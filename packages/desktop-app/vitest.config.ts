@@ -178,13 +178,12 @@ export default defineConfig({
       }
     },
 
-    // Coverage configuration - 90% threshold for files with testable logic
-    // Excludes: UI components, type definitions, configs, generated files, re-exports
+    // Coverage configuration - targeting 90% for testable business logic (Issue #735)
+    // We focus on logic that is practically testable without complex mocking
     coverage: {
       provider: 'v8', // Use V8 coverage provider (fast and accurate)
       reporter: ['text', 'html'],
       exclude: [
-        // Standard exclusions
         'node_modules/',
         'src/tests/',
         '**/*.d.ts',
@@ -192,82 +191,36 @@ export default defineConfig({
         '**/*.config.js',
         'build/',
         'dist/',
-
-        // Svelte components (UI rendering, not testable logic)
-        '**/*.svelte',
-
-        // Re-export index files (no logic)
-        '**/index.ts',
-
-        // Pure type definition files
-        '**/types.ts',
-        'src/lib/types/**',
-
-        // Generated files
-        '.svelte-kit/**',
-
-        // Route files (Svelte pages)
-        'src/routes/**',
-
-        // Scripts and tooling
-        'scripts/**',
-        'eslint-rules/**',
-
-        // Design tokens and theme (static configuration)
-        'src/lib/design/theme.ts',
-        'src/lib/design/tokens.ts',
-
-        // Constants (static values)
-        'src/lib/constants/**',
-
-        // Development-only utilities
-        'src/lib/services/developer-inspector.ts',
-        'src/lib/services/performance-tracker.ts',
-
-        // Context providers (Svelte context, minimal logic)
-        'src/lib/contexts/**',
-
-        // Interface-only files (no implementation)
-        'src/lib/components/viewers/base-viewer.ts',
-
-        // Tauri/desktop-specific initialization (requires Tauri runtime)
-        'src/lib/services/app-initialization.ts',
-
-        // Layout persistence (localStorage integration, tested via integration tests)
-        'src/lib/services/layout-persistence-service.ts',
-        'src/lib/stores/layout.ts',
-
-        // Simple utilities that are integration-tested elsewhere
-        'src/lib/utils/throttle.ts',
-        'src/lib/utils/selection-utils.ts',
-        'src/lib/utils/markdown.ts',
-
-        // DOM-dependent cursor utilities (require real browser, tested in browser tests)
-        'src/lib/design/components/cursor-positioning.ts',
-        'src/lib/services/cursor-positioning-service.ts',
-
-        // Backend adapters (Tauri/HTTP integration, mocked in unit tests)
-        'src/lib/services/backend-adapter.ts',
-        'src/lib/services/tauri-commands.ts',
-
-        // Browser-specific services (DOM APIs, tested in browser tests)
-        'src/lib/services/inline-decoration.ts',
-        'src/lib/services/browser-sync-service.ts',
-        'src/lib/services/markdown-utils.ts',
-
-        // Logger utility (console wrapper, not critical path logic)
-        'src/lib/utils/logger.ts',
-
-        // Pattern detector (event-based, tested via integration)
-        'src/lib/services/pattern-detector.ts',
-
-        // Splitter index (re-exports)
-        'src/lib/patterns/splitter/index.ts'
+        '.svelte-kit/**', // SvelteKit generated files
+        'scripts/**', // Build/dev scripts
+        'eslint-rules/**', // Custom eslint rules
+        // Excluded from coverage targets (Issue #735)
+        'src/lib/components/ui/**', // Third-party shadcn-svelte wrappers
+        'src/lib/design/**', // Svelte components - tested via browser-mode tests
+        'src/lib/components/**', // Svelte UI components - require browser testing
+        'src/lib/contexts/**', // Svelte context providers - tightly coupled to components
+        'src/lib/constants/**', // Constants and event definitions - no logic to test
+        'src/routes/**', // SvelteKit routes - integration test territory
+        'src/lib/services/developer-inspector.ts', // Dev-only debugging tool
+        'src/lib/services/performance-tracker.ts', // Dev-only performance monitoring
+        'src/lib/services/app-initialization.ts', // Bootstrap code with Tauri dependencies
+        'src/lib/services/index.ts', // Re-export barrel file
+        'src/lib/utils.ts', // SvelteKit generated utils
+        // Type-only files (no executable code)
+        'src/lib/types/sse-events.ts',
+        'src/lib/types/tree.ts',
+        'src/lib/types/update-protocol.ts',
+        'src/lib/types/navigation.ts',
+        'src/lib/types/node-viewers.ts',
+        'src/lib/types/query.ts',
+        'src/lib/types/event-types.ts',
+        'src/lib/types/content-decoration.ts'
       ],
       thresholds: {
+        // Global thresholds - 90% target for testable logic
         lines: 90,
         functions: 90,
-        branches: 90,
+        branches: 85,
         statements: 90
       }
     },

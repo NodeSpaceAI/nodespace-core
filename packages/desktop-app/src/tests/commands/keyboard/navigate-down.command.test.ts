@@ -91,6 +91,40 @@ describe('NavigateDownCommand', () => {
       expect(command.canExecute(context)).toBe(true);
     });
 
+    it('should use isAtLastLine for textarea elements', () => {
+      const context = createContext({
+        key: 'ArrowDown',
+        allowMultiline: true
+      });
+
+      // Create a TEXTAREA element (not a DIV)
+      const textarea = document.createElement('textarea');
+      mockController.element = textarea as unknown as TextareaController["element"];
+
+      // Mock isAtLastLine to return false
+      (mockController.isAtLastLine as ReturnType<typeof vi.fn>).mockReturnValue(false);
+
+      // Should not execute - not at last line
+      expect(command.canExecute(context)).toBe(false);
+    });
+
+    it('should fallback to true when isAtLastLine is not available on textarea', () => {
+      const context = createContext({
+        key: 'ArrowDown',
+        allowMultiline: true
+      });
+
+      // Create a TEXTAREA element
+      const textarea = document.createElement('textarea');
+      mockController.element = textarea as unknown as TextareaController["element"];
+
+      // Remove isAtLastLine method
+      mockController.isAtLastLine = undefined as unknown as (() => boolean);
+
+      // Should execute - fallback to true
+      expect(command.canExecute(context)).toBe(true);
+    });
+
     it('should not execute for non-ArrowDown keys', () => {
       const context = createContext({
         key: 'ArrowUp',

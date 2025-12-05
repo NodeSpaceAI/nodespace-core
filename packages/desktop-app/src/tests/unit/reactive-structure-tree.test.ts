@@ -123,6 +123,14 @@ describe('ReactiveStructureTree', () => {
         { nodeId: 'child2', order: 2.5 }
       ]);
     });
+
+    it('should return empty array for non-existent parent', () => {
+      structureTree.children.clear();
+
+      const childInfo = structureTree.getChildrenWithOrder('nonexistent');
+
+      expect(childInfo).toEqual([]);
+    });
   });
 
   describe('snapshot and restore', () => {
@@ -433,6 +441,337 @@ describe('ReactiveStructureTree', () => {
 
       // No relationships to add
       expect(structureTree.children.size).toBe(0);
+    });
+  });
+
+  describe('addChild - duplicate handling', () => {
+    it('should silently handle duplicate child with same order', () => {
+      structureTree.children.clear();
+
+      // Add child once
+      structureTree.__testOnly_addChild({
+        parentId: 'parent1',
+        childId: 'child1',
+        order: 1.0
+      });
+
+      // Add same child again with same order (should be silently ignored)
+      structureTree.__testOnly_addChild({
+        parentId: 'parent1',
+        childId: 'child1',
+        order: 1.0
+      });
+
+      // Verify only one instance exists
+      const children = structureTree.getChildren('parent1');
+      expect(children).toEqual(['child1']);
+      expect(children.length).toBe(1);
+    });
+
+    it('should update order when duplicate child has different order', () => {
+      structureTree.children.clear();
+
+      // Add child with initial order
+      structureTree.__testOnly_addChild({
+        parentId: 'parent1',
+        childId: 'child1',
+        order: 2.0
+      });
+
+      structureTree.__testOnly_addChild({
+        parentId: 'parent1',
+        childId: 'child2',
+        order: 3.0
+      });
+
+      // Update child1's order to 5.0 (should re-sort)
+      structureTree.__testOnly_addChild({
+        parentId: 'parent1',
+        childId: 'child1',
+        order: 5.0
+      });
+
+      // Verify child1 moved to end after re-sort
+      const children = structureTree.getChildren('parent1');
+      expect(children).toEqual(['child2', 'child1']);
+
+      // Verify only 2 children exist (no duplicates)
+      expect(children.length).toBe(2);
+
+      // Verify order was updated
+      const childInfo = structureTree.getChildrenWithOrder('parent1');
+      expect(childInfo.find(c => c.nodeId === 'child1')?.order).toBe(5.0);
+    });
+
+    it('should prevent adding child with different parent (tree invariant)', () => {
+      structureTree.children.clear();
+
+      // Add child to parent1
+      structureTree.__testOnly_addChild({
+        parentId: 'parent1',
+        childId: 'child1',
+        order: 1.0
+      });
+
+      // Try to add same child to parent2 (should be rejected due to tree invariant)
+      structureTree.__testOnly_addChild({
+        parentId: 'parent2',
+        childId: 'child1',
+        order: 1.0
+      });
+
+      // Verify child1 only belongs to parent1 (tree invariant preserved)
+      expect(structureTree.getChildren('parent1')).toEqual(['child1']);
+      expect(structureTree.getChildren('parent2')).toEqual([]);
+
+      // Verify child1's parent is still parent1
+      expect(structureTree.getParent('child1')).toBe('parent1');
+    });
+  });
+
+  describe('removeChild', () => {
+    it('should remove child from parent', () => {
+      structureTree.children.clear();
+
+      // Add children
+      structureTree.__testOnly_addChild({
+        parentId: 'parent1',
+        childId: 'child1',
+        order: 1.0
+      });
+
+      structureTree.__testOnly_addChild({
+        parentId: 'parent1',
+        childId: 'child2',
+        order: 2.0
+      });
+
+      // Remove child1
+      structureTree.removeChild({
+        parentId: 'parent1',
+        childId: 'child1',
+        order: 1.0
+      });
+
+      // Verify child1 removed
+      const children = structureTree.getChildren('parent1');
+      expect(children).toEqual(['child2']);
+    });
+
+    it('should delete parent entry when last child removed', () => {
+      structureTree.children.clear();
+
+      // Add single child
+      structureTree.__testOnly_addChild({
+        parentId: 'parent1',
+        childId: 'child1',
+        order: 1.0
+      });
+
+      // Remove only child
+      structureTree.removeChild({
+        parentId: 'parent1',
+        childId: 'child1',
+        order: 1.0
+      });
+
+      // Verify parent entry deleted (not empty array)
+      expect(structureTree.children.has('parent1')).toBe(false);
+      expect(structureTree.getChildren('parent1')).toEqual([]);
+    });
+
+    it('should handle removing non-existent child gracefully', () => {
+      structureTree.children.clear();
+
+      // Add child1
+      structureTree.__testOnly_addChild({
+        parentId: 'parent1',
+        childId: 'child1',
+        order: 1.0
+      });
+
+      // Try to remove non-existent child2
+      structureTree.removeChild({
+        parentId: 'parent1',
+        childId: 'child2',
+        order: 1.0
+      });
+
+      // Verify child1 still exists
+      expect(structureTree.getChildren('parent1')).toEqual(['child1']);
+    });
+
+    it('should handle removing from non-existent parent gracefully', () => {
+      structureTree.children.clear();
+
+      // Try to remove child from non-existent parent (should not throw)
+      structureTree.removeChild({
+        parentId: 'nonexistent',
+        childId: 'child1',
+        order: 1.0
+      });
+
+      // Verify no changes
+      expect(structureTree.children.size).toBe(0);
+    });
+  });
+
+  describe('addInMemoryRelationship', () => {
+    it('should add in-memory relationship with explicit order', () => {
+      structureTree.children.clear();
+
+      structureTree.addInMemoryRelationship('parent1', 'child1', 1.5);
+
+      const children = structureTree.getChildren('parent1');
+      expect(children).toEqual(['child1']);
+
+      const childInfo = structureTree.getChildrenWithOrder('parent1');
+      expect(childInfo[0].order).toBe(1.5);
+    });
+
+    it('should add in-memory relationship with default order 1.0', () => {
+      structureTree.children.clear();
+
+      // Call without order parameter
+      structureTree.addInMemoryRelationship('parent1', 'child1');
+
+      const children = structureTree.getChildren('parent1');
+      expect(children).toEqual(['child1']);
+
+      const childInfo = structureTree.getChildrenWithOrder('parent1');
+      expect(childInfo[0].order).toBe(1.0);
+    });
+
+    it('should support multiple in-memory relationships with different orders', () => {
+      structureTree.children.clear();
+
+      structureTree.addInMemoryRelationship('parent1', 'child1', 1.0);
+      structureTree.addInMemoryRelationship('parent1', 'child2', 2.0);
+      structureTree.addInMemoryRelationship('parent1', 'child3', 1.5);
+
+      const children = structureTree.getChildren('parent1');
+      expect(children).toEqual(['child1', 'child3', 'child2']);
+    });
+  });
+
+  describe('batchAddRelationships', () => {
+    it('should add multiple relationships in batch', () => {
+      structureTree.children.clear();
+
+      const relationships = [
+        { parentId: 'parent1', childId: 'child1', order: 1.0 },
+        { parentId: 'parent1', childId: 'child2', order: 2.0 },
+        { parentId: 'parent2', childId: 'child3', order: 1.0 }
+      ];
+
+      structureTree.batchAddRelationships(relationships);
+
+      expect(structureTree.getChildren('parent1')).toEqual(['child1', 'child2']);
+      expect(structureTree.getChildren('parent2')).toEqual(['child3']);
+    });
+
+    it('should handle empty batch', () => {
+      structureTree.children.clear();
+
+      structureTree.batchAddRelationships([]);
+
+      expect(structureTree.children.size).toBe(0);
+    });
+
+    it('should maintain sort order during batch add', () => {
+      structureTree.children.clear();
+
+      const relationships = [
+        { parentId: 'parent1', childId: 'child3', order: 3.0 },
+        { parentId: 'parent1', childId: 'child1', order: 1.0 },
+        { parentId: 'parent1', childId: 'child2', order: 2.0 }
+      ];
+
+      structureTree.batchAddRelationships(relationships);
+
+      // Verify children are sorted correctly despite unsorted batch input
+      expect(structureTree.getChildren('parent1')).toEqual(['child1', 'child2', 'child3']);
+    });
+  });
+
+  describe('moveInMemoryRelationship', () => {
+    it('should move child from old parent to new parent', () => {
+      structureTree.children.clear();
+
+      // Setup: child1 under parent1
+      structureTree.addInMemoryRelationship('parent1', 'child1', 1.0);
+      structureTree.addInMemoryRelationship('parent1', 'child2', 2.0);
+
+      // Move child1 from parent1 to parent2
+      structureTree.moveInMemoryRelationship('parent1', 'parent2', 'child1', 1.0);
+
+      // Verify child1 removed from parent1
+      expect(structureTree.getChildren('parent1')).toEqual(['child2']);
+
+      // Verify child1 added to parent2
+      expect(structureTree.getChildren('parent2')).toEqual(['child1']);
+    });
+
+    it('should handle moving from null parent (root)', () => {
+      structureTree.children.clear();
+
+      // Move from root (null parent) to parent1
+      structureTree.moveInMemoryRelationship(null, 'parent1', 'child1', 1.0);
+
+      // Verify child1 added to parent1
+      expect(structureTree.getChildren('parent1')).toEqual(['child1']);
+    });
+
+    it('should calculate order automatically when not provided', () => {
+      structureTree.children.clear();
+
+      // Setup: parent2 already has children
+      structureTree.addInMemoryRelationship('parent2', 'child2', 1.0);
+      structureTree.addInMemoryRelationship('parent2', 'child3', 2.0);
+
+      // Setup: child1 under parent1
+      structureTree.addInMemoryRelationship('parent1', 'child1', 1.0);
+
+      // Move child1 to parent2 without specifying order (should append)
+      structureTree.moveInMemoryRelationship('parent1', 'parent2', 'child1');
+
+      // Verify child1 appended to end of parent2's children
+      expect(structureTree.getChildren('parent2')).toEqual(['child2', 'child3', 'child1']);
+
+      // Verify order was auto-calculated (should be 3.0 = existing length + 1)
+      const childInfo = structureTree.getChildrenWithOrder('parent2');
+      expect(childInfo.find(c => c.nodeId === 'child1')?.order).toBe(3.0);
+    });
+
+    it('should calculate order 1.0 when moving to empty parent', () => {
+      structureTree.children.clear();
+
+      // Setup: child1 under parent1
+      structureTree.addInMemoryRelationship('parent1', 'child1', 1.0);
+
+      // Move child1 to empty parent2 without specifying order
+      structureTree.moveInMemoryRelationship('parent1', 'parent2', 'child1');
+
+      // Verify child1 added to parent2 with order 1.0
+      const childInfo = structureTree.getChildrenWithOrder('parent2');
+      expect(childInfo[0].order).toBe(1.0);
+    });
+
+    it('should maintain sort order after move with explicit order', () => {
+      structureTree.children.clear();
+
+      // Setup: parent2 has children
+      structureTree.addInMemoryRelationship('parent2', 'child2', 1.0);
+      structureTree.addInMemoryRelationship('parent2', 'child4', 3.0);
+
+      // Setup: child3 under parent1
+      structureTree.addInMemoryRelationship('parent1', 'child3', 1.0);
+
+      // Move child3 to parent2 with order 2.0 (between child2 and child4)
+      structureTree.moveInMemoryRelationship('parent1', 'parent2', 'child3', 2.0);
+
+      // Verify child3 inserted in correct position
+      expect(structureTree.getChildren('parent2')).toEqual(['child2', 'child3', 'child4']);
     });
   });
 });

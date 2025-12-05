@@ -1,5 +1,9 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { queueDatabaseWrite, getQueueDepth } from '$lib/utils/database-write-queue';
+import {
+  queueDatabaseWrite,
+  getQueueDepth,
+  __resetQueueForTesting
+} from '$lib/utils/database-write-queue';
 
 describe('databaseWriteQueue', () => {
   beforeEach(() => {
@@ -296,6 +300,156 @@ describe('databaseWriteQueue', () => {
       // Depth should be 1 both at start and end of operation execution
       expect(depths).toEqual([1, 1]);
       expect(getQueueDepth()).toBe(0);
+    });
+  });
+
+  describe('error handling in queue chain', () => {
+    test('ignores errors from previous operations in the queue (line 69 coverage)', async () => {
+      // This test specifically covers the catch block (lines 66-69) that ignores errors
+      // from previous operations to prevent error propagation through the chain
+      const error = new Error('Previous operation error');
+      const failingOperation = vi.fn().mockRejectedValue(error);
+      const successOperation = vi.fn().mockResolvedValue('success');
+
+      // Start both operations concurrently to ensure second waits for first
+      const promise1 = queueDatabaseWrite(failingOperation);
+      const promise2 = queueDatabaseWrite(successOperation);
+
+      // First operation should fail
+      await expect(promise1).rejects.toThrow('Previous operation error');
+
+      // Second operation should succeed despite the first one failing
+      // This exercises the catch block where errors from previous operations are ignored
+      const result2 = await promise2;
+
+      expect(result2).toBe('success');
+      expect(successOperation).toHaveBeenCalledTimes(1);
+    });
+
+    test('catch block allows continuation after previous operation error', async () => {
+      // Additional test to ensure the empty catch block is covered
+      const error = new Error('Previous operation error');
+      const failingOperation = vi.fn().mockRejectedValue(error);
+      const successOperation = vi.fn().mockResolvedValue('success');
+      const thirdOperation = vi.fn().mockResolvedValue('third');
+
+      // Queue three operations: fail, success, success
+      const promise1 = queueDatabaseWrite(failingOperation);
+      const promise2 = queueDatabaseWrite(successOperation);
+      const promise3 = queueDatabaseWrite(thirdOperation);
+
+      // First operation should fail
+      await expect(promise1).rejects.toThrow('Previous operation error');
+
+      // Second and third operations should succeed despite the first one failing
+      // This exercises the catch block multiple times
+      const result2 = await promise2;
+      const result3 = await promise3;
+
+      expect(result2).toBe('success');
+      expect(result3).toBe('third');
+      expect(successOperation).toHaveBeenCalledTimes(1);
+      expect(thirdOperation).toHaveBeenCalledTimes(1);
+    });
+
+    test('handles multiple consecutive failures in queue chain', async () => {
+      // Test that line 69 works correctly with multiple failures in sequence
+      const error1 = new Error('First failure');
+      const error2 = new Error('Second failure');
+      const failOp1 = vi.fn().mockRejectedValue(error1);
+      const failOp2 = vi.fn().mockRejectedValue(error2);
+      const successOp = vi.fn().mockResolvedValue('finally success');
+
+      // Queue three operations: fail, fail, success
+      const promise1 = queueDatabaseWrite(failOp1);
+      const promise2 = queueDatabaseWrite(failOp2);
+      const promise3 = queueDatabaseWrite(successOp);
+
+      // First two should fail with their respective errors
+      await expect(promise1).rejects.toThrow('First failure');
+      await expect(promise2).rejects.toThrow('Second failure');
+
+      // Third should succeed (exercises line 69 twice)
+      const result = await promise3;
+      expect(result).toBe('finally success');
+      expect(successOp).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('__resetQueueForTesting', () => {
+    test('resets queue state in test environment', async () => {
+      // First ensure we start fresh
+      __resetQueueForTesting();
+
+      // Queue an operation to create some state
+      await queueDatabaseWrite(vi.fn().mockResolvedValue('test'));
+
+      // Verify we can reset the queue state
+      __resetQueueForTesting();
+      expect(getQueueDepth()).toBe(0);
+    });
+
+    test('resets queue state after operations have been queued', async () => {
+      // First ensure we start fresh
+      __resetQueueForTesting();
+
+      // Queue some operations to create state
+      const operations = Array.from({ length: 3 }, (_, i) => vi.fn().mockResolvedValue(i));
+      const promises = operations.map((op) => queueDatabaseWrite(op));
+      await Promise.all(promises);
+
+      // Queue depth should be 0 after operations complete
+      expect(getQueueDepth()).toBe(0);
+
+      // Reset should work without errors
+      __resetQueueForTesting();
+      expect(getQueueDepth()).toBe(0);
+    });
+
+    test('throws error when called outside test environment', () => {
+      // Save original NODE_ENV
+      const originalEnv = process.env.NODE_ENV;
+
+      try {
+        // Temporarily change NODE_ENV to simulate production
+        process.env.NODE_ENV = 'production';
+
+        // Should throw error
+        expect(() => __resetQueueForTesting()).toThrow(
+          '__resetQueueForTesting() can only be called in test environment'
+        );
+      } finally {
+        // Restore original NODE_ENV
+        process.env.NODE_ENV = originalEnv;
+      }
+    });
+
+    test('throws error when called in development environment', () => {
+      const originalEnv = process.env.NODE_ENV;
+
+      try {
+        process.env.NODE_ENV = 'development';
+
+        expect(() => __resetQueueForTesting()).toThrow(
+          '__resetQueueForTesting() can only be called in test environment'
+        );
+      } finally {
+        process.env.NODE_ENV = originalEnv;
+      }
+    });
+
+    test('allows reset in test environment (NODE_ENV=test)', () => {
+      const originalEnv = process.env.NODE_ENV;
+
+      try {
+        process.env.NODE_ENV = 'test';
+
+        // Should not throw
+        expect(() => __resetQueueForTesting()).not.toThrow();
+        expect(getQueueDepth()).toBe(0);
+      } finally {
+        process.env.NODE_ENV = originalEnv;
+      }
     });
   });
 });

@@ -976,4 +976,923 @@ describe('PluginRegistry - Core Functionality', () => {
       expect(queryCommand.nodeType).toBe('query');
     });
   });
+
+  describe('Node Component Management', () => {
+    it('should resolve direct node component', async () => {
+      const plugin: PluginDefinition = {
+        id: 'direct-node',
+        name: 'Direct Node',
+        description: 'Plugin with direct node component',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        node: {
+          component: MockViewerComponent as unknown as import('$lib/plugins/types').NodeComponent,
+          priority: 1
+        }
+      };
+
+      registry.register(plugin);
+      const nodeComponent = await registry.getNodeComponent('direct-node');
+
+      expect(nodeComponent).toBe(MockViewerComponent);
+    });
+
+    it('should resolve lazy-loaded node component', async () => {
+      const plugin: PluginDefinition = {
+        id: 'lazy-node',
+        name: 'Lazy Node',
+        description: 'Plugin with lazy-loaded node',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        node: {
+          lazyLoad: () => Promise.resolve({ default: MockViewerComponent as unknown as import('$lib/plugins/types').NodeComponent }),
+          priority: 1
+        }
+      };
+
+      registry.register(plugin);
+      const nodeComponent = await registry.getNodeComponent('lazy-node');
+
+      expect(nodeComponent).toBe(MockViewerComponent);
+    });
+
+    it('should return null for missing node component', async () => {
+      const nodeComponent = await registry.getNodeComponent('non-existent');
+      expect(nodeComponent).toBeNull();
+    });
+
+    it('should return null for disabled plugin node component', async () => {
+      const plugin: PluginDefinition = {
+        id: 'disabled-node',
+        name: 'Disabled Node',
+        description: 'Plugin that will be disabled',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        node: {
+          component: MockViewerComponent as unknown as import('$lib/plugins/types').NodeComponent
+        }
+      };
+
+      registry.register(plugin);
+      registry.setEnabled('disabled-node', false);
+
+      const nodeComponent = await registry.getNodeComponent('disabled-node');
+      expect(nodeComponent).toBeNull();
+    });
+
+    it('should handle lazy-load errors gracefully for node components', async () => {
+      const plugin: PluginDefinition = {
+        id: 'error-node',
+        name: 'Error Node',
+        description: 'Plugin with failing lazy load',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        node: {
+          lazyLoad: () => Promise.reject(new Error('Failed to load')),
+          priority: 1
+        }
+      };
+
+      registry.register(plugin);
+
+      const nodeComponent = await registry.getNodeComponent('error-node');
+
+      expect(nodeComponent).toBeNull();
+    });
+
+    it('should check if node component exists', () => {
+      const plugin: PluginDefinition = {
+        id: 'node-check',
+        name: 'Node Check',
+        description: 'Plugin for checking node existence',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        node: {
+          component: MockViewerComponent as unknown as import('$lib/plugins/types').NodeComponent
+        }
+      };
+
+      registry.register(plugin);
+
+      expect(registry.hasNodeComponent('node-check')).toBe(true);
+      expect(registry.hasNodeComponent('non-existent')).toBe(false);
+    });
+
+    it('should cache loaded node components', async () => {
+      const lazyLoad = vi.fn().mockResolvedValue({ default: MockViewerComponent as unknown as import('$lib/plugins/types').NodeComponent });
+      const plugin: PluginDefinition = {
+        id: 'cached-node',
+        name: 'Cached Node',
+        description: 'Plugin for cache testing',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        node: {
+          lazyLoad,
+          priority: 1
+        }
+      };
+
+      registry.register(plugin);
+
+      // First call should invoke lazyLoad
+      const nodeComponent1 = await registry.getNodeComponent('cached-node');
+      expect(lazyLoad).toHaveBeenCalledTimes(1);
+
+      // Second call should use cache
+      const nodeComponent2 = await registry.getNodeComponent('cached-node');
+      expect(lazyLoad).toHaveBeenCalledTimes(1); // Still 1, not called again
+
+      expect(nodeComponent1).toBe(nodeComponent2);
+      expect(nodeComponent1).toBe(MockViewerComponent);
+    });
+
+    it('should get loaded node component synchronously', async () => {
+      const plugin: PluginDefinition = {
+        id: 'sync-node',
+        name: 'Sync Node',
+        description: 'Plugin for sync access',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        node: {
+          component: MockViewerComponent as unknown as import('$lib/plugins/types').NodeComponent
+        }
+      };
+
+      registry.register(plugin);
+
+      // Before async load - should return null
+      expect(registry.getLoadedNodeComponent('sync-node')).toBeNull();
+
+      // After async load - should return component
+      await registry.getNodeComponent('sync-node');
+      expect(registry.getLoadedNodeComponent('sync-node')).toBe(MockViewerComponent);
+    });
+
+    it('should return null for non-loaded node component sync access', () => {
+      expect(registry.getLoadedNodeComponent('not-loaded')).toBeNull();
+    });
+  });
+
+  describe('Pattern Detection', () => {
+    it('should return all pattern detection configs from enabled plugins', () => {
+      const plugin1: PluginDefinition = {
+        id: 'header',
+        name: 'Header',
+        description: 'Header plugin',
+        version: '1.0.0',
+        config: {
+          slashCommands: [],
+          patternDetection: [
+            {
+              pattern: /^(#{1,6})\s+(.+)$/,
+              targetNodeType: 'header',
+              cleanContent: false,
+              priority: 20
+            }
+          ]
+        }
+      };
+
+      const plugin2: PluginDefinition = {
+        id: 'task',
+        name: 'Task',
+        description: 'Task plugin',
+        version: '1.0.0',
+        config: {
+          slashCommands: [],
+          patternDetection: [
+            {
+              pattern: /^\[\s*[xX\s]\]\s+(.+)$/,
+              targetNodeType: 'task',
+              cleanContent: true,
+              priority: 10
+            }
+          ]
+        }
+      };
+
+      registry.register(plugin1);
+      registry.register(plugin2);
+
+      const configs = registry.getAllPatternDetectionConfigs();
+
+      expect(configs).toHaveLength(2);
+      expect(configs[0].targetNodeType).toBe('header'); // Higher priority first
+      expect(configs[1].targetNodeType).toBe('task');
+    });
+
+    it('should exclude pattern configs from disabled plugins', () => {
+      const plugin: PluginDefinition = {
+        id: 'disabled-pattern',
+        name: 'Disabled Pattern',
+        description: 'Plugin with pattern',
+        version: '1.0.0',
+        config: {
+          slashCommands: [],
+          patternDetection: [
+            {
+              pattern: /test/,
+              targetNodeType: 'test',
+              cleanContent: false,
+              priority: 10
+            }
+          ]
+        }
+      };
+
+      registry.register(plugin);
+      registry.setEnabled('disabled-pattern', false);
+
+      const configs = registry.getAllPatternDetectionConfigs();
+
+      expect(configs).toHaveLength(0);
+    });
+
+    it('should detect pattern in content using plugin patterns', () => {
+      const mockExtractMetadata = vi.fn((match: RegExpMatchArray) => ({
+        level: match[1].length
+      }));
+
+      const plugin: PluginDefinition = {
+        id: 'header',
+        name: 'Header',
+        description: 'Header plugin',
+        version: '1.0.0',
+        config: {
+          slashCommands: [
+            {
+              id: 'header',
+              name: 'Header',
+              description: 'Create header',
+              contentTemplate: '',
+              nodeType: 'header',
+              priority: 10
+            }
+          ]
+        },
+        pattern: {
+          detect: /^(#{1,6})\s+(.+)$/,
+          canRevert: true,
+          onEnter: 'inherit',
+          splittingStrategy: 'prefix-inheritance',
+          cursorPlacement: 'after-prefix',
+          extractMetadata: mockExtractMetadata
+        }
+      };
+
+      registry.register(plugin);
+
+      const result = registry.detectPatternInContent('## Test Header');
+
+      expect(result).toBeDefined();
+      expect(result?.plugin.id).toBe('header');
+      expect(result?.config.targetNodeType).toBe('header');
+      expect(result?.config.cleanContent).toBe(false); // canRevert: true means cleanContent: false
+      expect(result?.match).toBeDefined();
+      expect(result?.metadata).toEqual({ level: 2 });
+      expect(mockExtractMetadata).toHaveBeenCalledWith(expect.any(Array));
+    });
+
+    it('should return null when no pattern matches', () => {
+      const plugin: PluginDefinition = {
+        id: 'header',
+        name: 'Header',
+        description: 'Header plugin',
+        version: '1.0.0',
+        config: {
+          slashCommands: []
+        },
+        pattern: {
+          detect: /^(#{1,6})\s+(.+)$/,
+          canRevert: true,
+          onEnter: 'inherit',
+          splittingStrategy: 'prefix-inheritance',
+          cursorPlacement: 'after-prefix'
+        }
+      };
+
+      registry.register(plugin);
+
+      const result = registry.detectPatternInContent('Normal text');
+
+      expect(result).toBeNull();
+    });
+
+    it('should respect plugin priority when detecting patterns', () => {
+      const plugin1: PluginDefinition = {
+        id: 'low-priority',
+        name: 'Low Priority',
+        description: 'Low priority plugin',
+        version: '1.0.0',
+        config: {
+          slashCommands: [
+            {
+              id: 'low',
+              name: 'Low',
+              description: 'Low priority',
+              contentTemplate: '',
+              nodeType: 'low-priority',
+              priority: 5
+            }
+          ]
+        },
+        pattern: {
+          detect: /^test/,
+          canRevert: false,
+          onEnter: 'none',
+          splittingStrategy: 'simple-split',
+          cursorPlacement: 'start'
+        }
+      };
+
+      const plugin2: PluginDefinition = {
+        id: 'high-priority',
+        name: 'High Priority',
+        description: 'High priority plugin',
+        version: '1.0.0',
+        config: {
+          slashCommands: [
+            {
+              id: 'high',
+              name: 'High',
+              description: 'High priority',
+              contentTemplate: '',
+              nodeType: 'high-priority',
+              priority: 20
+            }
+          ]
+        },
+        pattern: {
+          detect: /^test/,
+          canRevert: false,
+          onEnter: 'none',
+          splittingStrategy: 'simple-split',
+          cursorPlacement: 'start'
+        }
+      };
+
+      registry.register(plugin1);
+      registry.register(plugin2);
+
+      const result = registry.detectPatternInContent('test content');
+
+      // Should match high-priority plugin first
+      expect(result?.plugin.id).toBe('high-priority');
+    });
+
+    it('should handle pattern without metadata extractor', () => {
+      const plugin: PluginDefinition = {
+        id: 'simple-pattern',
+        name: 'Simple Pattern',
+        description: 'Simple pattern plugin',
+        version: '1.0.0',
+        config: {
+          slashCommands: []
+        },
+        pattern: {
+          detect: /^test/,
+          canRevert: false,
+          onEnter: 'none',
+          splittingStrategy: 'simple-split',
+          cursorPlacement: 'start'
+        }
+      };
+
+      registry.register(plugin);
+
+      const result = registry.detectPatternInContent('test content');
+
+      expect(result?.metadata).toEqual({});
+    });
+  });
+
+  describe('Metadata Extraction and State Mapping', () => {
+    it('should extract metadata using plugin function', () => {
+      const mockExtractMetadata = vi.fn().mockReturnValue({
+        status: 'open',
+        priority: 'high'
+      });
+
+      const plugin: PluginDefinition = {
+        id: 'task',
+        name: 'Task',
+        description: 'Task plugin',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        extractMetadata: mockExtractMetadata
+      };
+
+      registry.register(plugin);
+
+      const node = {
+        nodeType: 'task',
+        properties: { rawStatus: 'pending', rawPriority: 'urgent' }
+      };
+
+      const metadata = registry.extractNodeMetadata(node);
+
+      expect(metadata).toEqual({ status: 'open', priority: 'high' });
+      expect(mockExtractMetadata).toHaveBeenCalledWith(node);
+    });
+
+    it('should return properties as-is when no extractMetadata function', () => {
+      const plugin: PluginDefinition = {
+        id: 'text',
+        name: 'Text',
+        description: 'Text plugin',
+        version: '1.0.0',
+        config: { slashCommands: [] }
+      };
+
+      registry.register(plugin);
+
+      const node = {
+        nodeType: 'text',
+        properties: { foo: 'bar', baz: 42 }
+      };
+
+      const metadata = registry.extractNodeMetadata(node);
+
+      expect(metadata).toEqual({ foo: 'bar', baz: 42 });
+    });
+
+    it('should return empty object when no properties', () => {
+      const plugin: PluginDefinition = {
+        id: 'empty',
+        name: 'Empty',
+        description: 'Empty plugin',
+        version: '1.0.0',
+        config: { slashCommands: [] }
+      };
+
+      registry.register(plugin);
+
+      const node = {
+        nodeType: 'empty'
+      };
+
+      const metadata = registry.extractNodeMetadata(node);
+
+      expect(metadata).toEqual({});
+    });
+
+    it('should map state to schema using plugin function', () => {
+      const mockMapStateToSchema = vi.fn((state: string, fieldName: string) => {
+        if (fieldName === 'status') {
+          return state === 'pending' ? 'open' : 'closed';
+        }
+        return state;
+      });
+
+      const plugin: PluginDefinition = {
+        id: 'task',
+        name: 'Task',
+        description: 'Task plugin',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        mapStateToSchema: mockMapStateToSchema
+      };
+
+      registry.register(plugin);
+
+      const result1 = registry.mapStateToSchema('task', 'pending', 'status');
+      const result2 = registry.mapStateToSchema('task', 'done', 'status');
+
+      expect(result1).toBe('open');
+      expect(result2).toBe('closed');
+      expect(mockMapStateToSchema).toHaveBeenCalledWith('pending', 'status');
+      expect(mockMapStateToSchema).toHaveBeenCalledWith('done', 'status');
+    });
+
+    it('should return state as-is when no mapStateToSchema function', () => {
+      const plugin: PluginDefinition = {
+        id: 'text',
+        name: 'Text',
+        description: 'Text plugin',
+        version: '1.0.0',
+        config: { slashCommands: [] }
+      };
+
+      registry.register(plugin);
+
+      const result = registry.mapStateToSchema('text', 'someState', 'someField');
+
+      expect(result).toBe('someState');
+    });
+
+    it('should handle disabled plugin in metadata extraction', () => {
+      const plugin: PluginDefinition = {
+        id: 'disabled-extract',
+        name: 'Disabled Extract',
+        description: 'Plugin that will be disabled',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        extractMetadata: vi.fn().mockReturnValue({ extracted: true })
+      };
+
+      registry.register(plugin);
+      registry.setEnabled('disabled-extract', false);
+
+      const node = {
+        nodeType: 'disabled-extract',
+        properties: { raw: true }
+      };
+
+      const metadata = registry.extractNodeMetadata(node);
+
+      // Should fall back to properties when plugin disabled
+      expect(metadata).toEqual({ raw: true });
+    });
+
+    it('should handle disabled plugin in state mapping', () => {
+      const plugin: PluginDefinition = {
+        id: 'disabled-map',
+        name: 'Disabled Map',
+        description: 'Plugin that will be disabled',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        mapStateToSchema: vi.fn().mockReturnValue('mapped')
+      };
+
+      registry.register(plugin);
+      registry.setEnabled('disabled-map', false);
+
+      const result = registry.mapStateToSchema('disabled-map', 'original', 'field');
+
+      // Should return state as-is when plugin disabled
+      expect(result).toBe('original');
+    });
+  });
+
+  describe('Content Merge Acceptance', () => {
+    it('should return false for plugins with acceptsContentMerge: false', () => {
+      const plugin: PluginDefinition = {
+        id: 'code-block',
+        name: 'Code Block',
+        description: 'Code block node',
+        version: '1.0.0',
+        config: {
+          slashCommands: []
+        },
+        acceptsContentMerge: false
+      };
+
+      registry.register(plugin);
+
+      expect(registry.acceptsContentMerge('code-block')).toBe(false);
+    });
+
+    it('should return true for plugins with acceptsContentMerge: true', () => {
+      const plugin: PluginDefinition = {
+        id: 'text',
+        name: 'Text Node',
+        description: 'Text node',
+        version: '1.0.0',
+        config: {
+          slashCommands: []
+        },
+        acceptsContentMerge: true
+      };
+
+      registry.register(plugin);
+
+      expect(registry.acceptsContentMerge('text')).toBe(true);
+    });
+
+    it('should return true by default when acceptsContentMerge is not specified', () => {
+      const plugin: PluginDefinition = {
+        id: 'default-merge',
+        name: 'Default Merge',
+        description: 'Node without acceptsContentMerge specified',
+        version: '1.0.0',
+        config: {
+          slashCommands: []
+        }
+      };
+
+      registry.register(plugin);
+
+      expect(registry.acceptsContentMerge('default-merge')).toBe(true);
+    });
+
+    it('should return true for unknown/unregistered plugins', () => {
+      expect(registry.acceptsContentMerge('unknown-plugin')).toBe(true);
+    });
+
+    it('should return true for disabled plugins', () => {
+      const plugin: PluginDefinition = {
+        id: 'disabled-merge',
+        name: 'Disabled Merge',
+        description: 'A disabled plugin',
+        version: '1.0.0',
+        config: {
+          slashCommands: []
+        },
+        acceptsContentMerge: false
+      };
+
+      registry.register(plugin);
+      registry.setEnabled('disabled-merge', false);
+
+      expect(registry.acceptsContentMerge('disabled-merge')).toBe(true);
+    });
+  });
+
+  describe('Schema Form Management (Issue #709)', () => {
+    it('should return schema form for plugin with registered form', async () => {
+      const MockSchemaForm = vi.fn() as unknown as import('$lib/plugins/types').SchemaFormComponent;
+      const plugin: PluginDefinition = {
+        id: 'task',
+        name: 'Task Node',
+        description: 'Task node with schema form',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        schemaForm: {
+          component: MockSchemaForm
+        }
+      };
+
+      registry.register(plugin);
+
+      const form = await registry.getSchemaForm('task');
+      expect(form).toBe(MockSchemaForm);
+    });
+
+    it('should resolve lazy-loaded schema form', async () => {
+      const MockSchemaForm = vi.fn() as unknown as import('$lib/plugins/types').SchemaFormComponent;
+      const plugin: PluginDefinition = {
+        id: 'lazy-form',
+        name: 'Lazy Form',
+        description: 'Plugin with lazy-loaded form',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        schemaForm: {
+          lazyLoad: () => Promise.resolve({ default: MockSchemaForm })
+        }
+      };
+
+      registry.register(plugin);
+
+      const form = await registry.getSchemaForm('lazy-form');
+      expect(form).toBe(MockSchemaForm);
+    });
+
+    it('should return null for plugin without schema form', async () => {
+      const plugin: PluginDefinition = {
+        id: 'no-form',
+        name: 'No Form',
+        description: 'Plugin without schema form',
+        version: '1.0.0',
+        config: { slashCommands: [] }
+      };
+
+      registry.register(plugin);
+
+      const form = await registry.getSchemaForm('no-form');
+      expect(form).toBeNull();
+    });
+
+    it('should return null for non-existent plugin', async () => {
+      const form = await registry.getSchemaForm('non-existent');
+      expect(form).toBeNull();
+    });
+
+    it('should return null for disabled plugin schema form', async () => {
+      const MockSchemaForm = vi.fn() as unknown as import('$lib/plugins/types').SchemaFormComponent;
+      const plugin: PluginDefinition = {
+        id: 'disabled-form',
+        name: 'Disabled Form',
+        description: 'Plugin that will be disabled',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        schemaForm: {
+          component: MockSchemaForm
+        }
+      };
+
+      registry.register(plugin);
+      registry.setEnabled('disabled-form', false);
+
+      const form = await registry.getSchemaForm('disabled-form');
+      expect(form).toBeNull();
+    });
+
+    it('should handle lazy-load errors gracefully for schema forms', async () => {
+      const plugin: PluginDefinition = {
+        id: 'error-form',
+        name: 'Error Form',
+        description: 'Plugin with failing lazy load',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        schemaForm: {
+          lazyLoad: () => Promise.reject(new Error('Failed to load form'))
+        }
+      };
+
+      registry.register(plugin);
+
+      const form = await registry.getSchemaForm('error-form');
+      expect(form).toBeNull();
+    });
+
+    it('should cache loaded schema forms', async () => {
+      const MockSchemaForm = vi.fn() as unknown as import('$lib/plugins/types').SchemaFormComponent;
+      const lazyLoad = vi.fn().mockResolvedValue({ default: MockSchemaForm });
+      const plugin: PluginDefinition = {
+        id: 'cached-form',
+        name: 'Cached Form',
+        description: 'Plugin for cache testing',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        schemaForm: {
+          lazyLoad
+        }
+      };
+
+      registry.register(plugin);
+
+      // First call should invoke lazyLoad
+      const form1 = await registry.getSchemaForm('cached-form');
+      expect(lazyLoad).toHaveBeenCalledTimes(1);
+
+      // Second call should use cache
+      const form2 = await registry.getSchemaForm('cached-form');
+      expect(lazyLoad).toHaveBeenCalledTimes(1); // Still 1, not called again
+
+      expect(form1).toBe(form2);
+      expect(form1).toBe(MockSchemaForm);
+    });
+
+    it('should check if schema form exists with hasSchemaForm', () => {
+      const MockSchemaForm = vi.fn() as unknown as import('$lib/plugins/types').SchemaFormComponent;
+      const pluginWithForm: PluginDefinition = {
+        id: 'with-form',
+        name: 'With Form',
+        description: 'Plugin with form',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        schemaForm: {
+          component: MockSchemaForm
+        }
+      };
+
+      const pluginWithoutForm: PluginDefinition = {
+        id: 'without-form',
+        name: 'Without Form',
+        description: 'Plugin without form',
+        version: '1.0.0',
+        config: { slashCommands: [] }
+      };
+
+      registry.register(pluginWithForm);
+      registry.register(pluginWithoutForm);
+
+      expect(registry.hasSchemaForm('with-form')).toBe(true);
+      expect(registry.hasSchemaForm('without-form')).toBe(false);
+      expect(registry.hasSchemaForm('non-existent')).toBe(false);
+    });
+
+    it('should return false for disabled plugin in hasSchemaForm', () => {
+      const MockSchemaForm = vi.fn() as unknown as import('$lib/plugins/types').SchemaFormComponent;
+      const plugin: PluginDefinition = {
+        id: 'disabled-has-form',
+        name: 'Disabled Has Form',
+        description: 'Plugin that will be disabled',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        schemaForm: {
+          component: MockSchemaForm
+        }
+      };
+
+      registry.register(plugin);
+      expect(registry.hasSchemaForm('disabled-has-form')).toBe(true);
+
+      registry.setEnabled('disabled-has-form', false);
+      expect(registry.hasSchemaForm('disabled-has-form')).toBe(false);
+    });
+  });
+
+  describe('Slash Command Filtering Edge Cases', () => {
+    beforeEach(() => {
+      const plugin: PluginDefinition = {
+        id: 'filter-test',
+        name: 'Filter Test',
+        description: 'Plugin for filter testing',
+        version: '1.0.0',
+        config: {
+          slashCommands: [
+            {
+              id: 'cmd1',
+              name: 'Create Task',
+              description: 'Create a new task',
+              contentTemplate: '',
+              shortcut: 't'
+            },
+            {
+              id: 'cmd2',
+              name: 'Create Note',
+              description: 'Create a new note',
+              contentTemplate: '',
+              shortcut: 'n'
+            }
+          ]
+        }
+      };
+      registry.register(plugin);
+    });
+
+    it('should filter by name', () => {
+      const filtered = registry.filterSlashCommands('task');
+
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].name).toBe('Create Task');
+    });
+
+    it('should filter by description', () => {
+      const filtered = registry.filterSlashCommands('note');
+
+      expect(filtered).toHaveLength(1);
+      expect(filtered[0].name).toBe('Create Note');
+    });
+
+    it('should filter by shortcut', () => {
+      const filtered = registry.filterSlashCommands('t');
+
+      // Matches both "Create Task" (name contains 't') and cmd1 (shortcut 't')
+      expect(filtered.length).toBeGreaterThanOrEqual(1);
+      expect(filtered.some(cmd => cmd.shortcut === 't')).toBe(true);
+    });
+
+    it('should handle whitespace-only query', () => {
+      const filtered = registry.filterSlashCommands('   ');
+
+      expect(filtered).toHaveLength(2); // Returns all
+    });
+  });
+
+  describe('Lifecycle Events', () => {
+    it('should not call lifecycle events when none provided', () => {
+      const registryNoEvents = new PluginRegistry();
+      const plugin: PluginDefinition = {
+        id: 'test',
+        name: 'Test',
+        description: 'Test plugin',
+        version: '1.0.0',
+        config: { slashCommands: [] }
+      };
+
+      // Should not throw
+      expect(() => registryNoEvents.register(plugin)).not.toThrow();
+      expect(() => registryNoEvents.setEnabled('test', false)).not.toThrow();
+      expect(() => registryNoEvents.setEnabled('test', true)).not.toThrow();
+      expect(() => registryNoEvents.unregister('test')).not.toThrow();
+    });
+  });
+
+  describe('Viewer Component Caching', () => {
+    it('should cache loaded viewers', async () => {
+      const lazyLoad = vi.fn().mockResolvedValue({ default: MockViewerComponent });
+      const plugin: PluginDefinition = {
+        id: 'cached-viewer',
+        name: 'Cached Viewer',
+        description: 'Plugin for viewer cache testing',
+        version: '1.0.0',
+        config: { slashCommands: [] },
+        viewer: {
+          lazyLoad,
+          priority: 1
+        }
+      };
+
+      registry.register(plugin);
+
+      // First call should invoke lazyLoad
+      const viewer1 = await registry.getViewer('cached-viewer');
+      expect(lazyLoad).toHaveBeenCalledTimes(1);
+
+      // Second call should use cache
+      const viewer2 = await registry.getViewer('cached-viewer');
+      expect(lazyLoad).toHaveBeenCalledTimes(1); // Still 1, not called again
+
+      expect(viewer1).toBe(viewer2);
+      expect(viewer1).toBe(MockViewerComponent);
+    });
+
+    it('should return null for plugin without viewer', async () => {
+      const plugin: PluginDefinition = {
+        id: 'no-viewer-explicit',
+        name: 'No Viewer Explicit',
+        description: 'Plugin explicitly without viewer',
+        version: '1.0.0',
+        config: { slashCommands: [] }
+      };
+
+      registry.register(plugin);
+
+      const viewer = await registry.getViewer('no-viewer-explicit');
+      expect(viewer).toBeNull();
+      expect(registry.hasViewer('no-viewer-explicit')).toBe(false);
+    });
+  });
 });

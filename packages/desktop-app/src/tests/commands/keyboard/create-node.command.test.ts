@@ -277,6 +277,54 @@ describe('CreateNodeCommand', () => {
     });
   });
 
+  describe('execute - multiline content handling', () => {
+    it('should use convertHtmlToTextWithNewlines for multiline nodes', async () => {
+      const convertSpy = vi.fn().mockReturnValue('Line 1\nLine 2');
+      mockController.convertHtmlToTextWithNewlines = convertSpy;
+      mockController.element = {
+        innerHTML: '<div>Line 1</div><div>Line 2</div>',
+        textContent: 'Line 1Line 2'
+      } as unknown as TextareaController["element"];
+
+      const context = createContext({
+        key: 'Enter',
+        content: 'Line 1Line 2',
+        cursorPosition: 6
+      });
+      context.allowMultiline = true;
+
+      await command.execute(context);
+
+      expect(convertSpy).toHaveBeenCalledWith('<div>Line 1</div><div>Line 2</div>');
+      expect(createNewNodeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          currentContent: expect.any(String),
+          newContent: expect.any(String)
+        })
+      );
+    });
+
+    it('should fallback to context.content for multiline nodes without element', async () => {
+      mockController.element = null as unknown as TextareaController["element"];
+
+      const context = createContext({
+        key: 'Enter',
+        content: 'test content',
+        cursorPosition: 4
+      });
+      context.allowMultiline = true;
+
+      await command.execute(context);
+
+      expect(createNewNodeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          currentContent: 'test',
+          newContent: ' content'
+        })
+      );
+    });
+  });
+
   // Helper function to create mock context
   function createContext(options: {
     key: string;

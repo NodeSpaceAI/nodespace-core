@@ -214,10 +214,9 @@ describe('NodeExpansionCoordinator', () => {
       service.initializeNodes([createMockNode('node-1', 'Node 1')]);
       NodeExpansionCoordinator.registerViewer(viewerId, service);
 
-      NodeExpansionCoordinator.restoreExpansionStates(viewerId, []);
-
-      // Should not throw error
-      expect(true).toBe(true);
+      expect(() => {
+        NodeExpansionCoordinator.restoreExpansionStates(viewerId, []);
+      }).not.toThrow();
     });
 
     it('should handle registering the same viewer twice', () => {
@@ -245,6 +244,99 @@ describe('NodeExpansionCoordinator', () => {
       NodeExpansionCoordinator.scheduleRestoration('viewer-2', ['node-1']);
 
       NodeExpansionCoordinator.clear();
+
+      expect(NodeExpansionCoordinator.getRegisteredViewerCount()).toBe(0);
+      expect(NodeExpansionCoordinator.getPendingRestorationCount()).toBe(0);
+    });
+  });
+
+  describe('Memory Management', () => {
+    it('should warn when registry size exceeds maximum', () => {
+      const service = createMockReactiveNodeService();
+
+      // Register 101 viewers to exceed MAX_REGISTRY_SIZE (100)
+      for (let i = 0; i < 101; i++) {
+        NodeExpansionCoordinator.registerViewer(`viewer-${i}`, service);
+      }
+
+      // Should have registered all 101 viewers
+      expect(NodeExpansionCoordinator.getRegisteredViewerCount()).toBe(101);
+      // Warning is logged but test continues - we're just verifying the warning path executes
+    });
+
+    it('should cleanup stale entries older than specified age', () => {
+      const service = createMockReactiveNodeService();
+
+      // Register viewers
+      NodeExpansionCoordinator.registerViewer('viewer-1', service);
+      NodeExpansionCoordinator.registerViewer('viewer-2', service);
+      NodeExpansionCoordinator.registerViewer('viewer-3', service);
+
+      expect(NodeExpansionCoordinator.getRegisteredViewerCount()).toBe(3);
+
+      // Cleanup with -1ms max age - all entries will be older than this
+      const removedCount = NodeExpansionCoordinator.cleanupStaleEntries(-1);
+
+      expect(removedCount).toBe(3);
+      expect(NodeExpansionCoordinator.getRegisteredViewerCount()).toBe(0);
+    });
+
+    it('should not cleanup entries younger than max age', () => {
+      const service = createMockReactiveNodeService();
+
+      NodeExpansionCoordinator.registerViewer('viewer-1', service);
+      NodeExpansionCoordinator.registerViewer('viewer-2', service);
+
+      // Cleanup with very large max age - no entries should be removed
+      const removedCount = NodeExpansionCoordinator.cleanupStaleEntries(1000 * 60 * 60); // 1 hour
+
+      expect(removedCount).toBe(0);
+      expect(NodeExpansionCoordinator.getRegisteredViewerCount()).toBe(2);
+    });
+
+    it('should cleanup pending restorations for stale entries', () => {
+      const service = createMockReactiveNodeService();
+
+      // Register viewer and schedule restoration
+      NodeExpansionCoordinator.registerViewer('viewer-1', service);
+      NodeExpansionCoordinator.scheduleRestoration('viewer-2', ['node-1']);
+
+      expect(NodeExpansionCoordinator.getRegisteredViewerCount()).toBe(1);
+      expect(NodeExpansionCoordinator.getPendingRestorationCount()).toBe(1);
+
+      // Cleanup stale entries (-1ms max age - all registered entries will be removed)
+      NodeExpansionCoordinator.cleanupStaleEntries(-1);
+
+      // Registered viewer should be removed, pending restoration should also be cleaned
+      expect(NodeExpansionCoordinator.getRegisteredViewerCount()).toBe(0);
+      // Note: pending restoration for unregistered viewer remains (only cleaned when viewer is stale)
+      expect(NodeExpansionCoordinator.getPendingRestorationCount()).toBe(1);
+    });
+
+    it('should return 0 when no stale entries to cleanup', () => {
+      const service = createMockReactiveNodeService();
+
+      NodeExpansionCoordinator.registerViewer('viewer-1', service);
+
+      // Cleanup with large max age - nothing should be removed
+      const removedCount = NodeExpansionCoordinator.cleanupStaleEntries(1000 * 60 * 60);
+
+      expect(removedCount).toBe(0);
+    });
+
+    it('should unregister viewer and cleanup pending restorations', () => {
+      const service = createMockReactiveNodeService();
+      const viewerId = 'test-viewer-1';
+
+      // Register viewer and add pending restoration
+      NodeExpansionCoordinator.registerViewer(viewerId, service);
+      NodeExpansionCoordinator.scheduleRestoration(viewerId, ['node-1']);
+
+      expect(NodeExpansionCoordinator.getRegisteredViewerCount()).toBe(1);
+      expect(NodeExpansionCoordinator.getPendingRestorationCount()).toBe(1);
+
+      // Unregister should clean both
+      NodeExpansionCoordinator.unregisterViewer(viewerId);
 
       expect(NodeExpansionCoordinator.getRegisteredViewerCount()).toBe(0);
       expect(NodeExpansionCoordinator.getPendingRestorationCount()).toBe(0);

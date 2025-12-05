@@ -342,12 +342,11 @@ describe('TabPersistenceService', () => {
     });
 
     it('can be called multiple times safely', () => {
-      TabPersistenceService.flush();
-      TabPersistenceService.flush();
-      TabPersistenceService.flush();
-
-      // Should not throw
-      expect(true).toBe(true);
+      expect(() => {
+        TabPersistenceService.flush();
+        TabPersistenceService.flush();
+        TabPersistenceService.flush();
+      }).not.toThrow();
     });
   });
 

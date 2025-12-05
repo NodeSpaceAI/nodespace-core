@@ -177,4 +177,204 @@ describe('positionCursor action', () => {
 
     expect(arrowNavSpy).toHaveBeenCalledWith('down', 100);
   });
+
+  it('should apply node-type-conversion cursor position', () => {
+    const focusSpy = vi.spyOn(controller, 'focus');
+    const setCursorSpy = vi.spyOn(controller, 'setCursorPosition');
+
+    const data: CursorPosition = { type: 'node-type-conversion', position: 15 };
+    positionCursor(textarea, { data, controller });
+
+    expect(rafSpy).toHaveBeenCalled();
+    expect(focusSpy).toHaveBeenCalled();
+    expect(setCursorSpy).toHaveBeenCalledWith(15);
+  });
+
+  it('should retry node-type-conversion if cursor position changes', async () => {
+    vi.useFakeTimers();
+
+    // Mock setCursorPosition to NOT actually change the cursor position
+    // This simulates the scenario where a component switch resets the cursor
+    const setCursorSpy = vi.spyOn(controller, 'setCursorPosition').mockImplementation(() => {
+      // Do nothing - simulates cursor being reset by component
+    });
+
+    const data: CursorPosition = { type: 'node-type-conversion', position: 20 };
+
+    // Simulate textarea being focused with wrong cursor position
+    textarea.focus();
+    textarea.selectionStart = 5; // Different from target position
+    textarea.selectionEnd = 5;
+
+    positionCursor(textarea, { data, controller });
+
+    // First call happens in RAF
+    expect(setCursorSpy).toHaveBeenCalledWith(20);
+
+    // Wait for retry timeout (10ms)
+    vi.advanceTimersByTime(10);
+
+    // Should retry because selectionStart (5) !== data.position (20)
+    expect(setCursorSpy).toHaveBeenCalledTimes(2);
+    expect(setCursorSpy).toHaveBeenCalledWith(20);
+
+    vi.useRealTimers();
+  });
+
+  it('should not retry node-type-conversion if cursor position is correct', async () => {
+    vi.useFakeTimers();
+
+    const setCursorSpy = vi.spyOn(controller, 'setCursorPosition');
+    const data: CursorPosition = { type: 'node-type-conversion', position: 20 };
+
+    // Simulate textarea being focused with correct cursor position
+    textarea.focus();
+    textarea.selectionStart = 20; // Same as target position
+    textarea.selectionEnd = 20;
+
+    positionCursor(textarea, { data, controller });
+
+    // First call happens in RAF
+    expect(setCursorSpy).toHaveBeenCalledWith(20);
+
+    // Wait for retry timeout (10ms)
+    vi.advanceTimersByTime(10);
+
+    // Should NOT retry because position is already correct
+    expect(setCursorSpy).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+  });
+
+  it('should not retry node-type-conversion if element is not a textarea', async () => {
+    vi.useFakeTimers();
+
+    const setCursorSpy = vi.spyOn(controller, 'setCursorPosition');
+    const data: CursorPosition = { type: 'node-type-conversion', position: 20 };
+
+    // Simulate a non-textarea element being focused
+    const div = document.createElement('div');
+    div.focus();
+
+    positionCursor(textarea, { data, controller });
+
+    // First call happens in RAF
+    expect(setCursorSpy).toHaveBeenCalledWith(20);
+
+    // Wait for retry timeout (10ms)
+    vi.advanceTimersByTime(10);
+
+    // Should NOT retry because activeElement is not a textarea
+    expect(setCursorSpy).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+  });
+
+  it('should apply inherited-type cursor position', () => {
+    const focusSpy = vi.spyOn(controller, 'focus');
+    const setCursorSpy = vi.spyOn(controller, 'setCursorPosition');
+
+    const data: CursorPosition = { type: 'inherited-type', position: 8 };
+    positionCursor(textarea, { data, controller });
+
+    expect(rafSpy).toHaveBeenCalled();
+    expect(focusSpy).toHaveBeenCalled();
+    expect(setCursorSpy).toHaveBeenCalledWith(8);
+  });
+
+  it('should retry inherited-type if cursor position changes', async () => {
+    vi.useFakeTimers();
+
+    // Mock setCursorPosition to NOT actually change the cursor position
+    // This simulates the scenario where a component switch resets the cursor
+    const setCursorSpy = vi.spyOn(controller, 'setCursorPosition').mockImplementation(() => {
+      // Do nothing - simulates cursor being reset by component
+    });
+
+    const data: CursorPosition = { type: 'inherited-type', position: 12 };
+
+    // Simulate textarea being focused with wrong cursor position
+    textarea.focus();
+    textarea.selectionStart = 3; // Different from target position
+    textarea.selectionEnd = 3;
+
+    positionCursor(textarea, { data, controller });
+
+    // First call happens in RAF
+    expect(setCursorSpy).toHaveBeenCalledWith(12);
+
+    // Wait for retry timeout (10ms)
+    vi.advanceTimersByTime(10);
+
+    // Should retry because selectionStart (3) !== data.position (12)
+    expect(setCursorSpy).toHaveBeenCalledTimes(2);
+    expect(setCursorSpy).toHaveBeenCalledWith(12);
+
+    vi.useRealTimers();
+  });
+
+  it('should not retry inherited-type if cursor position is correct', async () => {
+    vi.useFakeTimers();
+
+    const setCursorSpy = vi.spyOn(controller, 'setCursorPosition');
+    const data: CursorPosition = { type: 'inherited-type', position: 12 };
+
+    // Simulate textarea being focused with correct cursor position
+    textarea.focus();
+    textarea.selectionStart = 12; // Same as target position
+    textarea.selectionEnd = 12;
+
+    positionCursor(textarea, { data, controller });
+
+    // First call happens in RAF
+    expect(setCursorSpy).toHaveBeenCalledWith(12);
+
+    // Wait for retry timeout (10ms)
+    vi.advanceTimersByTime(10);
+
+    // Should NOT retry because position is already correct
+    expect(setCursorSpy).toHaveBeenCalledTimes(1);
+
+    vi.useRealTimers();
+  });
+
+  it('should use skipSyntax default value (true) for default position', () => {
+    const spy = vi.spyOn(controller, 'positionCursorAtLineBeginning');
+
+    // Omit skipSyntax to test default
+    const data: CursorPosition = { type: 'default' };
+    positionCursor(textarea, { data, controller });
+
+    // Should default to true
+    expect(spy).toHaveBeenCalledWith(0, true);
+  });
+
+  it('should use skipSyntax default value (true) for line-column position', () => {
+    const spy = vi.spyOn(controller, 'positionCursorAtLineBeginning');
+
+    // Omit skipSyntax to test default
+    const data: CursorPosition = { type: 'line-column', line: 1 };
+    positionCursor(textarea, { data, controller });
+
+    // Should default to true
+    expect(spy).toHaveBeenCalledWith(1, true);
+  });
+
+  it('should handle skipSyntax: false explicitly for default position', () => {
+    const spy = vi.spyOn(controller, 'positionCursorAtLineBeginning');
+
+    const data: CursorPosition = { type: 'default', skipSyntax: false };
+    positionCursor(textarea, { data, controller });
+
+    expect(spy).toHaveBeenCalledWith(0, false);
+  });
+
+  it('should handle arrow navigation with down direction', () => {
+    const spy = vi.spyOn(controller, 'enterFromArrowNavigation');
+
+    const data: CursorPosition = { type: 'arrow-navigation', direction: 'down', pixelOffset: 75 };
+    positionCursor(textarea, { data, controller });
+
+    expect(spy).toHaveBeenCalledWith('down', 75);
+  });
 });

@@ -106,6 +106,43 @@ describe('NavigateUpCommand', () => {
       expect(command.canExecute(context)).toBe(true);
     });
 
+    it('should use isAtFirstLine for textarea elements', () => {
+      const context = createContext({
+        key: 'ArrowUp',
+        allowMultiline: true
+      });
+
+      // Create a TEXTAREA element (not a DIV)
+      const textarea = document.createElement('textarea');
+       
+      mockController.element = textarea as unknown as TextareaController["element"];
+
+      // Mock isAtFirstLine to return false
+      (mockController.isAtFirstLine as ReturnType<typeof vi.fn>).mockReturnValue(false);
+
+      // Should not execute - not at first line
+      expect(command.canExecute(context)).toBe(false);
+    });
+
+    it('should fallback to true when isAtFirstLine is not available on textarea', () => {
+      const context = createContext({
+        key: 'ArrowUp',
+        allowMultiline: true
+      });
+
+      // Create a TEXTAREA element
+      const textarea = document.createElement('textarea');
+       
+      mockController.element = textarea as unknown as TextareaController["element"];
+
+      // Remove isAtFirstLine method
+       
+      mockController.isAtFirstLine = undefined as unknown as (() => boolean);
+
+      // Should execute - fallback to true
+      expect(command.canExecute(context)).toBe(true);
+    });
+
     it('should not execute for non-ArrowUp keys', () => {
       const context = createContext({
         key: 'ArrowDown',
@@ -146,6 +183,43 @@ describe('NavigateUpCommand', () => {
       mockController.autocompleteDropdownActive = true;
 
       expect(command.canExecute(context)).toBe(false);
+    });
+  });
+
+  describe('isAtFirstLine fallback', () => {
+    it('should return true for single-line nodes', () => {
+      const context = createContext({
+        key: 'ArrowUp',
+        allowMultiline: false
+      });
+
+      // For single-line nodes, isAtFirstLine should always return true
+      expect(command.canExecute(context)).toBe(true);
+    });
+
+    it('should use controller.isAtFirstLine when available for multiline', () => {
+      const context = createContext({
+        key: 'ArrowUp',
+        allowMultiline: true
+      });
+
+      // Mock isAtFirstLine to return true
+      (mockController.isAtFirstLine as ReturnType<typeof vi.fn>).mockReturnValue(true);
+
+      expect(command.canExecute(context)).toBe(true);
+    });
+
+    it('should fallback to true when controller.isAtFirstLine is undefined', () => {
+      const context = createContext({
+        key: 'ArrowUp',
+        allowMultiline: true
+      });
+
+      // Remove isAtFirstLine method
+       
+      mockController.isAtFirstLine = undefined as unknown as (() => boolean);
+
+      expect(command.canExecute(context)).toBe(true);
     });
   });
 
