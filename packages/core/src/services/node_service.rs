@@ -38,6 +38,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::broadcast;
 
+/// Default limit for query_nodes_simple when no limit is specified.
+/// Prevents accidental full table scans and improves performance.
+pub const DEFAULT_QUERY_LIMIT: usize = 100;
+
 /// Type alias for subtree data returned by `get_subtree_data`
 ///
 /// Contains (root_node, node_map, adjacency_list) where:
@@ -3502,6 +3506,12 @@ where
     ///
     /// Queries with no parameters (all fields `None` or `false`) will return an empty vector.
     /// This is intentional to prevent accidentally fetching all nodes from the database.
+    ///
+    /// # Default Limit
+    ///
+    /// If no limit is specified in the query, a default limit of [`DEFAULT_QUERY_LIMIT`] (100)
+    /// is applied to prevent unbounded queries and potential performance issues.
+    /// Callers can override this by explicitly setting a limit via `query.with_limit(n)`.
     pub async fn query_nodes_simple(
         &self,
         query: crate::models::NodeQuery,
@@ -3518,6 +3528,13 @@ where
                 return Ok(vec![]);
             }
         }
+
+        // Apply default limit if not specified to prevent unbounded queries
+        let query = if query.limit.is_none() {
+            query.with_limit(DEFAULT_QUERY_LIMIT)
+        } else {
+            query
+        };
 
         // Priority 2+: Delegate to store.query_nodes
         // Complex query features (mentioned_by, content_contains, filters) delegated to store
@@ -5933,6 +5950,62 @@ mod tests {
                 2,
                 "Content search should return all matching nodes"
             );
+        }
+
+        #[tokio::test]
+        async fn default_limit_applied() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create nodes with unique content to isolate test
+            for i in 0..5 {
+                let node = Node::new(
+                    "text".to_string(),
+                    format!("UniqueDefaultLimitTest Node {}", i),
+                    json!({}),
+                );
+                service.create_node(node).await.unwrap();
+            }
+
+            // Query without explicit limit - should apply DEFAULT_QUERY_LIMIT
+            let query = crate::models::NodeQuery {
+                content_contains: Some("UniqueDefaultLimitTest".to_string()),
+                ..Default::default()
+            };
+
+            // The query should succeed and apply the default limit (100)
+            // Since we only created 5 nodes, we should get all 5 back
+            let results = service.query_nodes_simple(query).await.unwrap();
+            assert_eq!(
+                results.len(),
+                5,
+                "Should return all 5 nodes (within default limit of {})",
+                DEFAULT_QUERY_LIMIT
+            );
+        }
+
+        #[tokio::test]
+        async fn explicit_limit_respected() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create nodes with unique content to isolate test
+            for i in 0..10 {
+                let node = Node::new(
+                    "text".to_string(),
+                    format!("UniqueExplicitLimitTest Node {}", i),
+                    json!({}),
+                );
+                service.create_node(node).await.unwrap();
+            }
+
+            // Query with explicit limit of 3
+            let query = crate::models::NodeQuery {
+                content_contains: Some("UniqueExplicitLimitTest".to_string()),
+                limit: Some(3),
+                ..Default::default()
+            };
+
+            let results = service.query_nodes_simple(query).await.unwrap();
+            assert_eq!(results.len(), 3, "Should respect explicit limit of 3");
         }
     }
 
