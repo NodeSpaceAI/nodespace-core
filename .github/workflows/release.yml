@@ -55,6 +55,33 @@ jobs:
         if: matrix.platform == 'windows-latest'
         run: choco install protoc
 
+      # Pre-install WiX toolset to avoid flaky GitHub release downloads during tauri build
+      # The tauri-action downloads WiX on-demand which can fail with HTTP 504 timeouts
+      - name: Install WiX Toolset (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          $wixDir = "$env:LOCALAPPDATA\tauri\WixTools314"
+          New-Item -ItemType Directory -Force -Path $wixDir | Out-Null
+          $wixUrl = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+          $wixZip = "$env:TEMP\wix314-binaries.zip"
+          # Retry download up to 3 times with longer timeout
+          $maxRetries = 3
+          for ($i = 1; $i -le $maxRetries; $i++) {
+            try {
+              Write-Host "Downloading WiX toolset (attempt $i of $maxRetries)..."
+              Invoke-WebRequest -Uri $wixUrl -OutFile $wixZip -TimeoutSec 300
+              break
+            } catch {
+              if ($i -eq $maxRetries) { throw }
+              Write-Host "Download failed, retrying in 10 seconds..."
+              Start-Sleep -Seconds 10
+            }
+          }
+          Write-Host "Extracting WiX toolset..."
+          Expand-Archive -Path $wixZip -DestinationPath $wixDir -Force
+          Remove-Item $wixZip
+          Write-Host "WiX toolset installed to $wixDir"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
