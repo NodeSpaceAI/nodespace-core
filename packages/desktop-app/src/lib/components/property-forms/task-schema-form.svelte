@@ -40,7 +40,9 @@
 
   // Reactive node data - initialize outside effect (same pattern as schema-property-form)
   // This prevents the reactive loop that was causing effect_update_depth_exceeded
-  const rawNodeInitial = nodeId ? sharedNodeStore.getNode(nodeId) : null;
+  // Capture nodeId to avoid Svelte state_referenced_locally warning
+  const initialNodeId = nodeId;
+  const rawNodeInitial = initialNodeId ? sharedNodeStore.getNode(initialNodeId) : null;
   let node = $state<TaskNode | null>(
     rawNodeInitial?.nodeType === 'task' ? nodeToTaskNode(rawNodeInitial) : null
   );

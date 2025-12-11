@@ -50,7 +50,9 @@
 
   // REFACTOR (Issue #316 Phase 2): Removed $effect for prop sync
   // Newline stripping now happens in event handler for clearer event flow
-  let internalContent = $state(content);
+  // Capture initial value to avoid Svelte state_referenced_locally warning
+  const initialContent = content;
+  let internalContent = $state(initialContent);
 
   // Header level - derived from markdown syntax (#, ##, ###, etc.)
   // REFACTOR (Issue #316 Phase 1): Replaced $effect with $derived for pure reactive computation

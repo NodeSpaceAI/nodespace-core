@@ -13,7 +13,10 @@
 
   // Set paneId in context so all descendant components can access it
   // This avoids prop threading through all component layers
-  setContext('paneId', pane.id);
+  // Use IIFE to capture initial value and avoid Svelte state_referenced_locally warning
+  // Context is set once at component creation - this is intentional one-time capture
+  const paneId = (() => pane.id)();
+  setContext('paneId', paneId);
 
   // Derive tab state using Svelte 5 $derived
   // KEY FIX: Use pane.id instead of global $tabState.activePaneId
