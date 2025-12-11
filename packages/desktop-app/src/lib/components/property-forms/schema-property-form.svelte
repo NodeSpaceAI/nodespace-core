@@ -48,7 +48,8 @@
   let schemaError = $state<string | null>(null);
 
   // Reactive node data - updates when store changes via subscription
-  let node = $state<Node | null>(nodeId ? sharedNodeStore.getNode(nodeId) || null : null);
+  // Initialized to null; the $effect below handles loading and reactivity
+  let node = $state<Node | null>(null);
 
   // Subscribe to node changes
   $effect(() => {

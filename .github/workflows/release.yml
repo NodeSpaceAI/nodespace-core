@@ -11,18 +11,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # macOS ARM (Apple Silicon - M1/M2/M3)
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
             rust_targets: 'aarch64-apple-darwin'
-          - platform: 'macos-latest'
-            args: '--target x86_64-apple-darwin'
-            rust_targets: 'x86_64-apple-darwin'
-          - platform: 'ubuntu-22.04'
-            args: ''
-            rust_targets: ''
+          # Windows x64
           - platform: 'windows-latest'
             args: ''
             rust_targets: ''
+          # NOTE: Ubuntu and macOS Intel disabled due to candle/onnx build issues
+          # Re-enable when ONNX cross-compilation is fixed
+          # - platform: 'macos-latest'
+          #   args: '--target x86_64-apple-darwin'
+          #   rust_targets: 'x86_64-apple-darwin'
+          # - platform: 'ubuntu-22.04'
+          #   args: ''
+          #   rust_targets: ''
 
     runs-on: ${{ matrix.platform }}
 
@@ -40,11 +44,12 @@ jobs:
         with:
           workspaces: './packages/desktop-app/src-tauri -> target'
 
-      - name: Install dependencies (Ubuntu only)
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      # NOTE: Ubuntu build disabled - uncomment this when re-enabling
+      # - name: Install dependencies (Ubuntu only)
+      #   if: matrix.platform == 'ubuntu-22.04'
+      #   run: |
+      #     sudo apt-get update
+      #     sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2

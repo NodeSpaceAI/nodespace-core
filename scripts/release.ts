@@ -87,11 +87,10 @@ function generateReleaseNotes(version: string): string {
 | Platform | File | Description |
 |----------|------|-------------|
 | macOS (Apple Silicon) | \`NodeSpace_${v}_aarch64.dmg\` | For M1/M2/M3 Macs |
-| macOS (Intel) | \`NodeSpace_${v}_x64.dmg\` | For Intel Macs |
 | Windows | \`NodeSpace_${v}_x64-setup.exe\` | Windows installer |
 | Windows | \`NodeSpace_${v}_x64.msi\` | Windows MSI package |
-| Linux | \`NodeSpace_${v}_amd64.deb\` | Debian/Ubuntu package |
-| Linux | \`NodeSpace_${v}_amd64.AppImage\` | Universal Linux binary |
+
+> **Note:** macOS Intel and Linux builds are temporarily disabled. See [#750](https://github.com/malibio/nodespace-core/issues/750) for status.
 
 ### What's New
 
