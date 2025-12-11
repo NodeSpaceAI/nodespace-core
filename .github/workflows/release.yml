@@ -5,6 +5,10 @@ on:
     types: [created]
   workflow_dispatch:
 
+# Required permissions for uploading release assets
+permissions:
+  contents: write
+
 jobs:
   build-tauri:
     strategy:
@@ -15,12 +19,13 @@ jobs:
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
             rust_targets: 'aarch64-apple-darwin'
-          # Windows x64
-          - platform: 'windows-latest'
-            args: ''
-            rust_targets: ''
-          # NOTE: Ubuntu and macOS Intel disabled due to candle/onnx build issues
-          # Re-enable when ONNX cross-compilation is fixed
+          # NOTE: Windows, Ubuntu, and macOS Intel disabled due to candle-core Metal/objc dependencies
+          # candle-core unconditionally depends on 'metal' crate which pulls in objc_exception
+          # objc_exception has Objective-C files (.m) that MSVC cannot compile on Windows
+          # Re-enable when candle-core properly gates Metal dependencies behind cfg(target_os = "macos")
+          # - platform: 'windows-latest'
+          #   args: ''
+          #   rust_targets: ''
           # - platform: 'macos-latest'
           #   args: '--target x86_64-apple-darwin'
           #   rust_targets: 'x86_64-apple-darwin'
