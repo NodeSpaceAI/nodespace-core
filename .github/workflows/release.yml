@@ -19,13 +19,11 @@ jobs:
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
             rust_targets: 'aarch64-apple-darwin'
-          # NOTE: Windows, Ubuntu, and macOS Intel disabled due to candle-core Metal/objc dependencies
-          # candle-core unconditionally depends on 'metal' crate which pulls in objc_exception
-          # objc_exception has Objective-C files (.m) that MSVC cannot compile on Windows
-          # Re-enable when candle-core properly gates Metal dependencies behind cfg(target_os = "macos")
-          # - platform: 'windows-latest'
-          #   args: ''
-          #   rust_targets: ''
+          # Windows (CUDA support for NVIDIA GPUs)
+          - platform: 'windows-latest'
+            args: ''
+            rust_targets: ''
+          # NOTE: Ubuntu and macOS Intel disabled for now
           # - platform: 'macos-latest'
           #   args: '--target x86_64-apple-darwin'
           #   rust_targets: 'x86_64-apple-darwin'
@@ -87,7 +85,8 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-${{ matrix.platform }}-${{ matrix.args || 'default' }}
+          name: binaries-${{ matrix.platform }}-${{ matrix.rust_targets || 'default' }}
           path: |
-            packages/desktop-app/src-tauri/target/**/release/bundle/**/*
+            packages/desktop-app/src-tauri/target/${{ matrix.rust_targets || '' }}/release/bundle/
+            packages/desktop-app/src-tauri/target/release/bundle/
           if-no-files-found: warn
