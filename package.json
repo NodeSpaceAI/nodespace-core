@@ -66,7 +66,14 @@
     "container:list": "bun run scripts/container.ts list",
     "container:stop": "bun run scripts/container.ts stop",
     "container:resize": "bun run scripts/container.ts resize",
-    "container:help": "bun run scripts/container.ts"
+    "container:help": "bun run scripts/container.ts",
+    "release": "bun run scripts/release.ts",
+    "release:list": "bun run scripts/release.ts list",
+    "release:watch": "bun run scripts/release.ts watch",
+    "release:view": "bun run scripts/release.ts view",
+    "release:delete": "bun run scripts/release.ts delete",
+    "release:bump": "bun run scripts/release.ts bump",
+    "release:help": "bun run scripts/release.ts --help"
   },
   "devDependencies": {
     "@types/jsdom": "^21.1.7",
