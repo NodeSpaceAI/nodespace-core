@@ -10,7 +10,8 @@ repository.workspace = true
 [dependencies]
 # Candle dependencies for ONNX embedding (feature-gated)
 # Using crates.io version for stability
-candle-core = { version = "0.9", features = ["metal"], optional = true }
+# NOTE: Metal feature is added via [target] section at end of file for macOS only
+candle-core = { version = "0.9", optional = true }
 candle-nn = { version = "0.9", optional = true }
 candle-onnx = { version = "0.9", optional = true }
 tokenizers = { version = "0.15", default-features = false, features = ["onig"], optional = true }
@@ -42,3 +43,8 @@ futures = "0.3"
 # There was a SIGABRT crash in release builds - investigating
 default = ["embedding-service"]
 embedding-service = ["candle-core", "candle-nn", "candle-onnx", "tokenizers"]
+
+# Platform-specific: Enable Metal acceleration on macOS only
+# This section MUST be at the end of the file to avoid affecting other dependencies
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.9", features = ["metal"], optional = true }
