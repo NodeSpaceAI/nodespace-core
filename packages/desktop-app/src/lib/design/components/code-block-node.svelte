@@ -73,13 +73,14 @@
 
   const dispatch = createEventDispatcher();
 
-  // Internal reactive state - initialized from content prop
+  // Internal reactive state - initialized from content prop (one-time capture)
   // Note: Content updates flow through handleContentChange event, not prop sync
   // External changes are rare (only from parent re-renders) and handled by component remount
-  let internalContent = $state(content);
+  const initialContent = content; // Capture initial value to avoid Svelte warning
+  let internalContent = $state(initialContent);
 
   // Parse language from opening fence (```language or just ```)
-  let language = $state<string>(parseLanguage(content));
+  let language = $state<string>(parseLanguage(initialContent));
 
   // Code blocks use multiline editing (Shift+Enter for new lines, Enter creates new node)
   // Prevent merging into code-blocks (structured content can't accept arbitrary merges)

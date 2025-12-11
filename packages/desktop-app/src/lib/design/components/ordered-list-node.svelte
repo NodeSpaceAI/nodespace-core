@@ -44,10 +44,11 @@
   const NEWLINE_LENGTH = 1; // \n character
   const LIST_PREFIX_LENGTH = 3; // "1. " prefix length
 
-  // Internal reactive state - initialized from content prop
+  // Internal reactive state - initialized from content prop (one-time capture)
   // Note: Content updates flow through handleContentChange event, not prop sync
   // External changes are rare (only from parent re-renders) and handled by component remount
-  let internalContent = $state(content);
+  const initialContent = content; // Capture initial value to avoid Svelte warning
+  let internalContent = $state(initialContent);
 
   // Track if we just added prefixes (for cursor adjustment)
   let pendingCursorAdjustment = $state<number | null>(null);

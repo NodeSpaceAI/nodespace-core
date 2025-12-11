@@ -145,7 +145,10 @@
   // Reference to the scroll container element
   let scrollContainer: HTMLElement | null = null;
   // Generate unique viewer ID for this viewer instance
-  const viewerId = getViewerId(tabId, paneId);
+  // Capture props at initialization to avoid Svelte state_referenced_locally warning
+  const initialTabId = tabId;
+  const initialPaneId = paneId;
+  const viewerId = getViewerId(initialTabId, initialPaneId);
 
   // Track expanded state for nodes (viewer-local UI state)
   // Use $state for reactive Map mutations
