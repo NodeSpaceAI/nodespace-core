@@ -1,10 +1,20 @@
 /// Core embedding service using Candle + ONNX
 /// Follows patterns from nodespace BERT implementation guide
+///
+/// ## Panic Safety
+///
+/// All Candle/ONNX operations are wrapped in `catch_unwind` to convert panics
+/// into errors. This prevents the tokio runtime from aborting when tensor
+/// operations fail unexpectedly.
 use crate::config::EmbeddingConfig;
 use crate::error::{EmbeddingError, Result};
 use lru::LruCache;
 use std::num::NonZeroUsize;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex};
+
+/// Embedding vector dimension for BAAI/bge-small-en-v1.5 model
+const EMBEDDING_DIMENSION: usize = 384;
 
 #[cfg(feature = "embedding-service")]
 use candle_core::{Device, Tensor};
@@ -126,16 +136,33 @@ impl EmbeddingService {
     /// - Service not initialized (`ModelNotInitialized`)
     /// - Tokenization fails (`TokenizationError`)
     /// - Model inference fails (`InferenceError`)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the cache mutex is poisoned (unrecoverable concurrency error)
+    /// - Cache mutex is poisoned (`InferenceError`)
+    /// - Candle/ONNX operation panics (`InferenceError`)
     pub fn generate_embedding(&self, text: &str) -> Result<Vec<f32>> {
-        // Check cache first
+        // Input validation
+        if text.is_empty() {
+            tracing::warn!("generate_embedding called with empty text");
+            return Err(EmbeddingError::TokenizationError(
+                "Cannot generate embedding for empty text".to_string(),
+            ));
+        }
+
+        // Check cache first (handle poisoned mutex gracefully)
         {
-            let mut cache = self.cache.lock().unwrap();
-            if let Some(cached) = cache.get(text) {
-                return Ok(cached.clone());
+            let cache_result = self.cache.lock();
+            match cache_result {
+                Ok(mut cache) => {
+                    if let Some(cached) = cache.get(text) {
+                        return Ok(cached.clone());
+                    }
+                }
+                Err(poisoned) => {
+                    tracing::warn!("Cache mutex was poisoned, recovering");
+                    let mut cache = poisoned.into_inner();
+                    if let Some(cached) = cache.get(text) {
+                        return Ok(cached.clone());
+                    }
+                }
             }
         }
 
@@ -145,12 +172,48 @@ impl EmbeddingService {
 
         #[cfg(feature = "embedding-service")]
         {
-            let embedding = self.generate_embedding_internal(text)?;
+            // Wrap Candle operations in catch_unwind to prevent tokio runtime abort
+            let text_owned = text.to_string();
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                self.generate_embedding_internal(&text_owned)
+            }));
 
-            // Cache the result (LRU will automatically evict oldest if full)
+            let embedding = match result {
+                Ok(Ok(emb)) => emb,
+                Ok(Err(e)) => return Err(e),
+                Err(panic_info) => {
+                    let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        s.to_string()
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        s.clone()
+                    } else {
+                        "Unknown panic in Candle inference".to_string()
+                    };
+                    tracing::error!(
+                        "Candle panic during embedding generation: {}. Text length: {} chars",
+                        panic_msg,
+                        text.len()
+                    );
+                    return Err(EmbeddingError::InferenceError(format!(
+                        "Candle panic: {}",
+                        panic_msg
+                    )));
+                }
+            };
+
+            // Cache the result (handle poisoned mutex)
             {
-                let mut cache = self.cache.lock().unwrap();
-                cache.put(text.to_string(), embedding.clone());
+                let cache_result = self.cache.lock();
+                match cache_result {
+                    Ok(mut cache) => {
+                        cache.put(text.to_string(), embedding.clone());
+                    }
+                    Err(poisoned) => {
+                        tracing::warn!("Cache mutex was poisoned during write, recovering");
+                        let mut cache = poisoned.into_inner();
+                        cache.put(text.to_string(), embedding.clone());
+                    }
+                }
             }
 
             Ok(embedding)
@@ -159,7 +222,7 @@ impl EmbeddingService {
         #[cfg(not(feature = "embedding-service"))]
         {
             // Stub: return zero vector with correct dimensions
-            Ok(vec![0.0; 384])
+            Ok(vec![0.0; EMBEDDING_DIMENSION])
         }
     }
 
@@ -172,26 +235,48 @@ impl EmbeddingService {
     /// - Service not initialized (`ModelNotInitialized`)
     /// - Tokenization fails for any text (`TokenizationError`)
     /// - Model inference fails (`InferenceError`)
-    ///
-    /// # Panics
-    ///
-    /// Panics if the cache mutex is poisoned (unrecoverable concurrency error)
+    /// - Cache mutex is poisoned (`InferenceError`)
+    /// - Candle/ONNX operation panics (`InferenceError`)
     pub fn generate_batch(&self, texts: Vec<&str>) -> Result<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Filter out empty texts
+        let non_empty_count = texts.iter().filter(|t| !t.is_empty()).count();
+        if non_empty_count == 0 {
+            tracing::warn!("generate_batch called with all empty texts");
+            return Err(EmbeddingError::TokenizationError(
+                "Cannot generate embeddings for empty texts".to_string(),
+            ));
+        }
+
         if !self.initialized {
             return Err(EmbeddingError::ModelNotInitialized);
         }
 
         #[cfg(feature = "embedding-service")]
         {
-            // Separate cached and uncached texts
+            // Separate cached and uncached texts (handle poisoned mutex)
             let mut results: Vec<Option<Vec<f32>>> = Vec::with_capacity(texts.len());
             let mut uncached_indices = Vec::new();
             let mut uncached_texts = Vec::new();
 
             {
-                let mut cache = self.cache.lock().unwrap();
+                let cache_result = self.cache.lock();
+                let mut cache = match cache_result {
+                    Ok(c) => c,
+                    Err(poisoned) => {
+                        tracing::warn!("Cache mutex was poisoned in batch read, recovering");
+                        poisoned.into_inner()
+                    }
+                };
+
                 for (i, text) in texts.iter().enumerate() {
-                    if let Some(cached) = cache.get(*text) {
+                    if text.is_empty() {
+                        // Return zero vector for empty text entries
+                        results.push(Some(vec![0.0; EMBEDDING_DIMENSION]));
+                    } else if let Some(cached) = cache.get(*text) {
                         results.push(Some(cached.clone()));
                     } else {
                         results.push(None);
@@ -201,13 +286,50 @@ impl EmbeddingService {
                 }
             }
 
-            // Process uncached texts as a single batch
+            // Process uncached texts as a single batch with panic protection
             if !uncached_texts.is_empty() {
-                let batch_embeddings = self.generate_batch_internal(&uncached_texts)?;
+                let texts_owned: Vec<String> =
+                    uncached_texts.iter().map(|s| s.to_string()).collect();
 
-                // Insert into cache and results (LRU will auto-evict if full)
+                let batch_result = catch_unwind(AssertUnwindSafe(|| {
+                    let text_refs: Vec<&str> = texts_owned.iter().map(|s| s.as_str()).collect();
+                    self.generate_batch_internal(&text_refs)
+                }));
+
+                let batch_embeddings = match batch_result {
+                    Ok(Ok(embs)) => embs,
+                    Ok(Err(e)) => return Err(e),
+                    Err(panic_info) => {
+                        let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                            s.to_string()
+                        } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "Unknown panic in Candle batch inference".to_string()
+                        };
+                        tracing::error!(
+                            "Candle panic during batch embedding: {}. Batch size: {}",
+                            panic_msg,
+                            uncached_texts.len()
+                        );
+                        return Err(EmbeddingError::InferenceError(format!(
+                            "Candle batch panic: {}",
+                            panic_msg
+                        )));
+                    }
+                };
+
+                // Insert into cache and results (handle poisoned mutex)
                 {
-                    let mut cache = self.cache.lock().unwrap();
+                    let cache_result = self.cache.lock();
+                    let mut cache = match cache_result {
+                        Ok(c) => c,
+                        Err(poisoned) => {
+                            tracing::warn!("Cache mutex was poisoned in batch write, recovering");
+                            poisoned.into_inner()
+                        }
+                    };
+
                     for (idx, embedding) in uncached_indices.into_iter().zip(batch_embeddings) {
                         cache.put(texts[idx].to_string(), embedding.clone());
                         results[idx] = Some(embedding);
@@ -215,17 +337,28 @@ impl EmbeddingService {
                 }
             }
 
-            // Unwrap all results (all should be Some at this point)
-            Ok(results
+            // Convert to final result (should all be Some now, but handle gracefully)
+            let final_results: Vec<Vec<f32>> = results
                 .into_iter()
-                .map(|r| r.expect("All results should be populated"))
-                .collect())
+                .enumerate()
+                .map(|(i, r)| {
+                    r.unwrap_or_else(|| {
+                        tracing::error!(
+                            "Missing embedding result at index {} - this should not happen",
+                            i
+                        );
+                        vec![0.0; EMBEDDING_DIMENSION] // Return zero vector instead of panicking
+                    })
+                })
+                .collect();
+
+            Ok(final_results)
         }
 
         #[cfg(not(feature = "embedding-service"))]
         {
             // Stub: return zero vectors
-            Ok(vec![vec![0.0; 384]; texts.len()])
+            Ok(vec![vec![0.0; EMBEDDING_DIMENSION]; texts.len()])
         }
     }
 
@@ -322,10 +455,18 @@ impl EmbeddingService {
         // Convert to Vec<Vec<f32>> - one embedding per input text
         let mut embeddings = Vec::with_capacity(batch_size);
         for i in 0..batch_size {
-            let embedding_tensor = pooled.get(i)?;
-            let embedding: Vec<f32> = embedding_tensor
-                .to_vec1()
-                .map_err(|e| EmbeddingError::InferenceError(e.to_string()))?;
+            let embedding_tensor = pooled.get(i).map_err(|e| {
+                EmbeddingError::InferenceError(format!(
+                    "Failed to extract embedding at index {} of {}: {}",
+                    i, batch_size, e
+                ))
+            })?;
+            let embedding: Vec<f32> = embedding_tensor.to_vec1().map_err(|e| {
+                EmbeddingError::InferenceError(format!(
+                    "Failed to convert embedding tensor to vec at index {}: {}",
+                    i, e
+                ))
+            })?;
             embeddings.push(embedding);
         }
 
@@ -467,13 +608,27 @@ impl EmbeddingService {
 
     /// Clear the embedding cache
     pub fn clear_cache(&self) {
-        let mut cache = self.cache.lock().unwrap();
+        let cache_result = self.cache.lock();
+        let mut cache = match cache_result {
+            Ok(c) => c,
+            Err(poisoned) => {
+                tracing::warn!("Cache mutex was poisoned during clear, recovering");
+                poisoned.into_inner()
+            }
+        };
         cache.clear();
     }
 
     /// Get cache statistics (size, capacity)
     pub fn cache_stats(&self) -> (usize, usize) {
-        let cache = self.cache.lock().unwrap();
+        let cache_result = self.cache.lock();
+        let cache = match cache_result {
+            Ok(c) => c,
+            Err(poisoned) => {
+                tracing::warn!("Cache mutex was poisoned during stats, recovering");
+                poisoned.into_inner()
+            }
+        };
         let len = cache.len();
         let capacity = cache.cap().get();
         (len, capacity)

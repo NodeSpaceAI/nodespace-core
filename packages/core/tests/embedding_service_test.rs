@@ -395,6 +395,7 @@ async fn test_service_with_custom_config() -> Result<()> {
     let custom_config = EmbeddingConfig {
         max_tokens_per_chunk: 256,
         overlap_tokens: 25,
+        chars_per_token_estimate: 3,
         max_descendants: 50,
         max_content_size: 100_000,
         debounce_duration_secs: 10,

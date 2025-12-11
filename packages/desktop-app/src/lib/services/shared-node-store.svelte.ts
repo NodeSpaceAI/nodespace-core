@@ -56,10 +56,14 @@ interface PendingOperation {
   reject: (error: Error) => void;
 }
 
+const coordLog = createLogger('PersistenceCoordinator');
+
 class SimplePersistenceCoordinator {
   private static instance: SimplePersistenceCoordinator | null = null;
   private pendingOperations = new Map<string, PendingOperation>();
+  private executingOperations = new Set<string>(); // Track in-flight operations
   private readonly DEBOUNCE_MS = 500;
+  private operationCounter = 0; // For tracking operation IDs
 
   static getInstance(): SimplePersistenceCoordinator {
     if (!SimplePersistenceCoordinator.instance) {
@@ -77,8 +81,20 @@ class SimplePersistenceCoordinator {
     operation: () => Promise<void>,
     options: { mode: 'immediate' | 'debounce'; dependencies?: Array<string | (() => Promise<void>)> } = { mode: 'debounce' }
   ): { promise: Promise<void> } {
+    const opId = ++this.operationCounter;
+    const shortNodeId = nodeId.substring(0, 8);
+
+    // Check if an operation is currently executing for this node
+    const isExecuting = this.executingOperations.has(nodeId);
+    const hasPending = this.pendingOperations.has(nodeId);
+
+    coordLog.debug(
+      `[op#${opId}] persist() called for ${shortNodeId}: mode=${options.mode}, ` +
+      `hasPending=${hasPending}, isExecuting=${isExecuting}`
+    );
+
     // Cancel existing pending operation for this node
-    this.cancelPending(nodeId);
+    this.cancelPending(nodeId, opId);
 
     let resolve: () => void = () => {};
     let reject: (error: Error) => void = () => {};
@@ -88,6 +104,10 @@ class SimplePersistenceCoordinator {
     });
 
     const executeOperation = async () => {
+      // Mark as executing
+      this.executingOperations.add(nodeId);
+      coordLog.debug(`[op#${opId}] executeOperation() starting for ${shortNodeId}`);
+
       try {
         // Wait for dependencies if any
         if (options.dependencies) {
@@ -105,15 +125,19 @@ class SimplePersistenceCoordinator {
         }
 
         await operation();
+        coordLog.debug(`[op#${opId}] executeOperation() completed for ${shortNodeId}`);
         resolve();
       } catch (error) {
+        coordLog.debug(`[op#${opId}] executeOperation() failed for ${shortNodeId}: ${error}`);
         reject(error instanceof Error ? error : new Error(String(error)));
       } finally {
         this.pendingOperations.delete(nodeId);
+        this.executingOperations.delete(nodeId);
       }
     };
 
     if (options.mode === 'immediate') {
+      coordLog.debug(`[op#${opId}] scheduling IMMEDIATE for ${shortNodeId}`);
       const pending: PendingOperation = {
         nodeId,
         operation,
@@ -125,6 +149,7 @@ class SimplePersistenceCoordinator {
       this.pendingOperations.set(nodeId, pending);
       executeOperation();
     } else {
+      coordLog.debug(`[op#${opId}] scheduling DEBOUNCED (${this.DEBOUNCE_MS}ms) for ${shortNodeId}`);
       const timeoutId = setTimeout(executeOperation, this.DEBOUNCE_MS);
       const pending: PendingOperation = {
         nodeId,
@@ -140,9 +165,15 @@ class SimplePersistenceCoordinator {
     return { promise };
   }
 
-  cancelPending(nodeId: string): void {
+  cancelPending(nodeId: string, opId?: number): void {
     const pending = this.pendingOperations.get(nodeId);
     if (pending) {
+      const shortNodeId = nodeId.substring(0, 8);
+      const isExecuting = this.executingOperations.has(nodeId);
+      coordLog.debug(
+        `[op#${opId ?? '?'}] cancelPending() for ${shortNodeId}: ` +
+        `isExecuting=${isExecuting} (cancel ${isExecuting ? 'INEFFECTIVE' : 'effective'})`
+      );
       clearTimeout(pending.timeoutId);
       this.pendingOperations.delete(nodeId);
     }
@@ -786,6 +817,16 @@ export class SharedNodeStore {
                   const currentNode = this.nodes.get(nodeId);
                   const currentVersion = currentNode?.version ?? 1;
 
+                  // Debug: Log version being sent
+                  const shortNodeId = nodeId.substring(0, 8);
+                  const contentPreview = 'content' in updatePayload
+                    ? `"${String(updatePayload.content).substring(0, 20)}"`
+                    : '(no content)';
+                  log.debug(
+                    `[UPDATE] ${shortNodeId}: sending version=${currentVersion}, ` +
+                    `content=${contentPreview}`
+                  );
+
                   try {
                     // Issue #709: Smart routing via plugin system
                     // Type-specific updaters route to spoke table methods (updateTaskNode, etc.)
@@ -824,8 +865,12 @@ export class SharedNodeStore {
                     // Update local node with backend version
                     const localNode = this.nodes.get(nodeId);
                     if (localNode && updatedNodeFromBackend) {
+                      const oldVersion = localNode.version;
                       localNode.version = updatedNodeFromBackend.version;
                       this.nodes.set(nodeId, localNode);
+                      log.debug(
+                        `[UPDATE] ${shortNodeId}: success, version ${oldVersion} -> ${updatedNodeFromBackend.version}`
+                      );
                     }
                   } catch (updateError) {
                     // If UPDATE fails because node doesn't exist, try CREATE instead
@@ -1070,9 +1115,11 @@ export class SharedNodeStore {
             }
           },
           {
-            // CRITICAL: Use debounce mode for new viewer nodes to coalesce rapid updates
-            // This prevents double-write where setNode() CREATE fires immediately,
-            // then updateNode() fires debounced UPDATE shortly after
+            // Use debounce mode for new viewer nodes to coalesce rapid updates.
+            // This allows indent/outdent to modify the parentId BEFORE the CREATE fires,
+            // enabling single-transaction create-with-correct-parent instead of CREATE + MOVE.
+            // The indentNode function checks isNodePersisted() and handles unpersisted nodes
+            // by re-triggering setNode with the new parentId (cancelling the previous pending CREATE).
             mode: source.type === 'viewer' && isNewNode ? 'debounce' : 'immediate',
             dependencies: dependencies.length > 0 ? dependencies : undefined
           }
@@ -1554,12 +1601,32 @@ export class SharedNodeStore {
    * Wait for pending node saves to complete with timeout
    * Delegates to PersistenceCoordinator
    *
+   * NOTE: This only waits for already-executing operations. It does NOT trigger
+   * debounced operations that haven't started yet. For that, use flushNodeSaves().
+   *
    * @param nodeIds - Array of node IDs to wait for
    * @param timeoutMs - Timeout in milliseconds (default 5000)
    * @returns Set of node IDs that failed to save
    */
   async waitForNodeSaves(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
     return PersistenceCoordinator.getInstance().waitForPersistence(nodeIds, timeoutMs);
+  }
+
+  /**
+   * Flush specific pending node saves immediately and wait for completion.
+   *
+   * Unlike waitForNodeSaves which only waits for in-flight operations,
+   * this method also TRIGGERS debounced operations that haven't started yet.
+   *
+   * Use this when you need to ensure specific nodes are fully persisted
+   * before performing dependent operations (e.g., moveNode that references them).
+   *
+   * @param nodeIds - Array of node IDs to flush and wait for
+   * @param timeoutMs - Timeout in milliseconds (default 5000)
+   * @returns Set of node IDs that failed to save
+   */
+  async flushNodeSaves(nodeIds: string[], timeoutMs = 5000): Promise<Set<string>> {
+    return PersistenceCoordinator.getInstance().flushAndWaitForNodes(nodeIds, timeoutMs);
   }
 
   /**

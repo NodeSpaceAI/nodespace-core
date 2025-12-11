@@ -828,8 +828,11 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (!node) return false;
 
     // Find previous sibling (indent target)
-    const parents = sharedNodeStore.getParentsForNode(nodeId);
-    const currentParentId = parents.length > 0 ? parents[0].id : null;
+    // CRITICAL FIX: Use node's own parentId first (authoritative), then fallback to structureTree
+    // This fixes the placeholder promotion issue where structureTree may be stale when a promoted
+    // placeholder has a parentId but hasn't been registered in the structure tree yet.
+    const structureTreeParents = sharedNodeStore.getParentsForNode(nodeId);
+    const currentParentId = node.parentId ?? (structureTreeParents.length > 0 ? structureTreeParents[0].id : null);
 
     // Get siblings (already sorted by backend via fractional ordering)
     let siblings: string[];
@@ -885,6 +888,40 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     events.hierarchyChanged();
     _updateTrigger++;
 
+    // Check if node has been persisted to database yet
+    const isNodePersisted = sharedNodeStore.isNodePersisted(nodeId);
+
+    if (!isNodePersisted) {
+      // OPTIMIZATION: Node hasn't been persisted yet (just created via Enter key).
+      // Instead of CREATE + MOVE (two operations), we can:
+      // 1. Cancel the pending CREATE
+      // 2. Re-trigger setNode with updated parentId
+      // 3. The CREATE will happen with the correct parent - no MOVE needed!
+      //
+      // This is more efficient and avoids race conditions entirely.
+      log.debug(`[indentNode] Node ${nodeId.substring(0, 8)} not persisted yet, updating parentId for CREATE`);
+
+      // Get the current node with updated parentId
+      const updatedNode = sharedNodeStore.getNode(nodeId);
+      if (updatedNode) {
+        // Update the node's parentId and clear insertAfterNodeId
+        // IMPORTANT: insertAfterNodeId referenced a sibling under the OLD parent,
+        // so it's invalid for the new parent. Set to null to append at end of new parent's children.
+        const nodeWithNewParent = {
+          ...updatedNode,
+          parentId: targetParentId,
+          insertAfterNodeId: null  // Clear - old sibling reference is invalid for new parent
+        } as typeof updatedNode & { insertAfterNodeId?: string | null };
+        // Re-set the node to trigger a new CREATE with correct parentId
+        // The previous pending CREATE will be cancelled by the new one
+        sharedNodeStore.setNode(nodeWithNewParent, viewerSource);
+      }
+
+      // No moveOperation needed - the CREATE will include the correct parent
+      return true;
+    }
+
+    // Node is already persisted - need to MOVE it in the database
     // Track move operation to prevent race conditions with subsequent indent/outdent
     // CRITICAL: Other hierarchy operations must wait for this move to complete
     // before they can reference this node's edges in the database
@@ -894,9 +931,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // This ensures move operations are processed in order, preventing edge conflicts.
         await waitForPendingMoveOperations();
 
-        // CRITICAL: Wait for the node to be persisted before moving it
-        // This prevents race conditions when user presses Enter then Tab rapidly
-        await sharedNodeStore.waitForNodeSaves([nodeId]);
+        // CRITICAL: Flush and wait for any pending updates before moving
+        // This prevents race conditions with content updates
+        await sharedNodeStore.flushNodeSaves([nodeId]);
 
         // Get fresh node data to ensure we have the latest version
         const freshNode = sharedNodeStore.getNode(nodeId);

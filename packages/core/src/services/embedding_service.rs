@@ -221,7 +221,9 @@ where
                 aggregated.len(),
                 self.config.max_content_size
             );
-            return Ok(aggregated[..self.config.max_content_size].to_string());
+            // Find valid UTF-8 boundary to avoid splitting multi-byte chars
+            let truncate_idx = Self::find_char_boundary(&aggregated, self.config.max_content_size);
+            return Ok(aggregated[..truncate_idx].to_string());
         }
 
         Ok(aggregated)
@@ -240,11 +242,18 @@ where
 
     /// Split content into chunks for embedding
     ///
-    /// Uses approximate token counting (4 chars ≈ 1 token) and overlaps
-    /// chunks by `overlap_tokens` to maintain context across boundaries.
+    /// Uses conservative token counting to ensure chunks never exceed the
+    /// model's token limit. The `chars_per_token_estimate` config controls
+    /// the character-to-token ratio. Overlaps chunks by `overlap_tokens`
+    /// to maintain context across boundaries.
+    ///
+    /// This function is UTF-8 safe - it never splits in the middle of a
+    /// multi-byte character (like emojis).
     fn chunk_content(&self, content: &str) -> Vec<(i32, i32, String)> {
-        // Approximate token count (rough estimate: 4 chars ≈ 1 token)
-        let chars_per_token = 4;
+        // Use configured chars_per_token estimate (default: 3)
+        // BGE models typically tokenize at ~3-4 chars/token, but technical content
+        // with code, markdown, and special characters can be closer to 2.5.
+        let chars_per_token = self.config.chars_per_token_estimate;
         let max_chars = self.config.max_tokens_per_chunk * chars_per_token;
         let overlap_chars = self.config.overlap_tokens * chars_per_token;
 
@@ -257,9 +266,12 @@ where
         let mut start = 0;
 
         while start < content.len() {
-            let end = (start + max_chars).min(content.len());
+            // Find the byte index that's at most max_chars from start,
+            // but ensure it's on a valid UTF-8 character boundary
+            let end = Self::find_char_boundary(content, (start + max_chars).min(content.len()));
 
             // Try to find a good break point (newline or space)
+            // All searches use rfind which returns byte positions within the slice
             let actual_end = if end < content.len() {
                 // Look for paragraph break first
                 if let Some(pos) = content[start..end].rfind("\n\n") {
@@ -285,15 +297,30 @@ where
                 content[start..actual_end].to_string(),
             ));
 
-            // Move forward with overlap
+            // Move forward with overlap, ensuring we land on a char boundary
             start = if actual_end >= content.len() {
                 actual_end
             } else {
-                (actual_end - overlap_chars).max(start + 1)
+                let overlap_start = (actual_end - overlap_chars).max(start + 1);
+                Self::find_char_boundary(content, overlap_start)
             };
         }
 
         chunks
+    }
+
+    /// Find the nearest valid UTF-8 character boundary at or before the given byte index.
+    ///
+    /// This prevents panics when slicing strings with multi-byte characters (emojis, etc.)
+    fn find_char_boundary(s: &str, mut index: usize) -> usize {
+        if index >= s.len() {
+            return s.len();
+        }
+        // Walk backwards until we find a valid char boundary
+        while index > 0 && !s.is_char_boundary(index) {
+            index -= 1;
+        }
+        index
     }
 
     // =========================================================================
@@ -664,5 +691,80 @@ mod tests {
         assert_eq!(hash1, hash2);
         assert_ne!(hash1, hash3);
         assert_eq!(hash1.len(), 64); // SHA256 hex = 64 chars
+    }
+
+    #[test]
+    fn test_find_char_boundary_ascii() {
+        let s = "hello world";
+        // ASCII characters are all single-byte, so any index is valid
+        assert_eq!(
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 0),
+            0
+        );
+        assert_eq!(
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 5),
+            5
+        );
+        assert_eq!(
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 100),
+            s.len()
+        );
+    }
+
+    #[test]
+    fn test_find_char_boundary_emoji() {
+        // ✅ is 3 bytes (E2 9C 85)
+        let s = "test ✅ done";
+        // Byte positions: t(0) e(1) s(2) t(3) ' '(4) ✅(5,6,7) ' '(8) d(9) o(10) n(11) e(12)
+
+        // Index 5 is start of emoji - valid
+        assert_eq!(
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 5),
+            5
+        );
+
+        // Index 6 is inside emoji - should walk back to 5
+        assert_eq!(
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 6),
+            5
+        );
+
+        // Index 7 is inside emoji - should walk back to 5
+        assert_eq!(
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 7),
+            5
+        );
+
+        // Index 8 is after emoji (space) - valid
+        assert_eq!(
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 8),
+            8
+        );
+    }
+
+    #[test]
+    fn test_find_char_boundary_multiple_emojis() {
+        // Test with multiple multi-byte characters
+        // 🎉 is 4 bytes, ✅ is 3 bytes
+        let s = "🎉 done ✅";
+        // Byte positions: 🎉(0-3) ' '(4) d(5) o(6) n(7) e(8) ' '(9) ✅(10-12)
+
+        // Index inside first emoji
+        assert_eq!(
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 2),
+            0
+        );
+
+        // Index 4 (space after emoji)
+        assert_eq!(
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 4),
+            4
+        );
+
+        // Index inside second emoji
+        assert_eq!(
+            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 11),
+            10
+        );
     }
 }

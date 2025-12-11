@@ -26,6 +26,12 @@ pub const MAX_TOKENS_PER_CHUNK: usize = 512;
 /// Token overlap between chunks - preserves context across boundaries (tokens)
 pub const OVERLAP_TOKENS: usize = 100;
 
+/// Conservative estimate of characters per token for chunking
+/// BGE models typically tokenize at ~3-4 chars/token, but technical content
+/// with code, markdown, and special characters can be closer to 2.5.
+/// Using 3 provides a safety margin to prevent exceeding 512 token limit.
+pub const CHARS_PER_TOKEN_ESTIMATE: usize = 3;
+
 /// Embedding record stored in the `embedding` table
 ///
 /// Represents the vector embedding for a root node's aggregated content.
@@ -204,6 +210,9 @@ pub struct EmbeddingConfig {
     pub max_tokens_per_chunk: usize,
     /// Token overlap between chunks (default: 100)
     pub overlap_tokens: usize,
+    /// Estimated characters per token for chunking (default: 3)
+    /// Conservative estimate to prevent exceeding token limits
+    pub chars_per_token_estimate: usize,
     /// Maximum descendants to aggregate (default: 1000)
     pub max_descendants: usize,
     /// Maximum content size in bytes (default: 10MB)
@@ -218,6 +227,7 @@ impl Default for EmbeddingConfig {
             debounce_duration_secs: 30,
             max_tokens_per_chunk: MAX_TOKENS_PER_CHUNK,
             overlap_tokens: OVERLAP_TOKENS,
+            chars_per_token_estimate: CHARS_PER_TOKEN_ESTIMATE,
             max_descendants: 1000,
             max_content_size: 10 * 1024 * 1024, // 10MB
             max_retries: 3,
@@ -243,6 +253,7 @@ mod tests {
         assert_eq!(config.debounce_duration_secs, 30);
         assert_eq!(config.max_tokens_per_chunk, 512);
         assert_eq!(config.overlap_tokens, 100);
+        assert_eq!(config.chars_per_token_estimate, 3);
         assert_eq!(config.max_descendants, 1000);
         assert_eq!(config.max_content_size, 10 * 1024 * 1024);
         assert_eq!(config.max_retries, 3);
