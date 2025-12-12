@@ -90,25 +90,17 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      - name: Install Python (for huggingface-cli)
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - name: Download NLP models for bundling
         run: |
-          # Use full path from pythonLocation to ensure correct Python
-          PYTHON="$pythonLocation/bin/python3"
-          echo "Using Python: $PYTHON"
-          "$PYTHON" -m pip install "huggingface-hub[cli]"
-          mkdir -p packages/desktop-app/src-tauri/resources/models/BAAI-bge-small-en-v1.5
-          # Use python -m huggingface_hub (not the old .commands.huggingface_cli path)
-          "$PYTHON" -m huggingface_hub download BAAI/bge-small-en-v1.5 \
-            --local-dir packages/desktop-app/src-tauri/resources/models/BAAI-bge-small-en-v1.5 \
-            --exclude pytorch_model.bin tf_model.h5 \
-            --quiet
+          mkdir -p packages/desktop-app/src-tauri/resources/models
+          # Download pre-packaged model from GitHub releases
+          gh release download models-v1 --pattern "BAAI-bge-small-en-v1.5.tar.gz" --dir /tmp
+          # Extract to resources directory
+          tar -xzf /tmp/BAAI-bge-small-en-v1.5.tar.gz -C packages/desktop-app/src-tauri/resources/models/
           echo "Model downloaded:"
           ls -la packages/desktop-app/src-tauri/resources/models/BAAI-bge-small-en-v1.5/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
