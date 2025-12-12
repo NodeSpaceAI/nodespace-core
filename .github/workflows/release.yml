@@ -19,10 +19,10 @@ jobs:
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
             rust_targets: 'aarch64-apple-darwin'
-          # Windows - temporarily disabled for macOS-only test
-          # - platform: 'windows-latest'
-          #   args: ''
-          #   rust_targets: ''
+          # Windows
+          - platform: 'windows-latest'
+            args: ''
+            rust_targets: ''
           # NOTE: Ubuntu and macOS Intel disabled for now
           # - platform: 'macos-latest'
           #   args: '--target x86_64-apple-darwin'
