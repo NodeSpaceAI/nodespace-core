@@ -96,7 +96,15 @@ jobs:
           python-version: '3.11'
 
       - name: Download NLP models for bundling
-        run: bun run download:models:bundle
+        run: |
+          pip install huggingface-hub
+          mkdir -p packages/desktop-app/src-tauri/resources/models/BAAI-bge-small-en-v1.5
+          huggingface-cli download BAAI/bge-small-en-v1.5 \
+            --local-dir packages/desktop-app/src-tauri/resources/models/BAAI-bge-small-en-v1.5 \
+            --exclude pytorch_model.bin tf_model.h5 \
+            --quiet
+          echo "Model downloaded:"
+          ls -la packages/desktop-app/src-tauri/resources/models/BAAI-bge-small-en-v1.5/
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
