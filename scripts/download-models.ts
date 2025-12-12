@@ -35,17 +35,13 @@ async function downloadModels() {
     return;
   }
 
-  // Check if huggingface-cli is available
-  try {
-    await $`which huggingface-cli`.quiet();
-  } catch {
-    console.log("❌ huggingface-cli not found. Installing...");
-    await $`pip install huggingface-hub`;
-  }
+  // Ensure huggingface-hub is installed
+  console.log("📦 Ensuring huggingface-hub is installed...");
+  await $`pip install huggingface-hub`.quiet();
 
-  // Download model
+  // Download model using python -m to avoid PATH issues in CI/CD
   console.log(`⬇️  Downloading BAAI/bge-small-en-v1.5...`);
-  await $`huggingface-cli download BAAI/bge-small-en-v1.5 \
+  await $`python -m huggingface_hub.commands.huggingface_cli download BAAI/bge-small-en-v1.5 \
     --local-dir ${MODEL_PATH} \
     --exclude pytorch_model.bin tf_model.h5 \
     --quiet`;
