@@ -6,11 +6,53 @@
 use crate::commands::embeddings::EmbeddingState;
 use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService};
 use nodespace_core::{NodeService, SurrealStore};
-use nodespace_nlp_engine::EmbeddingService;
+use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 use tokio::fs;
+
+/// Resolve the path to the bundled NLP model
+///
+/// Checks multiple locations in order:
+/// 1. Bundled resources (for production builds)
+/// 2. User's ~/.nodespace/models/ directory (fallback for dev)
+///
+/// # Arguments
+/// * `app` - Tauri application handle for resource resolution
+///
+/// # Returns
+/// * `Ok(PathBuf)` - Path to the model directory
+/// * `Err(String)` - Error if model not found anywhere
+fn resolve_bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let model_name = "BAAI-bge-small-en-v1.5";
+
+    // Try bundled resources first (production builds)
+    if let Ok(resource_path) = app.path().resolve(
+        format!("resources/models/{}", model_name),
+        BaseDirectory::Resource,
+    ) {
+        if resource_path.exists() {
+            tracing::info!("Found bundled model at: {:?}", resource_path);
+            return Ok(resource_path);
+        }
+    }
+
+    // Try ~/.nodespace/models/ fallback (development or user-installed)
+    if let Some(home_dir) = dirs::home_dir() {
+        let user_model_path = home_dir.join(".nodespace").join("models").join(model_name);
+        if user_model_path.exists() {
+            tracing::info!("Found user model at: {:?}", user_model_path);
+            return Ok(user_model_path);
+        }
+    }
+
+    Err(format!(
+        "Model file not found at path: Model not found at {:?}. Please install model to ~/.nodespace/models/",
+        format!("~/.nodespace/models/{}", model_name)
+    ))
+}
 
 /// Initialize database services with user-selected or default path
 ///
@@ -64,8 +106,18 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     // NOTE: SchemaService removed (Issue #690) - schema operations use NodeService directly
 
     // Initialize NLP engine for embeddings
+    // First, try to find the bundled model in Tauri resources
     tracing::info!("🔧 [init_services] Initializing NLP engine...");
-    let mut nlp_engine = EmbeddingService::new(Default::default())
+
+    let model_path = resolve_bundled_model_path(app)?;
+    tracing::info!("🔧 [init_services] Using model path: {:?}", model_path);
+
+    let config = EmbeddingConfig {
+        model_path: Some(model_path),
+        ..Default::default()
+    };
+
+    let mut nlp_engine = EmbeddingService::new(config)
         .map_err(|e| format!("Failed to initialize NLP engine: {}", e))?;
 
     // Initialize the NLP engine (loads model)

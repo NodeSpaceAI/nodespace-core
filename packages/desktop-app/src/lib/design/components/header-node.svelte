@@ -30,11 +30,13 @@
   import BaseNode from './base-node.svelte';
 
   // Props using Svelte 5 runes mode - same interface as BaseNode
+  // Using $bindable() for content enables two-way binding with parent
+  // This is the proper Svelte 5 pattern - no internal state copy needed
   let {
     nodeId,
     nodeType = 'header',
     autoFocus = false,
-    content = '',
+    content = $bindable(''),
     children = []
     // metadata = {} // Not yet used but reserved for future header-specific metadata
   }: {
@@ -48,15 +50,9 @@
 
   const dispatch = createEventDispatcher();
 
-  // REFACTOR (Issue #316 Phase 2): Removed $effect for prop sync
-  // Newline stripping now happens in event handler for clearer event flow
-  // Capture initial value to avoid Svelte state_referenced_locally warning
-  const initialContent = content;
-  let internalContent = $state(initialContent);
-
   // Header level - derived from markdown syntax (#, ##, ###, etc.)
   // REFACTOR (Issue #316 Phase 1): Replaced $effect with $derived for pure reactive computation
-  let headerLevel = $derived(parseHeaderLevel(internalContent));
+  let headerLevel = $derived(parseHeaderLevel(content));
 
   // Headers use default single-line editing
   const editableConfig = {};
@@ -68,7 +64,7 @@
   const wrapperClasses = $derived(`header-node-wrapper header-h${headerLevel}`);
 
   // Compute display content for blur mode (strip hashtags)
-  let displayContent = $derived(internalContent.replace(/^#{1,6}\s+/, ''));
+  let displayContent = $derived(content.replace(/^#{1,6}\s+/, ''));
 
   /**
    * Parse header level from markdown syntax
@@ -96,6 +92,7 @@
    * Handle content changes and sync with parent
    * REFACTOR (Issue #316 Phase 2): Moved newline stripping from $effect to event handler
    * This makes side effects explicit and event-driven instead of reactive
+   * REFACTOR: Using $bindable() prop - update content directly via two-way binding
    */
   function handleContentChange(event: CustomEvent<{ content: string }>) {
     let newContent = event.detail.content;
@@ -106,7 +103,8 @@
       newContent = newContent.replace(/\n+/g, ' '); // Replace newlines with spaces
     }
 
-    internalContent = newContent;
+    // Update via $bindable() prop - this updates the parent's state directly
+    content = newContent;
     dispatch('contentChanged', { content: newContent });
   }
 
@@ -124,7 +122,7 @@
     {nodeId}
     {nodeType}
     {autoFocus}
-    bind:content={internalContent}
+    bind:content
     {displayContent}
     {children}
     {editableConfig}

@@ -3,12 +3,14 @@
   import '../app.css';
   import '$lib/styles/noderef.css';
   import AppShell from '$lib/components/layout/app-shell.svelte';
+  import DiagnosticPanel from '$lib/design/components/diagnostic-panel.svelte';
   import { initializeSchemaPluginSystem } from '$lib/plugins/schema-plugin-loader';
   import { initializeTauriSyncListeners } from '$lib/services/tauri-sync-listener';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { initializeApp } from '$lib/services/app-initialization';
 
   let isInitialized = false;
+  let initError: string | null = null;
 
   // Initialize database first, then schema plugins, then sync listeners
   onMount(async () => {
@@ -51,6 +53,8 @@
       console.log('[App Layout] Initialization complete, rendering app');
     } catch (error) {
       console.error('[App Layout] Critical initialization error:', error);
+      // Store error for display on screen
+      initError = error instanceof Error ? error.message : String(error);
     }
   });
 
@@ -83,8 +87,55 @@
   <AppShell>
     <slot />
   </AppShell>
+{:else if initError}
+  <div class="initialization-error">
+    <h1>Initialization Failed</h1>
+    <p class="error-message">{initError}</p>
+    <p class="hint">Please report this issue with the error message above.</p>
+    <p class="hint">Press Ctrl+Shift+D to open the diagnostic panel for more details.</p>
+  </div>
 {:else}
   <div class="initialization-screen">
     <p>Initializing NodeSpace...</p>
   </div>
 {/if}
+
+<!-- Diagnostic Panel - Press Ctrl+Shift+D to toggle -->
+<DiagnosticPanel />
+
+<style>
+  .initialization-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    background: #1a1a1a;
+    color: #fff;
+    padding: 2rem;
+    text-align: center;
+  }
+
+  .initialization-error h1 {
+    color: #f85149;
+    margin-bottom: 1rem;
+  }
+
+  .initialization-error .error-message {
+    background: #2d1f1f;
+    border: 1px solid #f85149;
+    border-radius: 8px;
+    padding: 1rem 2rem;
+    font-family: monospace;
+    font-size: 14px;
+    max-width: 80%;
+    word-break: break-word;
+    margin-bottom: 1.5rem;
+  }
+
+  .initialization-error .hint {
+    color: #888;
+    font-size: 14px;
+    margin: 0.5rem 0;
+  }
+</style>

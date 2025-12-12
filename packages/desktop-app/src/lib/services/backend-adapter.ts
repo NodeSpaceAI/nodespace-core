@@ -25,6 +25,7 @@
 import type { Node, NodeWithChildren, TaskNode, TaskNodeUpdate } from '$lib/types';
 import type { SchemaNode } from '$lib/types/schema-node';
 import { createLogger } from '$lib/utils/logger';
+import { withDiagnosticLogging } from './diagnostic-logger';
 
 const log = createLogger('BackendAdapter');
 
@@ -143,33 +144,57 @@ class TauriAdapter implements BackendAdapter {
       parentId: (input as CreateNodeInput).parentId ?? null,
       insertAfterNodeId: (input as CreateNodeInput).insertAfterNodeId ?? null
     };
-    return invoke<string>('create_node', { node: nodeInput });
+    return withDiagnosticLogging(
+      'createNode',
+      () => invoke<string>('create_node', { node: nodeInput }),
+      [nodeInput]
+    );
   }
 
   async getNode(id: string): Promise<Node | null> {
     const invoke = await this.getInvoke();
-    return invoke<Node | null>('get_node', { id });
+    return withDiagnosticLogging(
+      'getNode',
+      () => invoke<Node | null>('get_node', { id }),
+      [id]
+    );
   }
 
   async updateNode(id: string, version: number, update: UpdateNodeInput): Promise<Node> {
     const invoke = await this.getInvoke();
-    return invoke<Node>('update_node', { id, version, update });
+    return withDiagnosticLogging(
+      'updateNode',
+      () => invoke<Node>('update_node', { id, version, update }),
+      [id, version, update]
+    );
   }
 
   async updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode> {
     const invoke = await this.getInvoke();
-    return invoke<TaskNode>('update_task_node', { id, version, update });
+    return withDiagnosticLogging(
+      'updateTaskNode',
+      () => invoke<TaskNode>('update_task_node', { id, version, update }),
+      [id, version, update]
+    );
   }
 
   async deleteNode(id: string, version: number): Promise<DeleteResult> {
     const invoke = await this.getInvoke();
-    return invoke<DeleteResult>('delete_node', { id, version });
+    return withDiagnosticLogging(
+      'deleteNode',
+      () => invoke<DeleteResult>('delete_node', { id, version }),
+      [id, version]
+    );
   }
 
   async getChildren(parentId: string): Promise<Node[]> {
     const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
-    return invoke<Node[]>('get_children', { parentId });
+    return withDiagnosticLogging(
+      'getChildren',
+      () => invoke<Node[]>('get_children', { parentId }),
+      [parentId]
+    );
   }
 
   async getDescendants(rootNodeId: string): Promise<Node[]> {
@@ -191,92 +216,141 @@ class TauriAdapter implements BackendAdapter {
   async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
     const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
-    const result = await invoke<NodeWithChildren | Record<string, never>>('get_children_tree', { parentId });
-    // Backend returns {} for non-existent parent, normalize to null
-    if (!result || Object.keys(result).length === 0) {
-      return null;
-    }
-    return result as NodeWithChildren;
+    return withDiagnosticLogging(
+      'getChildrenTree',
+      async () => {
+        const result = await invoke<NodeWithChildren | Record<string, never>>('get_children_tree', { parentId });
+        // Backend returns {} for non-existent parent, normalize to null
+        if (!result || Object.keys(result).length === 0) {
+          return null;
+        }
+        return result as NodeWithChildren;
+      },
+      [parentId]
+    );
   }
 
   async moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<void> {
     const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
-    return invoke<void>('move_node', {
-      nodeId,
-      version,
-      newParentId,
-      insertAfterNodeId
-    });
+    return withDiagnosticLogging(
+      'moveNode',
+      () => invoke<void>('move_node', {
+        nodeId,
+        version,
+        newParentId,
+        insertAfterNodeId
+      }),
+      [nodeId, version, newParentId, insertAfterNodeId]
+    );
   }
 
   async createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
-    return invoke<void>('create_node_mention', {
-      mentioningNodeId,
-      mentionedNodeId
-    });
+    return withDiagnosticLogging(
+      'createMention',
+      () => invoke<void>('create_node_mention', {
+        mentioningNodeId,
+        mentionedNodeId
+      }),
+      [mentioningNodeId, mentionedNodeId]
+    );
   }
 
   async deleteMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
     const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
-    return invoke<void>('delete_node_mention', {
-      mentioningNodeId,
-      mentionedNodeId
-    });
+    return withDiagnosticLogging(
+      'deleteMention',
+      () => invoke<void>('delete_node_mention', {
+        mentioningNodeId,
+        mentionedNodeId
+      }),
+      [mentioningNodeId, mentionedNodeId]
+    );
   }
 
   async getOutgoingMentions(nodeId: string): Promise<string[]> {
     const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
-    return invoke<string[]>('get_outgoing_mentions', { nodeId });
+    return withDiagnosticLogging(
+      'getOutgoingMentions',
+      () => invoke<string[]>('get_outgoing_mentions', { nodeId }),
+      [nodeId]
+    );
   }
 
   async getIncomingMentions(nodeId: string): Promise<string[]> {
     const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
-    return invoke<string[]>('get_incoming_mentions', { nodeId });
+    return withDiagnosticLogging(
+      'getIncomingMentions',
+      () => invoke<string[]>('get_incoming_mentions', { nodeId }),
+      [nodeId]
+    );
   }
 
   async getMentioningContainers(nodeId: string): Promise<string[]> {
     const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case Rust params to camelCase JS params
-    return invoke<string[]>('get_mentioning_roots', { nodeId });
+    return withDiagnosticLogging(
+      'getMentioningContainers',
+      () => invoke<string[]>('get_mentioning_roots', { nodeId }),
+      [nodeId]
+    );
   }
 
   async queryNodes(query: NodeQuery): Promise<Node[]> {
     const invoke = await this.getInvoke();
-    return invoke<Node[]>('query_nodes_simple', { query });
+    return withDiagnosticLogging(
+      'queryNodes',
+      () => invoke<Node[]>('query_nodes_simple', { query }),
+      [query]
+    );
   }
 
   async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
     const invoke = await this.getInvoke();
-    return invoke<Node[]>('mention_autocomplete', { query, limit });
+    return withDiagnosticLogging(
+      'mentionAutocomplete',
+      () => invoke<Node[]>('mention_autocomplete', { query, limit }),
+      [query, limit]
+    );
   }
 
   async createContainerNode(input: CreateContainerInput): Promise<string> {
     const invoke = await this.getInvoke();
     // Keep snake_case for struct fields to match Rust serde expectations
-    return invoke<string>('create_root_node', {
-      input: {
-        content: input.content,
-        node_type: input.nodeType,
-        properties: input.properties ?? {},
-        mentioned_by: input.mentionedBy
-      }
-    });
+    const rustInput = {
+      content: input.content,
+      node_type: input.nodeType,
+      properties: input.properties ?? {},
+      mentioned_by: input.mentionedBy
+    };
+    return withDiagnosticLogging(
+      'createContainerNode',
+      () => invoke<string>('create_root_node', { input: rustInput }),
+      [input]
+    );
   }
 
   async getAllSchemas(): Promise<SchemaNode[]> {
     const invoke = await this.getInvoke();
-    return invoke<SchemaNode[]>('get_all_schemas');
+    return withDiagnosticLogging(
+      'getAllSchemas',
+      () => invoke<SchemaNode[]>('get_all_schemas'),
+      []
+    );
   }
 
   async getSchema(schemaId: string): Promise<SchemaNode> {
     const invoke = await this.getInvoke();
-    return invoke<SchemaNode>('get_schema_definition', { schemaId });
+    return withDiagnosticLogging(
+      'getSchema',
+      () => invoke<SchemaNode>('get_schema_definition', { schemaId }),
+      [schemaId]
+    );
   }
 }
 

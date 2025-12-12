@@ -57,11 +57,13 @@
   const EMPTY_CODE_BLOCK_TEMPLATE = '```\n\n```';
 
   // Props using Svelte 5 runes mode - same interface as BaseNode
+  // Using $bindable() for content enables two-way binding with parent
+  // This is the proper Svelte 5 pattern - no internal state copy needed
   let {
     nodeId,
     nodeType = 'code-block',
     autoFocus = false,
-    content = '',
+    content = $bindable(''),
     children = []
   }: {
     nodeId: string;
@@ -73,14 +75,9 @@
 
   const dispatch = createEventDispatcher();
 
-  // Internal reactive state - initialized from content prop (one-time capture)
-  // Note: Content updates flow through handleContentChange event, not prop sync
-  // External changes are rare (only from parent re-renders) and handled by component remount
-  const initialContent = content; // Capture initial value to avoid Svelte warning
-  let internalContent = $state(initialContent);
-
   // Parse language from opening fence (```language or just ```)
-  let language = $state<string>(parseLanguage(initialContent));
+  // Use $derived to reactively parse language from content
+  let language = $state<string>(parseLanguage(content));
 
   // Code blocks use multiline editing (Shift+Enter for new lines, Enter creates new node)
   // Prevent merging into code-blocks (structured content can't accept arbitrary merges)
@@ -154,8 +151,8 @@
 
   // Edit mode: Show fences without language (```\ncode\n```)
   // View mode: Show just code (no fences)
-  let editContent = $derived(extractCodeForEditing(internalContent));
-  let displayContent = $derived(extractCodeForDisplay(internalContent));
+  let editContent = $derived(extractCodeForEditing(content));
+  let displayContent = $derived(extractCodeForDisplay(content));
 
   /**
    * Extract code content (strip both opening and closing fences for copy functionality)
@@ -170,15 +167,17 @@
 
   /**
    * Update language and content when language changes
+   * REFACTOR: Using $bindable() prop - update content directly via two-way binding
    */
   function handleLanguageChange(newLanguage: string) {
     language = newLanguage;
     showLanguageDropdown = false;
 
     // Just replace the language in the existing content
-    const newContent = internalContent.replace(/^```\w*/, `\`\`\`${newLanguage}`);
+    const newContent = content.replace(/^```\w*/, `\`\`\`${newLanguage}`);
 
-    internalContent = newContent;
+    // Update via $bindable() prop - this updates the parent's state directly
+    content = newContent;
     dispatch('contentChanged', { content: newContent });
   }
 
@@ -186,6 +185,7 @@
    * Handle content changes from BaseNode
    * User edits: ```\ncode\n```
    * We inject language: ```{language}\ncode\n```
+   * REFACTOR: Using $bindable() prop - update content directly via two-way binding
    */
   function handleContentChange(event: CustomEvent<{ content: string }>) {
     const userContent = event.detail.content;
@@ -193,7 +193,8 @@
     // Inject language into opening fence
     const withLanguage = userContent.replace(/^```/, `\`\`\`${language}`);
 
-    internalContent = withLanguage;
+    // Update via $bindable() prop - this updates the parent's state directly
+    content = withLanguage;
     dispatch('contentChanged', { content: withLanguage });
   }
 
@@ -201,7 +202,7 @@
    * Copy code content to clipboard
    */
   async function handleCopy() {
-    const codeContent = extractCodeContent(internalContent);
+    const codeContent = extractCodeContent(content);
     try {
       // Check if clipboard API is available (browser environment)
       if (typeof window !== 'undefined' && window.navigator?.clipboard) {
@@ -251,7 +252,7 @@
 
     // For code-blocks: no splitting, create blank code-block below with cursor ready
     if (detail.nodeType === 'code-block') {
-      detail.currentContent = internalContent; // Keep current node unchanged
+      detail.currentContent = content; // Keep current node unchanged
       detail.newContent = EMPTY_CODE_BLOCK_TEMPLATE; // New blank code-block (language managed by dropdown state)
       // Cursor position is for edit content (```\n|\n```) which is position 4
       detail.newNodeCursorPosition = 4; // After ```\n, on the empty line

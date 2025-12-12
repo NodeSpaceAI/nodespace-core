@@ -24,11 +24,13 @@
   const paneId = getContext<string>('paneId') ?? DEFAULT_PANE_ID;
 
   // Props using Svelte 5 runes mode - same interface as BaseNode
+  // Using $bindable() for content enables two-way binding with parent
+  // This is the proper Svelte 5 pattern - no internal state copy needed
   let {
     nodeId,
     nodeType = 'ordered-list',
     autoFocus = false,
-    content = '',
+    content = $bindable(''),
     children = []
   }: {
     nodeId: string;
@@ -43,12 +45,6 @@
   // Cursor positioning constants for Shift+Enter behavior
   const NEWLINE_LENGTH = 1; // \n character
   const LIST_PREFIX_LENGTH = 3; // "1. " prefix length
-
-  // Internal reactive state - initialized from content prop (one-time capture)
-  // Note: Content updates flow through handleContentChange event, not prop sync
-  // External changes are rare (only from parent re-renders) and handled by component remount
-  const initialContent = content; // Capture initial value to avoid Svelte warning
-  let internalContent = $state(initialContent);
 
   // Track if we just added prefixes (for cursor adjustment)
   let pendingCursorAdjustment = $state<number | null>(null);
@@ -82,11 +78,12 @@
   }
 
   // Display content: Add sequential numbering for view mode
-  let displayContent = $derived(extractListForDisplay(internalContent));
+  let displayContent = $derived(extractListForDisplay(content));
 
   /**
    * Handle content changes from BaseNode
    * Add "1. " prefix to all lines before saving (users only type it on first line)
+   * REFACTOR: Using $bindable() prop - update content directly via two-way binding
    */
   function handleContentChange(event: CustomEvent<{ content: string }>) {
     const userContent = event.detail.content;
@@ -123,7 +120,8 @@
     });
     const prefixedContent = prefixedLines.join('\n');
 
-    internalContent = prefixedContent;
+    // Update via $bindable() prop - this updates the parent's state directly
+    content = prefixedContent;
     dispatch('contentChanged', { content: prefixedContent });
 
     // If we have a pending cursor adjustment (from Shift+Enter), apply it
@@ -213,7 +211,7 @@
     {nodeId}
     {nodeType}
     {autoFocus}
-    content={internalContent}
+    bind:content
     {displayContent}
     {children}
     {editableConfig}

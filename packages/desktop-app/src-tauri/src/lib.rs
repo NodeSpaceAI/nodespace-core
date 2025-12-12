@@ -249,6 +249,9 @@ pub fn run() {
             // Schema read commands (Issue #690 - mutation commands removed, not used by UI)
             commands::schemas::get_all_schemas,
             commands::schemas::get_schema_definition,
+            // Diagnostic commands for debugging persistence issues
+            commands::diagnostics::get_database_diagnostics,
+            commands::diagnostics::test_node_persistence,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
