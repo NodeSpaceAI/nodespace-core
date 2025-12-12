@@ -97,19 +97,13 @@ jobs:
 
       - name: Download NLP models for bundling
         run: |
-          # Debug: show Python paths
-          echo "pythonLocation: $pythonLocation"
-          ls -la "$pythonLocation/bin/" || ls -la "$pythonLocation/"
-          which python python3 || true
           # Use full path from pythonLocation to ensure correct Python
           PYTHON="$pythonLocation/bin/python3"
-          if [ ! -f "$PYTHON" ]; then
-            PYTHON="$pythonLocation/python"
-          fi
           echo "Using Python: $PYTHON"
-          "$PYTHON" -m pip install huggingface-hub
+          "$PYTHON" -m pip install "huggingface-hub[cli]"
           mkdir -p packages/desktop-app/src-tauri/resources/models/BAAI-bge-small-en-v1.5
-          "$PYTHON" -m huggingface_hub.commands.huggingface_cli download BAAI/bge-small-en-v1.5 \
+          # Use python -m huggingface_hub (not the old .commands.huggingface_cli path)
+          "$PYTHON" -m huggingface_hub download BAAI/bge-small-en-v1.5 \
             --local-dir packages/desktop-app/src-tauri/resources/models/BAAI-bge-small-en-v1.5 \
             --exclude pytorch_model.bin tf_model.h5 \
             --quiet
