@@ -35,13 +35,13 @@ async function downloadModels() {
     return;
   }
 
-  // Ensure huggingface-hub is installed
+  // Ensure huggingface-hub is installed (use pip3/python3 for CI/CD compatibility)
   console.log("📦 Ensuring huggingface-hub is installed...");
-  await $`pip install huggingface-hub`.quiet();
+  await $`pip3 install huggingface-hub`.quiet();
 
-  // Download model using python -m to avoid PATH issues in CI/CD
+  // Download model using python3 -m to ensure we use the same Python that pip3 installed to
   console.log(`⬇️  Downloading BAAI/bge-small-en-v1.5...`);
-  await $`python -m huggingface_hub.commands.huggingface_cli download BAAI/bge-small-en-v1.5 \
+  await $`python3 -m huggingface_hub.commands.huggingface_cli download BAAI/bge-small-en-v1.5 \
     --local-dir ${MODEL_PATH} \
     --exclude pytorch_model.bin tf_model.h5 \
     --quiet`;
