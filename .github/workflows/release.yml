@@ -134,6 +134,6 @@ jobs:
         with:
           name: binaries-${{ matrix.platform }}-${{ matrix.rust_targets || 'default' }}
           path: |
-            packages/desktop-app/src-tauri/target/${{ matrix.rust_targets || '' }}/release/bundle/
-            packages/desktop-app/src-tauri/target/release/bundle/
+            target/${{ matrix.rust_targets || '' }}/release/bundle/
+            target/release/bundle/
           if-no-files-found: warn
