@@ -6,17 +6,21 @@
 //! # Architecture
 //!
 //! **Query Pattern:**
+//! Note: Column aliases use camelCase to match serde's `#[serde(rename_all = "camelCase")]`.
+//! Database stores snake_case, but serde expects camelCase for deserialization.
+//!
 //! ```sql
 //! SELECT
 //!     record::id(id) AS id,
-//!     is_core,
-//!     version AS schema_version,
+//!     is_core AS isCore,
+//!     version AS schemaVersion,
 //!     description,
 //!     fields,
+//!     relationships,
 //!     node.content AS content,
 //!     node.version AS version,
-//!     node.created_at AS created_at,
-//!     node.modified_at AS modified_at
+//!     node.created_at AS createdAt,
+//!     node.modified_at AS modifiedAt
 //! FROM schema:`task`;
 //! ```
 //!

@@ -99,10 +99,11 @@ pub struct UpdateNodeParams {
 #[derive(Debug, Deserialize)]
 pub struct DeleteNodeParams {
     pub node_id: String,
-    /// Expected version for optimistic concurrency control (REQUIRED)
-    /// This prevents race conditions and accidental deletion of modified nodes.
-    /// Always fetch the node first to get its current version before deleting.
-    pub version: i64,
+    /// Expected version for optimistic concurrency control (optional).
+    /// If not provided, current version is fetched automatically (convenient for AI agents).
+    /// If provided, enables OCC for concurrent deletion protection.
+    #[serde(default)]
+    pub version: Option<i64>,
 }
 
 /// Parameters for query_nodes method
@@ -377,10 +378,23 @@ where
     let params: DeleteNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
+    // If version not provided, fetch current version (convenient for AI agents)
+    // If version provided, use OCC for concurrent deletion protection
+    let version = match params.version {
+        Some(v) => v,
+        None => {
+            let node = node_service
+                .get_node(&params.node_id)
+                .await
+                .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
+                .ok_or_else(|| MCPError::node_not_found(&params.node_id))?;
+            node.version
+        }
+    };
+
     // Delete node via NodeService
-    // Version is now mandatory - no auto-fetch to prevent TOCTOU race conditions
     let result = node_service
-        .delete_node_with_occ(&params.node_id, params.version)
+        .delete_node_with_occ(&params.node_id, version)
         .await
         .map_err(service_error_to_mcp)?;
 
