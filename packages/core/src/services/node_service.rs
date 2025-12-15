@@ -3701,7 +3701,32 @@ where
             return Ok(Vec::new());
         }
 
-        // Validate all nodes before insertion
+        // Performance optimization (Issue #760): Cache schema lookups by node_type
+        // Instead of querying the database for each node, we query once per unique type
+        let unique_types: std::collections::HashSet<&str> = nodes
+            .iter()
+            .map(|(_, node_type, _, _, _, _)| node_type.as_str())
+            .collect();
+
+        // Pre-fetch schemas for all unique types (excluding "schema" type itself)
+        let mut schema_cache: std::collections::HashMap<
+            String,
+            Option<Vec<crate::models::SchemaField>>,
+        > = std::collections::HashMap::new();
+        for node_type in unique_types {
+            if node_type != "schema" {
+                let fields = match self.get_schema_for_type(node_type).await? {
+                    Some(schema_json) => match schema_json.get("fields") {
+                        Some(fields_json) => serde_json::from_value(fields_json.clone()).ok(),
+                        None => None,
+                    },
+                    None => None,
+                };
+                schema_cache.insert(node_type.to_string(), fields);
+            }
+        }
+
+        // Validate all nodes before insertion using cached schemas
         for (id, node_type, content, _, _, properties) in &nodes {
             // Build temporary Node for validation
             let temp_node = Node {
@@ -3720,17 +3745,21 @@ where
             // Validate via behaviors
             self.behaviors.validate_node(&temp_node)?;
 
-            // Validate against schema (skip for schema nodes themselves)
+            // Validate against cached schema (skip for schema nodes themselves)
             if node_type != "schema" {
-                self.validate_node_against_schema(&temp_node).await?;
+                if let Some(Some(fields)) = schema_cache.get(node_type) {
+                    self.validate_node_with_fields(&temp_node, fields)?;
+                }
             }
         }
 
-        // Collect unique parent IDs for embedding queue (before moving nodes)
-        let unique_parent_ids: std::collections::HashSet<String> = nodes
-            .iter()
-            .filter_map(|(_, _, _, parent_id, _, _)| parent_id.clone())
-            .collect();
+        // Find the root ID once - all nodes in a bulk import share the same root
+        // Performance optimization (Issue #760): Single DB query instead of N queries
+        let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes.first() {
+            self.get_root_id(first_parent).await.ok()
+        } else {
+            None
+        };
 
         // Delegate to store for atomic batch insert
         let result = self
@@ -3739,10 +3768,10 @@ where
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-        // Queue roots for embedding regeneration (Issue #729)
-        // Each unique parent's root should be queued once
-        for parent_id in unique_parent_ids {
-            self.queue_root_for_embedding(&parent_id).await;
+        // Queue root for embedding regeneration once (Issue #729, #760)
+        // All nodes share the same root, so we only need one queue operation
+        if let Some(root_id) = root_id {
+            self.queue_root_for_embedding(&root_id).await;
         }
 
         Ok(result)

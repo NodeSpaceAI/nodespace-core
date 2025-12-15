@@ -1721,4 +1721,78 @@ Regular text after code."#;
             "All created nodes (except root) should be descendants of root"
         );
     }
+
+    // Issue #760: Test async_import parameter for instant response mode
+    #[tokio::test]
+    async fn test_async_import_returns_immediately() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        let markdown = r#"# Test Document
+## Section 1
+Content under section 1
+## Section 2
+Content under section 2"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "title": "Async Import Test",
+            "async_import": true
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        // Async mode returns immediately with minimal response
+        assert_eq!(result["success"], true);
+        assert_eq!(result["async"], true);
+        assert!(result["root_id"].is_string(), "Should have root_id");
+
+        // Should NOT have nodes_created, node_ids, or nodes in async mode
+        // These are populated after background task completes
+        assert!(
+            result.get("nodes_created").is_none(),
+            "Async mode should not include nodes_created"
+        );
+        assert!(
+            result.get("node_ids").is_none(),
+            "Async mode should not include node_ids"
+        );
+        assert!(
+            result.get("nodes").is_none(),
+            "Async mode should not include nodes array"
+        );
+    }
+
+    // Issue #760: Test that sync mode (default) still works correctly
+    #[tokio::test]
+    async fn test_sync_import_default_behavior() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        let markdown = r#"# Test Document
+Some content"#;
+
+        // Explicit async_import: false
+        let params = json!({
+            "markdown_content": markdown,
+            "title": "Sync Import Test",
+            "async_import": false
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        // Sync mode returns full response with all nodes
+        assert_eq!(result["success"], true);
+        assert!(
+            result.get("async").is_none(),
+            "Sync mode should not have async field"
+        );
+        assert!(result["root_id"].is_string());
+        assert!(result["nodes_created"].is_number());
+        assert!(result["node_ids"].is_array());
+        assert!(result["nodes"].is_array());
+        assert!(result["duration_ms"].is_number());
+    }
 }
