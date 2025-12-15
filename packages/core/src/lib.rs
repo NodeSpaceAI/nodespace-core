@@ -27,8 +27,8 @@ pub mod services;
 
 // Re-exports
 pub use behaviors::{
-    CustomNodeBehavior, DateNodeBehavior, NodeBehavior, NodeBehaviorRegistry, ProcessingError,
-    TaskNodeBehavior, TextNodeBehavior,
+    CollectionNodeBehavior, CustomNodeBehavior, DateNodeBehavior, NodeBehavior,
+    NodeBehaviorRegistry, ProcessingError, TaskNodeBehavior, TextNodeBehavior,
 };
 pub use db::{
     DatabaseError, DomainEvent, EdgeRecord, EdgeRelationship, HierarchyRelationship,

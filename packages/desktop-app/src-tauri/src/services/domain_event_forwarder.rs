@@ -115,6 +115,12 @@ impl DomainEventForwarder {
             DomainEvent::EdgeDeleted {
                 source_client_id, ..
             } => source_client_id,
+            DomainEvent::CollectionMemberAdded {
+                source_client_id, ..
+            } => source_client_id,
+            DomainEvent::CollectionMemberRemoved {
+                source_client_id, ..
+            } => source_client_id,
         };
 
         // Filter out events from this client (prevent feedback loop)
@@ -168,6 +174,16 @@ impl DomainEventForwarder {
                 let payload = NodeIdPayload { id: id.clone() };
                 if let Err(e) = self.app.emit("edge:deleted", &payload) {
                     error!("Failed to emit edge:deleted: {}", e);
+                }
+            }
+            DomainEvent::CollectionMemberAdded { membership, .. } => {
+                if let Err(e) = self.app.emit("collection:member-added", membership) {
+                    error!("Failed to emit collection:member-added: {}", e);
+                }
+            }
+            DomainEvent::CollectionMemberRemoved { membership, .. } => {
+                if let Err(e) = self.app.emit("collection:member-removed", membership) {
+                    error!("Failed to emit collection:member-removed: {}", e);
                 }
             }
         }

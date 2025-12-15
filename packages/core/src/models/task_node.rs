@@ -545,6 +545,7 @@ impl TaskNode {
             properties: json!(properties),
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
+            member_of: Vec::new(),
         }
     }
 

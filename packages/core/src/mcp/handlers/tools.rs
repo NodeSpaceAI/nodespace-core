@@ -120,6 +120,8 @@ fn get_tool_category(tool_name: &str) -> ToolCategory {
         | "get_child_at_index"
         | "get_node_tree" => ToolCategory::Hierarchy,
 
+        "get_node_collections" => ToolCategory::Query,
+
         "create_nodes_from_markdown"
         | "get_markdown_from_node_id"
         | "update_root_from_markdown" => ToolCategory::Markdown,
@@ -358,6 +360,7 @@ where
         }
         "move_child_to_index" => nodes::handle_move_child_to_index(node_service, arguments).await,
         "get_node_tree" => nodes::handle_get_node_tree(node_service, arguments).await,
+        "get_node_collections" => nodes::handle_get_node_collections(node_service, arguments).await,
 
         // Markdown Import/Export
         "create_nodes_from_markdown" => {
@@ -480,7 +483,7 @@ fn get_tool_schemas() -> Value {
                 "properties": {
                     "node_type": {
                         "type": "string",
-                        "enum": ["text", "header", "task", "date", "code-block", "quote-block", "ordered-list"],
+                        "enum": ["text", "header", "task", "date", "code-block", "quote-block", "ordered-list", "collection"],
                         "description": "Type of node to create"
                     },
                     "content": {
@@ -498,6 +501,10 @@ fn get_tool_schemas() -> Value {
                     "properties": {
                         "type": "object",
                         "description": "Additional type-specific properties (JSON object)"
+                    },
+                    "collection": {
+                        "type": "string",
+                        "description": "Optional collection path to add this node to (e.g., 'hr:policy:vacation'). Creates collections along the path if they don't exist."
                     }
                 },
                 "required": ["node_type", "content"]
@@ -534,6 +541,14 @@ fn get_tool_schemas() -> Value {
                     "properties": {
                         "type": "object",
                         "description": "Updated properties (core fields are protected)"
+                    },
+                    "add_to_collection": {
+                        "type": "string",
+                        "description": "Add node to a collection by path (e.g., 'hr:policy:vacation'). Creates collections along the path if they don't exist."
+                    },
+                    "remove_from_collection": {
+                        "type": "string",
+                        "description": "Remove node from a collection by collection ID"
                     }
                 },
                 "required": ["node_id"]
@@ -566,6 +581,18 @@ fn get_tool_schemas() -> Value {
                     "limit": {
                         "type": "number",
                         "description": "Maximum number of results"
+                    },
+                    "node_type": {
+                        "type": "string",
+                        "description": "Filter by node type"
+                    },
+                    "collection_id": {
+                        "type": "string",
+                        "description": "Filter by collection membership - returns only nodes in this collection"
+                    },
+                    "collection": {
+                        "type": "string",
+                        "description": "Filter by collection path (e.g., 'hr:policy') - resolves path to collection ID"
                     }
                 }
             }
@@ -696,6 +723,20 @@ fn get_tool_schemas() -> Value {
             }
         },
         {
+            "name": "get_node_collections",
+            "description": "Get the collections that a node belongs to. Returns collection IDs and names.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "Node ID to get collections for"
+                    }
+                },
+                "required": ["node_id"]
+            }
+        },
+        {
             "name": "create_nodes_from_markdown",
             "description": "Parse markdown and create hierarchical nodes. If 'title' is provided, it becomes the root node and markdown_content becomes children. If 'title' is omitted, the first line of markdown_content is used as the root node title.",
             "inputSchema": {
@@ -708,6 +749,10 @@ fn get_tool_schemas() -> Value {
                     "title": {
                         "type": "string",
                         "description": "Optional root node title. Can be: (1) A date string in 'YYYY-MM-DD' format to use/create a date root, or (2) Markdown text (e.g., '# Project Alpha' or 'Meeting Notes') to create a text/header root. If omitted, the first line of markdown_content is used as the root."
+                    },
+                    "collection": {
+                        "type": "string",
+                        "description": "Optional collection path to add the root node to (e.g., 'hr:policy:vacation'). Creates collections along the path if they don't exist."
                     }
                 },
                 "required": ["markdown_content"]
@@ -824,6 +869,14 @@ fn get_tool_schemas() -> Value {
                         "type": "number",
                         "description": "Maximum number of results (default: 20)",
                         "default": 20
+                    },
+                    "collection_id": {
+                        "type": "string",
+                        "description": "Filter results to nodes in this collection"
+                    },
+                    "collection": {
+                        "type": "string",
+                        "description": "Filter results by collection path (e.g., 'hr:policy') - resolves path to collection ID"
                     }
                 },
                 "required": ["query"]

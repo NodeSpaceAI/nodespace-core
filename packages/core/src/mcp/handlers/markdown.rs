@@ -33,7 +33,7 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::{Node, TaskNode, TaskStatus};
-use crate::services::{CreateNodeParams, NodeService};
+use crate::services::{CollectionService, CreateNodeParams, NodeService, NodeServiceError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -441,6 +441,11 @@ pub struct CreateNodesFromMarkdownParams {
     /// Multi-line types (code-block, quote-block, ordered-list) cannot be roots.
     #[serde(default)]
     pub title: Option<String>,
+
+    /// Optional collection path to add the root node to (e.g., "hr:policy:vacation")
+    /// Creates collections along the path if they don't exist.
+    #[serde(default)]
+    pub collection: Option<String>,
 }
 
 /// Metadata for a created node (id + type)
@@ -768,12 +773,33 @@ where
         }
     }
 
+    // Add root node to collection if specified
+    let collection_id = if let Some(path) = &params.collection {
+        let collection_service = CollectionService::new(&node_service.store);
+        let resolved = collection_service
+            .add_to_collection_by_path(&root_id, path)
+            .await
+            .map_err(|e| match e {
+                NodeServiceError::InvalidCollectionPath(msg) => {
+                    MCPError::invalid_params(format!("Invalid collection path: {}", msg))
+                }
+                NodeServiceError::CollectionCycle(msg) => {
+                    MCPError::invalid_params(format!("Collection cycle detected: {}", msg))
+                }
+                _ => MCPError::internal_error(format!("Failed to add to collection: {}", e)),
+            })?;
+        Some(resolved.leaf_id().to_string())
+    } else {
+        None
+    };
+
     Ok(json!({
         "success": true,
         "root_id": root_id,
         "nodes_created": all_nodes.len(),
         "node_ids": all_node_ids,
-        "nodes": all_nodes
+        "nodes": all_nodes,
+        "collection_id": collection_id
     }))
 }
 

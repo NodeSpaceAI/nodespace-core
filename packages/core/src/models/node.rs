@@ -158,6 +158,13 @@ pub struct Node {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mentioned_by: Vec<String>,
+
+    /// Collection memberships - IDs of collections this node belongs to
+    /// Computed from member_of edges (member_of.in = this.id)
+    /// Read-only field, populated on query
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub member_of: Vec<String>,
 }
 
 impl Node {
@@ -202,6 +209,7 @@ impl Node {
             properties,
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
+            member_of: Vec::new(),
         }
     }
 
@@ -244,6 +252,7 @@ impl Node {
             properties,
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
+            member_of: Vec::new(),
         }
     }
 

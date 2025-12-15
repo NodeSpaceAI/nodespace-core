@@ -135,6 +135,46 @@ export interface Node {
    */
   mentions?: string[];
 
+  /**
+   * Collection memberships - IDs of collections this node belongs to
+   *
+   * Populated from member_of edges in the database (member_of.in = this.id).
+   * This field is read-only and computed on query - to modify memberships,
+   * use the add_to_collection/remove_from_collection operations.
+   *
+   * ## Collection System Overview
+   *
+   * Collections are a flexible organizational structure (like tags but hierarchical):
+   * - Any node can belong to multiple collections (many-to-many)
+   * - Collections can be nested (DAG structure, not tree)
+   * - Unlike parent/child hierarchy, this is a "membership" relationship
+   *
+   * ## Path Syntax
+   *
+   * Collections are organized using colon-separated paths:
+   * - "hr" → Top-level collection
+   * - "hr:policy" → "policy" collection under "hr"
+   * - "hr:policy:vacation" → "vacation" under "hr:policy"
+   *
+   * ## Usage
+   *
+   * ```typescript
+   * // Check if node belongs to any collections
+   * if (node.memberOf && node.memberOf.length > 0) {
+   *   console.log('Node belongs to:', node.memberOf);
+   * }
+   *
+   * // Add node to collection via MCP
+   * await updateNode(node.id, node.version, { add_to_collection: 'hr:policy' });
+   *
+   * // Remove from collection
+   * await updateNode(node.id, node.version, { remove_from_collection: 'collection-id' });
+   * ```
+   *
+   * @see CollectionNode for the collection node type itself
+   */
+  memberOf?: string[];
+
   // ============================================================================
   // Spoke Fields (for typed nodes like TaskNode)
   // ============================================================================
@@ -153,6 +193,142 @@ export interface Node {
 
   /** Task assignee (for task nodes) */
   assignee?: string | null;
+}
+
+// ============================================================================
+// Collection Node Types
+// ============================================================================
+
+/**
+ * CollectionNode - A specialized node type for organizing other nodes
+ *
+ * Collections provide a flexible, hierarchical organizational structure similar
+ * to tags but with additional features:
+ * - Hierarchical nesting (collections can contain sub-collections)
+ * - Many-to-many membership (nodes can belong to multiple collections)
+ * - DAG structure (directed acyclic graph - not strictly tree)
+ * - Path-based navigation (e.g., "hr:policy:vacation")
+ *
+ * ## Path Syntax
+ *
+ * Collections use colon-separated paths for intuitive navigation:
+ * - "hr" → Top-level HR collection
+ * - "hr:policy" → Policy sub-collection under HR
+ * - "hr:policy:vacation" → Vacation policy under HR policy
+ *
+ * ## Usage Example
+ *
+ * ```typescript
+ * // Create a collection
+ * const collection = await createNode({
+ *   nodeType: 'collection',
+ *   content: 'HR Policies',
+ *   properties: { description: 'Human resources policy documents' }
+ * });
+ *
+ * // Add a document to the collection
+ * await updateNode(docId, docVersion, { add_to_collection: 'hr:policy' });
+ *
+ * // Query all members of a collection
+ * const members = await queryNodes({ collection: 'hr:policy' });
+ * ```
+ *
+ * ## Difference from Parent-Child Hierarchy
+ *
+ * | Feature | Parent-Child | Collections |
+ * |---------|-------------|-------------|
+ * | Cardinality | Node has 1 parent | Node has N collections |
+ * | Structure | Tree | DAG (directed acyclic graph) |
+ * | Use case | Document structure | Cross-cutting organization |
+ * | Path syntax | N/A | colon-separated (hr:policy) |
+ *
+ * @see Node.memberOf for collection membership on regular nodes
+ */
+export interface CollectionNode extends Node {
+  /** Always 'collection' for collection nodes */
+  nodeType: 'collection';
+
+  /** Collection-specific properties */
+  properties: {
+    /** Optional description of the collection's purpose */
+    description?: string;
+
+    /** Optional icon identifier for UI display */
+    icon?: string;
+
+    /** Optional color for UI display (hex or color name) */
+    color?: string;
+
+    /** Allow additional plugin/custom properties */
+    [key: string]: unknown;
+  };
+}
+
+/**
+ * Type guard to check if a node is a CollectionNode
+ */
+export function isCollectionNode(node: Node): node is CollectionNode {
+  return node.nodeType === 'collection';
+}
+
+/**
+ * Collection membership info - extended data about a node's collection memberships
+ *
+ * Used when you need more than just the collection IDs (which are in node.memberOf).
+ * This provides full collection details for UI display.
+ */
+export interface CollectionMembership {
+  /** The collection node this membership refers to */
+  collection: CollectionNode;
+
+  /** When the membership was created */
+  addedAt: string;
+}
+
+/**
+ * Collection path segment - used when parsing collection paths
+ *
+ * Each segment represents one level in the path hierarchy.
+ */
+export interface CollectionPathSegment {
+  /** The segment name (e.g., "policy" in "hr:policy") */
+  name: string;
+
+  /** The resolved collection node ID, if known */
+  collectionId?: string;
+}
+
+/**
+ * Parse a collection path into segments
+ *
+ * @param path - Collection path like "hr:policy:vacation"
+ * @returns Array of path segments
+ *
+ * @example
+ * ```typescript
+ * const segments = parseCollectionPath('hr:policy:vacation');
+ * // Returns: [{ name: 'hr' }, { name: 'policy' }, { name: 'vacation' }]
+ * ```
+ */
+export function parseCollectionPath(path: string): CollectionPathSegment[] {
+  if (!path || path.trim() === '') {
+    return [];
+  }
+
+  return path
+    .split(':')
+    .filter((segment) => segment.trim() !== '')
+    .map((name) => ({ name: name.trim() }));
+}
+
+/**
+ * Format collection path segments back into a path string
+ *
+ * @param segments - Array of path segments
+ * @returns Colon-separated path string
+ */
+export function formatCollectionPath(segments: CollectionPathSegment[]): string {
+  return segments.map((s) => s.name).join(':');
 }
 
 /**

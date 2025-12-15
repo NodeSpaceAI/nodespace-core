@@ -4,9 +4,10 @@
 //! Pure business logic - no Tauri dependencies.
 
 use crate::mcp::types::MCPError;
-use crate::services::NodeEmbeddingService;
+use crate::services::{CollectionService, NodeEmbeddingService, NodeServiceError};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Parameters for search_semantic method
@@ -25,6 +26,14 @@ pub struct SearchSemanticParams {
     /// Default: 20
     #[serde(default)]
     pub limit: Option<usize>,
+
+    /// Filter by collection ID - returns only results from this collection
+    #[serde(default)]
+    pub collection_id: Option<String>,
+
+    /// Filter by collection path (e.g., "hr:policy") - resolves path to collection ID
+    #[serde(default)]
+    pub collection: Option<String>,
 }
 
 /// Search root nodes by semantic similarity
@@ -79,11 +88,66 @@ where
         ));
     }
 
+    // Resolve collection ID and get member IDs if filtering by collection
+    let (collection_id, collection_member_ids): (Option<String>, Option<HashSet<String>>) =
+        if let Some(path) = &params.collection {
+            let collection_service = CollectionService::new(service.store());
+            match collection_service.resolve_path(path).await {
+                Ok(resolved) => {
+                    let coll_id = resolved.leaf_id().to_string();
+                    let members = collection_service
+                        .get_collection_members(&coll_id)
+                        .await
+                        .map_err(|e| {
+                            MCPError::internal_error(format!(
+                                "Failed to get collection members: {}",
+                                e
+                            ))
+                        })?;
+                    (Some(coll_id), Some(members.into_iter().collect()))
+                }
+                Err(NodeServiceError::CollectionNotFound(_)) => {
+                    // Collection doesn't exist, return empty result
+                    return Ok(json!({
+                        "nodes": [],
+                        "count": 0,
+                        "query": params.query,
+                        "threshold": threshold,
+                        "collection_id": null
+                    }));
+                }
+                Err(e) => {
+                    return Err(MCPError::internal_error(format!(
+                        "Failed to resolve collection path: {}",
+                        e
+                    )))
+                }
+            }
+        } else if let Some(coll_id) = &params.collection_id {
+            let collection_service = CollectionService::new(service.store());
+            let members = collection_service
+                .get_collection_members(coll_id)
+                .await
+                .map_err(|e| {
+                    MCPError::internal_error(format!("Failed to get collection members: {}", e))
+                })?;
+            (Some(coll_id.clone()), Some(members.into_iter().collect()))
+        } else {
+            (None, None)
+        };
+
     tracing::info!("Semantic search for: '{}'", params.query);
+
+    // When filtering by collection, fetch more results to compensate for post-filtering
+    let effective_limit = if collection_member_ids.is_some() {
+        limit * 3
+    } else {
+        limit
+    };
 
     // Call the embedding service's semantic search
     let results = service
-        .semantic_search_nodes(&params.query, limit, threshold)
+        .semantic_search_nodes(&params.query, effective_limit, threshold)
         .await
         .map_err(|e| {
             let err_msg = e.to_string();
@@ -103,8 +167,19 @@ where
             }
         })?;
 
+    // Filter by collection if specified, then apply limit
+    let filtered_results: Vec<_> = if let Some(member_ids) = collection_member_ids {
+        results
+            .into_iter()
+            .filter(|(node, _)| member_ids.contains(&node.id))
+            .take(limit)
+            .collect()
+    } else {
+        results
+    };
+
     // Transform results into JSON-serializable format
-    let nodes: Vec<Value> = results
+    let nodes: Vec<Value> = filtered_results
         .iter()
         .map(|(node, similarity)| {
             json!({
@@ -125,7 +200,8 @@ where
         "nodes": nodes,
         "count": nodes.len(),
         "query": params.query,
-        "threshold": threshold
+        "threshold": threshold,
+        "collection_id": collection_id
     }))
 }
 

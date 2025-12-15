@@ -72,6 +72,22 @@ pub enum NodeServiceError {
     /// Service initialization failed
     #[error("Initialization error: {0}")]
     InitializationError(String),
+
+    /// Collection path error
+    #[error("Invalid collection path: {0}")]
+    InvalidCollectionPath(String),
+
+    /// Collection not found
+    #[error("Collection not found: {0}")]
+    CollectionNotFound(String),
+
+    /// Collection hierarchy cycle detected
+    #[error("Collection hierarchy cycle detected: {0}")]
+    CollectionCycle(String),
+
+    /// Maximum collection depth exceeded
+    #[error("Collection path exceeds maximum depth of {max_depth} levels: {path}")]
+    CollectionDepthExceeded { path: String, max_depth: usize },
 }
 
 impl NodeServiceError {
@@ -151,5 +167,28 @@ impl NodeServiceError {
     /// Create an initialization error
     pub fn initialization_error(msg: impl Into<String>) -> Self {
         Self::InitializationError(msg.into())
+    }
+
+    /// Create an invalid collection path error
+    pub fn invalid_collection_path(msg: impl Into<String>) -> Self {
+        Self::InvalidCollectionPath(msg.into())
+    }
+
+    /// Create a collection not found error
+    pub fn collection_not_found(name: impl Into<String>) -> Self {
+        Self::CollectionNotFound(name.into())
+    }
+
+    /// Create a collection cycle error
+    pub fn collection_cycle(context: impl Into<String>) -> Self {
+        Self::CollectionCycle(context.into())
+    }
+
+    /// Create a collection depth exceeded error
+    pub fn collection_depth_exceeded(path: impl Into<String>, max_depth: usize) -> Self {
+        Self::CollectionDepthExceeded {
+            path: path.into(),
+            max_depth,
+        }
     }
 }

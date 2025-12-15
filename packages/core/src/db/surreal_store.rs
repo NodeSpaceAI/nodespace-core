@@ -265,6 +265,7 @@ impl From<SurrealNode> for Node {
             properties,
             mentions: sn.mentions,
             mentioned_by: sn.mentioned_by,
+            member_of: Vec::new(),
         }
     }
 }
@@ -327,6 +328,85 @@ async fn batch_fetch_properties<C: surrealdb::Connection>(
         if let Some(props) = records.into_iter().next() {
             result.insert(node_id_owned, props);
         }
+    }
+
+    Ok(result)
+}
+
+/// Batch fetch collection memberships for multiple nodes
+///
+/// **Purpose**: Avoid N+1 query pattern when populating member_of for multiple nodes.
+///
+/// **Performance**:
+/// - Old: 100 nodes = 100 individual queries
+/// - New: 100 nodes = 1 batch query
+///
+/// # Arguments
+///
+/// * `db` - SurrealDB connection
+/// * `node_ids` - Vector of node IDs to fetch memberships for
+///
+/// # Returns
+///
+/// HashMap mapping node ID to its collection membership IDs
+async fn batch_fetch_memberships<C: surrealdb::Connection>(
+    db: &Surreal<C>,
+    node_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<String>>> {
+    use surrealdb::sql::{Id, Thing};
+
+    if node_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    // Build Things for all node IDs
+    let node_things: Vec<Thing> = node_ids
+        .iter()
+        .map(|id| Thing::from(("node".to_string(), id.to_string())))
+        .collect();
+
+    // Query all membership edges in one batch
+    // Returns: [{ node_id: "xxx", collection_ids: [Thing, Thing] }, ...]
+    let query = r#"
+        SELECT
+            record::id(id) AS node_id,
+            ->member_of->node.id AS collection_ids
+        FROM node
+        WHERE id IN $node_ids;
+    "#;
+
+    let mut response = db
+        .query(query)
+        .bind(("node_ids", node_things))
+        .await
+        .context("Failed to batch fetch memberships")?;
+
+    #[derive(Debug, serde::Deserialize)]
+    struct MembershipRow {
+        node_id: String,
+        #[serde(default)]
+        collection_ids: Vec<Thing>,
+    }
+
+    let rows: Vec<MembershipRow> = response
+        .take(0)
+        .context("Failed to extract membership results")?;
+
+    // Convert to HashMap<node_id, Vec<collection_id>>
+    let mut result = std::collections::HashMap::new();
+    for row in rows {
+        let collection_ids: Vec<String> = row
+            .collection_ids
+            .into_iter()
+            .filter_map(|thing| {
+                if let Id::String(id_str) = thing.id {
+                    Some(id_str)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        result.insert(row.node_id, collection_ids);
     }
 
     Ok(result)
@@ -795,6 +875,17 @@ where
         // Note: embedding_vector is not stored in hub-and-spoke architecture
         // Embeddings are managed separately for optimization
 
+        // Enforce globally unique names for collection nodes
+        if node.node_type == "collection" {
+            if let Some(existing) = self.get_collection_by_name(&node.content).await? {
+                anyhow::bail!(
+                    "Collection with name '{}' already exists (id: {})",
+                    node.content,
+                    existing.id
+                );
+            }
+        }
+
         // Check if we need to create a spoke record for properties
         let has_properties = !node
             .properties
@@ -1236,6 +1327,7 @@ where
             properties,
             mentions,
             mentioned_by,
+            member_of: Vec::new(),
         }
     }
 
@@ -1288,12 +1380,16 @@ where
                 .unwrap_or(serde_json::json!({}))
         };
 
-        Ok(Some(self.build_node_from_hub(
-            id.to_string(),
-            node_type,
-            &hub,
-            properties,
-        )))
+        let mut node = self.build_node_from_hub(id.to_string(), node_type, &hub, properties);
+
+        // Query 3: Get collection memberships
+        // Uses batch function with single ID for consistency
+        let memberships = batch_fetch_memberships(&self.db, &[id.to_string()]).await?;
+        if let Some(collections) = memberships.get(id) {
+            node.member_of = collections.clone();
+        }
+
+        Ok(Some(node))
     }
 
     /// Batch-fetch multiple nodes by their IDs in a single query.
@@ -1399,6 +1495,17 @@ where
                 let node =
                     self.build_node_from_hub(node_id.clone(), node_type.clone(), &hub, properties);
                 result_map.insert(node_id, node);
+            }
+        }
+
+        // Batch fetch collection memberships for all nodes
+        let all_node_ids: Vec<String> = result_map.keys().cloned().collect();
+        let memberships = batch_fetch_memberships(&self.db, &all_node_ids).await?;
+
+        // Hydrate member_of into nodes
+        for (node_id, node) in result_map.iter_mut() {
+            if let Some(collections) = memberships.get(node_id) {
+                node.member_of = collections.clone();
             }
         }
 
@@ -2375,6 +2482,21 @@ where
             }
         }
 
+        // Batch fetch collection memberships for all nodes
+        let all_node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+        match batch_fetch_memberships(&self.db, &all_node_ids).await {
+            Ok(memberships) => {
+                for node in &mut nodes {
+                    if let Some(collections) = memberships.get(&node.id) {
+                        node.member_of = collections.clone();
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to batch fetch memberships: {}", e);
+            }
+        }
+
         Ok(nodes)
     }
 
@@ -2495,6 +2617,21 @@ where
         for node in &mut nodes {
             if let Some(props) = all_properties.get(&node.id) {
                 node.properties = props.clone();
+            }
+        }
+
+        // Batch fetch collection memberships for all nodes
+        let all_node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+        match batch_fetch_memberships(&self.db, &all_node_ids).await {
+            Ok(memberships) => {
+                for node in &mut nodes {
+                    if let Some(collections) = memberships.get(&node.id) {
+                        node.member_of = collections.clone();
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to batch fetch memberships for children: {}", e);
             }
         }
 
@@ -3861,6 +3998,7 @@ where
                 properties: properties.clone(),
                 mentions: vec![],
                 mentioned_by: vec![],
+                member_of: vec![],
             };
             self.notify(StoreChange {
                 operation: StoreOperation::Created,
@@ -4542,6 +4680,349 @@ where
             .collect();
 
         Ok(results)
+    }
+
+    // ========================================================================
+    // Collection Membership Operations (member_of edges)
+    // ========================================================================
+
+    /// Add a node to a collection (create member_of edge)
+    ///
+    /// Creates a member_of edge from the member node to the collection node.
+    /// Direction: member -> collection (node X belongs to collection Y)
+    ///
+    /// This is idempotent - if the membership already exists, nothing happens.
+    ///
+    /// # Arguments
+    ///
+    /// * `member_id` - The ID of the node to add to the collection
+    /// * `collection_id` - The ID of the collection node
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - Membership created or already exists
+    /// * `Err` - Database error
+    pub async fn add_to_collection(&self, member_id: &str, collection_id: &str) -> Result<()> {
+        let member_thing = Thing::from(("node".to_string(), member_id.to_string()));
+        let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
+
+        // Note: Validation that collection_id is actually a collection node
+        // is done in CollectionService.add_to_collection (service layer).
+        // Store layer focuses on data persistence only.
+
+        // Check if membership already exists (for idempotency)
+        let check_query =
+            "SELECT VALUE id FROM member_of WHERE in = $member AND out = $collection;";
+        let mut check_response = self
+            .db
+            .query(check_query)
+            .bind(("member", member_thing.clone()))
+            .bind(("collection", collection_thing.clone()))
+            .await
+            .context("Failed to check for existing membership")?;
+
+        let existing_membership_ids: Vec<Thing> = check_response
+            .take(0)
+            .context("Failed to extract membership check results")?;
+
+        // Only create membership if it doesn't exist
+        if existing_membership_ids.is_empty() {
+            let query = "RELATE $member->member_of->$collection;";
+
+            self.db
+                .query(query)
+                .bind(("member", member_thing))
+                .bind(("collection", collection_thing))
+                .await
+                .context("Failed to create membership")?;
+        }
+
+        Ok(())
+    }
+
+    /// Remove a node from a collection (delete member_of edge)
+    ///
+    /// Deletes the member_of edge from the member node to the collection node.
+    ///
+    /// # Arguments
+    ///
+    /// * `member_id` - The ID of the node to remove from the collection
+    /// * `collection_id` - The ID of the collection node
+    pub async fn remove_from_collection(&self, member_id: &str, collection_id: &str) -> Result<()> {
+        let member_thing = Thing::from(("node".to_string(), member_id.to_string()));
+        let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
+
+        self.db
+            .query("DELETE FROM member_of WHERE in = $member AND out = $collection;")
+            .bind(("member", member_thing))
+            .bind(("collection", collection_thing))
+            .await
+            .context("Failed to delete membership")?;
+
+        Ok(())
+    }
+
+    /// Get all collections a node belongs to
+    ///
+    /// Returns the IDs of all collections the node is a member of.
+    /// Direction: node -> member_of -> collection
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The ID of the node
+    ///
+    /// # Returns
+    ///
+    /// Collection IDs the node belongs to
+    pub async fn get_node_memberships(&self, node_id: &str) -> Result<Vec<String>> {
+        let query =
+            "SELECT ->member_of->node.id AS collection_ids FROM type::thing('node', $node_id);";
+
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("node_id", node_id.to_string()))
+            .await
+            .context("Failed to get node memberships")?;
+
+        #[derive(Debug, Deserialize)]
+        struct MembershipResult {
+            collection_ids: Vec<Thing>,
+        }
+
+        let results: Vec<MembershipResult> = response
+            .take(0)
+            .context("Failed to extract memberships from response")?;
+
+        let collection_ids: Vec<String> = results
+            .into_iter()
+            .flat_map(|r| r.collection_ids)
+            .filter_map(|thing| {
+                if let Id::String(id_str) = &thing.id {
+                    Some(id_str.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(collection_ids)
+    }
+
+    /// Get all members of a collection
+    ///
+    /// Returns the IDs of all nodes that are members of the collection.
+    /// Direction: member -> member_of -> collection
+    ///
+    /// # Arguments
+    ///
+    /// * `collection_id` - The ID of the collection node
+    ///
+    /// # Returns
+    ///
+    /// Member node IDs
+    pub async fn get_collection_members(&self, collection_id: &str) -> Result<Vec<String>> {
+        let query =
+            "SELECT <-member_of<-node.id AS member_ids FROM type::thing('node', $collection_id);";
+
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("collection_id", collection_id.to_string()))
+            .await
+            .context("Failed to get collection members")?;
+
+        #[derive(Debug, Deserialize)]
+        struct MemberResult {
+            member_ids: Vec<Thing>,
+        }
+
+        let results: Vec<MemberResult> = response
+            .take(0)
+            .context("Failed to extract members from response")?;
+
+        let member_ids: Vec<String> = results
+            .into_iter()
+            .flat_map(|r| r.member_ids)
+            .filter_map(|thing| {
+                if let Id::String(id_str) = &thing.id {
+                    Some(id_str.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(member_ids)
+    }
+
+    /// Get collection by name (case-insensitive lookup)
+    ///
+    /// Finds a collection node by its content field (collection name).
+    /// Uses case-insensitive matching.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The collection name to search for
+    ///
+    /// # Returns
+    ///
+    /// The collection node if found
+    pub async fn get_collection_by_name(&self, name: &str) -> Result<Option<Node>> {
+        let normalized_name = name.to_lowercase();
+
+        // Use string::lowercase for case-insensitive matching
+        // Return only the ID so we can use get_node for consistent handling
+        let query = r#"
+            SELECT VALUE record::id(id) FROM node
+            WHERE node_type = 'collection'
+            AND string::lowercase(content) = $name
+            LIMIT 1;
+        "#;
+
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("name", normalized_name))
+            .await
+            .context("Failed to search for collection by name")?;
+
+        let results: Vec<String> = response
+            .take(0)
+            .context("Failed to extract collection search results")?;
+
+        if let Some(collection_id) = results.into_iter().next() {
+            // Use get_node for consistent node construction
+            self.get_node(&collection_id).await
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Batch get collections by names (case-insensitive lookup)
+    ///
+    /// Finds collection nodes by their content fields in a single query.
+    /// Returns a map of normalized name -> Node for collections that exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `names` - The collection names to search for
+    ///
+    /// # Returns
+    ///
+    /// Map of normalized (lowercase) name to Node for each found collection
+    pub async fn get_collections_by_names(
+        &self,
+        names: &[String],
+    ) -> Result<std::collections::HashMap<String, Node>> {
+        use std::collections::HashMap;
+
+        if names.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let normalized_names: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
+
+        // Use CONTAINS operator for batch lookup
+        // Return only IDs and content, then use get_node for consistent node construction
+        let query = r#"
+            SELECT VALUE { id: record::id(id), content: content }
+            FROM node
+            WHERE node_type = 'collection'
+            AND $names CONTAINS string::lowercase(content);
+        "#;
+
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("names", normalized_names))
+            .await
+            .context("Failed to batch search for collections by names")?;
+
+        // Parse as objects with id and content fields
+        let results: Vec<Value> = response.take(0).unwrap_or_default();
+
+        let mut collections = HashMap::new();
+        for row in results {
+            let node_id = row["id"].as_str().unwrap_or("").to_string();
+            let content = row["content"].as_str().unwrap_or("").to_string();
+
+            if node_id.is_empty() {
+                continue;
+            }
+
+            // Use get_node for consistent node construction
+            if let Ok(Some(node)) = self.get_node(&node_id).await {
+                let normalized_content = content.to_lowercase();
+                collections.insert(normalized_content, node);
+            }
+        }
+
+        Ok(collections)
+    }
+
+    /// Get all members of a collection recursively (including members of child collections)
+    ///
+    /// This method returns members of the specified collection and all its
+    /// descendant collections in the hierarchy.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection_id` - The ID of the root collection
+    ///
+    /// # Returns
+    ///
+    /// All member node IDs (deduplicated)
+    pub async fn get_collection_members_recursive(
+        &self,
+        collection_id: &str,
+    ) -> Result<Vec<String>> {
+        let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
+
+        // Get all collections in the subtree (collection + descendants)
+        // Then get all members of those collections
+        let query = r#"
+            LET $collection_subtree = array::concat(
+                [$collection_thing],
+                $collection_thing.{..+collect}->has_child->node
+            );
+            SELECT <-member_of<-node.id AS member_ids FROM node
+            WHERE id IN $collection_subtree;
+        "#;
+
+        let mut response = self
+            .db
+            .query(query)
+            .bind(("collection_thing", collection_thing))
+            .await
+            .context("Failed to get recursive collection members")?;
+
+        #[derive(Debug, Deserialize)]
+        struct MemberResult {
+            member_ids: Vec<Thing>,
+        }
+
+        let results: Vec<MemberResult> = response
+            .take(1) // Second statement result
+            .context("Failed to extract recursive members from response")?;
+
+        let mut member_ids: Vec<String> = results
+            .into_iter()
+            .flat_map(|r| r.member_ids)
+            .filter_map(|thing| {
+                if let Id::String(id_str) = &thing.id {
+                    Some(id_str.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Deduplicate (a node could be in multiple child collections)
+        member_ids.sort();
+        member_ids.dedup();
+
+        Ok(member_ids)
     }
 
     /// Create a stale embedding marker for a new root node

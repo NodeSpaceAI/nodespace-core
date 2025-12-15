@@ -248,6 +248,19 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             fields: vec![],
             relationships: vec![],
         },
+        // Collection schema - hierarchical labels for organizing nodes
+        SchemaNode {
+            id: "collection".to_string(),
+            content: "Collection".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            schema_version: 1,
+            description: "Hierarchical label for organizing nodes into groups".to_string(),
+            fields: vec![],        // No spoke fields - uses hub content for name
+            relationships: vec![], // member_of is a native edge, not schema-defined
+        },
         // Query schema - saved query definitions
         SchemaNode {
             id: "query".to_string(),
@@ -399,9 +412,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_core_schemas_returns_all_eight() {
+    fn test_get_core_schemas_returns_all_nine() {
         let schemas = get_core_schemas();
-        assert_eq!(schemas.len(), 8);
+        assert_eq!(schemas.len(), 9);
     }
 
     #[test]
@@ -434,6 +447,7 @@ mod tests {
             "code-block",
             "quote-block",
             "ordered-list",
+            "collection",
         ] {
             let schema = schemas.iter().find(|s| s.id == *id).unwrap();
             assert!(

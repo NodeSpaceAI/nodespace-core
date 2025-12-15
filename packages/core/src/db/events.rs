@@ -36,6 +36,16 @@ pub struct MentionRelationship {
     pub target_id: String,
 }
 
+/// Represents collection membership relationship (node belongs to collection)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CollectionMembership {
+    /// The node that is a member
+    pub member_id: String,
+    /// The collection the node belongs to
+    pub collection_id: String,
+}
+
 /// Represents different types of edge relationships between nodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -94,6 +104,18 @@ pub enum DomainEvent {
     /// An edge relationship was deleted
     EdgeDeleted {
         id: String,
+        source_client_id: Option<String>,
+    },
+
+    /// A node was added to a collection
+    CollectionMemberAdded {
+        membership: CollectionMembership,
+        source_client_id: Option<String>,
+    },
+
+    /// A node was removed from a collection
+    CollectionMemberRemoved {
+        membership: CollectionMembership,
         source_client_id: Option<String>,
     },
 }

@@ -192,6 +192,7 @@ impl SchemaNode {
             properties,
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
+            member_of: Vec::new(),
         }
     }
 

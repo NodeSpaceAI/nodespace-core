@@ -646,6 +646,32 @@ async fn domain_event_to_sse_bridge(
                         // EdgeUpdated events not currently used by SSE clients
                         // (order changes handled by full node refresh)
                     }
+                    DomainEvent::CollectionMemberAdded {
+                        source_client_id, ..
+                    } => {
+                        // Filter out events from dev-proxy (browser operations)
+                        if source_client_id.as_deref() == Some("dev-proxy") {
+                            tracing::debug!(
+                                "Filtering out CollectionMemberAdded event from dev-proxy"
+                            );
+                            continue;
+                        }
+                        // Collection membership events not currently used by SSE clients
+                        // TODO: Add SSE event type if browser needs collection membership updates
+                    }
+                    DomainEvent::CollectionMemberRemoved {
+                        source_client_id, ..
+                    } => {
+                        // Filter out events from dev-proxy (browser operations)
+                        if source_client_id.as_deref() == Some("dev-proxy") {
+                            tracing::debug!(
+                                "Filtering out CollectionMemberRemoved event from dev-proxy"
+                            );
+                            continue;
+                        }
+                        // Collection membership events not currently used by SSE clients
+                        // TODO: Add SSE event type if browser needs collection membership updates
+                    }
                 }
             }
             Err(broadcast::error::RecvError::Lagged(n)) => {

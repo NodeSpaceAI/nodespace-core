@@ -7,7 +7,7 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
-use crate::services::{NodeService, NodeServiceError};
+use crate::services::{CollectionService, NodeService, NodeServiceError};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -70,6 +70,10 @@ pub struct MCPCreateNodeParams {
     pub root_id: Option<String>,
     #[serde(default)]
     pub properties: Value,
+    /// Optional collection path to add this node to (e.g., "hr:policy:vacation")
+    /// Creates collections along the path if they don't exist.
+    #[serde(default)]
+    pub collection: Option<String>,
 }
 
 /// Parameters for get_node method
@@ -93,6 +97,13 @@ pub struct UpdateNodeParams {
     pub content: Option<String>,
     #[serde(default)]
     pub properties: Option<Value>,
+    /// Add node to a collection by path (e.g., "hr:policy:vacation")
+    /// Creates collections along the path if they don't exist.
+    #[serde(default)]
+    pub add_to_collection: Option<String>,
+    /// Remove node from a collection by collection ID
+    #[serde(default)]
+    pub remove_from_collection: Option<String>,
 }
 
 /// Parameters for delete_node method
@@ -119,6 +130,12 @@ pub struct QueryNodesParams {
     pub limit: Option<usize>,
     #[serde(default)]
     pub offset: Option<usize>,
+    /// Filter by collection membership - returns only nodes in this collection
+    #[serde(default)]
+    pub collection_id: Option<String>,
+    /// Filter by collection path - resolves path to collection ID first
+    #[serde(default)]
+    pub collection: Option<String>,
 }
 
 /// Parameters for get_children method
@@ -178,6 +195,12 @@ fn default_max_depth() -> usize {
     10
 }
 
+/// Parameters for get_node_collections method
+#[derive(Debug, Deserialize)]
+pub struct GetNodeCollectionsParams {
+    pub node_id: String,
+}
+
 /// Child information for ordered list
 #[derive(Debug, serde::Serialize)]
 pub struct ChildInfo {
@@ -222,6 +245,7 @@ where
     // Create node via NodeService (enforces all business rules)
     // Note: root_id is auto-derived from parent chain by backend
     let parent_id = mcp_params.parent_id.clone();
+    let collection_path = mcp_params.collection.clone();
     let node_id = node_service
         .create_node_with_parent(crate::services::CreateNodeParams {
             id: None, // MCP generates IDs server-side
@@ -234,7 +258,19 @@ where
         .await
         .map_err(|e| MCPError::node_creation_failed(format!("Failed to create node: {}", e)))?;
 
-    // Fetch the created node for response (includes version, timestamps, etc.)
+    // Add to collection if specified
+    let collection_id = if let Some(path) = &collection_path {
+        let collection_service = CollectionService::new(&node_service.store);
+        let resolved = collection_service
+            .add_to_collection_by_path(&node_id, path)
+            .await
+            .map_err(service_error_to_mcp)?;
+        Some(resolved.leaf_id().to_string())
+    } else {
+        None
+    };
+
+    // Fetch the created node for response (includes version, timestamps, member_of, etc.)
     let created_node = node_service
         .get_node(&node_id)
         .await
@@ -247,6 +283,7 @@ where
         "node_id": node_id,
         "node_type": mcp_params.node_type,
         "parent_id": parent_id,
+        "collection_id": collection_id,
         "success": true,
         "node_data": node_data
     }))
@@ -354,16 +391,54 @@ where
         Err(e) => return Err(service_error_to_mcp(e)),
     };
 
+    // Handle collection operations
+    let collection_service = CollectionService::new(&node_service.store);
+    let mut collection_added = None;
+    let mut collection_removed = None;
+
+    // Add to collection if specified
+    if let Some(path) = &params.add_to_collection {
+        let resolved = collection_service
+            .add_to_collection_by_path(&params.node_id, path)
+            .await
+            .map_err(service_error_to_mcp)?;
+        collection_added = Some(resolved.leaf_id().to_string());
+    }
+
+    // Remove from collection if specified
+    if let Some(collection_id) = &params.remove_from_collection {
+        collection_service
+            .remove_from_collection(&params.node_id, collection_id)
+            .await
+            .map_err(service_error_to_mcp)?;
+        collection_removed = Some(collection_id.clone());
+    }
+
+    // Re-fetch node to get updated member_of if collections changed
+    let final_node = if params.add_to_collection.is_some()
+        || params.remove_from_collection.is_some()
+    {
+        node_service
+            .get_node(&params.node_id)
+            .await
+            .map_err(|e| MCPError::internal_error(format!("Failed to fetch updated node: {}", e)))?
+            .unwrap_or(updated_node)
+    } else {
+        updated_node
+    };
+
     // Include full node data in response for:
     // 1. SSE broadcasting (callback can extract node_data)
     // 2. Client convenience (no need for separate fetch)
-    let node_data = node_to_typed_value(updated_node)?;
+    let node_data = node_to_typed_value(final_node)?;
 
     Ok(json!({
         "node_id": params.node_id,
         "version": node_data.get("version").and_then(|v| v.as_i64()).unwrap_or(0),
         "success": true,
-        "node_data": node_data
+        "node_data": node_data,
+        "collection_added": collection_added,
+        "collection_removed": collection_removed
     }))
 }
 
@@ -416,6 +491,39 @@ where
     let params: QueryNodesParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
+    // Resolve collection ID if path provided
+    let collection_id = if let Some(path) = &params.collection {
+        let collection_service = CollectionService::new(&node_service.store);
+        // Use resolve_path to find the collection (don't create if doesn't exist)
+        match collection_service.resolve_path(path).await {
+            Ok(resolved) => Some(resolved.leaf_id().to_string()),
+            Err(NodeServiceError::CollectionNotFound(_)) => {
+                // Collection doesn't exist, return empty result
+                return Ok(json!({
+                    "nodes": [],
+                    "count": 0,
+                    "collection_id": null
+                }));
+            }
+            Err(e) => return Err(service_error_to_mcp(e)),
+        }
+    } else {
+        params.collection_id.clone()
+    };
+
+    // If filtering by collection, get member IDs first
+    let collection_member_ids: Option<std::collections::HashSet<String>> =
+        if let Some(coll_id) = &collection_id {
+            let collection_service = CollectionService::new(&node_service.store);
+            let members = collection_service
+                .get_collection_members(coll_id)
+                .await
+                .map_err(service_error_to_mcp)?;
+            Some(members.into_iter().collect())
+        } else {
+            None
+        };
+
     // Build NodeFilter using builder pattern
     let mut filter = NodeFilter::new();
 
@@ -438,9 +546,16 @@ where
         );
     }
 
-    if let Some(limit) = params.limit {
-        filter = filter.with_limit(limit);
-    }
+    // When filtering by collection, we fetch more and filter client-side
+    // (because collection membership is stored in edges, not NodeFilter)
+    let effective_limit = if collection_member_ids.is_some() {
+        // Fetch more to compensate for post-filtering
+        params.limit.map(|l| l * 3).unwrap_or(1000)
+    } else {
+        params.limit.unwrap_or(100)
+    };
+
+    filter = filter.with_limit(effective_limit);
 
     if let Some(offset) = params.offset {
         filter = filter.with_offset(offset);
@@ -454,13 +569,29 @@ where
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to query nodes: {}", e)))?;
 
+    // Apply collection filter if specified
+    let filtered_nodes = if let Some(member_ids) = collection_member_ids {
+        let mut result: Vec<_> = nodes
+            .into_iter()
+            .filter(|n| member_ids.contains(&n.id))
+            .collect();
+        // Apply limit after filtering
+        if let Some(limit) = params.limit {
+            result.truncate(limit);
+        }
+        result
+    } else {
+        nodes
+    };
+
     // Convert nodes to strongly-typed JSON representations
-    let count = nodes.len();
-    let typed_nodes = nodes_to_typed_values(nodes)?;
+    let count = filtered_nodes.len();
+    let typed_nodes = nodes_to_typed_values(filtered_nodes)?;
 
     Ok(json!({
         "nodes": typed_nodes,
-        "count": count
+        "count": count,
+        "collection_id": collection_id
     }))
 }
 
@@ -1137,6 +1268,50 @@ where
         "updated": updated,
         "failed": failed,
         "count": updated.len()
+    }))
+}
+
+/// Handle get_node_collections MCP request
+///
+/// Returns the collections that a node belongs to.
+pub async fn handle_get_node_collections<C>(
+    node_service: &Arc<NodeService<C>>,
+    params: Value,
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
+    let params: GetNodeCollectionsParams = serde_json::from_value(params)
+        .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    // Get collection memberships via CollectionService
+    let collection_service = CollectionService::new(&node_service.store);
+    let collection_ids = collection_service
+        .get_node_collections(&params.node_id)
+        .await
+        .map_err(service_error_to_mcp)?;
+
+    // Fetch collection nodes to get their content (names)
+    let collections: Vec<Value> = if !collection_ids.is_empty() {
+        let mut result = Vec::new();
+        for coll_id in &collection_ids {
+            if let Ok(Some(node)) = node_service.get_node(coll_id).await {
+                result.push(json!({
+                    "id": node.id,
+                    "name": node.content,
+                    "nodeType": node.node_type
+                }));
+            }
+        }
+        result
+    } else {
+        Vec::new()
+    };
+
+    Ok(json!({
+        "node_id": params.node_id,
+        "collections": collections,
+        "count": collections.len()
     }))
 }
 

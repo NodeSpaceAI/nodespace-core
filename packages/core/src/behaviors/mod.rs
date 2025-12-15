@@ -1113,6 +1113,95 @@ impl NodeBehavior for QueryNodeBehavior {
     }
 }
 
+/// Built-in behavior for collection nodes
+///
+/// Collection nodes provide hierarchical labels for organizing other nodes.
+/// They form a DAG (Directed Acyclic Graph) structure where:
+/// - Collections can have multiple parent collections (multi-parent)
+/// - Nodes can belong to multiple collections (multi-membership)
+/// - Collection names are globally unique (case-insensitive lookup)
+///
+/// Collections use the hub `content` field for the collection name and have
+/// no spoke table (no extra fields).
+///
+/// # Path Syntax
+///
+/// Collections use `:` delimiter for hierarchical paths:
+/// - `hr:policy:vacation:Berlin` - Nested path
+/// - `engineering:docs` - Simple hierarchy
+/// - `Berlin` - Single collection
+///
+/// # Examples
+///
+/// ```rust
+/// use nodespace_core::behaviors::{NodeBehavior, CollectionNodeBehavior};
+/// use nodespace_core::models::Node;
+/// use serde_json::json;
+///
+/// let behavior = CollectionNodeBehavior;
+/// let node = Node::new(
+///     "collection".to_string(),
+///     "Engineering".to_string(),
+///     json!({}),
+/// );
+/// assert!(behavior.validate(&node).is_ok());
+/// ```
+pub struct CollectionNodeBehavior;
+
+impl NodeBehavior for CollectionNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "collection"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Collection names must be non-empty
+        // The content field stores the collection name
+        if node.content.trim().is_empty() {
+            return Err(NodeValidationError::MissingField(
+                "Collection name (content) cannot be empty".to_string(),
+            ));
+        }
+
+        // Collection names cannot contain the path delimiter ':'
+        // This ensures clean path parsing
+        if node.content.contains(':') {
+            return Err(NodeValidationError::InvalidProperties(
+                "Collection name cannot contain ':' (path delimiter)".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        true // Collections form hierarchies via has_child edges
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false // Collection names are plain text
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+
+    /// Collections are not embedded (they're organizational containers)
+    ///
+    /// Collections are organizational labels, not semantic content.
+    /// The nodes that are members of collections carry the actual embeddable content.
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
+    }
+
+    /// Collections don't contribute to parent embeddings
+    ///
+    /// Collections are structural/organizational and don't have semantic content
+    /// that should be embedded.
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
+    }
+}
+
 /// Fallback behavior for schema-defined custom types
 ///
 /// This behavior is used for node types that have a schema definition but no
@@ -1288,6 +1377,7 @@ impl NodeBehaviorRegistry {
         registry.register(Arc::new(DateNodeBehavior));
         registry.register(Arc::new(SchemaNodeBehavior));
         registry.register(Arc::new(QueryNodeBehavior));
+        registry.register(Arc::new(CollectionNodeBehavior));
 
         registry
     }
@@ -1910,7 +2000,8 @@ mod tests {
         assert!(types.contains(&"date".to_string()));
         assert!(types.contains(&"schema".to_string()));
         assert!(types.contains(&"query".to_string()));
-        assert_eq!(types.len(), 9);
+        assert!(types.contains(&"collection".to_string()));
+        assert_eq!(types.len(), 10);
     }
 
     #[test]
@@ -2753,6 +2844,94 @@ mod tests {
         let node = Node::new("query".to_string(), "Find all tasks".to_string(), json!({}));
 
         // Query nodes should not be embedded (operational, not semantic content)
+        assert!(behavior.get_embeddable_content(&node).is_none());
+        assert!(behavior.get_parent_contribution(&node).is_none());
+    }
+
+    // =========================================================================
+    // CollectionNodeBehavior Tests
+    // =========================================================================
+
+    #[test]
+    fn test_collection_node_behavior_validation() {
+        let behavior = CollectionNodeBehavior;
+
+        // Valid collection node with name
+        let valid_node = Node::new(
+            "collection".to_string(),
+            "Engineering".to_string(),
+            json!({}),
+        );
+        assert!(behavior.validate(&valid_node).is_ok());
+
+        // Valid collection with spaces in name
+        let spaced_name = Node::new(
+            "collection".to_string(),
+            "Human Resources".to_string(),
+            json!({}),
+        );
+        assert!(behavior.validate(&spaced_name).is_ok());
+    }
+
+    #[test]
+    fn test_collection_node_empty_name_rejected() {
+        let behavior = CollectionNodeBehavior;
+
+        // Empty content should be rejected
+        let empty_node = Node::new("collection".to_string(), "".to_string(), json!({}));
+        let result = behavior.validate(&empty_node);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(NodeValidationError::MissingField(_))));
+
+        // Whitespace-only content should be rejected
+        let whitespace_node = Node::new("collection".to_string(), "   ".to_string(), json!({}));
+        let result = behavior.validate(&whitespace_node);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(NodeValidationError::MissingField(_))));
+    }
+
+    #[test]
+    fn test_collection_node_colon_in_name_rejected() {
+        let behavior = CollectionNodeBehavior;
+
+        // Name with colon should be rejected (colon is path delimiter)
+        let colon_node = Node::new("collection".to_string(), "hr:policy".to_string(), json!({}));
+        let result = behavior.validate(&colon_node);
+        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(NodeValidationError::InvalidProperties(_))
+        ));
+    }
+
+    #[test]
+    fn test_collection_node_behavior_capabilities() {
+        let behavior = CollectionNodeBehavior;
+
+        assert_eq!(behavior.type_name(), "collection");
+        assert!(behavior.can_have_children()); // Collections form hierarchies
+        assert!(!behavior.supports_markdown()); // Collection names are plain text
+    }
+
+    #[test]
+    fn test_collection_node_default_metadata() {
+        let behavior = CollectionNodeBehavior;
+        let metadata = behavior.default_metadata();
+
+        // Collections have minimal default metadata (no spoke fields)
+        assert_eq!(metadata, json!({}));
+    }
+
+    #[test]
+    fn test_collection_node_embedding_behavior() {
+        let behavior = CollectionNodeBehavior;
+        let node = Node::new(
+            "collection".to_string(),
+            "Engineering".to_string(),
+            json!({}),
+        );
+
+        // Collection nodes should not be embedded (organizational containers)
         assert!(behavior.get_embeddable_content(&node).is_none());
         assert!(behavior.get_parent_contribution(&node).is_none());
     }

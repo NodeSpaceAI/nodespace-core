@@ -1281,6 +1281,7 @@ where
             properties: params.properties,
             mentions: vec![],
             mentioned_by: vec![],
+            member_of: vec![],
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
         };
@@ -1581,6 +1582,7 @@ where
                     properties: serde_json::json!({}),
                     mentions: vec![],
                     mentioned_by: vec![],
+                    member_of: vec![],
                 };
                 return Ok(Some(virtual_date));
             }
@@ -3710,6 +3712,7 @@ where
                 properties: properties.clone(),
                 mentions: vec![],
                 mentioned_by: vec![],
+                member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
             };
@@ -4008,6 +4011,7 @@ where
                 properties: serde_json::json!({}),
                 mentions: vec![],
                 mentioned_by: vec![],
+                member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
             };

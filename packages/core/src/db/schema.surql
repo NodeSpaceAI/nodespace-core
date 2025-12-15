@@ -115,6 +115,31 @@ DEFINE INDEX IF NOT EXISTS idx_mentions_out ON TABLE mentions COLUMNS out;
 DEFINE INDEX IF NOT EXISTS idx_unique_mention ON TABLE mentions COLUMNS in, out UNIQUE;
 
 -- ============================================================================
+
+-- Member_of relation: Collection membership (node belongs to collection)
+-- This represents the "labeling" relationship where any node can be a member
+-- of one or more collection nodes. Collections form a DAG (Directed Acyclic Graph).
+--
+-- Direction: member_of goes FROM member node TO collection node
+-- Example: node:abc -> collection:engineering means "abc belongs to engineering"
+--
+-- Note: Collection hierarchy uses has_child edges, not member_of.
+-- member_of is only for non-collection nodes joining collections.
+DEFINE TABLE IF NOT EXISTS member_of SCHEMAFULL TYPE RELATION IN node OUT node;
+
+-- Required base fields
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE member_of TYPE datetime DEFAULT time::now();
+
+-- Indexes for efficient queries
+-- "What collections does this node belong to?" - query by `in`
+DEFINE INDEX IF NOT EXISTS idx_member_of_in ON TABLE member_of COLUMNS in;
+-- "What nodes belong to this collection?" - query by `out`
+DEFINE INDEX IF NOT EXISTS idx_member_of_out ON TABLE member_of COLUMNS out;
+
+-- Prevent duplicate memberships (a node can only join a collection once)
+DEFINE INDEX IF NOT EXISTS idx_unique_membership ON TABLE member_of COLUMNS in, out UNIQUE;
+
+-- ============================================================================
 -- EMBEDDINGS TABLE (Root-Aggregate Model for Semantic Search)
 -- ============================================================================
 --

@@ -10,6 +10,7 @@
 //! - `InboundRelationshipCache` - Fast NLP discovery of inbound relationships
 //! - `McpServerService` - MCP server lifecycle management (Issue #715)
 //! - `QueryService` - Query execution with SQL translation (Issue #440)
+//! - `CollectionService` - Collection path parsing and membership management (Issue #756)
 //!
 //! Schema nodes are managed via generic NodeService CRUD operations (Issue #690).
 //! Validation is handled by SchemaNodeBehavior. DDL generation by SchemaTableManager.
@@ -17,6 +18,7 @@
 //! Services coordinate between the database layer and application logic,
 //! implementing business rules and orchestrating complex operations.
 
+pub mod collection_service;
 pub mod embedding_processor;
 pub mod embedding_service;
 pub mod error;
@@ -28,6 +30,11 @@ pub mod query_service;
 pub mod relationship_cache;
 pub mod schema_table_manager;
 
+pub use collection_service::{
+    build_path_string, normalize_collection_name, parse_collection_path, validate_collection_name,
+    CollectionPath, CollectionSegment, CollectionService, ResolvedCollection, ResolvedPath,
+    COLLECTION_PATH_DELIMITER, MAX_COLLECTION_DEPTH,
+};
 pub use embedding_processor::{EmbeddingProcessor, EmbeddingWaker};
 pub use embedding_service::{NodeEmbeddingService, EMBEDDING_DIMENSION};
 pub use error::NodeServiceError;

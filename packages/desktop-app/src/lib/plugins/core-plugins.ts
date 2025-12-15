@@ -457,6 +457,50 @@ export const documentNodePlugin: PluginDefinition = {
   }
 };
 
+/**
+ * Collection Node Plugin
+ *
+ * Collections provide flexible, hierarchical organization for nodes.
+ * Unlike parent-child relationships, collections allow:
+ * - Many-to-many membership (nodes can belong to multiple collections)
+ * - DAG structure (directed acyclic graph)
+ * - Path-based navigation (e.g., "hr:policy:vacation")
+ *
+ * Collections are created via MCP tools, not through slash commands.
+ * The plugin provides reference and future viewer components.
+ */
+export const collectionNodePlugin: PluginDefinition = {
+  id: 'collection',
+  name: 'Collection Node',
+  description: 'Organize nodes into flexible, hierarchical collections',
+  version: '1.0.0',
+  config: {
+    // No slash commands - collections are created via MCP tools
+    // This is intentional: collections are organizational metadata, not content
+    slashCommands: [],
+    canHaveChildren: true, // Collections can have sub-collections (DAG structure)
+    canBeChild: true // Collections can be nested under other nodes
+  },
+  // Collections use BaseNodeReference for inline references
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  },
+  // Type-specific metadata extraction for collection properties
+  extractMetadata: (node: { nodeType: string; properties?: Record<string, unknown> }) => {
+    const properties = node.properties || {};
+    return {
+      description: properties.description as string | undefined,
+      icon: properties.icon as string | undefined,
+      color: properties.color as string | undefined,
+      ...properties
+    };
+  }
+  // TODO: Future enhancements (Issue #757+):
+  // - collectionNodeViewer: Display collection members in a grid/list view
+  // - collectionNode component: Visual representation with icon and member count
+};
+
 // Export all core plugins
 // These are the foundation plugins - external developers can create additional plugins
 // like WhiteBoardNode, ImageNode, etc. in separate packages
@@ -469,7 +513,8 @@ export const corePlugins = [
   codeBlockNodePlugin,
   quoteBlockNodePlugin,
   orderedListNodePlugin,
-  queryNodePlugin
+  queryNodePlugin,
+  collectionNodePlugin
   // Note: userNodePlugin and documentNodePlugin are defined but not registered
   // They will be added when user/document reference system is implemented
 ];
