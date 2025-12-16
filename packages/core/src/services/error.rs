@@ -192,3 +192,155 @@ impl NodeServiceError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_node_not_found_error() {
+        let err = NodeServiceError::node_not_found("test-id");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::NodeNotFound { .. }));
+        assert!(msg.contains("test-id"));
+    }
+
+    #[test]
+    fn test_invalid_parent_error() {
+        let err = NodeServiceError::invalid_parent("parent-123");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::InvalidParent { .. }));
+        assert!(msg.contains("parent-123"));
+    }
+
+    #[test]
+    fn test_invalid_root_error() {
+        let err = NodeServiceError::invalid_root("root-456");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::InvalidRoot { .. }));
+        assert!(msg.contains("root-456"));
+    }
+
+    #[test]
+    fn test_circular_reference_error() {
+        let err = NodeServiceError::circular_reference("node A -> B -> A");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::CircularReference { .. }));
+        assert!(msg.contains("Circular reference"));
+    }
+
+    #[test]
+    fn test_hierarchy_violation_error() {
+        let err = NodeServiceError::hierarchy_violation("Cannot move root node");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::HierarchyViolation(_)));
+        assert!(msg.contains("Hierarchy constraint"));
+    }
+
+    #[test]
+    fn test_bulk_operation_failed_error() {
+        let err = NodeServiceError::bulk_operation_failed("3 of 5 nodes failed");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::BulkOperationFailed { .. }));
+        assert!(msg.contains("Bulk operation"));
+    }
+
+    #[test]
+    fn test_transaction_failed_error() {
+        let err = NodeServiceError::transaction_failed("Commit failed");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::TransactionFailed { .. }));
+        assert!(msg.contains("Transaction failed"));
+    }
+
+    #[test]
+    fn test_invalid_update_error() {
+        let err = NodeServiceError::invalid_update("Cannot change node type");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::InvalidUpdate(_)));
+        assert!(msg.contains("Invalid update"));
+    }
+
+    #[test]
+    fn test_serialization_error() {
+        let err = NodeServiceError::serialization_error("Invalid JSON");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::SerializationError(_)));
+        assert!(msg.contains("Serialization error"));
+    }
+
+    #[test]
+    fn test_query_failed_error() {
+        let err = NodeServiceError::query_failed("Syntax error in SQL");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::QueryFailed(_)));
+        assert!(msg.contains("Query failed"));
+    }
+
+    #[test]
+    fn test_version_conflict_error() {
+        let err = NodeServiceError::version_conflict("node-789", 5, 3);
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::VersionConflict { .. }));
+        assert!(msg.contains("Version conflict"));
+        assert!(msg.contains("expected version 5"));
+        assert!(msg.contains("found 3"));
+    }
+
+    #[test]
+    fn test_initialization_error() {
+        let err = NodeServiceError::initialization_error("Database connection failed");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::InitializationError(_)));
+        assert!(msg.contains("Initialization error"));
+    }
+
+    #[test]
+    fn test_invalid_collection_path_error() {
+        let err = NodeServiceError::invalid_collection_path("Empty path segment");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::InvalidCollectionPath(_)));
+        assert!(msg.contains("Invalid collection path"));
+    }
+
+    #[test]
+    fn test_collection_not_found_error() {
+        let err = NodeServiceError::collection_not_found("favorites");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::CollectionNotFound(_)));
+        assert!(msg.contains("Collection not found"));
+    }
+
+    #[test]
+    fn test_collection_cycle_error() {
+        let err = NodeServiceError::collection_cycle("A -> B -> A");
+        let msg = err.to_string();
+        assert!(matches!(err, NodeServiceError::CollectionCycle(_)));
+        assert!(msg.contains("Collection hierarchy cycle"));
+    }
+
+    #[test]
+    fn test_collection_depth_exceeded_error() {
+        let err = NodeServiceError::collection_depth_exceeded("a:b:c:d:e:f", 5);
+        let msg = err.to_string();
+        assert!(matches!(
+            err,
+            NodeServiceError::CollectionDepthExceeded { .. }
+        ));
+        assert!(msg.contains("maximum depth of 5"));
+    }
+
+    #[test]
+    fn test_error_from_validation_error() {
+        let validation_err = ValidationError::MissingField("test_field".to_string());
+        let err: NodeServiceError = validation_err.into();
+        assert!(matches!(err, NodeServiceError::ValidationFailed(_)));
+    }
+
+    #[test]
+    fn test_error_from_database_error() {
+        let db_err = DatabaseError::initialization_failed("Connection lost");
+        let err: NodeServiceError = db_err.into();
+        assert!(matches!(err, NodeServiceError::DatabaseError(_)));
+    }
+}
