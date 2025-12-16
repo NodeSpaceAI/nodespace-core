@@ -442,14 +442,15 @@ pub struct CreateNodesFromMarkdownParams {
     #[serde(default)]
     pub title: Option<String>,
 
-    /// Enable async import mode for faster response (Issue #760).
+    /// Sync import mode for testing only.
     ///
-    /// When true, returns immediately with just `root_id` and `async: true`.
-    /// Children are inserted in a background task.
+    /// When false (default), returns immediately with just `root_id`.
+    /// Children are inserted in a background task (fire-and-forget).
     ///
-    /// When false (default), waits for all nodes to be created before responding.
+    /// When true, waits for all nodes to be created before responding.
+    /// This is only useful for tests that need to verify node creation.
     #[serde(default)]
-    pub async_import: bool,
+    pub sync_import: bool,
 
     /// Optional collection path to add the root node to (e.g., "hr:policy:vacation")
     /// Creates collections along the path if they don't exist.
@@ -731,8 +732,8 @@ where
     }
 
     // Phase 2: Prepare and insert children
-    // When async_import=true, spawn background task for faster response
-    // When async_import=false (default), insert synchronously for test compatibility
+    // Default: Fire-and-forget async for fast MCP response
+    // sync_import=true: Wait for completion (for tests only)
     if !remaining_content.trim().is_empty() {
         let prepared_children =
             prepare_nodes_from_markdown(&remaining_content, Some(root_id.clone()))?;
@@ -769,8 +770,25 @@ where
                 })
                 .collect();
 
-            if params.async_import {
-                // Async mode (Issue #760): Spawn background task for faster response
+            if params.sync_import {
+                // Sync mode (for tests): Insert synchronously and wait
+                let created_ids = node_service
+                    .bulk_create_hierarchy(nodes_for_bulk)
+                    .await
+                    .map_err(|e| {
+                        MCPError::internal_error(format!("Bulk creation failed: {}", e))
+                    })?;
+
+                // Track all created nodes (only needed for sync mode)
+                for (i, child) in prepared_children.iter().enumerate() {
+                    all_node_ids.push(created_ids[i].clone());
+                    all_nodes.push(NodeMetadata {
+                        id: created_ids[i].clone(),
+                        node_type: child.node_type.clone(),
+                    });
+                }
+            } else {
+                // Default: Fire-and-forget async for fast MCP response
                 let node_service = Arc::clone(node_service);
                 let root_id_for_log = root_id.clone();
                 tokio::spawn(async move {
@@ -793,43 +811,12 @@ where
                         }
                     }
                 });
-
-                let duration_ms = start.elapsed().as_millis();
-                tracing::info!(
-                    duration_ms = duration_ms,
-                    root_id = %root_id,
-                    async_import = true,
-                    "Markdown import initiated (async)"
-                );
-
-                return Ok(json!({
-                    "success": true,
-                    "root_id": root_id,
-                    "async": true
-                }));
-            } else {
-                // Sync mode (default): Insert synchronously
-                let created_ids = node_service
-                    .bulk_create_hierarchy(nodes_for_bulk)
-                    .await
-                    .map_err(|e| {
-                        MCPError::internal_error(format!("Bulk creation failed: {}", e))
-                    })?;
-
-                // Track all created nodes
-                for (i, child) in prepared_children.iter().enumerate() {
-                    all_node_ids.push(created_ids[i].clone());
-                    all_nodes.push(NodeMetadata {
-                        id: created_ids[i].clone(),
-                        node_type: child.node_type.clone(),
-                    });
-                }
             }
         }
     }
 
     // Add root node to collection if specified
-    let collection_id = if let Some(path) = &params.collection {
+    let _collection_id = if let Some(path) = &params.collection {
         let collection_service = CollectionService::new(&node_service.store);
         let resolved = collection_service
             .add_to_collection_by_path(&root_id, path)
@@ -848,29 +835,37 @@ where
         None
     };
 
-    let duration_ms = start.elapsed().as_millis();
-    let nodes_per_sec = if duration_ms > 0 {
-        (all_nodes.len() as u128 * 1000) / duration_ms
+    // Return minimal response - client can fetch details via get_markdown_from_node_id if needed
+    // For sync mode (tests), include full details for verification
+    // For async mode (default), children are still being created in background
+    if params.sync_import {
+        let duration_ms = start.elapsed().as_millis();
+        tracing::info!(
+            duration_ms = duration_ms,
+            nodes_created = all_nodes.len(),
+            sync_import = true,
+            "Markdown import completed (sync)"
+        );
+        // Sync mode: Include full details for test verification
+        Ok(json!({
+            "success": true,
+            "root_id": root_id,
+            "nodes_created": all_nodes.len(),
+            "node_ids": all_node_ids,
+            "nodes": all_nodes,
+            "duration_ms": duration_ms
+        }))
     } else {
-        all_nodes.len() as u128 * 1000
-    };
-
-    tracing::info!(
-        duration_ms = duration_ms,
-        nodes_created = all_nodes.len(),
-        nodes_per_sec = nodes_per_sec,
-        "Markdown import completed"
-    );
-
-    Ok(json!({
-        "success": true,
-        "root_id": root_id,
-        "nodes_created": all_nodes.len(),
-        "node_ids": all_node_ids,
-        "nodes": all_nodes,
-        "collection_id": collection_id,
-        "duration_ms": duration_ms
-    }))
+        // Async mode (default): Return immediately with just root_id
+        tracing::info!(
+            root_id = %root_id,
+            "Markdown import initiated (async)"
+        );
+        Ok(json!({
+            "success": true,
+            "root_id": root_id
+        }))
+    }
 }
 
 /// Check if a string matches the date format YYYY-MM-DD

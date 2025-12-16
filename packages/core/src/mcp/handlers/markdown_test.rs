@@ -32,6 +32,7 @@ Some content under subtitle."#;
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Test Document"
         });
 
@@ -68,6 +69,7 @@ Text under second H2"#;
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Hierarchy Test"
         });
 
@@ -104,6 +106,7 @@ Content under H3"#;
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "# Container H1"
         });
 
@@ -209,6 +212,7 @@ Content under H3"#;
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Complex Test"
         });
 
@@ -301,6 +305,7 @@ code block
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Content Test"
         });
 
@@ -361,6 +366,7 @@ code block
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "List Test"
         });
 
@@ -383,6 +389,7 @@ code block
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Task List"
         });
 
@@ -453,6 +460,7 @@ fn main() {
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Code Test"
         });
 
@@ -489,6 +497,7 @@ plain code
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Plain Code Test"
         });
 
@@ -535,6 +544,7 @@ Regular paragraph text."#;
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Mixed Content"
         });
 
@@ -555,6 +565,7 @@ Regular paragraph text."#;
 
         let params = json!({
             "markdown_content": "",
+            "sync_import": true,
             "title": "Empty Document"
         });
 
@@ -575,6 +586,7 @@ Regular paragraph text."#;
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Container Test"
         });
 
@@ -601,6 +613,7 @@ Text content
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Shared Container"
         });
 
@@ -629,7 +642,8 @@ Text content
 
         // No title provided - should use first line as root
         let params = json!({
-            "markdown_content": "# My Document\n\n## Section 1\n\nSome text"
+            "markdown_content": "# My Document\n\n## Section 1\n\nSome text",
+            "sync_import": true
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
@@ -654,7 +668,8 @@ Text content
 
         // Empty markdown without title should error
         let params = json!({
-            "markdown_content": ""
+            "markdown_content": "",
+            "sync_import": true
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params).await;
@@ -671,6 +686,7 @@ Text content
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Inline Code Test"
         });
 
@@ -714,6 +730,7 @@ Third paragraph"#;
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Sibling Order Test"
         });
 
@@ -789,6 +806,7 @@ Text under H6"#;
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Deep Hierarchy Test"
         });
 
@@ -874,6 +892,7 @@ Text under H6"#;
 
         let params = json!({
             "markdown_content": large_markdown,
+            "sync_import": true,
             "title": "Large Document"
         });
 
@@ -895,6 +914,7 @@ Text paragraph
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Metadata Test"
         });
 
@@ -934,6 +954,7 @@ Text paragraph
         let markdown = "# Hello World\n\n- Item 1";
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Test"
         });
 
@@ -981,6 +1002,7 @@ Text paragraph
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Deep Hierarchy"
         });
 
@@ -1024,6 +1046,7 @@ Text paragraph
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Test"
         });
 
@@ -1065,6 +1088,7 @@ Text paragraph
         // Import
         let import_params = json!({
             "markdown_content": original,
+            "sync_import": true,
             "title": "Test"
         });
         let import_result = handle_create_nodes_from_markdown(&node_service, import_params)
@@ -1147,6 +1171,7 @@ Text paragraph
         let markdown = "# Hello World\n\n- Item 1\n- Item 2";
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Test Container"
         });
 
@@ -1231,6 +1256,7 @@ Text under section 1
 
         let import_params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Hierarchy Test"
         });
 
@@ -1288,6 +1314,7 @@ Text under section 1
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "# Container"
         });
 
@@ -1338,6 +1365,7 @@ Text under section 1
 
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "# Container"
         });
 
@@ -1365,6 +1393,7 @@ Text under section 1
         // Import
         let import_params = json!({
             "markdown_content": "Text paragraph\n- Bullet 1\n- Bullet 2",
+            "sync_import": true,
             "title": "# Header"
         });
 
@@ -1414,6 +1443,7 @@ Regular text after code."#;
 
         let import_params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Code Test"
         });
 
@@ -1463,10 +1493,11 @@ Regular text after code."#;
     async fn test_update_root_from_markdown_basic() {
         let (node_service, _temp_dir) = setup_test_service().await;
 
-        // Create root with some children
+        // Create root with some children (sync mode for test)
         let create_params = json!({
             "markdown_content": "- Old item 1\n- Old item 2",
-            "title": "# Test Container"
+            "title": "# Test Container",
+            "sync_import": true
         });
 
         let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
@@ -1513,10 +1544,11 @@ Regular text after code."#;
     async fn test_update_root_from_markdown_complex_structure() {
         let (node_service, _temp_dir) = setup_test_service().await;
 
-        // Create root with simple structure
+        // Create root with simple structure (sync mode for test)
         let create_params = json!({
             "markdown_content": "Simple text",
-            "title": "# Document"
+            "title": "# Document",
+            "sync_import": true
         });
 
         let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
@@ -1606,10 +1638,11 @@ Regular text after code."#;
     async fn test_update_root_from_markdown_empty_markdown() {
         let (node_service, _temp_dir) = setup_test_service().await;
 
-        // Create root with children
+        // Create root with children (sync mode for test)
         let create_params = json!({
             "markdown_content": "- Item 1\n- Item 2",
-            "title": "# Container"
+            "title": "# Container",
+            "sync_import": true
         });
 
         let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
@@ -1696,6 +1729,7 @@ Regular text after code."#;
         let markdown = generate_large_markdown(50);
         let params = json!({
             "markdown_content": markdown,
+            "sync_import": true,
             "title": "Hierarchy Test"
         });
 
@@ -1722,7 +1756,7 @@ Regular text after code."#;
         );
     }
 
-    // Issue #760: Test async_import parameter for instant response mode
+    // Issue #760: Test async mode (default) returns immediately with minimal response
     #[tokio::test]
     async fn test_async_import_returns_immediately() {
         let (node_service, _temp_dir) = setup_test_service().await;
@@ -1733,62 +1767,102 @@ Content under section 1
 ## Section 2
 Content under section 2"#;
 
+        // Default mode (no sync_import) is async/fire-and-forget
         let params = json!({
             "markdown_content": markdown,
-            "title": "Async Import Test",
-            "async_import": true
+            "title": "Async Import Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
-        // Async mode returns immediately with minimal response
+        // Async mode (default) returns immediately with minimal response
         assert_eq!(result["success"], true);
-        assert_eq!(result["async"], true);
         assert!(result["root_id"].is_string(), "Should have root_id");
 
-        // Should NOT have nodes_created, node_ids, or nodes in async mode
-        // These are populated after background task completes
+        // Should NOT have nodes_created in async mode (children still being created)
         assert!(
             result.get("nodes_created").is_none(),
             "Async mode should not include nodes_created"
         );
+    }
+
+    // Issue #760: Test that async mode actually creates nodes in background
+    #[tokio::test]
+    async fn test_async_import_creates_nodes_in_background() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        let markdown = r#"# Async Background Test
+## Section 1
+Content under section 1
+## Section 2
+Content under section 2
+### Subsection 2.1
+More nested content"#;
+
+        // Default mode (no sync_import) is async/fire-and-forget
+        let params = json!({
+            "markdown_content": markdown,
+            "title": "Async Background Test"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        // Should return immediately with root_id
+        assert_eq!(result["success"], true);
+        let root_id = result["root_id"].as_str().unwrap();
+
+        // Wait for background task to complete (give it time to insert nodes)
+        // In practice this is very fast, but we allow some buffer
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+        // Verify the root node exists
+        let root_node = node_service.get_node(root_id).await.unwrap();
+        assert!(root_node.is_some(), "Root node should exist after async import");
+        let root_node = root_node.unwrap();
+        assert_eq!(root_node.content, "Async Background Test");
+
+        // Verify children were created in the background
+        let children = node_service.get_children(root_id).await.unwrap();
         assert!(
-            result.get("node_ids").is_none(),
-            "Async mode should not include node_ids"
+            !children.is_empty(),
+            "Children should be created by background task"
         );
+
+        // Verify we have the expected structure (root + 5 children: 2 sections, 2 contents, 1 subsection + 1 nested content)
+        // Let's count all descendants
+        let descendants = node_service.get_descendants(root_id).await.unwrap();
         assert!(
-            result.get("nodes").is_none(),
-            "Async mode should not include nodes array"
+            descendants.len() >= 5,
+            "Should have at least 5 descendants (sections, content, subsection): got {}",
+            descendants.len()
         );
     }
 
-    // Issue #760: Test that sync mode (default) still works correctly
+    // Issue #760: Test that sync mode (for tests) returns full response
     #[tokio::test]
-    async fn test_sync_import_default_behavior() {
+    async fn test_sync_import_for_tests() {
         let (node_service, _temp_dir) = setup_test_service().await;
 
         let markdown = r#"# Test Document
 Some content"#;
 
-        // Explicit async_import: false
+        // Explicit sync_import: true for testing
         let params = json!({
             "markdown_content": markdown,
-            "title": "Sync Import Test",
-            "async_import": false
+            "sync_import": true,
+            "title": "Sync Import Test"
         });
 
         let result = handle_create_nodes_from_markdown(&node_service, params)
             .await
             .unwrap();
 
-        // Sync mode returns full response with all nodes
+        // Sync mode returns full response for test verification
         assert_eq!(result["success"], true);
-        assert!(
-            result.get("async").is_none(),
-            "Sync mode should not have async field"
-        );
         assert!(result["root_id"].is_string());
         assert!(result["nodes_created"].is_number());
         assert!(result["node_ids"].is_array());
