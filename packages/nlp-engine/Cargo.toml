@@ -1,20 +1,16 @@
 [package]
 name = "nodespace-nlp-engine"
 version = "0.1.0"
-description = "NodeSpace unified vector embedding service using Candle + ONNX"
+description = "NodeSpace unified vector embedding service using llama.cpp"
 authors.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-# Candle dependencies for ONNX embedding (feature-gated)
-# Using crates.io version for stability
-# NOTE: Metal feature is added via [target] section at end of file for macOS only
-candle-core = { version = "0.9", optional = true }
-candle-nn = { version = "0.9", optional = true }
-candle-onnx = { version = "0.9", optional = true }
-tokenizers = { version = "0.15", default-features = false, features = ["onig"], optional = true }
+# llama.cpp for embeddings via Rust bindings
+# Supports Metal (macOS), CUDA (NVIDIA), Vulkan (cross-platform)
+llama-cpp-2 = { version = "0.1", optional = true }
 
 # Caching layer
 lru = "0.12"
@@ -39,12 +35,14 @@ tempfile = "3.0"
 futures = "0.3"
 
 [features]
-# embedding-service is enabled by default for release builds
-# There was a SIGABRT crash in release builds - investigating
 default = ["embedding-service"]
-embedding-service = ["candle-core", "candle-nn", "candle-onnx", "tokenizers"]
+embedding-service = ["llama-cpp-2"]
 
-# Platform-specific: Enable Metal acceleration on macOS only
-# This section MUST be at the end of the file to avoid affecting other dependencies
+# GPU acceleration features
+cuda = ["llama-cpp-2/cuda"]
+metal = ["llama-cpp-2/metal"]
+vulkan = ["llama-cpp-2/vulkan"]
+
+# Platform-specific: Enable Metal acceleration on macOS by default
 [target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { version = "0.9", features = ["metal"], optional = true }
+llama-cpp-2 = { version = "0.1", features = ["metal"], optional = true }

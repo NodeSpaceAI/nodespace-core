@@ -1,25 +1,21 @@
 /// Integration tests for the embedding service
-/// These tests require the bge-small-en-v1.5 model to be downloaded
-/// See packages/nlp-engine/models/README.md for download instructions
+/// These tests require the nomic-embed-vision GGUF model to be downloaded
+/// See docs/architecture/components/nlp-model-setup.md for download instructions
 #[cfg(all(test, feature = "embedding-service"))]
 mod integration_tests {
-    use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
-    use std::path::PathBuf;
-
-    const MODEL_PATH: &str = "packages/nlp-engine/models/bge-small-en-v1.5/model.onnx";
+    use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService, EMBEDDING_DIMENSION};
 
     fn model_exists() -> bool {
-        let model_path = PathBuf::from(MODEL_PATH);
-        model_path.exists()
+        let config = EmbeddingConfig::default();
+        config.resolve_model_path().is_ok()
     }
 
     #[tokio::test]
     async fn test_service_initialization() {
         if !model_exists() {
             eprintln!(
-                "Skipping test: model not found at '{}'. \
-                See docs/architecture/components/nlp-model-setup.md for setup instructions.",
-                MODEL_PATH
+                "Skipping test: model not found. \
+                See docs/architecture/components/nlp-model-setup.md for setup instructions."
             );
             return;
         }
@@ -49,17 +45,47 @@ mod integration_tests {
         assert!(embedding.is_ok(), "Failed to generate embedding");
         let embedding = embedding.unwrap();
 
-        // bge-small-en-v1.5 produces 384-dimensional embeddings
+        // nomic-embed-vision-v1.5 produces 768-dimensional embeddings
         assert_eq!(
             embedding.len(),
-            384,
-            "Expected 384 dimensions, got {}",
+            EMBEDDING_DIMENSION,
+            "Expected {} dimensions, got {}",
+            EMBEDDING_DIMENSION,
             embedding.len()
         );
 
         // Check that embeddings are not all zeros
         let non_zero_count = embedding.iter().filter(|&&x| x != 0.0).count();
         assert!(non_zero_count > 0, "Embedding should not be all zeros");
+    }
+
+    #[tokio::test]
+    async fn test_asymmetric_embeddings() {
+        if !model_exists() {
+            eprintln!("Skipping test: model not found");
+            return;
+        }
+
+        let config = EmbeddingConfig::default();
+        let mut service = EmbeddingService::new(config).unwrap();
+        service.initialize().unwrap();
+
+        let text = "Machine learning for natural language processing";
+
+        // Document and query embeddings should be different due to prefixes
+        let doc_embedding = service.embed_document(text).unwrap();
+        let query_embedding = service.embed_query(text).unwrap();
+
+        assert_eq!(doc_embedding.len(), EMBEDDING_DIMENSION);
+        assert_eq!(query_embedding.len(), EMBEDDING_DIMENSION);
+
+        // They should be different (asymmetric prefixes)
+        let diff: f32 = doc_embedding
+            .iter()
+            .zip(query_embedding.iter())
+            .map(|(a, b)| (a - b).abs())
+            .sum();
+        assert!(diff > 0.01, "Document and query embeddings should differ");
     }
 
     #[tokio::test]
@@ -86,7 +112,7 @@ mod integration_tests {
         assert_eq!(embeddings.len(), texts.len());
 
         for embedding in embeddings {
-            assert_eq!(embedding.len(), 384);
+            assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
         }
     }
 
@@ -143,9 +169,9 @@ mod integration_tests {
         let text2 = "A feline rests on a rug";
         let text3 = "Python is a programming language";
 
-        let emb1 = service.generate_embedding(text1).unwrap();
-        let emb2 = service.generate_embedding(text2).unwrap();
-        let emb3 = service.generate_embedding(text3).unwrap();
+        let emb1 = service.embed_document(text1).unwrap();
+        let emb2 = service.embed_document(text2).unwrap();
+        let emb3 = service.embed_document(text3).unwrap();
 
         // Cosine similarity helper
         fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -184,8 +210,8 @@ mod integration_tests {
         // Convert to blob
         let blob = EmbeddingService::to_blob(&embedding);
 
-        // Verify blob size (4 bytes per f32 * 384 dimensions)
-        assert_eq!(blob.len(), 384 * 4);
+        // Verify blob size (4 bytes per f32 * 768 dimensions)
+        assert_eq!(blob.len(), EMBEDDING_DIMENSION * 4);
 
         // Convert back
         let recovered = EmbeddingService::from_blob(&blob);
@@ -211,12 +237,9 @@ mod integration_tests {
         let mut service = EmbeddingService::new(config).unwrap();
         service.initialize().unwrap();
 
-        // Empty string should still generate an embedding
+        // Empty string should return an error
         let result = service.generate_embedding("");
-        assert!(result.is_ok(), "Should handle empty strings");
-
-        let embedding = result.unwrap();
-        assert_eq!(embedding.len(), 384);
+        assert!(result.is_err(), "Empty string should return error");
     }
 
     #[tokio::test]
@@ -230,14 +253,14 @@ mod integration_tests {
         let mut service = EmbeddingService::new(config).unwrap();
         service.initialize().unwrap();
 
-        // Text longer than max_sequence_length (512 tokens)
-        let long_text = "word ".repeat(1000); // ~1000 tokens
+        // Text longer than typical context (will be truncated by tokenizer)
+        let long_text = "word ".repeat(1000);
 
         let result = service.generate_embedding(&long_text);
         assert!(result.is_ok(), "Should handle long texts (with truncation)");
 
         let embedding = result.unwrap();
-        assert_eq!(embedding.len(), 384);
+        assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
     }
 
     #[tokio::test]
@@ -253,10 +276,10 @@ mod integration_tests {
 
         let device_info = service.device_info();
 
-        // Should report either Metal GPU or CPU
+        // Should report llama.cpp with GPU layers
         assert!(
-            device_info.contains("Metal") || device_info.contains("CPU"),
-            "Device info should report Metal or CPU, got: {}",
+            device_info.contains("llama.cpp"),
+            "Device info should report llama.cpp, got: {}",
             device_info
         );
     }
@@ -294,7 +317,7 @@ mod integration_tests {
             assert!(result.is_ok(), "Concurrent request failed");
             let embedding = result.unwrap();
             assert!(embedding.is_ok(), "Embedding generation failed");
-            assert_eq!(embedding.unwrap().len(), 384);
+            assert_eq!(embedding.unwrap().len(), EMBEDDING_DIMENSION);
         }
     }
 }
@@ -302,7 +325,7 @@ mod integration_tests {
 /// Stub tests that run even without the model
 #[cfg(all(test, not(feature = "embedding-service")))]
 mod stub_tests {
-    use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
+    use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService, EMBEDDING_DIMENSION};
 
     #[tokio::test]
     async fn test_stub_service_creation() {
@@ -327,7 +350,7 @@ mod stub_tests {
         service.initialize().unwrap();
 
         let embedding = service.generate_embedding("test").unwrap();
-        assert_eq!(embedding.len(), 384);
+        assert_eq!(embedding.len(), EMBEDDING_DIMENSION);
         assert!(embedding.iter().all(|&x| x == 0.0));
     }
 }

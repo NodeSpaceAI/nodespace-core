@@ -40,8 +40,8 @@ use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// Embedding vector dimension for BAAI/bge-small-en-v1.5 model
-pub const EMBEDDING_DIMENSION: usize = 384;
+// Re-export embedding dimension from nlp-engine as single source of truth
+pub use nodespace_nlp_engine::EMBEDDING_DIMENSION;
 
 /// Default batch size for processing stale embeddings
 pub const DEFAULT_BATCH_SIZE: usize = 50;

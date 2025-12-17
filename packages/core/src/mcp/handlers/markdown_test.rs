@@ -1821,7 +1821,10 @@ More nested content"#;
 
         // Verify the root node exists
         let root_node = node_service.get_node(root_id).await.unwrap();
-        assert!(root_node.is_some(), "Root node should exist after async import");
+        assert!(
+            root_node.is_some(),
+            "Root node should exist after async import"
+        );
         let root_node = root_node.unwrap();
         assert_eq!(root_node.content, "Async Background Test");
 

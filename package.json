@@ -52,7 +52,7 @@
     "rust:benchmark:update": "cargo test --lib benchmark_update_nodes_batch -- --ignored --nocapture",
     "rust:format": "cargo fmt --all",
     "rust:format:check": "cargo fmt --all --check",
-    "rust:lint": "cargo clippy --all-targets --all-features -- -D warnings -D clippy::unused-async",
+    "rust:lint": "cargo clippy --all-targets -- -D warnings -D clippy::unused-async",
     "rust:quality": "bun run rust:format:check && bun run rust:lint",
     "rust:quality:fix": "bun run rust:format && bun run rust:lint",
     "quality:fix": "bun run --cwd packages/desktop-app quality:fix && bun run rust:quality:fix",

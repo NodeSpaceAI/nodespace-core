@@ -1,25 +1,28 @@
-/// Configuration for the embedding service
+/// Configuration for the embedding service using llama.cpp
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Maximum supported sequence length for transformer models
-/// Limited by attention matrix memory requirements (O(n²))
-const MAX_SUPPORTED_SEQUENCE_LENGTH: usize = 8192;
+/// Offload all model layers to GPU. This is the llama.cpp convention
+/// where any value >= total layers offloads everything.
+pub const GPU_OFFLOAD_ALL_LAYERS: u32 = 99;
 
-/// Configuration for BERT embedding model
+/// Configuration for llama.cpp embedding model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddingConfig {
     /// Model name or identifier
     pub model_name: String,
 
-    /// Local model path (bundled with application)
+    /// Local model path (GGUF file)
     pub model_path: Option<PathBuf>,
 
-    /// Maximum sequence length for tokenization
-    pub max_sequence_length: usize,
+    /// Number of GPU layers to offload. Use `GPU_OFFLOAD_ALL_LAYERS` (99) to offload all.
+    pub n_gpu_layers: u32,
 
-    /// Enable instruction prefix for queries (e.g., "Represent this sentence for searching:")
-    pub use_instruction_prefix: bool,
+    /// Context size for embedding
+    pub context_size: u32,
+
+    /// Number of threads for CPU inference
+    pub n_threads: i32,
 
     /// Maximum cache size (number of embeddings to cache)
     pub cache_capacity: usize,
@@ -28,10 +31,13 @@ pub struct EmbeddingConfig {
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            model_name: "BAAI/bge-small-en-v1.5".to_string(),
+            model_name: "nomic-embed-vision-v1.5".to_string(),
             model_path: None,
-            max_sequence_length: 512,
-            use_instruction_prefix: false,
+            n_gpu_layers: GPU_OFFLOAD_ALL_LAYERS,
+            context_size: 8192,
+            n_threads: std::thread::available_parallelism()
+                .map(|p| p.get() as i32)
+                .unwrap_or(4),
             cache_capacity: 10000,
         }
     }
@@ -40,15 +46,9 @@ impl Default for EmbeddingConfig {
 impl EmbeddingConfig {
     /// Get the model path, resolving it from ~/.nodespace/models/
     ///
-    /// Uses centralized data directory pattern (same as database):
-    /// - macOS/Linux: ~/.nodespace/models/bge-small-en-v1.5/
-    /// - Windows: %USERPROFILE%\.nodespace\models\bge-small-en-v1.5\
-    ///
-    /// This allows:
-    /// - Consistent location with database (~/.nodespace/database/)
-    /// - Easy version updates without app reinstall
-    /// - User-friendly management of data
-    /// - Shared models across app versions
+    /// Uses centralized data directory pattern:
+    /// - macOS/Linux: ~/.nodespace/models/nomic-embed-vision-v1.5.gguf
+    /// - Windows: %USERPROFILE%\.nodespace\models\nomic-embed-vision-v1.5.gguf
     pub fn resolve_model_path(&self) -> Result<PathBuf, std::io::Error> {
         if let Some(path) = &self.model_path {
             if path.exists() {
@@ -64,22 +64,28 @@ impl EmbeddingConfig {
             )
         })?;
 
-        let model_path = home_dir
-            .join(".nodespace")
-            .join("models")
-            .join(sanitize_model_name(&self.model_name));
+        // Try multiple possible filenames
+        let base_path = home_dir.join(".nodespace").join("models");
+        let possible_names = [
+            format!("{}.gguf", sanitize_model_name(&self.model_name)),
+            format!("{}.Q8_0.gguf", sanitize_model_name(&self.model_name)),
+            format!("{}.f16.gguf", sanitize_model_name(&self.model_name)),
+        ];
 
-        if model_path.exists() {
-            Ok(model_path)
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!(
-                    "Model not found at {:?}. Please install model to ~/.nodespace/models/",
-                    model_path
-                ),
-            ))
+        for name in &possible_names {
+            let model_path = base_path.join(name);
+            if model_path.exists() {
+                return Ok(model_path);
+            }
         }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "Model not found. Please download nomic-embed-vision GGUF to ~/.nodespace/models/. Tried: {:?}",
+                possible_names
+            ),
+        ))
     }
 
     /// Validate configuration
@@ -88,15 +94,8 @@ impl EmbeddingConfig {
             return Err("model_name cannot be empty".to_string());
         }
 
-        if self.max_sequence_length == 0 {
-            return Err("max_sequence_length must be greater than 0".to_string());
-        }
-
-        if self.max_sequence_length > MAX_SUPPORTED_SEQUENCE_LENGTH {
-            return Err(format!(
-                "max_sequence_length cannot exceed {} (transformer attention matrix memory limit)",
-                MAX_SUPPORTED_SEQUENCE_LENGTH
-            ));
+        if self.context_size == 0 {
+            return Err("context_size must be greater than 0".to_string());
         }
 
         if self.cache_capacity == 0 {
@@ -108,11 +107,9 @@ impl EmbeddingConfig {
 }
 
 /// Sanitize model name to be filesystem-safe
-/// Replaces all filesystem-unsafe characters with hyphens
-/// Filters out control characters for additional safety
 fn sanitize_model_name(name: &str) -> String {
     name.chars()
-        .filter(|c| !c.is_control()) // Remove control characters (0x00-0x1F)
+        .filter(|c| !c.is_control())
         .map(|c| match c {
             '/' | '\\' | ':' | '*' | '?' | '<' | '>' | '|' | '"' => '-',
             _ => c,
@@ -127,9 +124,9 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = EmbeddingConfig::default();
-        assert_eq!(config.model_name, "BAAI/bge-small-en-v1.5");
-        assert_eq!(config.max_sequence_length, 512);
-        assert!(!config.use_instruction_prefix);
+        assert_eq!(config.model_name, "nomic-embed-vision-v1.5");
+        assert_eq!(config.n_gpu_layers, GPU_OFFLOAD_ALL_LAYERS);
+        assert_eq!(config.context_size, 8192);
         assert_eq!(config.cache_capacity, 10000);
     }
 
@@ -144,18 +141,21 @@ mod tests {
         config.model_name = String::new();
         assert!(config.validate().is_err());
 
-        // Invalid: zero sequence length
+        // Invalid: zero context size
         config.model_name = "test".to_string();
-        config.max_sequence_length = 0;
-        assert!(config.validate().is_err());
-
-        // Invalid: excessive sequence length
-        config.max_sequence_length = 10000;
+        config.context_size = 0;
         assert!(config.validate().is_err());
 
         // Invalid: zero cache capacity
-        config.max_sequence_length = 512;
+        config.context_size = 8192;
         config.cache_capacity = 0;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_sanitize_model_name() {
+        assert_eq!(sanitize_model_name("nomic/embed"), "nomic-embed");
+        assert_eq!(sanitize_model_name("model:v1"), "model-v1");
+        assert_eq!(sanitize_model_name("normal-name"), "normal-name");
     }
 }

@@ -90,30 +90,27 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      - name: Download NLP models for bundling (macOS)
+      # Download nomic-embed-vision GGUF model for llama.cpp embeddings
+      - name: Download embedding model for bundling (macOS)
         if: matrix.platform == 'macos-latest'
         run: |
           mkdir -p packages/desktop-app/src-tauri/resources/models
-          # Download pre-packaged model from GitHub releases
-          gh release download models-v1 --pattern "BAAI-bge-small-en-v1.5.tar.gz" --dir /tmp
-          # Extract to resources directory
-          tar -xzf /tmp/BAAI-bge-small-en-v1.5.tar.gz -C packages/desktop-app/src-tauri/resources/models/
+          # Download pre-packaged model from GitHub releases (models-v2 for llama.cpp)
+          gh release download models-v2 --pattern "nomic-embed-vision-v1.5.Q8_0.gguf" --dir packages/desktop-app/src-tauri/resources/models/
           echo "Model downloaded:"
-          ls -la packages/desktop-app/src-tauri/resources/models/BAAI-bge-small-en-v1.5/
+          ls -la packages/desktop-app/src-tauri/resources/models/
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download NLP models for bundling (Windows)
+      - name: Download embedding model for bundling (Windows)
         if: matrix.platform == 'windows-latest'
         run: |
           $modelsDir = "packages/desktop-app/src-tauri/resources/models"
           New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null
-          # Download pre-packaged model from GitHub releases
-          gh release download models-v1 --pattern "BAAI-bge-small-en-v1.5.tar.gz" --dir $env:TEMP
-          # Extract to resources directory
-          tar -xzf "$env:TEMP/BAAI-bge-small-en-v1.5.tar.gz" -C $modelsDir
+          # Download pre-packaged model from GitHub releases (models-v2 for llama.cpp)
+          gh release download models-v2 --pattern "nomic-embed-vision-v1.5.Q8_0.gguf" --dir $modelsDir
           Write-Host "Model downloaded:"
-          Get-ChildItem -Path "$modelsDir/BAAI-bge-small-en-v1.5"
+          Get-ChildItem -Path $modelsDir
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
