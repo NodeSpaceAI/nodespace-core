@@ -141,6 +141,11 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     node_service.set_embedding_waker(processor.waker());
     tracing::info!("✅ [init_services] EmbeddingProcessor waker connected to NodeService");
 
+    // Wake processor on startup to process any existing stale embeddings
+    // This handles cases where stale markers exist from previous sessions
+    processor.wake();
+    tracing::info!("🔔 [init_services] EmbeddingProcessor woken to process stale embeddings");
+
     let node_service_arc = Arc::new(node_service);
     let processor_arc = Arc::new(processor);
 

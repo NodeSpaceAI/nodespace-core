@@ -46,7 +46,7 @@ async fn test_initialize_success() {
 async fn test_initialize_wrong_version() {
     let node_service = create_test_service().await;
     let params = json!({
-        "protocolVersion": "1999-01-01",  // Unsupported version
+        "protocolVersion": "invalid-version",  // Invalid format (not YYYY-MM-DD)
         "clientInfo": {
             "name": "test-client"
         }
@@ -57,9 +57,37 @@ async fn test_initialize_wrong_version() {
 
     let err = result.unwrap_err();
     assert_eq!(err.code, crate::mcp::types::INVALID_REQUEST);
-    assert!(err.message.contains("Unsupported protocol version"));
-    assert!(err.message.contains("1999-01-01"));
-    assert!(err.message.contains("2024-11-05"));
+    assert!(err.message.contains("Invalid protocol version format"));
+    assert!(err.message.contains("invalid-version"));
+}
+
+#[tokio::test]
+async fn test_initialize_accepts_valid_date_formats() {
+    let node_service = create_test_service().await;
+
+    // Test various valid YYYY-MM-DD formats (including future versions)
+    let valid_versions = vec!["2024-11-05", "2025-01-15", "2025-12-31", "2030-06-18"];
+
+    for version in valid_versions {
+        let params = json!({
+            "protocolVersion": version,
+            "clientInfo": {
+                "name": "test-client"
+            }
+        });
+
+        let result = handle_initialize(&node_service, params).await;
+        assert!(
+            result.is_ok(),
+            "Version '{}' should be accepted as valid YYYY-MM-DD format",
+            version
+        );
+        assert_eq!(
+            result.unwrap()["protocolVersion"],
+            version,
+            "Server should echo back the client's version"
+        );
+    }
 }
 
 #[tokio::test]
@@ -481,20 +509,20 @@ mod integration_tests {
 
         state.mark_initialized();
 
-        // Try to initialize again with wrong version (should still error)
+        // Try to initialize again with invalid format (should still error)
         let params_wrong = json!({
-            "protocolVersion": "1999-01-01",
+            "protocolVersion": "not-a-valid-format",
             "clientInfo": {"name": "test"}
         });
         let result_wrong = handle_initialize(&node_service, params_wrong).await;
         assert!(
             result_wrong.is_err(),
-            "Initialize with wrong version should fail even after initialization"
+            "Initialize with invalid format should fail even after initialization"
         );
 
         let err = result_wrong.unwrap_err();
         assert_eq!(err.code, INVALID_REQUEST);
-        assert!(err.message.contains("Unsupported protocol version"));
+        assert!(err.message.contains("Invalid protocol version format"));
     }
 
     #[tokio::test]

@@ -13,13 +13,6 @@ use crate::services::NodeService;
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-/// Supported MCP protocol versions (for backward compatibility)
-const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
-    "2025-06-18", // Latest spec (future-proof)
-    "2025-03-26", // Streamable HTTP (current)
-    "2024-11-05", // HTTP+SSE (deprecated but supported)
-];
-
 /// Handle MCP initialize request
 ///
 /// This is the FIRST method called when a client connects.
@@ -62,13 +55,20 @@ where
         .as_str()
         .ok_or_else(|| MCPError::invalid_params("Missing protocolVersion parameter".to_string()))?;
 
-    // Version negotiation: Check if we support client's version
-    // MCP spec: Server should respond with same version if supported,
-    // or suggest alternative version
-    if !SUPPORTED_PROTOCOL_VERSIONS.contains(&client_version) {
+    // Version negotiation: Accept any valid MCP protocol version (YYYY-MM-DD format)
+    // This future-proofs against Claude Code updates that use newer versions.
+    // MCP spec: Server echoes back the client's version if supported.
+    let is_valid_version = client_version.len() == 10
+        && client_version.chars().nth(4) == Some('-')
+        && client_version.chars().nth(7) == Some('-')
+        && client_version[0..4].parse::<u32>().is_ok()
+        && client_version[5..7].parse::<u32>().is_ok()
+        && client_version[8..10].parse::<u32>().is_ok();
+
+    if !is_valid_version {
         return Err(MCPError::invalid_request(format!(
-            "Unsupported protocol version: {}. Server supports: {:?}",
-            client_version, SUPPORTED_PROTOCOL_VERSIONS
+            "Invalid protocol version format: {}. Expected YYYY-MM-DD format.",
+            client_version
         )));
     }
 

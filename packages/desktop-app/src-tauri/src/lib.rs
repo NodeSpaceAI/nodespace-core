@@ -252,6 +252,10 @@ pub fn run() {
             // Diagnostic commands for debugging persistence issues
             commands::diagnostics::get_database_diagnostics,
             commands::diagnostics::test_node_persistence,
+            // File import commands for bulk markdown import
+            commands::import::import_markdown_file,
+            commands::import::import_markdown_files,
+            commands::import::import_markdown_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

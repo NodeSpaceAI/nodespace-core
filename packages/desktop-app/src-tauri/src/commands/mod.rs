@@ -5,6 +5,7 @@
 pub mod db;
 pub mod diagnostics;
 pub mod embeddings;
+pub mod import;
 pub mod models;
 pub mod nodes;
 pub mod schemas;

@@ -87,12 +87,22 @@ pub async fn save_preferences(app: &AppHandle, prefs: &AppPreferences) -> Result
 
 /// Get default database path for current platform
 ///
-/// Uses unified path across all platforms: `~/.nodespace/database/nodespace`
+/// Checks `NODESPACE_DB_PATH` environment variable first, then falls back to
+/// unified path across all platforms: `~/.nodespace/database/nodespace`
+///
+/// # Environment Variable
+/// * `NODESPACE_DB_PATH` - Override default database location (useful for testing/benchmarks)
 ///
 /// # Returns
 /// * `Ok(PathBuf)` - Default database path
 /// * `Err(String)` - If home directory cannot be determined
 pub fn get_default_database_path() -> Result<PathBuf, String> {
+    // Check for environment variable override first
+    if let Ok(env_path) = std::env::var("NODESPACE_DB_PATH") {
+        tracing::info!("Using database path from NODESPACE_DB_PATH: {}", env_path);
+        return Ok(PathBuf::from(env_path));
+    }
+
     let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
 
     Ok(home_dir
