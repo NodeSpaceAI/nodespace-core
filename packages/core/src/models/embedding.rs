@@ -14,11 +14,13 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Default embedding dimension for BAAI/bge-small-en-v1.5 model (384 dimensions)
-pub const DEFAULT_EMBEDDING_DIMENSION: i32 = 384;
+/// Default embedding dimension for nomic-embed-text-v1.5 model (768 dimensions)
+/// Note: The authoritative constant is `EMBEDDING_DIMENSION` in nlp-engine crate.
+/// This is kept for database schema compatibility.
+pub const DEFAULT_EMBEDDING_DIMENSION: i32 = 768;
 
-/// Default model name
-pub const DEFAULT_MODEL_NAME: &str = "bge-small-en-v1.5";
+/// Default model name (nomic-embed-text-v1.5 via llama.cpp)
+pub const DEFAULT_MODEL_NAME: &str = "nomic-embed-text-v1.5";
 
 /// Maximum tokens per chunk - model context limit (tokens)
 pub const MAX_TOKENS_PER_CHUNK: usize = 512;
@@ -48,7 +50,7 @@ pub struct Embedding {
     /// The embedding vector (array of floats)
     pub vector: Vec<f32>,
 
-    /// Dimension of the vector (384 for bge-small-en-v1.5)
+    /// Dimension of the vector (768 for nomic-embed-text-v1.5)
     #[serde(default = "default_dimension")]
     pub dimension: i32,
 
@@ -131,7 +133,7 @@ pub struct NewEmbedding {
     pub node_id: String,
     /// The embedding vector
     pub vector: Vec<f32>,
-    /// Model name (defaults to bge-small-en-v1.5)
+    /// Model name (defaults to nomic-embed-text-v1.5)
     pub model_name: Option<String>,
     /// Chunk index (0 for single-chunk)
     pub chunk_index: i32,

@@ -159,12 +159,12 @@ DEFINE TABLE IF NOT EXISTS embedding SCHEMAFULL;
 -- Uses record<node> type for SurrealDB record link semantics
 DEFINE FIELD IF NOT EXISTS node ON TABLE embedding TYPE record<node>;
 
--- Vector data
+-- Vector data (768 dimensions for nomic-embed-text-v1.5)
 DEFINE FIELD IF NOT EXISTS vector ON TABLE embedding TYPE array<float>;
-DEFINE FIELD IF NOT EXISTS dimension ON TABLE embedding TYPE int DEFAULT 384;
+DEFINE FIELD IF NOT EXISTS dimension ON TABLE embedding TYPE int DEFAULT 768;
 
 -- Model info (future multi-model support)
-DEFINE FIELD IF NOT EXISTS model_name ON TABLE embedding TYPE string DEFAULT 'bge-small-en-v1.5';
+DEFINE FIELD IF NOT EXISTS model_name ON TABLE embedding TYPE string DEFAULT 'nomic-embed-text-v1.5';
 
 -- Chunking support (for content > 512 tokens)
 DEFINE FIELD IF NOT EXISTS chunk_index ON TABLE embedding TYPE int DEFAULT 0;

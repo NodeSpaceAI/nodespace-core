@@ -90,13 +90,13 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      # Download nomic-embed-vision GGUF model for llama.cpp embeddings
+      # Download nomic-embed-text GGUF model for llama.cpp embeddings
       - name: Download embedding model for bundling (macOS)
         if: matrix.platform == 'macos-latest'
         run: |
           mkdir -p packages/desktop-app/src-tauri/resources/models
           # Download pre-packaged model from GitHub releases (models-v2 for llama.cpp)
-          gh release download models-v2 --pattern "nomic-embed-vision-v1.5.Q8_0.gguf" --dir packages/desktop-app/src-tauri/resources/models/
+          gh release download models-v2 --pattern "nomic-embed-text-v1.5.Q8_0.gguf" --dir packages/desktop-app/src-tauri/resources/models/
           echo "Model downloaded:"
           ls -la packages/desktop-app/src-tauri/resources/models/
         env:
@@ -108,7 +108,7 @@ jobs:
           $modelsDir = "packages/desktop-app/src-tauri/resources/models"
           New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null
           # Download pre-packaged model from GitHub releases (models-v2 for llama.cpp)
-          gh release download models-v2 --pattern "nomic-embed-vision-v1.5.Q8_0.gguf" --dir $modelsDir
+          gh release download models-v2 --pattern "nomic-embed-text-v1.5.Q8_0.gguf" --dir $modelsDir
           Write-Host "Model downloaded:"
           Get-ChildItem -Path $modelsDir
         env:

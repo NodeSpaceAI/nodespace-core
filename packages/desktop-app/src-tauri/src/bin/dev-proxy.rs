@@ -378,7 +378,7 @@ async fn main() -> anyhow::Result<()> {
     let mut nlp_engine = EmbeddingService::new(Default::default())
         .map_err(|e| anyhow::anyhow!("Failed to create NLP engine: {}", e))?;
 
-    // Initialize the model (loads ONNX model and tokenizer)
+    // Initialize the model (loads GGUF model via llama.cpp)
     nlp_engine
         .initialize()
         .map_err(|e| anyhow::anyhow!("Failed to initialize NLP engine: {}", e))?;

@@ -31,7 +31,7 @@ pub struct EmbeddingConfig {
 impl Default for EmbeddingConfig {
     fn default() -> Self {
         Self {
-            model_name: "nomic-embed-vision-v1.5".to_string(),
+            model_name: "nomic-embed-text-v1.5".to_string(),
             model_path: None,
             n_gpu_layers: GPU_OFFLOAD_ALL_LAYERS,
             context_size: 8192,
@@ -47,8 +47,8 @@ impl EmbeddingConfig {
     /// Get the model path, resolving it from ~/.nodespace/models/
     ///
     /// Uses centralized data directory pattern:
-    /// - macOS/Linux: ~/.nodespace/models/nomic-embed-vision-v1.5.gguf
-    /// - Windows: %USERPROFILE%\.nodespace\models\nomic-embed-vision-v1.5.gguf
+    /// - macOS/Linux: ~/.nodespace/models/nomic-embed-text-v1.5.Q8_0.gguf
+    /// - Windows: %USERPROFILE%\.nodespace\models\nomic-embed-text-v1.5.Q8_0.gguf
     pub fn resolve_model_path(&self) -> Result<PathBuf, std::io::Error> {
         if let Some(path) = &self.model_path {
             if path.exists() {
@@ -82,7 +82,7 @@ impl EmbeddingConfig {
         Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!(
-                "Model not found. Please download nomic-embed-vision GGUF to ~/.nodespace/models/. Tried: {:?}",
+                "Model not found. Please download nomic-embed-text GGUF to ~/.nodespace/models/. Tried: {:?}",
                 possible_names
             ),
         ))
@@ -124,7 +124,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = EmbeddingConfig::default();
-        assert_eq!(config.model_name, "nomic-embed-vision-v1.5");
+        assert_eq!(config.model_name, "nomic-embed-text-v1.5");
         assert_eq!(config.n_gpu_layers, GPU_OFFLOAD_ALL_LAYERS);
         assert_eq!(config.context_size, 8192);
         assert_eq!(config.cache_capacity, 10000);

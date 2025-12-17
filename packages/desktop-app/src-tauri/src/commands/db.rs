@@ -13,7 +13,10 @@ use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 use tokio::fs;
 
-/// Resolve the path to the bundled NLP model
+/// GGUF model filename for llama.cpp embedding (nomic-embed-text-v1.5, 768 dimensions)
+const MODEL_FILENAME: &str = "nomic-embed-text-v1.5.Q8_0.gguf";
+
+/// Resolve the path to the bundled NLP model (GGUF format for llama.cpp)
 ///
 /// Checks multiple locations in order:
 /// 1. Bundled resources (for production builds)
@@ -23,14 +26,12 @@ use tokio::fs;
 /// * `app` - Tauri application handle for resource resolution
 ///
 /// # Returns
-/// * `Ok(PathBuf)` - Path to the model directory
+/// * `Ok(PathBuf)` - Path to the GGUF model file
 /// * `Err(String)` - Error if model not found anywhere
 fn resolve_bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let model_name = "BAAI-bge-small-en-v1.5";
-
     // Try bundled resources first (production builds)
     if let Ok(resource_path) = app.path().resolve(
-        format!("resources/models/{}", model_name),
+        format!("resources/models/{}", MODEL_FILENAME),
         BaseDirectory::Resource,
     ) {
         if resource_path.exists() {
@@ -41,7 +42,10 @@ fn resolve_bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
 
     // Try ~/.nodespace/models/ fallback (development or user-installed)
     if let Some(home_dir) = dirs::home_dir() {
-        let user_model_path = home_dir.join(".nodespace").join("models").join(model_name);
+        let user_model_path = home_dir
+            .join(".nodespace")
+            .join("models")
+            .join(MODEL_FILENAME);
         if user_model_path.exists() {
             tracing::info!("Found user model at: {:?}", user_model_path);
             return Ok(user_model_path);
@@ -49,8 +53,8 @@ fn resolve_bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
     }
 
     Err(format!(
-        "Model file not found at path: Model not found at {:?}. Please install model to ~/.nodespace/models/",
-        format!("~/.nodespace/models/{}", model_name)
+        "Model file not found. Please download {} to ~/.nodespace/models/",
+        MODEL_FILENAME
     ))
 }
 

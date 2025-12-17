@@ -4497,7 +4497,7 @@ where
                 .bind((
                     "model_name",
                     emb.model_name
-                        .unwrap_or_else(|| "bge-small-en-v1.5".to_string()),
+                        .unwrap_or_else(|| "nomic-embed-text-v1.5".to_string()),
                 ))
                 .bind(("chunk_index", emb.chunk_index))
                 .bind(("chunk_start", emb.chunk_start))
@@ -5034,8 +5034,8 @@ where
             CREATE embedding CONTENT {
                 node: type::thing('node', $node_id),
                 vector: [],
-                dimension: 384,
-                model_name: 'bge-small-en-v1.5',
+                dimension: 768,
+                model_name: 'nomic-embed-text-v1.5',
                 chunk_index: 0,
                 chunk_start: 0,
                 chunk_end: NONE,
