@@ -1253,7 +1253,8 @@ async fn test_handle_create_nodes_from_markdown_simple() {
     let result = nodespace_core::mcp::handlers::markdown::handle_create_nodes_from_markdown(
         &node_service,
         json!({
-            "markdown_content": "# My Document\n\nThis is the first paragraph.\n\nThis is the second paragraph."
+            "markdown_content": "# My Document\n\nThis is the first paragraph.\n\nThis is the second paragraph.",
+            "sync_import": true
         }),
     )
     .await;
@@ -1289,7 +1290,8 @@ async fn test_handle_create_nodes_from_markdown_with_tasks() {
     let result = nodespace_core::mcp::handlers::markdown::handle_create_nodes_from_markdown(
         &node_service,
         json!({
-            "markdown_content": "# Tasks\n\n- [ ] First task\n- [x] Completed task\n- [ ] Another task"
+            "markdown_content": "# Tasks\n\n- [ ] First task\n- [x] Completed task\n- [ ] Another task",
+            "sync_import": true
         }),
     )
     .await;
@@ -1482,7 +1484,8 @@ async fn test_handle_create_nodes_from_markdown_nested_lists() {
     let result = nodespace_core::mcp::handlers::markdown::handle_create_nodes_from_markdown(
         &node_service,
         json!({
-            "markdown_content": "# Nested List\n\n- Item 1\n  - Sub item 1.1\n  - Sub item 1.2\n- Item 2"
+            "markdown_content": "# Nested List\n\n- Item 1\n  - Sub item 1.1\n  - Sub item 1.2\n- Item 2",
+            "sync_import": true
         }),
     )
     .await;

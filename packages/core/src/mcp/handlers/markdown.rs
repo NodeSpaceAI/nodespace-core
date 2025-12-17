@@ -789,28 +789,44 @@ where
                 }
             } else {
                 // Default: Fire-and-forget async for fast MCP response
+                // Use Handle::try_current().spawn() to ensure we're spawning on
+                // the current runtime (works in both standalone tokio and Tauri)
                 let node_service = Arc::clone(node_service);
                 let root_id_for_log = root_id.clone();
-                tokio::spawn(async move {
-                    let insert_start = std::time::Instant::now();
-                    match node_service.bulk_create_hierarchy(nodes_for_bulk).await {
-                        Ok(created_ids) => {
-                            tracing::info!(
-                                root_id = %root_id_for_log,
-                                nodes_created = created_ids.len(),
-                                duration_ms = insert_start.elapsed().as_millis(),
-                                "Background markdown import completed"
-                            );
+
+                // Get the current tokio runtime handle and spawn on it
+                // This should work in both standalone tokio and Tauri contexts
+                if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                    handle.spawn(async move {
+                        let insert_start = std::time::Instant::now();
+                        match node_service.bulk_create_hierarchy(nodes_for_bulk).await {
+                            Ok(created_ids) => {
+                                tracing::info!(
+                                    root_id = %root_id_for_log,
+                                    nodes_created = created_ids.len(),
+                                    duration_ms = insert_start.elapsed().as_millis(),
+                                    "Background markdown import completed"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    root_id = %root_id_for_log,
+                                    error = %e,
+                                    "Background markdown import failed"
+                                );
+                            }
                         }
-                        Err(e) => {
-                            tracing::error!(
-                                root_id = %root_id_for_log,
-                                error = %e,
-                                "Background markdown import failed"
-                            );
-                        }
-                    }
-                });
+                    });
+                } else {
+                    // Fallback: No tokio runtime available, do synchronous import
+                    tracing::warn!("No tokio runtime available, falling back to sync import");
+                    let _ = node_service
+                        .bulk_create_hierarchy(nodes_for_bulk)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!(error = %e, "Sync fallback bulk creation failed");
+                        });
+                }
             }
         }
     }
