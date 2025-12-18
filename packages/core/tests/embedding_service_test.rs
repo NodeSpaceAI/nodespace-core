@@ -317,7 +317,7 @@ async fn test_queue_for_embedding_root_node() -> Result<()> {
     embedding_service.queue_for_embedding(&root.id).await?;
 
     // Check that stale marker was created
-    let stale_ids = store.get_stale_embedding_root_ids(Some(10)).await?;
+    let stale_ids = store.get_stale_embedding_root_ids(Some(10), 0).await?;
     assert!(stale_ids.contains(&root.id));
     Ok(())
 }
@@ -333,7 +333,7 @@ async fn test_queue_for_embedding_child_node() -> Result<()> {
     embedding_service.queue_for_embedding(&child.id).await?;
 
     // Should have queued the root, not the child
-    let stale_ids = store.get_stale_embedding_root_ids(Some(10)).await?;
+    let stale_ids = store.get_stale_embedding_root_ids(Some(10), 0).await?;
     assert!(stale_ids.contains(&root.id));
     Ok(())
 }
@@ -347,7 +347,7 @@ async fn test_queue_for_embedding_non_embeddable() -> Result<()> {
     embedding_service.queue_for_embedding(&task.id).await?;
 
     // Should not have queued non-embeddable type
-    let stale_ids = store.get_stale_embedding_root_ids(Some(10)).await?;
+    let stale_ids = store.get_stale_embedding_root_ids(Some(10), 0).await?;
     assert!(!stale_ids.contains(&task.id));
     Ok(())
 }
@@ -367,7 +367,7 @@ async fn test_queue_nodes_for_embedding_deduplicates_roots() -> Result<()> {
         .await?;
 
     // Should only queue root once
-    let stale_ids = store.get_stale_embedding_root_ids(Some(10)).await?;
+    let stale_ids = store.get_stale_embedding_root_ids(Some(10), 0).await?;
     assert_eq!(
         stale_ids.len(),
         1,

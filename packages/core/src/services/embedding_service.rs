@@ -111,6 +111,11 @@ where
         &self.store
     }
 
+    /// Get reference to the embedding configuration
+    pub fn config(&self) -> &EmbeddingConfig {
+        &self.config
+    }
+
     // =========================================================================
     // Root Node Detection
     // =========================================================================
@@ -298,12 +303,16 @@ where
             ));
 
             // Move forward with overlap, ensuring we land on a char boundary
-            start = if actual_end >= content.len() {
-                actual_end
-            } else {
-                let overlap_start = (actual_end - overlap_chars).max(start + 1);
-                Self::find_char_boundary(content, overlap_start)
-            };
+            if actual_end >= content.len() {
+                // We've processed the entire content, exit the loop
+                break;
+            }
+
+            // Calculate where to start the next chunk with overlap
+            // Ensure we advance at least (chunk_size - overlap) to prevent infinite loops
+            let min_advance = max_chars.saturating_sub(overlap_chars).max(1);
+            let next_start = start + min_advance;
+            start = Self::find_char_boundary(content, next_start);
         }
 
         chunks
@@ -432,16 +441,19 @@ where
     /// Process all stale embeddings
     ///
     /// Fetches root node IDs with stale embeddings and re-generates them.
+    /// Uses per-root debounce: only processes embeddings that were marked stale
+    /// more than `debounce_duration_secs` ago (default 30s), allowing rapid
+    /// changes to accumulate before processing.
     pub async fn process_stale_embeddings(
         &self,
         limit: Option<usize>,
     ) -> Result<usize, NodeServiceError> {
         let batch_size = limit.unwrap_or(DEFAULT_BATCH_SIZE);
 
-        // Get stale root IDs from embedding table
+        // Get stale root IDs from embedding table, filtered by debounce duration
         let stale_ids = self
             .store
-            .get_stale_embedding_root_ids(Some(batch_size as i64))
+            .get_stale_embedding_root_ids(Some(batch_size as i64), self.config.debounce_duration_secs)
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to query stale embeddings: {}", e))
@@ -765,6 +777,146 @@ mod tests {
         assert_eq!(
             NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 11),
             10
+        );
+    }
+
+    /// Helper struct for testing chunk_content without full service initialization
+    struct ChunkTester {
+        config: EmbeddingConfig,
+    }
+
+    impl ChunkTester {
+        fn new() -> Self {
+            Self {
+                config: EmbeddingConfig::default(),
+            }
+        }
+
+        fn chunk_content(&self, content: &str) -> Vec<(i32, i32, String)> {
+            let chars_per_token = self.config.chars_per_token_estimate;
+            let max_chars = self.config.max_tokens_per_chunk * chars_per_token;
+            let overlap_chars = self.config.overlap_tokens * chars_per_token;
+
+            if content.len() <= max_chars {
+                return vec![(0, content.len() as i32, content.to_string())];
+            }
+
+            let mut chunks = Vec::new();
+            let mut start = 0;
+
+            while start < content.len() {
+                let end = Self::find_char_boundary(content, (start + max_chars).min(content.len()));
+
+                let actual_end = if end < content.len() {
+                    if let Some(pos) = content[start..end].rfind("\n\n") {
+                        start + pos + 2
+                    } else if let Some(pos) = content[start..end].rfind(". ") {
+                        start + pos + 2
+                    } else if let Some(pos) = content[start..end].rfind(' ') {
+                        start + pos + 1
+                    } else {
+                        end
+                    }
+                } else {
+                    end
+                };
+
+                chunks.push((
+                    start as i32,
+                    actual_end as i32,
+                    content[start..actual_end].to_string(),
+                ));
+
+                if actual_end >= content.len() {
+                    break;
+                }
+
+                let min_advance = max_chars.saturating_sub(overlap_chars).max(1);
+                let next_start = start + min_advance;
+                start = Self::find_char_boundary(content, next_start);
+            }
+
+            chunks
+        }
+
+        fn find_char_boundary(s: &str, mut index: usize) -> usize {
+            if index >= s.len() {
+                return s.len();
+            }
+            while index > 0 && !s.is_char_boundary(index) {
+                index -= 1;
+            }
+            index
+        }
+    }
+
+    #[test]
+    fn test_chunk_content_no_infinite_loop() {
+        // Regression test for infinite loop bug:
+        // When content is just over 2 chunks worth, the overlap calculation
+        // could cause start to only advance by 1 byte, creating hundreds of chunks.
+        let tester = ChunkTester::new();
+        let config = &tester.config;
+
+        // Create content that's about 2.5 chunks worth
+        let max_chars = config.max_tokens_per_chunk * config.chars_per_token_estimate;
+        let content_len = max_chars * 2 + (max_chars / 2);
+        let content = "x".repeat(content_len);
+
+        let chunks = tester.chunk_content(&content);
+
+        // With default config (512 tokens, 100 overlap, 3 chars/token):
+        // - max_chars = 1536, overlap_chars = 300
+        // - Content ~3840 chars should produce ~3-4 chunks, not hundreds
+        assert!(
+            chunks.len() <= 10,
+            "Expected at most 10 chunks for {}B content, got {} chunks",
+            content_len,
+            chunks.len()
+        );
+
+        // Verify chunks cover the entire content
+        assert_eq!(chunks.first().unwrap().0, 0, "First chunk should start at 0");
+        assert_eq!(
+            chunks.last().unwrap().1 as usize,
+            content.len(),
+            "Last chunk should end at content length"
+        );
+    }
+
+    #[test]
+    fn test_chunk_content_single_chunk() {
+        let tester = ChunkTester::new();
+        let short_content = "Hello world, this is a short test.";
+
+        let chunks = tester.chunk_content(short_content);
+
+        assert_eq!(chunks.len(), 1, "Short content should be single chunk");
+        assert_eq!(chunks[0].0, 0);
+        assert_eq!(chunks[0].1 as usize, short_content.len());
+        assert_eq!(chunks[0].2, short_content);
+    }
+
+    #[test]
+    fn test_chunk_content_breaks_at_sentences() {
+        let tester = ChunkTester::new();
+        let config = &tester.config;
+        let max_chars = config.max_tokens_per_chunk * config.chars_per_token_estimate;
+
+        // Create content with a sentence boundary before max_chars
+        let first_part = "x".repeat(max_chars - 100);
+        let sentence_break = ". This is a new sentence. ";
+        let second_part = "y".repeat(max_chars);
+        let content = format!("{}{}{}", first_part, sentence_break, second_part);
+
+        let chunks = tester.chunk_content(&content);
+
+        // Should break at the sentence boundary
+        assert!(chunks.len() >= 2, "Should have at least 2 chunks");
+        // First chunk should end after the sentence break
+        assert!(
+            chunks[0].2.ends_with(". "),
+            "First chunk should end at sentence boundary"
         );
     }
 }

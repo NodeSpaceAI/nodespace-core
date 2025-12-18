@@ -59,7 +59,7 @@
     "@vitest/browser": "2.1.9",
     "@vitest/coverage-v8": "^2.1.8",
     "autoprefixer": "^10.4.21",
-    "baseline-browser-mapping": "^2.9.7",
+    "baseline-browser-mapping": "^2.9.9",
     "bits-ui": "^1.4.7",
     "concurrently": "^9.2.1",
     "eslint": "^9.32.0",

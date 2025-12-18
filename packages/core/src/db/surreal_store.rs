@@ -4527,19 +4527,33 @@ where
         Ok(())
     }
 
-    /// Get all root node IDs with stale embeddings
+    /// Get all root node IDs with stale embeddings that are ready for processing
     ///
-    /// Returns node IDs that need re-embedding.
-    pub async fn get_stale_embedding_root_ids(&self, limit: Option<i64>) -> Result<Vec<String>> {
+    /// Returns node IDs that need re-embedding, filtered by debounce duration.
+    /// Only returns embeddings marked stale more than `debounce_secs` ago,
+    /// allowing rapid changes to accumulate before processing.
+    ///
+    /// # Arguments
+    /// * `limit` - Optional max number of results
+    /// * `debounce_secs` - Minimum seconds since last modification (default: 30)
+    pub async fn get_stale_embedding_root_ids(
+        &self,
+        limit: Option<i64>,
+        debounce_secs: u64,
+    ) -> Result<Vec<String>> {
         // Use GROUP BY node for uniqueness since DISTINCT doesn't work with record::id() in SurrealDB
         // Must include `node` in SELECT to satisfy GROUP BY requirements
+        // Filter by modified_at to implement per-root debounce
         let sql = if limit.is_some() {
-            "SELECT node, record::id(node) AS node_id FROM embedding WHERE stale = true GROUP BY node LIMIT $limit;"
+            "SELECT node, record::id(node) AS node_id FROM embedding WHERE stale = true AND modified_at < time::now() - type::duration($debounce) GROUP BY node LIMIT $limit;"
         } else {
-            "SELECT node, record::id(node) AS node_id FROM embedding WHERE stale = true GROUP BY node;"
+            "SELECT node, record::id(node) AS node_id FROM embedding WHERE stale = true AND modified_at < time::now() - type::duration($debounce) GROUP BY node;"
         };
 
-        let mut query_builder = self.db.query(sql);
+        // Format debounce as SurrealDB duration string (e.g., "30s")
+        let debounce_str = format!("{}s", debounce_secs);
+
+        let mut query_builder = self.db.query(sql).bind(("debounce", debounce_str));
 
         if let Some(lim) = limit {
             query_builder = query_builder.bind(("limit", lim));

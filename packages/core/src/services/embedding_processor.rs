@@ -1,19 +1,22 @@
 //! Background Embedding Processor (Issue #729)
 //!
 //! Provides event-driven background processing of stale root-aggregate embeddings:
-//! - Sleeps until woken by a trigger (no polling when idle)
-//! - Processes all stale embeddings until queue is empty
-//! - Returns to sleep waiting for next trigger
+//! - Event-driven with periodic debounce checking
+//! - Per-root debounce: each root waits 30s after last change before embedding
+//! - Processes embeddings that have passed their debounce window
 //! - Graceful shutdown support
 //!
-//! ## Event-Driven Model
+//! ## Event-Driven Model with Per-Root Debounce
 //!
-//! Instead of polling every N seconds, the processor:
-//! 1. Sleeps waiting for a wake signal
-//! 2. When woken, processes ALL stale embeddings until none remain
-//! 3. Returns to sleep
+//! The processor combines event-driven wake with periodic debounce checking:
+//! 1. Woken by triggers when nodes change (marks stale, resets debounce timer)
+//! 2. Checks periodically (every debounce_duration) for embeddings ready to process
+//! 3. Only processes embeddings marked stale > debounce_duration ago
 //!
-//! This is more efficient than polling - no CPU/DB overhead when idle.
+//! This ensures:
+//! - Rapid edits don't trigger constant re-embedding (debounce per root)
+//! - Bulk imports wait until complete before embedding (all children created)
+//! - Independent documents don't block each other (per-root timers)
 //!
 //! ## Root-Aggregate Model
 //!
@@ -21,10 +24,12 @@
 //! - Only root nodes (no parent) of embeddable types get embedded
 //! - Embeddings are stored in the `embedding` table, not on nodes
 //! - The `stale` flag tracks which embeddings need regeneration
+//! - The `modified_at` field tracks when embedding was marked stale (for debounce)
 
 use crate::services::error::NodeServiceError;
 use crate::services::NodeEmbeddingService;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Handle to wake the embedding processor
@@ -105,16 +110,24 @@ where
     /// # Returns
     /// A new EmbeddingProcessor instance with active background task
     pub fn new(embedding_service: Arc<NodeEmbeddingService<C>>) -> Result<Self, NodeServiceError> {
-        tracing::info!("EmbeddingProcessor initializing (event-driven model)");
+        tracing::info!("EmbeddingProcessor initializing (event-driven model with per-root debounce)");
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(10);
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
 
-        // Spawn event-driven background task
+        // Get debounce duration from config (default 30s)
+        let debounce_secs = embedding_service.config().debounce_duration_secs;
+        let check_interval = Duration::from_secs(debounce_secs);
+
+        // Spawn event-driven background task with periodic debounce check
         let service_clone = embedding_service.clone();
         tokio::spawn(async move {
+            // Interval for checking debounced embeddings
+            // Fires every debounce_duration to catch embeddings that have passed their window
+            let mut interval = tokio::time::interval(check_interval);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
             loop {
-                // Sleep until triggered or shutdown
                 tokio::select! {
                     biased; // Check shutdown first
 
@@ -124,11 +137,18 @@ where
                     }
 
                     Some(_) = trigger_rx.recv() => {
-                        tracing::debug!("EmbeddingProcessor woken up");
+                        tracing::debug!("EmbeddingProcessor woken up by trigger");
                         // Drain any additional pending triggers (coalesce rapid triggers)
                         while trigger_rx.try_recv().is_ok() {}
 
-                        // Process until no more stale embeddings
+                        // Process embeddings that have passed their debounce window
+                        Self::process_until_empty(&service_clone).await;
+                    }
+
+                    _ = interval.tick() => {
+                        // Periodic check for embeddings that have passed their debounce window
+                        // This catches embeddings marked stale during bulk operations
+                        // where the wake signal happened before debounce expired
                         Self::process_until_empty(&service_clone).await;
                     }
                 }

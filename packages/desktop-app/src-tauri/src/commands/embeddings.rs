@@ -451,10 +451,12 @@ pub async fn get_stale_root_count(
     node_service: State<'_, NodeService>,
 ) -> Result<usize, CommandError> {
     // Use new embedding table model (Issue #729)
+    // Pass debounce_secs=0 to get ALL stale embeddings (for reporting purposes)
+    // This shows the user the true count of pending work, including items still in debounce window
     let service_with_client = node_service.with_client(TAURI_CLIENT_ID);
     let store = service_with_client.store();
     let stale_root_ids = store
-        .get_stale_embedding_root_ids(None)
+        .get_stale_embedding_root_ids(None, 0)
         .await
         .map_err(|e| {
             command_error_with_details(
