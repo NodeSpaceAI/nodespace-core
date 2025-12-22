@@ -110,7 +110,9 @@ where
     /// # Returns
     /// A new EmbeddingProcessor instance with active background task
     pub fn new(embedding_service: Arc<NodeEmbeddingService<C>>) -> Result<Self, NodeServiceError> {
-        tracing::info!("EmbeddingProcessor initializing (event-driven model with per-root debounce)");
+        tracing::info!(
+            "EmbeddingProcessor initializing (event-driven model with per-root debounce)"
+        );
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(10);
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);

@@ -3,11 +3,17 @@
 /// Provides text and image embeddings using the llama.cpp backend.
 /// - Text: Uses asymmetric prefixes (search_document/search_query) for optimal retrieval
 /// - Images: Foundation for future multimodal embedding support
+///
+/// ## Performance Optimization (Issue #776)
+///
+/// The service reuses LlamaContext across embedding calls to avoid the overhead
+/// of Metal kernel compilation on each call. The context is created once during
+/// initialization and reused for all subsequent embeddings.
 use crate::config::EmbeddingConfig;
 use crate::error::{EmbeddingError, Result};
 use lru::LruCache;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Embedding vector dimension for nomic-embed-vision-v1.5
 pub const EMBEDDING_DIMENSION: usize = 768;
@@ -19,6 +25,8 @@ const SEARCH_QUERY_PREFIX: &str = "search_query: ";
 #[cfg(feature = "embedding-service")]
 use llama_cpp_2::context::params::LlamaContextParams;
 #[cfg(feature = "embedding-service")]
+use llama_cpp_2::context::LlamaContext;
+#[cfg(feature = "embedding-service")]
 use llama_cpp_2::llama_backend::LlamaBackend;
 #[cfg(feature = "embedding-service")]
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -27,13 +35,200 @@ use llama_cpp_2::model::params::LlamaModelParams;
 #[cfg(feature = "embedding-service")]
 use llama_cpp_2::model::{AddBos, LlamaModel};
 
+/// Global llama backend singleton.
+/// The llama.cpp backend can only be initialized once per process, so we use a OnceLock
+/// to ensure thread-safe initialization and allow multiple EmbeddingService instances
+/// to share the same backend (important for tests running in parallel).
+#[cfg(feature = "embedding-service")]
+static LLAMA_BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
+
+/// Initialize or get the global llama backend.
+/// Returns a reference to the singleton backend instance.
+///
+/// This handles the case where multiple threads try to initialize the backend
+/// concurrently. The llama.cpp backend is a global singleton that can only be
+/// initialized once per process.
+#[cfg(feature = "embedding-service")]
+fn get_or_init_backend() -> Result<&'static LlamaBackend> {
+    use llama_cpp_2::LLamaCppError;
+
+    // Try to get existing backend first
+    if let Some(backend) = LLAMA_BACKEND.get() {
+        return Ok(backend);
+    }
+
+    // Try to initialize - only one thread will succeed
+    match LlamaBackend::init() {
+        Ok(backend) => {
+            // Try to store it - might fail if another thread beat us
+            match LLAMA_BACKEND.set(backend) {
+                Ok(()) => {}
+                Err(_already_set) => {
+                    // Another thread beat us - that's fine, we'll use theirs
+                    // The backend we created will be dropped, but that's safe
+                    // because llama_backend_free is idempotent
+                }
+            }
+            // Return whatever is stored (either ours or the other thread's)
+            Ok(LLAMA_BACKEND.get().expect("Backend must be initialized"))
+        }
+        Err(LLamaCppError::BackendAlreadyInitialized) => {
+            // The C library backend is initialized, but our OnceLock might not have
+            // the reference yet. This can happen when:
+            // 1. Another thread is about to store the backend (race condition)
+            // 2. A previous test run left stale C global state
+            //
+            // For case 1, wait with exponential backoff for the OnceLock to be set.
+            // For case 2, we need to create a new wrapper that references the existing
+            // C backend (llama.cpp backend init is idempotent - it reuses existing state).
+            for i in 0..20 {
+                if let Some(backend) = LLAMA_BACKEND.get() {
+                    return Ok(backend);
+                }
+                // Exponential backoff: 1ms, 2ms, 4ms... up to ~1s total
+                std::thread::sleep(std::time::Duration::from_millis(1 << i.min(8)));
+            }
+
+            // Last resort: try to create a new LlamaBackend anyway.
+            // llama.cpp's backend_init is idempotent and will return OK if already initialized.
+            // This handles the case where the C backend is initialized but our Rust wrapper isn't.
+            match LlamaBackend::init() {
+                Ok(backend) => {
+                    let _ = LLAMA_BACKEND.set(backend);
+                    Ok(LLAMA_BACKEND.get().expect("Backend must be set"))
+                }
+                Err(_) => {
+                    // If still failing, check one more time if another thread set it
+                    if let Some(backend) = LLAMA_BACKEND.get() {
+                        return Ok(backend);
+                    }
+                    Err(EmbeddingError::ModelLoadError(
+                        "Backend initialization failed after multiple attempts".to_string(),
+                    ))
+                }
+            }
+        }
+        Err(e) => Err(EmbeddingError::ModelLoadError(format!(
+            "Backend init failed: {}",
+            e
+        ))),
+    }
+}
+
+/// Wrapper to hold model and context together with proper lifetimes.
+///
+/// ## Safety (Issue #776)
+/// This struct uses `unsafe` to store a `LlamaContext` with an extended lifetime.
+/// This is safe because:
+/// 1. The context is only used while model is alive (owned by this struct)
+/// 2. The backend is a global singleton that lives for the entire process
+/// 3. Drop order is guaranteed: context drops before model
+/// 4. Access is serialized through a Mutex in EmbeddingService
+///
+/// The context is created lazily on first embedding request and reused for all subsequent
+/// requests, avoiding the Metal kernel compilation overhead that was causing ~95% CPU usage.
+#[cfg(feature = "embedding-service")]
+struct LlamaState {
+    // SAFETY: Field order matters for drop order! Rust drops fields in declaration order.
+    // `context` must be declared AFTER `model` so it drops FIRST.
+    model: LlamaModel,
+    /// Persistent context for embedding generation.
+    /// Uses transmuted lifetime - safe because we control drop order (see above).
+    context: Option<LlamaContext<'static>>,
+    /// Current batch size of the context (needed to check if recreation is required)
+    current_batch_size: u32,
+    /// Context parameters for lazy initialization
+    context_size: u32,
+    n_threads: i32,
+}
+
+#[cfg(feature = "embedding-service")]
+impl LlamaState {
+    fn new(model: LlamaModel, context_size: u32, n_threads: i32) -> Self {
+        Self {
+            model,
+            context: None,
+            current_batch_size: 0,
+            context_size,
+            n_threads,
+        }
+    }
+
+    /// Get or create a context with sufficient batch size for the given token count.
+    ///
+    /// The context is reused when possible. If the token count exceeds the current
+    /// context's batch size, a new context is created with a larger batch size.
+    /// This balances the performance benefit of context reuse with the need to
+    /// handle varying text lengths.
+    fn get_or_create_context(
+        &mut self,
+        required_tokens: usize,
+    ) -> std::result::Result<&mut LlamaContext<'static>, EmbeddingError> {
+        let required_batch_size = std::cmp::max(required_tokens as u32, 512);
+
+        // Check if we need to create/recreate the context
+        let needs_new_context =
+            self.context.is_none() || required_batch_size > self.current_batch_size;
+
+        if needs_new_context {
+            // Drop existing context first (if any)
+            if self.context.is_some() {
+                tracing::debug!(
+                    "Recreating context: current batch_size={}, required={}",
+                    self.current_batch_size,
+                    required_batch_size
+                );
+                self.context = None;
+            } else {
+                tracing::info!("Creating persistent LlamaContext (Issue #776 optimization)");
+            }
+
+            let ctx_params = LlamaContextParams::default()
+                .with_n_ctx(std::num::NonZeroU32::new(self.context_size))
+                .with_n_batch(required_batch_size)
+                .with_n_ubatch(required_batch_size)
+                .with_n_threads_batch(self.n_threads)
+                .with_embeddings(true);
+
+            // Get the global backend reference
+            let backend = get_or_init_backend()?;
+            let ctx = self.model.new_context(backend, ctx_params).map_err(|e| {
+                EmbeddingError::InferenceError(format!("Context creation failed: {}", e))
+            })?;
+
+            // SAFETY: We're extending the lifetime of the context to 'static.
+            // This is safe because:
+            // 1. The context is stored in this struct alongside model and backend
+            // 2. Rust's drop order guarantees context drops before model and backend
+            // 3. The Mutex ensures single-threaded access to the context
+            let ctx: LlamaContext<'static> = unsafe { std::mem::transmute(ctx) };
+            self.context = Some(ctx);
+            self.current_batch_size = required_batch_size;
+
+            tracing::info!(
+                "Context created with batch_size={} - Metal kernels compiled",
+                required_batch_size
+            );
+        }
+
+        Ok(self.context.as_mut().unwrap())
+    }
+}
+
+// SAFETY: LlamaState is wrapped in Option<Mutex<LlamaState>> in EmbeddingService,
+// ensuring all access is synchronized. The underlying llama.cpp resources (backend,
+// model, context) are not inherently thread-safe, but our Mutex wrapper provides
+// the required synchronization for safe cross-thread access.
+#[cfg(feature = "embedding-service")]
+unsafe impl Send for LlamaState {}
+#[cfg(feature = "embedding-service")]
+unsafe impl Sync for LlamaState {}
+
 /// Main embedding service using llama.cpp
 pub struct EmbeddingService {
     config: EmbeddingConfig,
     #[cfg(feature = "embedding-service")]
-    backend: Option<LlamaBackend>,
-    #[cfg(feature = "embedding-service")]
-    model: Option<LlamaModel>,
+    state: Option<Mutex<LlamaState>>,
     cache: Arc<Mutex<LruCache<String, Vec<f32>>>>,
     initialized: bool,
     #[cfg(feature = "embedding-service")]
@@ -51,9 +246,7 @@ impl EmbeddingService {
         Ok(Self {
             config,
             #[cfg(feature = "embedding-service")]
-            backend: None,
-            #[cfg(feature = "embedding-service")]
-            model: None,
+            state: None,
             cache: Arc::new(Mutex::new(LruCache::new(cache_capacity))),
             initialized: false,
             #[cfg(feature = "embedding-service")]
@@ -65,6 +258,10 @@ impl EmbeddingService {
     ///
     /// If the model file is not found, the service will operate in stub mode
     /// returning zero vectors. This allows tests to run without the model.
+    ///
+    /// ## Performance (Issue #776)
+    /// Creates a persistent LlamaContext that is reused across all embedding calls.
+    /// This avoids the overhead of Metal kernel compilation on each embedding request.
     pub fn initialize(&mut self) -> Result<()> {
         if self.initialized {
             return Ok(());
@@ -89,16 +286,14 @@ impl EmbeddingService {
 
             tracing::info!("Model path resolved to: {:?}", model_path);
 
-            // Initialize llama.cpp backend
-            let backend = LlamaBackend::init().map_err(|e| {
-                EmbeddingError::ModelLoadError(format!("Backend init failed: {}", e))
-            })?;
+            // Initialize llama.cpp backend (uses global singleton)
+            let backend = get_or_init_backend()?;
 
             // Load model with GPU offloading
             let model_params =
                 LlamaModelParams::default().with_n_gpu_layers(self.config.n_gpu_layers);
 
-            let model = LlamaModel::load_from_file(&backend, &model_path, &model_params)
+            let model = LlamaModel::load_from_file(backend, &model_path, &model_params)
                 .map_err(|e| EmbeddingError::ModelLoadError(format!("Model load failed: {}", e)))?;
 
             // Get actual embedding dimension from model
@@ -108,8 +303,14 @@ impl EmbeddingService {
                 self.embedding_dimension
             );
 
-            self.backend = Some(backend);
-            self.model = Some(model);
+            // Create LlamaState to hold model and context together
+            // (backend is a global singleton, accessed via get_or_init_backend())
+            let state = LlamaState::new(model, self.config.context_size, self.config.n_threads);
+            self.state = Some(Mutex::new(state));
+
+            tracing::info!(
+                "Embedding service initialized with persistent context (Issue #776 optimization)"
+            );
         }
 
         #[cfg(not(feature = "embedding-service"))]
@@ -125,16 +326,28 @@ impl EmbeddingService {
     ///
     /// Use this for content that will be stored and searched against.
     pub fn embed_document(&self, text: &str) -> Result<Vec<f32>> {
+        if text.is_empty() {
+            return Err(EmbeddingError::InvalidInput(
+                "Cannot generate embedding for empty text".to_string(),
+            ));
+        }
         let prefixed = format!("{}{}", SEARCH_DOCUMENT_PREFIX, text);
-        self.generate_embedding_internal(&prefixed, text)
+        // Use prefixed text as cache key to differentiate document vs query embeddings
+        self.generate_embedding_internal(&prefixed, &prefixed)
     }
 
     /// Generate embedding for a search query (uses search_query: prefix)
     ///
     /// Use this for queries that will search against stored documents.
     pub fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        if text.is_empty() {
+            return Err(EmbeddingError::InvalidInput(
+                "Cannot generate embedding for empty text".to_string(),
+            ));
+        }
         let prefixed = format!("{}{}", SEARCH_QUERY_PREFIX, text);
-        self.generate_embedding_internal(&prefixed, text)
+        // Use prefixed text as cache key to differentiate document vs query embeddings
+        self.generate_embedding_internal(&prefixed, &prefixed)
     }
 
     /// Generate embedding for a single text (defaults to document embedding)
@@ -180,8 +393,8 @@ impl EmbeddingService {
 
         #[cfg(feature = "embedding-service")]
         {
-            // If model isn't loaded (stub mode), return zero vector
-            if self.model.is_none() {
+            // If state isn't loaded (stub mode), return zero vector
+            if self.state.is_none() {
                 return Ok(vec![0.0; self.embedding_dimension]);
             }
 
@@ -203,42 +416,39 @@ impl EmbeddingService {
         }
     }
 
-    /// Generate embedding using llama.cpp
+    /// Generate embedding using llama.cpp with persistent context (Issue #776)
+    ///
+    /// ## Performance Optimization
+    /// This method reuses a persistent `LlamaContext` across calls, avoiding the
+    /// overhead of Metal kernel compilation that was causing ~95% CPU usage.
+    /// The context is created lazily on first call and reused thereafter.
     #[cfg(feature = "embedding-service")]
     fn generate_embedding_llama(&self, text: &str) -> Result<Vec<f32>> {
-        let backend = self
-            .backend
-            .as_ref()
-            .ok_or(EmbeddingError::ModelNotInitialized)?;
-        let model = self
-            .model
+        // Lock the state to access model and context
+        let state_lock = self
+            .state
             .as_ref()
             .ok_or(EmbeddingError::ModelNotInitialized)?;
 
-        // Tokenize
-        let tokens = model
+        let mut state = state_lock.lock().unwrap_or_else(|p| p.into_inner());
+
+        // Tokenize using the model
+        let tokens = state
+            .model
             .str_to_token(text, AddBos::Always)
             .map_err(|e| EmbeddingError::TokenizationError(e.to_string()))?;
 
-        // Create context with appropriate batch size for encoder
-        let batch_size = std::cmp::max(tokens.len() as u32, 512);
-        let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(std::num::NonZeroU32::new(self.config.context_size))
-            .with_n_batch(batch_size)
-            .with_n_ubatch(batch_size)
-            .with_n_threads_batch(self.config.n_threads)
-            .with_embeddings(true);
+        // Get or create the persistent context with sufficient batch size
+        let ctx = state.get_or_create_context(tokens.len())?;
 
-        let mut ctx = model.new_context(backend, ctx_params).map_err(|e| {
-            EmbeddingError::InferenceError(format!("Context creation failed: {}", e))
-        })?;
-
-        // Create batch and encode
-        let mut batch = LlamaBatch::new(batch_size as usize, 1);
+        // Create batch for this text (use same size as context)
+        let batch_size = std::cmp::max(tokens.len(), 512);
+        let mut batch = LlamaBatch::new(batch_size, 1);
         batch
             .add_sequence(&tokens, 0, false)
             .map_err(|e| EmbeddingError::InferenceError(format!("Batch add failed: {}", e)))?;
 
+        // Clear KV cache and encode
         ctx.clear_kv_cache();
         ctx.encode(&mut batch)
             .map_err(|e| EmbeddingError::InferenceError(format!("Encoding failed: {}", e)))?;

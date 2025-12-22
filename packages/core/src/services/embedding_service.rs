@@ -453,7 +453,10 @@ where
         // Get stale root IDs from embedding table, filtered by debounce duration
         let stale_ids = self
             .store
-            .get_stale_embedding_root_ids(Some(batch_size as i64), self.config.debounce_duration_secs)
+            .get_stale_embedding_root_ids(
+                Some(batch_size as i64),
+                self.config.debounce_duration_secs,
+            )
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to query stale embeddings: {}", e))
@@ -876,7 +879,11 @@ mod tests {
         );
 
         // Verify chunks cover the entire content
-        assert_eq!(chunks.first().unwrap().0, 0, "First chunk should start at 0");
+        assert_eq!(
+            chunks.first().unwrap().0,
+            0,
+            "First chunk should start at 0"
+        );
         assert_eq!(
             chunks.last().unwrap().1 as usize,
             content.len(),

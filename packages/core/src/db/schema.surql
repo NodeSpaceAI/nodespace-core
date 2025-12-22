@@ -192,6 +192,9 @@ DEFINE INDEX IF NOT EXISTS idx_embedding_node ON TABLE embedding COLUMNS node;
 DEFINE INDEX IF NOT EXISTS idx_embedding_stale ON TABLE embedding COLUMNS stale;
 -- Unique constraint: one embedding per (node, model, chunk_index) combination
 DEFINE INDEX IF NOT EXISTS idx_embedding_unique ON TABLE embedding COLUMNS node, model_name, chunk_index UNIQUE;
+-- MTREE vector index for fast semantic similarity search (Issue #776)
+-- Uses cosine distance for nomic-embed-text-v1.5 embeddings
+DEFINE INDEX IF NOT EXISTS idx_embedding_vector ON TABLE embedding COLUMNS vector MTREE DIMENSION 768 DIST COSINE TYPE F32;
 
 -- ============================================================================
 -- Schema Version Tracking

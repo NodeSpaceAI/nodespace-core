@@ -4655,15 +4655,20 @@ where
             similarity: f64,
         }
 
-        // Query to get best similarity per node across all chunks
+        // Query using KNN operator for MTREE-indexed vector search (Issue #776)
+        // The <|K|> operator leverages the MTREE index for fast approximate nearest neighbor search.
+        // We fetch more candidates (limit * 3) to account for:
+        // 1. Multiple chunks per node (grouped later)
+        // 2. Threshold filtering (some may not meet similarity threshold)
         // Note: SurrealDB doesn't support HAVING, so we use a subquery with WHERE
+        let knn_limit = limit * 3; // Fetch more candidates for grouping/filtering
         let query = r#"
             SELECT * FROM (
                 SELECT
                     node,
                     math::max(vector::similarity::cosine(vector, $query_vector)) AS similarity
                 FROM embedding
-                WHERE stale = false
+                WHERE stale = false AND vector <|$knn_limit|> $query_vector
                 GROUP BY node
             )
             WHERE similarity > $threshold
@@ -4677,6 +4682,7 @@ where
             .bind(("query_vector", query_vector.to_vec()))
             .bind(("threshold", min_similarity))
             .bind(("limit", limit))
+            .bind(("knn_limit", knn_limit))
             .await
             .context("Failed to execute embedding search")?;
 
@@ -5041,13 +5047,16 @@ where
 
     /// Create a stale embedding marker for a new root node
     ///
-    /// Creates an empty embedding record marked as stale to queue it for processing.
+    /// Creates an embedding record with a zero vector marked as stale to queue it for processing.
     /// Used when a new root node is created that should be embedded.
+    ///
+    /// Note: Uses a 768-dim zero vector instead of empty array to ensure compatibility
+    /// with MTREE vector index which requires consistent dimensions.
     pub async fn create_stale_embedding_marker(&self, node_id: &str) -> Result<()> {
         let query = r#"
             CREATE embedding CONTENT {
                 node: type::thing('node', $node_id),
-                vector: [],
+                vector: array::repeat(0.0, 768),
                 dimension: 768,
                 model_name: 'nomic-embed-text-v1.5',
                 chunk_index: 0,
