@@ -546,8 +546,17 @@ async fn test_knn_search_with_mock_embeddings() -> Result<()> {
         "First result should be the exact match"
     );
     assert!(
-        (results[0].similarity - 1.0).abs() < 0.001,
-        "Exact match should have similarity ~1.0"
+        (results[0].max_similarity - 1.0).abs() < 0.001,
+        "Exact match should have max_similarity ~1.0"
+    );
+    // For a single chunk document, score should equal max_similarity (log10(1) = 0)
+    assert!(
+        (results[0].score - results[0].max_similarity).abs() < 0.001,
+        "Single chunk score should equal max_similarity"
+    );
+    assert_eq!(
+        results[0].matching_chunks, 1,
+        "Should have 1 matching chunk"
     );
 
     // Second result should be node2 (similar to cats)
@@ -668,8 +677,152 @@ async fn test_knn_search_with_multiple_chunks() -> Result<()> {
 
     // Should return the best similarity (from chunk2)
     assert!(
-        results[0].similarity > 0.99,
+        results[0].max_similarity > 0.99,
         "Should return best chunk similarity"
+    );
+
+    // With 2 matching chunks (both above 0.5 threshold), score should be boosted
+    // Score = max_similarity * (1 + 0.3 * log10(2)) ≈ max_similarity * 1.09
+    assert!(
+        results[0].matching_chunks >= 1,
+        "Should have at least 1 matching chunk"
+    );
+    // Score should be >= max_similarity (breadth boost is always positive)
+    assert!(
+        results[0].score >= results[0].max_similarity * 0.99, // Allow small float error
+        "Score should be at least max_similarity"
+    );
+
+    Ok(())
+}
+
+/// Test that multi-chunk scoring boosts documents with broader relevance (Issue #778)
+///
+/// Scenario:
+/// - Document A: Single chunk with similarity 0.85
+/// - Document B: Five chunks, best similarity 0.80
+///
+/// Expected: Document B should rank higher due to breadth boost
+#[tokio::test]
+async fn test_multi_chunk_scoring_breadth_boost() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Document A: Single high-scoring chunk
+    let doc_a = create_root_node(&node_service, "text", "Single chunk document").await?;
+
+    // Document B: Multiple moderate-scoring chunks
+    let doc_b = create_root_node(&node_service, "text", "Multi-chunk document").await?;
+
+    // Create base query vector
+    let mut query_vec = vec![0.0f32; 768];
+    query_vec[0] = 1.0;
+
+    // Document A: Single chunk with higher similarity (0.85)
+    // Vector is close to query but not identical
+    let mut vec_a = vec![0.0f32; 768];
+    vec_a[0] = 0.9;
+    vec_a[1] = 0.3;
+
+    store
+        .upsert_embeddings(
+            &doc_a.id,
+            vec![NewEmbedding {
+                node_id: doc_a.id.clone(),
+                vector: vec_a,
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 100,
+                total_chunks: 1,
+                content_hash: "hash-a".to_string(),
+                token_count: 50,
+            }],
+        )
+        .await?;
+
+    // Document B: Multiple chunks with moderate similarity (best ~0.80)
+    // All chunks should pass threshold (0.5) but have lower max than doc_a
+    let chunks: Vec<NewEmbedding> = (0..5)
+        .map(|i| {
+            let mut vec = vec![0.0f32; 768];
+            // Base similarity around 0.75-0.80
+            vec[0] = 0.8 - (i as f32 * 0.02); // 0.80, 0.78, 0.76, 0.74, 0.72
+            vec[1] = 0.4 + (i as f32 * 0.05); // Slight variation
+
+            NewEmbedding {
+                node_id: doc_b.id.clone(),
+                vector: vec,
+                model_name: Some("test-model".to_string()),
+                chunk_index: i,
+                chunk_start: i * 200,
+                chunk_end: (i + 1) * 200,
+                total_chunks: 5,
+                content_hash: "hash-b".to_string(),
+                token_count: 100,
+            }
+        })
+        .collect();
+
+    store.upsert_embeddings(&doc_b.id, chunks).await?;
+
+    // Search with threshold that includes all chunks
+    let results = store.search_embeddings(&query_vec, 10, Some(0.5)).await?;
+
+    // Should have both documents
+    assert!(
+        results.len() >= 2,
+        "Should return at least both documents, got {}",
+        results.len()
+    );
+
+    // Find both documents in results
+    let doc_a_result = results.iter().find(|r| r.node_id == doc_a.id);
+    let doc_b_result = results.iter().find(|r| r.node_id == doc_b.id);
+
+    assert!(doc_a_result.is_some(), "Document A should be in results");
+    assert!(doc_b_result.is_some(), "Document B should be in results");
+
+    let doc_a_result = doc_a_result.unwrap();
+    let doc_b_result = doc_b_result.unwrap();
+
+    // Verify document A has higher max_similarity but only 1 chunk
+    assert_eq!(doc_a_result.matching_chunks, 1, "Doc A should have 1 chunk");
+    assert!(
+        doc_b_result.matching_chunks >= 3,
+        "Doc B should have multiple chunks (got {})",
+        doc_b_result.matching_chunks
+    );
+
+    // Verify the score boost for document B
+    // Score formula: max_similarity * (1 + 0.3 * log10(matching_chunks))
+    // Doc A: ~0.85 * 1.0 = 0.85 (log10(1) = 0)
+    // Doc B with 5 chunks: ~0.80 * 1.21 = 0.97 (log10(5) ≈ 0.70)
+    let expected_breadth_factor = 1.0 + 0.3 * (doc_b_result.matching_chunks as f64).log10();
+    let expected_doc_b_score = doc_b_result.max_similarity * expected_breadth_factor;
+
+    assert!(
+        (doc_b_result.score - expected_doc_b_score).abs() < 0.001,
+        "Doc B score should match formula: expected {}, got {}",
+        expected_doc_b_score,
+        doc_b_result.score
+    );
+
+    // Key assertion: Document B should have higher SCORE despite lower max_similarity
+    // This validates the breadth boost is working
+    assert!(
+        doc_b_result.score > doc_a_result.score,
+        "Doc B (score: {:.3}, max_sim: {:.3}, chunks: {}) should rank higher than Doc A (score: {:.3}, max_sim: {:.3}, chunks: {})",
+        doc_b_result.score, doc_b_result.max_similarity, doc_b_result.matching_chunks,
+        doc_a_result.score, doc_a_result.max_similarity, doc_a_result.matching_chunks
+    );
+
+    // Verify the results are sorted by score (not max_similarity)
+    let first_result = &results[0];
+    assert_eq!(
+        first_result.node_id, doc_b.id,
+        "Document B should be first due to higher score"
     );
 
     Ok(())

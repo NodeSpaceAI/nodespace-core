@@ -4749,10 +4749,27 @@ where
         Ok(())
     }
 
-    /// Search embeddings by vector similarity
+    /// Breadth boost factor for multi-chunk scoring (Issue #778)
+    /// Formula: score = max_similarity * (1 + BREADTH_BOOST * log10(matching_chunks))
+    const BREADTH_BOOST: f64 = 0.3;
+
+    /// Search embeddings by vector similarity with multi-chunk scoring (Issue #778)
     ///
-    /// Returns the best-matching chunk per node, grouped by node.
-    /// Uses SurrealDB's native vector similarity functions.
+    /// Returns nodes ranked by a composite score that considers both:
+    /// 1. Maximum chunk similarity (primary signal)
+    /// 2. Number of matching chunks (breadth of relevance)
+    ///
+    /// Documents with multiple relevant chunks rank higher than those with
+    /// a single high-scoring chunk, ensuring broader relevance is rewarded.
+    ///
+    /// ## Scoring Formula
+    /// ```text
+    /// score = max_similarity * (1 + 0.3 * log10(matching_chunks))
+    /// ```
+    ///
+    /// ## Examples
+    /// - Doc A: 1 chunk @ 0.85 → score = 0.85
+    /// - Doc B: 5 chunks @ 0.80 max → score = 0.80 * 1.21 = 0.97
     ///
     /// # Arguments
     /// * `query_vector` - The query embedding vector
@@ -4766,35 +4783,47 @@ where
     ) -> Result<Vec<crate::models::EmbeddingSearchResult>> {
         let min_similarity = threshold.unwrap_or(0.5);
 
-        // Intermediate struct for raw SurrealDB results
+        // Intermediate struct for raw SurrealDB results with chunk count
         // Note: We select `node` directly instead of `record::id(node)` because
         // SurrealDB 2.3 doesn't allow function calls in SELECT with GROUP BY
         #[derive(Debug, serde::Deserialize)]
         struct RawSearchResult {
             node: surrealdb::sql::Thing,
-            similarity: f64,
+            max_similarity: f64,
+            matching_chunks: i64,
         }
 
         // Query using KNN operator for MTREE-indexed vector search (Issue #776)
+        // Enhanced for multi-chunk scoring (Issue #778):
+        // - We calculate similarity for each chunk
+        // - Count how many chunks exceed the threshold
+        // - Group by node, taking max similarity and count
+        //
         // The <|K|> operator leverages the MTREE index for fast approximate nearest neighbor search.
-        // We fetch more candidates (limit * 3) to account for:
+        // We fetch more candidates (limit * 5) to account for:
         // 1. Multiple chunks per node (grouped later)
         // 2. Threshold filtering (some may not meet similarity threshold)
         // Note: SurrealDB's KNN operator <|K|> requires a literal integer, not a bind parameter.
         // We interpolate knn_limit directly into the query string.
-        let knn_limit = limit * 3; // Fetch more candidates for grouping/filtering
+        let knn_limit = limit * 5; // Increased to capture more chunks per node
         let query = format!(
             r#"
             SELECT * FROM (
                 SELECT
                     node,
-                    math::max(vector::similarity::cosine(vector, $query_vector)) AS similarity
-                FROM embedding
-                WHERE stale = false AND vector <|{knn_limit}|> $query_vector
+                    math::max(similarity) AS max_similarity,
+                    count() AS matching_chunks
+                FROM (
+                    SELECT
+                        node,
+                        vector::similarity::cosine(vector, $query_vector) AS similarity
+                    FROM embedding
+                    WHERE stale = false AND vector <|{knn_limit}|> $query_vector
+                )
+                WHERE similarity > $threshold
                 GROUP BY node
             )
-            WHERE similarity > $threshold
-            ORDER BY similarity DESC
+            ORDER BY max_similarity DESC
             LIMIT $limit;
         "#
         );
@@ -4812,14 +4841,33 @@ where
             .take(0)
             .context("Failed to extract embedding search results")?;
 
-        // Convert Thing to node_id string
-        let results = raw_results
+        // Convert to EmbeddingSearchResult with composite score calculation
+        // Score formula: max_similarity * (1 + BREADTH_BOOST * log10(matching_chunks))
+        let mut results: Vec<crate::models::EmbeddingSearchResult> = raw_results
             .into_iter()
-            .map(|r| crate::models::EmbeddingSearchResult {
-                node_id: r.node.id.to_raw(),
-                similarity: r.similarity,
+            .map(|r| {
+                // Calculate breadth factor: log10(chunks) gives 0 for 1 chunk, ~0.70 for 5, ~1.0 for 10
+                // Note: matching_chunks comes from SQL count() which always returns >= 1,
+                // but .max(1.0) guards against edge cases and prevents log10(0) = -inf
+                let breadth_factor =
+                    1.0 + Self::BREADTH_BOOST * (r.matching_chunks as f64).max(1.0).log10();
+                let score = r.max_similarity * breadth_factor;
+
+                crate::models::EmbeddingSearchResult {
+                    node_id: r.node.id.to_raw(),
+                    score,
+                    max_similarity: r.max_similarity,
+                    matching_chunks: r.matching_chunks,
+                }
             })
             .collect();
+
+        // Re-sort by composite score (DB sorted by max_similarity, we need score order)
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok(results)
     }

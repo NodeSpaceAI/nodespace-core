@@ -194,13 +194,46 @@ impl NewEmbedding {
 }
 
 /// Result of a semantic search including similarity score
+///
+/// The scoring algorithm considers both the best chunk similarity and the
+/// breadth of relevance (number of matching chunks). This ensures documents
+/// with multiple relevant sections rank higher than those with just one
+/// good match.
+///
+/// ## Scoring Formula
+///
+/// ```text
+/// score = max_similarity * (1 + BREADTH_BOOST * log10(matching_chunks))
+/// ```
+///
+/// Where:
+/// - `max_similarity`: Highest cosine similarity among all chunks
+/// - `matching_chunks`: Number of chunks exceeding the threshold
+/// - `BREADTH_BOOST`: Tuning parameter (default 0.3)
+///
+/// ## Examples
+///
+/// | Document | Max Sim | Chunks | Score |
+/// |----------|---------|--------|-------|
+/// | Doc A    | 0.85    | 1      | 0.85  |
+/// | Doc B    | 0.80    | 5      | 0.97  |
+///
+/// Doc B ranks higher due to broader relevance despite lower max similarity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingSearchResult {
     /// The node ID (extracted from embedding.node)
     pub node_id: String,
-    /// Best similarity score across all chunks
-    pub similarity: f64,
+
+    /// Composite relevance score (max_similarity * breadth_boost)
+    /// This is the primary ranking score.
+    pub score: f64,
+
+    /// Best similarity score across all chunks (raw cosine similarity)
+    pub max_similarity: f64,
+
+    /// Number of chunks that matched above the threshold
+    pub matching_chunks: i64,
 }
 
 /// Configuration for the embedding queue

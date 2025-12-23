@@ -646,6 +646,8 @@ where
     /// Search and return full nodes
     ///
     /// Convenience method that fetches the full Node objects for search results.
+    /// Returns nodes with their composite relevance scores (which account for
+    /// both similarity and breadth of matching chunks).
     pub async fn semantic_search_nodes(
         &self,
         query: &str,
@@ -657,7 +659,8 @@ where
         let mut nodes_with_scores = Vec::new();
         for result in results {
             if let Ok(Some(node)) = self.store.get_node(&result.node_id).await {
-                nodes_with_scores.push((node, result.similarity));
+                // Return composite score which accounts for breadth of relevance (Issue #778)
+                nodes_with_scores.push((node, result.score));
             }
         }
 
