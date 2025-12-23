@@ -71,7 +71,8 @@
     "release:view": "bun run scripts/release.ts view",
     "release:delete": "bun run scripts/release.ts delete",
     "release:bump": "bun run scripts/release.ts bump",
-    "release:help": "bun run scripts/release.ts --help"
+    "release:help": "bun run scripts/release.ts --help",
+    "import:docs": "bun run scripts/import-docs.ts"
   },
   "devDependencies": {
     "@types/jsdom": "^21.1.7",

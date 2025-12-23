@@ -788,38 +788,62 @@ where
                     });
                 }
             } else {
-                // Default: Fire-and-forget async for fast MCP response
-                // Use Handle::try_current().spawn() to ensure we're spawning on
-                // the current runtime (works in both standalone tokio and Tauri)
-                let node_service = Arc::clone(node_service);
+                // Default: Fire-and-forget async with STREAMING inserts for better concurrency
+                // Uses optimized store.create_node_streaming() - single SQL query per node
+                // No validation queries needed (nodes pre-validated, order pre-calculated)
+                let store = node_service.store.clone();
                 let root_id_for_log = root_id.clone();
 
                 // Get the current tokio runtime handle and spawn on it
-                // This should work in both standalone tokio and Tauri contexts
                 if let Ok(handle) = tokio::runtime::Handle::try_current() {
                     handle.spawn(async move {
                         let insert_start = std::time::Instant::now();
-                        match node_service.bulk_create_hierarchy(nodes_for_bulk).await {
-                            Ok(created_ids) => {
-                                tracing::info!(
-                                    root_id = %root_id_for_log,
-                                    nodes_created = created_ids.len(),
-                                    duration_ms = insert_start.elapsed().as_millis(),
-                                    "Background markdown import completed"
-                                );
+                        let total_nodes = nodes_for_bulk.len();
+                        let mut created_count = 0;
+                        let mut error_count = 0;
+
+                        // Stream inserts: one optimized SQL query per node with yielding
+                        for (i, (id, node_type, content, parent_id, order, properties)) in
+                            nodes_for_bulk.into_iter().enumerate()
+                        {
+                            // Use streaming method - single SQL query, no validation overhead
+                            match store
+                                .create_node_streaming(
+                                    id, node_type, content, parent_id, order, properties,
+                                )
+                                .await
+                            {
+                                Ok(_) => created_count += 1,
+                                Err(e) => {
+                                    error_count += 1;
+                                    if error_count <= 3 {
+                                        tracing::warn!(
+                                            root_id = %root_id_for_log,
+                                            error = %e,
+                                            "Streaming import node creation failed"
+                                        );
+                                    }
+                                }
                             }
-                            Err(e) => {
-                                tracing::error!(
-                                    root_id = %root_id_for_log,
-                                    error = %e,
-                                    "Background markdown import failed"
-                                );
+
+                            // Yield every 10 nodes to allow other tasks to run
+                            if i % 10 == 0 {
+                                tokio::task::yield_now().await;
                             }
                         }
+
+                        tracing::info!(
+                            root_id = %root_id_for_log,
+                            nodes_created = created_count,
+                            errors = error_count,
+                            total = total_nodes,
+                            duration_ms = insert_start.elapsed().as_millis(),
+                            "Background streaming import completed"
+                        );
                     });
                 } else {
-                    // Fallback: No tokio runtime available, do synchronous import
-                    tracing::warn!("No tokio runtime available, falling back to sync import");
+                    // Fallback: No tokio runtime available, do synchronous bulk import
+                    tracing::warn!("No tokio runtime available, falling back to sync bulk import");
                     let _ = node_service
                         .bulk_create_hierarchy(nodes_for_bulk)
                         .await

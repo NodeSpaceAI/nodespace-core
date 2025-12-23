@@ -850,7 +850,7 @@ fn get_tool_schemas() -> Value {
         },
         {
             "name": "search_semantic",
-            "description": "Search root nodes by semantic similarity using vector embeddings. Returns only root nodes (documents/pages) - use get_markdown_from_node_id with the returned node ID to retrieve the full document content. Examples: 'Q4 planning documents', 'machine learning research notes'",
+            "description": "Search root nodes by semantic similarity using vector embeddings. Returns only root nodes (documents/pages) - use get_markdown_from_node_id with the returned node ID to retrieve the full document content. Supports filtering by collection (include) and exclude_collections (exclude). Examples: 'Q4 planning documents', 'machine learning research notes'",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -872,11 +872,16 @@ fn get_tool_schemas() -> Value {
                     },
                     "collection_id": {
                         "type": "string",
-                        "description": "Filter results to nodes in this collection"
+                        "description": "Filter results to nodes in this collection (by ID)"
                     },
                     "collection": {
                         "type": "string",
-                        "description": "Filter results by collection path (e.g., 'hr:policy') - resolves path to collection ID"
+                        "description": "Filter results to nodes in this collection (by path, e.g., 'hr:policy')"
+                    },
+                    "exclude_collections": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Exclude results from these collections (by path, e.g., ['archived', 'drafts']). Useful for filtering out deprecated or draft content."
                     }
                 },
                 "required": ["query"]

@@ -4,7 +4,7 @@
 //!
 //! - `Node` - Universal node model for all content types
 //! - `Embedding` - Vector embeddings for semantic search (root-aggregate model)
-//! - Type-safe wrappers (TaskNode, TextNode, DateNode, CodeBlockNode, QuoteBlockNode, OrderedListNode) for ergonomic access
+//! - Type-safe wrappers (TaskNode, TextNode, DateNode, CodeBlockNode, QuoteBlockNode, OrderedListNode, CollectionNode) for ergonomic access
 //! - Core schema definitions for built-in node types
 //!
 //! All entities use the Pure JSON schema approach with data stored in the
@@ -17,6 +17,7 @@ pub mod schema;
 pub mod time;
 
 // Type-safe node wrappers
+mod collection_node;
 mod date_node;
 mod schema_node;
 mod task_node;
@@ -61,6 +62,7 @@ pub use schema::{SchemaField, SchemaProtectionLevel};
 pub use time::{SystemTimeProvider, TimeProvider};
 
 // Export type-safe wrappers
+pub use collection_node::CollectionNode;
 pub use date_node::DateNode;
 pub use embedding::{
     is_embeddable_type, ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding,

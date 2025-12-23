@@ -570,9 +570,11 @@ where
 
     let result = match request.method.as_str() {
         // CRITICAL: Initialize must be first interaction (now fetches schemas for dynamic instructions)
+        // Also warms up the embedding model for fast first semantic search
         "initialize" => {
             crate::mcp::handlers::initialize::handle_initialize(
                 &services.node_service,
+                &services.embedding_service,
                 request.params,
             )
             .await
@@ -718,8 +720,13 @@ mod tests {
 
         let mut store = Arc::new(SurrealStore::new(db_path).await.unwrap());
         let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
-        let nlp_engine =
-            Arc::new(nodespace_nlp_engine::EmbeddingService::new(Default::default()).unwrap());
+
+        // Create NLP engine and initialize it (will operate in stub mode since model not available in tests)
+        let mut nlp_engine =
+            nodespace_nlp_engine::EmbeddingService::new(Default::default()).unwrap();
+        nlp_engine.initialize().unwrap();
+        let nlp_engine = Arc::new(nlp_engine);
+
         let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
 
         McpServices {

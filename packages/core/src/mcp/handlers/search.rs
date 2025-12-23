@@ -34,6 +34,11 @@ pub struct SearchSemanticParams {
     /// Filter by collection path (e.g., "hr:policy") - resolves path to collection ID
     #[serde(default)]
     pub collection: Option<String>,
+
+    /// Exclude results from these collections (by path, e.g., ["archived", "drafts"])
+    /// Results in any of these collections will be filtered out
+    #[serde(default)]
+    pub exclude_collections: Option<Vec<String>>,
 }
 
 /// Search root nodes by semantic similarity
@@ -136,14 +141,40 @@ where
             (None, None)
         };
 
+    // Resolve excluded collection paths and collect member IDs to exclude
+    let excluded_node_ids: HashSet<String> = if let Some(exclude_paths) =
+        &params.exclude_collections
+    {
+        let collection_service = CollectionService::new(service.store());
+        let mut excluded = HashSet::new();
+
+        for path in exclude_paths {
+            match collection_service.resolve_path(path).await {
+                Ok(resolved) => {
+                    let coll_id = resolved.leaf_id().to_string();
+                    if let Ok(members) = collection_service.get_collection_members(&coll_id).await {
+                        excluded.extend(members);
+                    }
+                }
+                Err(NodeServiceError::CollectionNotFound(_)) => {
+                    // Collection doesn't exist, skip silently
+                    tracing::debug!("Excluded collection '{}' not found, skipping", path);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to resolve excluded collection '{}': {}", path, e);
+                }
+            }
+        }
+        excluded
+    } else {
+        HashSet::new()
+    };
+
     tracing::info!("Semantic search for: '{}'", params.query);
 
-    // When filtering by collection, fetch more results to compensate for post-filtering
-    let effective_limit = if collection_member_ids.is_some() {
-        limit * 3
-    } else {
-        limit
-    };
+    // When filtering by collection or excluding collections, fetch more results to compensate for post-filtering
+    let has_post_filters = collection_member_ids.is_some() || !excluded_node_ids.is_empty();
+    let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
     // Call the embedding service's semantic search
     let results = service
@@ -167,16 +198,24 @@ where
             }
         })?;
 
-    // Filter by collection if specified, then apply limit
-    let filtered_results: Vec<_> = if let Some(member_ids) = collection_member_ids {
-        results
-            .into_iter()
-            .filter(|(node, _)| member_ids.contains(&node.id))
-            .take(limit)
-            .collect()
-    } else {
-        results
-    };
+    // Apply filters: include collection members (if specified), exclude collection members
+    let filtered_results: Vec<_> = results
+        .into_iter()
+        .filter(|(node, _)| {
+            // If include filter is specified, node must be in the collection
+            if let Some(ref member_ids) = collection_member_ids {
+                if !member_ids.contains(&node.id) {
+                    return false;
+                }
+            }
+            // Exclude nodes in excluded collections
+            if excluded_node_ids.contains(&node.id) {
+                return false;
+            }
+            true
+        })
+        .take(limit)
+        .collect();
 
     // Transform results into JSON-serializable format
     let nodes: Vec<Value> = filtered_results
@@ -407,12 +446,60 @@ mod search_tests {
                 json!({"query": "test", "threshold": 0.6, "limit": 15}),
                 "all params",
             ),
+            (
+                json!({"query": "test", "exclude_collections": ["archived"]}),
+                "with exclude_collections",
+            ),
+            (
+                json!({"query": "test", "collection": "docs", "exclude_collections": ["archived", "drafts"]}),
+                "with collection and exclude_collections",
+            ),
         ];
 
         for (params, description) in test_cases {
             let result: Result<SearchSemanticParams, _> = serde_json::from_value(params);
             assert!(result.is_ok(), "Failed to parse: {}", description);
         }
+    }
+
+    #[test]
+    fn test_exclude_collections_parsing() {
+        let params = json!({
+            "query": "test query",
+            "exclude_collections": ["archived", "drafts", "old-docs"]
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.query, "test query");
+        assert!(parsed.exclude_collections.is_some());
+
+        let excluded = parsed.exclude_collections.unwrap();
+        assert_eq!(excluded.len(), 3);
+        assert!(excluded.contains(&"archived".to_string()));
+        assert!(excluded.contains(&"drafts".to_string()));
+        assert!(excluded.contains(&"old-docs".to_string()));
+    }
+
+    #[test]
+    fn test_exclude_collections_empty_array() {
+        let params = json!({
+            "query": "test",
+            "exclude_collections": []
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert!(parsed.exclude_collections.is_some());
+        assert!(parsed.exclude_collections.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_exclude_collections_not_provided() {
+        let params = json!({
+            "query": "test"
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert!(parsed.exclude_collections.is_none());
     }
 
     #[test]

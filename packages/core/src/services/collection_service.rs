@@ -639,6 +639,21 @@ where
             .await
             .map_err(|e| db_error(e, "Failed to get collection by name"))
     }
+
+    /// Get all collection names
+    ///
+    /// Returns all collection names in the database, sorted alphabetically.
+    /// Useful for MCP handlers that need the names for filtering.
+    ///
+    /// # Returns
+    ///
+    /// Vec of collection names (e.g., ["architecture", "archived", "development"])
+    pub async fn get_all_collection_names(&self) -> Result<Vec<String>, NodeServiceError> {
+        self.store
+            .get_all_collection_names()
+            .await
+            .map_err(|e| db_error(e, "Failed to get all collection names"))
+    }
 }
 
 #[cfg(test)]

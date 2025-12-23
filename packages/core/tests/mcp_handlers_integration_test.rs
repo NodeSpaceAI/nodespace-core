@@ -15,8 +15,9 @@ use nodespace_core::{
         },
         schema::{handle_create_schema, handle_update_schema},
     },
-    services::NodeService,
+    services::{NodeEmbeddingService, NodeService},
 };
+use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -29,6 +30,24 @@ async fn create_test_env() -> anyhow::Result<(Arc<NodeService>, TempDir)> {
     let node_service = Arc::new(NodeService::new(&mut store).await?);
 
     Ok((node_service, temp_dir))
+}
+
+/// Test helper: Create a test environment with NodeService and NodeEmbeddingService
+async fn create_test_env_with_embedding(
+) -> anyhow::Result<(Arc<NodeService>, Arc<NodeEmbeddingService>, TempDir)> {
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("test.db");
+    let mut store = Arc::new(SurrealStore::new(db_path).await?);
+    let node_service = Arc::new(NodeService::new(&mut store).await?);
+
+    // Create NLP engine (will operate in stub mode since model not available in tests)
+    let mut nlp_engine = EmbeddingService::new(EmbeddingConfig::default())?;
+    nlp_engine.initialize()?;
+    let nlp_engine = Arc::new(nlp_engine);
+
+    let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
+
+    Ok((node_service, embedding_service, temp_dir))
 }
 
 // ============================================================================
@@ -1221,10 +1240,12 @@ async fn test_handle_move_child_to_index() {
 
 #[tokio::test]
 async fn test_handle_initialize() {
-    let (node_service, _temp_dir) = create_test_env().await.unwrap();
+    let (node_service, embedding_service, _temp_dir) =
+        create_test_env_with_embedding().await.unwrap();
 
     let result = nodespace_core::mcp::handlers::initialize::handle_initialize(
         &node_service,
+        &embedding_service,
         json!({
             "protocolVersion": "2024-11-05",
             "capabilities": {},

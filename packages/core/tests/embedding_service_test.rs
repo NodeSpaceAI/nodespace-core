@@ -451,6 +451,226 @@ async fn test_concurrent_queue_operations() -> Result<()> {
     Ok(())
 }
 
-// NOTE: Tests for semantic_search, embed_root_node, and other embedding generation
-// methods require an initialized NLP engine with a valid model, which is not available
-// in the test environment. Those tests should be added when testing against a real model.
+// =========================================================================
+// Semantic Search / KNN Tests
+// =========================================================================
+// Note: These tests use mock embeddings to test the database-level KNN search
+// functionality without requiring an initialized NLP engine.
+
+#[tokio::test]
+async fn test_knn_search_with_mock_embeddings() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Create test nodes
+    let node1 = create_root_node(&node_service, "text", "First document about cats").await?;
+    let node2 = create_root_node(&node_service, "text", "Second document about dogs").await?;
+    let node3 = create_root_node(&node_service, "text", "Third document about birds").await?;
+
+    // Create mock embeddings (768-dimensional vectors as used by nomic-embed-text)
+    // We use simple patterns where similar content has similar vectors
+    let mut vec1 = vec![0.0f32; 768];
+    vec1[0] = 1.0; // "cats" direction
+    vec1[1] = 0.5;
+
+    let mut vec2 = vec![0.0f32; 768];
+    vec2[0] = 0.9; // Similar to cats (dogs)
+    vec2[1] = 0.6;
+
+    let mut vec3 = vec![0.0f32; 768];
+    vec3[0] = 0.1; // Different (birds)
+    vec3[1] = 0.9;
+
+    // Insert mock embeddings
+    store
+        .upsert_embeddings(
+            &node1.id,
+            vec![NewEmbedding {
+                node_id: node1.id.clone(),
+                vector: vec1.clone(),
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 100,
+                total_chunks: 1,
+                content_hash: "hash1".to_string(),
+                token_count: 10,
+            }],
+        )
+        .await?;
+
+    store
+        .upsert_embeddings(
+            &node2.id,
+            vec![NewEmbedding {
+                node_id: node2.id.clone(),
+                vector: vec2,
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 100,
+                total_chunks: 1,
+                content_hash: "hash2".to_string(),
+                token_count: 10,
+            }],
+        )
+        .await?;
+
+    store
+        .upsert_embeddings(
+            &node3.id,
+            vec![NewEmbedding {
+                node_id: node3.id.clone(),
+                vector: vec3,
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 100,
+                total_chunks: 1,
+                content_hash: "hash3".to_string(),
+                token_count: 10,
+            }],
+        )
+        .await?;
+
+    // Search with a query vector similar to node1 (cats)
+    let results = store.search_embeddings(&vec1, 10, Some(0.5)).await?;
+
+    // Should find results
+    assert!(!results.is_empty(), "KNN search should return results");
+
+    // First result should be node1 (exact match)
+    assert_eq!(
+        results[0].node_id, node1.id,
+        "First result should be the exact match"
+    );
+    assert!(
+        (results[0].similarity - 1.0).abs() < 0.001,
+        "Exact match should have similarity ~1.0"
+    );
+
+    // Second result should be node2 (similar to cats)
+    if results.len() > 1 {
+        assert_eq!(
+            results[1].node_id, node2.id,
+            "Second result should be the similar node"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_knn_search_respects_threshold() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let node1 = create_root_node(&node_service, "text", "Test document").await?;
+
+    // Create a mock embedding
+    let mut vec1 = vec![0.0f32; 768];
+    vec1[0] = 1.0;
+    vec1[1] = 0.5;
+
+    store
+        .upsert_embeddings(
+            &node1.id,
+            vec![NewEmbedding {
+                node_id: node1.id.clone(),
+                vector: vec1.clone(),
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 100,
+                total_chunks: 1,
+                content_hash: "hash1".to_string(),
+                token_count: 10,
+            }],
+        )
+        .await?;
+
+    // Create a query vector with some similarity but not high
+    // This vector shares some components with vec1 but is different
+    let mut query_vec = vec![0.0f32; 768];
+    query_vec[0] = 0.3; // Some overlap with vec1
+    query_vec[1] = 0.1;
+    query_vec[2] = 0.9; // Different direction
+
+    // Search with high threshold (0.9) - should find nothing since similarity is ~0.3
+    let results = store.search_embeddings(&query_vec, 10, Some(0.9)).await?;
+    assert!(
+        results.is_empty(),
+        "High threshold should filter out low-similarity results"
+    );
+
+    // Search with low threshold (0.1) - should find the node
+    let results = store.search_embeddings(&query_vec, 10, Some(0.1)).await?;
+    assert!(!results.is_empty(), "Low threshold should include results");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_knn_search_with_multiple_chunks() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let node1 =
+        create_root_node(&node_service, "text", "Long document with multiple chunks").await?;
+
+    // Create multiple chunk embeddings for the same node
+    let mut vec_chunk1 = vec![0.0f32; 768];
+    vec_chunk1[0] = 0.8;
+    vec_chunk1[1] = 0.2;
+
+    let mut vec_chunk2 = vec![0.0f32; 768];
+    vec_chunk2[0] = 0.9;
+    vec_chunk2[1] = 0.3;
+
+    store
+        .upsert_embeddings(
+            &node1.id,
+            vec![
+                NewEmbedding {
+                    node_id: node1.id.clone(),
+                    vector: vec_chunk1,
+                    model_name: Some("test-model".to_string()),
+                    chunk_index: 0,
+                    chunk_start: 0,
+                    chunk_end: 500,
+                    total_chunks: 2,
+                    content_hash: "hash1".to_string(),
+                    token_count: 100,
+                },
+                NewEmbedding {
+                    node_id: node1.id.clone(),
+                    vector: vec_chunk2.clone(),
+                    model_name: Some("test-model".to_string()),
+                    chunk_index: 1,
+                    chunk_start: 500,
+                    chunk_end: 1000,
+                    total_chunks: 2,
+                    content_hash: "hash1".to_string(),
+                    token_count: 100,
+                },
+            ],
+        )
+        .await?;
+
+    // Query with vector similar to chunk2
+    let results = store.search_embeddings(&vec_chunk2, 10, Some(0.5)).await?;
+
+    // Should return only one result per node (grouped by node)
+    assert_eq!(results.len(), 1, "Should group multiple chunks by node");
+
+    // Should return the best similarity (from chunk2)
+    assert!(
+        results[0].similarity > 0.99,
+        "Should return best chunk similarity"
+    );
+
+    Ok(())
+}

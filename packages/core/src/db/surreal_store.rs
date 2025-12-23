@@ -4010,6 +4010,126 @@ where
         Ok(nodes.into_iter().map(|(id, _, _, _, _, _)| id).collect())
     }
 
+    /// Create a single node with parent edge for streaming imports
+    ///
+    /// This is an optimized path for async markdown imports where:
+    /// - Parent is guaranteed to exist (created before children)
+    /// - Order is pre-calculated (no DB query needed)
+    /// - No validation queries needed (nodes are pre-validated)
+    ///
+    /// Uses a single SQL query instead of the 7+ queries in create_node_with_parent.
+    pub async fn create_node_streaming(
+        &self,
+        id: String,
+        node_type: String,
+        content: String,
+        parent_id: Option<String>,
+        order: f64,
+        properties: serde_json::Value,
+    ) -> Result<String> {
+        self.validate_node_type(&node_type)?;
+
+        let escaped_content = Self::escape_surql_string(&content);
+        let props_json = serde_json::to_string(&properties).unwrap_or_else(|_| "{}".to_string());
+        let has_spoke = self.has_spoke_table(&node_type);
+
+        // Build single query for node + edge
+        let mut query = String::new();
+
+        if has_spoke {
+            // Types with spoke tables (task, schema)
+            query.push_str(&format!(
+                "CREATE {table}:`{id}` CONTENT {props};\n",
+                table = node_type,
+                id = id,
+                props = props_json
+            ));
+            query.push_str(&format!(
+                "UPDATE {table}:`{id}` SET node = node:`{id}`;\n",
+                table = node_type,
+                id = id
+            ));
+            query.push_str(&format!(
+                r#"CREATE node:`{id}` CONTENT {{
+                    node_type: "{node_type}",
+                    content: "{content}",
+                    data: {table}:`{id}`,
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
+                }};
+"#,
+                id = id,
+                node_type = node_type,
+                content = escaped_content,
+                table = node_type
+            ));
+        } else {
+            // Types without spoke tables (text, header, code-block, etc.)
+            query.push_str(&format!(
+                r#"CREATE node:`{id}` CONTENT {{
+                    node_type: "{node_type}",
+                    content: "{content}",
+                    data: NONE,
+                    properties: {props},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
+                }};
+"#,
+                id = id,
+                node_type = node_type,
+                content = escaped_content,
+                props = props_json
+            ));
+        }
+
+        // Create parent edge if parent specified
+        if let Some(ref parent) = parent_id {
+            query.push_str(&format!(
+                r#"RELATE node:`{parent}`->has_child->node:`{id}` CONTENT {{
+                    order: {order},
+                    created_at: time::now(),
+                    version: 1
+                }};
+"#,
+                parent = parent,
+                id = id,
+                order = order
+            ));
+        }
+
+        // Execute query
+        let response = self
+            .db
+            .query(&query)
+            .await
+            .context("Failed to create node (streaming)")?;
+
+        response.check().context("Streaming node creation failed")?;
+
+        // Notify for reactive updates
+        let node = Node {
+            id: id.clone(),
+            node_type: node_type.clone(),
+            content,
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties,
+            mentions: vec![],
+            mentioned_by: vec![],
+            member_of: vec![],
+        };
+        self.notify(StoreChange {
+            operation: StoreOperation::Created,
+            node,
+            source: Some("streaming_import".to_string()),
+        });
+
+        Ok(id)
+    }
+
     /// Escape string for SurrealQL to prevent injection
     fn escape_surql_string(s: &str) -> String {
         s.replace('\\', "\\\\")
@@ -4660,29 +4780,31 @@ where
         // We fetch more candidates (limit * 3) to account for:
         // 1. Multiple chunks per node (grouped later)
         // 2. Threshold filtering (some may not meet similarity threshold)
-        // Note: SurrealDB doesn't support HAVING, so we use a subquery with WHERE
+        // Note: SurrealDB's KNN operator <|K|> requires a literal integer, not a bind parameter.
+        // We interpolate knn_limit directly into the query string.
         let knn_limit = limit * 3; // Fetch more candidates for grouping/filtering
-        let query = r#"
+        let query = format!(
+            r#"
             SELECT * FROM (
                 SELECT
                     node,
                     math::max(vector::similarity::cosine(vector, $query_vector)) AS similarity
                 FROM embedding
-                WHERE stale = false AND vector <|$knn_limit|> $query_vector
+                WHERE stale = false AND vector <|{knn_limit}|> $query_vector
                 GROUP BY node
             )
             WHERE similarity > $threshold
             ORDER BY similarity DESC
             LIMIT $limit;
-        "#;
+        "#
+        );
 
         let mut response = self
             .db
-            .query(query)
+            .query(&query)
             .bind(("query_vector", query_vector.to_vec()))
             .bind(("threshold", min_similarity))
             .bind(("limit", limit))
-            .bind(("knn_limit", knn_limit))
             .await
             .context("Failed to execute embedding search")?;
 
@@ -5045,18 +5167,49 @@ where
         Ok(member_ids)
     }
 
+    /// Get all collection names
+    ///
+    /// Returns all collection names in the database, ordered alphabetically.
+    /// Collections have globally unique names.
+    ///
+    /// # Returns
+    ///
+    /// Vec of collection names (content field values)
+    pub async fn get_all_collection_names(&self) -> Result<Vec<String>> {
+        let query = r#"
+            SELECT VALUE content FROM node
+            WHERE node_type = 'collection'
+            ORDER BY content ASC;
+        "#;
+
+        let mut response = self
+            .db
+            .query(query)
+            .await
+            .context("Failed to get all collections")?;
+
+        let names: Vec<String> = response
+            .take(0)
+            .context("Failed to extract collection names")?;
+
+        Ok(names)
+    }
+
     /// Create a stale embedding marker for a new root node
     ///
-    /// Creates an embedding record with a zero vector marked as stale to queue it for processing.
+    /// Creates an embedding record with a placeholder vector marked as stale to queue it for processing.
     /// Used when a new root node is created that should be embedded.
     ///
-    /// Note: Uses a 768-dim zero vector instead of empty array to ensure compatibility
-    /// with MTREE vector index which requires consistent dimensions.
+    /// Note: Uses a unit vector [1,0,0,...,0] instead of zeros because the MTREE index
+    /// with COSINE distance cannot handle zero vectors (division by zero during normalization).
+    /// The stale=true flag ensures this placeholder will be replaced with a real embedding.
     pub async fn create_stale_embedding_marker(&self, node_id: &str) -> Result<()> {
+        // Use unit vector [1,0,0,...,0] - a valid vector that can be normalized for cosine distance
+        // Zero vectors cause NaN in cosine distance calculations
         let query = r#"
             CREATE embedding CONTENT {
                 node: type::thing('node', $node_id),
-                vector: array::repeat(0.0, 768),
+                vector: array::concat([1.0], array::repeat(0.0, 767)),
                 dimension: 768,
                 model_name: 'nomic-embed-text-v1.5',
                 chunk_index: 0,

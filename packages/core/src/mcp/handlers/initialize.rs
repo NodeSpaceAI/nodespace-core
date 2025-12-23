@@ -9,7 +9,7 @@
 //! of exposed tools and types.
 
 use crate::mcp::types::MCPError;
-use crate::services::NodeService;
+use crate::services::{CollectionService, NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -31,6 +31,7 @@ use std::sync::Arc;
 /// # Arguments
 ///
 /// * `node_service` - NodeService for querying available schemas
+/// * `embedding_service` - NodeEmbeddingService for warming up the embedding model
 /// * `params` - Initialize request parameters containing protocolVersion and clientInfo
 ///
 /// # Returns
@@ -43,8 +44,10 @@ use std::sync::Arc;
 /// - protocolVersion is missing or invalid
 /// - Client requests unsupported protocol version
 /// - Database query for schemas fails
+/// - Embedding model warmup fails
 pub async fn handle_initialize<C>(
     node_service: &Arc<NodeService<C>>,
+    embedding_service: &Arc<NodeEmbeddingService<C>>,
     params: Value,
 ) -> Result<Value, MCPError>
 where
@@ -72,11 +75,26 @@ where
         )));
     }
 
+    // Warm up the embedding model to ensure fast first semantic search
+    // This triggers model loading and Metal kernel compilation during handshake
+    // rather than on the first search query.
+    embedding_service.nlp_engine().warmup().map_err(|e| {
+        MCPError::internal_error(format!("Failed to warm up embedding model: {}", e))
+    })?;
+
     // Fetch all available schemas to build dynamic instructions
     // Note: If schemas haven't been initialized yet (fresh database), fall back to
     // built-in type list. This handles the bootstrap case where MCP server starts
     // before schema initialization completes.
     let schemas = node_service.get_all_schemas().await.unwrap_or_default();
+
+    // Fetch all available collection names for AI agent awareness
+    // This enables agents to use collection-based filtering in search_semantic
+    let collection_service = CollectionService::new(node_service.store());
+    let collections = collection_service
+        .get_all_collection_names()
+        .await
+        .unwrap_or_default();
 
     let node_types_str = if schemas.is_empty() {
         // Fallback: Built-in types (before schema initialization)
@@ -104,6 +122,13 @@ where
         node_types.join(", ")
     };
 
+    // Build collections string for instructions
+    let collections_str = if collections.is_empty() {
+        "(none yet)".to_string()
+    } else {
+        collections.join(", ")
+    };
+
     // Build capability response per MCP spec
     // Tools capability indicates support for tools/list and tools/call
     // Actual tool schemas are retrieved via tools/list method
@@ -120,6 +145,7 @@ where
             "resources": {},  // Future: Add resource capabilities
             "prompts": {}     // Future: Add prompt capabilities
         },
+        "collections": collections,  // Available collections for filtering
         "instructions": format!(
             "NodeSpace is a knowledge management system where all content is stored as nodes in a hierarchical tree structure.\n\n\
             PROGRESSIVE TOOL DISCOVERY: The tools/list response includes only 12 core tools (create_node, get_node, update_node, delete_node, query_nodes, get_children, insert_child_at_index, search_semantic, create_nodes_from_markdown, get_markdown_from_node_id, get_all_schemas, search_tools). Use search_tools to discover additional specialized tools by category, keyword, or node type. This reduces initial context and improves performance.\n\n\
@@ -127,12 +153,14 @@ where
             MARKDOWN WORKFLOWS: Use create_nodes_from_markdown (core tool) to import markdown documents as hierarchical nodes. Use get_markdown_from_node_id (core tool) to export nodes back to markdown format. These are primary workflows for NodeSpace.\n\n\
             NODE ARCHITECTURE: Nodes are generic data structures with a type field. You can create custom node types via create_schema tool (discoverable via search_tools).\n\n\
             AVAILABLE NODE TYPES: {}. Use get_all_schemas to see full schema definitions with fields and relationships.\n\n\
+            AVAILABLE COLLECTIONS: {}. Use 'collection' param in search_semantic to include only results from a collection, or 'exclude_collections' to filter out results (e.g., exclude_collections: [\"archived\"] to skip outdated content).\n\n\
             ROOT NODES (DOCUMENTS/PAGES/FILES): A root node represents a document, page, or file. It's a node with children but no parent (root_id = NULL). Two main patterns: (1) Date roots (YYYY-MM-DD format) for daily notes, (2) Topic roots for projects/notes.\n\n\
             DATE NODES: YYYY-MM-DD roots auto-exist. Just reference them as parent_id or root_id - no need to create them explicitly. Perfect for daily notes and time-based organization.\n\n\
             HIERARCHY CONTROL: Core tools include insert_child_at_index and get_children. For advanced operations (move_child_to_index, get_node_tree), use search_tools with category='hierarchy'.\n\n\
             LINKING NODES: Use nodespace://node-id syntax to create bidirectional links. Example: 'See nodespace://abc-123' - automatically tracked in mentions/mentioned_by fields for graph navigation.\n\n\
             RELATIONSHIPS: For explicit typed relationships between nodes (beyond hierarchy), use search_tools with category='relationships' to discover create_relationship, get_related_nodes, and graph discovery tools.",
-            node_types_str
+            node_types_str,
+            collections_str
         )
     }))
 }

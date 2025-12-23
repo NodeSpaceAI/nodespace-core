@@ -358,6 +358,18 @@ impl EmbeddingService {
         self.embed_document(text)
     }
 
+    /// Warm up the embedding model by generating a dummy embedding
+    ///
+    /// This triggers model loading and Metal kernel compilation, ensuring
+    /// the first real query is fast. Call this during initialization.
+    pub fn warmup(&self) -> Result<()> {
+        tracing::info!("Warming up embedding model...");
+        let start = std::time::Instant::now();
+        let _ = self.generate_embedding("warmup")?;
+        tracing::info!("Embedding model warmed up in {:?}", start.elapsed());
+        Ok(())
+    }
+
     /// Generate embedding for an image (foundation for future multimodal support)
     ///
     /// Currently returns an error - full implementation coming in future release.

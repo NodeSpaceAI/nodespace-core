@@ -2,22 +2,32 @@
 
 use super::*;
 use crate::db::SurrealStore;
-use crate::services::NodeService;
+use crate::services::{NodeEmbeddingService, NodeService};
+use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
 use serde_json::json;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-// Helper to create test NodeService
-async fn create_test_service() -> Arc<NodeService> {
+// Helper to create test services (NodeService + NodeEmbeddingService)
+async fn create_test_services() -> (Arc<NodeService>, Arc<NodeEmbeddingService>, TempDir) {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test.db");
     let mut store = Arc::new(SurrealStore::new(db_path).await.unwrap());
-    Arc::new(NodeService::new(&mut store).await.unwrap())
+    let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+
+    // Create NLP engine (will operate in stub mode since model not available in tests)
+    let mut nlp_engine = EmbeddingService::new(EmbeddingConfig::default()).unwrap();
+    nlp_engine.initialize().unwrap();
+    let nlp_engine = Arc::new(nlp_engine);
+
+    let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
+
+    (node_service, embedding_service, temp_dir)
 }
 
 #[tokio::test]
 async fn test_initialize_success() {
-    let node_service = create_test_service().await;
+    let (node_service, embedding_service, _temp_dir) = create_test_services().await;
     let params = json!({
         "protocolVersion": "2024-11-05",
         "clientInfo": {
@@ -26,7 +36,9 @@ async fn test_initialize_success() {
         }
     });
 
-    let result = handle_initialize(&node_service, params).await.unwrap();
+    let result = handle_initialize(&node_service, &embedding_service, params)
+        .await
+        .unwrap();
 
     // Verify protocol version
     assert_eq!(result["protocolVersion"], "2024-11-05");
@@ -44,7 +56,7 @@ async fn test_initialize_success() {
 
 #[tokio::test]
 async fn test_initialize_wrong_version() {
-    let node_service = create_test_service().await;
+    let (node_service, embedding_service, _temp_dir) = create_test_services().await;
     let params = json!({
         "protocolVersion": "invalid-version",  // Invalid format (not YYYY-MM-DD)
         "clientInfo": {
@@ -52,7 +64,7 @@ async fn test_initialize_wrong_version() {
         }
     });
 
-    let result = handle_initialize(&node_service, params).await;
+    let result = handle_initialize(&node_service, &embedding_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -63,7 +75,7 @@ async fn test_initialize_wrong_version() {
 
 #[tokio::test]
 async fn test_initialize_accepts_valid_date_formats() {
-    let node_service = create_test_service().await;
+    let (node_service, embedding_service, _temp_dir) = create_test_services().await;
 
     // Test various valid YYYY-MM-DD formats (including future versions)
     let valid_versions = vec!["2024-11-05", "2025-01-15", "2025-12-31", "2030-06-18"];
@@ -76,7 +88,7 @@ async fn test_initialize_accepts_valid_date_formats() {
             }
         });
 
-        let result = handle_initialize(&node_service, params).await;
+        let result = handle_initialize(&node_service, &embedding_service, params).await;
         assert!(
             result.is_ok(),
             "Version '{}' should be accepted as valid YYYY-MM-DD format",
@@ -92,14 +104,14 @@ async fn test_initialize_accepts_valid_date_formats() {
 
 #[tokio::test]
 async fn test_initialize_missing_version() {
-    let node_service = create_test_service().await;
+    let (node_service, embedding_service, _temp_dir) = create_test_services().await;
     let params = json!({
         "clientInfo": {
             "name": "test-client"
         }
     });
 
-    let result = handle_initialize(&node_service, params).await;
+    let result = handle_initialize(&node_service, &embedding_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -109,10 +121,10 @@ async fn test_initialize_missing_version() {
 
 #[tokio::test]
 async fn test_initialize_empty_params() {
-    let node_service = create_test_service().await;
+    let (node_service, embedding_service, _temp_dir) = create_test_services().await;
     let params = json!({});
 
-    let result = handle_initialize(&node_service, params).await;
+    let result = handle_initialize(&node_service, &embedding_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -355,7 +367,6 @@ mod integration_tests {
     use super::*;
     use crate::mcp::types::INVALID_REQUEST;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
 
     /// Simulates ServerState for integration testing
     struct TestServerState {
@@ -385,7 +396,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_full_initialization_handshake() {
-        let node_service = create_test_service().await;
+        let (node_service, embedding_service, _temp_dir) = create_test_services().await;
         let state = TestServerState::new();
 
         // Step 1: Verify initial state - not initialized
@@ -420,7 +431,9 @@ mod integration_tests {
             }
         });
 
-        let init_result = handle_initialize(&node_service, init_params).await.unwrap();
+        let init_result = handle_initialize(&node_service, &embedding_service, init_params)
+            .await
+            .unwrap();
 
         // Verify initialize response structure
         assert_eq!(init_result["protocolVersion"], "2024-11-05");
@@ -496,7 +509,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_initialize_then_wrong_version() {
-        let node_service = create_test_service().await;
+        let (node_service, embedding_service, _temp_dir) = create_test_services().await;
         let state = TestServerState::new();
 
         // First initialize with correct version
@@ -504,7 +517,7 @@ mod integration_tests {
             "protocolVersion": "2024-11-05",
             "clientInfo": {"name": "test"}
         });
-        let result = handle_initialize(&node_service, params).await;
+        let result = handle_initialize(&node_service, &embedding_service, params).await;
         assert!(result.is_ok(), "First initialize should succeed");
 
         state.mark_initialized();
@@ -514,7 +527,7 @@ mod integration_tests {
             "protocolVersion": "not-a-valid-format",
             "clientInfo": {"name": "test"}
         });
-        let result_wrong = handle_initialize(&node_service, params_wrong).await;
+        let result_wrong = handle_initialize(&node_service, &embedding_service, params_wrong).await;
         assert!(
             result_wrong.is_err(),
             "Initialize with invalid format should fail even after initialization"
@@ -527,7 +540,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn test_initialize_idempotent() {
-        let node_service = create_test_service().await;
+        let (node_service, embedding_service, _temp_dir) = create_test_services().await;
         let state = TestServerState::new();
 
         let params = json!({
@@ -536,13 +549,15 @@ mod integration_tests {
         });
 
         // First initialize
-        let result1 = handle_initialize(&node_service, params.clone())
+        let result1 = handle_initialize(&node_service, &embedding_service, params.clone())
             .await
             .unwrap();
         state.mark_initialized();
 
         // Second initialize (should succeed - idempotent)
-        let result2 = handle_initialize(&node_service, params).await.unwrap();
+        let result2 = handle_initialize(&node_service, &embedding_service, params)
+            .await
+            .unwrap();
 
         // Both should return same structure
         assert_eq!(result1["protocolVersion"], result2["protocolVersion"]);
