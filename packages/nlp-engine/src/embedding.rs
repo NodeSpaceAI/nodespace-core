@@ -436,42 +436,67 @@ impl EmbeddingService {
     /// The context is created lazily on first call and reused thereafter.
     #[cfg(feature = "embedding-service")]
     fn generate_embedding_llama(&self, text: &str) -> Result<Vec<f32>> {
+        let total_start = std::time::Instant::now();
+
         // Lock the state to access model and context
+        let lock_start = std::time::Instant::now();
         let state_lock = self
             .state
             .as_ref()
             .ok_or(EmbeddingError::ModelNotInitialized)?;
 
         let mut state = state_lock.lock().unwrap_or_else(|p| p.into_inner());
+        let lock_time = lock_start.elapsed();
 
         // Tokenize using the model
+        let tokenize_start = std::time::Instant::now();
         let tokens = state
             .model
             .str_to_token(text, AddBos::Always)
             .map_err(|e| EmbeddingError::TokenizationError(e.to_string()))?;
+        let tokenize_time = tokenize_start.elapsed();
 
         // Get or create the persistent context with sufficient batch size
+        let ctx_start = std::time::Instant::now();
         let ctx = state.get_or_create_context(tokens.len())?;
+        let ctx_time = ctx_start.elapsed();
 
         // Create batch for this text (use same size as context)
+        let batch_start = std::time::Instant::now();
         let batch_size = std::cmp::max(tokens.len(), 512);
         let mut batch = LlamaBatch::new(batch_size, 1);
         batch
             .add_sequence(&tokens, 0, false)
             .map_err(|e| EmbeddingError::InferenceError(format!("Batch add failed: {}", e)))?;
+        let batch_time = batch_start.elapsed();
 
         // Clear KV cache and encode
+        let encode_start = std::time::Instant::now();
         ctx.clear_kv_cache();
         ctx.encode(&mut batch)
             .map_err(|e| EmbeddingError::InferenceError(format!("Encoding failed: {}", e)))?;
+        let encode_time = encode_start.elapsed();
 
         // Get embeddings
+        let extract_start = std::time::Instant::now();
         let embedding = ctx
             .embeddings_seq_ith(0)
             .map_err(|e| EmbeddingError::InferenceError(format!("Get embeddings failed: {}", e)))?;
+        let extract_time = extract_start.elapsed();
 
         // L2 normalize
-        Ok(Self::normalize(embedding))
+        let normalize_start = std::time::Instant::now();
+        let result = Self::normalize(embedding);
+        let normalize_time = normalize_start.elapsed();
+
+        let total_time = total_start.elapsed();
+
+        tracing::debug!(
+            "EMBEDDING PROFILE: total={:?} | lock={:?} tokenize={:?} ctx={:?} batch={:?} encode={:?} extract={:?} normalize={:?} | tokens={}",
+            total_time, lock_time, tokenize_time, ctx_time, batch_time, encode_time, extract_time, normalize_time, tokens.len()
+        );
+
+        Ok(result)
     }
 
     /// L2 normalize embedding vector

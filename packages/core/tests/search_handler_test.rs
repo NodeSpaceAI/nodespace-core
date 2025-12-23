@@ -93,13 +93,13 @@ fn test_search_params_missing_query_fails() {
 
 #[tokio::test]
 async fn test_search_rejects_empty_query() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_test_services().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_test_services().await?;
 
     let params = json!({
         "query": ""
     });
 
-    let result = handle_search_semantic(&embedding_service, params).await;
+    let result = handle_search_semantic(&node_service, &embedding_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -109,13 +109,13 @@ async fn test_search_rejects_empty_query() -> Result<()> {
 
 #[tokio::test]
 async fn test_search_rejects_whitespace_query() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_test_services().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_test_services().await?;
 
     let params = json!({
         "query": "   "
     });
 
-    let result = handle_search_semantic(&embedding_service, params).await;
+    let result = handle_search_semantic(&node_service, &embedding_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -125,14 +125,14 @@ async fn test_search_rejects_whitespace_query() -> Result<()> {
 
 #[tokio::test]
 async fn test_search_rejects_threshold_below_zero() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_test_services().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_test_services().await?;
 
     let params = json!({
         "query": "valid query",
         "threshold": -0.1
     });
 
-    let result = handle_search_semantic(&embedding_service, params).await;
+    let result = handle_search_semantic(&node_service, &embedding_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -142,14 +142,14 @@ async fn test_search_rejects_threshold_below_zero() -> Result<()> {
 
 #[tokio::test]
 async fn test_search_rejects_threshold_above_one() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_test_services().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_test_services().await?;
 
     let params = json!({
         "query": "valid query",
         "threshold": 1.5
     });
 
-    let result = handle_search_semantic(&embedding_service, params).await;
+    let result = handle_search_semantic(&node_service, &embedding_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -159,14 +159,14 @@ async fn test_search_rejects_threshold_above_one() -> Result<()> {
 
 #[tokio::test]
 async fn test_search_rejects_limit_exceeds_max() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_test_services().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_test_services().await?;
 
     let params = json!({
         "query": "valid query",
         "limit": 5000
     });
 
-    let result = handle_search_semantic(&embedding_service, params).await;
+    let result = handle_search_semantic(&node_service, &embedding_service, params).await;
     assert!(result.is_err());
 
     let err = result.unwrap_err();
@@ -176,7 +176,7 @@ async fn test_search_rejects_limit_exceeds_max() -> Result<()> {
 
 #[tokio::test]
 async fn test_search_accepts_boundary_threshold_zero() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_test_services().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_test_services().await?;
 
     let params = json!({
         "query": "valid query",
@@ -184,7 +184,7 @@ async fn test_search_accepts_boundary_threshold_zero() -> Result<()> {
     });
 
     // Should not fail on validation, may fail on actual search (no embeddings)
-    let result = handle_search_semantic(&embedding_service, params).await;
+    let result = handle_search_semantic(&node_service, &embedding_service, params).await;
     // Either succeeds with empty results or fails with embedding-related error, not validation
     if let Err(e) = result {
         assert!(!e.message.contains("threshold"));
@@ -194,7 +194,7 @@ async fn test_search_accepts_boundary_threshold_zero() -> Result<()> {
 
 #[tokio::test]
 async fn test_search_accepts_boundary_threshold_one() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_test_services().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_test_services().await?;
 
     let params = json!({
         "query": "valid query",
@@ -202,7 +202,7 @@ async fn test_search_accepts_boundary_threshold_one() -> Result<()> {
     });
 
     // Should not fail on validation
-    let result = handle_search_semantic(&embedding_service, params).await;
+    let result = handle_search_semantic(&node_service, &embedding_service, params).await;
     if let Err(e) = result {
         assert!(!e.message.contains("threshold"));
     }
@@ -211,7 +211,7 @@ async fn test_search_accepts_boundary_threshold_one() -> Result<()> {
 
 #[tokio::test]
 async fn test_search_accepts_max_limit() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_test_services().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_test_services().await?;
 
     let params = json!({
         "query": "valid query",
@@ -219,7 +219,7 @@ async fn test_search_accepts_max_limit() -> Result<()> {
     });
 
     // Should not fail on validation
-    let result = handle_search_semantic(&embedding_service, params).await;
+    let result = handle_search_semantic(&node_service, &embedding_service, params).await;
     if let Err(e) = result {
         assert!(!e.message.contains("limit") && !e.message.contains("1000"));
     }
@@ -232,7 +232,7 @@ async fn test_search_accepts_max_limit() -> Result<()> {
 
 #[tokio::test]
 async fn test_search_with_collection_id_filter() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_test_services().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_test_services().await?;
 
     // Using collection_id instead of collection path
     let params = json!({
@@ -240,7 +240,7 @@ async fn test_search_with_collection_id_filter() -> Result<()> {
         "collection_id": "some-collection-id"
     });
 
-    let result = handle_search_semantic(&embedding_service, params).await;
+    let result = handle_search_semantic(&node_service, &embedding_service, params).await;
 
     // The handler will attempt collection filtering
     // Either succeeds with empty results or fails gracefully
@@ -270,14 +270,14 @@ async fn test_search_with_collection_id_filter() -> Result<()> {
 
 #[tokio::test]
 async fn test_search_response_has_required_fields() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_test_services().await?;
+    let (embedding_service, node_service, _store, _temp_dir) = create_test_services().await?;
 
     let params = json!({
         "query": "test query"
     });
 
     // This may fail with "no embeddings" but let's test if it at least tries
-    let result = handle_search_semantic(&embedding_service, params).await;
+    let result = handle_search_semantic(&node_service, &embedding_service, params).await;
 
     // If the service isn't initialized, it may return an error, but the error
     // should be about embeddings, not structure

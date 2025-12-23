@@ -234,6 +234,11 @@ pub struct EmbeddingSearchResult {
 
     /// Number of chunks that matched above the threshold
     pub matching_chunks: i64,
+
+    /// The full node data (fetched inline with the search query for performance)
+    /// This eliminates the need for separate get_node calls after search.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<super::Node>,
 }
 
 /// Configuration for the embedding queue

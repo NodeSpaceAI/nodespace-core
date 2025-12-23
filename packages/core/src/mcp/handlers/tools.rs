@@ -379,7 +379,9 @@ where
         "update_nodes_batch" => nodes::handle_update_nodes_batch(node_service, arguments).await,
 
         // Search
-        "search_semantic" => search::handle_search_semantic(embedding_service, arguments).await,
+        "search_semantic" => {
+            search::handle_search_semantic(node_service, embedding_service, arguments).await
+        }
 
         // Discovery
         "search_tools" => handle_search_tools(arguments),
@@ -850,7 +852,7 @@ fn get_tool_schemas() -> Value {
         },
         {
             "name": "search_semantic",
-            "description": "Search root nodes by semantic similarity using vector embeddings. Returns only root nodes (documents/pages) - use get_markdown_from_node_id with the returned node ID to retrieve the full document content. Supports filtering by collection (include) and exclude_collections (exclude). Examples: 'Q4 planning documents', 'machine learning research notes'",
+            "description": "Search root nodes by semantic similarity using vector embeddings. Returns root nodes (documents/pages) with optional full markdown content. By default, includes the complete markdown for the top result (include_markdown: 1), eliminating the need to call get_markdown_from_node_id separately. Supports filtering by collection (include) and exclude_collections (exclude). Examples: 'Q4 planning documents', 'machine learning research notes'",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -869,6 +871,13 @@ fn get_tool_schemas() -> Value {
                         "type": "number",
                         "description": "Maximum number of results (default: 20)",
                         "default": 20
+                    },
+                    "include_markdown": {
+                        "type": "number",
+                        "description": "Number of top results to include full markdown content for (0-5). Default: 1 (top result only). This saves a separate get_markdown_from_node_id call.",
+                        "minimum": 0,
+                        "maximum": 5,
+                        "default": 1
                     },
                     "collection_id": {
                         "type": "string",

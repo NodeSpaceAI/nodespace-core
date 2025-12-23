@@ -4783,12 +4783,15 @@ where
     ) -> Result<Vec<crate::models::EmbeddingSearchResult>> {
         let min_similarity = threshold.unwrap_or(0.5);
 
-        // Intermediate struct for raw SurrealDB results with chunk count
-        // Note: We select `node` directly instead of `record::id(node)` because
-        // SurrealDB 2.3 doesn't allow function calls in SELECT with GROUP BY
+        // Intermediate struct for raw SurrealDB results with chunk count and fetched node
+        // Note: Using FETCH node to get full node data in a single query (eliminates N+1 queries)
+        //
+        // Uses SurrealNode internally because FETCH returns the full node including its
+        // `id` field as a SurrealDB Thing type (see FETCH data Limitation comments above).
+        // We then convert SurrealNode -> Node which extracts the UUID from the Thing.
         #[derive(Debug, serde::Deserialize)]
         struct RawSearchResult {
-            node: surrealdb::sql::Thing,
+            node: SurrealNode,
             max_similarity: f64,
             matching_chunks: i64,
         }
@@ -4805,6 +4808,9 @@ where
         // 2. Threshold filtering (some may not meet similarity threshold)
         // Note: SurrealDB's KNN operator <|K|> requires a literal integer, not a bind parameter.
         // We interpolate knn_limit directly into the query string.
+        //
+        // PERFORMANCE: Using FETCH node to retrieve full node data in the same query,
+        // eliminating the need for separate get_node() calls (saves ~300ms for 5 results).
         let knn_limit = limit * 5; // Increased to capture more chunks per node
         let query = format!(
             r#"
@@ -4824,7 +4830,8 @@ where
                 GROUP BY node
             )
             ORDER BY max_similarity DESC
-            LIMIT $limit;
+            LIMIT $limit
+            FETCH node;
         "#
         );
 
@@ -4853,11 +4860,15 @@ where
                     1.0 + Self::BREADTH_BOOST * (r.matching_chunks as f64).max(1.0).log10();
                 let score = r.max_similarity * breadth_factor;
 
+                // Convert SurrealNode -> Node (extracts UUID from Thing, handles properties)
+                let node: Node = r.node.into();
+
                 crate::models::EmbeddingSearchResult {
-                    node_id: r.node.id.to_raw(),
+                    node_id: node.id.clone(),
                     score,
                     max_similarity: r.max_similarity,
                     matching_chunks: r.matching_chunks,
+                    node: Some(node),
                 }
             })
             .collect();

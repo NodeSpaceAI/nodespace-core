@@ -611,6 +611,8 @@ where
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<EmbeddingSearchResult>, NodeServiceError> {
+        let total_start = std::time::Instant::now();
+
         if query.trim().is_empty() {
             return Err(NodeServiceError::invalid_update(
                 "Search query cannot be empty",
@@ -618,14 +620,17 @@ where
         }
 
         // Generate query embedding
+        let embed_start = std::time::Instant::now();
         let query_vector = self.nlp_engine.generate_embedding(query).map_err(|e| {
             NodeServiceError::SerializationError(format!(
                 "Failed to generate query embedding: {}",
                 e
             ))
         })?;
+        let embed_time = embed_start.elapsed();
 
         // Search embedding table
+        let search_start = std::time::Instant::now();
         let results = self
             .store
             .search_embeddings(&query_vector, limit as i64, Some(threshold as f64))
@@ -633,11 +638,13 @@ where
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Semantic search failed: {}", e))
             })?;
+        let search_time = search_start.elapsed();
+
+        let total_time = total_start.elapsed();
 
         tracing::debug!(
-            "Semantic search for '{}' returned {} results",
-            query,
-            results.len()
+            "SEMANTIC SEARCH PROFILE: total={:?} | embedding={:?} db_search={:?} | results={} query='{}'",
+            total_time, embed_time, search_time, results.len(), &query[..query.len().min(50)]
         );
 
         Ok(results)
@@ -648,21 +655,31 @@ where
     /// Convenience method that fetches the full Node objects for search results.
     /// Returns nodes with their composite relevance scores (which account for
     /// both similarity and breadth of matching chunks).
+    ///
+    /// PERFORMANCE: Node data is now fetched inline with the search query using
+    /// SurrealDB's FETCH clause, eliminating N+1 query overhead.
     pub async fn semantic_search_nodes(
         &self,
         query: &str,
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
+        let total_start = std::time::Instant::now();
+
         let results = self.semantic_search(query, limit, threshold).await?;
 
-        let mut nodes_with_scores = Vec::new();
-        for result in results {
-            if let Ok(Some(node)) = self.store.get_node(&result.node_id).await {
-                // Return composite score which accounts for breadth of relevance (Issue #778)
-                nodes_with_scores.push((node, result.score));
-            }
-        }
+        // Nodes are now included in search results via FETCH - no separate queries needed
+        let nodes_with_scores: Vec<(Node, f64)> = results
+            .into_iter()
+            .filter_map(|result| result.node.map(|node| (node, result.score)))
+            .collect();
+
+        let total_time = total_start.elapsed();
+        tracing::debug!(
+            "SEMANTIC SEARCH NODES: total={:?} | nodes={} (inline fetch)",
+            total_time,
+            nodes_with_scores.len()
+        );
 
         Ok(nodes_with_scores)
     }

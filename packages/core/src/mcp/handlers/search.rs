@@ -4,11 +4,88 @@
 //! Pure business logic - no Tauri dependencies.
 
 use crate::mcp::types::MCPError;
-use crate::services::{CollectionService, NodeEmbeddingService, NodeServiceError};
+use crate::models::Node;
+use crate::services::{CollectionService, NodeEmbeddingService, NodeService, NodeServiceError};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+/// Maximum depth for markdown tree traversal (prevents stack overflow on deeply nested documents)
+const MARKDOWN_MAX_DEPTH: usize = 20;
+
+/// Recursively build markdown from a node tree
+/// This is a simplified version that produces clean markdown without node ID comments
+fn build_markdown_recursive(
+    node: &Node,
+    node_map: &HashMap<String, Node>,
+    adjacency_list: &HashMap<String, Vec<String>>,
+    output: &mut String,
+    depth: usize,
+    max_depth: usize,
+) {
+    if depth > max_depth {
+        return;
+    }
+
+    // Add node content with appropriate formatting based on type
+    match node.node_type.as_str() {
+        "header" => {
+            output.push_str(&node.content);
+            output.push_str("\n\n");
+        }
+        "text" => {
+            output.push_str(&node.content);
+            output.push_str("\n\n");
+        }
+        "task" => {
+            let status = node
+                .properties
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("todo");
+            let checkbox = if status == "done" { "[x]" } else { "[ ]" };
+            output.push_str(&format!("- {} {}\n", checkbox, node.content));
+        }
+        "code-block" => {
+            let language = node
+                .properties
+                .get("language")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            output.push_str(&format!("```{}\n{}\n```\n\n", language, node.content));
+        }
+        "quote-block" => {
+            for line in node.content.lines() {
+                output.push_str(&format!("> {}\n", line));
+            }
+            output.push('\n');
+        }
+        "ordered-list" => {
+            output.push_str(&format!("1. {}\n", node.content));
+        }
+        _ => {
+            output.push_str(&node.content);
+            output.push_str("\n\n");
+        }
+    }
+
+    // Recursively add children
+    if let Some(child_ids) = adjacency_list.get(&node.id) {
+        for child_id in child_ids {
+            if let Some(child) = node_map.get(child_id) {
+                build_markdown_recursive(
+                    child,
+                    node_map,
+                    adjacency_list,
+                    output,
+                    depth + 1,
+                    max_depth,
+                );
+            }
+        }
+    }
+}
 
 /// Parameters for search_semantic method
 #[derive(Debug, Deserialize)]
@@ -39,6 +116,13 @@ pub struct SearchSemanticParams {
     /// Results in any of these collections will be filtered out
     #[serde(default)]
     pub exclude_collections: Option<Vec<String>>,
+
+    /// Number of top results to include full markdown content for (0-5)
+    /// This saves AI agents from needing to call get_markdown_from_node_id separately.
+    /// Default: 1 (include markdown for top result only)
+    /// Set to 0 to disable, max 5 to limit response size.
+    #[serde(default)]
+    pub include_markdown: Option<usize>,
 }
 
 /// Search root nodes by semantic similarity
@@ -55,11 +139,12 @@ pub struct SearchSemanticParams {
 ///     "threshold": 0.7,
 ///     "limit": 10
 /// });
-/// let result = handle_search_semantic(&embedding_service, params).await?;
+/// let result = handle_search_semantic(&node_service, &embedding_service, params).await?;
 /// // Returns top 10 most relevant root nodes
 /// ```
 pub async fn handle_search_semantic<C>(
-    service: &Arc<NodeEmbeddingService<C>>,
+    node_service: &Arc<NodeService<C>>,
+    embedding_service: &Arc<NodeEmbeddingService<C>>,
     params: Value,
 ) -> Result<Value, MCPError>
 where
@@ -73,6 +158,7 @@ where
     // These values override any client-side defaults from the JSON schema
     let threshold = params.threshold.unwrap_or(0.7);
     let limit = params.limit.unwrap_or(20);
+    let include_markdown = params.include_markdown.unwrap_or(1).min(5); // Default 1, max 5
 
     // Validate parameters
     if !(0.0..=1.0).contains(&threshold) {
@@ -96,7 +182,7 @@ where
     // Resolve collection ID and get member IDs if filtering by collection
     let (collection_id, collection_member_ids): (Option<String>, Option<HashSet<String>>) =
         if let Some(path) = &params.collection {
-            let collection_service = CollectionService::new(service.store());
+            let collection_service = CollectionService::new(embedding_service.store());
             match collection_service.resolve_path(path).await {
                 Ok(resolved) => {
                     let coll_id = resolved.leaf_id().to_string();
@@ -129,7 +215,7 @@ where
                 }
             }
         } else if let Some(coll_id) = &params.collection_id {
-            let collection_service = CollectionService::new(service.store());
+            let collection_service = CollectionService::new(embedding_service.store());
             let members = collection_service
                 .get_collection_members(coll_id)
                 .await
@@ -145,7 +231,7 @@ where
     let excluded_node_ids: HashSet<String> = if let Some(exclude_paths) =
         &params.exclude_collections
     {
-        let collection_service = CollectionService::new(service.store());
+        let collection_service = CollectionService::new(embedding_service.store());
         let mut excluded = HashSet::new();
 
         for path in exclude_paths {
@@ -177,7 +263,7 @@ where
     let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
     // Call the embedding service's semantic search
-    let results = service
+    let results = embedding_service
         .semantic_search_nodes(&params.query, effective_limit, threshold)
         .await
         .map_err(|e| {
@@ -217,11 +303,48 @@ where
         .take(limit)
         .collect();
 
+    // Fetch markdown for top N results if requested
+    // This saves AI agents from needing to call get_markdown_from_node_id separately
+    let mut markdown_contents: HashMap<String, String> = HashMap::new();
+
+    if include_markdown > 0 {
+        for (node, _) in filtered_results.iter().take(include_markdown) {
+            // Use get_subtree_data to fetch the full document tree (same as get_markdown_from_node_id)
+            if let Ok((Some(root_node), node_map, adjacency_list)) =
+                node_service.get_subtree_data(&node.id).await
+            {
+                // Build markdown from the tree (simplified version without node IDs for readability)
+                let mut markdown = String::new();
+                markdown.push_str(&root_node.content);
+                markdown.push_str("\n\n");
+
+                // Export children recursively
+                if let Some(child_ids) = adjacency_list.get(&root_node.id) {
+                    for child_id in child_ids {
+                        if let Some(child) = node_map.get(child_id) {
+                            build_markdown_recursive(
+                                child,
+                                &node_map,
+                                &adjacency_list,
+                                &mut markdown,
+                                0,
+                                MARKDOWN_MAX_DEPTH,
+                            );
+                        }
+                    }
+                }
+
+                markdown_contents.insert(node.id.clone(), markdown.trim().to_string());
+            }
+        }
+    }
+
     // Transform results into JSON-serializable format
     let nodes: Vec<Value> = filtered_results
         .iter()
-        .map(|(node, similarity)| {
-            json!({
+        .enumerate()
+        .map(|(idx, (node, similarity))| {
+            let mut node_json = json!({
                 "id": node.id,
                 "nodeType": node.node_type,
                 "content": node.content,
@@ -230,7 +353,16 @@ where
                 "modifiedAt": node.modified_at,
                 "properties": node.properties,
                 "similarity": similarity
-            })
+            });
+
+            // Include markdown for top N results
+            if idx < include_markdown {
+                if let Some(markdown) = markdown_contents.get(&node.id) {
+                    node_json["markdown"] = json!(markdown);
+                }
+            }
+
+            node_json
         })
         .collect();
 
@@ -240,7 +372,8 @@ where
         "count": nodes.len(),
         "query": params.query,
         "threshold": threshold,
-        "collection_id": collection_id
+        "collection_id": collection_id,
+        "include_markdown": include_markdown
     }))
 }
 
