@@ -1,20 +1,20 @@
 //! Query Service - Query Execution with SQL Translation
 //!
 //! This module provides query execution functionality for QueryNode, translating
-//! structured query definitions to SurrealQL and executing against the hub-and-spoke
-//! database architecture.
+//! structured query definitions to SurrealQL and executing against the unified
+//! node table with JSON properties.
 //!
 //! # Architecture
 //!
-//! - **Hub-and-Spoke**: Queries target hub `node` table with type filters
-//! - **Record Links**: Type-specific properties accessed via `data.property`
+//! - **Unified Node Table**: All queries target the `node` table directly
+//! - **JSON Properties**: Type-specific properties stored in `properties` JSON column
 //! - **Graph Edges**: Relationships traversed via `->has_child->`, `->mentions->`
-//! - **FETCH data**: All queries include FETCH to hydrate spoke properties
+//! - **No FETCH**: Single table queries, no record link resolution needed
 //!
 //! # Query Pattern Examples
 //!
 //! - Type filter: `SELECT * FROM node WHERE node_type = 'task'`
-//! - Property filter: `SELECT * FROM node WHERE data.status = 'open' FETCH data`
+//! - Property filter: `SELECT * FROM node WHERE properties.status = 'open'`
 //! - Relationship: `SELECT * FROM node WHERE id IN (SELECT VALUE out FROM has_child WHERE in = node:⟨parent⟩)`
 //!
 //! # Examples
@@ -46,7 +46,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-/// Structured query definition matching QueryNode spoke fields
+/// Structured query definition matching QueryNode fields
 ///
 /// This struct matches the TypeScript QueryNode interface from
 /// `packages/desktop-app/src/lib/types/query.ts`.
@@ -188,8 +188,7 @@ impl QueryService {
         }
 
         // Re-apply sorting in Rust to guarantee sort order
-        // This is necessary because spoke queries with record links may not preserve
-        // ORDER BY semantics through the fetch cycle
+        // This ensures consistent sorting even if database ordering behaves unexpectedly
         if let Some(sorting) = &query.sorting {
             self.sort_nodes(&mut nodes, sorting);
         }
@@ -303,98 +302,26 @@ impl QueryService {
 
     /// Translate QueryDefinition to SurrealQL
     ///
-    /// Builds spoke-centric queries for types with spoke tables (task, invoice, etc.)
-    /// or hub-centric queries for wildcard searches.
+    /// Builds queries against the unified node table with JSON properties.
+    /// All node types use the same query pattern with properties stored inline.
     fn build_query(&self, query: &QueryDefinition) -> Result<String> {
-        // Determine query strategy based on target type
-        if query.target_type == "*" {
-            // Wildcard: use hub-centric query
-            self.build_hub_query(query)
-        } else if self.store.has_spoke_table(&query.target_type) {
-            // Spoke table exists: use spoke-centric query (more efficient)
-            self.build_spoke_query(query)
-        } else {
-            // No spoke table: these types should use semantic search, not QueryService
-            anyhow::bail!(
-                "Type '{}' has no spoke table. Use semantic search for simple node types (text, header, code-block).",
-                query.target_type
-            )
-        }
-    }
-
-    /// Build spoke-centric query for types with spoke tables
-    ///
-    /// Query pattern: SELECT * FROM task WHERE status = 'open' AND node.created_at >= ... FETCH node
-    ///
-    /// Note: FETCH node is required to resolve the hub record link before sorting/filtering
-    /// on hub fields like content, created_at, etc.
-    fn build_spoke_query(&self, query: &QueryDefinition) -> Result<String> {
-        let mut sql = format!("SELECT * FROM {}", query.target_type);
-        let mut conditions = Vec::new();
-
-        // Build filter conditions
-        for filter in &query.filters {
-            match filter.filter_type {
-                FilterType::Property => conditions.push(self.build_spoke_property_filter(filter)?),
-                FilterType::Content => conditions.push(self.build_spoke_content_filter(filter)?),
-                FilterType::Relationship => {
-                    conditions.push(self.build_spoke_relationship_filter(filter)?)
-                }
-                FilterType::Metadata => conditions.push(self.build_spoke_metadata_filter(filter)?),
-            }
-        }
-
-        // Apply WHERE clause
-        if !conditions.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&conditions.join(" AND "));
-        }
-
-        // Add sorting
-        if let Some(sorting) = &query.sorting {
-            if !sorting.is_empty() {
-                sql.push_str(" ORDER BY ");
-                let clauses: Vec<String> = sorting
-                    .iter()
-                    .map(|s| {
-                        let direction = match s.direction {
-                            SortDirection::Ascending => "ASC",
-                            SortDirection::Descending => "DESC",
-                        };
-                        format!("{} {}", self.resolve_spoke_field(&s.field), direction)
-                    })
-                    .collect();
-                sql.push_str(&clauses.join(", "));
-            }
-        }
-
-        // Add limit
-        if let Some(limit) = query.limit {
-            sql.push_str(&format!(" LIMIT {}", limit));
-        }
-
-        // FETCH node to resolve the hub record link for proper sorting/filtering
-        // This is required because ORDER BY node.content needs the node link resolved
-        sql.push_str(" FETCH node;");
-        Ok(sql)
-    }
-
-    /// Build hub-centric query for wildcard searches
-    ///
-    /// Query pattern: SELECT * FROM node WHERE node_type = 'task' AND data.status = 'open'
-    fn build_hub_query(&self, query: &QueryDefinition) -> Result<String> {
         let mut sql = String::from("SELECT * FROM node");
         let mut conditions = Vec::new();
 
+        // Add type filter if not wildcard
+        if query.target_type != "*" {
+            conditions.push(format!("node_type = '{}'", query.target_type));
+        }
+
         // Build filter conditions
         for filter in &query.filters {
             match filter.filter_type {
-                FilterType::Property => conditions.push(self.build_hub_property_filter(filter)?),
-                FilterType::Content => conditions.push(self.build_hub_content_filter(filter)?),
+                FilterType::Property => conditions.push(self.build_property_filter(filter)?),
+                FilterType::Content => conditions.push(self.build_content_filter(filter)?),
                 FilterType::Relationship => {
-                    conditions.push(self.build_hub_relationship_filter(filter)?)
+                    conditions.push(self.build_relationship_filter(filter)?)
                 }
-                FilterType::Metadata => conditions.push(self.build_hub_metadata_filter(filter)?),
+                FilterType::Metadata => conditions.push(self.build_metadata_filter(filter)?),
             }
         }
 
@@ -415,7 +342,7 @@ impl QueryService {
                             SortDirection::Ascending => "ASC",
                             SortDirection::Descending => "DESC",
                         };
-                        format!("{} {}", self.resolve_hub_field(&s.field), direction)
+                        format!("{} {}", self.resolve_field(&s.field), direction)
                     })
                     .collect();
                 sql.push_str(&clauses.join(", "));
@@ -431,108 +358,51 @@ impl QueryService {
         Ok(sql)
     }
 
-    /// Resolve field name for spoke-centric queries
+    /// Resolve field name for queries
     ///
-    /// Metadata fields accessed via node link: node.created_at
-    /// Type-specific fields accessed directly: status, priority
-    fn resolve_spoke_field(&self, field: &str) -> String {
-        if ["created_at", "modified_at", "content", "node_type"].contains(&field) {
-            format!("node.{}", field)
-        } else {
-            field.to_string()
-        }
-    }
-
-    /// Resolve field name for hub-centric queries
-    ///
-    /// Metadata fields accessed directly: created_at
-    /// Type-specific fields accessed via data link: data.status
-    fn resolve_hub_field(&self, field: &str) -> String {
+    /// Metadata fields accessed directly: created_at, modified_at, content, node_type
+    /// Type-specific fields accessed via properties JSON: properties.status
+    fn resolve_field(&self, field: &str) -> String {
         if ["created_at", "modified_at", "content", "node_type"].contains(&field) {
             field.to_string()
         } else {
-            format!("data.{}", field)
+            format!("properties.{}", field)
         }
     }
 
-    // ========== Spoke-Centric Filter Builders ==========
+    // ========== Filter Builders ==========
 
-    /// Build property filter for spoke-centric queries
+    /// Build property filter
     ///
-    /// Direct field access: status = 'open', priority = 'high'
-    fn build_spoke_property_filter(&self, filter: &QueryFilter) -> Result<String> {
+    /// Access via properties JSON: properties.status = 'open'
+    fn build_property_filter(&self, filter: &QueryFilter) -> Result<String> {
         let property = filter
             .property
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Property filter missing 'property' field"))?;
 
-        self.build_filter_condition(property, &filter.operator, filter)
-    }
-
-    /// Build content filter for spoke-centric queries
-    ///
-    /// Access via node link: node.content CONTAINS 'text'
-    fn build_spoke_content_filter(&self, filter: &QueryFilter) -> Result<String> {
-        self.build_content_condition("node.content", filter)
-    }
-
-    /// Build relationship filter for spoke-centric queries
-    ///
-    /// Uses node.id for filtering: node.id IN (SELECT...)
-    fn build_spoke_relationship_filter(&self, filter: &QueryFilter) -> Result<String> {
-        self.build_relationship_condition("node.id", filter)
-    }
-
-    /// Build metadata filter for spoke-centric queries
-    ///
-    /// Access via node link: node.created_at >= '2025-01-01'
-    fn build_spoke_metadata_filter(&self, filter: &QueryFilter) -> Result<String> {
-        let property = filter
-            .property
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Metadata filter missing property"))?;
-
-        if !["created_at", "modified_at", "node_type", "content"].contains(&property.as_str()) {
-            anyhow::bail!("Invalid metadata field: {}", property);
-        }
-
-        let field = format!("node.{}", property);
+        let field = format!("properties.{}", property);
         self.build_filter_condition(&field, &filter.operator, filter)
     }
 
-    // ========== Hub-Centric Filter Builders ==========
-
-    /// Build property filter for hub-centric queries
-    ///
-    /// Access via data link: data.status = 'open'
-    fn build_hub_property_filter(&self, filter: &QueryFilter) -> Result<String> {
-        let property = filter
-            .property
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Property filter missing 'property' field"))?;
-
-        let field = format!("data.{}", property);
-        self.build_filter_condition(&field, &filter.operator, filter)
-    }
-
-    /// Build content filter for hub-centric queries
+    /// Build content filter
     ///
     /// Direct access: content CONTAINS 'text'
-    fn build_hub_content_filter(&self, filter: &QueryFilter) -> Result<String> {
+    fn build_content_filter(&self, filter: &QueryFilter) -> Result<String> {
         self.build_content_condition("content", filter)
     }
 
-    /// Build relationship filter for hub-centric queries
+    /// Build relationship filter
     ///
     /// Uses id for filtering: id IN (SELECT...)
-    fn build_hub_relationship_filter(&self, filter: &QueryFilter) -> Result<String> {
+    fn build_relationship_filter(&self, filter: &QueryFilter) -> Result<String> {
         self.build_relationship_condition("id", filter)
     }
 
-    /// Build metadata filter for hub-centric queries
+    /// Build metadata filter
     ///
     /// Direct access: created_at >= '2025-01-01'
-    fn build_hub_metadata_filter(&self, filter: &QueryFilter) -> Result<String> {
+    fn build_metadata_filter(&self, filter: &QueryFilter) -> Result<String> {
         let property = filter
             .property
             .as_ref()

@@ -1,24 +1,16 @@
 //! Strongly-Typed TaskNode
 //!
-//! Provides direct deserialization from spoke table with hub data via record link,
-//! eliminating the intermediate JSON `properties` step for true compile-time type safety.
+//! Provides compile-time type safety for task nodes with strongly-typed status,
+//! priority, and date fields. Uses Universal Graph Architecture (Issue #783).
 //!
-//! # Architecture (Issue #673)
+//! # Architecture
 //!
-//! **Old Pattern (Weak Typing):**
+//! **Universal Graph Architecture:**
 //! ```text
-//! DB spoke (task.status)
-//!   → Query hub, then query spoke
-//!   → Hydrate into Node.properties as JSON
-//!   → TaskNode wraps Node
-//!   → TaskNode.status() reads from node.properties["status"]
-//! ```
-//!
-//! **New Pattern (Strong Typing):**
-//! ```text
-//! DB spoke (task.status + task.node.* for hub fields)
-//!   → Single query with record link
-//!   → Deserialize directly to TaskNode struct
+//! DB node table (node.properties.status, node.properties.priority, etc.)
+//!   → Single query from node table
+//!   → Properties extracted from node.properties JSON
+//!   → Deserialize directly to TaskNode struct with typed enums
 //!   → TaskNode.status is a TaskStatus enum field
 //! ```
 //!
@@ -273,24 +265,24 @@ impl<'de> Deserialize<'de> for TaskPriority {
 
 /// Strongly-typed task node with direct field access
 ///
-/// Deserializes directly from spoke table with hub data via record link.
-/// All fields are strongly typed - no JSON intermediary.
+/// Uses Universal Graph Architecture - properties stored in node.properties JSON.
+/// All fields are strongly typed - TaskStatus and TaskPriority enums.
 ///
-/// # Query Pattern
+/// # Query Pattern (Universal Graph Architecture)
 ///
 /// ```sql
 /// SELECT
-///     id,
-///     status,
-///     priority,
-///     due_date,
-///     assignee,
-///     node.id AS node_id,
-///     node.content AS content,
-///     node.version AS version,
-///     node.created_at AS created_at,
-///     node.modified_at AS modified_at
-/// FROM task:`some-id`;
+///     record::id(id) AS id,
+///     node_type AS nodeType,
+///     properties.status AS status,
+///     properties.priority AS priority,
+///     properties.due_date AS dueDate,
+///     properties.assignee AS assignee,
+///     content,
+///     version,
+///     created_at AS createdAt,
+///     modified_at AS modifiedAt
+/// FROM node:`some-id`;
 /// ```
 ///
 /// When serialized (for Tauri/HTTP responses), outputs a flat structure with typed fields:
@@ -321,9 +313,9 @@ impl<'de> Deserialize<'de> for TaskPriority {
 #[serde(rename_all = "camelCase")]
 pub struct TaskNode {
     // ========================================================================
-    // Hub fields (from task.node.* via record link)
+    // Node fields (from node table)
     // ========================================================================
-    /// Unique identifier (matches hub node ID)
+    /// Unique identifier
     pub id: String,
 
     /// Node type (always "task" for TaskNode)
@@ -344,12 +336,12 @@ pub struct TaskNode {
     pub modified_at: DateTime<Utc>,
 
     /// Properties object (for schema-driven UI compatibility)
-    /// Contains spoke fields duplicated for generic Node consumers
+    /// Contains task fields for generic Node consumers
     #[serde(default)]
     pub properties: serde_json::Value,
 
     // ========================================================================
-    // Spoke fields (direct from task table)
+    // Task-specific fields (from node.properties)
     // ========================================================================
     /// Task status (strongly typed enum)
     #[serde(default)]
@@ -458,7 +450,7 @@ impl TaskNode {
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&Utc));
 
-        // Build properties object with spoke fields for schema-driven UI compatibility
+        // Build properties object for schema-driven UI compatibility
         // Use camelCase keys per naming conventions (snake_case in DB, camelCase in JSON API)
         let mut props = serde_json::Map::new();
         props.insert("status".to_string(), json!(status.as_str()));
@@ -655,7 +647,7 @@ impl TaskNodeBuilder {
 
         let status = self.status.unwrap_or_default();
 
-        // Build properties object with spoke fields for schema-driven UI compatibility
+        // Build properties object for schema-driven UI compatibility
         // Use camelCase keys per naming conventions (snake_case in DB, camelCase in JSON API)
         let mut props = serde_json::Map::new();
         props.insert("status".to_string(), json!(status.as_str()));
@@ -690,8 +682,8 @@ impl TaskNodeBuilder {
 
 /// Partial update structure for task nodes
 ///
-/// Supports updating task-specific spoke fields (status, priority, due_date, assignee)
-/// as well as hub fields (content). Uses Option for each field to enable partial updates.
+/// Supports updating task-specific fields (status, priority, due_date, assignee)
+/// as well as content. Uses Option for each field to enable partial updates.
 ///
 /// # Double-Option Pattern
 ///
@@ -716,18 +708,18 @@ impl TaskNodeBuilder {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskNodeUpdate {
-    /// Update task status (spoke field)
+    /// Update task status (task property)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<TaskStatus>,
 
-    /// Update task priority (spoke field)
+    /// Update task priority (task property)
     /// - `None` - Don't change
     /// - `Some(None)` - Clear priority
     /// - `Some(Some(p))` - Set to priority p (low, medium, high, or user-defined)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<Option<TaskPriority>>,
 
-    /// Update due date (spoke field)
+    /// Update due date (task property)
     /// - `None` - Don't change
     /// - `Some(None)` - Clear due date
     /// - `Some(Some(dt))` - Set to specific date
@@ -740,14 +732,14 @@ pub struct TaskNodeUpdate {
     )]
     pub due_date: Option<Option<DateTime<Utc>>>,
 
-    /// Update assignee (spoke field)
+    /// Update assignee (task property)
     /// - `None` - Don't change
     /// - `Some(None)` - Clear assignee
     /// - `Some(Some(id))` - Set to specific assignee
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<Option<String>>,
 
-    /// Update started_at date (spoke field)
+    /// Update started_at date (task property)
     /// - `None` - Don't change
     /// - `Some(None)` - Clear started_at
     /// - `Some(Some(dt))` - Set to specific date
@@ -760,7 +752,7 @@ pub struct TaskNodeUpdate {
     )]
     pub started_at: Option<Option<DateTime<Utc>>>,
 
-    /// Update completed_at date (spoke field)
+    /// Update completed_at date (task property)
     /// - `None` - Don't change
     /// - `Some(None)` - Clear completed_at
     /// - `Some(Some(dt))` - Set to specific date
@@ -773,7 +765,7 @@ pub struct TaskNodeUpdate {
     )]
     pub completed_at: Option<Option<DateTime<Utc>>>,
 
-    /// Update content (hub field)
+    /// Update content (node field)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
 }
@@ -825,8 +817,8 @@ impl TaskNodeUpdate {
             && self.content.is_none()
     }
 
-    /// Check if this update contains spoke fields (requires spoke table update)
-    pub fn has_spoke_fields(&self) -> bool {
+    /// Check if this update contains task property fields
+    pub fn has_property_fields(&self) -> bool {
         self.status.is_some()
             || self.priority.is_some()
             || self.due_date.is_some()
@@ -835,8 +827,8 @@ impl TaskNodeUpdate {
             || self.completed_at.is_some()
     }
 
-    /// Check if this update contains hub fields (requires hub table update)
-    pub fn has_hub_fields(&self) -> bool {
+    /// Check if this update contains content field
+    pub fn has_content_field(&self) -> bool {
         self.content.is_some()
     }
 }

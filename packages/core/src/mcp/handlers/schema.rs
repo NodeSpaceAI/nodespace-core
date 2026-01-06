@@ -167,7 +167,7 @@ where
         .unwrap_or_else(|| format!("Schema for {}", params.name));
     let properties = serde_json::json!({
         "isCore": false,
-        "version": 1,
+        "schemaVersion": 1,
         "description": &description_text,
         "fields": &namespaced_fields,
         "relationships": &relationships

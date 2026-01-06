@@ -2,6 +2,7 @@
 //!
 //! These tests validate query execution against a real SurrealDB database,
 //! testing SQL generation and result retrieval for all filter types.
+//! All queries use the unified node table with JSON properties.
 
 #[cfg(test)]
 mod tests {
@@ -635,22 +636,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_with_no_spoke_table() {
-        let (query_service, _node_service, _temp) = create_test_services().await;
+    async fn test_query_any_node_type() {
+        let (query_service, node_service, _temp) = create_test_services().await;
 
-        // Query for a type without a spoke table (should error)
+        // Create a node with custom type
+        let custom_node = CreateNodeParams {
+            id: None,
+            node_type: "custom_type".to_string(),
+            content: "Custom node".to_string(),
+            parent_id: None,
+            insert_after_node_id: None,
+            properties: json!({"custom_field": "value"}),
+        };
+        node_service
+            .create_node_with_parent(custom_node)
+            .await
+            .unwrap();
+
+        // Query for the custom type - should work with unified node table
         let query = QueryDefinition {
-            target_type: "nonexistent_type".to_string(),
+            target_type: "custom_type".to_string(),
             filters: vec![],
             sorting: None,
             limit: None,
         };
 
         let result = query_service.execute(&query).await;
-        assert!(
-            result.is_err(),
-            "Should error for types without spoke tables"
-        );
+        assert!(result.is_ok(), "Should succeed for any node type");
+        let nodes = result.unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].node_type, "custom_type");
     }
 
     #[tokio::test]
@@ -700,11 +715,11 @@ mod tests {
     }
 
     // =========================================================================
-    // Hub-Centric Query Tests (Wildcard target_type = "*")
+    // Wildcard Query Tests (target_type = "*")
     // =========================================================================
 
     #[tokio::test]
-    async fn test_hub_query_wildcard_with_metadata_filter() {
+    async fn test_wildcard_query_with_metadata_filter() {
         let (query_service, node_service, _temp) = create_test_services().await;
 
         // Create nodes with different types
@@ -750,7 +765,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hub_query_content_filter() {
+    async fn test_wildcard_query_content_filter() {
         let (query_service, node_service, _temp) = create_test_services().await;
 
         let task = CreateNodeParams {
@@ -773,7 +788,7 @@ mod tests {
         node_service.create_node_with_parent(task).await.unwrap();
         node_service.create_node_with_parent(text).await.unwrap();
 
-        // Hub query with content filter (case-sensitive)
+        // Wildcard query with content filter (case-sensitive)
         let query = QueryDefinition {
             target_type: "*".to_string(),
             filters: vec![QueryFilter {
@@ -795,7 +810,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hub_query_with_sorting_and_limit() {
+    async fn test_wildcard_query_with_sorting_and_limit() {
         let (query_service, node_service, _temp) = create_test_services().await;
 
         // Create multiple tasks
@@ -811,7 +826,7 @@ mod tests {
             node_service.create_node_with_parent(task).await.unwrap();
         }
 
-        // Hub query with sorting (ascending) and limit
+        // Wildcard query with sorting (ascending) and limit
         let query = QueryDefinition {
             target_type: "*".to_string(),
             filters: vec![QueryFilter {
@@ -1005,7 +1020,7 @@ mod tests {
         node_service.create_node_with_parent(task).await.unwrap();
         node_service.create_node_with_parent(text).await.unwrap();
 
-        // Hub query sorted by node_type ascending
+        // Wildcard query sorted by node_type ascending
         let query = QueryDefinition {
             target_type: "*".to_string(),
             filters: vec![],
@@ -1129,7 +1144,7 @@ mod tests {
         node_service.create_node_with_parent(task1).await.unwrap();
         node_service.create_node_with_parent(task2).await.unwrap();
 
-        // Hub query with metadata (node_type) and content filters
+        // Wildcard query with metadata (node_type) and content filters
         let query = QueryDefinition {
             target_type: "*".to_string(),
             filters: vec![

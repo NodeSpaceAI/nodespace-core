@@ -1,9 +1,9 @@
 //! Strongly-Typed SchemaNode
 //!
-//! Provides direct deserialization from spoke table with hub data via record link,
-//! eliminating the intermediate JSON `properties` step for true compile-time type safety.
+//! Provides compile-time type safety for schema nodes using Universal Graph Architecture.
+//! Schema properties (fields, relationships) are stored in node.properties.
 //!
-//! # Architecture
+//! # Architecture (Universal Graph - Issue #783)
 //!
 //! **Query Pattern:**
 //! Note: Column aliases use camelCase to match serde's `#[serde(rename_all = "camelCase")]`.
@@ -12,16 +12,16 @@
 //! ```sql
 //! SELECT
 //!     record::id(id) AS id,
-//!     is_core AS isCore,
-//!     version AS schemaVersion,
-//!     description,
-//!     fields,
-//!     relationships,
-//!     node.content AS content,
-//!     node.version AS version,
-//!     node.created_at AS createdAt,
-//!     node.modified_at AS modifiedAt
-//! FROM schema:`task`;
+//!     properties.isCore AS isCore,
+//!     properties.version AS schemaVersion,
+//!     properties.description AS description,
+//!     properties.fields AS fields,
+//!     properties.relationships AS relationships,
+//!     content,
+//!     version,
+//!     created_at AS createdAt,
+//!     modified_at AS modifiedAt
+//! FROM node:`task` WHERE node_type = 'schema';
 //! ```
 //!
 //! # Examples
@@ -43,9 +43,9 @@ use serde::{Deserialize, Serialize};
 
 /// Strongly-typed schema node with direct field access
 ///
-/// Deserializes directly from spoke table with hub data via record link.
-/// Combines hub metadata (id, content, timestamps) with spoke-specific
-/// schema definition fields (is_core, fields, description).
+/// Uses Universal Graph Architecture - schema data stored in node.properties.
+/// Combines node metadata (id, content, timestamps) with schema-specific
+/// fields (is_core, fields, relationships).
 ///
 /// Fields are public for direct mutation. After modifying, persist via
 /// `store.update_schema_node(schema)`.
@@ -53,15 +53,15 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase")]
 pub struct SchemaNode {
     // ========================================================================
-    // Hub fields (from schema.node.* via record link)
+    // Node fields (from node table)
     // ========================================================================
-    /// Unique identifier (matches hub node ID, e.g., "task", "date")
+    /// Unique identifier (e.g., "task", "date")
     pub id: String,
 
     /// Display name of the schema (e.g., "Task", "Date")
     pub content: String,
 
-    /// Optimistic concurrency control version (hub's version)
+    /// Optimistic concurrency control version
     #[serde(default = "default_version")]
     pub version: i64,
 
@@ -72,7 +72,7 @@ pub struct SchemaNode {
     pub modified_at: DateTime<Utc>,
 
     // ========================================================================
-    // Spoke fields (direct from schema table)
+    // Schema-specific fields (from node.properties)
     // ========================================================================
     /// Whether this is a core schema (shipped with NodeSpace)
     #[serde(default)]
@@ -132,7 +132,7 @@ impl SchemaNode {
 
         let schema_version = node
             .properties
-            .get("version")
+            .get("schemaVersion")
             .and_then(|v| v.as_u64())
             .map(|v| v as u32)
             .unwrap_or(1);
@@ -176,7 +176,7 @@ impl SchemaNode {
     pub fn into_node(self) -> Node {
         let properties = serde_json::json!({
             "isCore": self.is_core,
-            "version": self.schema_version,
+            "schemaVersion": self.schema_version,
             "description": self.description,
             "fields": self.fields,
             "relationships": self.relationships,
@@ -312,7 +312,7 @@ mod tests {
             "task".to_string(),
             json!({
                 "isCore": true,
-                "version": 2,
+                "schemaVersion": 2,
                 "description": "Task tracking schema",
                 "fields": [
                     {
@@ -469,7 +469,7 @@ mod tests {
 
     #[test]
     fn test_serde_deserialization() {
-        // Direct deserialization (simulates spoke table query result)
+        // Direct deserialization (simulates node table query result)
         let json = json!({
             "id": "test-schema",
             "content": "Test Schema",

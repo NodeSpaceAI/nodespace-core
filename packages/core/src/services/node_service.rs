@@ -561,30 +561,25 @@ where
             .map(|s| (s.id.clone(), !s.fields.is_empty()))
             .collect();
 
-        // CRITICAL: SchemaTableManager must be scoped to drop before Arc::get_mut()
-        //
-        // SchemaTableManager::new() clones the Arc<SurrealStore> for DDL generation.
-        // If this clone exists during Arc::get_mut() call (below), get_mut() will fail
-        // because Arc requires exactly 1 strong reference for mutable access.
-        //
-        // This scope ensures the Arc clone is dropped before the cache update phase.
+        // Universal Graph Architecture (Issue #783): No spoke tables
+        // Schema field definitions are stored in node.properties, not separate tables.
+        // Only edge tables are created for relationships.
         {
-            let table_manager =
-                crate::services::schema_table_manager::SchemaTableManager::new(Arc::clone(store));
+            let table_manager = crate::services::schema_table_manager::SchemaTableManager::new();
 
-            // For each schema: atomically create schema node + spoke table DDL
+            // For each schema: atomically create schema node + edge table DDL (if any)
             for schema in &core_schemas {
                 let schema_id = schema.id.clone();
                 let node = schema.clone().into_node();
 
-                // Generate DDL statements for schemas with fields (e.g., task)
-                // Simple schemas (text, date, header) have no fields, so no DDL
-                let ddl_statements = if !schema.fields.is_empty() {
+                // Universal Graph Architecture: Only generate edge table DDL for relationships
+                // No spoke table DDL - properties are stored in node.properties
+                let ddl_statements = if !schema.relationships.is_empty() {
                     table_manager
-                        .generate_ddl_statements(&schema_id, &schema.fields)
+                        .generate_relationship_ddl_statements(&schema_id, &schema.relationships)
                         .map_err(|e| {
                             NodeServiceError::SerializationError(format!(
-                                "Failed to generate DDL for '{}': {}",
+                                "Failed to generate relationship DDL for '{}': {}",
                                 schema_id, e
                             ))
                         })?
@@ -615,8 +610,8 @@ where
             )
         })?;
 
-        for (type_name, has_fields) in schema_cache_updates {
-            store_mut.add_to_schema_cache(type_name, has_fields);
+        for (type_name, _has_fields) in schema_cache_updates {
+            store_mut.add_to_schema_cache(type_name);
         }
 
         tracing::info!("✅ Core schemas seeded successfully (caches updated)");
@@ -1104,15 +1099,8 @@ where
         // NOTE: root_id filtering removed - hierarchy now managed via edges
 
         // For schema nodes, use atomic creation with DDL generation (Issue #691, #703)
-        // This ensures schema node data, spoke table DDL, AND edge table DDL are created together atomically
+        // Universal Graph Architecture (Issue #783): Only edge table DDL, no spoke tables
         if node.node_type == "schema" {
-            // Parse schema fields from properties
-            let fields: Vec<crate::models::SchemaField> = node
-                .properties
-                .get("fields")
-                .and_then(|f| serde_json::from_value(f.clone()).ok())
-                .unwrap_or_default();
-
             // Parse schema relationships from properties (Issue #703)
             let relationships: Vec<SchemaRelationship> = node
                 .properties
@@ -1121,25 +1109,18 @@ where
                 .unwrap_or_default();
 
             // Generate DDL statements for the schema
-            // The schema node ID is the table name (e.g., "task", "person")
-            let table_manager =
-                crate::services::schema_table_manager::SchemaTableManager::new(self.store.clone());
-
-            let mut ddl_statements = Vec::new();
-
-            // Generate spoke table DDL (if it has fields)
-            if !fields.is_empty() {
-                ddl_statements.extend(table_manager.generate_ddl_statements(&node.id, &fields)?);
-            }
+            // Universal Graph Architecture: Only edge tables, no spoke tables
+            // Schema field definitions are stored in node.properties
+            let table_manager = crate::services::schema_table_manager::SchemaTableManager::new();
 
             // Generate edge table DDL (if it has relationships)
-            if !relationships.is_empty() {
-                ddl_statements.extend(
-                    table_manager.generate_relationship_ddl_statements(&node.id, &relationships)?,
-                );
-            }
+            let ddl_statements = if !relationships.is_empty() {
+                table_manager.generate_relationship_ddl_statements(&node.id, &relationships)?
+            } else {
+                vec![]
+            };
 
-            // Execute atomic create: schema node + spoke DDL + edge DDL in one transaction
+            // Execute atomic create: schema node + edge DDL in one transaction
             self.store
                 .create_schema_node_atomic(node.clone(), ddl_statements, self.client_id.clone())
                 .await
@@ -1899,15 +1880,8 @@ where
         };
 
         // For schema nodes, use atomic update with DDL generation (Issue #690, #703)
-        // This ensures schema node data, spoke table DDL, AND edge table DDL change atomically
+        // Universal Graph Architecture (Issue #783): Only edge table DDL, no spoke tables
         if updated.node_type == "schema" {
-            // Parse schema fields from properties
-            let fields: Vec<crate::models::SchemaField> = updated
-                .properties
-                .get("fields")
-                .and_then(|f| serde_json::from_value(f.clone()).ok())
-                .unwrap_or_default();
-
             // Parse schema relationships from properties (Issue #703)
             let relationships: Vec<SchemaRelationship> = updated
                 .properties
@@ -1916,23 +1890,18 @@ where
                 .unwrap_or_default();
 
             // Generate DDL statements for the schema
-            // The schema node ID is the table name (e.g., "task", "person")
-            let table_manager =
-                crate::services::schema_table_manager::SchemaTableManager::new(self.store.clone());
-
-            let mut ddl_statements = Vec::new();
-
-            // Generate spoke table DDL (always, even if fields is empty - ensures table exists)
-            ddl_statements.extend(table_manager.generate_ddl_statements(id, &fields)?);
+            // Universal Graph Architecture: Only edge tables, no spoke tables
+            // Schema field definitions are stored in node.properties
+            let table_manager = crate::services::schema_table_manager::SchemaTableManager::new();
 
             // Generate edge table DDL (if it has relationships)
-            if !relationships.is_empty() {
-                ddl_statements.extend(
-                    table_manager.generate_relationship_ddl_statements(id, &relationships)?,
-                );
-            }
+            let ddl_statements = if !relationships.is_empty() {
+                table_manager.generate_relationship_ddl_statements(id, &relationships)?
+            } else {
+                vec![]
+            };
 
-            // Execute atomic update: node + spoke DDL + edge DDL in one transaction
+            // Execute atomic update: node + edge DDL in one transaction
             self.store
                 .update_schema_node_atomic(id, node_update, ddl_statements, self.client_id.clone())
                 .await

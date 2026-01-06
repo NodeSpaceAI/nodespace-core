@@ -1,585 +1,54 @@
 //! Schema Table Manager
 //!
-//! Handles DDL (Data Definition Language) generation for schema-defined tables.
-//! Extracted from SchemaService to support the simplified schema architecture
-//! where schemas use generic CRUD operations.
+//! Handles DDL (Data Definition Language) generation for relationship edge tables.
+//!
+//! ## Universal Graph Architecture (Issue #783)
+//!
+//! With Universal Graph Architecture, all node properties are stored in the
+//! `node.properties` field. This eliminates the need for spoke tables.
+//!
+//! **This module now only generates DDL for relationship edge tables.**
 //!
 //! ## Responsibilities
 //!
-//! - Creating and defining tables based on schema fields
-//! - Defining fields with proper SurrealDB types
-//! - Managing indexes for optimized queries
-//! - Handling nested fields and array structures
-//! - Generating DDL statements for atomic transactions (Issue #690)
-//!
-//! ## Atomic Schema Updates
-//!
-//! When updating a schema node via the generic CRUD API (update_node), both the
-//! node data and the SurrealDB table definitions must change atomically. The
-//! `generate_ddl_statements` method produces DDL statements without executing them,
-//! allowing NodeService to wrap both the node update and DDL execution in a
-//! single transaction.
+//! - Generating DDL statements for relationship edge tables
+//! - Mapping edge field types to proper SurrealDB types
+//! - Generating index definitions for efficient graph traversal
 //!
 //! ## Example Usage
 //!
 //! ```ignore
 //! use nodespace_core::services::SchemaTableManager;
-//! use nodespace_core::db::SurrealStore;
-//! use std::sync::Arc;
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let store = Arc::new(SurrealStore::new("./test.db").await?);
-//!     let table_manager = SchemaTableManager::new(store);
+//! let table_manager = SchemaTableManager::new();
 //!
-//!     // Sync schema fields to database tables
-//!     let fields = vec![]; // SchemaField instances
-//!     table_manager.sync_schema_to_database("person", &fields).await?;
-//!     Ok(())
-//! }
+//! // Generate DDL statements for relationship edge tables
+//! let relationships = vec![]; // SchemaRelationship instances
+//! let ddl_statements = table_manager.generate_relationship_ddl_statements("invoice", &relationships)?;
+//! // Execute ddl_statements in a transaction with the node update
 //! ```
 
-use crate::db::SurrealStore;
-use crate::models::schema::{EdgeField, SchemaField, SchemaRelationship};
+use crate::models::schema::{EdgeField, SchemaRelationship};
 use crate::services::NodeServiceError;
-use std::sync::Arc;
 
-/// Manages database table definitions for schema nodes
+/// Pure DDL generator for relationship edge tables
 ///
-/// Handles creating and syncing database tables based on schema definitions.
-/// This includes:
-/// - Creating spoke tables for schema types
-/// - Defining fields with proper SurrealDB types
-/// - Creating indexes for optimized queries
-/// - Managing nested object fields and array structures
-pub struct SchemaTableManager<C = surrealdb::engine::local::Db>
-where
-    C: surrealdb::Connection,
-{
-    store: Arc<SurrealStore<C>>,
-}
+/// Universal Graph Architecture (Issue #783): This struct only generates DDL
+/// for relationship edge tables. Spoke tables are no longer used - all node
+/// properties are stored in `node.properties`.
+///
+/// ## Design
+///
+/// `SchemaTableManager` is stateless and does not hold database connections.
+/// DDL execution is the responsibility of the caller (typically `NodeService`),
+/// which wraps DDL execution in transactions for atomicity.
+#[derive(Default)]
+pub struct SchemaTableManager;
 
-impl<C> SchemaTableManager<C>
-where
-    C: surrealdb::Connection,
-{
+impl SchemaTableManager {
     /// Create a new SchemaTableManager
-    ///
-    /// # Arguments
-    ///
-    /// * `store` - SurrealDB store instance
-    pub fn new(store: Arc<SurrealStore<C>>) -> Self {
-        Self { store }
-    }
-
-    /// Generate DDL statements for a schema without executing them
-    ///
-    /// This method produces a list of DDL statements (DEFINE TABLE, DEFINE FIELD,
-    /// DEFINE INDEX) that can be executed atomically alongside node updates.
-    ///
-    /// Used by NodeService.update_node to ensure atomic schema updates where
-    /// both the schema node data and the SurrealDB table definitions change
-    /// together in a single transaction.
-    ///
-    /// # Arguments
-    ///
-    /// * `type_name` - The table name (must be alphanumeric + underscores)
-    /// * `schema` - The schema definition containing fields and configuration
-    ///
-    /// # Returns
-    ///
-    /// A vector of DDL statements to be executed atomically
-    ///
-    /// # Errors
-    ///
-    /// - Invalid type name (contains non-alphanumeric characters besides underscores)
-    /// - Invalid field names or types
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// # use nodespace_core::services::SchemaTableManager;
-    /// # use nodespace_core::models::schema::SchemaField;
-    /// # fn example(manager: &SchemaTableManager, fields: &[SchemaField]) -> Result<(), Box<dyn std::error::Error>> {
-    /// let ddl_statements = manager.generate_ddl_statements("person", fields)?;
-    /// // Execute these statements in a transaction along with the node update
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn generate_ddl_statements(
-        &self,
-        type_name: &str,
-        fields: &[SchemaField],
-    ) -> Result<Vec<String>, NodeServiceError> {
-        // Validate type_name to prevent SQL injection
-        if !type_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return Err(NodeServiceError::invalid_update(format!(
-                "Invalid type name '{}': must contain only alphanumeric characters and underscores",
-                type_name
-            )));
-        }
-
-        let mut statements = Vec::new();
-
-        // Use SCHEMAFULL with FLEXIBLE fields to allow user extensions
-        // This enforces defined fields while accepting additional properties
-        let table_mode = "SCHEMAFULL";
-
-        // DEFINE TABLE statement
-        statements.push(format!(
-            "DEFINE TABLE IF NOT EXISTS {} {};",
-            type_name, table_mode
-        ));
-
-        // Define reverse link to hub node (required for hub-spoke architecture)
-        statements.push(format!(
-            "DEFINE FIELD IF NOT EXISTS node ON TABLE {} TYPE option<record>;",
-            type_name
-        ));
-
-        // Generate field definitions from schema
-        for field in fields {
-            self.generate_field_ddl(type_name, field, None, &mut statements)?;
-        }
-
-        Ok(statements)
-    }
-
-    /// Generate DDL statements for a field (recursive for nested fields)
-    ///
-    /// Appends DEFINE FIELD and DEFINE INDEX statements to the provided vector.
-    ///
-    /// # Arguments
-    ///
-    /// * `table` - The table name
-    /// * `field` - The field definition
-    /// * `parent_path` - Optional parent path for nested fields
-    /// * `statements` - Vector to append DDL statements to
-    fn generate_field_ddl(
-        &self,
-        table: &str,
-        field: &SchemaField,
-        parent_path: Option<&str>,
-        statements: &mut Vec<String>,
-    ) -> Result<(), NodeServiceError> {
-        // Build full field path (e.g., "address.city")
-        let field_path = if let Some(parent) = parent_path {
-            format!("{}.{}", parent, field.name)
-        } else {
-            field.name.clone()
-        };
-
-        // Validate field name to prevent SQL injection
-        if !field
-            .name
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
-        {
-            return Err(NodeServiceError::invalid_update(format!(
-                "Invalid field name '{}': must contain only alphanumeric characters, underscores, and colons",
-                field.name
-            )));
-        }
-
-        // Map schema field type to SurrealDB type
-        let db_type = self.map_field_type(&field.field_type, field)?;
-
-        // Quote field paths that contain colons
-        let quoted_field = if field_path.contains(':') {
-            format!("`{}`", field_path)
-        } else {
-            field_path.clone()
-        };
-
-        // Add DEFINE FIELD statement with FLEXIBLE to allow extra properties
-        // FLEXIBLE allows the field to accept any valid JSON value beyond the base type
-        statements.push(format!(
-            "DEFINE FIELD IF NOT EXISTS {} ON TABLE {} FLEXIBLE TYPE {};",
-            quoted_field, table, db_type
-        ));
-
-        // Add index if requested
-        if field.indexed {
-            let index_name = format!(
-                "idx_{}_{}",
-                table,
-                field_path
-                    .replace('.', "_")
-                    .replace("[*]", "_arr")
-                    .replace(':', "_")
-            );
-            statements.push(format!(
-                "DEFINE INDEX IF NOT EXISTS {} ON TABLE {} COLUMNS {};",
-                index_name, table, quoted_field
-            ));
-        }
-
-        // Recursively handle nested fields (for object types)
-        if let Some(ref nested_fields) = field.fields {
-            for nested_field in nested_fields {
-                self.generate_field_ddl(table, nested_field, Some(&field_path), statements)?;
-            }
-        }
-
-        // Recursively handle item fields (for array of objects)
-        if let Some(ref item_fields) = field.item_fields {
-            let array_item_path = format!("{}[*]", field_path);
-            for item_field in item_fields {
-                self.generate_field_ddl(table, item_field, Some(&array_item_path), statements)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Sync schema fields to database table structure
-    ///
-    /// Creates or updates the database table to match the schema fields,
-    /// including all fields, types, and indexes.
-    ///
-    /// # Arguments
-    ///
-    /// * `type_name` - The table name (must be alphanumeric + underscores)
-    /// * `fields` - The schema fields to sync
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if synchronization succeeds
-    ///
-    /// # Errors
-    ///
-    /// - Invalid type name (contains non-alphanumeric characters besides underscores)
-    /// - Database operation errors
-    /// - Field definition errors
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// # use nodespace_core::services::SchemaTableManager;
-    /// # use nodespace_core::models::schema::SchemaField;
-    /// # async fn example(manager: SchemaTableManager, fields: Vec<SchemaField>) -> Result<(), Box<dyn std::error::Error>> {
-    /// manager.sync_schema_to_database("person", &fields).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn sync_schema_to_database(
-        &self,
-        type_name: &str,
-        fields: &[SchemaField],
-    ) -> Result<(), NodeServiceError> {
-        // Validate type_name to prevent SQL injection
-        if !type_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            return Err(NodeServiceError::invalid_update(format!(
-                "Invalid type name '{}': must contain only alphanumeric characters and underscores",
-                type_name
-            )));
-        }
-
-        // Use SCHEMAFULL with FLEXIBLE fields to allow user extensions
-        // This enforces defined fields while accepting additional properties
-        let table_mode = "SCHEMAFULL";
-
-        // Get database connection
-        let db = self.store.db();
-
-        // Create/update table
-        let define_table_query =
-            format!("DEFINE TABLE IF NOT EXISTS {} {};", type_name, table_mode);
-
-        let mut response = db.query(&define_table_query).await.map_err(|e| {
-            NodeServiceError::DatabaseError(crate::db::DatabaseError::OperationError(format!(
-                "Failed to define table '{}': {}",
-                type_name, e
-            )))
-        })?;
-
-        // Consume the response to ensure the query is fully executed
-        let _: Result<Vec<serde_json::Value>, _> = response.take(0);
-
-        tracing::info!("Synced table '{}' with mode {}", type_name, table_mode);
-
-        // Define reverse link to hub node (required for hub-spoke architecture)
-        let node_field_query = format!(
-            "DEFINE FIELD IF NOT EXISTS node ON TABLE {} TYPE option<record>;",
-            type_name
-        );
-        let mut response = db.query(&node_field_query).await.map_err(|e| {
-            NodeServiceError::DatabaseError(crate::db::DatabaseError::OperationError(format!(
-                "Failed to define node field on table '{}': {}",
-                type_name, e
-            )))
-        })?;
-        let _: Result<Vec<serde_json::Value>, _> = response.take(0);
-
-        // Define all fields recursively from schema
-        for field in fields {
-            self.define_field(type_name, field, None).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Define a field in the database (recursive for nested fields)
-    ///
-    /// Creates DEFINE FIELD statements for the field and recursively handles
-    /// nested fields (object types) and array of objects.
-    ///
-    /// # Arguments
-    ///
-    /// * `table` - The table name
-    /// * `field` - The field definition
-    /// * `parent_path` - Optional parent path for nested fields (e.g., "address")
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if field definition succeeds
-    ///
-    /// # Errors
-    ///
-    /// - Invalid field name (contains invalid characters)
-    /// - Database operation errors
-    /// - Any errors from `map_field_type`
-    ///
-    /// # Notes
-    ///
-    /// This method is recursive and uses `Box::pin` to handle async recursion.
-    /// It processes nested object fields and array item fields automatically.
-    fn define_field<'a>(
-        &'a self,
-        table: &'a str,
-        field: &'a SchemaField,
-        parent_path: Option<&'a str>,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), NodeServiceError>> + Send + 'a>,
-    > {
-        Box::pin(async move {
-            // Build full field path (e.g., "address.city")
-            let field_path = if let Some(parent) = parent_path {
-                format!("{}.{}", parent, field.name)
-            } else {
-                field.name.clone()
-            };
-
-            // Validate field name to prevent SQL injection
-            if !field
-                .name
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
-            {
-                return Err(NodeServiceError::invalid_update(format!(
-                "Invalid field name '{}': must contain only alphanumeric characters, underscores, and colons",
-                field.name
-            )));
-            }
-
-            // Map schema field type to SurrealDB type
-            let db_type = self.map_field_type(&field.field_type, field)?;
-
-            // Get database connection
-            let db = self.store.db();
-
-            // Define field in database
-            // Fields with colons in the name need backtick quoting
-            let quoted_field = if field_path.contains(':') {
-                format!("`{}`", field_path)
-            } else {
-                field_path.clone()
-            };
-            let define_field_query = format!(
-                "DEFINE FIELD IF NOT EXISTS {} ON {} TYPE {};",
-                quoted_field, table, db_type
-            );
-
-            let mut response = db.query(&define_field_query).await.map_err(|e| {
-                NodeServiceError::DatabaseError(crate::db::DatabaseError::OperationError(format!(
-                    "Failed to define field '{}' on table '{}': {}",
-                    field_path, table, e
-                )))
-            })?;
-
-            // Consume the response to ensure the query is fully executed
-            let _: Result<Vec<serde_json::Value>, _> = response.take(0);
-
-            tracing::info!(
-                "Defined field '{}' on table '{}' as type '{}'",
-                field_path,
-                table,
-                db_type
-            );
-
-            // Create index if requested
-            if field.indexed {
-                self.create_field_index(table, field, parent_path).await?;
-            }
-
-            // Recursively define nested fields (for object types)
-            if let Some(ref nested_fields) = field.fields {
-                for nested_field in nested_fields {
-                    self.define_field(table, nested_field, Some(&field_path))
-                        .await?;
-                }
-            }
-
-            // Recursively define item fields (for array of objects)
-            if let Some(ref item_fields) = field.item_fields {
-                for item_field in item_fields {
-                    // For array items, we need special path handling
-                    // SurrealDB uses notation like: contacts[*].email
-                    let array_item_path = format!("{}[*]", field_path);
-                    self.define_field(table, item_field, Some(&array_item_path))
-                        .await?;
-                }
-            }
-
-            Ok(())
-        })
-    }
-
-    /// Map schema field type to SurrealDB type
-    ///
-    /// Converts schema type strings to SurrealDB type syntax.
-    ///
-    /// # Arguments
-    ///
-    /// * `schema_type` - The schema field type (e.g., "string", "number", "enum")
-    /// * `field` - The field definition (for enum validation)
-    ///
-    /// # Returns
-    ///
-    /// SurrealDB type string (e.g., "string", "number", "bool", "datetime")
-    ///
-    /// # Errors
-    ///
-    /// - Unknown field types
-    /// - Enum fields with no values defined
-    fn map_field_type(
-        &self,
-        schema_type: &str,
-        field: &SchemaField,
-    ) -> Result<String, NodeServiceError> {
-        let base_type = match schema_type {
-            "string" | "text" | "enum" => "string".to_string(),
-            "number" => "number".to_string(),
-            "boolean" => "bool".to_string(),
-            "date" => "datetime".to_string(),
-            "array" => {
-                if let Some(ref item_type) = field.item_type {
-                    if item_type == "object" {
-                        "array<object>".to_string()
-                    } else {
-                        format!("array<{}>", item_type)
-                    }
-                } else {
-                    "array".to_string()
-                }
-            }
-            "object" => "object".to_string(),
-            "record" => "record".to_string(),
-            _ => {
-                return Err(NodeServiceError::invalid_update(format!(
-                    "Unknown field type '{}'",
-                    schema_type
-                )))
-            }
-        };
-
-        // Wrap in option<> unless required
-        // Required fields have defaults, optional fields are nullable
-        let db_type = if field.required.unwrap_or(false) {
-            // Required fields need DEFAULT value
-            if let Some(ref default) = field.default {
-                let default_val = match default {
-                    serde_json::Value::String(s) => format!("'{}'", s),
-                    serde_json::Value::Number(n) => n.to_string(),
-                    serde_json::Value::Bool(b) => b.to_string(),
-                    _ => "''".to_string(),
-                };
-                format!("{} DEFAULT {}", base_type, default_val)
-            } else {
-                base_type
-            }
-        } else {
-            // Optional fields are nullable
-            format!("option<{}>", base_type)
-        };
-
-        Ok(db_type)
-    }
-
-    /// Create index for a field
-    ///
-    /// Creates a database index for faster queries on the field.
-    ///
-    /// # Arguments
-    ///
-    /// * `table` - The table name
-    /// * `field` - The field definition
-    /// * `parent_path` - Optional parent path for nested fields
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if index creation succeeds
-    ///
-    /// # Errors
-    ///
-    /// - Database operation errors
-    async fn create_field_index(
-        &self,
-        table: &str,
-        field: &SchemaField,
-        parent_path: Option<&str>,
-    ) -> Result<(), NodeServiceError> {
-        // Build full field path
-        let field_path = if let Some(parent) = parent_path {
-            format!("{}.{}", parent, field.name)
-        } else {
-            field.name.clone()
-        };
-
-        // Build index name: idx_{table}_{field_path_with_underscores}
-        let index_name = format!(
-            "idx_{}_{}",
-            table,
-            field_path
-                .replace('.', "_")
-                .replace("[*]", "_arr")
-                .replace(':', "_")
-        );
-
-        // Get database connection
-        let db = self.store.db();
-
-        // Quote field paths that contain colons
-        let quoted_field = if field_path.contains(':') {
-            format!("`{}`", field_path)
-        } else {
-            field_path.clone()
-        };
-
-        // Create index
-        let define_index_query = format!(
-            "DEFINE INDEX IF NOT EXISTS {} ON {} FIELDS {};",
-            index_name, table, quoted_field
-        );
-
-        let mut response = db.query(&define_index_query).await.map_err(|e| {
-            NodeServiceError::DatabaseError(crate::db::DatabaseError::OperationError(format!(
-                "Failed to create index '{}' on table '{}': {}",
-                index_name, table, e
-            )))
-        })?;
-
-        // Consume the response to ensure the query is fully executed
-        let _: Result<Vec<serde_json::Value>, _> = response.take(0);
-
-        tracing::info!(
-            "Created index '{}' on table '{}' for field '{}'",
-            index_name,
-            table,
-            field_path
-        );
-
-        Ok(())
+    pub fn new() -> Self {
+        Self
     }
 
     // =========================================================================
@@ -662,8 +131,8 @@ where
         let mut statements = Vec::new();
 
         // 1. Define edge table with RELATION type
-        // Note: All nodes are stored in the universal 'node' table (hub-and-spoke architecture)
-        // so IN and OUT must reference 'node', not the schema type names
+        // Universal Graph Architecture (Issue #783): All nodes are stored in the 'node' table
+        // so IN and OUT reference 'node', not schema type names
         statements.push(format!(
             "DEFINE TABLE IF NOT EXISTS {} SCHEMAFULL TYPE RELATION IN node OUT node;",
             edge_table
@@ -848,89 +317,32 @@ mod tests {
 
     #[test]
     fn test_validate_relationship_name_valid() {
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name(
-                "billed_to"
-            )
-            .is_ok()
-        );
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name(
-                "assigned-to"
-            )
-            .is_ok()
-        );
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name("owns")
-                .is_ok()
-        );
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name(
-                "partOf123"
-            )
-            .is_ok()
-        );
+        assert!(SchemaTableManager::validate_relationship_name("billed_to").is_ok());
+        assert!(SchemaTableManager::validate_relationship_name("assigned-to").is_ok());
+        assert!(SchemaTableManager::validate_relationship_name("owns").is_ok());
+        assert!(SchemaTableManager::validate_relationship_name("partOf123").is_ok());
     }
 
     #[test]
     fn test_validate_relationship_name_reserved() {
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name(
-                "has_child"
-            )
-            .is_err()
-        );
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name(
-                "mentions"
-            )
-            .is_err()
-        );
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name("node")
-                .is_err()
-        );
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name("data")
-                .is_err()
-        );
+        assert!(SchemaTableManager::validate_relationship_name("has_child").is_err());
+        assert!(SchemaTableManager::validate_relationship_name("mentions").is_err());
+        assert!(SchemaTableManager::validate_relationship_name("node").is_err());
+        assert!(SchemaTableManager::validate_relationship_name("data").is_err());
     }
 
     #[test]
     fn test_validate_relationship_name_invalid_pattern() {
         // Must start with letter
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name(
-                "123_invalid"
-            )
-            .is_err()
-        );
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name(
-                "_starts_with_underscore"
-            )
-            .is_err()
-        );
+        assert!(SchemaTableManager::validate_relationship_name("123_invalid").is_err());
+        assert!(SchemaTableManager::validate_relationship_name("_starts_with_underscore").is_err());
 
         // No special characters
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name(
-                "has spaces"
-            )
-            .is_err()
-        );
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name(
-                "has.dot"
-            )
-            .is_err()
-        );
+        assert!(SchemaTableManager::validate_relationship_name("has spaces").is_err());
+        assert!(SchemaTableManager::validate_relationship_name("has.dot").is_err());
 
         // Empty string
-        assert!(
-            SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name("")
-                .is_err()
-        );
+        assert!(SchemaTableManager::validate_relationship_name("").is_err());
     }
 
     // =========================================================================
@@ -1055,9 +467,9 @@ mod tests {
         // Should have: table definition, created_at, version, 3 indexes
         assert!(statements.len() >= 6);
 
-        // Check table definition
+        // Check table definition - Universal Graph Architecture uses 'node' for IN/OUT
         assert!(statements[0].contains("DEFINE TABLE IF NOT EXISTS invoice_billed_to_customer"));
-        assert!(statements[0].contains("TYPE RELATION IN invoice OUT customer"));
+        assert!(statements[0].contains("TYPE RELATION IN node OUT node"));
 
         // Check tracking fields
         assert!(statements[1].contains("created_at"));
@@ -1311,14 +723,17 @@ mod tests {
         fn generate_edge_table_ddl(
             &self,
             edge_table: &str,
-            source_type: &str,
+            _source_type: &str,
             relationship: &SchemaRelationship,
         ) -> Result<Vec<String>, NodeServiceError> {
+            let _ = &relationship.target_type; // Suppress unused warning
             let mut statements = Vec::new();
 
+            // Universal Graph Architecture (Issue #783): Match production behavior
+            // All nodes are stored in the 'node' table, so IN and OUT reference 'node'
             statements.push(format!(
-                "DEFINE TABLE IF NOT EXISTS {} SCHEMAFULL TYPE RELATION IN {} OUT {};",
-                edge_table, source_type, relationship.target_type
+                "DEFINE TABLE IF NOT EXISTS {} SCHEMAFULL TYPE RELATION IN node OUT node;",
+                edge_table
             ));
 
             statements.push(format!(
@@ -1361,15 +776,9 @@ mod tests {
             let mut statements = Vec::new();
 
             for relationship in relationships {
-                SchemaTableManager::<surrealdb::engine::local::Db>::validate_relationship_name(
-                    &relationship.name,
-                )?;
-                SchemaTableManager::<surrealdb::engine::local::Db>::validate_type_name(
-                    source_type,
-                )?;
-                SchemaTableManager::<surrealdb::engine::local::Db>::validate_type_name(
-                    &relationship.target_type,
-                )?;
+                SchemaTableManager::validate_relationship_name(&relationship.name)?;
+                SchemaTableManager::validate_type_name(source_type)?;
+                SchemaTableManager::validate_type_name(&relationship.target_type)?;
 
                 let edge_table = relationship.compute_edge_table_name(source_type);
                 let edge_ddl =

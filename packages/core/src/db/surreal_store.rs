@@ -5,18 +5,17 @@
 //!
 //! # Architecture
 //!
-//! SurrealStore uses a **hub-and-spoke architecture** (Issue #560):
-//! 1. **Hub `node` table** - Universal metadata for ALL node types with SCHEMAFULL validation
-//! 2. **Spoke tables** - Type-specific data (task, date, schema) with bidirectional Record Links
+//! SurrealStore uses a **Universal Graph Architecture** (Issue #783):
+//! 1. **Universal `node` table** - All node types with embedded `properties` field
+//! 2. **Schema nodes** - Type definitions stored as nodes with `node_type = 'schema'`
 //! 3. **Graph edges** - `has_child` edges for hierarchy, `mentions` for references
-//! 4. **Record Links** - `node.data` → spoke, `spoke.node` → hub (composition, not RELATE)
 //!
 //! # Design Principles
 //!
 //! 1. **Embedded RocksDB**: Desktop-only backend using `kv-rocksdb` engine
-//! 2. **SCHEMAFULL + FLEXIBLE**: Core fields strictly typed, user extensions allowed (Issue #560)
+//! 2. **SCHEMAFULL + FLEXIBLE**: Core fields strictly typed, user extensions allowed
 //! 3. **Record IDs**: Native SurrealDB format `node:uuid` (type embedded in ID)
-//! 4. **Hub-and-Spoke**: Universal `node` table + spoke tables (task, date, schema) with bidirectional Record Links
+//! 4. **Universal Storage**: All properties embedded in `node.properties` field
 //! 5. **Graph Edges**: Hierarchy via `has_child` edges (no parent_id/root_id fields)
 //! 6. **Direct Access**: No abstraction layers, SurrealStore used directly by services
 //!
@@ -130,12 +129,8 @@ pub struct StoreChange {
 /// to async tasks via channels.
 pub type StoreNotifier = Arc<dyn Fn(StoreChange) + Send + Sync>;
 
-// REMOVED: TYPES_WITH_SPOKE_TABLES constant (Issue #691)
-// REMOVED: VALID_NODE_TYPES constant and validate_node_type() function (Issue #691)
-//
-// Both spoke table requirements and valid node types are now derived from
-// schema definitions at runtime. See SurrealStore::build_schema_caches(),
-// has_spoke_table(), and validate_node_type() methods.
+// Valid node types are derived from schema definitions at runtime.
+// See SurrealStore::build_schema_caches() and validate_node_type() methods.
 
 /// Internal struct matching SurrealDB's schema
 ///
@@ -146,18 +141,17 @@ pub type StoreNotifier = Arc<dyn Fn(StoreChange) + Send + Sync>;
 ///   - Version-based optimistic concurrency control
 ///
 /// - **v1.2** (Issue #511): Graph-native architecture
-///   - Removed `uuid`, `parent_id`, `root_id`, `properties` fields
-///   - Added `data` field: Optional record link to type-specific table
-///   - Added `variants` field: Type history for lossless type switching
-///   - Added `_schema_version` field: Universal versioning
-///   - Table renamed from `nodes` to `node` (singular)
 ///   - Hierarchy via `has_child` graph edges only
-///   - Only `task` type table exists (other types are schema-only)
+///   - Table renamed from `nodes` to `node` (singular)
 ///
 /// - **v2.0** (Issue #729): Root-aggregate embedding architecture
-///   - Removed `embedding_vector` and `embedding_stale` from node table
 ///   - Embeddings now stored in dedicated `embedding` table
 ///   - Only root nodes get embedded (subtree content aggregated)
+///
+/// - **v3.0** (Issue #783): Universal Graph Architecture
+///   - All properties stored in `node.properties` field (Universal Graph Architecture)
+///   - No spoke tables - all node data in single table
+///   - Single-query node fetching (no N+1 pattern)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SurrealNode {
     // Record ID is stored in the 'id' field returned by SurrealDB (e.g., node:⟨uuid⟩)
@@ -171,41 +165,8 @@ struct SurrealNode {
     mentions: Vec<String>,
     #[serde(default)]
     mentioned_by: Vec<String>,
-    // Graph-native architecture fields (Issue #511)
-    /// FETCH data Limitation (Issue #511):
-    ///
-    /// **Problem**: SurrealDB's Thing type cannot be deserialized to `serde_json::Value`.
-    ///
-    /// **Root Cause**: When using `SELECT * FROM node FETCH data`, the `data` field can be:
-    /// - A String (record link): `"task:uuid"`  when not fetched
-    /// - An Object (fetched record): `{id: Thing, priority: "HIGH", ...}` when FETCH succeeds
-    ///
-    /// The `id` field in the fetched object is a SurrealDB `Thing` type, which serde_json
-    /// cannot deserialize to `Value`, causing:
-    /// ```text
-    /// Error: invalid type: enum, expected any valid JSON value
-    /// ```
-    ///
-    /// **Attempted Solutions**:
-    /// 1. ❌ Option<Value> - Fails with Thing deserialization error
-    /// 2. ❌ Custom deserializer - Complex, error-prone
-    /// 3. ✅ Skip + manual fetch with OMIT id - Current workaround
-    ///
-    /// **Workaround**: Use `#[serde(skip_deserializing)]` and manually fetch properties
-    /// with `SELECT * OMIT id` to exclude the Thing-typed id field.
-    ///
-    /// **Performance Impact**: Creates N+1 query pattern (see get_children implementation).
-    /// Batch fetching added to mitigate this issue.
-    ///
-    /// **Future**: Investigate SurrealDB support for FETCH with field exclusion:
-    /// `SELECT * FROM node FETCH data.* OMIT data.id;`
-    #[serde(skip_deserializing)]
-    data: Option<Value>, // Placeholder - properties fetched separately
-    #[serde(skip_deserializing, default)]
-    variants: Value, // Type history map {task: "task:uuid", text: null}
-    /// Properties field stores user-defined properties for types without dedicated tables
-    /// For types with dedicated tables (task, schema), this contains _schema_version only
-    /// and actual properties are fetched from the type-specific table
+    /// Properties field stores all type-specific properties directly on the node
+    /// Universal Graph Architecture (Issue #783): No spoke table lookups needed
     #[serde(default)]
     properties: Value,
 }
@@ -221,33 +182,10 @@ impl From<SurrealNode> for Node {
             _ => sn.id.id.to_string(),
         };
 
-        // Extract properties:
-        // 1. If data field is populated (types with dedicated tables like task/schema), use it
-        // 2. Otherwise use properties field (types without dedicated tables like text/date)
-        let properties = if let Some(Value::Object(ref obj)) = sn.data {
-            tracing::debug!(
-                "FETCH data populated for node {}: data has {} fields",
-                id,
-                obj.len()
-            );
-            // Remove the 'id' field and use remaining fields as properties
-            let mut props = obj.clone();
-            props.remove("id");
-            Value::Object(props)
-        } else if !sn.properties.is_null() {
-            tracing::debug!(
-                "Using properties field for node {} (type: {}): {} fields",
-                id,
-                sn.node_type,
-                sn.properties.as_object().map(|o| o.len()).unwrap_or(0)
-            );
+        // Universal Graph Architecture (Issue #783): Properties are always on node.properties
+        let properties = if !sn.properties.is_null() {
             sn.properties
         } else {
-            tracing::debug!(
-                "No properties found for node {} (type: {})",
-                id,
-                sn.node_type
-            );
             serde_json::json!({})
         };
 
@@ -270,68 +208,8 @@ impl From<SurrealNode> for Node {
     }
 }
 
-/// Batch fetch properties for multiple nodes of the same type
-///
-/// **Purpose**: Avoid N+1 query pattern when fetching properties for multiple nodes.
-///
-/// **Performance**:
-/// - Old: 100 nodes = 100 individual queries
-/// - New: 100 nodes = 1 batch query per type
-///
-/// # Arguments
-///
-/// * `db` - SurrealDB connection
-/// * `node_type` - Type of nodes (e.g., "task", "schema")
-/// * `node_ids` - Vector of node IDs to fetch properties for
-///
-/// # Returns
-///
-/// HashMap mapping node ID to its properties
-async fn batch_fetch_properties<C: surrealdb::Connection>(
-    db: &Surreal<C>,
-    node_type: &str,
-    node_ids: &[String],
-) -> Result<std::collections::HashMap<String, Value>> {
-    if node_ids.is_empty() {
-        return Ok(std::collections::HashMap::new());
-    }
-
-    // Strategy: Query each spoke record individually using OMIT id pattern
-    // This avoids Thing deserialization issues while keeping ID association clear
-    // Performance: Still much better than N+1 since we batch the queries together
-    let mut result = std::collections::HashMap::new();
-
-    for node_id in node_ids {
-        // Query spoke table using backtick-quoted ID (same pattern as get_node)
-        // IDs with special characters (hyphens, etc.) need backtick-quoting in SurrealDB
-        let query = format!("SELECT * OMIT id, node FROM {}:`{}`;", node_type, node_id);
-
-        // Clone node_id so we own it
-        let node_id_owned = node_id.clone();
-
-        let mut response = db.query(&query).await.with_context(|| {
-            format!(
-                "Failed to fetch properties for type '{}' id '{}'",
-                node_type, node_id_owned
-            )
-        })?;
-
-        // Deserialize as generic Value
-        let records: Vec<Value> = response.take(0).with_context(|| {
-            format!(
-                "Failed to parse property results for type '{}' id '{}'",
-                node_type, node_id_owned
-            )
-        })?;
-
-        // Take first record if exists
-        if let Some(props) = records.into_iter().next() {
-            result.insert(node_id_owned, props);
-        }
-    }
-
-    Ok(result)
-}
+// REMOVED: batch_fetch_properties() function (Issue #783)
+// Properties are now stored directly in node.properties field, no spoke table lookups needed.
 
 /// Batch fetch collection memberships for multiple nodes
 ///
@@ -428,19 +306,6 @@ where
     db: Arc<Surreal<C>>,
     /// Broadcast channel for domain events (128 subscriber capacity)
     event_tx: broadcast::Sender<DomainEvent>,
-    /// Cache of node types that have spoke tables (derived from schema definitions)
-    ///
-    /// A type needs a spoke table if:
-    /// 1. It's the `schema` type (structural, always has spoke table)
-    /// 2. Its schema node has `fields.len() > 0`
-    ///
-    /// **Cache Population Strategy (Issue #704):**
-    /// - **First launch (fresh DB)**: NodeService seeds schemas and populates cache incrementally
-    ///   via `add_to_schema_cache()` - no database re-query needed
-    /// - **Subsequent launches**: `build_schema_caches()` queries existing schema records once at startup
-    ///
-    /// Replaces the hardcoded TYPES_WITH_SPOKE_TABLES constant (Issue #691).
-    types_with_spoke_tables: std::collections::HashSet<String>,
     /// Cache of all valid node types (derived from schema definitions)
     ///
     /// Contains all schema IDs from the database, used for validating
@@ -450,8 +315,6 @@ where
     /// - **First launch (fresh DB)**: NodeService seeds schemas and populates cache incrementally
     ///   via `add_to_schema_cache()` - no database re-query needed
     /// - **Subsequent launches**: `build_schema_caches()` queries existing schema records once at startup
-    ///
-    /// Replaces the hardcoded VALID_NODE_TYPES constant (Issue #691).
     valid_node_types: std::collections::HashSet<String>,
     /// Optional notifier callback for store-level change notifications (Issue #718)
     ///
@@ -518,8 +381,8 @@ impl SurrealStore<Db> {
         // Note: Schema nodes are seeded by NodeService, not here (Issue #704)
         Self::initialize_schema(&db).await?;
 
-        // Build schema caches from definitions (Issue #691)
-        let (types_with_spoke_tables, valid_node_types) = Self::build_schema_caches(&db).await?;
+        // Build valid node types cache from schema definitions (Issue #691)
+        let valid_node_types = Self::build_schema_caches(&db).await?;
 
         // Initialize broadcast channel for domain events
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
@@ -527,7 +390,6 @@ impl SurrealStore<Db> {
         Ok(Self {
             db,
             event_tx,
-            types_with_spoke_tables,
             valid_node_types,
             notifier: None,
         })
@@ -601,10 +463,10 @@ impl SurrealStore<Client> {
         // Note: Schema nodes are seeded by NodeService, not here (Issue #704)
         Self::initialize_schema(&db).await?;
 
-        // Build schema caches from definitions (Issue #691)
-        let (types_with_spoke_tables, valid_node_types) = Self::build_schema_caches(&db).await?;
+        // Build valid node types cache from schema definitions (Issue #691)
+        let valid_node_types = Self::build_schema_caches(&db).await?;
 
-        tracing::info!("✅ Connected to SurrealDB HTTP server");
+        tracing::info!("Connected to SurrealDB HTTP server");
 
         // Initialize broadcast channel for domain events
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
@@ -612,7 +474,6 @@ impl SurrealStore<Client> {
         Ok(Self {
             db,
             event_tx,
-            types_with_spoke_tables,
             valid_node_types,
             notifier: None,
         })
@@ -700,17 +561,9 @@ where
     // Note: emit_event method removed - domain events are now emitted at NodeService layer
     // for client filtering support. See issue #665.
 
-    /// Check if a node type has a spoke table
-    ///
-    /// A type needs a spoke table if:
-    /// 1. It's the `schema` type (structural, DDL in schema.surql)
-    /// 2. Its schema node has fields defined
-    ///
-    /// This replaces the hardcoded TYPES_WITH_SPOKE_TABLES constant (Issue #691).
-    #[inline]
-    pub fn has_spoke_table(&self, node_type: &str) -> bool {
-        self.types_with_spoke_tables.contains(node_type)
-    }
+    // REMOVED: has_spoke_table() method (Issue #783)
+    // Universal Graph Architecture: All properties stored in node.properties field.
+    // No spoke tables - schema definitions are also in node.properties.
 
     /// Validates a node type against the schema-derived whitelist
     ///
@@ -739,14 +592,13 @@ where
         }
     }
 
-    /// Build both schema caches from database schema definitions
+    /// Build valid node types cache from database schema definitions
     ///
-    /// Queries the `schema` spoke table to determine which node types exist and which
-    /// have spoke tables (based on whether they have fields defined).
+    /// Universal Graph Architecture (Issue #783): Queries `node WHERE node_type = 'schema'`
+    /// to determine which node types exist. Schema data is in node.properties.
     ///
     /// # Returns
     ///
-    /// - `types_with_spoke_tables`: Types that have spoke tables (schema + types with fields)
     /// - `valid_node_types`: All valid node types (all schema IDs)
     ///
     /// # Cache Population Strategy (Issue #704)
@@ -762,22 +614,16 @@ where
     /// - No further cache updates needed
     async fn build_schema_caches(
         db: &Arc<Surreal<C>>,
-    ) -> Result<(
-        std::collections::HashSet<String>,
-        std::collections::HashSet<String>,
-    )> {
-        let mut spoke_tables = std::collections::HashSet::new();
+    ) -> Result<std::collections::HashSet<String>> {
         let mut valid_types = std::collections::HashSet::new();
 
-        // Schema type always has a spoke table (structural, defined in schema.surql)
-        // and is always a valid type
-        spoke_tables.insert("schema".to_string());
+        // Schema type is always a valid type
         valid_types.insert("schema".to_string());
 
-        // Query all schema nodes to get all valid types and which have fields
+        // Query all schema nodes from node table (Universal Graph Architecture)
         // Schema nodes have node_type = "schema" and id = the type name (e.g., "task", "text")
         let query = r#"
-            SELECT id, fields FROM schema;
+            SELECT id FROM node WHERE node_type = 'schema';
         "#;
 
         let mut response = db
@@ -785,47 +631,39 @@ where
             .await
             .context("Failed to query schema nodes for caches")?;
 
-        // Parse results - each row has id (the type name) and fields
+        // Parse results - each row has id (the type name)
         #[derive(serde::Deserialize)]
         struct SchemaRow {
             id: surrealdb::sql::Thing,
-            fields: Vec<serde_json::Value>,
         }
 
         let rows: Vec<SchemaRow> = response.take(0).unwrap_or_default();
 
         for row in rows {
-            // Extract type name from Thing id (e.g., schema:task -> task)
+            // Extract type name from Thing id (e.g., node:task -> task)
             let type_name = match &row.id.id {
                 surrealdb::sql::Id::String(s) => s.clone(),
                 other => other.to_string(),
             };
 
             // All schema IDs are valid node types
-            valid_types.insert(type_name.clone());
-
-            // Types with fields need spoke tables
-            if !row.fields.is_empty() {
-                spoke_tables.insert(type_name);
-            }
+            valid_types.insert(type_name);
         }
 
-        Ok((spoke_tables, valid_types))
+        Ok(valid_types)
     }
 
-    /// Initialize database schema from schema.surql file (Issue #560)
+    /// Initialize database schema from schema.surql file
     ///
     /// Creates SCHEMAFULL tables with FLEXIBLE fields for user extensions.
-    /// Uses hub-and-spoke architecture with bidirectional Record Links.
+    /// Universal Graph Architecture (Issue #783): All properties embedded in node.properties.
     ///
-    /// # Hub-and-Spoke Architecture
-    /// - Hub: Universal `node` table with metadata for ALL nodes
-    /// - Spokes: Type-specific tables (task, date, schema) with `node` reverse link
+    /// # Architecture
+    /// - Universal `node` table with embedded properties for ALL nodes (including schemas)
     /// - Graph edges: `has_child` and `mentions` relations for relationships
-    /// - Record Links: Bidirectional pointers for composition (NOT RELATE)
     async fn initialize_schema(db: &Arc<Surreal<C>>) -> Result<()> {
-        // Load schema from schema.surql file (Issue #560)
-        // Hub-and-spoke architecture with SCHEMAFULL tables and Record Links
+        // Load schema from schema.surql file
+        // Universal Graph Architecture with SCHEMAFULL tables
         let schema_sql = include_str!("schema.surql");
 
         db.query(schema_sql)
@@ -835,16 +673,15 @@ where
         Ok(())
     }
 
-    /// Add a node type to schema caches (called during schema seeding)
+    /// Add a node type to valid types cache (called during schema seeding)
     ///
-    /// When NodeService seeds schema records on first launch, it populates the caches
+    /// When NodeService seeds schema records on first launch, it populates the cache
     /// incrementally as each schema is created. This avoids re-querying the database
     /// after seeding - we already have the schema data in memory.
     ///
     /// # Arguments
     ///
     /// * `type_name` - The node type (e.g., "task", "text", "date")
-    /// * `has_fields` - Whether this type has fields (determines if spoke table exists)
     ///
     /// # Cache Population Strategy (Issue #704)
     ///
@@ -852,18 +689,15 @@ where
     /// ```text
     /// for schema in core_schemas {
     ///     create_schema_node_atomic(schema);
-    ///     add_to_schema_cache(schema.id, !schema.fields.is_empty()); // ✅ No DB query
+    ///     add_to_schema_cache(schema.id); // No DB query needed
     /// }
     /// ```
     ///
     /// **Subsequent launches:**
-    /// - Caches already populated by `build_schema_caches()` during `SurrealStore::new()`
+    /// - Cache already populated by `build_schema_caches()` during `SurrealStore::new()`
     /// - This method is not called
-    pub(crate) fn add_to_schema_cache(&mut self, type_name: String, has_fields: bool) {
-        self.valid_node_types.insert(type_name.clone());
-        if has_fields {
-            self.types_with_spoke_tables.insert(type_name);
-        }
+    pub(crate) fn add_to_schema_cache(&mut self, type_name: String) {
+        self.valid_node_types.insert(type_name);
     }
 }
 
@@ -872,8 +706,8 @@ where
     C: surrealdb::Connection,
 {
     pub async fn create_node(&self, node: Node, source: Option<String>) -> Result<Node> {
-        // Note: embedding_vector is not stored in hub-and-spoke architecture
-        // Embeddings are managed separately for optimization
+        // Universal Graph Architecture (Issue #783): All properties stored in node.properties
+        // Embeddings are managed separately in dedicated embedding table
 
         // Enforce globally unique names for collection nodes
         if node.node_type == "collection" {
@@ -886,21 +720,9 @@ where
             }
         }
 
-        // Check if we need to create a spoke record for properties
-        let has_properties = !node
-            .properties
-            .as_object()
-            .unwrap_or(&serde_json::Map::new())
-            .is_empty();
-        let should_create_spoke = self.has_spoke_table(&node.node_type);
-        let props_with_schema = node.properties.as_object().cloned().unwrap_or_default();
-
-        // Create hub node using simpler table:id syntax
+        // Create node with properties embedded directly
         // Note: IDs with special characters (hyphens, spaces, etc.) need to be backtick-quoted
-        // For types without spoke tables, store properties directly on the hub
-        // Hub-spoke architecture: properties are NOT stored on hub node
-        // They go to spoke tables (task, schema) for types that have them
-        let hub_query = format!(
+        let create_query = format!(
             r#"
             CREATE node:`{}` CONTENT {{
                 node_type: $node_type,
@@ -910,7 +732,7 @@ where
                 modified_at: time::now(),
                 mentions: [],
                 mentioned_by: [],
-                data: $data
+                properties: $properties
             }};
         "#,
             node.id
@@ -918,100 +740,30 @@ where
 
         let mut response = self
             .db
-            .query(&hub_query)
+            .query(&create_query)
             .bind(("node_type", node.node_type.clone()))
             .bind(("content", node.content.clone()))
             .bind(("version", node.version))
-            .bind(("data", None::<String>))
+            .bind(("properties", node.properties.clone()))
             .await
             .context("Failed to create node in universal table")?;
 
         // Consume the CREATE response - critical for persistence
         let _: Result<Vec<serde_json::Value>, _> = response.take(0usize);
 
-        // Verify the hub node was actually created by querying it back
+        // Verify the node was actually created by querying it back
         // This ensures the CREATE statement fully persisted before proceeding
         let verify_query = format!("SELECT * FROM node:`{}` LIMIT 1;", node.id);
         let mut verify_response = self
             .db
             .query(&verify_query)
             .await
-            .context("Failed to verify hub node creation")?;
+            .context("Failed to verify node creation")?;
 
         let _: Vec<SurrealNode> = verify_response.take(0).context(format!(
-            "Hub node '{}' was not created - verification query returned no results",
+            "Node '{}' was not created - verification query returned no results",
             node.id
         ))?;
-
-        // Create spoke record if needed
-        if should_create_spoke && has_properties {
-            // CREATE spoke record using EXACTLY the same pattern as hub nodes (which works)
-            // Use inline property assignments in the CONTENT block rather than passing $properties
-
-            // Build the property assignments list
-            let mut property_bindings = String::new();
-            let mut binding_pairs = Vec::new();
-
-            for (key, value) in props_with_schema.iter() {
-                property_bindings.push_str(&format!("{}: ${},\n                ", key, key));
-                binding_pairs.push((key.clone(), value.clone()));
-            }
-
-            // Remove trailing comma and newline
-            property_bindings = property_bindings
-                .trim_end_matches(",\n                ")
-                .to_string();
-
-            let create_spoke_query = format!(
-                r#"
-                CREATE {}:`{}` CONTENT {{
-                    {}
-                }};
-                "#,
-                node.node_type, node.id, property_bindings
-            );
-
-            let mut query_builder = self.db.query(&create_spoke_query);
-
-            // Bind all property values using owned strings for keys
-            for (key, value) in binding_pairs {
-                query_builder = query_builder.bind((key, value));
-            }
-
-            let mut spoke_response = query_builder
-                .await
-                .context("Failed to create spoke record")?;
-
-            // Consume the response to ensure it's fully executed
-            // Use Option to handle Thing deserialization issues gracefully
-            let _: Result<Vec<Option<serde_json::Value>>, _> = spoke_response.take(0);
-
-            // Verify spoke record was created
-            let verify_spoke = format!("SELECT * FROM {}:`{}` LIMIT 1;", node.node_type, node.id);
-            let mut verify_response = self.db.query(&verify_spoke).await?;
-            let _verify_results: Vec<serde_json::Value> =
-                verify_response.take(0).unwrap_or_default();
-
-            // Set bidirectional links: hub -> spoke and spoke -> hub
-            let link_query = format!(
-                r#"
-                UPDATE node:`{}` SET data = {}:`{}`;
-                UPDATE {}:`{}` SET node = node:`{}`;
-            "#,
-                node.id, node.node_type, node.id, node.node_type, node.id, node.id
-            );
-
-            let mut link_response = self
-                .db
-                .query(&link_query)
-                .await
-                .context("Failed to set spoke links")?;
-
-            // Consume link responses - both UPDATE statements
-            // UPDATE returns updated records which may have deserialization quirks
-            let _: Result<Vec<serde_json::Value>, _> = link_response.take(0usize);
-            let _: Result<Vec<serde_json::Value>, _> = link_response.take(1usize);
-        }
 
         // Note: Parent-child relationships are now established separately via move_node()
         // This allows cleaner separation of node creation from hierarchy management
@@ -1030,8 +782,10 @@ where
     /// Create a child node atomically with parent edge in a single transaction
     ///
     /// This is the atomic version of create_node + move_node. It guarantees that either:
-    /// - The node, type-specific record (if applicable), and parent edge are ALL created
+    /// - The node and parent edge are ALL created
     /// - OR nothing is created (transaction rolls back on failure)
+    ///
+    /// Universal Graph Architecture (Issue #783): All properties embedded in node.properties.
     ///
     /// # Performance Target
     /// - <15ms for create operation (from Issue #532 acceptance criteria)
@@ -1118,130 +872,51 @@ where
             FractionalOrderCalculator::calculate_order(None, None)
         };
 
-        // Prepare properties for type-specific tables
-        let props_with_schema = properties.as_object().cloned().unwrap_or_default();
-        let has_type_table = self.has_spoke_table(&node_type);
+        // Universal Graph Architecture (Issue #783): All properties embedded in node.properties
+        let transaction_query = r#"
+            BEGIN TRANSACTION;
 
-        // Prepare spoke properties WITHOUT the node field (we'll set it in the query using a Thing binding)
-        // This is because JSON objects can't represent SurrealDB Record Links properly
-        let spoke_properties = if has_type_table && !props_with_schema.is_empty() {
-            Some(Value::Object(props_with_schema.clone()))
-        } else {
-            None
-        };
+            -- Create node with embedded properties
+            CREATE $node_id CONTENT {
+                id: $node_id,
+                node_type: $node_type,
+                content: $content,
+                properties: $properties,
+                version: 1,
+                created_at: time::now(),
+                modified_at: time::now()
+            };
 
-        // Prepare hub properties for non-spoke types (text, date, etc.)
-        let hub_properties = if !has_type_table {
-            Some(properties.clone())
-        } else {
-            None
-        };
+            -- Create parent-child edge (parent->has_child->child)
+            RELATE $parent_id->has_child->$node_id CONTENT {
+                order: $order,
+                created_at: time::now(),
+                version: 1
+            };
 
-        // Calculate fractional order using FractionalOrderCalculator (Issue #550)
-        let order = new_order;
-
-        // Build atomic transaction query with bidirectional Record Links (Issue #560)
-        // This ensures ALL operations succeed or ALL fail
-        // Hub-and-spoke: Create spoke with reverse link, then hub with forward link
-        // Note: Use time::now() for datetime fields instead of binding string timestamps
-        let transaction_query = if has_type_table && !props_with_schema.is_empty() {
-            // For types with dedicated tables (task, schema) - bidirectional links
-            // Use dynamic properties binding to support all spoke types (not just task)
-            r#"
-                BEGIN TRANSACTION;
-
-                -- Step 1: Create spoke (type-specific data) with properties
-                CREATE $type_id CONTENT $spoke_properties;
-
-                -- Step 2: Set the reverse link (spoke.node -> hub) using proper Thing binding
-                UPDATE $type_id SET node = $node_id;
-
-                -- Step 3: Create hub (universal metadata) with forward link to spoke
-                CREATE $node_id CONTENT {
-                    id: $node_id,
-                    node_type: $node_type,
-                    content: $content,
-                    data: $type_id,
-                    version: 1,
-                    created_at: time::now(),
-                    modified_at: time::now()
-                };
-
-                -- Step 4: Create parent-child edge (parent->has_child->child)
-                RELATE $parent_id->has_child->$node_id CONTENT {
-                    order: $order,
-                    created_at: time::now(),
-                    version: 1
-                };
-
-                COMMIT TRANSACTION;
-            "#
-            .to_string()
-        } else {
-            // For types without dedicated tables (text, date, etc.) - no spoke needed
-            // Store properties directly on the hub node
-            r#"
-                BEGIN TRANSACTION;
-
-                -- Create hub only (no spoke needed for simple types)
-                -- Properties stored directly on hub for non-spoke types
-                CREATE $node_id CONTENT {
-                    id: $node_id,
-                    node_type: $node_type,
-                    content: $content,
-                    data: NONE,
-                    properties: $hub_properties,
-                    version: 1,
-                    created_at: time::now(),
-                    modified_at: time::now()
-                };
-
-                -- Create parent-child edge (parent->has_child->child)
-                RELATE $parent_id->has_child->$node_id CONTENT {
-                    order: $order,
-                    created_at: time::now(),
-                    version: 1
-                };
-
-                COMMIT TRANSACTION;
-            "#
-            .to_string()
-        };
+            COMMIT TRANSACTION;
+        "#;
 
         // Construct Thing objects for Record IDs
-        // Thing format: table name paired with ID
         let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.clone()));
-        let type_thing = surrealdb::sql::Thing::from((node_type.clone(), node_id.clone()));
 
         // Execute transaction
-        let mut query = self
+        let response = self
             .db
             .query(transaction_query)
             .bind(("node_id", node_thing))
             .bind(("parent_id", parent_thing))
-            .bind(("type_id", type_thing))
             .bind(("node_type", node_type.clone()))
             .bind(("content", content.clone()))
-            .bind(("order", order));
-
-        // Conditionally bind spoke_properties for types with dedicated tables
-        if let Some(spoke_props) = spoke_properties {
-            query = query.bind(("spoke_properties", spoke_props));
-        }
-
-        // Conditionally bind hub_properties for types without dedicated tables
-        if let Some(hub_props) = hub_properties {
-            query = query.bind(("hub_properties", hub_props));
-        }
-
-        let response = query.await.context(format!(
-            "Failed to execute create child node transaction for '{}' under parent '{}'",
-            node_id, parent_id
-        ))?;
+            .bind(("order", new_order))
+            .bind(("properties", properties))
+            .await
+            .context(format!(
+                "Failed to execute create child node transaction for '{}' under parent '{}'",
+                node_id, parent_id
+            ))?;
 
         // Check transaction response for errors
-        // We need to consume results to ensure execution, but ignore serialization errors
-        // that occur when SurrealDB returns internal types (like transaction markers)
         response.check().context(format!(
             "Transaction failed when creating child node '{}' under parent '{}'",
             node_id, parent_id
@@ -1332,58 +1007,32 @@ where
     }
 
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {
-        // Two-query approach: hub first, then spoke if needed
-        //
-        // For embedded SurrealDB (RocksDB), the extra in-process call is ~microseconds.
-        // This approach scales with any number of spoke types without code changes.
-        //
-        // For compile-time type safety, use get_task_node() or get_schema_node().
+        // Universal Graph Architecture (Issue #783): Single query for node + properties
+        // Properties are embedded directly in node.properties field
 
-        // Query 1: Get hub node
-        let hub_query = format!("SELECT * OMIT id, data FROM node:`{id}` LIMIT 1;", id = id);
+        // Query 1: Get node (properties included)
+        let node_query = format!("SELECT * OMIT id FROM node:`{id}` LIMIT 1;", id = id);
         let mut response = self
             .db
-            .query(&hub_query)
+            .query(&node_query)
             .await
-            .context("Failed to query hub node")?;
+            .context("Failed to query node")?;
 
         let results: Vec<Value> = response.take(0).unwrap_or_default();
         let Some(hub) = results.into_iter().next() else {
             return Ok(None);
         };
 
-        // Parse hub fields manually (SurrealDB snake_case → Node camelCase)
+        // Parse node fields (properties embedded directly)
         let node_type = hub["node_type"].as_str().unwrap_or("text").to_string();
-
-        // Query 2: Get spoke data if this type has a spoke table
-        let has_spoke = self.has_spoke_table(&node_type);
-        let properties = if has_spoke {
-            let spoke_query = format!(
-                "SELECT * OMIT id, node FROM {table}:`{id}` LIMIT 1;",
-                table = node_type,
-                id = id
-            );
-            let mut spoke_response = self
-                .db
-                .query(&spoke_query)
-                .await
-                .context("Failed to query spoke table")?;
-
-            let spoke_results: Vec<Value> = spoke_response.take(0).unwrap_or_default();
-            spoke_results
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| serde_json::json!({}))
-        } else {
-            hub.get("properties")
-                .cloned()
-                .unwrap_or(serde_json::json!({}))
-        };
+        let properties = hub
+            .get("properties")
+            .cloned()
+            .unwrap_or(serde_json::json!({}));
 
         let mut node = self.build_node_from_hub(id.to_string(), node_type, &hub, properties);
 
-        // Query 3: Get collection memberships
-        // Uses batch function with single ID for consistency
+        // Query 2: Get collection memberships
         let memberships = batch_fetch_memberships(&self.db, &[id.to_string()]).await?;
         if let Some(collections) = memberships.get(id) {
             node.member_of = collections.clone();
@@ -1397,9 +1046,8 @@ where
     /// Returns a HashMap mapping node IDs to their Node data. IDs that don't exist
     /// are simply not included in the result (no error is raised).
     ///
-    /// This method optimizes bulk operations by avoiding N+1 query patterns.
-    /// For nodes with spoke tables (task, schema), spoke data is fetched in batches
-    /// grouped by node type.
+    /// Universal Graph Architecture (Issue #783): Single query for all nodes,
+    /// properties embedded in node.properties field.
     pub async fn get_nodes_by_ids(&self, ids: &[String]) -> Result<HashMap<String, Node>> {
         if ids.is_empty() {
             return Ok(HashMap::new());
@@ -1409,23 +1057,23 @@ where
         let id_list: Vec<String> = ids.iter().map(|id| format!("node:`{}`", id)).collect();
         let id_clause = id_list.join(", ");
 
-        // Query all hub nodes in one batch
-        // Note: We use record::id(id) AS id to extract the string ID for result mapping
-        // The raw id field is an object/Thing that doesn't serialize to a simple string
-        let hub_query = format!(
-            "SELECT *, record::id(id) AS node_id OMIT id, data FROM node WHERE id IN [{}];",
+        // Query all nodes in one batch (properties embedded)
+        // Note: We use record::id(id) AS node_id to extract the string ID for result mapping
+        let node_query = format!(
+            "SELECT *, record::id(id) AS node_id OMIT id FROM node WHERE id IN [{}];",
             id_clause
         );
         let mut response = self
             .db
-            .query(&hub_query)
+            .query(&node_query)
             .await
-            .context("Failed to batch query hub nodes")?;
+            .context("Failed to batch query nodes")?;
 
         let results: Vec<Value> = response.take(0).unwrap_or_default();
 
-        // Group nodes by type for efficient spoke queries
-        let mut nodes_by_type: HashMap<String, Vec<(String, Value)>> = HashMap::new();
+        let mut result_map: HashMap<String, Node> = HashMap::new();
+
+        // Convert each node row to Node struct
         for hub in results {
             // Extract ID from the node_id alias (set via record::id(id) AS node_id)
             let node_id = hub["node_id"].as_str().unwrap_or("").to_string();
@@ -1433,69 +1081,13 @@ where
                 continue; // Skip if no ID found
             }
             let node_type = hub["node_type"].as_str().unwrap_or("text").to_string();
+            let properties = hub
+                .get("properties")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
 
-            nodes_by_type
-                .entry(node_type)
-                .or_default()
-                .push((node_id, hub));
-        }
-
-        let mut result_map: HashMap<String, Node> = HashMap::new();
-
-        // Process each node type group
-        for (node_type, hubs) in nodes_by_type {
-            let has_spoke = self.has_spoke_table(&node_type);
-
-            // Batch fetch spoke data if needed
-            let spoke_data: HashMap<String, Value> = if has_spoke {
-                let spoke_ids: Vec<String> = hubs
-                    .iter()
-                    .map(|(id, _)| format!("{}:`{}`", node_type, id))
-                    .collect();
-                let spoke_clause = spoke_ids.join(", ");
-                // Use record::id(id) AS spoke_id to extract string ID for result mapping
-                let spoke_query = format!(
-                    "SELECT *, record::id(id) AS spoke_id OMIT id, node FROM {} WHERE id IN [{}];",
-                    node_type, spoke_clause
-                );
-
-                let mut spoke_response = self
-                    .db
-                    .query(&spoke_query)
-                    .await
-                    .context("Failed to batch query spoke table")?;
-
-                let spoke_results: Vec<Value> = spoke_response.take(0).unwrap_or_default();
-
-                spoke_results
-                    .into_iter()
-                    .filter_map(|spoke| {
-                        // Extract ID from spoke_id alias (set via record::id(id) AS spoke_id)
-                        let spoke_id = spoke["spoke_id"].as_str()?.to_string();
-                        Some((spoke_id, spoke))
-                    })
-                    .collect()
-            } else {
-                HashMap::new()
-            };
-
-            // Convert hub + spoke data to Node structs using the shared helper
-            for (node_id, hub) in hubs {
-                let properties = if has_spoke {
-                    spoke_data
-                        .get(&node_id)
-                        .cloned()
-                        .unwrap_or_else(|| serde_json::json!({}))
-                } else {
-                    hub.get("properties")
-                        .cloned()
-                        .unwrap_or(serde_json::json!({}))
-                };
-
-                let node =
-                    self.build_node_from_hub(node_id.clone(), node_type.clone(), &hub, properties);
-                result_map.insert(node_id, node);
-            }
+            let node = self.build_node_from_hub(node_id.clone(), node_type, &hub, properties);
+            result_map.insert(node_id, node);
         }
 
         // Batch fetch collection memberships for all nodes
@@ -1518,6 +1110,8 @@ where
         update: NodeUpdate,
         source: Option<String>,
     ) -> Result<Node> {
+        // Universal Graph Architecture (Issue #783): All properties in node.properties
+
         // Fetch current node
         let current = self
             .get_node(id)
@@ -1528,11 +1122,7 @@ where
         let updated_node_type = update.node_type.unwrap_or(current.node_type.clone());
 
         // Merge properties if they're being updated
-        // For types without dedicated tables (text, date, etc.), store properties directly in universal table
-        //
         // NOTE: _schema_version is managed by NodeService, not SurrealStore.
-        // NodeService adds _schema_version only for node types with schema fields.
-        // Don't add/preserve _schema_version here - it causes properties pollution.
         let properties_update = if let Some(ref updated_props) = update.properties {
             let mut merged_props = current.properties.as_object().cloned().unwrap_or_default();
             if let Some(new_props) = updated_props.as_object() {
@@ -1540,7 +1130,6 @@ where
                     merged_props.insert(key.clone(), value.clone());
                 }
             }
-            // Properties are merged as-is - no automatic _schema_version insertion
             Some(serde_json::Value::Object(merged_props))
         } else {
             None
@@ -1584,35 +1173,6 @@ where
         }
 
         query_builder.await.context("Failed to update node")?;
-
-        // If properties were provided and node type has type-specific table, update it there too
-        if let Some(updated_props) = update.properties {
-            if self.has_spoke_table(&updated_node_type) {
-                // UPSERT with MERGE to preserve existing spoke data on type reconversions
-                // Scenario: text→task creates task:uuid, task→text preserves it, text→task reconnects
-                // MERGE ensures old task properties (priority, due_date) aren't lost on reconversion
-                // Only adds missing defaults, preserves user-set values
-                // Note: Schema properties stored directly - enums handled via strong typing on read
-
-                self.db
-                    .query("UPSERT type::thing($table, $id) MERGE $properties;")
-                    .bind(("table", updated_node_type.clone()))
-                    .bind(("id", id.to_string()))
-                    .bind(("properties", updated_props))
-                    .await
-                    .context("Failed to upsert properties in type-specific table")?;
-
-                // Ensure data link exists (in case this is a type change)
-                self.db
-                    .query(
-                        "UPDATE type::thing('node', $id) SET data = type::thing($type_table, $id);",
-                    )
-                    .bind(("id", id.to_string()))
-                    .bind(("type_table", updated_node_type))
-                    .await
-                    .context("Failed to set data link")?;
-            }
-        }
 
         // Fetch and return updated node
         let updated_node = self
@@ -1682,16 +1242,17 @@ where
             ));
         }
 
-        // Build atomic transaction: DDL FIRST, then CREATE node + CREATE spoke
-        // DDL must come before CREATE so the spoke table exists when we create schema entries
+        // Build atomic transaction: DDL FIRST, then CREATE node
+        // Universal Graph Architecture (Issue #783): Schema data stored in node.properties
         let mut transaction_parts = vec!["BEGIN TRANSACTION;".to_string()];
 
-        // Add all DDL statements FIRST (for the type this schema defines, e.g., task spoke table)
+        // Add all DDL statements FIRST (for the type this schema defines, e.g., task indexes)
         for ddl in &ddl_statements {
             transaction_parts.push(ddl.clone());
         }
 
-        // Create hub node
+        // Create schema node with all schema data in properties
+        // Universal Graph Architecture: No separate spoke table
         transaction_parts.push(format!(
             r#"CREATE node:`{}` CONTENT {{
                 node_type: $node_type,
@@ -1701,20 +1262,7 @@ where
                 modified_at: time::now(),
                 mentions: [],
                 mentioned_by: [],
-                data: type::thing('schema', $id)
-            }};"#,
-            node.id
-        ));
-
-        // Create spoke record (schema table entry)
-        transaction_parts.push(format!(
-            r#"CREATE schema:`{}` CONTENT {{
-                node: type::thing('node', $id),
-                is_core: $is_core,
-                version: $schema_version,
-                description: $description,
-                fields: $fields,
-                relationships: $relationships
+                properties: $properties
             }};"#,
             node.id
         ));
@@ -1722,44 +1270,13 @@ where
         transaction_parts.push("COMMIT TRANSACTION;".to_string());
         let transaction_query = transaction_parts.join("\n");
 
-        // Extract schema-specific properties
-        let is_core = node
-            .properties
-            .get("isCore")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let schema_version = node
-            .properties
-            .get("version")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1);
-        let description = node
-            .properties
-            .get("description")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let fields = node
-            .properties
-            .get("fields")
-            .cloned()
-            .unwrap_or(serde_json::json!([]));
-        let relationships = node
-            .properties
-            .get("relationships")
-            .cloned()
-            .unwrap_or(serde_json::json!([]));
-
         // Execute atomic transaction
         self.db
             .query(&transaction_query)
             .bind(("id", node.id.clone()))
             .bind(("node_type", node.node_type.clone()))
             .bind(("content", node.content.clone()))
-            .bind(("is_core", is_core))
-            .bind(("schema_version", schema_version))
-            .bind(("description", description.to_string()))
-            .bind(("fields", fields))
-            .bind(("relationships", relationships))
+            .bind(("properties", node.properties.clone()))
             .await
             .context("Failed to execute atomic schema creation transaction")?;
 
@@ -1810,10 +1327,10 @@ where
         };
 
         // Build the atomic transaction query
-        // This wraps: node update + spoke table update + all DDL statements in one transaction
+        // Universal Graph Architecture (Issue #783): All data in node.properties
         let mut transaction_parts = vec!["BEGIN TRANSACTION;".to_string()];
 
-        // Add node update statement (updates the hub node table)
+        // Add node update statement - properties stored directly in node.properties
         transaction_parts.push(
             r#"UPDATE type::thing('node', $id) SET
                 content = $content,
@@ -1822,16 +1339,6 @@ where
                 version = version + 1,
                 properties = $properties;"#
                 .to_string(),
-        );
-
-        // CRITICAL: Also update the spoke table (schema:id) where properties are actually read from
-        // get_node() reads properties from the spoke table for types with spoke tables
-        transaction_parts
-            .push(r#"UPSERT type::thing('schema', $id) MERGE $properties;"#.to_string());
-
-        // Ensure data link exists
-        transaction_parts.push(
-            r#"UPDATE type::thing('node', $id) SET data = type::thing('schema', $id);"#.to_string(),
         );
 
         // Add all DDL statements
@@ -1931,6 +1438,8 @@ where
         new_properties: Value,
         source: Option<String>,
     ) -> Result<Node> {
+        // Universal Graph Architecture (Issue #783): Type switch updates node.properties directly
+
         // Validate new_type to prevent SQL injection
         self.validate_node_type(new_type)?;
 
@@ -1946,84 +1455,30 @@ where
 
         let old_type = current_node.node_type.clone();
 
-        // Build variants update: preserve old type, add new type
-        // variants map format: {"task": "task:uuid", "text": null, ...}
-        let old_type_record = if self.has_spoke_table(&old_type) {
-            format!("{}:{}", old_type, node_id)
-        } else {
-            "null".to_string()
-        };
+        // Build atomic transaction - just update node_type and properties
+        let transaction_query = r#"
+            BEGIN TRANSACTION;
 
-        let new_type_record = if self.has_spoke_table(&new_type) {
-            format!("{}:{}", new_type, node_id)
-        } else {
-            "null".to_string()
-        };
+            -- Update node type and properties
+            UPDATE $node_id SET
+                node_type = $new_type,
+                properties = $properties,
+                modified_at = time::now(),
+                version = version + 1;
 
-        // Prepare properties
-        // Note: Schema properties stored directly - enums handled via strong typing on read
-        let props_with_schema = new_properties.as_object().cloned().unwrap_or_default();
-        let has_new_type_table = self.has_spoke_table(&new_type);
+            COMMIT TRANSACTION;
+        "#;
 
-        // Build atomic transaction using Thing parameters
-        // Note: Field names use snake_case (node_type, modified_at) to match hub schema
-        let transaction_query = if has_new_type_table && !props_with_schema.is_empty() {
-            // New type has properties table
-            r#"
-                BEGIN TRANSACTION;
-
-                -- Create new type-specific record
-                CREATE $new_type_id CONTENT $properties;
-
-                -- Set the reverse link (spoke.node -> hub) using proper Thing binding
-                UPDATE $new_type_id SET node = $node_id;
-
-                -- Update node type, variants map, and data link
-                UPDATE $node_id SET
-                    node_type = $new_type,
-                    modified_at = time::now(),
-                    version = version + 1,
-                    variants[$old_type] = $old_type_record,
-                    variants[$new_type] = $new_type_id,
-                    data = $new_type_id;
-
-                COMMIT TRANSACTION;
-            "#
-            .to_string()
-        } else {
-            // New type doesn't have properties table
-            r#"
-                BEGIN TRANSACTION;
-
-                -- Update node type and variants map
-                UPDATE $node_id SET
-                    node_type = $new_type,
-                    modified_at = time::now(),
-                    version = version + 1,
-                    variants[$old_type] = $old_type_record,
-                    variants[$new_type] = $new_type_record,
-                    data = NONE;
-
-                COMMIT TRANSACTION;
-            "#
-            .to_string()
-        };
-
-        // Construct Thing objects for Record IDs
+        // Construct Thing for node ID
         let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.clone()));
-        let new_type_thing = surrealdb::sql::Thing::from((new_type.clone(), node_id.clone()));
 
         // Execute transaction
         let response = self
             .db
             .query(transaction_query)
             .bind(("node_id", node_thing))
-            .bind(("new_type_id", new_type_thing))
             .bind(("new_type", new_type.clone()))
-            .bind(("old_type", old_type.clone()))
-            .bind(("old_type_record", old_type_record))
-            .bind(("new_type_record", new_type_record))
-            .bind(("properties", Value::Object(props_with_schema)))
+            .bind(("properties", new_properties))
             .await
             .context(format!(
                 "Failed to execute switch type transaction for node '{}'",
@@ -2108,8 +1563,7 @@ where
         let new_version = expected_version + 1;
 
         // Atomic update with version check using record ID
-        // NOTE: Properties are NOT stored on hub node - they go to spoke tables
-        // (hub-spoke architecture: hub has metadata, spokes have type-specific data)
+        // Universal Graph Architecture (Issue #783): Properties stored in node.properties
         let query = "
             UPDATE type::thing('node', $id) SET
                 content = $content,
@@ -2145,31 +1599,18 @@ where
             return Ok(None);
         }
 
-        // Update spoke table if properties were provided and node type has spoke table
+        // Universal Graph Architecture (Issue #783): Properties stored in node.properties
+        // Update properties directly if provided
         if let Some(props) = updated_properties {
-            if self.has_spoke_table(&updated_node_type) {
-                // UPSERT with MERGE to preserve existing spoke data
-                self.db
-                    .query("UPSERT type::thing($table, $id) MERGE $properties;")
-                    .bind(("table", updated_node_type.clone()))
-                    .bind(("id", id.to_string()))
-                    .bind(("properties", props))
-                    .await
-                    .context("Failed to upsert properties in spoke table")?;
-
-                // Ensure data link exists
-                self.db
-                    .query(
-                        "UPDATE type::thing('node', $id) SET data = type::thing($type_table, $id);",
-                    )
-                    .bind(("id", id.to_string()))
-                    .bind(("type_table", updated_node_type))
-                    .await
-                    .context("Failed to set data link")?;
-            }
+            self.db
+                .query("UPDATE type::thing('node', $id) SET properties = $properties;")
+                .bind(("id", id.to_string()))
+                .bind(("properties", props))
+                .await
+                .context("Failed to update properties")?;
         }
 
-        // Fetch fresh node with hydrated properties from spoke table
+        // Fetch fresh node
         let node = self
             .get_node(id)
             .await?
@@ -2186,17 +1627,17 @@ where
     }
 
     pub async fn delete_node(&self, id: &str, source: Option<String>) -> Result<DeleteResult> {
-        // Get node to determine type for Record ID
+        // Universal Graph Architecture (Issue #783): No spoke tables to delete
+
+        // Get node before deletion for notification
         let node = match self.get_node(id).await? {
             Some(n) => n,
             None => return Ok(DeleteResult { existed: false }),
         };
 
-        // Delete using record IDs and graph edges
-        // Use transaction for atomicity (all or nothing)
+        // Delete node and its edges atomically
         let transaction_query = "
             BEGIN TRANSACTION;
-            DELETE type::thing($table, $id);
             DELETE type::thing('node', $id);
             DELETE mentions WHERE in = type::thing('node', $id) OR out = type::thing('node', $id);
             DELETE has_child WHERE in = type::thing('node', $id) OR out = type::thing('node', $id);
@@ -2205,7 +1646,6 @@ where
 
         self.db
             .query(transaction_query)
-            .bind(("table", node.node_type.clone()))
             .bind(("id", node.id.clone()))
             .await
             .context("Failed to delete node and relations")?;
@@ -2440,47 +1880,8 @@ where
             .take(0)
             .context("Failed to extract nodes from query response")?;
 
-        // Convert to nodes
+        // Universal Graph Architecture (Issue #783): Properties embedded in node.properties
         let mut nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
-
-        // Batch fetch properties for nodes that have them (same as get_children)
-        // Performance: 100 nodes with properties = 2-3 queries (vs 101 with N+1 pattern)
-        use std::collections::HashMap;
-
-        // Group nodes by type for batch fetching
-        let mut nodes_by_type: HashMap<String, Vec<String>> = HashMap::new();
-        for node in &nodes {
-            if self.has_spoke_table(&node.node_type) {
-                nodes_by_type
-                    .entry(node.node_type.clone())
-                    .or_default()
-                    .push(node.id.clone());
-            }
-        }
-
-        // Batch fetch properties for each type
-        let mut all_properties: HashMap<String, Value> = HashMap::new();
-        for (node_type, node_ids) in nodes_by_type {
-            match batch_fetch_properties(&self.db, &node_type, &node_ids).await {
-                Ok(props_map) => {
-                    all_properties.extend(props_map);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to batch fetch properties for type '{}': {}",
-                        node_type,
-                        e
-                    );
-                }
-            }
-        }
-
-        // Hydrate properties into nodes
-        for node in &mut nodes {
-            if let Some(props) = all_properties.get(&node.id) {
-                node.properties = props.clone();
-            }
-        }
 
         // Batch fetch collection memberships for all nodes
         let all_node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
@@ -2501,15 +1902,14 @@ where
     }
 
     pub async fn get_children(&self, parent_id: Option<&str>) -> Result<Vec<Node>> {
+        // Universal Graph Architecture (Issue #783): Properties embedded in node.properties
         // Use graph edges for hierarchy traversal with fractional ordering (Issue #550)
-        // Note: We don't use FETCH data because it causes deserialization issues (same as get_node)
         let surreal_nodes = if let Some(parent_id) = parent_id {
             // Create Thing record ID for parent node
             use surrealdb::sql::Thing;
             let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
 
             // Query children ordered by edge.order (fractional ordering)
-            // Build ordered list of child IDs, then fetch full nodes in that order
             let mut edge_response = self
                 .db
                 .query("SELECT * FROM has_child WHERE in = $parent_thing ORDER BY order ASC;")
@@ -2554,7 +1954,7 @@ where
                 node_map.insert(id_str, node);
             }
 
-            // Reconstruct nodes in the exact order from the edge query (ordered_node_strs)
+            // Reconstruct nodes in the exact order from the edge query
             let mut nodes: Vec<SurrealNode> = Vec::new();
             for id_str in ordered_node_strs.iter() {
                 if let Some(node) = node_map.remove(id_str) {
@@ -2578,47 +1978,8 @@ where
             nodes
         };
 
-        // Convert to nodes
+        // Convert to nodes (properties already embedded)
         let mut nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
-
-        // Batch fetch properties for nodes that have them
-        // Performance: 100 nodes with properties = 2-3 queries (vs 101 with N+1 pattern)
-        use std::collections::HashMap;
-
-        // Group nodes by type for batch fetching
-        let mut nodes_by_type: HashMap<String, Vec<String>> = HashMap::new();
-        for node in &nodes {
-            if self.has_spoke_table(&node.node_type) {
-                nodes_by_type
-                    .entry(node.node_type.clone())
-                    .or_default()
-                    .push(node.id.clone());
-            }
-        }
-
-        // Batch fetch properties for each type
-        let mut all_properties: HashMap<String, Value> = HashMap::new();
-        for (node_type, node_ids) in nodes_by_type {
-            match batch_fetch_properties(&self.db, &node_type, &node_ids).await {
-                Ok(props_map) => {
-                    all_properties.extend(props_map);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to batch fetch properties for type '{}': {}",
-                        node_type,
-                        e
-                    );
-                }
-            }
-        }
-
-        // Hydrate properties into nodes
-        for node in &mut nodes {
-            if let Some(props) = all_properties.get(&node.id) {
-                node.properties = props.clone();
-            }
-        }
 
         // Batch fetch collection memberships for all nodes
         let all_node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
@@ -2635,14 +1996,13 @@ where
             }
         }
 
-        // Children are ordered by has_child edge order field (fractional ordering)
-        // Sorting is done by the database query ORDER BY clause
         Ok(nodes)
     }
 
     /// Get the parent of a node (via incoming has_child edge)
     ///
     /// Returns the node's parent if it has one, or None if it's a root node.
+    /// Universal Graph Architecture (Issue #783): Properties embedded in node.properties.
     ///
     /// # Arguments
     ///
@@ -2656,7 +2016,6 @@ where
         let child_thing = Thing::from(("node".to_string(), child_id.to_string()));
 
         // Query for parent via incoming has_child edge
-        // SELECT * FROM node WHERE id IN (SELECT VALUE in FROM has_child WHERE out = $child_thing)
         let mut response = self
             .db
             .query("SELECT * FROM node WHERE id IN (SELECT VALUE in FROM has_child WHERE out = $child_thing) LIMIT 1;")
@@ -2672,19 +2031,8 @@ where
             return Ok(None);
         }
 
-        // Convert to node and fetch properties if needed
-        let mut node: Node = nodes.into_iter().next().unwrap().into();
-
-        // Fetch properties if this node type has them
-        if self.has_spoke_table(&node.node_type) {
-            if let Ok(props_map) =
-                batch_fetch_properties(&self.db, &node.node_type, &[node.id.clone()]).await
-            {
-                if let Some(props) = props_map.get(&node.id) {
-                    node.properties = props.clone();
-                }
-            }
-        }
+        // Convert to node (properties already embedded)
+        let node: Node = nodes.into_iter().next().unwrap().into();
 
         Ok(Some(node))
     }
@@ -2881,7 +2229,9 @@ where
     /// 1. Recursively collects all descendant node IDs
     /// 2. Fetches root + all descendants in one SELECT
     /// 3. Fetches all edges in one SELECT
-    /// 4. Batch-fetches spoke data for task nodes (if any)
+    ///
+    /// Universal Graph Architecture (Issue #783): All node properties are stored
+    /// in node.properties field, eliminating the need for spoke table queries.
     ///
     /// # Arguments
     ///
@@ -2890,7 +2240,7 @@ where
     /// # Returns
     ///
     /// Tuple of (all_nodes, edges) where:
-    /// - all_nodes: Vec<Node> - root node + all descendants with spoke data enriched
+    /// - all_nodes: Vec<Node> - root node + all descendants with properties embedded
     /// - edges: Vec<EdgeRecord> - all parent-child edges in the subtree
     pub async fn get_subtree_with_edges(
         &self,
@@ -2900,21 +2250,15 @@ where
 
         let root_thing = Thing::from(("node".to_string(), root_id.to_string()));
 
-        // Single query batch to fetch everything:
+        // Universal Graph Architecture (Issue #783): Single query batch
         // 1. All descendant node IDs (recursive collect)
-        // 2. Root + all descendant nodes
+        // 2. Root + all descendant nodes (properties embedded in node.properties)
         // 3. All edges in subtree
-        // 4. Task spoke data (status, priority, etc.) for task nodes in subtree
-        //
-        // The task spoke query uses string IDs matching node IDs since task records
-        // have the same ID as their parent node (e.g., task:uuid matches node:uuid)
         let query = "
             LET $descendants = $root_thing.{..+collect}->has_child->node;
             LET $all_nodes = array::concat([$root_thing], $descendants);
             SELECT * FROM node WHERE id IN $all_nodes;
             SELECT id, in, out, order FROM has_child WHERE in IN $all_nodes ORDER BY order ASC;
-            LET $task_ids = (SELECT VALUE id FROM node WHERE id IN $all_nodes AND node_type = 'task');
-            SELECT * OMIT node FROM task WHERE id IN $task_ids;
         ";
 
         let mut response = self
@@ -2924,18 +2268,16 @@ where
             .await
             .context("Failed to query subtree")?;
 
-        // Query has 6 statements:
+        // Query has 4 statements:
         // 0: LET $descendants
         // 1: LET $all_nodes
         // 2: SELECT nodes
         // 3: SELECT edges
-        // 4: LET $task_ids
-        // 5: SELECT task spoke data
         let surreal_nodes: Vec<SurrealNode> = response
             .take(2)
             .context("Failed to extract subtree nodes")?;
 
-        let mut all_nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
+        let all_nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
         // Parse edges (index 3)
         #[derive(serde::Deserialize)]
@@ -2951,37 +2293,6 @@ where
         let edge_rows: Vec<EdgeRow> = response
             .take(3)
             .context("Failed to extract subtree edges")?;
-
-        // Parse task spoke data (index 5)
-        #[derive(serde::Deserialize)]
-        struct TaskSpokeRow {
-            id: Thing,
-            #[serde(flatten)]
-            properties: Value,
-        }
-
-        let task_spokes: Vec<TaskSpokeRow> = response.take(5).unwrap_or_default();
-
-        // Build map of task_id -> spoke properties
-        let mut spoke_map: std::collections::HashMap<String, Value> =
-            std::collections::HashMap::new();
-        for spoke in task_spokes {
-            let id_str = match &spoke.id.id {
-                Id::String(s) => s.clone(),
-                Id::Number(n) => n.to_string(),
-                _ => spoke.id.to_string(),
-            };
-            spoke_map.insert(id_str, spoke.properties);
-        }
-
-        // Merge spoke data into task nodes
-        for node in all_nodes.iter_mut() {
-            if node.node_type == "task" {
-                if let Some(spoke_data) = spoke_map.remove(&node.id) {
-                    node.properties = spoke_data;
-                }
-            }
-        }
 
         let edges: Vec<EdgeRecord> = edge_rows
             .into_iter()
@@ -3890,6 +3201,7 @@ where
             return Ok(Vec::new());
         }
 
+        // Universal Graph Architecture (Issue #783): All properties embedded in node.properties
         // Build a single transaction query for all operations
         let mut query = String::from("BEGIN TRANSACTION;\n");
 
@@ -3901,62 +3213,24 @@ where
             let escaped_content = Self::escape_surql_string(content);
             let props_json = serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
 
-            let has_spoke = self.has_spoke_table(node_type);
-
-            if has_spoke {
-                // For types with dedicated spoke tables (task, schema)
-                // Step 1: Create spoke record with properties
-                query.push_str(&format!(
-                    "CREATE {table}:`{id}` CONTENT {props};\n",
-                    table = node_type,
-                    id = id,
-                    props = props_json
-                ));
-
-                // Step 2: Set the reverse link (spoke.node -> hub)
-                query.push_str(&format!(
-                    "UPDATE {table}:`{id}` SET node = node:`{id}`;\n",
-                    table = node_type,
-                    id = id
-                ));
-
-                // Step 3: Create hub node with forward link to spoke
-                query.push_str(&format!(
-                    r#"CREATE node:`{id}` CONTENT {{
-                        node_type: "{node_type}",
-                        content: "{content}",
-                        data: {table}:`{id}`,
-                        version: 1,
-                        created_at: time::now(),
-                        modified_at: time::now()
-                    }};
+            // Create node with embedded properties
+            query.push_str(&format!(
+                r#"CREATE node:`{id}` CONTENT {{
+                    node_type: "{node_type}",
+                    content: "{content}",
+                    properties: {props},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
+                }};
 "#,
-                    id = id,
-                    node_type = node_type,
-                    content = escaped_content,
-                    table = node_type
-                ));
-            } else {
-                // For types without spoke tables (text, header, date, code-block, etc.)
-                query.push_str(&format!(
-                    r#"CREATE node:`{id}` CONTENT {{
-                        node_type: "{node_type}",
-                        content: "{content}",
-                        data: NONE,
-                        properties: {props},
-                        version: 1,
-                        created_at: time::now(),
-                        modified_at: time::now()
-                    }};
-"#,
-                    id = id,
-                    node_type = node_type,
-                    content = escaped_content,
-                    props = props_json
-                ));
-            }
+                id = id,
+                node_type = node_type,
+                content = escaped_content,
+                props = props_json
+            ));
 
-            // Step 4: Create parent-child edge if node has parent
+            // Create parent-child edge if node has parent
             if let Some(parent) = parent_id {
                 query.push_str(&format!(
                     r#"RELATE node:`{parent}`->has_child->node:`{id}` CONTENT {{
@@ -4012,12 +3286,14 @@ where
 
     /// Create a single node with parent edge for streaming imports
     ///
+    /// Universal Graph Architecture (Issue #783): All properties embedded in node.properties.
+    ///
     /// This is an optimized path for async markdown imports where:
     /// - Parent is guaranteed to exist (created before children)
     /// - Order is pre-calculated (no DB query needed)
     /// - No validation queries needed (nodes are pre-validated)
     ///
-    /// Uses a single SQL query instead of the 7+ queries in create_node_with_parent.
+    /// Uses a single SQL query instead of multiple queries.
     pub async fn create_node_streaming(
         &self,
         id: String,
@@ -4031,58 +3307,25 @@ where
 
         let escaped_content = Self::escape_surql_string(&content);
         let props_json = serde_json::to_string(&properties).unwrap_or_else(|_| "{}".to_string());
-        let has_spoke = self.has_spoke_table(&node_type);
 
-        // Build single query for node + edge
+        // Build single query for node + edge (properties embedded)
         let mut query = String::new();
 
-        if has_spoke {
-            // Types with spoke tables (task, schema)
-            query.push_str(&format!(
-                "CREATE {table}:`{id}` CONTENT {props};\n",
-                table = node_type,
-                id = id,
-                props = props_json
-            ));
-            query.push_str(&format!(
-                "UPDATE {table}:`{id}` SET node = node:`{id}`;\n",
-                table = node_type,
-                id = id
-            ));
-            query.push_str(&format!(
-                r#"CREATE node:`{id}` CONTENT {{
-                    node_type: "{node_type}",
-                    content: "{content}",
-                    data: {table}:`{id}`,
-                    version: 1,
-                    created_at: time::now(),
-                    modified_at: time::now()
-                }};
+        query.push_str(&format!(
+            r#"CREATE node:`{id}` CONTENT {{
+                node_type: "{node_type}",
+                content: "{content}",
+                properties: {props},
+                version: 1,
+                created_at: time::now(),
+                modified_at: time::now()
+            }};
 "#,
-                id = id,
-                node_type = node_type,
-                content = escaped_content,
-                table = node_type
-            ));
-        } else {
-            // Types without spoke tables (text, header, code-block, etc.)
-            query.push_str(&format!(
-                r#"CREATE node:`{id}` CONTENT {{
-                    node_type: "{node_type}",
-                    content: "{content}",
-                    data: NONE,
-                    properties: {props},
-                    version: 1,
-                    created_at: time::now(),
-                    modified_at: time::now()
-                }};
-"#,
-                id = id,
-                node_type = node_type,
-                content = escaped_content,
-                props = props_json
-            ));
-        }
+            id = id,
+            node_type = node_type,
+            content = escaped_content,
+            props = props_json
+        ));
 
         // Create parent edge if parent specified
         if let Some(ref parent) = parent_id {
@@ -4148,13 +3391,13 @@ where
     // Strongly-Typed Node Retrieval (Issue #673)
     // ========================================================================
     //
-    // These methods provide direct deserialization from spoke tables with hub
-    // data via record link, eliminating the intermediate JSON `properties` step.
+    // Universal Graph Architecture (Issue #783): These methods provide direct
+    // deserialization from node.properties, eliminating the intermediate JSON step.
 
     /// Get a task node with strong typing using single-query pattern
     ///
-    /// Fetches spoke fields (status, priority, due_date, assignee) and hub fields
-    /// (id, content, version, timestamps) in a single query via record link.
+    /// Universal Graph Architecture: Fetches task properties from node.properties
+    /// and node metadata (id, content, version, timestamps) in a single query.
     ///
     /// # Query Pattern
     ///
@@ -4163,15 +3406,15 @@ where
     /// ```sql
     /// SELECT
     ///     record::id(id) AS id,
-    ///     status,
-    ///     priority,
-    ///     due_date AS dueDate,
-    ///     assignee,
-    ///     node.content AS content,
-    ///     node.version AS version,
-    ///     node.created_at AS createdAt,
-    ///     node.modified_at AS modifiedAt
-    /// FROM task:`some-id`;
+    ///     properties.status AS status,
+    ///     properties.priority AS priority,
+    ///     properties.due_date AS dueDate,
+    ///     properties.assignee AS assignee,
+    ///     content AS content,
+    ///     version AS version,
+    ///     created_at AS createdAt,
+    ///     modified_at AS modifiedAt
+    /// FROM node:`some-id`;
     /// ```
     ///
     /// # Arguments
@@ -4201,23 +3444,22 @@ where
     /// # }
     /// ```
     pub async fn get_task_node(&self, id: &str) -> Result<Option<crate::models::TaskNode>> {
-        // Single query: spoke fields + hub fields via record link
+        // Universal Graph Architecture (Issue #783): Properties embedded in node.properties
         // Note: Column aliases use camelCase to match TaskNode's #[serde(rename_all = "camelCase")]
-        // Database stores snake_case, but serde expects camelCase for deserialization
         let query = format!(
             r#"
             SELECT
                 record::id(id) AS id,
-                node.node_type AS nodeType,
-                status,
-                priority,
-                due_date AS dueDate,
-                assignee,
-                node.content AS content,
-                node.version AS version,
-                node.created_at AS createdAt,
-                node.modified_at AS modifiedAt
-            FROM task:`{}`;
+                node_type AS nodeType,
+                properties.status AS status,
+                properties.priority AS priority,
+                properties.due_date AS dueDate,
+                properties.assignee AS assignee,
+                content AS content,
+                version AS version,
+                created_at AS createdAt,
+                modified_at AS modifiedAt
+            FROM node:`{}`;
             "#,
             id
         );
@@ -4234,26 +3476,28 @@ where
         Ok(tasks.into_iter().next())
     }
 
-    /// Update a task node with type-safe spoke field updates
+    /// Update a task node with type-safe property updates
     ///
-    /// Updates the task spoke table fields (status, priority, due_date, assignee) and
-    /// optionally the hub content field. Uses optimistic concurrency control (OCC)
-    /// to prevent lost updates.
+    /// Universal Graph Architecture (Issue #783): Updates task properties in
+    /// node.properties field and optionally the content field. Uses optimistic
+    /// concurrency control (OCC) to prevent lost updates.
     ///
     /// # Transaction Pattern
     ///
-    /// Updates are atomic - spoke fields and hub fields (if provided) are updated
-    /// in a single transaction with OCC check:
+    /// Updates are atomic with OCC check:
     ///
     /// ```sql
     /// BEGIN TRANSACTION;
     /// -- OCC check
     /// LET $current = SELECT version FROM node:`id`;
     /// IF $current.version != $expected { THROW "Version mismatch" };
-    /// -- Update spoke table
-    /// UPDATE task:`id` SET status = $status, ...;
-    /// -- Update hub (if content changed)
-    /// UPDATE node:`id` SET content = $content, version = version + 1, modified_at = time::now();
+    /// -- Update node properties and metadata
+    /// UPDATE node:`id` SET
+    ///     properties.status = $status,
+    ///     properties.priority = $priority,
+    ///     content = $content,
+    ///     version = version + 1,
+    ///     modified_at = time::now();
     /// COMMIT;
     /// ```
     ///
@@ -4289,53 +3533,61 @@ where
         expected_version: i64,
         update: crate::models::TaskNodeUpdate,
     ) -> Result<crate::models::TaskNode> {
-        // Build SET clauses for spoke table update
-        let mut spoke_set_clauses: Vec<String> = Vec::new();
+        // Universal Graph Architecture (Issue #783): Properties embedded in node.properties
+        // Build SET clauses for properties update
+        let mut property_set_clauses: Vec<String> = Vec::new();
 
         if let Some(ref status) = update.status {
-            spoke_set_clauses.push(format!("status = '{}'", status.as_str()));
+            property_set_clauses.push(format!("properties.status = '{}'", status.as_str()));
         }
 
         if let Some(ref priority_opt) = update.priority {
             match priority_opt {
-                Some(p) => spoke_set_clauses.push(format!("priority = '{}'", p.as_str())),
-                None => spoke_set_clauses.push("priority = NONE".to_string()),
+                Some(p) => {
+                    property_set_clauses.push(format!("properties.priority = '{}'", p.as_str()))
+                }
+                None => property_set_clauses.push("properties.priority = NONE".to_string()),
             }
         }
 
         if let Some(ref due_date_opt) = update.due_date {
             match due_date_opt {
-                Some(dt) => {
-                    spoke_set_clauses.push(format!("due_date = <datetime>'{}'", dt.to_rfc3339()))
-                }
-                None => spoke_set_clauses.push("due_date = NONE".to_string()),
+                Some(dt) => property_set_clauses.push(format!(
+                    "properties.due_date = <datetime>'{}'",
+                    dt.to_rfc3339()
+                )),
+                None => property_set_clauses.push("properties.due_date = NONE".to_string()),
             }
         }
 
         if let Some(ref assignee_opt) = update.assignee {
             match assignee_opt {
                 // Escape single quotes to prevent SQL injection
-                Some(a) => {
-                    spoke_set_clauses.push(format!("assignee = '{}'", a.replace('\'', "\\'")))
-                }
-                None => spoke_set_clauses.push("assignee = NONE".to_string()),
+                Some(a) => property_set_clauses.push(format!(
+                    "properties.assignee = '{}'",
+                    a.replace('\'', "\\'")
+                )),
+                None => property_set_clauses.push("properties.assignee = NONE".to_string()),
             }
         }
 
         if let Some(ref started_at_opt) = update.started_at {
             match started_at_opt {
-                Some(dt) => {
-                    spoke_set_clauses.push(format!("started_at = <datetime>'{}'", dt.to_rfc3339()))
-                }
-                None => spoke_set_clauses.push("started_at = NONE".to_string()),
+                Some(dt) => property_set_clauses.push(format!(
+                    "properties.started_at = <datetime>'{}'",
+                    dt.to_rfc3339()
+                )),
+                None => property_set_clauses.push("properties.started_at = NONE".to_string()),
             }
         }
 
         if let Some(ref completed_at_opt) = update.completed_at {
             match completed_at_opt {
-                Some(dt) => spoke_set_clauses
-                    .push(format!("completed_at = <datetime>'{}'", dt.to_rfc3339())),
-                None => spoke_set_clauses.push("completed_at = NONE".to_string()),
+                Some(dt) => property_set_clauses.push(format!(
+                    "properties.completed_at = <datetime>'{}'",
+                    dt.to_rfc3339()
+                )),
+                None => property_set_clauses.push("properties.completed_at = NONE".to_string()),
             }
         }
 
@@ -4352,39 +3604,21 @@ where
             expected_version = expected_version
         ));
 
-        // Update spoke table if there are spoke field changes
-        // CRITICAL: Always include node link to hub for proper hub-spoke architecture
-        // This ensures the spoke record has the bidirectional link even if it was
-        // just created (e.g., when converting text → task via generic node type update)
-        if !spoke_set_clauses.is_empty() {
-            // Add the node link to ensure spoke → hub connection exists
-            spoke_set_clauses.push(format!("node = node:`{}`", id));
-            transaction_parts.push(format!(
-                r#"UPDATE task:`{id}` SET {sets};"#,
-                id = id,
-                sets = spoke_set_clauses.join(", ")
-            ));
+        // Build the full SET clause with all updates
+        let mut all_set_clauses = property_set_clauses;
+        all_set_clauses.push("version = version + 1".to_string());
+        all_set_clauses.push("modified_at = time::now()".to_string());
+
+        // Optionally update content
+        if let Some(ref content) = update.content {
+            all_set_clauses.push(format!("content = '{}'", content.replace('\'', "\\'")));
         }
 
-        // Update hub table: always bump version and modified_at, optionally update content
-        // Also ensure hub → spoke link exists (data field points to spoke record)
-        let hub_sets = if let Some(ref content) = update.content {
-            format!(
-                "content = '{}', version = version + 1, modified_at = time::now(), data = task:`{}`",
-                content.replace('\'', "\\'"),
-                id
-            )
-        } else {
-            format!(
-                "version = version + 1, modified_at = time::now(), data = task:`{}`",
-                id
-            )
-        };
-
+        // Update node with all changes
         transaction_parts.push(format!(
             r#"UPDATE node:`{id}` SET {sets};"#,
             id = id,
-            sets = hub_sets
+            sets = all_set_clauses.join(", ")
         ));
 
         transaction_parts.push("COMMIT TRANSACTION;".to_string());
@@ -4398,8 +3632,7 @@ where
             .await
             .context(format!("Failed to update task node '{}'", id))?;
 
-        // Check the response for errors - SurrealDB transactions with THROW will produce errors
-        // that need to be explicitly checked via .check()
+        // Check the response for errors
         response
             .check()
             .context(format!("Failed to update task node '{}'", id))?;
@@ -4410,27 +3643,26 @@ where
             .ok_or_else(|| anyhow::anyhow!("Task node '{}' not found after update", id))
     }
 
-    /// Get a schema node with strong typing using single-query pattern
+    /// Get a schema node with strong typing
     ///
-    /// Fetches spoke fields (is_core, schema_version, description, fields) and hub
-    /// fields (id, content, version, timestamps) in a single query via record link.
+    /// Fetches schema data from node table where node_type = 'schema'.
+    /// Schema properties (is_core, fields, relationships) are stored in node.properties.
     ///
     /// # Query Pattern
-    ///
-    /// Column aliases use camelCase to match SchemaNode's `#[serde(rename_all = "camelCase")]`:
     ///
     /// ```sql
     /// SELECT
     ///     record::id(id) AS id,
-    ///     is_core AS isCore,
-    ///     version AS schemaVersion,
-    ///     description,
-    ///     fields,
-    ///     node.content AS content,
-    ///     node.version AS version,
-    ///     node.created_at AS createdAt,
-    ///     node.modified_at AS modifiedAt
-    /// FROM schema:`task`;
+    ///     properties.isCore AS isCore,
+    ///     properties.schemaVersion AS schemaVersion,
+    ///     properties.description AS description,
+    ///     properties.fields AS fields,
+    ///     properties.relationships AS relationships,
+    ///     content,
+    ///     version,
+    ///     created_at AS createdAt,
+    ///     modified_at AS modifiedAt
+    /// FROM node:`task` WHERE node_type = 'schema';
     /// ```
     ///
     /// # Arguments
@@ -4442,41 +3674,23 @@ where
     /// * `Ok(Some(SchemaNode))` - Schema found with strongly-typed fields
     /// * `Ok(None)` - Schema not found
     /// * `Err(_)` - Database or deserialization error
-    ///
-    /// # Examples
-    ///
-    /// ```rust,no_run
-    /// # use nodespace_core::db::SurrealStore;
-    /// # use std::path::PathBuf;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let store = SurrealStore::new(PathBuf::from("./data/surreal.db")).await?;
-    /// if let Some(schema) = store.get_schema_node("task").await? {
-    ///     // Direct field access - no JSON parsing
-    ///     println!("Is core: {}", schema.is_core);
-    ///     println!("Fields: {:?}", schema.fields.len());
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
     pub async fn get_schema_node(&self, id: &str) -> Result<Option<crate::models::SchemaNode>> {
-        // Single query: spoke fields + hub fields via record link
-        // Note: Column aliases use camelCase to match SchemaNode's #[serde(rename_all = "camelCase")]
-        // Database stores snake_case, but serde expects camelCase for deserialization
+        // Query node table for schema nodes - properties are in node.properties
         let query = format!(
             r#"
             SELECT
                 record::id(id) AS id,
-                is_core AS isCore,
-                version AS schemaVersion,
-                description,
-                fields,
-                relationships,
-                node.content AS content,
-                node.version AS version,
-                node.created_at AS createdAt,
-                node.modified_at AS modifiedAt
-            FROM schema:`{}`;
+                properties.isCore AS isCore,
+                properties.schemaVersion AS schemaVersion,
+                properties.description AS description,
+                properties.fields AS fields,
+                properties.relationships AS relationships,
+                content,
+                version,
+                created_at AS createdAt,
+                modified_at AS modifiedAt
+            FROM node:`{}`
+            WHERE node_type = 'schema';
             "#,
             id
         );
@@ -4497,44 +3711,27 @@ where
     /// Get all schema nodes from the database
     ///
     /// Returns all schema definitions including their fields and relationships.
-    /// Used by NLP discovery API to build relationship caches.
+    /// Schema nodes have node_type = 'schema' with properties in node.properties.
     ///
     /// # Returns
     ///
     /// Vector of all schema nodes, ordered by ID.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// # use nodespace_core::db::SurrealStore;
-    /// # use std::path::PathBuf;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let store = SurrealStore::new(PathBuf::from("./data/surreal.db")).await?;
-    /// let schemas = store.get_all_schemas().await?;
-    /// for schema in schemas {
-    ///     println!("{}: {} fields, {} relationships",
-    ///         schema.id, schema.fields.len(), schema.relationships.len());
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
     pub async fn get_all_schemas(&self) -> Result<Vec<crate::models::SchemaNode>> {
-        // Note: Column aliases use camelCase to match SchemaNode's #[serde(rename_all = "camelCase")]
-        // Database stores snake_case, but serde expects camelCase for deserialization
+        // Query node table for all schema nodes - properties are in node.properties
         let query = r#"
             SELECT
                 record::id(id) AS id,
-                is_core AS isCore,
-                version AS schemaVersion,
-                description,
-                fields,
-                relationships,
-                node.content AS content,
-                node.version AS version,
-                node.created_at AS createdAt,
-                node.modified_at AS modifiedAt
-            FROM schema
+                properties.isCore AS isCore,
+                properties.schemaVersion AS schemaVersion,
+                properties.description AS description,
+                properties.fields AS fields,
+                properties.relationships AS relationships,
+                content,
+                version,
+                created_at AS createdAt,
+                modified_at AS modifiedAt
+            FROM node
+            WHERE node_type = 'schema'
             ORDER BY id;
         "#;
 
