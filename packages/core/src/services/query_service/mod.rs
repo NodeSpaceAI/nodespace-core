@@ -8,14 +8,14 @@
 //!
 //! - **Unified Node Table**: All queries target the `node` table directly
 //! - **JSON Properties**: Type-specific properties stored in `properties` JSON column
-//! - **Graph Edges**: Relationships traversed via `->has_child->`, `->mentions->`
+//! - **Universal Relationship Table**: All relationships in `relationship` table with `relationship_type` discriminator (Issue #788)
 //! - **No FETCH**: Single table queries, no record link resolution needed
 //!
 //! # Query Pattern Examples
 //!
 //! - Type filter: `SELECT * FROM node WHERE node_type = 'task'`
 //! - Property filter: `SELECT * FROM node WHERE properties.status = 'open'`
-//! - Relationship: `SELECT * FROM node WHERE id IN (SELECT VALUE out FROM has_child WHERE in = node:⟨parent⟩)`
+//! - Relationship: `SELECT * FROM node WHERE id IN (SELECT VALUE out FROM relationship WHERE in = node:⟨parent⟩ AND relationship_type = 'has_child')`
 //!
 //! # Examples
 //!
@@ -525,24 +525,25 @@ impl QueryService {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Missing nodeId"))?;
 
+        // Issue #788: Universal Relationship Architecture - use relationship table with type filter
         match rel_type {
             RelationshipType::Children => Ok(format!(
-                "{} IN (SELECT VALUE out FROM has_child WHERE in = node:⟨{}⟩)",
+                "{} IN (SELECT VALUE out FROM relationship WHERE in = node:⟨{}⟩ AND relationship_type = 'has_child')",
                 id_field,
                 self.escape_string(node_id)
             )),
             RelationshipType::Parent => Ok(format!(
-                "{} IN (SELECT VALUE in FROM has_child WHERE out = node:⟨{}⟩)",
+                "{} IN (SELECT VALUE in FROM relationship WHERE out = node:⟨{}⟩ AND relationship_type = 'has_child')",
                 id_field,
                 self.escape_string(node_id)
             )),
             RelationshipType::Mentions => Ok(format!(
-                "{} IN (SELECT VALUE out FROM mentions WHERE in = node:⟨{}⟩)",
+                "{} IN (SELECT VALUE out FROM relationship WHERE in = node:⟨{}⟩ AND relationship_type = 'mentions')",
                 id_field,
                 self.escape_string(node_id)
             )),
             RelationshipType::MentionedBy => Ok(format!(
-                "{} IN (SELECT VALUE in FROM mentions WHERE out = node:⟨{}⟩)",
+                "{} IN (SELECT VALUE in FROM relationship WHERE out = node:⟨{}⟩ AND relationship_type = 'mentions')",
                 id_field,
                 self.escape_string(node_id)
             )),

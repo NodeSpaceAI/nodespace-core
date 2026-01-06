@@ -5,10 +5,10 @@
 //!
 //! # Architecture
 //!
-//! SurrealStore uses a **Universal Graph Architecture** (Issue #783):
+//! SurrealStore uses a **Universal Graph Architecture** (Issue #783, #788):
 //! 1. **Universal `node` table** - All node types with embedded `properties` field
 //! 2. **Schema nodes** - Type definitions stored as nodes with `node_type = 'schema'`
-//! 3. **Graph edges** - `has_child` edges for hierarchy, `mentions` for references
+//! 3. **Universal `relationship` table** - All relationships with `relationship_type` discriminator
 //!
 //! # Design Principles
 //!
@@ -16,7 +16,7 @@
 //! 2. **SCHEMAFULL + FLEXIBLE**: Core fields strictly typed, user extensions allowed
 //! 3. **Record IDs**: Native SurrealDB format `node:uuid` (type embedded in ID)
 //! 4. **Universal Storage**: All properties embedded in `node.properties` field
-//! 5. **Graph Edges**: Hierarchy via `has_child` edges (no parent_id/root_id fields)
+//! 5. **Universal Edges**: All relationships in `relationship` table with `relationship_type` discriminator
 //! 6. **Direct Access**: No abstraction layers, SurrealStore used directly by services
 //!
 //! # Performance Targets (from PoC)
@@ -70,21 +70,35 @@ use tracing::warn;
 /// the current state, not historical events.
 const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 128;
 
-/// Represents a has_child edge from the database
+/// Represents an relationship from the universal relationship table
 ///
-/// Used for bulk loading the tree structure on startup.
+/// Used for bulk loading relationships (e.g., tree structure on startup).
+/// Universal Relationship Architecture (Issue #788): All relationships in single `relationship` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EdgeRecord {
-    /// Edge ID in SurrealDB format (e.g., "has_child:123")
+pub struct RelationshipRecord {
+    /// Relationship ID in SurrealDB format (e.g., "relationship:123")
     pub id: String,
-    /// Parent node ID
+    /// Source node ID
     #[serde(rename = "in")]
     pub in_node: String,
-    /// Child node ID
+    /// Target node ID
     #[serde(rename = "out")]
     pub out_node: String,
-    /// Order position for this child in parent's children list
-    pub order: f64,
+    /// Relationship type discriminator (has_child, mentions, member_of, etc.)
+    pub relationship_type: String,
+    /// Type-specific properties (e.g., order for has_child, context for mentions)
+    #[serde(default)]
+    pub properties: Value,
+}
+
+impl RelationshipRecord {
+    /// Get the order property for has_child relationships
+    pub fn order(&self) -> f64 {
+        self.properties
+            .get("order")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+    }
 }
 
 /// Store operation types for automatic notification (Issue #718)
@@ -141,7 +155,7 @@ pub type StoreNotifier = Arc<dyn Fn(StoreChange) + Send + Sync>;
 ///   - Version-based optimistic concurrency control
 ///
 /// - **v1.2** (Issue #511): Graph-native architecture
-///   - Hierarchy via `has_child` graph edges only
+///   - Hierarchy via `has_child` graph relationships only
 ///   - Table renamed from `nodes` to `node` (singular)
 ///
 /// - **v2.0** (Issue #729): Root-aggregate embedding architecture
@@ -243,12 +257,12 @@ async fn batch_fetch_memberships<C: surrealdb::Connection>(
         .map(|id| Thing::from(("node".to_string(), id.to_string())))
         .collect();
 
-    // Query all membership edges in one batch
+    // Query all membership relationships in one batch (Issue #788: use relationship table)
     // Returns: [{ node_id: "xxx", collection_ids: [Thing, Thing] }, ...]
     let query = r#"
         SELECT
             record::id(id) AS node_id,
-            ->member_of->node.id AS collection_ids
+            ->relationship[WHERE relationship_type = 'member_of']->node.id AS collection_ids
         FROM node
         WHERE id IN $node_ids;
     "#;
@@ -526,7 +540,7 @@ where
 
     /// Subscribe to domain events emitted by this store
     ///
-    /// Returns a receiver that will get notified when nodes or edges change.
+    /// Returns a receiver that will get notified when nodes or relationships change.
     /// Multiple subscribers are supported - each gets their own copy of events.
     ///
     /// # Example
@@ -660,7 +674,7 @@ where
     ///
     /// # Architecture
     /// - Universal `node` table with embedded properties for ALL nodes (including schemas)
-    /// - Graph edges: `has_child` and `mentions` relations for relationships
+    /// - Graph relationships: `has_child` and `mentions` relations for relationships
     async fn initialize_schema(db: &Arc<Surreal<C>>) -> Result<()> {
         // Load schema from schema.surql file
         // Universal Graph Architecture with SCHEMAFULL tables
@@ -779,10 +793,10 @@ where
         Ok(node)
     }
 
-    /// Create a child node atomically with parent edge in a single transaction
+    /// Create a child node atomically with parent relationship in a single transaction
     ///
     /// This is the atomic version of create_node + move_node. It guarantees that either:
-    /// - The node and parent edge are ALL created
+    /// - The node and parent relationship are ALL created
     /// - OR nothing is created (transaction rolls back on failure)
     ///
     /// Universal Graph Architecture (Issue #783): All properties embedded in node.properties.
@@ -853,10 +867,11 @@ where
         }
 
         let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
+        // Universal Relationship Architecture (Issue #788): Query from relationship table with relationship_type filter
         let mut order_response = self
             .db
             .query(
-                "SELECT order FROM has_child WHERE in = $parent_thing ORDER BY order DESC LIMIT 1;",
+                "SELECT properties.order AS order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' ORDER BY properties.order DESC LIMIT 1;",
             )
             .bind(("parent_thing", parent_thing.clone()))
             .await
@@ -866,13 +881,13 @@ where
             .take(0)
             .context("Failed to extract last child order")?;
 
-        let new_order = if let Some(edge) = last_order {
-            FractionalOrderCalculator::calculate_order(Some(edge.order), None)
+        let new_order = if let Some(rel) = last_order {
+            FractionalOrderCalculator::calculate_order(Some(rel.order), None)
         } else {
             FractionalOrderCalculator::calculate_order(None, None)
         };
 
-        // Universal Graph Architecture (Issue #783): All properties embedded in node.properties
+        // Universal Graph Architecture (Issue #783, #788): All properties embedded, relationships in universal table
         let transaction_query = r#"
             BEGIN TRANSACTION;
 
@@ -887,10 +902,12 @@ where
                 modified_at: time::now()
             };
 
-            -- Create parent-child edge (parent->has_child->child)
-            RELATE $parent_id->has_child->$node_id CONTENT {
-                order: $order,
+            -- Create parent-child relationship in universal relationship table (Issue #788)
+            RELATE $parent_id->relationship->$node_id CONTENT {
+                relationship_type: 'has_child',
+                properties: { order: $order },
                 created_at: time::now(),
+                modified_at: time::now(),
                 version: 1
             };
 
@@ -1627,7 +1644,7 @@ where
     }
 
     pub async fn delete_node(&self, id: &str, source: Option<String>) -> Result<DeleteResult> {
-        // Universal Graph Architecture (Issue #783): No spoke tables to delete
+        // Universal Graph Architecture (Issue #783, #788): No spoke tables, all relationships in universal table
 
         // Get node before deletion for notification
         let node = match self.get_node(id).await? {
@@ -1635,12 +1652,11 @@ where
             None => return Ok(DeleteResult { existed: false }),
         };
 
-        // Delete node and its edges atomically
+        // Delete node and its relationships atomically (Issue #788: use universal relationship table)
         let transaction_query = "
             BEGIN TRANSACTION;
             DELETE type::thing('node', $id);
-            DELETE mentions WHERE in = type::thing('node', $id) OR out = type::thing('node', $id);
-            DELETE has_child WHERE in = type::thing('node', $id) OR out = type::thing('node', $id);
+            DELETE relationship WHERE in = type::thing('node', $id) OR out = type::thing('node', $id);
             COMMIT TRANSACTION;
         ";
 
@@ -1664,16 +1680,16 @@ where
     /// Delete a node with cascade cleanup in a single atomic transaction
     ///
     /// This is an enhanced atomic version of delete_node. It guarantees that either:
-    /// - The node, type-specific record, all edges, and all mentions are ALL deleted
+    /// - The node and all its relationships are ALL deleted
     /// - OR nothing is deleted (transaction rolls back on failure)
     ///
     /// # Cascade Cleanup
     ///
     /// Deletes the following in one atomic transaction:
     /// - Node record from universal `node` table
-    /// - Type-specific record (if type has properties table)
-    /// - All incoming and outgoing `has_child` edges
-    /// - All incoming and outgoing `mentions` edges
+    /// - All relationships (incoming and outgoing) from universal `relationship` table
+    ///
+    /// Universal Relationship Architecture (Issue #788): All relationship types in single table.
     ///
     /// # Arguments
     ///
@@ -1706,23 +1722,21 @@ where
 
         // Build atomic cascade delete transaction using Thing parameters
         // This ensures ALL related data is deleted or NOTHING is deleted
+        // Universal Relationship Architecture (Issue #788): All relationships in single table
         let node_type = node.node_type.clone();
         let node_id_str = node.id.clone();
 
         let transaction_query = r#"
             BEGIN TRANSACTION;
 
-            -- Delete type-specific record (if exists)
+            -- Delete type-specific record (if exists - legacy support)
             DELETE $type_id;
 
             -- Delete node from universal table
             DELETE $node_id;
 
-            -- Delete all has_child edges (incoming and outgoing)
-            DELETE has_child WHERE in = $node_id OR out = $node_id;
-
-            -- Delete all mention edges (incoming and outgoing)
-            DELETE mentions WHERE in = $node_id OR out = $node_id;
+            -- Delete all relationships (incoming and outgoing) from universal relationship table
+            DELETE relationship WHERE in = $node_id OR out = $node_id;
 
             COMMIT TRANSACTION;
         "#
@@ -1787,11 +1801,12 @@ where
         // See: docs/architecture/data/surrealdb-schema-design.md - Graph Traversal Patterns
         if let Some(ref mentioned_node_id) = query.mentioned_by {
             // Use graph traversal to get IDs, then fetch full nodes
-            // We can't use SELECT <-mentions<-node.* directly because it returns nested structure
+            // Issue #788: Universal Relationship Architecture - filter by relationship_type
+            // We can't use SELECT <-relationship[...]<-node.* directly because it returns nested structure
             let sql = if query.limit.is_some() {
-                "SELECT VALUE <-mentions<-node.id FROM type::thing('node', $node_id) LIMIT $limit;"
+                "SELECT VALUE <-relationship[WHERE relationship_type = 'mentions']<-node.id FROM type::thing('node', $node_id) LIMIT $limit;"
             } else {
-                "SELECT VALUE <-mentions<-node.id FROM type::thing('node', $node_id);"
+                "SELECT VALUE <-relationship[WHERE relationship_type = 'mentions']<-node.id FROM type::thing('node', $node_id);"
             };
 
             let mut query_builder = self
@@ -1902,36 +1917,36 @@ where
     }
 
     pub async fn get_children(&self, parent_id: Option<&str>) -> Result<Vec<Node>> {
-        // Universal Graph Architecture (Issue #783): Properties embedded in node.properties
-        // Use graph edges for hierarchy traversal with fractional ordering (Issue #550)
+        // Universal Graph Architecture (Issue #783, #788): Properties embedded in node.properties
+        // Use universal relationship table for hierarchy traversal with fractional ordering
         let surreal_nodes = if let Some(parent_id) = parent_id {
             // Create Thing record ID for parent node
             use surrealdb::sql::Thing;
             let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
 
-            // Query children ordered by edge.order (fractional ordering)
-            let mut edge_response = self
+            // Query children ordered by relationship.properties.order (Issue #788: universal relationship table)
+            let mut rel_response = self
                 .db
-                .query("SELECT * FROM has_child WHERE in = $parent_thing ORDER BY order ASC;")
+                .query("SELECT out, properties.order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' ORDER BY properties.order ASC;")
                 .bind(("parent_thing", parent_thing.clone()))
                 .await
-                .context("Failed to get child edges")?;
+                .context("Failed to get child relationships")?;
 
             #[derive(serde::Deserialize)]
-            struct EdgeOut {
+            struct RelOut {
                 out: Thing,
             }
 
-            let edges: Vec<EdgeOut> = edge_response
+            let relationships: Vec<RelOut> = rel_response
                 .take(0)
-                .context("Failed to extract child edges")?;
+                .context("Failed to extract child relationships")?;
 
             // Extract node Things in order
             let mut ordered_node_things: Vec<Thing> = Vec::new();
             let mut ordered_node_strs: Vec<String> = Vec::new();
-            for edge in edges {
-                ordered_node_things.push(edge.out.clone());
-                ordered_node_strs.push(format!("{}", edge.out));
+            for rel in relationships {
+                ordered_node_things.push(rel.out.clone());
+                ordered_node_strs.push(format!("{}", rel.out));
             }
 
             // Fetch all nodes using Things for proper ID matching
@@ -1954,7 +1969,7 @@ where
                 node_map.insert(id_str, node);
             }
 
-            // Reconstruct nodes in the exact order from the edge query
+            // Reconstruct nodes in the exact order from the relationship query
             let mut nodes: Vec<SurrealNode> = Vec::new();
             for id_str in ordered_node_strs.iter() {
                 if let Some(node) = node_map.remove(id_str) {
@@ -1964,10 +1979,10 @@ where
 
             nodes
         } else {
-            // Root nodes: nodes that have NO incoming has_child edges
+            // Root nodes: nodes that have NO incoming has_child relationships (Issue #788: universal relationship table)
             let mut response = self
                 .db
-                .query("SELECT * FROM node WHERE count(<-has_child) = 0;")
+                .query("SELECT * FROM node WHERE count(<-relationship[WHERE relationship_type = 'has_child']) = 0;")
                 .await
                 .context("Failed to get root nodes")?;
 
@@ -1999,10 +2014,10 @@ where
         Ok(nodes)
     }
 
-    /// Get the parent of a node (via incoming has_child edge)
+    /// Get the parent of a node (via incoming has_child relationship)
     ///
     /// Returns the node's parent if it has one, or None if it's a root node.
-    /// Universal Graph Architecture (Issue #783): Properties embedded in node.properties.
+    /// Universal Graph Architecture (Issue #783, #788): Properties embedded, relationships in universal table.
     ///
     /// # Arguments
     ///
@@ -2015,10 +2030,10 @@ where
         use surrealdb::sql::Thing;
         let child_thing = Thing::from(("node".to_string(), child_id.to_string()));
 
-        // Query for parent via incoming has_child edge
+        // Query for parent via incoming has_child relationship (Issue #788: universal relationship table)
         let mut response = self
             .db
-            .query("SELECT * FROM node WHERE id IN (SELECT VALUE in FROM has_child WHERE out = $child_thing) LIMIT 1;")
+            .query("SELECT * FROM node WHERE id IN (SELECT VALUE in FROM relationship WHERE out = $child_thing AND relationship_type = 'has_child') LIMIT 1;")
             .bind(("child_thing", child_thing))
             .await
             .context("Failed to get parent")?;
@@ -2205,11 +2220,11 @@ where
     /// This collects all descendant IDs in a single traversal, then fetches all
     /// node data in one query. Total: 2 queries regardless of tree depth.
     ///
-    /// **Note:** If you need both nodes AND edges, use [`get_subtree_with_edges`] directly
+    /// **Note:** If you need both nodes AND relationships, use [`get_subtree_with_relationships`] directly
     /// to avoid duplicate database queries.
     pub async fn get_nodes_in_subtree(&self, root_id: &str) -> Result<Vec<Node>> {
         // Delegate to consolidated method, excluding root
-        let (all_nodes, _edges) = self.get_subtree_with_edges(root_id).await?;
+        let (all_nodes, _relationships) = self.get_subtree_with_relationships(root_id).await?;
 
         // Filter out root node (consolidated method includes it)
         let descendants: Vec<Node> = all_nodes.into_iter().filter(|n| n.id != root_id).collect();
@@ -2217,21 +2232,21 @@ where
         Ok(descendants)
     }
 
-    /// Get entire subtree (root + all descendants) with edges in a single optimized query
+    /// Get entire subtree (root + all descendants) with relationships in a single optimized query
     ///
     /// This is the most efficient way to fetch a complete subtree. It uses SurrealDB's
     /// recursive `{..+collect}` syntax to traverse the entire hierarchy and fetch all
-    /// nodes and edges in a single database round-trip.
+    /// nodes and relationships in a single database round-trip.
     ///
     /// # Performance
     ///
     /// Single database query regardless of tree depth or node count. The query:
     /// 1. Recursively collects all descendant node IDs
     /// 2. Fetches root + all descendants in one SELECT
-    /// 3. Fetches all edges in one SELECT
+    /// 3. Fetches all relationships in one SELECT
     ///
-    /// Universal Graph Architecture (Issue #783): All node properties are stored
-    /// in node.properties field, eliminating the need for spoke table queries.
+    /// Universal Graph Architecture (Issue #783, #788): All node properties are stored
+    /// in node.properties field, all relationships in universal relationship table.
     ///
     /// # Arguments
     ///
@@ -2239,26 +2254,27 @@ where
     ///
     /// # Returns
     ///
-    /// Tuple of (all_nodes, edges) where:
+    /// Tuple of (all_nodes, relationships) where:
     /// - all_nodes: Vec<Node> - root node + all descendants with properties embedded
-    /// - edges: Vec<EdgeRecord> - all parent-child edges in the subtree
-    pub async fn get_subtree_with_edges(
+    /// - relationships: Vec<RelationshipRecord> - all parent-child relationships in the subtree
+    pub async fn get_subtree_with_relationships(
         &self,
         root_id: &str,
-    ) -> Result<(Vec<Node>, Vec<EdgeRecord>)> {
+    ) -> Result<(Vec<Node>, Vec<RelationshipRecord>)> {
         use surrealdb::sql::Thing;
 
         let root_thing = Thing::from(("node".to_string(), root_id.to_string()));
 
-        // Universal Graph Architecture (Issue #783): Single query batch
-        // 1. All descendant node IDs (recursive collect)
+        // Universal Graph Architecture (Issue #783, #788): Single query batch
+        // 1. All descendant node IDs (recursive collect via relationship table)
         // 2. Root + all descendant nodes (properties embedded in node.properties)
-        // 3. All edges in subtree
+        // 3. All has_child relationships in subtree
+        // Note: Must include properties.order in SELECT when ordering by it (SurrealDB requirement)
         let query = "
-            LET $descendants = $root_thing.{..+collect}->has_child->node;
+            LET $descendants = $root_thing.{..+collect}->relationship[WHERE relationship_type = 'has_child']->node;
             LET $all_nodes = array::concat([$root_thing], $descendants);
             SELECT * FROM node WHERE id IN $all_nodes;
-            SELECT id, in, out, order FROM has_child WHERE in IN $all_nodes ORDER BY order ASC;
+            SELECT id, in, out, relationship_type, properties, properties.order FROM relationship WHERE in IN $all_nodes AND relationship_type = 'has_child' ORDER BY properties.order ASC;
         ";
 
         let mut response = self
@@ -2272,14 +2288,14 @@ where
         // 0: LET $descendants
         // 1: LET $all_nodes
         // 2: SELECT nodes
-        // 3: SELECT edges
+        // 3: SELECT relationships
         let surreal_nodes: Vec<SurrealNode> = response
             .take(2)
             .context("Failed to extract subtree nodes")?;
 
         let all_nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
-        // Parse edges (index 3)
+        // Parse edges (index 3) - Issue #788: universal relationship table with properties
         #[derive(serde::Deserialize)]
         struct EdgeRow {
             id: Thing,
@@ -2287,14 +2303,16 @@ where
             in_node: Thing,
             #[serde(rename = "out")]
             out_node: Thing,
-            order: f64,
+            relationship_type: String,
+            #[serde(default)]
+            properties: Value,
         }
 
-        let edge_rows: Vec<EdgeRow> = response
+        let rel_rows: Vec<EdgeRow> = response
             .take(3)
-            .context("Failed to extract subtree edges")?;
+            .context("Failed to extract subtree relationships")?;
 
-        let edges: Vec<EdgeRecord> = edge_rows
+        let relationships: Vec<RelationshipRecord> = rel_rows
             .into_iter()
             .map(|e| {
                 let id_str = match &e.id.id {
@@ -2312,42 +2330,46 @@ where
                     Id::Number(n) => n.to_string(),
                     _ => e.out_node.to_string(),
                 };
-                EdgeRecord {
+                RelationshipRecord {
                     id: id_str,
                     in_node: in_str,
                     out_node: out_str,
-                    order: e.order,
+                    relationship_type: e.relationship_type,
+                    properties: e.properties,
                 }
             })
             .collect();
 
-        Ok((all_nodes, edges))
+        Ok((all_nodes, relationships))
     }
 
-    /// Get all edges in a subtree using recursive collect
+    /// Get all relationships in a subtree using recursive collect
     ///
-    /// Fetches all parent-child relationships (has_child edges) within a subtree.
+    /// Fetches all parent-child relationships (has_child relationships) within a subtree.
     /// Combined with `get_nodes_in_subtree()`, this enables building an in-memory adjacency list
     /// for efficient tree construction and navigation.
     ///
     /// # Performance
     ///
-    /// Delegates to `get_subtree_with_edges()` which fetches everything in a single query.
+    /// Delegates to `get_subtree_with_relationships()` which fetches everything in a single query.
     ///
-    /// **Note:** If you need both nodes AND edges, use [`get_subtree_with_edges`] directly
+    /// **Note:** If you need both nodes AND relationships, use [`get_subtree_with_relationships`] directly
     /// to avoid duplicate database queries.
     ///
     /// # Arguments
     ///
-    /// * `root_id` - ID of the root node to fetch descendant edges for
+    /// * `root_id` - ID of the root node to fetch descendant relationships for
     ///
     /// # Returns
     ///
-    /// Vector of all edges within the subtree (parent-child relationships)
-    pub async fn get_edges_in_subtree(&self, root_id: &str) -> Result<Vec<EdgeRecord>> {
+    /// Vector of all relationships within the subtree (parent-child relationships)
+    pub async fn get_relationships_in_subtree(
+        &self,
+        root_id: &str,
+    ) -> Result<Vec<RelationshipRecord>> {
         // Delegate to consolidated method, discarding nodes
-        let (_nodes, edges) = self.get_subtree_with_edges(root_id).await?;
-        Ok(edges)
+        let (_nodes, relationships) = self.get_subtree_with_relationships(root_id).await?;
+        Ok(relationships)
     }
 
     pub async fn search_nodes_by_content(
@@ -2411,10 +2433,10 @@ where
             "ordered-list",
         ];
 
-        // Build SQL with filtering logic:
+        // Build SQL with filtering logic (Issue #788: universal relationship table):
         // 1. Content search (case-insensitive)
         // 2. Exclude date and schema types
-        // 3. For text types: only include if root (count(<-has_child) = 0)
+        // 3. For text types: only include if root (no incoming has_child relationship)
         // 4. For other types: include regardless of hierarchy
         let sql = r#"
             SELECT * FROM node
@@ -2423,7 +2445,7 @@ where
               AND (
                 node_type NOT IN $text_types
                 OR
-                count(<-has_child) = 0
+                count(<-relationship[WHERE relationship_type = 'has_child']) = 0
               )
             LIMIT $limit;
         "#;
@@ -2480,16 +2502,16 @@ where
         use surrealdb::sql::Thing;
 
         // Check if parent is a descendant of child
-        // If so, creating this edge would create a cycle
+        // If so, creating this relationship would create a cycle
         let child_thing = Thing::from(("node".to_string(), child_id.to_string()));
 
-        // Query: Get all descendants of child node recursively
+        // Query: Get all descendants of child node recursively (Issue #788: universal relationship table)
         // Then check if parent is in that list
         // Using SurrealDB recursive graph traversal syntax (v2.1+) to check ALL descendant levels
         // The `{..+collect}` syntax means unbounded recursive traversal collecting unique nodes
         // This will detect cycles at any level: A→B (direct), A→B→C (3-node), A→B→C→D (4-node), etc.
         let query = "
-            LET $descendants = $child_thing.{..+collect}->has_child->node;
+            LET $descendants = $child_thing.{..+collect}->relationship[WHERE relationship_type = 'has_child']->node;
             SELECT * FROM type::thing('node', $parent_id)
             WHERE id IN $descendants
             LIMIT 1;
@@ -2539,54 +2561,54 @@ where
     async fn rebalance_children_for_parent(&self, parent_id: &str) -> Result<()> {
         use surrealdb::sql::Thing;
 
-        // Step 1: Get all children in current order
+        // Step 1: Get all children in current order (Issue #788: universal relationship table)
         let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
 
         #[derive(Deserialize)]
-        struct EdgeOut {
+        struct RelOut {
             out: Thing,
         }
 
-        let mut edges_response = self
+        let mut rels_response = self
             .db
-            .query("SELECT out FROM has_child WHERE in = $parent_thing ORDER BY order ASC;")
+            .query("SELECT out, properties.order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' ORDER BY properties.order ASC;")
             .bind(("parent_thing", parent_thing.clone()))
             .await
             .context("Failed to get children for rebalancing")?;
 
-        let edges: Vec<EdgeOut> = edges_response
+        let relationships: Vec<RelOut> = rels_response
             .take(0)
             .context("Failed to extract children for rebalancing")?;
 
-        if edges.is_empty() {
+        if relationships.is_empty() {
             return Ok(()); // Nothing to rebalance
         }
 
         // Step 2: Calculate new orders [1.0, 2.0, 3.0, ...]
-        let new_orders = FractionalOrderCalculator::rebalance(edges.len());
+        let new_orders = FractionalOrderCalculator::rebalance(relationships.len());
 
-        // Step 3: Build atomic transaction to update all edges
-        // We need to update each has_child edge's order field
+        // Step 3: Build atomic transaction to update all relationships (Issue #788: universal relationship table)
+        // We need to update each relationship's properties.order field
         let mut transaction = String::from("BEGIN TRANSACTION;\n");
 
-        for (i, _edge) in edges.iter().enumerate() {
+        for (i, _rel) in relationships.iter().enumerate() {
             let new_order = new_orders[i];
             transaction.push_str(&format!(
-                "UPDATE has_child SET order = {} WHERE in = $parent_thing AND out = $out{} FETCH AFTER;\n",
+                "UPDATE relationship SET properties.order = {} WHERE in = $parent_thing AND out = $out{} AND relationship_type = 'has_child';\n",
                 new_order, i
             ));
         }
 
         transaction.push_str("COMMIT TRANSACTION;");
 
-        // Step 4: Execute transaction with all edges bound
+        // Step 4: Execute transaction with all relationships bound
         let mut query_builder = self
             .db
             .query(&transaction)
             .bind(("parent_thing", parent_thing));
 
-        for (i, edge) in edges.iter().enumerate() {
-            query_builder = query_builder.bind((format!("out{}", i), edge.out.clone()));
+        for (i, rel) in relationships.iter().enumerate() {
+            query_builder = query_builder.bind((format!("out{}", i), rel.out.clone()));
         }
 
         query_builder
@@ -2599,14 +2621,14 @@ where
     /// Move a node to a new parent atomically
     ///
     /// Guarantees that either:
-    /// - The old edge is deleted AND the new edge is created
+    /// - The old relationship is deleted AND the new relationship is created
     /// - OR nothing changes (transaction rolls back on failure)
     ///
     /// # Arguments
     ///
     /// * `node_id` - ID of the node to move
     /// * `new_parent_id` - ID of the new parent (None = make root node)
-    /// * `insert_after_sibling_id` - Optional sibling to insert after (uses edge-based fractional ordering)
+    /// * `insert_after_sibling_id` - Optional sibling to insert after (uses relationship-based fractional ordering)
     ///
     /// # Returns
     ///
@@ -2653,9 +2675,9 @@ where
             self.validate_no_cycle(parent_id, &node_id).await?;
         }
 
-        // Calculate fractional order for the new position
+        // Calculate fractional order for the new position (Issue #788: universal relationship table)
         #[derive(Deserialize)]
-        struct EdgeWithOrder {
+        struct RelWithOrder {
             out: surrealdb::sql::Thing,
             order: f64,
         }
@@ -2663,32 +2685,32 @@ where
         let new_order = if let Some(ref parent_id) = new_parent_id {
             let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
 
-            // Get all child edges for this parent, ordered by order field
-            let mut edges_response = self
+            // Get all child edges for this parent, ordered by properties.order field
+            let mut rels_response = self
                 .db
                 .query(
-                    "SELECT out, order FROM has_child WHERE in = $parent_thing ORDER BY order ASC;",
+                    "SELECT out, properties.order AS order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' ORDER BY properties.order ASC;",
                 )
                 .bind(("parent_thing", parent_thing.clone()))
                 .await
-                .context("Failed to get child edges")?;
+                .context("Failed to get child relationships")?;
 
-            let edges: Vec<EdgeWithOrder> = edges_response
+            let relationships: Vec<RelWithOrder> = rels_response
                 .take(0)
-                .context("Failed to extract child edges")?;
+                .context("Failed to extract child relationships")?;
 
             if let Some(after_id) = insert_after_sibling_id {
                 // Find the sibling we're inserting after
                 let after_thing =
                     surrealdb::sql::Thing::from(("node".to_string(), after_id.clone()));
-                let after_index = edges
+                let after_index = relationships
                     .iter()
                     .position(|e| e.out == after_thing)
                     .ok_or_else(|| anyhow::anyhow!("Sibling not found: {}", after_id))?;
 
                 // Get orders before and after insertion point
-                let prev_order = edges[after_index].order;
-                let next_order = edges.get(after_index + 1).map(|e| e.order);
+                let prev_order = relationships[after_index].order;
+                let next_order = relationships.get(after_index + 1).map(|e| e.order);
 
                 // Calculate new order between them
                 let calculated =
@@ -2700,33 +2722,33 @@ where
                         // Gap too small, need to rebalance before inserting
                         self.rebalance_children_for_parent(parent_id).await?;
 
-                        // Re-query edges after rebalancing
+                        // Re-query relationships after rebalancing (Issue #788: universal relationship table)
                         // NOTE: There is a small race condition window here - between rebalancing
                         // completion and this re-query, another client could move/delete the sibling.
                         // If this occurs, we'll get "Sibling not found after rebalancing" error and
                         // the operation fails. This is an accepted limitation - clients can retry.
                         // A fully atomic solution would require SurrealDB to support multi-step
                         // transactions with deferred constraint checking, which isn't available.
-                        let mut edges_response = self
+                        let mut rels_response = self
                             .db
-                            .query("SELECT out, order FROM has_child WHERE in = $parent_thing ORDER BY order ASC;")
+                            .query("SELECT out, properties.order AS order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' ORDER BY properties.order ASC;")
                             .bind(("parent_thing", parent_thing.clone()))
                             .await
-                            .context("Failed to get child edges after rebalancing")?;
+                            .context("Failed to get child relationships after rebalancing")?;
 
-                        let edges: Vec<EdgeWithOrder> = edges_response
+                        let relationships: Vec<RelWithOrder> = rels_response
                             .take(0)
-                            .context("Failed to extract child edges after rebalancing")?;
+                            .context("Failed to extract child relationships after rebalancing")?;
 
-                        let after_index = edges
+                        let after_index = relationships
                             .iter()
                             .position(|e| e.out == after_thing)
                             .ok_or_else(|| {
-                                anyhow::anyhow!("Sibling not found after rebalancing: {}", after_id)
-                            })?;
+                            anyhow::anyhow!("Sibling not found after rebalancing: {}", after_id)
+                        })?;
 
-                        let prev_order = edges[after_index].order;
-                        let next_order = edges.get(after_index + 1).map(|e| e.order);
+                        let prev_order = relationships[after_index].order;
+                        let next_order = relationships.get(after_index + 1).map(|e| e.order);
                         FractionalOrderCalculator::calculate_order(Some(prev_order), next_order)
                     } else {
                         calculated
@@ -2736,38 +2758,41 @@ where
                 }
             } else {
                 // No insert_after_sibling specified, insert at beginning
-                let first_order = edges.first().map(|e| e.order);
+                let first_order = relationships.first().map(|e| e.order);
                 FractionalOrderCalculator::calculate_order(None, first_order)
             }
         } else {
             0.0 // Root nodes don't use order
         };
 
-        // Build atomic transaction query using Thing parameters
+        // Build atomic transaction query using Thing parameters (Issue #788: universal relationship table)
         let transaction_query = if new_parent_id.is_some() {
             // Move to new parent
             r#"
                 BEGIN TRANSACTION;
 
-                -- Delete old parent edge
-                DELETE has_child WHERE out = $node_id;
+                -- Delete old parent relationship from universal relationship table
+                DELETE relationship WHERE out = $node_id AND relationship_type = 'has_child';
 
-                -- Create new parent edge with fractional order
-                RELATE $parent_id->has_child->$node_id CONTENT {
-                    order: $order,
-                    created_at: time::now()
+                -- Create new parent relationship with fractional order in universal relationship table
+                RELATE $parent_id->relationship->$node_id CONTENT {
+                    relationship_type: 'has_child',
+                    properties: { order: $order },
+                    created_at: time::now(),
+                    modified_at: time::now(),
+                    version: 1
                 };
 
                 COMMIT TRANSACTION;
             "#
             .to_string()
         } else {
-            // Make root node (delete parent edge only)
+            // Make root node (delete parent relationship only)
             r#"
                 BEGIN TRANSACTION;
 
-                -- Delete old parent edge
-                DELETE has_child WHERE out = $node_id;
+                -- Delete old parent relationship from universal relationship table
+                DELETE relationship WHERE out = $node_id AND relationship_type = 'has_child';
 
                 COMMIT TRANSACTION;
             "#
@@ -2809,12 +2834,12 @@ where
         target_id: &str,
         root_id: &str,
     ) -> Result<()> {
-        // Mentions relate nodes in the hub table, so we reference the node table directly
+        // Issue #788: Universal Relationship Architecture - mentions stored in relationship table
         let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
         let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
 
         // Check if mention already exists (for idempotency)
-        let check_query = "SELECT VALUE id FROM mentions WHERE in = $source AND out = $target;";
+        let check_query = "SELECT VALUE id FROM relationship WHERE in = $source AND out = $target AND relationship_type = 'mentions';";
         let mut check_response = self
             .db
             .query(check_query)
@@ -2829,18 +2854,15 @@ where
 
         // Only create mention if it doesn't exist
         if existing_mention_ids.is_empty() {
-            // TECH DEBT: SurrealDB Binding Limitation
-            // ----------------------------------------
-            // SurrealDB's RELATE statement does not support parameter binding for SET field values.
-            // We must embed root_id directly in the query string.
-            //
-            // Security mitigation: root_id is a system-generated UUID from Node.id, not user input.
-            // The single-quote escaping is a defense-in-depth measure, but this should be refactored
-            // to use parameterized queries if SurrealDB adds support for SET bindings in RELATE.
-            //
-            // See: https://surrealdb.com/docs/surrealql/statements/relate
+            // Issue #788: Universal Relationship Architecture - use CONTENT for properties
             let query = format!(
-                "RELATE $source->mentions->$target SET root_id = '{}';",
+                r#"RELATE $source->relationship->$target CONTENT {{
+                    relationship_type: 'mentions',
+                    properties: {{ root_id: '{}' }},
+                    created_at: time::now(),
+                    modified_at: time::now(),
+                    version: 1
+                }};"#,
                 root_id.replace('\'', "''")
             );
 
@@ -2858,12 +2880,12 @@ where
     }
 
     pub async fn delete_mention(&self, source_id: &str, target_id: &str) -> Result<()> {
-        // Mentions relate nodes in the hub table, so we reference the node table directly
+        // Issue #788: Universal Relationship Architecture - delete from relationship table
         let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
         let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
 
         self.db
-            .query("DELETE FROM mentions WHERE in = $source AND out = $target;")
+            .query("DELETE FROM relationship WHERE in = $source AND out = $target AND relationship_type = 'mentions';")
             .bind(("source", source_thing))
             .bind(("target", target_thing))
             .await
@@ -2875,11 +2897,10 @@ where
     }
 
     pub async fn get_outgoing_mentions(&self, node_id: &str) -> Result<Vec<String>> {
-        // Use SurrealDB graph traversal syntax for optimal performance
-        // See: docs/architecture/data/surrealdb-schema-design.md - Graph Traversal Patterns
+        // Issue #788: Universal Relationship Architecture - use relationship table with relationship_type filter
         // Returns array<record> which we need to extract IDs from
         let query =
-            "SELECT ->mentions->node.id AS mentioned_ids FROM type::thing('node', $node_id);";
+            "SELECT ->relationship[WHERE relationship_type = 'mentions']->node.id AS mentioned_ids FROM type::thing('node', $node_id);";
 
         let mut response = self
             .db
@@ -2916,11 +2937,10 @@ where
     }
 
     pub async fn get_incoming_mentions(&self, node_id: &str) -> Result<Vec<String>> {
-        // Use SurrealDB graph traversal syntax for backlinks (reverse lookup)
-        // See: docs/architecture/data/surrealdb-schema-design.md - Graph Traversal Patterns
+        // Issue #788: Universal Relationship Architecture - use relationship table with relationship_type filter
         // Returns array<record> which we need to extract IDs from
         let query =
-            "SELECT <-mentions<-node.id AS mentioned_by_ids FROM type::thing('node', $node_id);";
+            "SELECT <-relationship[WHERE relationship_type = 'mentions']<-node.id AS mentioned_by_ids FROM type::thing('node', $node_id);";
 
         let mut response = self
             .db
@@ -2957,10 +2977,9 @@ where
     }
 
     pub async fn get_mentioning_containers(&self, node_id: &str) -> Result<Vec<Node>> {
-        // Query mention edges directly to get root_id values
-        // Graph traversal syntax `<-mentions.root_id` can return Null in some SurrealDB versions
+        // Issue #788: Universal Relationship Architecture - query relationship table for mentions
         let target_thing = Thing::from(("node".to_string(), node_id.to_string()));
-        let query = "SELECT root_id FROM mentions WHERE out = $target;";
+        let query = "SELECT properties.root_id AS root_id FROM relationship WHERE out = $target AND relationship_type = 'mentions';";
 
         let mut response = self
             .db
@@ -2969,7 +2988,7 @@ where
             .await
             .context("Failed to get mentioning roots")?;
 
-        // Parse the response - each row has a root_id field
+        // Parse the response - each row has a root_id field from properties
         #[derive(Debug, Deserialize)]
         struct MentionRow {
             root_id: Option<String>,
@@ -3169,8 +3188,8 @@ where
 
     /// Bulk create nodes with hierarchy in a single transaction (Issue #737)
     ///
-    /// This method creates multiple nodes and their parent-child edges atomically
-    /// using a single database transaction. All nodes and edges are inserted in one
+    /// This method creates multiple nodes and their parent-child relationships atomically
+    /// using a single database transaction. All nodes and relationships are inserted in one
     /// operation for optimal performance.
     ///
     /// # Arguments
@@ -3230,12 +3249,14 @@ where
                 props = props_json
             ));
 
-            // Create parent-child edge if node has parent
+            // Create parent-child relationship in universal relationship table (Issue #788)
             if let Some(parent) = parent_id {
                 query.push_str(&format!(
-                    r#"RELATE node:`{parent}`->has_child->node:`{id}` CONTENT {{
-                        order: {order},
+                    r#"RELATE node:`{parent}`->relationship->node:`{id}` CONTENT {{
+                        relationship_type: 'has_child',
+                        properties: {{ order: {order} }},
                         created_at: time::now(),
+                        modified_at: time::now(),
                         version: 1
                     }};
 "#,
@@ -3284,7 +3305,7 @@ where
         Ok(nodes.into_iter().map(|(id, _, _, _, _, _)| id).collect())
     }
 
-    /// Create a single node with parent edge for streaming imports
+    /// Create a single node with parent relationship for streaming imports
     ///
     /// Universal Graph Architecture (Issue #783): All properties embedded in node.properties.
     ///
@@ -3308,7 +3329,7 @@ where
         let escaped_content = Self::escape_surql_string(&content);
         let props_json = serde_json::to_string(&properties).unwrap_or_else(|_| "{}".to_string());
 
-        // Build single query for node + edge (properties embedded)
+        // Build single query for node + relationship (properties embedded)
         let mut query = String::new();
 
         query.push_str(&format!(
@@ -3327,12 +3348,14 @@ where
             props = props_json
         ));
 
-        // Create parent edge if parent specified
+        // Create parent relationship in universal relationship table (Issue #788)
         if let Some(ref parent) = parent_id {
             query.push_str(&format!(
-                r#"RELATE node:`{parent}`->has_child->node:`{id}` CONTENT {{
-                    order: {order},
+                r#"RELATE node:`{parent}`->relationship->node:`{id}` CONTENT {{
+                    relationship_type: 'has_child',
+                    properties: {{ order: {order} }},
                     created_at: time::now(),
+                    modified_at: time::now(),
                     version: 1
                 }};
 "#,
@@ -4081,13 +4104,15 @@ where
     }
 
     // ========================================================================
-    // Collection Membership Operations (member_of edges)
+    // Collection Membership Operations (member_of relationships)
     // ========================================================================
 
-    /// Add a node to a collection (create member_of edge)
+    /// Add a node to a collection (create member_of relationship)
     ///
-    /// Creates a member_of edge from the member node to the collection node.
+    /// Creates a member_of relationship from the member node to the collection node.
     /// Direction: member -> collection (node X belongs to collection Y)
+    ///
+    /// Issue #788: Universal Relationship Architecture - stored in relationship table with relationship_type='member_of'
     ///
     /// This is idempotent - if the membership already exists, nothing happens.
     ///
@@ -4108,9 +4133,9 @@ where
         // is done in CollectionService.add_to_collection (service layer).
         // Store layer focuses on data persistence only.
 
-        // Check if membership already exists (for idempotency)
+        // Check if membership already exists (for idempotency) - Issue #788: use relationship table
         let check_query =
-            "SELECT VALUE id FROM member_of WHERE in = $member AND out = $collection;";
+            "SELECT VALUE id FROM relationship WHERE in = $member AND out = $collection AND relationship_type = 'member_of';";
         let mut check_response = self
             .db
             .query(check_query)
@@ -4123,9 +4148,15 @@ where
             .take(0)
             .context("Failed to extract membership check results")?;
 
-        // Only create membership if it doesn't exist
+        // Only create membership if it doesn't exist - Issue #788: use relationship table
         if existing_membership_ids.is_empty() {
-            let query = "RELATE $member->member_of->$collection;";
+            let query = r#"RELATE $member->relationship->$collection CONTENT {
+                relationship_type: 'member_of',
+                properties: {},
+                created_at: time::now(),
+                modified_at: time::now(),
+                version: 1
+            };"#;
 
             self.db
                 .query(query)
@@ -4138,9 +4169,10 @@ where
         Ok(())
     }
 
-    /// Remove a node from a collection (delete member_of edge)
+    /// Remove a node from a collection (delete member_of relationship)
     ///
-    /// Deletes the member_of edge from the member node to the collection node.
+    /// Deletes the member_of relationship from the member node to the collection node.
+    /// Issue #788: Universal Relationship Architecture - deletes from relationship table.
     ///
     /// # Arguments
     ///
@@ -4151,7 +4183,7 @@ where
         let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
 
         self.db
-            .query("DELETE FROM member_of WHERE in = $member AND out = $collection;")
+            .query("DELETE FROM relationship WHERE in = $member AND out = $collection AND relationship_type = 'member_of';")
             .bind(("member", member_thing))
             .bind(("collection", collection_thing))
             .await
@@ -4164,6 +4196,7 @@ where
     ///
     /// Returns the IDs of all collections the node is a member of.
     /// Direction: node -> member_of -> collection
+    /// Issue #788: Universal Relationship Architecture - queries relationship table.
     ///
     /// # Arguments
     ///
@@ -4174,7 +4207,7 @@ where
     /// Collection IDs the node belongs to
     pub async fn get_node_memberships(&self, node_id: &str) -> Result<Vec<String>> {
         let query =
-            "SELECT ->member_of->node.id AS collection_ids FROM type::thing('node', $node_id);";
+            "SELECT ->relationship[WHERE relationship_type = 'member_of']->node.id AS collection_ids FROM type::thing('node', $node_id);";
 
         let mut response = self
             .db
@@ -4211,6 +4244,7 @@ where
     ///
     /// Returns the IDs of all nodes that are members of the collection.
     /// Direction: member -> member_of -> collection
+    /// Issue #788: Universal Relationship Architecture - queries relationship table.
     ///
     /// # Arguments
     ///
@@ -4221,7 +4255,7 @@ where
     /// Member node IDs
     pub async fn get_collection_members(&self, collection_id: &str) -> Result<Vec<String>> {
         let query =
-            "SELECT <-member_of<-node.id AS member_ids FROM type::thing('node', $collection_id);";
+            "SELECT <-relationship[WHERE relationship_type = 'member_of']<-node.id AS member_ids FROM type::thing('node', $collection_id);";
 
         let mut response = self
             .db
@@ -4379,12 +4413,13 @@ where
 
         // Get all collections in the subtree (collection + descendants)
         // Then get all members of those collections
+        // Issue #788: Universal Relationship Architecture - use relationship table
         let query = r#"
             LET $collection_subtree = array::concat(
                 [$collection_thing],
-                $collection_thing.{..+collect}->has_child->node
+                $collection_thing.{..+collect}->relationship[WHERE relationship_type = 'has_child']->node
             );
-            SELECT <-member_of<-node.id AS member_ids FROM node
+            SELECT <-relationship[WHERE relationship_type = 'member_of']<-node.id AS member_ids FROM node
             WHERE id IN $collection_subtree;
         "#;
 
@@ -4668,7 +4703,7 @@ mod tests {
         assert_eq!(child.content, "Child content");
         assert_eq!(child.node_type, "text");
 
-        // Verify parent-child edge exists
+        // Verify parent-child relationship exists
         let children = store.get_children(Some(&parent.id)).await?;
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].id, child.id);
@@ -4850,7 +4885,7 @@ mod tests {
         let child_fetched = store.get_node(&child.id).await?;
         assert!(child_fetched.is_some());
 
-        // Verify child is now a root node (no parent edge)
+        // Verify child is now a root node (no parent relationship)
         let root_nodes = store.get_children(None).await?;
         assert!(root_nodes.iter().any(|n| n.id == child.id));
 
@@ -4988,7 +5023,7 @@ mod tests {
     }
 
     // Tests for the adjacency list strategy (recursive graph traversal)
-    // Uses SurrealDB's .{..}(->edge->target) syntax for recursive queries
+    // Uses SurrealDB's .{..}(->relationship->target) syntax for recursive queries
 
     #[tokio::test]
     async fn test_get_nodes_in_subtree_returns_descendants() -> Result<()> {
@@ -5003,7 +5038,7 @@ mod tests {
         store.create_node(child.clone(), None).await?;
         store.create_node(grandchild.clone(), None).await?;
 
-        // Create edges: root -> child -> grandchild
+        // Create relationships: root -> child -> grandchild
         store.move_node(&child.id, Some(&root.id), None).await?;
         store
             .move_node(&grandchild.id, Some(&child.id), None)
@@ -5044,7 +5079,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_edges_in_subtree_returns_subtree_edges() -> Result<()> {
+    async fn test_get_relationships_in_subtree_returns_subtree_edges() -> Result<()> {
         let (store, _temp) = create_test_store().await?;
 
         // Create a tree structure: root -> child -> grandchild
@@ -5056,29 +5091,33 @@ mod tests {
         store.create_node(child.clone(), None).await?;
         store.create_node(grandchild.clone(), None).await?;
 
-        // Create edges: root -> child -> grandchild
+        // Create relationships: root -> child -> grandchild
         store.move_node(&child.id, Some(&root.id), None).await?;
         store
             .move_node(&grandchild.id, Some(&child.id), None)
             .await?;
 
-        // Get edges in subtree of root - should include both edges
-        let subtree_edges = store.get_edges_in_subtree(&root.id).await?;
+        // Get relationships in subtree of root - should include both relationships
+        let subtree_relationships = store.get_relationships_in_subtree(&root.id).await?;
 
-        assert_eq!(subtree_edges.len(), 2, "Should have 2 edges in subtree");
+        assert_eq!(
+            subtree_relationships.len(),
+            2,
+            "Should have 2 relationships in subtree"
+        );
 
-        // Verify the edges are correct
-        let edge_pairs: Vec<_> = subtree_edges
+        // Verify the relationships are correct
+        let relationship_pairs: Vec<_> = subtree_relationships
             .iter()
-            .map(|e| (e.in_node.clone(), e.out_node.clone()))
+            .map(|r| (r.in_node.clone(), r.out_node.clone()))
             .collect();
         assert!(
-            edge_pairs.contains(&(root.id.clone(), child.id.clone())),
-            "Should contain root->child edge"
+            relationship_pairs.contains(&(root.id.clone(), child.id.clone())),
+            "Should contain root->child relationship"
         );
         assert!(
-            edge_pairs.contains(&(child.id.clone(), grandchild.id.clone())),
-            "Should contain child->grandchild edge"
+            relationship_pairs.contains(&(child.id.clone(), grandchild.id.clone())),
+            "Should contain child->grandchild relationship"
         );
 
         Ok(())

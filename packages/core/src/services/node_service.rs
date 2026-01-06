@@ -563,16 +563,16 @@ where
 
         // Universal Graph Architecture (Issue #783): No spoke tables
         // Schema field definitions are stored in node.properties, not separate tables.
-        // Only edge tables are created for relationships.
+        // Only relationship tables are created for relationships.
         {
             let table_manager = crate::services::schema_table_manager::SchemaTableManager::new();
 
-            // For each schema: atomically create schema node + edge table DDL (if any)
+            // For each schema: atomically create schema node + relationship table DDL (if any)
             for schema in &core_schemas {
                 let schema_id = schema.id.clone();
                 let node = schema.clone().into_node();
 
-                // Universal Graph Architecture: Only generate edge table DDL for relationships
+                // Universal Graph Architecture: Only generate relationship table DDL for relationships
                 // No spoke table DDL - properties are stored in node.properties
                 let ddl_statements = if !schema.relationships.is_empty() {
                     table_manager
@@ -1096,10 +1096,10 @@ where
         // Update node with properties (only versioned if schema has fields)
         node.properties = properties;
 
-        // NOTE: root_id filtering removed - hierarchy now managed via edges
+        // NOTE: root_id filtering removed - hierarchy now managed via relationships
 
         // For schema nodes, use atomic creation with DDL generation (Issue #691, #703)
-        // Universal Graph Architecture (Issue #783): Only edge table DDL, no spoke tables
+        // Universal Graph Architecture (Issue #783): Only relationship table DDL, no spoke tables
         if node.node_type == "schema" {
             // Parse schema relationships from properties (Issue #703)
             let relationships: Vec<SchemaRelationship> = node
@@ -1109,18 +1109,18 @@ where
                 .unwrap_or_default();
 
             // Generate DDL statements for the schema
-            // Universal Graph Architecture: Only edge tables, no spoke tables
+            // Universal Graph Architecture: Only relationship tables, no spoke tables
             // Schema field definitions are stored in node.properties
             let table_manager = crate::services::schema_table_manager::SchemaTableManager::new();
 
-            // Generate edge table DDL (if it has relationships)
+            // Generate relationship table DDL (if it has relationships)
             let ddl_statements = if !relationships.is_empty() {
                 table_manager.generate_relationship_ddl_statements(&node.id, &relationships)?
             } else {
                 vec![]
             };
 
-            // Execute atomic create: schema node + edge DDL in one transaction
+            // Execute atomic create: schema node + relationship DDL in one transaction
             self.store
                 .create_schema_node_atomic(node.clone(), ddl_statements, self.client_id.clone())
                 .await
@@ -1269,7 +1269,7 @@ where
 
         let created_id = self.create_node(node).await?;
 
-        // Step 6: Create parent edge if parent specified
+        // Step 6: Create parent relationship if parent specified
         if let Some(parent_id) = params.parent_id {
             // Pass insert_after_node_id directly without translation
             // None means "insert at beginning" (store.move_node semantics)
@@ -1499,10 +1499,10 @@ where
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         // Emit EdgeDeleted event (Phase 2 of Issue #665)
-        // Use composite ID for mention edge: "source->target"
-        let edge_id = format!("{}->{}", mentioning_node_id, mentioned_node_id);
+        // Use composite ID for mention relationship: "source->target"
+        let relationship_id = format!("{}->{}", mentioning_node_id, mentioned_node_id);
         self.emit_event(DomainEvent::EdgeDeleted {
-            id: edge_id,
+            id: relationship_id,
             source_client_id: self.client_id.clone(),
         });
 
@@ -1552,7 +1552,7 @@ where
             // Date nodes (YYYY-MM-DD format) are virtual until they have children
             if is_date_node_id(id) {
                 // Return virtual date node (will auto-persist when children are added)
-                // Date nodes are root-level containers (no parent/container edges)
+                // Date nodes are root-level containers (no parent/container relationships)
                 let virtual_date = Node {
                     id: id.to_string(),
                     node_type: "date".to_string(),
@@ -1827,7 +1827,7 @@ where
             updated.content = content;
         }
 
-        // NOTE: Sibling ordering is now handled via has_child edge order field.
+        // NOTE: Sibling ordering is now handled via has_child relationship order field.
         // Use reorder_siblings() or move_node() for ordering changes.
 
         if let Some(properties) = update.properties {
@@ -1880,7 +1880,7 @@ where
         };
 
         // For schema nodes, use atomic update with DDL generation (Issue #690, #703)
-        // Universal Graph Architecture (Issue #783): Only edge table DDL, no spoke tables
+        // Universal Graph Architecture (Issue #783): Only relationship table DDL, no spoke tables
         if updated.node_type == "schema" {
             // Parse schema relationships from properties (Issue #703)
             let relationships: Vec<SchemaRelationship> = updated
@@ -1890,18 +1890,18 @@ where
                 .unwrap_or_default();
 
             // Generate DDL statements for the schema
-            // Universal Graph Architecture: Only edge tables, no spoke tables
+            // Universal Graph Architecture: Only relationship tables, no spoke tables
             // Schema field definitions are stored in node.properties
             let table_manager = crate::services::schema_table_manager::SchemaTableManager::new();
 
-            // Generate edge table DDL (if it has relationships)
+            // Generate relationship table DDL (if it has relationships)
             let ddl_statements = if !relationships.is_empty() {
                 table_manager.generate_relationship_ddl_statements(id, &relationships)?
             } else {
                 vec![]
             };
 
-            // Execute atomic update: node + edge DDL in one transaction
+            // Execute atomic update: node + relationship DDL in one transaction
             self.store
                 .update_schema_node_atomic(id, node_update, ddl_statements, self.client_id.clone())
                 .await
@@ -2011,7 +2011,7 @@ where
             updated.content = content;
         }
 
-        // NOTE: Sibling ordering is now handled via has_child edge order field.
+        // NOTE: Sibling ordering is now handled via has_child relationship order field.
         // Use reorder_siblings() or move_node() for ordering changes.
 
         if let Some(properties) = update.properties {
@@ -2605,14 +2605,14 @@ where
     pub async fn get_subtree_data(&self, root_id: &str) -> Result<SubtreeData, NodeServiceError> {
         use std::collections::HashMap;
 
-        // Single consolidated query fetches root + all descendants + all edges
-        let (all_nodes, edges) = self
+        // Single consolidated query fetches root + all descendants + all relationships
+        let (all_nodes, relationships) = self
             .store
-            .get_subtree_with_edges(root_id)
+            .get_subtree_with_relationships(root_id)
             .await
             .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to fetch subtree: {}", e))
-            })?;
+            NodeServiceError::query_failed(format!("Failed to fetch subtree: {}", e))
+        })?;
 
         // Find root node from the results
         let root_node = all_nodes.iter().find(|n| n.id == root_id).cloned();
@@ -2624,12 +2624,13 @@ where
         }
 
         // Create adjacency list: parent_id → Vec of child_ids (sorted by order)
+        // Issue #788: RelationshipRecord now stores order in properties, accessed via order() method
         let mut adjacency_with_order: HashMap<String, Vec<(String, f64)>> = HashMap::new();
-        for edge in edges {
+        for rel in relationships {
             adjacency_with_order
-                .entry(edge.in_node.clone())
+                .entry(rel.in_node.clone())
                 .or_default()
-                .push((edge.out_node.clone(), edge.order));
+                .push((rel.out_node.clone(), rel.order()));
         }
 
         // Sort children by order for each parent, then extract just the IDs
@@ -2655,13 +2656,13 @@ where
     ///
     /// `true` if the node has no parent (is a root), `false` otherwise
     pub async fn is_root_node(&self, node_id: &str) -> Result<bool, NodeServiceError> {
-        // A node is a root if it has no incoming has_child edges
+        // A node is a root if it has no incoming has_child relationships
         // We check this by trying to get its parent - if parent is None, it's a root
         let parent = self.get_parent(node_id).await?;
         Ok(parent.is_none())
     }
 
-    /// Get the parent of a node (via incoming has_child edge)
+    /// Get the parent of a node (via incoming has_child relationship)
     ///
     /// Returns the node's parent if it has one, or None if it's a root node.
     ///
@@ -2673,7 +2674,7 @@ where
     ///
     /// `Some(parent_node)` if the node has a parent, `None` if it's a root node
     pub async fn get_parent(&self, node_id: &str) -> Result<Option<Node>, NodeServiceError> {
-        // Query for nodes that have has_child edge pointing to this node
+        // Query for nodes that have has_child relationship pointing to this node
         // This is done via SurrealDB graph traversal: <-has_child
         let parent = self
             .store
@@ -2883,7 +2884,7 @@ where
         &self,
         root_node_id: &str,
     ) -> Result<Vec<Node>, NodeServiceError> {
-        // Hierarchy is now managed via edges - use get_children instead
+        // Hierarchy is now managed via relationships - use get_children instead
         self.get_children(root_node_id).await
     }
 
@@ -2962,7 +2963,7 @@ where
             }
         }
 
-        // Hierarchy is now managed via edges - use store's move_node
+        // Hierarchy is now managed via relationships - use store's move_node
         self.store
             .move_node(node_id, new_parent, insert_after_node_id)
             .await
@@ -3200,7 +3201,7 @@ where
         //   insert_after_node_id = Some(id) → "insert AFTER this sibling"
         //   insert_after_node_id = None → "insert at beginning"
 
-        // Use store's move_node which creates the has_child edge atomically
+        // Use store's move_node which creates the has_child relationship atomically
         self.store
             .move_node(child_id, Some(parent_id), insert_after_node_id)
             .await
@@ -3274,7 +3275,7 @@ where
             }
         }
 
-        // Child ordering is handled via has_child edge order field.
+        // Child ordering is handled via has_child relationship order field.
         // Get current parent to move within the same parent
         let parent = self.get_parent(node_id).await?;
         let parent_id = parent.map(|p| p.id);
@@ -3558,7 +3559,7 @@ where
                 return Ok(true); // Found node_id, so potential_descendant IS a descendant
             }
 
-            // Walk up via parent edge
+            // Walk up via parent relationship
             if let Ok(Some(parent)) = self.get_parent(&current_id).await {
                 current_id = parent.id;
             } else {
@@ -3815,7 +3816,7 @@ where
                 updated.content = content.clone();
             }
 
-            // NOTE: Sibling ordering is now handled via has_child edge order field.
+            // NOTE: Sibling ordering is now handled via has_child relationship order field.
             // Bulk updates don't support sibling reordering - use move_node instead.
 
             if let Some(properties) = &update.properties {
@@ -3929,7 +3930,7 @@ where
         content: &str,
         node_type: &str,
         parent_id: &str,
-        _root_id: &str, // Deprecated: hierarchy now managed via edges
+        _root_id: &str, // Deprecated: hierarchy now managed via relationships
         before_sibling_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
         // Ensure parent exists (create if missing)
@@ -3965,7 +3966,7 @@ where
             // Update existing node
             let update = NodeUpdate {
                 content: Some(content.to_string()),
-                // NOTE: Sibling ordering now handled via has_child edge order field
+                // NOTE: Sibling ordering now handled via has_child relationship order field
                 ..Default::default()
             };
             self.store
@@ -4564,7 +4565,7 @@ where
 
     /// Get all related nodes for a given relationship
     ///
-    /// Queries the edge table and returns all target nodes connected via the specified
+    /// Queries the relationship table and returns all target nodes connected via the specified
     /// relationship. Supports both "out" and "in" directions.
     ///
     /// # TODO(Issue #710): UI components needed for relationship interaction
@@ -4635,12 +4636,12 @@ where
                 ))
             })?;
 
-        // 3. Query related node IDs via edge table (same pattern as get_children)
+        // 3. Query related node IDs via relationship table (same pattern as get_children)
         let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.to_string()));
 
         let edge_table = relationship.compute_edge_table_name(schema_id);
 
-        // First query the edge table to get related node Things
+        // First query the relationship table to get related node Things
         let edge_query = match direction {
             "out" => {
                 // Forward: get 'out' nodes from edges where 'in' = source node
@@ -5019,7 +5020,7 @@ mod tests {
         assert_eq!(date_node.id, "2025-10-13");
         assert_eq!(date_node.node_type, "date");
         assert_eq!(date_node.content, "2025-10-13"); // Virtual date nodes default content to the date ID
-                                                     // Note: Sibling ordering is now on has_child edge order field, not node.before_sibling_id
+                                                     // Note: Sibling ordering is now on has_child relationship order field, not node.before_sibling_id
     }
 
     #[tokio::test]
@@ -7329,7 +7330,7 @@ mod tests {
             }),
         );
 
-        // Create the schema node (should generate edge table DDL)
+        // Create the schema node (should generate relationship table DDL)
         let id = service.create_node(schema_node).await.unwrap();
 
         // Verify the schema node was created

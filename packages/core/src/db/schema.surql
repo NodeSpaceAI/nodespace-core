@@ -1,14 +1,16 @@
 -- ============================================================================
--- NodeSpace SurrealDB Schema - Universal Graph Architecture (Issue #783)
+-- NodeSpace SurrealDB Schema - Universal Graph Architecture (Issue #783, #788)
 -- ============================================================================
 --
 -- This schema implements the Universal Graph Architecture where:
 -- 1. Node table - Universal storage for ALL node types with embedded properties
--- 2. Properties - Type-specific data stored in node.properties field (JSON)
--- 3. Graph Edges - has_child, mentions, and member_of for node relationships
+-- 2. Relationship table - Universal storage for ALL relationships with relationship_type discriminator
+-- 3. Properties - Type-specific data stored in properties field (JSON) for both
 --
--- Key Pattern: ALL node data (including schemas) in single node table
--- Schema nodes use node_type='schema' with fields/relationships in properties
+-- Key Patterns:
+-- - ALL node data (including schemas) in single `node` table
+-- - ALL relationships in single `relationship` table with relationship_type discriminator
+-- - Zero DDL for custom types/relationships (enables Playbook Marketplace)
 -- ============================================================================
 
 -- ============================================================================
@@ -35,76 +37,62 @@ DEFINE INDEX IF NOT EXISTS idx_node_modified ON TABLE node COLUMNS modified_at;
 -- Note: Partial indexes (WHERE clause) are not supported in SurrealDB 2.x
 -- Properties are queried via node_type filter + properties.field access
 
--- NO beforeSiblingId - structure lives in has_child edges!
--- NO parentId - hierarchy lives in has_child edges!
+-- NO beforeSiblingId - structure lives in has_child relationships!
+-- NO parentId - hierarchy lives in has_child relationships!
 
 -- ============================================================================
--- GRAPH RELATIONS (SCHEMAFULL - Node-to-node relationships)
+-- UNIVERSAL RELATIONSHIP TABLE (Issue #788 - Single table for all relationships)
 -- ============================================================================
-
--- Has_child relation: Hierarchical relationships with fractional ordering
-DEFINE TABLE IF NOT EXISTS has_child SCHEMAFULL TYPE RELATION IN node OUT node;
-
--- Required fields for hierarchy
-DEFINE FIELD IF NOT EXISTS order ON TABLE has_child TYPE float ASSERT $value != NONE;
-DEFINE FIELD IF NOT EXISTS created_at ON TABLE has_child TYPE datetime DEFAULT time::now();
-DEFINE FIELD IF NOT EXISTS version ON TABLE has_child TYPE int DEFAULT 1;  -- OCC for concurrent edits
-
--- Index for efficient ordering queries
-DEFINE INDEX IF NOT EXISTS idx_child_order ON TABLE has_child COLUMNS in, order;
-
--- Ensure unique parent-child relationships
-DEFINE INDEX IF NOT EXISTS idx_unique_child ON TABLE has_child COLUMNS in, out UNIQUE;
-
--- ============================================================================
-
--- Mentions relation: Bidirectional references between nodes
-DEFINE TABLE IF NOT EXISTS mentions SCHEMAFULL TYPE RELATION IN node OUT node;
-
--- Required base fields
-DEFINE FIELD IF NOT EXISTS created_at ON TABLE mentions TYPE datetime DEFAULT time::now();
-DEFINE FIELD IF NOT EXISTS context ON TABLE mentions TYPE string DEFAULT "";
-DEFINE FIELD IF NOT EXISTS offset ON TABLE mentions TYPE int DEFAULT 0;
-DEFINE FIELD IF NOT EXISTS root_id ON TABLE mentions TYPE option<string>;  -- Root node of mentioning node's tree
-
--- Indexes for efficient queries
-DEFINE INDEX IF NOT EXISTS idx_mentions_in ON TABLE mentions COLUMNS in;
-DEFINE INDEX IF NOT EXISTS idx_mentions_out ON TABLE mentions COLUMNS out;
-
--- Prevent duplicate mentions
-DEFINE INDEX IF NOT EXISTS idx_unique_mention ON TABLE mentions COLUMNS in, out UNIQUE;
-
--- ============================================================================
-
--- Member_of relation: Collection membership (node belongs to collection)
--- This represents the "labeling" relationship where any node can be a member
--- of one or more collection nodes. Collections form a DAG (Directed Acyclic Graph).
 --
--- Direction: member_of goes FROM member node TO collection node
--- Example: node:abc -> collection:engineering means "abc belongs to engineering"
+-- All relationships stored in single `relationship` table with type discrimination.
+-- This enables custom relationship types without DDL (Playbook Marketplace).
 --
--- Note: Collection hierarchy uses has_child edges, not member_of.
--- member_of is only for non-collection nodes joining collections.
-DEFINE TABLE IF NOT EXISTS member_of SCHEMAFULL TYPE RELATION IN node OUT node;
+-- Core relationship_types:
+--   - has_child: Document tree hierarchy (order in properties)
+--   - mentions: @references and [[links]] (context, offset, root_id in properties)
+--   - member_of: Collection membership
+-- ============================================================================
 
--- Required base fields
-DEFINE FIELD IF NOT EXISTS created_at ON TABLE member_of TYPE datetime DEFAULT time::now();
+DEFINE TABLE IF NOT EXISTS relationship SCHEMAFULL TYPE RELATION IN node OUT node;
 
--- Indexes for efficient queries
--- "What collections does this node belong to?" - query by `in`
-DEFINE INDEX IF NOT EXISTS idx_member_of_in ON TABLE member_of COLUMNS in;
--- "What nodes belong to this collection?" - query by `out`
-DEFINE INDEX IF NOT EXISTS idx_member_of_out ON TABLE member_of COLUMNS out;
+-- The discriminator field
+DEFINE FIELD IF NOT EXISTS relationship_type ON TABLE relationship TYPE string ASSERT $value != NONE;
 
--- Prevent duplicate memberships (a node can only join a collection once)
-DEFINE INDEX IF NOT EXISTS idx_unique_membership ON TABLE member_of COLUMNS in, out UNIQUE;
+-- Type-specific data stored in properties
+DEFINE FIELD IF NOT EXISTS properties ON TABLE relationship FLEXIBLE TYPE object DEFAULT {};
+
+-- System metadata
+DEFINE FIELD IF NOT EXISTS version ON TABLE relationship TYPE int DEFAULT 1;
+DEFINE FIELD IF NOT EXISTS created_at ON TABLE relationship TYPE datetime DEFAULT time::now();
+DEFINE FIELD IF NOT EXISTS modified_at ON TABLE relationship TYPE datetime DEFAULT time::now();
+
+-- Core indexes for all relationship queries
+DEFINE INDEX IF NOT EXISTS idx_relationship_type ON TABLE relationship COLUMNS relationship_type;
+DEFINE INDEX IF NOT EXISTS idx_rel_in ON TABLE relationship COLUMNS in, relationship_type;
+DEFINE INDEX IF NOT EXISTS idx_rel_out ON TABLE relationship COLUMNS out, relationship_type;
+
+-- Composite index for ordered children lookup (has_child relationships)
+-- Query: SELECT * FROM relationship WHERE in = $parent AND relationship_type = 'has_child' ORDER BY properties.order
+DEFINE INDEX IF NOT EXISTS idx_rel_child_order ON TABLE relationship COLUMNS in, relationship_type, properties.order;
+
+-- Unique constraint for all relationship types
+-- Design Decision (Issue #788): We use a universal unique constraint on (in, out, relationship_type)
+-- rather than a partial index only for has_child. This prevents duplicate relationships between
+-- any two nodes for the same relationship type. While the original spec only required uniqueness
+-- for has_child (a node can only have one parent), applying this universally:
+-- 1. Simplifies schema - one constraint covers all relationship types
+-- 2. Prevents data anomalies in all relationship types (e.g., duplicate mentions, member_of)
+-- 3. Aligns with graph database best practices (edges should be unique by type)
+-- Future consideration: If a relationship type needs to allow duplicates (e.g., multiple mentions
+-- with different contexts), that type should use a custom edge table via the schema system.
+DEFINE INDEX IF NOT EXISTS idx_rel_unique_child ON TABLE relationship COLUMNS in, out, relationship_type UNIQUE;
 
 -- ============================================================================
 -- EMBEDDINGS TABLE (Root-Aggregate Model for Semantic Search)
 -- ============================================================================
 --
 -- NodeSpace uses a root-aggregate embedding model:
--- - Only ROOT nodes (no parent edge) of embeddable types get embedded
+-- - Only ROOT nodes (no parent relationship) of embeddable types get embedded
 -- - Embeddings represent the semantic content of the entire subtree
 -- - Chunking support for content > 512 tokens
 -- - Backend-managed queue with debouncing (no frontend involvement)
