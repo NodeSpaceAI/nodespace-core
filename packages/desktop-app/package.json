@@ -10,7 +10,7 @@
     "dev:browser:db": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info rocksdb:~/.nodespace/database/nodespace-dev",
     "dev:browser:db:prod": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info rocksdb:~/.nodespace/database/nodespace",
     "dev:browser:proxy": "cd src-tauri && cargo run --bin dev-proxy",
-    "dev:browser:frontend": "bunx vite dev --port 5173",
+    "dev:browser:frontend": "BROWSERSLIST_IGNORE_OLD_DATA=1 bunx vite dev --port 5173",
     "dev:browser": "bun run dev:check && bunx concurrently --success first --names 'DB,Proxy,UI' --prefix-colors 'blue,yellow,green' 'bun run dev:browser:db' 'sleep 2 && bun run dev:browser:proxy' 'sleep 4 && bun run dev:browser:frontend'",
     "dev:browser:prod": "bun run dev:check && bunx concurrently --success first --names 'DB,Proxy,UI' --prefix-colors 'blue,yellow,green' 'bun run dev:browser:db:prod' 'sleep 2 && bun run dev:browser:proxy' 'sleep 4 && bun run dev:browser:frontend'",
     "dev:tauri:frontend": "bunx vite dev --port 1420",
@@ -27,8 +27,8 @@
     "test:db:watch": "TEST_USE_DATABASE=true bunx vitest",
     "test:all": "bun run test && bun run rust:test",
     "rust:test": "cd src-tauri && cargo test --lib -p nodespace-core -- --test-threads=2",
-    "quality:check": "bunx eslint 'src/**/*.{ts,svelte}' && bunx svelte-check",
-    "quality:fix": "bunx eslint --fix 'src/**/*.{ts,svelte}' && bunx svelte-check",
+    "quality:check": "bunx eslint 'src/**/*.{ts,svelte}' && BROWSERSLIST_IGNORE_OLD_DATA=1 bunx svelte-check",
+    "quality:fix": "bunx eslint --fix 'src/**/*.{ts,svelte}' && BROWSERSLIST_IGNORE_OLD_DATA=1 bunx svelte-check",
     "tauri": "bunx tauri",
     "tauri:dev": "bun run dev:tauri",
     "tauri:build": "bunx tauri build"
@@ -61,8 +61,8 @@
     "@vitest/browser": "2.1.9",
     "@vitest/coverage-v8": "^2.1.8",
     "autoprefixer": "^10.4.21",
-    "baseline-browser-mapping": "^2.9.11",
     "bits-ui": "^1.4.7",
+    "browserslist": "4.28.1",
     "concurrently": "^9.2.1",
     "eslint": "^9.32.0",
     "eslint-plugin-filename-rules": "^1.3.1",
@@ -77,7 +77,7 @@
     "prettier": "^3.6.2",
     "prettier-plugin-svelte": "^3.4.0",
     "svelte": "^5.39.4",
-    "svelte-check": "^4.0.0",
+    "svelte-check": "^4.3.5",
     "tailwind-variants": "^1.0.0",
     "tailwindcss": "^3.4.17",
     "typescript": "~5.6.2",
@@ -91,5 +91,13 @@
     "yarn": "Please use Bun instead",
     "pnpm": "Please use Bun instead"
   },
-  "packageManager": "bun@1.0.0"
+  "packageManager": "bun@1.0.0",
+  "overrides": {
+    "browserslist": "^4.28.1",
+    "baseline-browser-mapping": "^2.9.11"
+  },
+  "resolutions": {
+    "browserslist": "^4.28.1",
+    "baseline-browser-mapping": "^2.9.11"
+  }
 }
