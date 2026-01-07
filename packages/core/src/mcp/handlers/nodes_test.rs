@@ -1348,7 +1348,7 @@ mod typed_response_tests {
     async fn test_query_nodes_returns_typed_and_generic_nodes() {
         let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
-        // Create a task node
+        // Create a task node (Issue #794: namespaced properties)
         let task_id = node_service
             .create_node_with_parent(CreateNodeParams {
                 id: None,
@@ -1356,7 +1356,7 @@ mod typed_response_tests {
                 content: "Task node".to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "done"}),
+                properties: json!({"task": {"status": "done"}}),
             })
             .await
             .unwrap();
@@ -1391,7 +1391,7 @@ mod typed_response_tests {
     async fn test_get_nodes_batch_returns_typed_nodes() {
         let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
-        // Create multiple nodes of different types (priority is string enum)
+        // Create multiple nodes of different types (Issue #794: namespaced properties)
         let task_id = node_service
             .create_node_with_parent(CreateNodeParams {
                 id: None,
@@ -1399,7 +1399,7 @@ mod typed_response_tests {
                 content: "Batch task".to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "in_progress", "priority": "medium"}),
+                properties: json!({"task": {"status": "in_progress", "priority": "medium"}}),
             })
             .await
             .unwrap();

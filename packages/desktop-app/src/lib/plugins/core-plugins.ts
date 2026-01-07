@@ -156,11 +156,12 @@ export const taskNodePlugin: PluginDefinition = {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
   },
-  // Type-specific metadata extraction (Issue #698)
+  // Type-specific metadata extraction (Issue #698, #794)
+  // Issue #794: Properties are now namespaced under properties[node_type]
   extractMetadata: (node: { nodeType: string; properties?: Record<string, unknown> }) => {
     const properties = node.properties || {};
     const taskProps = properties[node.nodeType] as Record<string, unknown> | undefined;
-    const status = taskProps?.status || properties.status; // Support both nested and flat formats
+    const status = taskProps?.status;
 
     // Map task status to NodeState expected by TaskNode
     let taskState: 'pending' | 'inProgress' | 'completed' = 'pending';

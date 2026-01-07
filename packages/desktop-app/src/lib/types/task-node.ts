@@ -261,10 +261,10 @@ export function nodeToTaskNode(node: Node): TaskNode {
     return node as TaskNode;
   }
 
-  // Extract from properties (try nested task.* first, then flat)
+  // Extract from properties (Issue #794: namespaced under properties.task)
   // Per naming conventions: API returns camelCase (dueDate, startedAt, completedAt)
   const props = node.properties as Record<string, unknown> | undefined;
-  const taskProps = (props?.task as Record<string, unknown>) ?? props ?? {};
+  const taskProps = (props?.task as Record<string, unknown>) ?? {};
 
   const status = (taskProps.status as TaskStatus) ?? 'open';
   const priority = taskProps.priority as TaskPriority | undefined;

@@ -837,18 +837,64 @@ where
         // Get mutable reference to properties object
         let props_obj = node.properties.as_object_mut().unwrap();
 
-        // Apply defaults for missing fields
+        // Get or create the type namespace (Issue #794)
+        // Properties are stored under properties[node_type][field_name]
+        let type_namespace = props_obj
+            .entry(&node.node_type)
+            .or_insert_with(|| serde_json::json!({}));
+
+        let type_props = type_namespace.as_object_mut().ok_or_else(|| {
+            NodeServiceError::invalid_update(format!(
+                "Type namespace for '{}' is not an object",
+                node.node_type
+            ))
+        })?;
+
+        // Apply defaults for missing fields within the type namespace
         for field in fields {
-            // Check if field is missing
-            if !props_obj.contains_key(&field.name) {
+            // Check if field is missing in the type namespace
+            if !type_props.contains_key(&field.name) {
                 // Apply default value if one is defined
                 if let Some(default_value) = &field.default {
-                    props_obj.insert(field.name.clone(), default_value.clone());
+                    type_props.insert(field.name.clone(), default_value.clone());
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Deep-merge namespaced properties for Issue #794
+    ///
+    /// Properties use namespaced format: `{ "nodeType": { "field": "value" } }`.
+    /// This function deep-merges new properties into existing ones, preserving
+    /// dormant type namespaces (properties from previous node types).
+    ///
+    /// # Arguments
+    ///
+    /// * `existing` - Mutable reference to the existing properties
+    /// * `new` - The new properties to merge in
+    fn deep_merge_namespaced_properties(existing: &mut Value, new: Value) {
+        if let (Some(existing_obj), Some(new_obj)) = (existing.as_object_mut(), new.as_object()) {
+            for (key, value) in new_obj {
+                // If both existing and new have the same key as objects, deep merge
+                if let (Some(existing_ns), Some(new_ns)) = (
+                    existing_obj.get_mut(key).and_then(|v| v.as_object_mut()),
+                    value.as_object(),
+                ) {
+                    // Deep merge: update fields within the namespace
+                    for (field_key, field_value) in new_ns {
+                        existing_ns.insert(field_key.clone(), field_value.clone());
+                    }
+                } else {
+                    // Otherwise replace the key (for new namespaces or non-object values)
+                    existing_obj.insert(key.clone(), value.clone());
+                }
+            }
+        } else {
+            // If either is not an object, just replace (shouldn't happen normally)
+            *existing = new;
+        }
     }
 
     /// Validate a node against pre-loaded schema fields
@@ -867,11 +913,11 @@ where
         node: &Node,
         fields: &[crate::models::SchemaField],
     ) -> Result<(), NodeServiceError> {
-        // Get properties for this node type (supports both flat and nested formats)
+        // Get properties for this node type from the type namespace (Issue #794)
+        // Properties are stored under properties[node_type][field_name]
         let node_props = node
             .properties
             .get(&node.node_type)
-            .or(Some(&node.properties))
             .and_then(|p| p.as_object());
 
         // Validate each field in the schema
@@ -944,20 +990,45 @@ where
     /// * `Ok(())` - Version was already present or successfully backfilled
     /// * `Err` - Database error during backfill
     async fn backfill_schema_version(&self, node: &mut Node) -> Result<(), NodeServiceError> {
-        if let Some(props_obj) = node.properties.as_object() {
-            if !props_obj.contains_key("_schema_version") {
-                // Determine version from schema if exists, otherwise default to 1
-                let version =
-                    if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
-                        schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1)
-                    } else {
-                        1 // Default version for types without schema
-                    };
+        // Only backfill for types that have schema fields (Issue #794)
+        // Types without schema fields (text, date, header, etc.) don't need versioning
+        let schema = match self.get_schema_for_type(&node.node_type).await? {
+            Some(s) => s,
+            None => return Ok(()), // No schema = no version needed
+        };
 
-                // Add version to node properties IN-MEMORY ONLY
-                // Don't persist to database - persisting backfill is unnecessary and risks race conditions
-                if let Some(props_obj) = node.properties.as_object_mut() {
-                    props_obj.insert("_schema_version".to_string(), serde_json::json!(version));
+        // Check if schema has any fields
+        let has_fields = schema
+            .get("fields")
+            .and_then(|f| f.as_array())
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false);
+
+        if !has_fields {
+            return Ok(()); // Empty schema = no version needed
+        }
+
+        // Check if _schema_version exists in the type namespace (Issue #794)
+        let has_version = node
+            .properties
+            .get(&node.node_type)
+            .and_then(|ns| ns.get("_schema_version"))
+            .is_some();
+
+        if !has_version {
+            let version = schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
+
+            // Add version to type namespace IN-MEMORY ONLY
+            // Don't persist to database - this prevents overwriting freshly created records
+            // Issue #511: After node type conversion, the record has status+_schema_version
+            // Backfill would MERGE just _schema_version, but the record already has it
+            // Persisting backfill is unnecessary and risks race conditions
+            if let Some(props_obj) = node.properties.as_object_mut() {
+                let type_namespace = props_obj
+                    .entry(&node.node_type)
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(type_props) = type_namespace.as_object_mut() {
+                    type_props.insert("_schema_version".to_string(), serde_json::json!(version));
                 }
             }
         }
@@ -978,10 +1049,11 @@ where
     /// * `Ok(())` - Node was already up-to-date or successfully migrated
     /// * `Err` - Migration failed or database error
     async fn apply_lazy_migration(&self, node: &mut Node) -> Result<(), NodeServiceError> {
-        // Get current version from node
+        // Get current version from type namespace (Issue #794)
         let current_version = node
             .properties
-            .get("_schema_version")
+            .get(&node.node_type)
+            .and_then(|ns| ns.get("_schema_version"))
             .and_then(|v| v.as_u64())
             .unwrap_or(1) as u32;
 
@@ -1066,19 +1138,26 @@ where
         // NOTE: Parent/container validation removed - now handled by NodeOperations layer
         // The graph-native architecture uses edges for hierarchy, not fields on Node struct
 
-        // Add schema version to properties ONLY if schema has fields
+        // Add schema version to type namespace ONLY if schema has fields (Issue #794)
         // For empty schemas (text, date, header, etc.), don't pollute properties with version
         // Schema versioning is only needed for types with schema-defined fields (task, person, etc.)
-        let mut properties = node.properties.clone();
         if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
             // Check if schema has any fields
             if let Some(fields) = schema.get("fields").and_then(|f| f.as_array()) {
                 if !fields.is_empty() {
                     // Schema has fields - add version for migration tracking
                     if let Some(version) = schema.get("version").and_then(|v| v.as_i64()) {
-                        if let Some(props_obj) = properties.as_object_mut() {
-                            props_obj
-                                .insert("_schema_version".to_string(), serde_json::json!(version));
+                        if let Some(props_obj) = node.properties.as_object_mut() {
+                            // Get or create the type namespace
+                            let type_namespace = props_obj
+                                .entry(&node.node_type)
+                                .or_insert_with(|| serde_json::json!({}));
+                            if let Some(type_props) = type_namespace.as_object_mut() {
+                                type_props.insert(
+                                    "_schema_version".to_string(),
+                                    serde_json::json!(version),
+                                );
+                            }
                         }
                     }
                 }
@@ -1086,9 +1165,6 @@ where
         }
         // Note: No else clause - if no schema or empty schema, don't add version
         // The backfill_schema_version function will add it on read if needed
-
-        // Update node with properties (only versioned if schema has fields)
-        node.properties = properties;
 
         // NOTE: root_id filtering removed - hierarchy now managed via relationships
 
@@ -1819,18 +1895,8 @@ where
         // Use reorder_siblings() or move_node() for ordering changes.
 
         if let Some(properties) = update.properties {
-            // Merge properties instead of replacing them to preserve _schema_version
-            if let (Some(existing_obj), Some(new_obj)) =
-                (updated.properties.as_object_mut(), properties.as_object())
-            {
-                // Merge new properties into existing ones
-                for (key, value) in new_obj {
-                    existing_obj.insert(key.clone(), value.clone());
-                }
-            } else {
-                // If either is not an object, just replace (shouldn't happen normally)
-                updated.properties = properties;
-            }
+            // Deep-merge namespaced properties (Issue #794)
+            Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
         }
 
         // Step 1: Core behavior validation (PROTECTED)
@@ -2000,18 +2066,8 @@ where
         // Use reorder_siblings() or move_node() for ordering changes.
 
         if let Some(properties) = update.properties {
-            // Merge properties instead of replacing them to preserve _schema_version
-            if let (Some(existing_obj), Some(new_obj)) =
-                (updated.properties.as_object_mut(), properties.as_object())
-            {
-                // Merge new properties into existing ones
-                for (key, value) in new_obj {
-                    existing_obj.insert(key.clone(), value.clone());
-                }
-            } else {
-                // If either is not an object, just replace (shouldn't happen normally)
-                updated.properties = properties;
-            }
+            // Deep-merge namespaced properties (Issue #794)
+            Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
         }
 
         // Step 1: Core behavior validation (PROTECTED)
@@ -6685,25 +6741,30 @@ mod tests {
                 let (service, _temp) = create_test_service().await;
 
                 // Create a text node (no schema exists, should default to version 1)
-                let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
+                // Text nodes don't have schemas, so they won't get _schema_version
+                // Testing with text node to verify that behavior
+                let text_node =
+                    Node::new("text".to_string(), "Test content".to_string(), json!({}));
+                let text_id = service.create_node(text_node).await.unwrap();
+                let retrieved_text = service.get_node(&text_id).await.unwrap().unwrap();
 
-                let id = service.create_node(node).await.unwrap();
-                let retrieved = service.get_node(&id).await.unwrap().unwrap();
-
-                // Verify _schema_version was added
-                assert!(retrieved.properties.get("_schema_version").is_some());
-                assert_eq!(retrieved.properties["_schema_version"], 1);
+                // Text nodes should NOT have _schema_version (no schema fields)
+                let text_ns = retrieved_text.properties.get("text");
+                assert!(
+                    text_ns.is_none() || text_ns.unwrap().get("_schema_version").is_none(),
+                    "Text nodes without schema fields should not have _schema_version"
+                );
             }
 
             // NOTE: Backfill tests removed - no legacy data exists (pre-release project)
             // All nodes created via NodeService automatically get _schema_version
 
             #[tokio::test]
-            async fn test_auto_created_date_nodes_get_version() {
+            async fn test_auto_created_date_nodes_no_version() {
                 let (service, _temp) = create_test_service().await;
 
                 // Directly create a date node (simulating persisted date node)
-                // Types without schemas (date, text) get _schema_version via backfill on read
+                // Types without schemas (date, text) should NOT get _schema_version
                 let date_node = Node::new_with_id(
                     "2025-01-15".to_string(),
                     "date".to_string(),
@@ -6712,33 +6773,41 @@ mod tests {
                 );
                 service.create_node(date_node).await.unwrap();
 
-                // Retrieve the date node - backfill should add _schema_version
+                // Retrieve the date node - should NOT have _schema_version (no schema fields)
                 let retrieved = service.get_node("2025-01-15").await.unwrap().unwrap();
+                let date_ns = retrieved.properties.get("date");
                 assert!(
-                    retrieved.properties.get("_schema_version").is_some(),
-                    "Date nodes should get _schema_version via backfill on read"
+                    date_ns.is_none() || date_ns.unwrap().get("_schema_version").is_none(),
+                    "Date nodes without schema fields should not have _schema_version"
                 );
-                assert_eq!(retrieved.properties["_schema_version"], 1);
             }
 
             #[tokio::test]
-            async fn test_nodes_with_existing_version_not_modified() {
+            async fn test_nodes_multiple_retrieval_consistent() {
                 let (service, _temp) = create_test_service().await;
 
-                // Create a node (will get version 1)
+                // Create a text node (no schema fields, so no _schema_version)
                 let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
-
                 let id = service.create_node(node).await.unwrap();
 
-                // Retrieve twice to ensure version doesn't get modified on subsequent access
+                // Retrieve twice to ensure consistency across retrievals
                 let retrieved1 = service.get_node(&id).await.unwrap().unwrap();
                 let retrieved2 = service.get_node(&id).await.unwrap().unwrap();
 
-                assert_eq!(retrieved1.properties["_schema_version"], 1);
-                assert_eq!(retrieved2.properties["_schema_version"], 1);
+                // Text nodes without schema fields should not have _schema_version
+                let ns1 = retrieved1.properties.get("text");
+                let ns2 = retrieved2.properties.get("text");
+                assert!(
+                    ns1.is_none() || ns1.unwrap().get("_schema_version").is_none(),
+                    "Text nodes should not have _schema_version"
+                );
+                assert!(
+                    ns2.is_none() || ns2.unwrap().get("_schema_version").is_none(),
+                    "Text nodes should not have _schema_version"
+                );
                 assert_eq!(
                     retrieved1.modified_at, retrieved2.modified_at,
-                    "Modified timestamp should not change on backfill skip"
+                    "Modified timestamp should not change between retrievals"
                 );
             }
         }
@@ -8294,6 +8363,173 @@ mod tests {
             let task_refetch = service.get_task_node(&text_node.id).await.unwrap().unwrap();
             assert_eq!(task_refetch.status, TaskStatus::InProgress);
             assert_eq!(task_refetch.content, "This will become a task");
+        }
+
+        // ============================================================
+        // Issue #794: Namespaced Properties - Type Change Tests
+        // ============================================================
+
+        /// Test that namespaced properties are preserved when changing node types.
+        ///
+        /// This is the core value proposition of Issue #794: when a node changes type,
+        /// the old type's properties should remain as dormant data under their original
+        /// namespace, allowing restoration if the node is converted back.
+        #[tokio::test]
+        async fn test_type_change_preserves_old_type_properties() {
+            let (service, _temp) = create_test_service().await;
+
+            // Step 1: Create a task node with specific properties
+            // Properties will be stored under properties.task.status, properties.task.priority
+            let task_node = Node::new(
+                "task".to_string(),
+                "Important work item".to_string(),
+                json!({
+                    "task": {
+                        "status": "in_progress",
+                        "priority": "high"
+                    }
+                }),
+            );
+            let node_id = service.create_node(task_node).await.unwrap();
+
+            // Verify task properties are stored in namespaced format
+            let node_as_task = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(node_as_task.properties["task"]["status"], "in_progress");
+            assert_eq!(node_as_task.properties["task"]["priority"], "high");
+
+            // Step 2: Change the node type to text
+            let type_update = crate::models::NodeUpdate {
+                node_type: Some("text".to_string()),
+                ..Default::default()
+            };
+            service.update_node(&node_id, type_update).await.unwrap();
+
+            // Step 3: Verify old task properties are preserved as dormant data
+            let node_as_text = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(node_as_text.node_type, "text");
+            // Old task properties should still exist under the "task" namespace
+            assert_eq!(node_as_text.properties["task"]["status"], "in_progress");
+            assert_eq!(node_as_text.properties["task"]["priority"], "high");
+
+            // Step 4: Change back to task type
+            let type_update_back = crate::models::NodeUpdate {
+                node_type: Some("task".to_string()),
+                ..Default::default()
+            };
+            service
+                .update_node(&node_id, type_update_back)
+                .await
+                .unwrap();
+
+            // Step 5: Verify original task properties are restored/accessible
+            let node_restored = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(node_restored.node_type, "task");
+            assert_eq!(node_restored.properties["task"]["status"], "in_progress");
+            assert_eq!(node_restored.properties["task"]["priority"], "high");
+        }
+
+        /// Test that properties with the same field name in different types don't conflict.
+        ///
+        /// For example, both "task" and "invoice" types might have a "status" field,
+        /// but they should be stored independently under their respective namespaces.
+        #[tokio::test]
+        async fn test_same_property_name_different_types_no_conflict() {
+            let (service, _temp) = create_test_service().await;
+
+            // Step 1: Create a node with task properties (use valid task status: done)
+            let node = Node::new(
+                "task".to_string(),
+                "Multi-purpose node".to_string(),
+                json!({
+                    "task": {
+                        "status": "done"
+                    }
+                }),
+            );
+            let node_id = service.create_node(node).await.unwrap();
+
+            // Step 2: Convert to text and add custom:status property
+            // (simulating a custom property with same name as task's status)
+            let update1 = crate::models::NodeUpdate {
+                node_type: Some("text".to_string()),
+                properties: Some(json!({
+                    "custom": {
+                        "status": "draft"
+                    }
+                })),
+                ..Default::default()
+            };
+            service.update_node(&node_id, update1).await.unwrap();
+
+            // Step 3: Verify both status values coexist without conflict
+            let node_after = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(node_after.node_type, "text");
+            // Task's status should be preserved
+            assert_eq!(node_after.properties["task"]["status"], "done");
+            // Custom status should also exist
+            assert_eq!(node_after.properties["custom"]["status"], "draft");
+
+            // Step 4: Convert back to task
+            let update2 = crate::models::NodeUpdate {
+                node_type: Some("task".to_string()),
+                ..Default::default()
+            };
+            service.update_node(&node_id, update2).await.unwrap();
+
+            // Step 5: Verify task's original status is intact, custom status still exists
+            let node_final = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(node_final.node_type, "task");
+            assert_eq!(node_final.properties["task"]["status"], "done");
+            assert_eq!(node_final.properties["custom"]["status"], "draft");
+        }
+
+        /// Test that updating properties of the current type doesn't affect dormant properties.
+        #[tokio::test]
+        async fn test_updating_current_type_preserves_dormant_properties() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a task with properties
+            let task_node = Node::new(
+                "task".to_string(),
+                "Task with dormant data".to_string(),
+                json!({
+                    "task": {
+                        "status": "open",
+                        "priority": "low"
+                    }
+                }),
+            );
+            let node_id = service.create_node(task_node).await.unwrap();
+
+            // Convert to text, which leaves task properties as dormant
+            let to_text = crate::models::NodeUpdate {
+                node_type: Some("text".to_string()),
+                properties: Some(json!({
+                    "text": {
+                        "format": "markdown"
+                    }
+                })),
+                ..Default::default()
+            };
+            service.update_node(&node_id, to_text).await.unwrap();
+
+            // Update the text properties
+            let text_update = crate::models::NodeUpdate {
+                properties: Some(json!({
+                    "text": {
+                        "format": "plain"
+                    }
+                })),
+                ..Default::default()
+            };
+            service.update_node(&node_id, text_update).await.unwrap();
+
+            // Verify dormant task properties are unchanged
+            let node_after_text_update = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(node_after_text_update.properties["task"]["status"], "open");
+            assert_eq!(node_after_text_update.properties["task"]["priority"], "low");
+            // Active text properties were updated
+            assert_eq!(node_after_text_update.properties["text"]["format"], "plain");
         }
     }
 }

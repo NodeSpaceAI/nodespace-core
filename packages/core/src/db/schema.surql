@@ -148,5 +148,7 @@ DEFINE INDEX IF NOT EXISTS idx_embedding_vector ON TABLE embedding COLUMNS vecto
 -- Schema Version Tracking
 -- ============================================================================
 
--- Track schema version for migrations
-DEFINE FIELD IF NOT EXISTS _schema_version ON TABLE node TYPE int DEFAULT 1;
+-- Issue #794: Schema version is now stored in namespaced properties
+-- Format: properties[node_type]._schema_version
+-- This allows version tracking per-type while supporting type changes
+-- The MigrationRegistry reads/writes to this namespaced location

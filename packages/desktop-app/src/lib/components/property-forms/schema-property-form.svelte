@@ -129,14 +129,13 @@
       return (node as unknown as Record<string, unknown>)[fieldName];
     }
 
-    // Try new nested format: properties[nodeType][fieldName]
+    // Issue #794: Properties are namespaced under properties[nodeType][fieldName]
     const typeNamespace = node.properties?.[nodeType];
     if (typeNamespace && typeof typeNamespace === 'object' && fieldName in typeNamespace) {
       return (typeNamespace as Record<string, unknown>)[fieldName];
     }
 
-    // Fall back to old flat format: properties[fieldName]
-    return node.properties?.[fieldName];
+    return undefined;
   }
 
   // Get schema fields directly from typed field (no helper needed)

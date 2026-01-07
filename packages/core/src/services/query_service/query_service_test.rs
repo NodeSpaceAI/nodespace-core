@@ -39,7 +39,7 @@ mod tests {
             content: "Task 1".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
         let task2 = CreateNodeParams {
             id: None,
@@ -47,7 +47,7 @@ mod tests {
             content: "Task 2".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "done"}),
+            properties: json!({"task": {"status": "done"}}),
         };
         let text1 = CreateNodeParams {
             id: None,
@@ -83,14 +83,14 @@ mod tests {
     async fn test_property_filter_equals() {
         let (query_service, node_service, _temp) = create_test_services().await;
 
-        // Create task nodes with different statuses
+        // Create task nodes with different statuses (Issue #794: namespaced properties)
         let task1 = CreateNodeParams {
             id: None,
             node_type: "task".to_string(),
             content: "Task 1".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
         let task2 = CreateNodeParams {
             id: None,
@@ -98,7 +98,7 @@ mod tests {
             content: "Task 2".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "done"}),
+            properties: json!({"task": {"status": "done"}}),
         };
         let task3 = CreateNodeParams {
             id: None,
@@ -106,7 +106,7 @@ mod tests {
             content: "Task 3".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
 
         node_service.create_node_with_parent(task1).await.unwrap();
@@ -133,7 +133,9 @@ mod tests {
 
         assert_eq!(results.len(), 2, "Should return only open tasks");
         assert!(
-            results.iter().all(|n| n.properties["status"] == "open"),
+            results
+                .iter()
+                .all(|n| n.properties["task"]["status"] == "open"),
             "All results should have open status"
         );
     }
@@ -153,7 +155,7 @@ mod tests {
                 content: format!("Task {}", i + 1),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": status}),
+                properties: json!({"task": {"status": status}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }
@@ -179,7 +181,7 @@ mod tests {
         assert_eq!(results.len(), 2, "Should return open and in_progress tasks");
         assert!(
             results.iter().all(|n| {
-                let status = n.properties["status"].as_str().unwrap();
+                let status = n.properties["task"]["status"].as_str().unwrap();
                 status == "open" || status == "in_progress"
             }),
             "All results should be open or in_progress"
@@ -205,7 +207,7 @@ mod tests {
                 content: content.to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "open"}),
+                properties: json!({"task": {"status": "open"}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }
@@ -258,7 +260,7 @@ mod tests {
                 content: content.to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "open"}),
+                properties: json!({"task": {"status": "open"}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }
@@ -363,7 +365,7 @@ mod tests {
                 content: content.to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "open"}),
+                properties: json!({"task": {"status": "open"}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }
@@ -400,7 +402,7 @@ mod tests {
                 content: format!("Task {}", i),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "open"}),
+                properties: json!({"task": {"status": "open"}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }
@@ -422,7 +424,7 @@ mod tests {
     async fn test_combined_filters() {
         let (query_service, node_service, _temp) = create_test_services().await;
 
-        // Create various task nodes
+        // Create various task nodes (Issue #794: namespaced properties)
         let tasks = vec![
             ("High priority open task", "open", "high"),
             ("Low priority open task", "open", "low"),
@@ -438,8 +440,10 @@ mod tests {
                 parent_id: None,
                 insert_after_node_id: None,
                 properties: json!({
-                    "status": status,
-                    "priority": priority
+                    "task": {
+                        "status": status,
+                        "priority": priority
+                    }
                 }),
             };
             node_service.create_node_with_parent(task).await.unwrap();
@@ -479,8 +483,8 @@ mod tests {
             results[0].content, "High priority open task",
             "Should be the high priority open task"
         );
-        assert_eq!(results[0].properties["status"], "open");
-        assert_eq!(results[0].properties["priority"], "high");
+        assert_eq!(results[0].properties["task"]["status"], "open");
+        assert_eq!(results[0].properties["task"]["priority"], "high");
     }
 
     #[tokio::test]
@@ -494,7 +498,7 @@ mod tests {
             content: "Task node".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
         let text = CreateNodeParams {
             id: None,
@@ -565,7 +569,7 @@ mod tests {
             content: "Exact Match".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
         let task2 = CreateNodeParams {
             id: None,
@@ -573,7 +577,7 @@ mod tests {
             content: "Different".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
 
         node_service.create_node_with_parent(task1).await.unwrap();
@@ -612,7 +616,7 @@ mod tests {
                 content: content.to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "open"}),
+                properties: json!({"task": {"status": "open"}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }
@@ -729,7 +733,7 @@ mod tests {
             content: "Task content".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
         let text = CreateNodeParams {
             id: None,
@@ -774,7 +778,7 @@ mod tests {
             content: "Important meeting".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
         let text = CreateNodeParams {
             id: None,
@@ -821,7 +825,7 @@ mod tests {
                 content: content.to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "open"}),
+                properties: json!({"task": {"status": "open"}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }
@@ -973,7 +977,7 @@ mod tests {
                 content: content.to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "open"}),
+                properties: json!({"task": {"status": "open"}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }
@@ -1006,7 +1010,7 @@ mod tests {
             content: "Task".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
         let text = CreateNodeParams {
             id: None,
@@ -1051,7 +1055,7 @@ mod tests {
             content: "With status".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
 
         node_service.create_node_with_parent(task).await.unwrap();
@@ -1091,7 +1095,7 @@ mod tests {
             content: "EXACT Match".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
         node_service.create_node_with_parent(task).await.unwrap();
 
@@ -1130,7 +1134,7 @@ mod tests {
             content: "Open task".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "open"}),
+            properties: json!({"task": {"status": "open"}}),
         };
         let task2 = CreateNodeParams {
             id: None,
@@ -1138,7 +1142,7 @@ mod tests {
             content: "Done task".to_string(),
             parent_id: None,
             insert_after_node_id: None,
-            properties: json!({"status": "done"}),
+            properties: json!({"task": {"status": "done"}}),
         };
 
         node_service.create_node_with_parent(task1).await.unwrap();
@@ -1228,7 +1232,7 @@ mod tests {
                 content: content.to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": status}),
+                properties: json!({"task": {"status": status}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }
@@ -1246,10 +1250,10 @@ mod tests {
 
         let results = query_service.execute(&query).await.unwrap();
         assert_eq!(results.len(), 3);
-        // Sorted by status alphabetically: done, in_progress, open
-        assert_eq!(results[0].properties["status"], "done");
-        assert_eq!(results[1].properties["status"], "in_progress");
-        assert_eq!(results[2].properties["status"], "open");
+        // Sorted by status alphabetically: done, in_progress, open (Issue #794: namespaced properties)
+        assert_eq!(results[0].properties["task"]["status"], "done");
+        assert_eq!(results[1].properties["task"]["status"], "in_progress");
+        assert_eq!(results[2].properties["task"]["status"], "open");
     }
 
     #[tokio::test]
@@ -1264,7 +1268,7 @@ mod tests {
                 content: content.to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": "open"}),
+                properties: json!({"task": {"status": "open"}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }
@@ -1303,7 +1307,7 @@ mod tests {
                 content: content.to_string(),
                 parent_id: None,
                 insert_after_node_id: None,
-                properties: json!({"status": status}),
+                properties: json!({"task": {"status": status}}),
             };
             node_service.create_node_with_parent(task).await.unwrap();
         }

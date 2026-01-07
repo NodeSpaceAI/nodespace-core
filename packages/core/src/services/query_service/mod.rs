@@ -217,7 +217,7 @@ impl QueryService {
         });
     }
 
-    /// Compare two nodes by a specific field
+    /// Compare two nodes by a specific field (Issue #794: Namespaced property access)
     fn compare_nodes_by_field(&self, a: &Node, b: &Node, field: &str) -> std::cmp::Ordering {
         match field {
             // Metadata fields
@@ -225,10 +225,11 @@ impl QueryService {
             "modified_at" => a.modified_at.cmp(&b.modified_at),
             "content" => a.content.cmp(&b.content),
             "node_type" => a.node_type.cmp(&b.node_type),
-            // Type-specific properties (accessed via properties JSON)
+            // Type-specific properties (accessed via namespaced properties JSON)
+            // Access properties[node_type][field] for proper namespaced access
             _ => {
-                let val_a = a.properties.get(field);
-                let val_b = b.properties.get(field);
+                let val_a = a.properties.get(&a.node_type).and_then(|ns| ns.get(field));
+                let val_b = b.properties.get(&b.node_type).and_then(|ns| ns.get(field));
                 self.compare_json_values(val_a, val_b)
             }
         }
@@ -304,6 +305,9 @@ impl QueryService {
     ///
     /// Builds queries against the unified node table with JSON properties.
     /// All node types use the same query pattern with properties stored inline.
+    ///
+    /// Issue #794: Properties are now stored in namespaced format:
+    /// properties[node_type][field_name] instead of properties[field_name]
     fn build_query(&self, query: &QueryDefinition) -> Result<String> {
         let mut sql = String::from("SELECT * FROM node");
         let mut conditions = Vec::new();
@@ -313,10 +317,12 @@ impl QueryService {
             conditions.push(format!("node_type = '{}'", query.target_type));
         }
 
-        // Build filter conditions
+        // Build filter conditions (pass target_type for namespaced property access)
         for filter in &query.filters {
             match filter.filter_type {
-                FilterType::Property => conditions.push(self.build_property_filter(filter)?),
+                FilterType::Property => {
+                    conditions.push(self.build_property_filter(filter, &query.target_type)?)
+                }
                 FilterType::Content => conditions.push(self.build_content_filter(filter)?),
                 FilterType::Relationship => {
                     conditions.push(self.build_relationship_filter(filter)?)
@@ -331,7 +337,7 @@ impl QueryService {
             sql.push_str(&conditions.join(" AND "));
         }
 
-        // Add sorting
+        // Add sorting (pass target_type for namespaced property access)
         if let Some(sorting) = &query.sorting {
             if !sorting.is_empty() {
                 sql.push_str(" ORDER BY ");
@@ -342,7 +348,11 @@ impl QueryService {
                             SortDirection::Ascending => "ASC",
                             SortDirection::Descending => "DESC",
                         };
-                        format!("{} {}", self.resolve_field(&s.field), direction)
+                        format!(
+                            "{} {}",
+                            self.resolve_field(&s.field, &query.target_type),
+                            direction
+                        )
                     })
                     .collect();
                 sql.push_str(&clauses.join(", "));
@@ -358,30 +368,43 @@ impl QueryService {
         Ok(sql)
     }
 
-    /// Resolve field name for queries
+    /// Resolve field name for queries (Issue #794: Namespaced property access)
     ///
     /// Metadata fields accessed directly: created_at, modified_at, content, node_type
-    /// Type-specific fields accessed via properties JSON: properties.status
-    fn resolve_field(&self, field: &str) -> String {
+    /// Type-specific fields accessed via namespaced properties JSON: properties.task.status
+    ///
+    /// For wildcard queries (*), we can't namespace, so we fall back to flat access.
+    fn resolve_field(&self, field: &str, target_type: &str) -> String {
         if ["created_at", "modified_at", "content", "node_type"].contains(&field) {
             field.to_string()
-        } else {
+        } else if target_type == "*" {
+            // Wildcard query - can't namespace (would need to check each node's type)
+            // Fall back to flat access for wildcard queries
             format!("properties.{}", field)
+        } else {
+            // Namespaced property access: properties[node_type][field]
+            format!("properties.{}.{}", target_type, field)
         }
     }
 
     // ========== Filter Builders ==========
 
-    /// Build property filter
+    /// Build property filter (Issue #794: Namespaced property access)
     ///
-    /// Access via properties JSON: properties.status = 'open'
-    fn build_property_filter(&self, filter: &QueryFilter) -> Result<String> {
+    /// Access via namespaced properties JSON: properties.task.status = 'open'
+    fn build_property_filter(&self, filter: &QueryFilter, target_type: &str) -> Result<String> {
         let property = filter
             .property
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Property filter missing 'property' field"))?;
 
-        let field = format!("properties.{}", property);
+        let field = if target_type == "*" {
+            // Wildcard query - can't namespace
+            format!("properties.{}", property)
+        } else {
+            // Namespaced property access
+            format!("properties.{}.{}", target_type, property)
+        };
         self.build_filter_condition(&field, &filter.operator, filter)
     }
 
