@@ -163,9 +163,9 @@ pub type StoreNotifier = Arc<dyn Fn(StoreChange) + Send + Sync>;
 ///   - Only root nodes get embedded (subtree content aggregated)
 ///
 /// - **v3.0** (Issue #783): Universal Graph Architecture
-///   - All properties stored in `node.properties` field (Universal Graph Architecture)
-///   - No spoke tables - all node data in single table
-///   - Single-query node fetching (no N+1 pattern)
+///   - All properties stored in `node.properties` field
+///   - All node data in single `node` table
+///   - Single-query node fetching
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SurrealNode {
     // Record ID is stored in the 'id' field returned by SurrealDB (e.g., node:⟨uuid⟩)
@@ -180,7 +180,6 @@ struct SurrealNode {
     #[serde(default)]
     mentioned_by: Vec<String>,
     /// Properties field stores all type-specific properties directly on the node
-    /// Universal Graph Architecture (Issue #783): No spoke table lookups needed
     #[serde(default)]
     properties: Value,
 }
@@ -221,9 +220,6 @@ impl From<SurrealNode> for Node {
         }
     }
 }
-
-// REMOVED: batch_fetch_properties() function (Issue #783)
-// Properties are now stored directly in node.properties field, no spoke table lookups needed.
 
 /// Batch fetch collection memberships for multiple nodes
 ///
@@ -571,13 +567,6 @@ where
     pub fn subscribe_to_events(&self) -> broadcast::Receiver<DomainEvent> {
         self.event_tx.subscribe()
     }
-
-    // Note: emit_event method removed - domain events are now emitted at NodeService layer
-    // for client filtering support. See issue #665.
-
-    // REMOVED: has_spoke_table() method (Issue #783)
-    // Universal Graph Architecture: All properties stored in node.properties field.
-    // No spoke tables - schema definitions are also in node.properties.
 
     /// Validates a node type against the schema-derived whitelist
     ///
@@ -964,8 +953,8 @@ where
     /// # Arguments
     /// * `node_id` - The node's ID string
     /// * `node_type` - The node's type (text, task, date, etc.)
-    /// * `hub` - The hub table row as a JSON Value
-    /// * `properties` - The node's properties (from spoke table or hub.properties)
+    /// * `hub` - The node table row as a JSON Value
+    /// * `properties` - The node's properties
     fn build_node_from_hub(
         &self,
         node_id: String,
@@ -1269,7 +1258,6 @@ where
         }
 
         // Create schema node with all schema data in properties
-        // Universal Graph Architecture: No separate spoke table
         transaction_parts.push(format!(
             r#"CREATE node:`{}` CONTENT {{
                 node_type: $node_type,
@@ -1644,7 +1632,7 @@ where
     }
 
     pub async fn delete_node(&self, id: &str, source: Option<String>) -> Result<DeleteResult> {
-        // Universal Graph Architecture (Issue #783, #788): No spoke tables, all relationships in universal table
+        // Universal Graph Architecture (Issue #783, #788): All relationships in universal table
 
         // Get node before deletion for notification
         let node = match self.get_node(id).await? {
@@ -5512,7 +5500,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_nodes_by_ids_with_task_nodes() -> Result<()> {
-        // Test that spoke tables (task) are correctly fetched in batch
+        // Test that task nodes are correctly fetched in batch
         let (store, _temp_dir) = create_test_store().await?;
 
         let task1 = Node::new(

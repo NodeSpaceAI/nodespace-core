@@ -2,7 +2,7 @@
 //!
 //! Tests cover:
 //! - QueryDefinition serialization/deserialization
-//! - Filter building for spoke and hub queries
+//! - Filter building for queries
 //! - Sorting configuration
 //! - SQL generation patterns
 //! - Query execution with real database

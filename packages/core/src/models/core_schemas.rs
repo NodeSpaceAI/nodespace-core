@@ -258,7 +258,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             is_core: true,
             schema_version: 1,
             description: "Hierarchical label for organizing nodes into groups".to_string(),
-            fields: vec![],        // No spoke fields - uses hub content for name
+            fields: vec![],        // Uses content for name
             relationships: vec![], // member_of is a native edge, not schema-defined
         },
         // Query schema - saved query definitions
@@ -278,7 +278,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     protection: SchemaProtectionLevel::Core,
                     core_values: None,
                     user_values: None,
-                    indexed: true, // Creates spoke table column
+                    indexed: true,
                     required: Some(true),
                     extensible: None,
                     default: Some(serde_json::json!("*")),

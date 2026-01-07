@@ -400,7 +400,6 @@ mod occ_tests {
     }
 
     /// Verifies property-only updates increment version
-    /// Uses task node type since it has a spoke table for properties (hub-spoke architecture)
     #[tokio::test]
     async fn test_property_update_increments_version() {
         let (node_service, _temp) = setup_test_service().await.unwrap();
@@ -417,7 +416,7 @@ mod occ_tests {
             .await
             .unwrap();
 
-        // Update properties only (status goes to task spoke table)
+        // Update properties only
         let params = json!({
             "node_id": node_id,
             "version": 1,
@@ -1217,7 +1216,6 @@ mod integration_tests {
     }
 
     /// Verifies property-only updates without content changes
-    /// Uses task node type since it has a spoke table for properties (hub-spoke architecture)
     #[tokio::test]
     async fn test_update_nodes_batch_with_properties() {
         let (node_service, _temp_dir) = setup_test_service().await.unwrap();
@@ -1234,7 +1232,7 @@ mod integration_tests {
             .await
             .unwrap();
 
-        // Update properties only (goes to task spoke table)
+        // Update properties only
         let params = json!({
             "updates": [
                 { "id": node, "properties": { "priority": "high", "status": "done" } }
@@ -1247,7 +1245,7 @@ mod integration_tests {
 
         assert_eq!(result["count"].as_u64().unwrap(), 1);
 
-        // Verify property update in spoke table
+        // Verify property update
         let updated = node_service.get_node(&node).await.unwrap().unwrap();
         assert_eq!(updated.properties["priority"], "high");
         assert_eq!(updated.properties["status"], "done");
@@ -1308,7 +1306,7 @@ mod typed_response_tests {
         assert_eq!(result["content"], "Test task");
         assert_eq!(result["status"], "open"); // Direct field, not properties.status
 
-        // TaskNode has properties field for UI compatibility (though spoke fields are also direct)
+        // TaskNode has properties field for UI compatibility
         // Properties should exist but be empty or contain minimal data
         assert!(result.get("properties").is_some());
     }
@@ -1318,7 +1316,7 @@ mod typed_response_tests {
     async fn test_get_node_returns_generic_node_for_text() {
         let (node_service, _temp_dir) = setup_test_service().await.unwrap();
 
-        // Create a text node (no spoke table, uses generic Node)
+        // Create a text node (uses generic Node)
         let node_id = node_service
             .create_node_with_parent(CreateNodeParams {
                 id: None,

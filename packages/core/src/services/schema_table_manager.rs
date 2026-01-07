@@ -5,9 +5,7 @@
 //! ## Universal Graph Architecture (Issue #783)
 //!
 //! With Universal Graph Architecture, all node properties are stored in the
-//! `node.properties` field. This eliminates the need for spoke tables.
-//!
-//! **This module now only generates DDL for relationship edge tables.**
+//! `node.properties` field. This module only generates DDL for relationship edge tables.
 //!
 //! ## Responsibilities
 //!

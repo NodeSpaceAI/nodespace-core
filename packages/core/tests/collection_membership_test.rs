@@ -491,19 +491,12 @@ mod collection_membership_tests {
                     modified_at: time::now()
                 }};
 
-                -- Task node with spoke
-                CREATE task:`{uuid}` CONTENT {{
-                    node: type::thing('node', '{uuid}'),
-                    status: 'open',
-                    priority: 'high'
-                }};
-
+                -- Task node (Universal Graph Architecture)
                 CREATE node:`{uuid}` CONTENT {{
                     node_type: 'task',
                     content: 'Task item',
-                    data: type::thing('task', '{uuid}'),
                     version: 1,
-                    properties: {{}},
+                    properties: {{ status: 'open', priority: 'high' }},
                     created_at: time::now(),
                     modified_at: time::now()
                 }};

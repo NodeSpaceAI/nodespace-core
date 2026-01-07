@@ -58,9 +58,9 @@
 //! ## Relationships
 //!
 //! Schemas can define relationships to other node types. Relationships are stored
-//! in edge tables (not spoke fields) and support:
+//! in edge tables and support:
 //!
-//! - **Edge-only storage**: No spoke table fields, edge table is single source of truth
+//! - **Edge table storage**: Edge table is single source of truth
 //! - **Bidirectional querying**: Both directions query the same edge table
 //! - **Edge fields**: Custom properties on the relationship itself
 //! - **Cardinality**: "one" or "many" constraints (enforced at application level)

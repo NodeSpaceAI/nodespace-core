@@ -74,7 +74,7 @@ pub use text_node::TextNode;
 
 /// Convert a Node to its strongly-typed JSON representation (Issue #673)
 ///
-/// For types with spoke tables (task, schema), converts to the typed struct
+/// For complex types (task, schema), converts to the typed struct
 /// which provides proper field structure. For simple types, returns the generic Node.
 ///
 /// This is the canonical implementation - all entry points (MCP, Tauri, HTTP)

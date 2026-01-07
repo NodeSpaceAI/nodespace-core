@@ -291,7 +291,7 @@ where
 
 /// Handle get_node MCP request
 ///
-/// Returns strongly-typed structs for types with spoke tables (task, schema),
+/// Returns strongly-typed structs for complex types (task, schema),
 /// and generic Node for simple types (text, header, etc.).
 ///
 /// This provides compile-time type safety for complex types while maintaining
@@ -306,7 +306,7 @@ where
     let params: GetNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Fetch the node (get_node already fetches spoke data for task/schema types)
+    // Fetch the node
     let node = node_service
         .get_node(&params.node_id)
         .await
