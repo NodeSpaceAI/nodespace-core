@@ -2664,6 +2664,16 @@ where
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found: {}", node_id))?;
 
+        // Get current parent to determine if this is same-parent reorder vs cross-parent move
+        // Issue #795: Preserve created_at and increment version for same-parent reorders
+        let current_parent = self.get_parent(&node_id).await?;
+        let current_parent_id = current_parent.map(|p| p.id);
+        let is_same_parent_reorder = match (&new_parent_id, &current_parent_id) {
+            (Some(new_pid), Some(cur_pid)) => new_pid == cur_pid,
+            (None, None) => true, // Both root - same "parent" (no parent)
+            _ => false,           // One has parent, one doesn't - different parents
+        };
+
         // Validate that moving won't create a cycle
         if let Some(ref parent_id) = new_parent_id {
             // Validate parent exists
@@ -2766,26 +2776,45 @@ where
         };
 
         // Build atomic transaction query using Thing parameters (Issue #788: universal relationship table)
+        // Issue #795: Use UPDATE for same-parent reorders to preserve created_at and increment version
         let transaction_query = if new_parent_id.is_some() {
-            // Move to new parent
-            r#"
-                BEGIN TRANSACTION;
+            if is_same_parent_reorder {
+                // Same-parent reorder: UPDATE existing relationship (preserve created_at, increment version)
+                // This is important for cloud sync and conflict resolution
+                r#"
+                    BEGIN TRANSACTION;
 
-                -- Delete old parent relationship from universal relationship table
-                DELETE relationship WHERE out = $node_id AND relationship_type = 'has_child';
+                    -- Update order and modified_at, increment version for OCC (Issue #795)
+                    UPDATE relationship
+                    SET properties.order = $order,
+                        modified_at = time::now(),
+                        version = version + 1
+                    WHERE in = $parent_id AND out = $node_id AND relationship_type = 'has_child';
 
-                -- Create new parent relationship with fractional order in universal relationship table
-                RELATE $parent_id->relationship->$node_id CONTENT {
-                    relationship_type: 'has_child',
-                    properties: { order: $order },
-                    created_at: time::now(),
-                    modified_at: time::now(),
-                    version: 1
-                };
+                    COMMIT TRANSACTION;
+                "#
+                .to_string()
+            } else {
+                // Cross-parent move: DELETE old + CREATE new relationship
+                r#"
+                    BEGIN TRANSACTION;
 
-                COMMIT TRANSACTION;
-            "#
-            .to_string()
+                    -- Delete old parent relationship from universal relationship table
+                    DELETE relationship WHERE out = $node_id AND relationship_type = 'has_child';
+
+                    -- Create new parent relationship with fractional order in universal relationship table
+                    RELATE $parent_id->relationship->$node_id CONTENT {
+                        relationship_type: 'has_child',
+                        properties: { order: $order },
+                        created_at: time::now(),
+                        modified_at: time::now(),
+                        version: 1
+                    };
+
+                    COMMIT TRANSACTION;
+                "#
+                .to_string()
+            }
         } else {
             // Make root node (delete parent relationship only)
             r#"
@@ -5568,6 +5597,236 @@ mod tests {
         for (i, id) in ids.iter().enumerate() {
             let node = result.get(id).unwrap();
             assert_eq!(node.content, format!("Content {}", i));
+        }
+
+        Ok(())
+    }
+
+    // ============================================================================
+    // Issue #795: Sync-ready relationship timestamps tests
+    // ============================================================================
+
+    /// Helper to get relationship metadata (created_at, modified_at, version) for a child node
+    async fn get_relationship_metadata(
+        store: &SurrealStore,
+        child_id: &str,
+    ) -> Result<Option<(String, String, i64)>> {
+        use surrealdb::sql::Thing;
+
+        #[derive(Debug, serde::Deserialize)]
+        struct RelMetadata {
+            created_at: String,
+            modified_at: String,
+            version: i64,
+        }
+
+        let child_thing = Thing::from(("node".to_string(), child_id.to_string()));
+
+        let mut response = store
+            .db
+            .query("SELECT created_at, modified_at, version FROM relationship WHERE out = $child_thing AND relationship_type = 'has_child' LIMIT 1;")
+            .bind(("child_thing", child_thing))
+            .await
+            .context("Failed to get relationship metadata")?;
+
+        let metadata: Vec<RelMetadata> = response
+            .take(0)
+            .context("Failed to extract relationship metadata")?;
+
+        Ok(metadata
+            .into_iter()
+            .next()
+            .map(|m| (m.created_at, m.modified_at, m.version)))
+    }
+
+    #[tokio::test]
+    async fn test_same_parent_reorder_preserves_created_at() -> Result<()> {
+        // Issue #795: Same-parent reorder should preserve created_at
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create parent and two children
+        let parent = store
+            .create_node(
+                Node::new("text".to_string(), "Parent".to_string(), json!({})),
+                None,
+            )
+            .await?;
+
+        let _child1 = store
+            .create_child_node_atomic(&parent.id, "text", "Child 1", json!({}), None)
+            .await?;
+        let child2 = store
+            .create_child_node_atomic(&parent.id, "text", "Child 2", json!({}), None)
+            .await?;
+
+        // Get original relationship metadata for child2
+        let original_metadata = get_relationship_metadata(&store, &child2.id)
+            .await?
+            .expect("Relationship should exist");
+        let original_created_at = original_metadata.0.clone();
+
+        // Wait a tiny bit to ensure time difference
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        // Reorder child2 to be before child1 (same parent, just reordering)
+        store.move_node(&child2.id, Some(&parent.id), None).await?;
+
+        // Get new relationship metadata
+        let new_metadata = get_relationship_metadata(&store, &child2.id)
+            .await?
+            .expect("Relationship should still exist");
+
+        // created_at should be PRESERVED (same value)
+        assert_eq!(
+            new_metadata.0, original_created_at,
+            "Same-parent reorder should preserve created_at"
+        );
+
+        // modified_at should be UPDATED (different value)
+        assert_ne!(
+            new_metadata.1, original_metadata.1,
+            "Same-parent reorder should update modified_at"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_same_parent_reorder_increments_version() -> Result<()> {
+        // Issue #795: Same-parent reorder should increment version for OCC
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create parent and child
+        let parent = store
+            .create_node(
+                Node::new("text".to_string(), "Parent".to_string(), json!({})),
+                None,
+            )
+            .await?;
+
+        let child = store
+            .create_child_node_atomic(&parent.id, "text", "Child", json!({}), None)
+            .await?;
+
+        // Get original version
+        let original_metadata = get_relationship_metadata(&store, &child.id)
+            .await?
+            .expect("Relationship should exist");
+        let original_version = original_metadata.2;
+
+        // Reorder (same parent)
+        store.move_node(&child.id, Some(&parent.id), None).await?;
+
+        // Get new version
+        let new_metadata = get_relationship_metadata(&store, &child.id)
+            .await?
+            .expect("Relationship should still exist");
+
+        // Version should be incremented
+        assert_eq!(
+            new_metadata.2,
+            original_version + 1,
+            "Same-parent reorder should increment version (was {}, expected {})",
+            original_version,
+            original_version + 1
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cross_parent_move_creates_new_relationship() -> Result<()> {
+        // Issue #795: Cross-parent move should create new relationship with new created_at
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create two parents and a child under parent1
+        let parent1 = store
+            .create_node(
+                Node::new("text".to_string(), "Parent 1".to_string(), json!({})),
+                None,
+            )
+            .await?;
+        let parent2 = store
+            .create_node(
+                Node::new("text".to_string(), "Parent 2".to_string(), json!({})),
+                None,
+            )
+            .await?;
+
+        let child = store
+            .create_child_node_atomic(&parent1.id, "text", "Child", json!({}), None)
+            .await?;
+
+        // Get original relationship metadata
+        let original_metadata = get_relationship_metadata(&store, &child.id)
+            .await?
+            .expect("Relationship should exist");
+        let original_created_at = original_metadata.0.clone();
+
+        // Wait to ensure time difference
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+
+        // Move child to different parent
+        store.move_node(&child.id, Some(&parent2.id), None).await?;
+
+        // Get new relationship metadata
+        let new_metadata = get_relationship_metadata(&store, &child.id)
+            .await?
+            .expect("Relationship should exist");
+
+        // created_at should be DIFFERENT (new relationship)
+        assert_ne!(
+            new_metadata.0, original_created_at,
+            "Cross-parent move should create new relationship with new created_at"
+        );
+
+        // version should be reset to 1 (new relationship)
+        assert_eq!(
+            new_metadata.2, 1,
+            "Cross-parent move should reset version to 1"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_multiple_same_parent_reorders_accumulate_version() -> Result<()> {
+        // Issue #795: Multiple reorders should accumulate version
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create parent and child
+        let parent = store
+            .create_node(
+                Node::new("text".to_string(), "Parent".to_string(), json!({})),
+                None,
+            )
+            .await?;
+
+        let child = store
+            .create_child_node_atomic(&parent.id, "text", "Child", json!({}), None)
+            .await?;
+
+        // Initial version should be 1
+        let initial_metadata = get_relationship_metadata(&store, &child.id)
+            .await?
+            .expect("Relationship should exist");
+        assert_eq!(initial_metadata.2, 1, "Initial version should be 1");
+
+        // Reorder multiple times
+        for expected_version in 2..=5 {
+            store.move_node(&child.id, Some(&parent.id), None).await?;
+
+            let metadata = get_relationship_metadata(&store, &child.id)
+                .await?
+                .expect("Relationship should exist");
+
+            assert_eq!(
+                metadata.2,
+                expected_version,
+                "Version should be {} after {} reorders",
+                expected_version,
+                expected_version - 1
+            );
         }
 
         Ok(())
