@@ -1,12 +1,109 @@
 <script lang="ts">
-  import { layoutState, navigationItems, toggleSidebar } from '$lib/stores/layout.js';
+  import { Collapsible } from 'bits-ui';
+  import {
+    layoutState,
+    navigationItems,
+    toggleSidebar,
+    setCollectionsExpanded
+  } from '$lib/stores/layout.js';
   import { tabState, setActiveTab, addTab } from '$lib/stores/navigation.js';
+  import {
+    collectionsState,
+    mockCollections,
+    selectedCollection,
+    selectedCollectionMembers
+  } from '$lib/stores/collections.js';
   import { formatDateISO } from '$lib/utils/date-formatting.js';
   import { v4 as uuidv4 } from 'uuid';
+  import CollectionSubPanel from './collection-sub-panel.svelte';
 
-  // Subscribe to stores
-  $: isCollapsed = $layoutState.sidebarCollapsed;
-  $: navItems = $navigationItems;
+  // Subscribe to stores using Svelte 5 runes
+  let isCollapsed = $derived($layoutState.sidebarCollapsed);
+  let navItems = $derived($navigationItems);
+  // Collections expanded state from layout store (persisted)
+  let collectionsExpanded = $derived($layoutState.collectionsExpanded);
+
+  // Collections state from collections store (UI-only, not persisted)
+  let selectedCollectionId = $derived($collectionsState.selectedCollectionId);
+  let subPanelOpen = $derived($collectionsState.subPanelOpen);
+  let expandedCollectionIds = $derived($collectionsState.expandedCollectionIds);
+
+  // Derived stores for sub-panel
+  let collectionForPanel = $derived($selectedCollection);
+  let collectionMembers = $derived($selectedCollectionMembers);
+
+  // Element references for click-outside detection
+  let navElement: HTMLElement | null = $state(null);
+  let subPanelElement: HTMLElement | null = $state(null);
+
+  // Close sub-panel when sidebar collapses
+  $effect(() => {
+    if (isCollapsed && subPanelOpen) {
+      collectionsState.clearSelection();
+    }
+  });
+
+  // Click-outside handler for sub-panel dismissal
+  $effect(() => {
+    if (!subPanelOpen) return;
+
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      // Close if click is outside both nav and sub-panel
+      const clickedOutsideNav = navElement && !navElement.contains(target);
+      const clickedOutsideSubPanel = subPanelElement && !subPanelElement.contains(target);
+
+      if (clickedOutsideNav && clickedOutsideSubPanel) {
+        collectionsState.clearSelection();
+      }
+    }
+
+    // Use capture phase to catch clicks before they bubble
+    document.addEventListener('click', handleClickOutside, true);
+
+    return () => {
+      document.removeEventListener('click', handleClickOutside, true);
+    };
+  });
+
+  function isCollectionExpanded(collectionId: string): boolean {
+    return expandedCollectionIds.has(collectionId);
+  }
+
+  function handleCollectionClick(collectionId: string) {
+    collectionsState.selectCollection(collectionId);
+  }
+
+  function handleCloseSubPanel() {
+    collectionsState.closeSubPanel();
+  }
+
+  function handleNodeClick(nodeId: string, nodeType: string) {
+    // Close sub-panel first
+    handleCloseSubPanel();
+
+    // Check if node is already open in a tab
+    const currentState = $tabState;
+    const existingTab = currentState.tabs.find((tab) => tab.content?.nodeId === nodeId);
+
+    if (existingTab) {
+      setActiveTab(existingTab.id, existingTab.paneId);
+    } else {
+      // Create new tab
+      const targetPaneId = getTargetPaneId();
+      addTab(
+        {
+          id: uuidv4(),
+          title: 'Loading...', // Viewer will update
+          type: 'node',
+          content: { nodeId, nodeType },
+          closeable: true,
+          paneId: targetPaneId
+        },
+        true
+      );
+    }
+  }
 
   /**
    * Get today's date in YYYY-MM-DD format
@@ -78,6 +175,12 @@
 
   // Handle navigation item clicks
   function handleNavItemClick(itemId: string) {
+    // Close sub-panel when clicking non-collection nav items
+    if (subPanelOpen) {
+      subPanelOpen = false;
+      selectedCollectionId = null;
+    }
+
     // Special handling for Daily Journal
     if (itemId === 'daily-journal') {
       handleDailyJournalClick();
@@ -94,6 +197,7 @@
 </script>
 
 <nav
+  bind:this={navElement}
   class="sidebar navigation-sidebar"
   class:sidebar-collapsed={isCollapsed}
   class:sidebar-expanded={!isCollapsed}
@@ -101,7 +205,7 @@
   <!-- Hamburger menu button -->
   <button
     class="hamburger-button"
-    on:click={toggleSidebar}
+    onclick={toggleSidebar}
     aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
     aria-expanded={!isCollapsed}
   >
@@ -120,11 +224,11 @@
 
   <!-- Navigation items -->
   <div class="nav-items">
-    {#each navItems as item}
+    <!-- Daily Journal (first item) -->
+    {#each navItems.slice(0, 1) as item}
       <button
         class="nav-item"
-        class:active={item.active}
-        on:click={() => handleNavItemClick(item.id)}
+        onclick={() => handleNavItemClick(item.id)}
         aria-label={item.label}
         disabled={item.type === 'placeholder'}
         title={isCollapsed ? item.label : undefined}
@@ -143,6 +247,171 @@
         {/if}
       </button>
     {/each}
+
+    <!-- Collections section (after Daily Journal) - accordion toggle -->
+    {#if !isCollapsed}
+      <Collapsible.Root open={collectionsExpanded} onOpenChange={(open) => setCollectionsExpanded(open)}>
+        <Collapsible.Trigger class="nav-item">
+          <svg
+            class="nav-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+          </svg>
+          <span class="nav-label">Collections</span>
+        </Collapsible.Trigger>
+
+        <Collapsible.Content>
+          <div class="collection-list">
+            {#each mockCollections as collection (collection.id)}
+              {@const hasChildren = collection.children && collection.children.length > 0}
+              {@const isExpanded = isCollectionExpanded(collection.id)}
+              <div
+                class="collection-item"
+                class:selected={selectedCollectionId === collection.id}
+              >
+                {#if hasChildren}
+                  <button
+                    class="expand-btn"
+                    onclick={() => collectionsState.toggleCollectionExpanded(collection.id)}
+                    aria-label={isExpanded ? 'Collapse' : 'Expand'}
+                  >
+                    <svg
+                      class="expand-chevron"
+                      class:rotate-90={isExpanded}
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                    >
+                      <path d="M9 18l6-6-6-6" />
+                    </svg>
+                  </button>
+                {/if}
+                <button
+                  class="collection-name-btn"
+                  onclick={() => handleCollectionClick(collection.id)}
+                >
+                  {collection.name}
+                </button>
+              </div>
+
+              <!-- Level 2 -->
+              {#if hasChildren && isExpanded && collection.children}
+                {#each collection.children as child (child.id)}
+                  {@const childHasChildren = child.children && child.children.length > 0}
+                  {@const childIsExpanded = isCollectionExpanded(child.id)}
+                  <div
+                    class="collection-item level-2"
+                    class:selected={selectedCollectionId === child.id}
+                  >
+                    {#if childHasChildren}
+                      <button
+                        class="expand-btn"
+                        onclick={() => collectionsState.toggleCollectionExpanded(child.id)}
+                        aria-label={childIsExpanded ? 'Collapse' : 'Expand'}
+                      >
+                        <svg
+                          class="expand-chevron"
+                          class:rotate-90={childIsExpanded}
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="2"
+                        >
+                          <path d="M9 18l6-6-6-6" />
+                        </svg>
+                      </button>
+                    {/if}
+                    <button
+                      class="collection-name-btn"
+                      onclick={() => handleCollectionClick(child.id)}
+                    >
+                      {child.name}
+                    </button>
+                  </div>
+
+                  <!-- Level 3 -->
+                  {#if childHasChildren && childIsExpanded && child.children}
+                    {#each child.children as grandchild (grandchild.id)}
+                      <div
+                        class="collection-item level-3"
+                        class:selected={selectedCollectionId === grandchild.id}
+                      >
+                        <button
+                          class="collection-name-btn"
+                          onclick={() => handleCollectionClick(grandchild.id)}
+                        >
+                          {grandchild.name}
+                        </button>
+                      </div>
+                    {/each}
+                  {/if}
+                {/each}
+              {/if}
+            {/each}
+          </div>
+        </Collapsible.Content>
+      </Collapsible.Root>
+    {:else}
+      <!-- Collapsed state: just show icon -->
+      <button
+        class="nav-item"
+        title="Collections"
+        onclick={() => {
+          toggleSidebar();
+          setCollectionsExpanded(true);
+        }}
+      >
+        <svg
+          class="nav-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        </svg>
+      </button>
+    {/if}
+
+    <!-- Remaining nav items (Search, Favorites) -->
+    {#each navItems.slice(1) as item}
+      <button
+        class="nav-item"
+        onclick={() => handleNavItemClick(item.id)}
+        aria-label={item.label}
+        disabled={item.type === 'placeholder'}
+        title={isCollapsed ? item.label : undefined}
+      >
+        <svg
+          class="nav-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+        >
+          <path d={item.icon}></path>
+        </svg>
+        {#if !isCollapsed}
+          <span class="nav-label">{item.label}</span>
+        {/if}
+      </button>
+    {/each}
+  </div>
+
+  <!-- Collection sub-panel -->
+  <div bind:this={subPanelElement}>
+    <CollectionSubPanel
+      open={subPanelOpen}
+      collectionName={collectionForPanel?.name ?? ''}
+      members={collectionMembers}
+      onClose={handleCloseSubPanel}
+      onNodeClick={handleNodeClick}
+    />
   </div>
 </nav>
 
@@ -253,27 +522,7 @@
     box-sizing: border-box;
   }
 
-  /* Collapsed sidebar active item - full-width background with left accent */
-  .sidebar-collapsed .nav-item.active {
-    background: hsl(var(--active-nav-background));
-    color: hsl(var(--foreground)); /* Same brightness as expanded state */
-    width: 100%; /* Full width of collapsed sidebar (52px) */
-    margin: 0; /* Remove any margin that might narrow the background */
-    padding: 0.5rem 0; /* Keep vertical padding */
-    padding-left: 1rem; /* Maintain 16px left padding to align with hamburger */
-    position: relative;
-  }
-
-  .sidebar-collapsed .nav-item.active::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0; /* Accent at the very left edge of the sidebar */
-    width: 4px;
-    background: hsl(var(--primary));
-    /* Accent overlays without pushing content */
-  }
+  /* Collapsed sidebar - no special active styling */
 
   /* Expanded sidebar nav items */
   .sidebar-expanded .nav-item {
@@ -283,12 +532,7 @@
     border-radius: 0;
   }
 
-  .sidebar-expanded .nav-item.active {
-    background: hsl(var(--active-nav-background));
-    color: hsl(var(--foreground));
-    border-left: 4px solid hsl(var(--primary));
-    padding-left: calc(1rem - 4px);
-  }
+  /* No special active styling - nav items are just for navigation */
 
   /* Navigation icon */
   .nav-icon {
@@ -302,5 +546,127 @@
     font-size: 0.875rem;
     white-space: nowrap;
     transition: opacity 0.2s ease-out;
+  }
+
+  /* Collections trigger styling - full-width hover to match nav items */
+  .sidebar-expanded :global([data-collapsible-trigger]) {
+    margin: 0 -1rem;
+    padding: 0.5rem 1rem;
+    width: calc(100% + 2rem); /* Full width including negative margins */
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: hsl(var(--muted-foreground));
+    font-weight: 500;
+    font-size: 0.875rem;
+    text-align: left;
+    height: 40px;
+    box-sizing: border-box;
+    transition:
+      background-color 0.2s,
+      color 0.2s;
+  }
+
+  .sidebar-expanded :global([data-collapsible-trigger]:hover) {
+    background: hsl(var(--border));
+    color: hsl(var(--foreground));
+  }
+
+  /* Chevron icon removed - Collections is now a simple accordion toggle */
+
+  /* Collection list (expanded content) */
+  .collection-list {
+    display: flex;
+    flex-direction: column;
+    padding: 0; /* No gap between Collections header and sub-items */
+    margin: 0 -1rem; /* Break out of sidebar padding */
+    overflow-x: auto; /* Allow horizontal scroll for long names */
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge */
+  }
+
+  .collection-list::-webkit-scrollbar {
+    display: none; /* Chrome/Safari/Opera */
+  }
+
+  /* Collection item - container for expand button and name */
+  .collection-item {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    min-width: 100%; /* Allow growing beyond container width */
+    width: max-content; /* Size to content for horizontal scrolling */
+    padding: 0 1rem 0 1.5rem; /* Base indent under Collections */
+    font-size: 0.8125rem;
+    color: hsl(var(--muted-foreground));
+    transition:
+      background-color 0.2s,
+      color 0.2s;
+  }
+
+  .collection-item:hover {
+    background: hsl(var(--border));
+    color: hsl(var(--foreground));
+  }
+
+  .collection-item.selected {
+    background: hsl(var(--active-nav-background));
+    color: hsl(var(--foreground));
+  }
+
+  /* Nested level indentation */
+  .collection-item.level-2 {
+    padding-left: 2.25rem;
+  }
+
+  .collection-item.level-3 {
+    padding-left: 3rem;
+  }
+
+  /* Expand/collapse button */
+  .expand-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 28px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: inherit;
+    padding: 0;
+    flex-shrink: 0;
+  }
+
+  .expand-btn:hover {
+    color: hsl(var(--foreground));
+  }
+
+  /* Collection name button - takes remaining space */
+  .collection-name-btn {
+    flex: 1;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: inherit;
+    text-align: left;
+    padding: 0.4rem 0;
+    font-size: inherit;
+    white-space: nowrap; /* Keep on single line, scroll horizontally if needed */
+  }
+
+  /* Expand chevron inside collection item */
+  .expand-chevron {
+    width: 12px;
+    height: 12px;
+    flex-shrink: 0;
+    transition: transform 0.15s ease-out;
+  }
+
+  .expand-chevron.rotate-90 {
+    transform: rotate(90deg);
   }
 </style>
