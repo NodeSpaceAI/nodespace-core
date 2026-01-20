@@ -130,12 +130,15 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       const nodeData = createTestNode('node1');
       registerMockNode(nodeData);
 
-      // But events arrive in reverse order (edge first, then node)
-      // First, the edge event arrives
-      const edgeEvent: SseEvent = {
-        type: 'edgeCreated',
-        parentId: 'parent1',
-        childId: 'node1'
+      // But events arrive in reverse order (relationship first, then node)
+      // First, the relationship event arrives (unified format - Issue #811)
+      const relationshipEvent: SseEvent = {
+        type: 'relationshipCreated',
+        id: 'relationship:parent1:node1',
+        fromId: 'parent1',
+        toId: 'node1',
+        relationshipType: 'has_child',
+        properties: { order: 1 }
       };
 
       // Then, the node event arrives (Issue #724: ID-only)
@@ -145,7 +148,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       };
 
       // Call handleEvent in reverse order (simulating network latency)
-      testableService.handleEvent(edgeEvent);
+      testableService.handleEvent(relationshipEvent);
 
       // At this point, edge references a node that hasn't been created yet
       // This should not crash
@@ -165,24 +168,27 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
     });
   });
 
-  describe('Edge before Node Race Condition', () => {
-    it('should handle edge created before referenced node exists', async () => {
+  describe('Relationship before Node Race Condition (Issue #811)', () => {
+    it('should handle relationship created before referenced node exists', async () => {
       // Scenario: Backend creates node N1 with parent P1, but SSE delivers
-      // edge:created event before nodeCreated event
+      // relationship:created event before nodeCreated event
 
       const nodeData = createTestNode('child1', 'Created after edge');
       registerMockNode(nodeData);
 
-      const edgeEvent: SseEvent = {
-        type: 'edgeCreated',
-        parentId: 'parent1',
-        childId: 'child1'
+      const relationshipEvent: SseEvent = {
+        type: 'relationshipCreated',
+        id: 'relationship:parent1:child1',
+        fromId: 'parent1',
+        toId: 'child1',
+        relationshipType: 'has_child',
+        properties: { order: 1 }
       };
 
-      // Add edge first (node doesn't exist yet)
-      testableService.handleEvent(edgeEvent);
+      // Add relationship first (node doesn't exist yet)
+      testableService.handleEvent(relationshipEvent);
 
-      // Verify edge was added even though node doesn't exist
+      // Verify relationship was added even though node doesn't exist
       expect(structureTree.hasChildren('parent1')).toBe(true);
       expect(structureTree.getChildren('parent1')).toContain('child1');
 
@@ -206,8 +212,8 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(structureTree.getChildren('parent1')).toContain('child1');
     });
 
-    it('should handle duplicate edge to same parent (second edge rejected due to tree invariant)', async () => {
-      // Scenario: Two edges to the same parent (duplicate) before node:created
+    it('should handle duplicate relationship to same parent (second edge rejected due to tree invariant)', async () => {
+      // Scenario: Two relationships to the same parent (duplicate) before node:created
       // Note: ReactiveStructureTree enforces a tree structure (not DAG),
       // so a node can only have one parent. Attempting to add a second parent
       // is logged as a tree invariant violation and rejected.
@@ -215,24 +221,30 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       const nodeData = createTestNode('child');
       registerMockNode(nodeData);
 
-      const edge1: SseEvent = {
-        type: 'edgeCreated',
-        parentId: 'parent1',
-        childId: 'child'
+      const relationship1: SseEvent = {
+        type: 'relationshipCreated',
+        id: 'relationship:parent1:child',
+        fromId: 'parent1',
+        toId: 'child',
+        relationshipType: 'has_child',
+        properties: { order: 1 }
       };
 
-      const edge2: SseEvent = {
-        type: 'edgeCreated',
-        parentId: 'parent2',
-        childId: 'child'
+      const relationship2: SseEvent = {
+        type: 'relationshipCreated',
+        id: 'relationship:parent2:child',
+        fromId: 'parent2',
+        toId: 'child',
+        relationshipType: 'has_child',
+        properties: { order: 1 }
       };
 
-      // First edge arrives
-      testableService.handleEvent(edge1);
+      // First relationship arrives
+      testableService.handleEvent(relationship1);
 
-      // Second edge to different parent arrives (violates tree structure)
+      // Second relationship to different parent arrives (violates tree structure)
       // This is logged as an error but doesn't crash
-      testableService.handleEvent(edge2);
+      testableService.handleEvent(relationship2);
 
       // First parent relationship exists
       expect(structureTree.getChildren('parent1')).toContain('child');
@@ -256,12 +268,12 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
     });
   });
 
-  describe('Node before Edge Deletion Race Condition', () => {
-    it('should handle node deleted before edge deleted', () => {
-      // Scenario: Node is deleted, then its edges should be deleted, but
-      // edge:deleted event might arrive before or after node:deleted
+  describe('Node before Relationship Deletion Race Condition (Issue #811)', () => {
+    it('should handle node deleted before relationship deleted', () => {
+      // Scenario: Node is deleted, then its relationships should be deleted, but
+      // relationship:deleted event might arrive before or after node:deleted
 
-      // First, set up node and edge
+      // First, set up node and relationship
       const nodeData = createTestNode('child1', 'Node to delete');
 
       sharedNodeStore.setNode(nodeData, { type: 'database', reason: 'sse-sync' });
@@ -279,14 +291,16 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
 
       // Node should be gone
       expect(sharedNodeStore.getNode('child1')).toBeUndefined();
-      // But edge might still reference it (until edge:deleted arrives)
+      // But relationship might still reference it (until relationship:deleted arrives)
       expect(structureTree.getChildren('parent1')).toContain('child1');
 
-      // Now the edge is deleted (arriving late)
+      // Now the relationship is deleted (arriving late)
       testableService.handleEvent({
-        type: 'edgeDeleted',
-        parentId: 'parent1',
-        childId: 'child1'
+        type: 'relationshipDeleted',
+        id: 'relationship:parent1:child1',
+        fromId: 'parent1',
+        toId: 'child1',
+        relationshipType: 'has_child'
       });
 
       // Now everything is cleaned up
@@ -294,8 +308,8 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       expect(structureTree.getChildren('parent1')).not.toContain('child1');
     });
 
-    it('should handle edge deleted before node deleted', () => {
-      // Opposite scenario: edge is deleted before node is deleted
+    it('should handle relationship deleted before node deleted', () => {
+      // Opposite scenario: relationship is deleted before node is deleted
 
       const nodeData = createTestNode('child1', 'Node to delete');
 
@@ -303,14 +317,16 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       sharedNodeStore.setNode(nodeData, { type: 'database', reason: 'sse-sync' });
       structureTree.addChild({ parentId: 'parent1', childId: 'child1', order: 1 });
 
-      // Edge is deleted first
+      // Relationship is deleted first
       testableService.handleEvent({
-        type: 'edgeDeleted',
-        parentId: 'parent1',
-        childId: 'child1'
+        type: 'relationshipDeleted',
+        id: 'relationship:parent1:child1',
+        fromId: 'parent1',
+        toId: 'child1',
+        relationshipType: 'has_child'
       });
 
-      // Edge should be gone
+      // Relationship should be gone
       expect(structureTree.getChildren('parent1')).not.toContain('child1');
       // But node still exists (until node:deleted arrives)
       expect(sharedNodeStore.getNode('child1')).toBeDefined();
@@ -327,8 +343,8 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
     });
   });
 
-  describe('Bulk Operations with Interleaved Events', () => {
-    it('should handle bulk create of multiple nodes with edges arriving interleaved', async () => {
+  describe('Bulk Operations with Interleaved Events (Issue #811)', () => {
+    it('should handle bulk create of multiple nodes with relationships arriving interleaved', async () => {
       // Scenario: Creating a tree:
       //   P
       //  / \
@@ -337,25 +353,25 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       //    N3
       //
       // But events arrive interleaved:
-      // - edge P->N1, edge P->N2, edge N2->N3, node N1, node N2, node N3
+      // - relationship P->N1, relationship P->N2, relationship N2->N3, node N1, node N2, node N3
 
       // Register mock nodes
       registerMockNode(createTestNode('N1', 'Node 1'));
       registerMockNode(createTestNode('N2', 'Node 2'));
       registerMockNode(createTestNode('N3', 'Node 3'));
 
-      // Edges arrive first
-      const edges: SseEvent[] = [
-        { type: 'edgeCreated', parentId: 'P', childId: 'N1' },
-        { type: 'edgeCreated', parentId: 'P', childId: 'N2' },
-        { type: 'edgeCreated', parentId: 'N2', childId: 'N3' }
+      // Relationships arrive first (unified format - Issue #811)
+      const relationships: SseEvent[] = [
+        { type: 'relationshipCreated', id: 'rel:P:N1', fromId: 'P', toId: 'N1', relationshipType: 'has_child', properties: { order: 1 } },
+        { type: 'relationshipCreated', id: 'rel:P:N2', fromId: 'P', toId: 'N2', relationshipType: 'has_child', properties: { order: 2 } },
+        { type: 'relationshipCreated', id: 'rel:N2:N3', fromId: 'N2', toId: 'N3', relationshipType: 'has_child', properties: { order: 1 } }
       ];
 
-      for (const edge of edges) {
-        testableService.handleEvent(edge);
+      for (const rel of relationships) {
+        testableService.handleEvent(rel);
       }
 
-      // All edges should be in place
+      // All relationships should be in place
       expect(structureTree.getChildren('P').sort()).toEqual(['N1', 'N2']);
       expect(structureTree.getChildren('N2')).toEqual(['N3']);
 
@@ -390,19 +406,22 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Set up node
       sharedNodeStore.setNode(nodeData, { type: 'database', reason: 'sse-sync' });
 
-      // Create edge first time
-      const edgeEvent: SseEvent = {
-        type: 'edgeCreated',
-        parentId: 'parent1',
-        childId: 'child1'
+      // Create relationship first time (unified format - Issue #811)
+      const relationshipEvent: SseEvent = {
+        type: 'relationshipCreated',
+        id: 'relationship:parent1:child1',
+        fromId: 'parent1',
+        toId: 'child1',
+        relationshipType: 'has_child',
+        properties: { order: 1 }
       };
 
-      testableService.handleEvent(edgeEvent);
+      testableService.handleEvent(relationshipEvent);
 
       expect(structureTree.getChildren('parent1')).toEqual(['child1']);
 
-      // Duplicate edge event arrives (idempotent operation)
-      testableService.handleEvent(edgeEvent);
+      // Duplicate relationship event arrives (idempotent operation)
+      testableService.handleEvent(relationshipEvent);
 
       // Should still have one edge, not duplicated
       expect(structureTree.getChildren('parent1')).toEqual(['child1']);
@@ -455,17 +474,17 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       registerMockNode(createTestNode('N1', 'Node 1'));
       registerMockNode(createTestNode('N3', 'Node 3'));
 
-      // Interleaved events (Issue #724: ID-only for node events)
+      // Interleaved events (Issue #724: ID-only for node events, Issue #811: unified relationships)
       const events: SseEvent[] = [
         // Tree 1 setup
         { type: 'nodeCreated', nodeId: 'P1' },
         // Tree 2 setup
         { type: 'nodeCreated', nodeId: 'P2' },
-        // Tree 1 edges and nodes
-        { type: 'edgeCreated', parentId: 'P1', childId: 'N1' },
+        // Tree 1 relationships and nodes
+        { type: 'relationshipCreated', id: 'rel:P1:N1', fromId: 'P1', toId: 'N1', relationshipType: 'has_child', properties: { order: 1 } },
         { type: 'nodeCreated', nodeId: 'N1' },
-        // Tree 2 edges and nodes
-        { type: 'edgeCreated', parentId: 'P2', childId: 'N3' },
+        // Tree 2 relationships and nodes
+        { type: 'relationshipCreated', id: 'rel:P2:N3', fromId: 'P2', toId: 'N3', relationshipType: 'has_child', properties: { order: 1 } },
         { type: 'nodeCreated', nodeId: 'N3' }
       ];
 
@@ -592,17 +611,19 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
   });
 
   describe('Edge Cases and Error Handling', () => {
-    it('should handle edge events for non-existent nodes gracefully', () => {
-      // This can happen if the node:deleted event arrived before edge:deleted
+    it('should handle relationship events for non-existent nodes gracefully', () => {
+      // This can happen if the node:deleted event arrived before relationship:deleted
 
-      const edgeEvent: SseEvent = {
-        type: 'edgeDeleted',
-        parentId: 'non-existent-parent',
-        childId: 'non-existent-child'
+      const relationshipEvent: SseEvent = {
+        type: 'relationshipDeleted',
+        id: 'relationship:non-existent-parent:non-existent-child',
+        fromId: 'non-existent-parent',
+        toId: 'non-existent-child',
+        relationshipType: 'has_child'
       };
 
       // Should not crash
-      testableService.handleEvent(edgeEvent);
+      testableService.handleEvent(relationshipEvent);
 
       // No errors, state unchanged
       expect(structureTree.getChildren('non-existent-parent')).toEqual([]);
@@ -765,17 +786,17 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
     });
   });
 
-  describe('Edge Deduplication', () => {
-    it('should skip edgeCreated when edge already exists (optimistic creation)', () => {
-      // When frontend creates a node optimistically, it adds the edge
+  describe('Relationship Deduplication', () => {
+    it('should skip relationshipCreated when relationship already exists (optimistic creation)', () => {
+      // When frontend creates a node optimistically, it adds the relationship
       // The SSE event should detect this and skip re-adding
       const nodeData = createTestNode('child1', 'Optimistic node');
       sharedNodeStore.setNode(nodeData, { type: 'database', reason: 'sse-sync' });
 
-      // Add edge optimistically (simulating frontend createNode)
+      // Add relationship optimistically (simulating frontend createNode)
       structureTree.addChild({ parentId: 'parent1', childId: 'child1', order: 100 });
 
-      // Verify edge exists with correct order
+      // Verify relationship exists with correct order
       const children = structureTree.getChildrenWithOrder('parent1');
       expect(children).toHaveLength(1);
       expect(children[0].nodeId).toBe('child1');
@@ -783,12 +804,15 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
 
       // Now SSE event arrives (would use Date.now() as order)
       testableService.handleEvent({
-        type: 'edgeCreated',
-        parentId: 'parent1',
-        childId: 'child1'
+        type: 'relationshipCreated',
+        id: 'relationship:parent1:child1',
+        fromId: 'parent1',
+        toId: 'child1',
+        relationshipType: 'has_child',
+        properties: { order: Date.now() }
       });
 
-      // Edge should still exist with ORIGINAL order (not overwritten)
+      // Relationship should still exist with ORIGINAL order (not overwritten)
       const childrenAfter = structureTree.getChildrenWithOrder('parent1');
       expect(childrenAfter).toHaveLength(1);
       expect(childrenAfter[0].nodeId).toBe('child1');
@@ -1168,35 +1192,40 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
   });
 
   describe('Edge Cases with structureTree null', () => {
-    it('should handle edgeCreated when structureTree is null', () => {
+    it('should handle relationshipCreated when structureTree is null', () => {
       // Save original structureTree reference
       const _originalTree = structureTree;
 
       // Mock structureTree as null (edge case)
       // This tests defensive programming in the service
-      const edgeEvent: SseEvent = {
-        type: 'edgeCreated',
-        parentId: 'parent1',
-        childId: 'child1'
+      const relationshipEvent: SseEvent = {
+        type: 'relationshipCreated',
+        id: 'relationship:parent1:child1',
+        fromId: 'parent1',
+        toId: 'child1',
+        relationshipType: 'has_child',
+        properties: { order: 100 }
       };
 
       // Should not crash even if structureTree is null
       // (The code checks `if (structureTree)` before using it)
       expect(() => {
-        testableService.handleEvent(edgeEvent);
+        testableService.handleEvent(relationshipEvent);
       }).not.toThrow();
     });
 
-    it('should handle edgeDeleted when structureTree is null', () => {
-      const edgeEvent: SseEvent = {
-        type: 'edgeDeleted',
-        parentId: 'parent1',
-        childId: 'child1'
+    it('should handle relationshipDeleted when structureTree is null', () => {
+      const relationshipEvent: SseEvent = {
+        type: 'relationshipDeleted',
+        id: 'relationship:parent1:child1',
+        fromId: 'parent1',
+        toId: 'child1',
+        relationshipType: 'has_child'
       };
 
       // Should not crash even if structureTree is null
       expect(() => {
-        testableService.handleEvent(edgeEvent);
+        testableService.handleEvent(relationshipEvent);
       }).not.toThrow();
     });
   });

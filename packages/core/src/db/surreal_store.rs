@@ -45,7 +45,7 @@
 //! }
 //! ```
 
-use crate::db::events::DomainEvent;
+use crate::db::events::{DomainEvent, RelationshipEvent};
 use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
 use anyhow::{Context, Result};
@@ -524,6 +524,16 @@ where
         if let Some(notifier) = &self.notifier {
             notifier(change);
         }
+    }
+
+    /// Emit a unified relationship event (Issue #811)
+    ///
+    /// Called internally by relationship mutation methods to broadcast
+    /// `RelationshipCreated`, `RelationshipUpdated`, or `RelationshipDeleted` events.
+    /// This ensures all relationship types emit events from a single location.
+    fn emit_relationship_event(&self, event: DomainEvent) {
+        // Ignore send errors (no subscribers)
+        let _ = self.event_tx.send(event);
     }
 
     /// Get the underlying database connection
@@ -2845,13 +2855,24 @@ where
         Ok(())
     }
 
+    /// Create a mention relationship between two nodes
+    ///
+    /// Issue #788: Universal Relationship Architecture - mentions stored in relationship table.
+    /// Issue #811: Emits unified RelationshipCreated event.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_id` - The ID of the node that contains the mention
+    /// * `target_id` - The ID of the node being mentioned
+    /// * `root_id` - The root node ID for context
+    /// * `source_client_id` - Optional client ID for event source tracking
     pub async fn create_mention(
         &self,
         source_id: &str,
         target_id: &str,
         root_id: &str,
+        source_client_id: Option<String>,
     ) -> Result<()> {
-        // Issue #788: Universal Relationship Architecture - mentions stored in relationship table
         let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
         let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
 
@@ -2879,28 +2900,79 @@ where
                     created_at: time::now(),
                     modified_at: time::now(),
                     version: 1
-                }};"#,
+                }} RETURN id;"#,
                 root_id.replace('\'', "''")
             );
 
-            self.db
+            let mut response = self
+                .db
                 .query(&query)
                 .bind(("source", source_thing))
                 .bind(("target", target_thing))
                 .await
                 .context("Failed to create mention")?;
 
-            // Note: Domain events are now emitted at NodeService layer for client filtering
+            // Extract relationship ID for event (Issue #811)
+            #[derive(Debug, Deserialize)]
+            struct RelateResult {
+                id: Thing,
+            }
+            let results: Vec<RelateResult> = response
+                .take(0)
+                .context("Failed to extract relationship ID")?;
+
+            if let Some(result) = results.first() {
+                // Emit unified RelationshipCreated event (Issue #811)
+                self.emit_relationship_event(DomainEvent::RelationshipCreated {
+                    relationship: RelationshipEvent {
+                        id: result.id.to_string(),
+                        from_id: source_id.to_string(),
+                        to_id: target_id.to_string(),
+                        relationship_type: "mentions".to_string(),
+                        properties: serde_json::json!({"root_id": root_id}),
+                    },
+                    source_client_id,
+                });
+            }
         }
 
         Ok(())
     }
 
-    pub async fn delete_mention(&self, source_id: &str, target_id: &str) -> Result<()> {
-        // Issue #788: Universal Relationship Architecture - delete from relationship table
+    /// Delete a mention relationship between two nodes
+    ///
+    /// Issue #788: Universal Relationship Architecture - delete from relationship table.
+    /// Issue #811: Emits unified RelationshipDeleted event.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_id` - The ID of the node that contains the mention
+    /// * `target_id` - The ID of the node being mentioned
+    /// * `source_client_id` - Optional client ID for event source tracking
+    pub async fn delete_mention(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        source_client_id: Option<String>,
+    ) -> Result<()> {
         let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
         let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
 
+        // First get the relationship ID before deleting (Issue #811)
+        let check_query = "SELECT VALUE id FROM relationship WHERE in = $source AND out = $target AND relationship_type = 'mentions';";
+        let mut check_response = self
+            .db
+            .query(check_query)
+            .bind(("source", source_thing.clone()))
+            .bind(("target", target_thing.clone()))
+            .await
+            .context("Failed to get mention ID")?;
+
+        let existing_ids: Vec<Thing> = check_response
+            .take(0)
+            .context("Failed to extract mention IDs")?;
+
+        // Delete the relationship
         self.db
             .query("DELETE FROM relationship WHERE in = $source AND out = $target AND relationship_type = 'mentions';")
             .bind(("source", source_thing))
@@ -2908,7 +2980,16 @@ where
             .await
             .context("Failed to delete mention")?;
 
-        // Note: Domain events are now emitted at NodeService layer for client filtering
+        // Emit unified RelationshipDeleted event (Issue #811)
+        if let Some(rel_id) = existing_ids.first() {
+            self.emit_relationship_event(DomainEvent::RelationshipDeleted {
+                id: rel_id.to_string(),
+                from_id: source_id.to_string(),
+                to_id: target_id.to_string(),
+                relationship_type: "mentions".to_string(),
+                source_client_id,
+            });
+        }
 
         Ok(())
     }
@@ -4130,6 +4211,7 @@ where
     /// Direction: member -> collection (node X belongs to collection Y)
     ///
     /// Issue #788: Universal Relationship Architecture - stored in relationship table with relationship_type='member_of'
+    /// Issue #811: Emits unified RelationshipCreated event.
     ///
     /// This is idempotent - if the membership already exists, nothing happens.
     ///
@@ -4137,12 +4219,18 @@ where
     ///
     /// * `member_id` - The ID of the node to add to the collection
     /// * `collection_id` - The ID of the collection node
+    /// * `source_client_id` - Optional client ID for event source tracking
     ///
     /// # Returns
     ///
     /// * `Ok(())` - Membership created or already exists
     /// * `Err` - Database error
-    pub async fn add_to_collection(&self, member_id: &str, collection_id: &str) -> Result<()> {
+    pub async fn add_to_collection(
+        &self,
+        member_id: &str,
+        collection_id: &str,
+        source_client_id: Option<String>,
+    ) -> Result<()> {
         let member_thing = Thing::from(("node".to_string(), member_id.to_string()));
         let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
 
@@ -4173,14 +4261,38 @@ where
                 created_at: time::now(),
                 modified_at: time::now(),
                 version: 1
-            };"#;
+            } RETURN id;"#;
 
-            self.db
+            let mut response = self
+                .db
                 .query(query)
                 .bind(("member", member_thing))
                 .bind(("collection", collection_thing))
                 .await
                 .context("Failed to create membership")?;
+
+            // Extract relationship ID for event (Issue #811)
+            #[derive(Debug, Deserialize)]
+            struct RelateResult {
+                id: Thing,
+            }
+            let results: Vec<RelateResult> = response
+                .take(0)
+                .context("Failed to extract relationship ID")?;
+
+            if let Some(result) = results.first() {
+                // Emit unified RelationshipCreated event (Issue #811)
+                self.emit_relationship_event(DomainEvent::RelationshipCreated {
+                    relationship: RelationshipEvent {
+                        id: result.id.to_string(),
+                        from_id: member_id.to_string(),
+                        to_id: collection_id.to_string(),
+                        relationship_type: "member_of".to_string(),
+                        properties: serde_json::json!({}),
+                    },
+                    source_client_id,
+                });
+            }
         }
 
         Ok(())
@@ -4190,21 +4302,54 @@ where
     ///
     /// Deletes the member_of relationship from the member node to the collection node.
     /// Issue #788: Universal Relationship Architecture - deletes from relationship table.
+    /// Issue #811: Emits unified RelationshipDeleted event.
     ///
     /// # Arguments
     ///
     /// * `member_id` - The ID of the node to remove from the collection
     /// * `collection_id` - The ID of the collection node
-    pub async fn remove_from_collection(&self, member_id: &str, collection_id: &str) -> Result<()> {
+    /// * `source_client_id` - Optional client ID for event source tracking
+    pub async fn remove_from_collection(
+        &self,
+        member_id: &str,
+        collection_id: &str,
+        source_client_id: Option<String>,
+    ) -> Result<()> {
         let member_thing = Thing::from(("node".to_string(), member_id.to_string()));
         let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
 
+        // First get the relationship ID before deleting (Issue #811)
+        let check_query = "SELECT VALUE id FROM relationship WHERE in = $member AND out = $collection AND relationship_type = 'member_of';";
+        let mut check_response = self
+            .db
+            .query(check_query)
+            .bind(("member", member_thing.clone()))
+            .bind(("collection", collection_thing.clone()))
+            .await
+            .context("Failed to get membership ID")?;
+
+        let existing_ids: Vec<Thing> = check_response
+            .take(0)
+            .context("Failed to extract membership IDs")?;
+
+        // Delete the relationship
         self.db
             .query("DELETE FROM relationship WHERE in = $member AND out = $collection AND relationship_type = 'member_of';")
             .bind(("member", member_thing))
             .bind(("collection", collection_thing))
             .await
             .context("Failed to delete membership")?;
+
+        // Emit unified RelationshipDeleted event (Issue #811)
+        if let Some(rel_id) = existing_ids.first() {
+            self.emit_relationship_event(DomainEvent::RelationshipDeleted {
+                id: rel_id.to_string(),
+                from_id: member_id.to_string(),
+                to_id: collection_id.to_string(),
+                relationship_type: "member_of".to_string(),
+                source_client_id,
+            });
+        }
 
         Ok(())
     }

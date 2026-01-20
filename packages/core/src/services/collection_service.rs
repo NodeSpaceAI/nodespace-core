@@ -263,12 +263,10 @@ pub fn build_path_string(segments: &[&str]) -> String {
 // CollectionService - High-level operations that integrate with the store
 // ============================================================================
 
-use crate::db::events::{CollectionMembership, DomainEvent};
 use crate::db::{DatabaseError, SurrealStore};
 use crate::models::Node;
 use serde_json::json;
 use std::sync::Arc;
-use tokio::sync::broadcast;
 
 /// Helper to convert anyhow errors to NodeServiceError with database context
 fn db_error(e: anyhow::Error, context: &str) -> NodeServiceError {
@@ -307,21 +305,16 @@ impl ResolvedPath {
 /// This service provides path resolution, membership management, and collection
 /// queries. It uses `SurrealStore` for database operations.
 ///
-/// # Event Emission
+/// # Event Emission (Issue #811)
 ///
-/// CollectionService emits domain events when collection membership changes:
-/// - `CollectionMemberAdded` - when a node is added to a collection
-/// - `CollectionMemberRemoved` - when a node is removed from a collection
-///
-/// Events include `source_client_id` for filtering (prevents feedback loops).
+/// Domain events are now emitted at the store level via unified RelationshipCreated/
+/// RelationshipDeleted events. The client_id is passed to store methods for source tracking.
 pub struct CollectionService<'a, C = surrealdb::engine::local::Db>
 where
     C: surrealdb::Connection,
 {
     store: &'a Arc<SurrealStore<C>>,
-    /// Optional event sender for broadcasting domain events
-    event_tx: Option<broadcast::Sender<DomainEvent>>,
-    /// Optional client identifier for event source tracking
+    /// Optional client identifier for event source tracking (passed to store methods)
     client_id: Option<String>,
 }
 
@@ -329,44 +322,26 @@ impl<'a, C> CollectionService<'a, C>
 where
     C: surrealdb::Connection,
 {
-    /// Create a new CollectionService without event emission
-    ///
-    /// Use `with_events()` if you need to emit domain events for membership changes.
-    pub fn new(store: &'a Arc<SurrealStore<C>>) -> Self {
-        Self {
-            store,
-            event_tx: None,
-            client_id: None,
-        }
-    }
-
-    /// Create a CollectionService with event emission support
+    /// Create a new CollectionService
     ///
     /// # Arguments
     ///
     /// * `store` - The database store
-    /// * `event_tx` - Broadcast sender for domain events
-    /// * `client_id` - Optional client ID for event source tracking
-    pub fn with_events(
-        store: &'a Arc<SurrealStore<C>>,
-        event_tx: broadcast::Sender<DomainEvent>,
-        client_id: Option<String>,
-    ) -> Self {
+    pub fn new(store: &'a Arc<SurrealStore<C>>) -> Self {
         Self {
             store,
-            event_tx: Some(event_tx),
-            client_id,
+            client_id: None,
         }
     }
 
-    /// Emit a domain event to all subscribers
+    /// Create a CollectionService with client ID for event source tracking
     ///
-    /// Internal helper for emitting events after successful operations.
-    /// No-op if event_tx is not configured.
-    fn emit_event(&self, event: DomainEvent) {
-        if let Some(tx) = &self.event_tx {
-            let _ = tx.send(event);
-        }
+    /// # Arguments
+    ///
+    /// * `store` - The database store
+    /// * `client_id` - Client ID for event source tracking (passed to store methods)
+    pub fn with_client(store: &'a Arc<SurrealStore<C>>, client_id: Option<String>) -> Self {
+        Self { store, client_id }
     }
 
     /// Resolve a collection path, creating collections as needed
@@ -440,9 +415,10 @@ where
             // Create hierarchy relationship: current collection is member_of parent collection
             // Direction: child -> member_of -> parent (same as nodes belonging to collections)
             // This is idempotent - if the relationship already exists, nothing happens
+            // Issue #811: Store now emits unified RelationshipCreated event
             if let Some(parent_id) = &previous_collection_id {
                 self.store
-                    .add_to_collection(&node.id, parent_id)
+                    .add_to_collection(&node.id, parent_id, self.client_id.clone())
                     .await
                     .map_err(|e| db_error(e, "Failed to create collection hierarchy"))?;
             }
@@ -516,19 +492,11 @@ where
     ) -> Result<ResolvedPath, NodeServiceError> {
         let resolved = self.resolve_path(collection_path).await?;
 
+        // Issue #811: Store now emits unified RelationshipCreated event
         self.store
-            .add_to_collection(node_id, &resolved.leaf.id)
+            .add_to_collection(node_id, &resolved.leaf.id, self.client_id.clone())
             .await
             .map_err(|e| db_error(e, "Failed to add node to collection"))?;
-
-        // Emit CollectionMemberAdded event
-        self.emit_event(DomainEvent::CollectionMemberAdded {
-            membership: CollectionMembership {
-                member_id: node_id.to_string(),
-                collection_id: resolved.leaf.id.clone(),
-            },
-            source_client_id: self.client_id.clone(),
-        });
 
         Ok(resolved)
     }
@@ -570,19 +538,11 @@ where
             )));
         }
 
+        // Issue #811: Store now emits unified RelationshipCreated event
         self.store
-            .add_to_collection(node_id, collection_id)
+            .add_to_collection(node_id, collection_id, self.client_id.clone())
             .await
             .map_err(|e| db_error(e, "Failed to add node to collection"))?;
-
-        // Emit CollectionMemberAdded event
-        self.emit_event(DomainEvent::CollectionMemberAdded {
-            membership: CollectionMembership {
-                member_id: node_id.to_string(),
-                collection_id: collection_id.to_string(),
-            },
-            source_client_id: self.client_id.clone(),
-        });
 
         Ok(())
     }
@@ -598,19 +558,11 @@ where
         node_id: &str,
         collection_id: &str,
     ) -> Result<(), NodeServiceError> {
+        // Issue #811: Store now emits unified RelationshipDeleted event
         self.store
-            .remove_from_collection(node_id, collection_id)
+            .remove_from_collection(node_id, collection_id, self.client_id.clone())
             .await
             .map_err(|e| db_error(e, "Failed to remove node from collection"))?;
-
-        // Emit CollectionMemberRemoved event
-        self.emit_event(DomainEvent::CollectionMemberRemoved {
-            membership: CollectionMembership {
-                member_id: node_id.to_string(),
-                collection_id: collection_id.to_string(),
-            },
-            source_client_id: self.client_id.clone(),
-        });
 
         Ok(())
     }

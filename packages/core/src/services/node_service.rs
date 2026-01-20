@@ -1508,21 +1508,16 @@ where
             &root_id
         };
 
+        // Issue #811: Store now emits unified RelationshipCreated event
         self.store
-            .create_mention(mentioning_node_id, mentioned_node_id, final_root_id)
+            .create_mention(
+                mentioning_node_id,
+                mentioned_node_id,
+                final_root_id,
+                self.client_id.clone(),
+            )
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-
-        // Emit EdgeCreated event (Phase 2 of Issue #665)
-        self.emit_event(DomainEvent::EdgeCreated {
-            relationship: crate::db::events::EdgeRelationship::Mention(
-                crate::db::events::MentionRelationship {
-                    source_id: mentioning_node_id.to_string(),
-                    target_id: mentioned_node_id.to_string(),
-                },
-            ),
-            source_client_id: self.client_id.clone(),
-        });
 
         Ok(())
     }
@@ -1560,18 +1555,15 @@ where
         mentioning_node_id: &str,
         mentioned_node_id: &str,
     ) -> Result<(), NodeServiceError> {
+        // Issue #811: Store now emits unified RelationshipDeleted event
         self.store
-            .delete_mention(mentioning_node_id, mentioned_node_id)
+            .delete_mention(
+                mentioning_node_id,
+                mentioned_node_id,
+                self.client_id.clone(),
+            )
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-
-        // Emit EdgeDeleted event (Phase 2 of Issue #665)
-        // Use composite ID for mention relationship: "source->target"
-        let relationship_id = format!("{}->{}", mentioning_node_id, mentioned_node_id);
-        self.emit_event(DomainEvent::EdgeDeleted {
-            id: relationship_id,
-            source_client_id: self.client_id.clone(),
-        });
 
         Ok(())
     }
@@ -3010,18 +3002,18 @@ where
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-        // Emit EdgeUpdated event (Phase 2 of Issue #665)
+        // Emit RelationshipUpdated event (Issue #811: unified relationship events)
         if let Some(parent_id) = new_parent {
             let children = self.get_children(parent_id).await?;
             if let Some(child_pos) = children.iter().position(|c| c.id == node_id) {
-                self.emit_event(DomainEvent::EdgeUpdated {
-                    relationship: crate::db::events::EdgeRelationship::Hierarchy(
-                        crate::db::events::HierarchyRelationship {
-                            parent_id: parent_id.to_string(),
-                            child_id: node_id.to_string(),
-                            order: child_pos as f64,
-                        },
-                    ),
+                self.emit_event(DomainEvent::RelationshipUpdated {
+                    relationship: crate::db::events::RelationshipEvent {
+                        id: format!("relationship:{}:{}", parent_id, node_id),
+                        from_id: parent_id.to_string(),
+                        to_id: node_id.to_string(),
+                        relationship_type: "has_child".to_string(),
+                        properties: serde_json::json!({"order": child_pos as f64}),
+                    },
                     source_client_id: self.client_id.clone(),
                 });
             }
@@ -3120,18 +3112,18 @@ where
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-        // Emit EdgeUpdated event (Phase 2 of Issue #665)
+        // Emit RelationshipUpdated event (Issue #811: unified relationship events)
         if let Some(parent_id) = new_parent {
             let children = self.get_children(parent_id).await?;
             if let Some(child_pos) = children.iter().position(|c| c.id == node_id) {
-                self.emit_event(DomainEvent::EdgeUpdated {
-                    relationship: crate::db::events::EdgeRelationship::Hierarchy(
-                        crate::db::events::HierarchyRelationship {
-                            parent_id: parent_id.to_string(),
-                            child_id: node_id.to_string(),
-                            order: child_pos as f64,
-                        },
-                    ),
+                self.emit_event(DomainEvent::RelationshipUpdated {
+                    relationship: crate::db::events::RelationshipEvent {
+                        id: format!("relationship:{}:{}", parent_id, node_id),
+                        from_id: parent_id.to_string(),
+                        to_id: node_id.to_string(),
+                        relationship_type: "has_child".to_string(),
+                        properties: serde_json::json!({"order": child_pos as f64}),
+                    },
                     source_client_id: self.client_id.clone(),
                 });
             }
@@ -3248,17 +3240,17 @@ where
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-        // Emit EdgeCreated event (Phase 2 of Issue #665)
+        // Emit RelationshipCreated event (Issue #811: unified relationship events)
         let children = self.get_children(parent_id).await?;
         if let Some(child_pos) = children.iter().position(|c| c.id == child_id) {
-            self.emit_event(DomainEvent::EdgeCreated {
-                relationship: crate::db::events::EdgeRelationship::Hierarchy(
-                    crate::db::events::HierarchyRelationship {
-                        parent_id: parent_id.to_string(),
-                        child_id: child_id.to_string(),
-                        order: child_pos as f64,
-                    },
-                ),
+            self.emit_event(DomainEvent::RelationshipCreated {
+                relationship: crate::db::events::RelationshipEvent {
+                    id: format!("relationship:{}:{}", parent_id, child_id),
+                    from_id: parent_id.to_string(),
+                    to_id: child_id.to_string(),
+                    relationship_type: "has_child".to_string(),
+                    properties: serde_json::json!({"order": child_pos as f64}),
+                },
                 source_client_id: self.client_id.clone(),
             });
         }
@@ -3327,20 +3319,20 @@ where
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-        // Emit EdgeUpdated event (Phase 2 of Issue #665)
+        // Emit RelationshipUpdated event (Issue #811: unified relationship events)
         // Reordering updates the hierarchy edge's order field
         if let Some(parent_id) = parent_id {
             // Get the updated edge information
             let children = self.get_children(&parent_id).await?;
             if let Some(child_pos) = children.iter().position(|c| c.id == node_id) {
-                self.emit_event(DomainEvent::EdgeUpdated {
-                    relationship: crate::db::events::EdgeRelationship::Hierarchy(
-                        crate::db::events::HierarchyRelationship {
-                            parent_id,
-                            child_id: node_id.to_string(),
-                            order: child_pos as f64,
-                        },
-                    ),
+                self.emit_event(DomainEvent::RelationshipUpdated {
+                    relationship: crate::db::events::RelationshipEvent {
+                        id: format!("relationship:{}:{}", parent_id, node_id),
+                        from_id: parent_id.clone(),
+                        to_id: node_id.to_string(),
+                        relationship_type: "has_child".to_string(),
+                        properties: serde_json::json!({"order": child_pos as f64}),
+                    },
                     source_client_id: self.client_id.clone(),
                 });
             }
@@ -4027,17 +4019,17 @@ where
                     NodeServiceError::query_failed(format!("Failed to update parent: {}", e))
                 })?;
 
-            // Emit EdgeUpdated event (Phase 2 of Issue #665)
+            // Emit RelationshipUpdated event (Issue #811: unified relationship events)
             let children = self.get_children(parent_id).await?;
             if let Some(child_pos) = children.iter().position(|c| c.id == node_id) {
-                self.emit_event(DomainEvent::EdgeUpdated {
-                    relationship: crate::db::events::EdgeRelationship::Hierarchy(
-                        crate::db::events::HierarchyRelationship {
-                            parent_id: parent_id.to_string(),
-                            child_id: node_id.to_string(),
-                            order: child_pos as f64,
-                        },
-                    ),
+                self.emit_event(DomainEvent::RelationshipUpdated {
+                    relationship: crate::db::events::RelationshipEvent {
+                        id: format!("relationship:{}:{}", parent_id, node_id),
+                        from_id: parent_id.to_string(),
+                        to_id: node_id.to_string(),
+                        relationship_type: "has_child".to_string(),
+                        properties: serde_json::json!({"order": child_pos as f64}),
+                    },
                     source_client_id: self.client_id.clone(),
                 });
             }
@@ -4072,17 +4064,17 @@ where
                     NodeServiceError::query_failed(format!("Failed to set parent: {}", e))
                 })?;
 
-            // Emit EdgeCreated event (Phase 2 of Issue #665)
+            // Emit RelationshipCreated event (Issue #811: unified relationship events)
             let children = self.get_children(parent_id).await?;
             if let Some(child_pos) = children.iter().position(|c| c.id == node_id) {
-                self.emit_event(DomainEvent::EdgeCreated {
-                    relationship: crate::db::events::EdgeRelationship::Hierarchy(
-                        crate::db::events::HierarchyRelationship {
-                            parent_id: parent_id.to_string(),
-                            child_id: node_id.to_string(),
-                            order: child_pos as f64,
-                        },
-                    ),
+                self.emit_event(DomainEvent::RelationshipCreated {
+                    relationship: crate::db::events::RelationshipEvent {
+                        id: format!("relationship:{}:{}", parent_id, node_id),
+                        from_id: parent_id.to_string(),
+                        to_id: node_id.to_string(),
+                        relationship_type: "has_child".to_string(),
+                        properties: serde_json::json!({"order": child_pos as f64}),
+                    },
                     source_client_id: self.client_id.clone(),
                 });
             }
@@ -4182,8 +4174,9 @@ where
             }
         }
 
+        // Issue #811: Store now emits unified RelationshipCreated event
         self.store
-            .create_mention(source_id, target_id, source_id)
+            .create_mention(source_id, target_id, source_id, self.client_id.clone())
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to insert mention: {}", e))
@@ -4221,18 +4214,13 @@ where
         source_id: &str,
         target_id: &str,
     ) -> Result<(), NodeServiceError> {
+        // Issue #811: Store now emits unified RelationshipDeleted event
         self.store
-            .delete_mention(source_id, target_id)
+            .delete_mention(source_id, target_id, self.client_id.clone())
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to delete mention: {}", e))
             })?;
-
-        // Emit EdgeDeleted event (Phase 2 of Issue #665)
-        self.emit_event(DomainEvent::EdgeDeleted {
-            id: format!("mentions:{}:{}", source_id, target_id),
-            source_client_id: self.client_id.clone(),
-        });
 
         Ok(())
     }
@@ -4500,9 +4488,9 @@ where
                 NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
             })?;
 
-        // TODO: Emit EdgeCreated event when EdgeRelationship supports custom relationships
-        // Currently EdgeRelationship only supports Hierarchy and Mention variants.
-        // Need to add a CustomRelationship variant to support schema-driven relationships.
+        // TODO: Emit RelationshipCreated event for custom relationships
+        // The unified event system (Issue #811) supports custom relationship types,
+        // but we need to capture the relationship ID from the query result.
 
         Ok(())
     }
@@ -4598,8 +4586,9 @@ where
                 NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
             })?;
 
-        // TODO: Emit EdgeDeleted event when EdgeRelationship supports custom relationships
-        // See comment in create_relationship() above.
+        // TODO: Emit RelationshipDeleted event for custom relationships
+        // The unified event system (Issue #811) supports custom relationship types,
+        // but we need to capture the relationship ID from the query result.
 
         Ok(())
     }

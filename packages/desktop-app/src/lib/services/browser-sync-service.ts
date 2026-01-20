@@ -49,22 +49,22 @@ type ConnectionState = 'disconnected' | 'connecting' | 'connected';
  *
  * ### Documented Race Conditions
  *
- * 1. **Edge Created Before Node Exists**
+ * 1. **Relationship Created Before Node Exists**
  *    - Scenario: Backend creates Node N1 under Parent P
- *    - Expected order: node:created → edge:created
- *    - Possible order: edge:created → node:created
- *    - Result: ReactiveStructureTree adds edge before SharedNodeStore has node
+ *    - Expected order: node:created → relationship:created
+ *    - Possible order: relationship:created → node:created
+ *    - Result: ReactiveStructureTree adds relationship before SharedNodeStore has node
  *    - Mitigation: Both stores handle missing nodes gracefully
  *
- * 2. **Node Deleted Before Edge Deleted**
- *    - Scenario: Backend deletes Node N1 and its edges
- *    - Expected order: edge:deleted → node:deleted (edges deleted first)
- *    - Possible order: node:deleted → edge:deleted
- *    - Result: Node gone from store but edge still in tree until edge:deleted arrives
+ * 2. **Node Deleted Before Relationship Deleted**
+ *    - Scenario: Backend deletes Node N1 and its relationships
+ *    - Expected order: relationship:deleted → node:deleted (relationships deleted first)
+ *    - Possible order: node:deleted → relationship:deleted
+ *    - Result: Node gone from store but relationship still in tree until relationship:deleted arrives
  *    - Mitigation: Both stores are idempotent and handle orphaned references
  *
  * 3. **Bulk Operations with Interleaved Events**
- *    - Scenario: Creating/deleting multiple nodes and edges simultaneously
+ *    - Scenario: Creating/deleting multiple nodes and relationships simultaneously
  *    - Result: Events may arrive completely out-of-order
  *    - Mitigation: Each store processes events independently and handles duplicates
  *
@@ -249,38 +249,70 @@ class BrowserSyncService {
         sharedNodeStore.deleteNode(event.nodeId, { type: 'database', reason: 'sse-sync' }, true);
         break;
 
-      case 'edgeCreated':
-        log.debug('Edge created:', { from: event.parentId, to: event.childId });
-        // Update ReactiveStructureTree with new edge
-        // Note: structureTree.addChild expects HierarchyRelationship format
-        // IMPORTANT: Check if edge already exists (added optimistically by createNode)
-        // to avoid overwriting the correct order with Date.now()
-        if (structureTree) {
-          const existingChildren = structureTree.getChildrenWithOrder(event.parentId);
-          const alreadyExists = existingChildren.some((c) => c.nodeId === event.childId);
-          if (!alreadyExists) {
-            structureTree.addChild({
-              parentId: event.parentId,
-              childId: event.childId,
-              order: Date.now() // Use timestamp as order (will be sorted properly on next load)
-            });
-          } else {
-            log.debug('Edge already exists (optimistic), skipping:', event.childId);
-          }
-        }
-        break;
+      // ======================================================================
+      // Unified Relationship Events (Issue #811)
+      // All relationship types (has_child, member_of, mentions, custom) use these events.
+      // ======================================================================
 
-      case 'edgeDeleted':
-        log.debug('Edge deleted:', { from: event.parentId, to: event.childId });
-        // Update ReactiveStructureTree by removing edge
-        if (structureTree) {
-          structureTree.removeChild({
-            parentId: event.parentId,
-            childId: event.childId,
-            order: 0 // Order doesn't matter for removal
-          });
+      case 'relationshipCreated': {
+        log.debug(`Relationship created: ${event.relationshipType} (${event.fromId} -> ${event.toId})`);
+
+        if (event.relationshipType === 'has_child') {
+          // Hierarchy relationship
+          if (structureTree) {
+            const order = (event.properties?.order as number) ?? Date.now();
+            const existingChildren = structureTree.getChildrenWithOrder(event.fromId);
+            const alreadyExists = existingChildren.some((c) => c.nodeId === event.toId);
+            if (!alreadyExists) {
+              structureTree.addChild({
+                parentId: event.fromId,
+                childId: event.toId,
+                order
+              });
+            }
+          }
+        } else if (event.relationshipType === 'member_of') {
+          // Collection membership - log for now
+          log.debug(`Member added: ${event.fromId} to collection ${event.toId}`);
+        } else if (event.relationshipType === 'mentions') {
+          // Mention relationship - log for now
+          log.debug(`Mention created: ${event.fromId} mentions ${event.toId}`);
+        } else {
+          // Custom relationship type
+          log.debug(`Custom relationship created: ${event.relationshipType}`);
         }
         break;
+      }
+
+      case 'relationshipUpdated': {
+        log.debug(`Relationship updated: ${event.relationshipType} (${event.fromId} -> ${event.toId})`);
+
+        if (event.relationshipType === 'has_child') {
+          // Future: Update child order in structure tree
+          log.debug(`Hierarchy order updated for ${event.toId}`);
+        }
+        break;
+      }
+
+      case 'relationshipDeleted': {
+        log.debug(`Relationship deleted: ${event.relationshipType} (${event.id}) from ${event.fromId} to ${event.toId}`);
+
+        if (event.relationshipType === 'has_child') {
+          // Hierarchy deletion - update ReactiveStructureTree
+          if (structureTree) {
+            structureTree.removeChild({
+              parentId: event.fromId,
+              childId: event.toId,
+              order: 0 // Order doesn't matter for removal
+            });
+          }
+        } else if (event.relationshipType === 'member_of') {
+          log.debug(`Member removed from collection: ${event.id}`);
+        } else if (event.relationshipType === 'mentions') {
+          log.debug(`Mention deleted: ${event.id}`);
+        }
+        break;
+      }
 
       default:
         log.warn('Unknown event type:', (event as SseEvent).type);

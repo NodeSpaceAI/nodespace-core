@@ -26,7 +26,7 @@ mod index_manager;
 mod surreal_store;
 
 pub use error::DatabaseError;
-pub use events::{DomainEvent, EdgeRelationship, HierarchyRelationship, MentionRelationship};
+pub use events::{DomainEvent, RelationshipEvent};
 pub use fractional_ordering::FractionalOrderCalculator;
 pub use index_manager::IndexManager;
 pub use surreal_store::{

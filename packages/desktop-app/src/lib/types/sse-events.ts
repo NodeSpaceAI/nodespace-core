@@ -43,23 +43,48 @@ export interface NodeDeletedEvent extends SseEventBase {
   clientId?: string;
 }
 
+// ============================================================================
+// Unified Relationship Events (Issue #811)
+// All relationship types (has_child, member_of, mentions, custom) use these events.
+// ============================================================================
+
 /**
- * Event sent when a parent-child edge is created
+ * Event sent when any relationship is created (unified format)
+ *
+ * Supports all relationship types: has_child, member_of, mentions, custom
  */
-export interface EdgeCreatedEvent extends SseEventBase {
-  type: 'edgeCreated';
-  parentId: string;
-  childId: string;
+export interface RelationshipCreatedEvent extends SseEventBase {
+  type: 'relationshipCreated';
+  id: string;
+  fromId: string;
+  toId: string;
+  relationshipType: string;
+  properties: Record<string, unknown>;
   clientId?: string;
 }
 
 /**
- * Event sent when a parent-child edge is deleted
+ * Event sent when any relationship is updated (unified format)
  */
-export interface EdgeDeletedEvent extends SseEventBase {
-  type: 'edgeDeleted';
-  parentId: string;
-  childId: string;
+export interface RelationshipUpdatedEvent extends SseEventBase {
+  type: 'relationshipUpdated';
+  id: string;
+  fromId: string;
+  toId: string;
+  relationshipType: string;
+  properties: Record<string, unknown>;
+  clientId?: string;
+}
+
+/**
+ * Event sent when any relationship is deleted (unified format)
+ */
+export interface RelationshipDeletedEvent extends SseEventBase {
+  type: 'relationshipDeleted';
+  id: string;
+  fromId: string;
+  toId: string;
+  relationshipType: string;
   clientId?: string;
 }
 
@@ -70,5 +95,6 @@ export type SseEvent =
   | NodeCreatedEvent
   | NodeUpdatedEvent
   | NodeDeletedEvent
-  | EdgeCreatedEvent
-  | EdgeDeletedEvent;
+  | RelationshipCreatedEvent
+  | RelationshipUpdatedEvent
+  | RelationshipDeletedEvent;

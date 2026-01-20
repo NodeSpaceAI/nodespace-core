@@ -42,40 +42,42 @@ export interface HierarchyRelationship {
 }
 
 // ============================================================================
-// Mention Event Data (Bidirectional References)
+// Unified Relationship Event (Issue #811)
 // ============================================================================
 
 /**
- * Mention relationship event data from domain events
- * Represents bidirectional references between nodes
+ * Unified relationship event for all relationship types
  *
- * Unlike hierarchies, mentions are not parent-child relationships
- * and do not have ordering. They represent connections or references.
+ * This generic structure supports all relationship types: has_child, member_of,
+ * mentions, and custom types. It replaces the enum-based approach that required
+ * modifying the event system for each new relationship type.
+ *
+ * Emitted by the store layer for all relationship operations.
  */
-export interface MentionRelationship {
-  sourceId: string; // Node making the reference
-  targetId: string; // Node being referenced
+export interface RelationshipEvent {
+  /** Unique relationship ID in SurrealDB format (e.g., "relationship:abc123") */
+  id: string;
+  /** Source node ID (the "from" node in the relationship) */
+  fromId: string;
+  /** Target node ID (the "to" node in the relationship) */
+  toId: string;
+  /** Relationship type: "has_child", "member_of", "mentions", or custom types */
+  relationshipType: string;
+  /** Type-specific properties (order for has_child, context for mentions, etc.) */
+  properties: Record<string, unknown>;
 }
 
-// ============================================================================
-// Edge Relationship Type (Union of all edge types)
-// ============================================================================
-
 /**
- * Edge relationship event data from domain events
- * Internally-tagged union type representing different relationship types
+ * Payload for relationship deleted events
  *
- * Rust uses #[serde(tag = "type")] which produces an internally-tagged format
- * where the discriminator is merged with the struct fields (NOT nested):
- *
- * - Hierarchy: { type: "hierarchy", parentId: "...", childId: "...", order: 1.0 }
- * - Mention: { type: "mention", sourceId: "...", targetId: "..." }
- *
- * TypeScript intersection types model this correctly.
+ * Contains the ID, from/to node IDs, and type.
  */
-export type HierarchyEdge = { type: 'hierarchy' } & HierarchyRelationship;
-export type MentionEdge = { type: 'mention' } & MentionRelationship;
-export type EdgeRelationship = HierarchyEdge | MentionEdge;
+export interface RelationshipDeletedPayload {
+  id: string;
+  fromId: string;
+  toId: string;
+  relationshipType: string;
+}
 
 // ============================================================================
 // Nested Tree Structure (for Recursive FETCH optimization)

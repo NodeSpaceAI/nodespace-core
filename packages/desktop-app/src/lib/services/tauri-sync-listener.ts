@@ -7,16 +7,22 @@
  *
  * This module handles:
  * - Node events (created, updated, deleted) → updates SharedNodeStore
- * - Edge events (hierarchy, mentions) → updates ReactiveStructureTree
+ * - Relationship events (has_child, mentions, member_of) → updates ReactiveStructureTree
  *
  * This enables real-time sync when external sources (MCP, other windows) modify data.
  *
  * Issue #724: Events now send only node_id (not full payload) for efficiency.
  * Frontend fetches full node data via getNode() API only when the node is in the active view.
+ *
+ * Issue #811: All relationship types use unified RelationshipCreated/Updated/Deleted events.
  */
 
 import { listen } from '@tauri-apps/api/event';
-import type { NodeEventData, EdgeRelationship } from '$lib/types/event-types';
+import type {
+  NodeEventData,
+  RelationshipEvent,
+  RelationshipDeletedPayload
+} from '$lib/types/event-types';
 import { sharedNodeStore } from './shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import type { Node } from '$lib/types/node';
@@ -107,59 +113,70 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       sharedNodeStore.deleteNode(event.payload.id, { type: 'database', reason: 'domain-event' }, true);
     });
 
-    // Listen for edge events (hierarchy and mention relationships)
-    // Serde internally-tagged format: fields are merged at top level (not nested)
-    await listen<EdgeRelationship>('edge:created', (event) => {
-      if (event.payload.type === 'hierarchy') {
-        const hierarchyEdge = event.payload;
-        log.debug(`Hierarchy relationship created: ${hierarchyEdge.parentId} -> ${hierarchyEdge.childId}`);
-        // Update ReactiveStructureTree with new edge
+    // ========================================================================
+    // Unified Relationship Events (Issue #811)
+    // All relationship types (has_child, member_of, mentions, custom) use these events.
+    // ========================================================================
+
+    await listen<RelationshipEvent>('relationship:created', (event) => {
+      const rel = event.payload;
+      log.debug(`Relationship created: ${rel.relationshipType} (${rel.fromId} -> ${rel.toId})`);
+
+      // Handle different relationship types
+      if (rel.relationshipType === 'has_child') {
+        // Hierarchy relationship
         if (structureTree) {
-          const existingChildren = structureTree.getChildrenWithOrder(hierarchyEdge.parentId);
-          const alreadyExists = existingChildren.some((c) => c.nodeId === hierarchyEdge.childId);
+          const order = (rel.properties?.order as number) ?? Date.now();
+          const existingChildren = structureTree.getChildrenWithOrder(rel.fromId);
+          const alreadyExists = existingChildren.some((c) => c.nodeId === rel.toId);
           if (!alreadyExists) {
             structureTree.addChild({
-              parentId: hierarchyEdge.parentId,
-              childId: hierarchyEdge.childId,
-              order: hierarchyEdge.order ?? Date.now()
+              parentId: rel.fromId,
+              childId: rel.toId,
+              order
             });
-          } else {
-            log.debug('Edge already exists (optimistic), skipping:', hierarchyEdge.childId);
           }
         }
-      } else if (event.payload.type === 'mention') {
-        const mentionEdge = event.payload;
-        log.debug(`Mention relationship created: ${mentionEdge.sourceId} -> ${mentionEdge.targetId}`);
+      } else if (rel.relationshipType === 'member_of') {
+        // Collection membership - currently just log, could update collection state if needed
+        log.debug(`Member added: ${rel.fromId} to collection ${rel.toId}`);
+      } else if (rel.relationshipType === 'mentions') {
+        // Mention relationship - currently just log
+        log.debug(`Mention created: ${rel.fromId} mentions ${rel.toId}`);
+      } else {
+        // Custom relationship type
+        log.debug(`Custom relationship created: ${rel.relationshipType}`);
       }
     });
 
-    await listen<EdgeRelationship>('edge:updated', (event) => {
-      if (event.payload.type === 'hierarchy') {
-        const hierarchyEdge = event.payload;
-        log.debug(`Hierarchy relationship updated: ${hierarchyEdge.parentId} -> ${hierarchyEdge.childId}`);
-        // For now, just log - order updates are rare
-        // Future: Add updateChildOrder method if needed
-      } else if (event.payload.type === 'mention') {
-        const mentionEdge = event.payload;
-        log.debug(`Mention relationship updated: ${mentionEdge.sourceId} -> ${mentionEdge.targetId}`);
+    await listen<RelationshipEvent>('relationship:updated', (event) => {
+      const rel = event.payload;
+      log.debug(`Relationship updated: ${rel.relationshipType} (${rel.fromId} -> ${rel.toId})`);
+
+      // Handle order updates for hierarchy
+      if (rel.relationshipType === 'has_child') {
+        // Future: Update child order in structure tree
+        log.debug(`Hierarchy order updated for ${rel.toId}`);
       }
     });
 
-    await listen<EdgeRelationship>('edge:deleted', (event) => {
-      if (event.payload.type === 'hierarchy') {
-        const hierarchyEdge = event.payload;
-        log.debug(`Hierarchy relationship deleted: ${hierarchyEdge.parentId} -> ${hierarchyEdge.childId}`);
-        // Update ReactiveStructureTree by removing edge
+    await listen<RelationshipDeletedPayload>('relationship:deleted', (event) => {
+      const { id, fromId, toId, relationshipType } = event.payload;
+      log.debug(`Relationship deleted: ${relationshipType} (${id}) from ${fromId} to ${toId}`);
+
+      if (relationshipType === 'has_child') {
+        // Hierarchy deletion - update ReactiveStructureTree
         if (structureTree) {
           structureTree.removeChild({
-            parentId: hierarchyEdge.parentId,
-            childId: hierarchyEdge.childId,
+            parentId: fromId,
+            childId: toId,
             order: 0 // Order doesn't matter for removal
           });
         }
-      } else if (event.payload.type === 'mention') {
-        const mentionEdge = event.payload;
-        log.debug(`Mention relationship deleted: ${mentionEdge.sourceId} -> ${mentionEdge.targetId}`);
+      } else if (relationshipType === 'member_of') {
+        log.debug(`Member removed from collection: ${id}`);
+      } else if (relationshipType === 'mentions') {
+        log.debug(`Mention deleted: ${id}`);
       }
     });
 

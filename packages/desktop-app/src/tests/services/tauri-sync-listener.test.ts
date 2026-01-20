@@ -169,9 +169,10 @@ describe('TauriSyncListener', () => {
 			expect(mockEventListeners.has('node:created')).toBe(true);
 			expect(mockEventListeners.has('node:updated')).toBe(true);
 			expect(mockEventListeners.has('node:deleted')).toBe(true);
-			expect(mockEventListeners.has('edge:created')).toBe(true);
-			expect(mockEventListeners.has('edge:updated')).toBe(true);
-			expect(mockEventListeners.has('edge:deleted')).toBe(true);
+			// Issue #811: Unified relationship events replace old edge:* events
+			expect(mockEventListeners.has('relationship:created')).toBe(true);
+			expect(mockEventListeners.has('relationship:updated')).toBe(true);
+			expect(mockEventListeners.has('relationship:deleted')).toBe(true);
 			expect(mockEventListeners.has('sync:error')).toBe(true);
 			expect(mockEventListeners.has('sync:status')).toBe(true);
 		});
@@ -259,17 +260,18 @@ describe('TauriSyncListener', () => {
 		});
 	});
 
-	describe('Edge Events - Hierarchy', () => {
+	describe('Unified Relationship Events - has_child (Issue #811)', () => {
 		beforeEach(async () => {
 			await initializeTauriSyncListeners();
 		});
 
-		it('should add hierarchy edge on edge:created', async () => {
-			emitTauriEvent('edge:created', {
-				type: 'hierarchy',
-				parentId: 'parent1',
-				childId: 'child1',
-				order: 100
+		it('should add hierarchy edge on relationship:created with has_child type', async () => {
+			emitTauriEvent('relationship:created', {
+				id: 'relationship:parent1:child1',
+				fromId: 'parent1',
+				toId: 'child1',
+				relationshipType: 'has_child',
+				properties: { order: 100 }
 			});
 
 			const children = structureTree.getChildrenWithOrder('parent1');
@@ -280,19 +282,21 @@ describe('TauriSyncListener', () => {
 
 		it('should not add duplicate edges (idempotent)', async () => {
 			// Add edge first time
-			emitTauriEvent('edge:created', {
-				type: 'hierarchy',
-				parentId: 'parent1',
-				childId: 'child1',
-				order: 100
+			emitTauriEvent('relationship:created', {
+				id: 'relationship:parent1:child1',
+				fromId: 'parent1',
+				toId: 'child1',
+				relationshipType: 'has_child',
+				properties: { order: 100 }
 			});
 
 			// Try to add same edge again
-			emitTauriEvent('edge:created', {
-				type: 'hierarchy',
-				parentId: 'parent1',
-				childId: 'child1',
-				order: 100
+			emitTauriEvent('relationship:created', {
+				id: 'relationship:parent1:child1',
+				fromId: 'parent1',
+				toId: 'child1',
+				relationshipType: 'has_child',
+				properties: { order: 100 }
 			});
 
 			// Should still only have one child
@@ -300,7 +304,7 @@ describe('TauriSyncListener', () => {
 			expect(children).toHaveLength(1);
 		});
 
-		it('should remove hierarchy edge on edge:deleted', async () => {
+		it('should remove hierarchy edge on relationship:deleted with has_child type', async () => {
 			// Add edge first
 			structureTree.addChild({
 				parentId: 'parent1',
@@ -311,17 +315,17 @@ describe('TauriSyncListener', () => {
 			expect(structureTree.getChildrenWithOrder('parent1')).toHaveLength(1);
 
 			// Delete edge
-			emitTauriEvent('edge:deleted', {
-				type: 'hierarchy',
-				parentId: 'parent1',
-				childId: 'child1',
-				order: 0
+			emitTauriEvent('relationship:deleted', {
+				id: 'relationship:parent1:child1',
+				fromId: 'parent1',
+				toId: 'child1',
+				relationshipType: 'has_child'
 			});
 
 			expect(structureTree.getChildrenWithOrder('parent1')).toHaveLength(0);
 		});
 
-		it('should handle edge:updated for hierarchy (currently logs only)', async () => {
+		it('should handle relationship:updated for hierarchy (currently logs only)', async () => {
 			// Add edge first
 			structureTree.addChild({
 				parentId: 'parent1',
@@ -331,47 +335,53 @@ describe('TauriSyncListener', () => {
 
 			// Update should not crash (currently just logs)
 			expect(() => {
-				emitTauriEvent('edge:updated', {
-					type: 'hierarchy',
-					parentId: 'parent1',
-					childId: 'child1',
-					order: 200
+				emitTauriEvent('relationship:updated', {
+					id: 'relationship:parent1:child1',
+					fromId: 'parent1',
+					toId: 'child1',
+					relationshipType: 'has_child',
+					properties: { order: 200 }
 				});
 			}).not.toThrow();
 		});
 	});
 
-	describe('Edge Events - Mentions', () => {
+	describe('Unified Relationship Events - Mentions (Issue #811)', () => {
 		beforeEach(async () => {
 			await initializeTauriSyncListeners();
 		});
 
-		it('should handle mention edge:created (logs only)', async () => {
+		it('should handle relationship:created with mentions type (logs only)', async () => {
 			expect(() => {
-				emitTauriEvent('edge:created', {
-					type: 'mention',
-					sourceId: 'node1',
-					targetId: 'node2'
+				emitTauriEvent('relationship:created', {
+					id: 'relationship:mention:node1:node2',
+					fromId: 'node1',
+					toId: 'node2',
+					relationshipType: 'mentions',
+					properties: {}
 				});
 			}).not.toThrow();
 		});
 
-		it('should handle mention edge:updated (logs only)', async () => {
+		it('should handle relationship:updated with mentions type (logs only)', async () => {
 			expect(() => {
-				emitTauriEvent('edge:updated', {
-					type: 'mention',
-					sourceId: 'node1',
-					targetId: 'node2'
+				emitTauriEvent('relationship:updated', {
+					id: 'relationship:mention:node1:node2',
+					fromId: 'node1',
+					toId: 'node2',
+					relationshipType: 'mentions',
+					properties: {}
 				});
 			}).not.toThrow();
 		});
 
-		it('should handle mention edge:deleted (logs only)', async () => {
+		it('should handle relationship:deleted with mentions type (logs only)', async () => {
 			expect(() => {
-				emitTauriEvent('edge:deleted', {
-					type: 'mention',
-					sourceId: 'node1',
-					targetId: 'node2'
+				emitTauriEvent('relationship:deleted', {
+					id: 'relationship:mention:node1:node2',
+					fromId: 'node1',
+					toId: 'node2',
+					relationshipType: 'mentions'
 				});
 			}).not.toThrow();
 		});
@@ -435,13 +445,14 @@ describe('TauriSyncListener', () => {
 			await initializeTauriSyncListeners();
 		});
 
-		it('should handle edge created before node exists', async () => {
-			// Edge event arrives first
-			emitTauriEvent('edge:created', {
-				type: 'hierarchy',
-				parentId: 'parent1',
-				childId: 'child1',
-				order: 100
+		it('should handle relationship created before node exists', async () => {
+			// Relationship event arrives first
+			emitTauriEvent('relationship:created', {
+				id: 'relationship:parent1:child1',
+				fromId: 'parent1',
+				toId: 'child1',
+				relationshipType: 'has_child',
+				properties: { order: 100 }
 			});
 
 			// Edge should be in structure tree
@@ -458,7 +469,7 @@ describe('TauriSyncListener', () => {
 			});
 		});
 
-		it('should handle node deleted before edge deleted', async () => {
+		it('should handle node deleted before relationship deleted', async () => {
 			// Setup: node and edge exist
 			const testNode = createTestNode('child1');
 			sharedNodeStore.setNode(testNode, { type: 'database', reason: 'test' }, false);
@@ -472,13 +483,13 @@ describe('TauriSyncListener', () => {
 			emitTauriEvent('node:deleted', { id: 'child1' });
 			expect(sharedNodeStore.hasNode('child1')).toBe(false);
 
-			// Edge deleted second (should not crash)
+			// Relationship deleted second (should not crash)
 			expect(() => {
-				emitTauriEvent('edge:deleted', {
-					type: 'hierarchy',
-					parentId: 'parent1',
-					childId: 'child1',
-					order: 0
+				emitTauriEvent('relationship:deleted', {
+					id: 'relationship:parent1:child1',
+					fromId: 'parent1',
+					toId: 'child1',
+					relationshipType: 'has_child'
 				});
 			}).not.toThrow();
 

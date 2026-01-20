@@ -173,7 +173,7 @@ mod event_emission_tests {
     }
 
     #[tokio::test]
-    async fn test_move_node_to_new_parent_emits_edge_updated_event() -> Result<()> {
+    async fn test_move_node_to_new_parent_emits_relationship_updated_event() -> Result<()> {
         let (service, _temp_dir) = create_test_service().await?;
 
         // Create parent and child nodes
@@ -196,35 +196,31 @@ mod event_emission_tests {
             .move_node(&child.id, Some(&parent2.id), None)
             .await?;
 
-        // Receive the emitted event
+        // Receive the emitted event (Issue #811: unified relationship events)
         let event = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's an EdgeUpdated event for hierarchy with correct client_id
+        // Verify it's a RelationshipUpdated event for has_child with correct client_id
         match event {
-            DomainEvent::EdgeUpdated {
-                relationship: edge,
+            DomainEvent::RelationshipUpdated {
+                relationship,
                 source_client_id,
             } => {
-                match edge {
-                    nodespace_core::db::EdgeRelationship::Hierarchy(rel) => {
-                        assert_eq!(rel.parent_id, parent2.id);
-                        assert_eq!(rel.child_id, child.id);
-                    }
-                    _ => panic!("Expected hierarchy edge, got {:?}", edge),
-                }
+                assert_eq!(relationship.relationship_type, "has_child");
+                assert_eq!(relationship.from_id, parent2.id);
+                assert_eq!(relationship.to_id, child.id);
                 assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
             }
-            _ => panic!("Expected EdgeUpdated event, got {:?}", event),
+            _ => panic!("Expected RelationshipUpdated event, got {:?}", event),
         }
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_create_mention_emits_edge_created_event() -> Result<()> {
+    async fn test_create_mention_emits_relationship_created_event() -> Result<()> {
         let (service, _temp_dir) = create_test_service().await?;
 
         // Create two nodes
@@ -240,35 +236,31 @@ mod event_emission_tests {
             .create_mention(&source_node.id, &target_node.id)
             .await?;
 
-        // Receive the emitted event
+        // Receive the emitted event (Issue #811: unified relationship events)
         let event = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's an EdgeCreated event for mention with correct client_id
+        // Verify it's a RelationshipCreated event for mentions with correct client_id
         match event {
-            DomainEvent::EdgeCreated {
-                relationship: edge,
+            DomainEvent::RelationshipCreated {
+                relationship,
                 source_client_id,
             } => {
-                match edge {
-                    nodespace_core::db::EdgeRelationship::Mention(rel) => {
-                        assert_eq!(rel.source_id, source_node.id);
-                        assert_eq!(rel.target_id, target_node.id);
-                    }
-                    _ => panic!("Expected mention edge, got {:?}", edge),
-                }
+                assert_eq!(relationship.relationship_type, "mentions");
+                assert_eq!(relationship.from_id, source_node.id);
+                assert_eq!(relationship.to_id, target_node.id);
                 assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
             }
-            _ => panic!("Expected EdgeCreated event, got {:?}", event),
+            _ => panic!("Expected RelationshipCreated event, got {:?}", event),
         }
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_delete_mention_emits_edge_deleted_event() -> Result<()> {
+    async fn test_delete_mention_emits_relationship_deleted_event() -> Result<()> {
         let (service, _temp_dir) = create_test_service().await?;
 
         // Create two nodes and a mention
@@ -288,22 +280,28 @@ mod event_emission_tests {
             .remove_mention(&source_node.id, &target_node.id)
             .await?;
 
-        // Receive the emitted event
+        // Receive the emitted event (Issue #811: unified relationship events)
         let event = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's an EdgeDeleted event with correct client_id
+        // Verify it's a RelationshipDeleted event with correct client_id
         match event {
-            DomainEvent::EdgeDeleted {
+            DomainEvent::RelationshipDeleted {
                 id,
+                from_id,
+                to_id,
+                relationship_type,
                 source_client_id,
             } => {
                 assert!(id.contains("mentions"));
+                assert_eq!(from_id, source_node.id);
+                assert_eq!(to_id, target_node.id);
+                assert_eq!(relationship_type, "mentions");
                 assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
             }
-            _ => panic!("Expected EdgeDeleted event, got {:?}", event),
+            _ => panic!("Expected RelationshipDeleted event, got {:?}", event),
         }
 
         Ok(())

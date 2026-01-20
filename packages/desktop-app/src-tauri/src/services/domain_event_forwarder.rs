@@ -94,6 +94,8 @@ impl DomainEventForwarder {
     ///
     /// Converts domain events from NodeService to Tauri events with proper naming and payload.
     /// Filters out events that originated from this client (prevents feedback loop).
+    ///
+    /// Issue #811: All relationship events use unified format (RelationshipCreated/Updated/Deleted).
     fn forward_event(&self, event: &DomainEvent) {
         // Extract source_client_id from the event
         let source_client_id = match event {
@@ -106,19 +108,14 @@ impl DomainEventForwarder {
             DomainEvent::NodeDeleted {
                 source_client_id, ..
             } => source_client_id,
-            DomainEvent::EdgeCreated {
+            // Unified relationship events (Issue #811)
+            DomainEvent::RelationshipCreated {
                 source_client_id, ..
             } => source_client_id,
-            DomainEvent::EdgeUpdated {
+            DomainEvent::RelationshipUpdated {
                 source_client_id, ..
             } => source_client_id,
-            DomainEvent::EdgeDeleted {
-                source_client_id, ..
-            } => source_client_id,
-            DomainEvent::CollectionMemberAdded {
-                source_client_id, ..
-            } => source_client_id,
-            DomainEvent::CollectionMemberRemoved {
+            DomainEvent::RelationshipDeleted {
                 source_client_id, ..
             } => source_client_id,
         };
@@ -160,30 +157,53 @@ impl DomainEventForwarder {
                     error!("Failed to emit node:deleted: {}", e);
                 }
             }
-            DomainEvent::EdgeCreated { relationship, .. } => {
-                if let Err(e) = self.app.emit("edge:created", relationship) {
-                    error!("Failed to emit edge:created: {}", e);
+            // Unified relationship events (Issue #811)
+            // All relationship types (has_child, member_of, mentions, custom) use these events
+            DomainEvent::RelationshipCreated { relationship, .. } => {
+                debug!(
+                    "Forwarding RelationshipCreated: {} ({})",
+                    relationship.id, relationship.relationship_type
+                );
+                if let Err(e) = self.app.emit("relationship:created", relationship) {
+                    error!("Failed to emit relationship:created: {}", e);
                 }
             }
-            DomainEvent::EdgeUpdated { relationship, .. } => {
-                if let Err(e) = self.app.emit("edge:updated", relationship) {
-                    error!("Failed to emit edge:updated: {}", e);
+            DomainEvent::RelationshipUpdated { relationship, .. } => {
+                debug!(
+                    "Forwarding RelationshipUpdated: {} ({})",
+                    relationship.id, relationship.relationship_type
+                );
+                if let Err(e) = self.app.emit("relationship:updated", relationship) {
+                    error!("Failed to emit relationship:updated: {}", e);
                 }
             }
-            DomainEvent::EdgeDeleted { id, .. } => {
-                let payload = NodeIdPayload { id: id.clone() };
-                if let Err(e) = self.app.emit("edge:deleted", &payload) {
-                    error!("Failed to emit edge:deleted: {}", e);
+            DomainEvent::RelationshipDeleted {
+                id,
+                from_id,
+                to_id,
+                relationship_type,
+                ..
+            } => {
+                #[derive(Serialize)]
+                #[serde(rename_all = "camelCase")]
+                struct RelationshipDeletedPayload {
+                    id: String,
+                    from_id: String,
+                    to_id: String,
+                    relationship_type: String,
                 }
-            }
-            DomainEvent::CollectionMemberAdded { membership, .. } => {
-                if let Err(e) = self.app.emit("collection:member-added", membership) {
-                    error!("Failed to emit collection:member-added: {}", e);
-                }
-            }
-            DomainEvent::CollectionMemberRemoved { membership, .. } => {
-                if let Err(e) = self.app.emit("collection:member-removed", membership) {
-                    error!("Failed to emit collection:member-removed: {}", e);
+                let payload = RelationshipDeletedPayload {
+                    id: id.clone(),
+                    from_id: from_id.clone(),
+                    to_id: to_id.clone(),
+                    relationship_type: relationship_type.clone(),
+                };
+                debug!(
+                    "Forwarding RelationshipDeleted: {} ({}) from {} to {}",
+                    id, relationship_type, from_id, to_id
+                );
+                if let Err(e) = self.app.emit("relationship:deleted", &payload) {
+                    error!("Failed to emit relationship:deleted: {}", e);
                 }
             }
         }

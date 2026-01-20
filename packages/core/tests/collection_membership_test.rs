@@ -1341,19 +1341,22 @@ mod collection_service_tests {
         Ok(())
     }
 
+    /// Test that collection membership operations emit unified relationship events (Issue #811)
+    ///
+    /// Events are now emitted at the store level as RelationshipCreated/RelationshipDeleted
+    /// with relationship_type="member_of", replacing the old CollectionMemberAdded/Removed events.
     #[tokio::test]
     async fn test_collection_membership_events_emitted() -> Result<()> {
         use nodespace_core::db::events::DomainEvent;
-        use tokio::sync::broadcast;
 
         let (store, _temp_dir) = create_test_store().await?;
 
-        // Create broadcast channel for events
-        let (event_tx, mut event_rx) = broadcast::channel::<DomainEvent>(16);
+        // Subscribe to store events (Issue #811: events now emitted from store)
+        let mut event_rx = store.subscribe_to_events();
 
-        // Create service with event emission
+        // Create service with client_id for source tracking
         let collection_service =
-            CollectionService::with_events(&store, event_tx, Some("test-client".to_string()));
+            CollectionService::with_client(&store, Some("test-client".to_string()));
 
         // Create a collection
         let resolved = collection_service.resolve_path("events-test").await?;
@@ -1362,42 +1365,43 @@ mod collection_service_tests {
         // Create a text node
         create_text_node(&store, "event-doc", "Event Test Doc").await?;
 
-        // Add node to collection - should emit CollectionMemberAdded
+        // Add node to collection - should emit RelationshipCreated (Issue #811)
         collection_service
             .add_to_collection("event-doc", &collection_id)
             .await?;
 
-        // Check for CollectionMemberAdded event
+        // Check for RelationshipCreated event (unified format)
         let event = event_rx.try_recv()?;
         match event {
-            DomainEvent::CollectionMemberAdded {
-                membership,
+            DomainEvent::RelationshipCreated {
+                relationship,
                 source_client_id,
             } => {
-                assert_eq!(membership.member_id, "event-doc");
-                assert_eq!(membership.collection_id, collection_id);
+                assert_eq!(relationship.from_id, "event-doc");
+                assert_eq!(relationship.to_id, collection_id);
+                assert_eq!(relationship.relationship_type, "member_of");
                 assert_eq!(source_client_id, Some("test-client".to_string()));
             }
-            other => panic!("Expected CollectionMemberAdded, got {:?}", other),
+            other => panic!("Expected RelationshipCreated, got {:?}", other),
         }
 
-        // Remove node from collection - should emit CollectionMemberRemoved
+        // Remove node from collection - should emit RelationshipDeleted (Issue #811)
         collection_service
             .remove_from_collection("event-doc", &collection_id)
             .await?;
 
-        // Check for CollectionMemberRemoved event
+        // Check for RelationshipDeleted event (unified format)
         let event = event_rx.try_recv()?;
         match event {
-            DomainEvent::CollectionMemberRemoved {
-                membership,
+            DomainEvent::RelationshipDeleted {
+                relationship_type,
                 source_client_id,
+                ..
             } => {
-                assert_eq!(membership.member_id, "event-doc");
-                assert_eq!(membership.collection_id, collection_id);
+                assert_eq!(relationship_type, "member_of");
                 assert_eq!(source_client_id, Some("test-client".to_string()));
             }
-            other => panic!("Expected CollectionMemberRemoved, got {:?}", other),
+            other => panic!("Expected RelationshipDeleted, got {:?}", other),
         }
 
         Ok(())
