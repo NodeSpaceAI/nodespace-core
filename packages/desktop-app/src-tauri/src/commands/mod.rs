@@ -2,6 +2,7 @@
 //!
 //! This module exposes Rust functionality to the frontend via Tauri commands.
 
+pub mod collections;
 pub mod db;
 pub mod diagnostics;
 pub mod embeddings;

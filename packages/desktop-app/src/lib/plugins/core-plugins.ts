@@ -482,6 +482,11 @@ export const collectionNodePlugin: PluginDefinition = {
     canHaveChildren: true, // Collections can have sub-collections (DAG structure)
     canBeChild: true // Collections can be nested under other nodes
   },
+  // CollectionNodeViewer for collection-specific UI (Issue #757)
+  viewer: {
+    lazyLoad: () => import('../components/viewers/collection-node-viewer.svelte'),
+    priority: 1
+  },
   // Collections use BaseNodeReference for inline references
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,
@@ -497,9 +502,6 @@ export const collectionNodePlugin: PluginDefinition = {
       ...properties
     };
   }
-  // TODO: Future enhancements (Issue #757+):
-  // - collectionNodeViewer: Display collection members in a grid/list view
-  // - collectionNode component: Visual representation with icon and member count
 };
 
 // Export all core plugins

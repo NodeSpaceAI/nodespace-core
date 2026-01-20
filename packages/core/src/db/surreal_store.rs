@@ -4503,6 +4503,111 @@ where
         Ok(names)
     }
 
+    /// Get all collections with their member counts in a single query
+    ///
+    /// Uses SurrealDB's graph traversal to count incoming member_of relationships
+    /// for each collection, avoiding N+1 query pattern.
+    ///
+    /// # Returns
+    ///
+    /// Vec of (Node, member_count) tuples for all collection nodes
+    pub async fn get_all_collections_with_member_counts(&self) -> Result<Vec<(Node, usize)>> {
+        // Single query that fetches collections and counts their members via graph traversal
+        let query = r#"
+            SELECT
+                *,
+                count(<-relationship[WHERE relationship_type = 'member_of']<-node) AS member_count
+            FROM node
+            WHERE node_type = 'collection'
+            ORDER BY content ASC;
+        "#;
+
+        let mut response = self
+            .db
+            .query(query)
+            .await
+            .context("Failed to get collections with member counts")?;
+
+        // Parse results - each row has node fields plus member_count
+        let rows: Vec<Value> = response
+            .take(0)
+            .context("Failed to extract collection results")?;
+
+        let mut results = Vec::with_capacity(rows.len());
+        for row in rows {
+            // Extract member_count from the row
+            let member_count = row
+                .get("member_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+
+            // Build Node from hub fields
+            let id = row
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    // Handle Thing format: node:xxx -> xxx
+                    if s.starts_with("node:") {
+                        s.strip_prefix("node:").unwrap_or(s)
+                    } else {
+                        s
+                    }
+                })
+                .unwrap_or("")
+                .to_string();
+
+            let node_type = row
+                .get("node_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("collection")
+                .to_string();
+
+            let content = row
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let version = row.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
+
+            let properties = row
+                .get("properties")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+
+            let created_at = row
+                .get("created_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(chrono::Utc::now);
+
+            let modified_at = row
+                .get("modified_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .unwrap_or_else(chrono::Utc::now);
+
+            let node = Node {
+                id,
+                node_type,
+                content,
+                version,
+                properties,
+                created_at,
+                modified_at,
+                mentions: vec![],
+                mentioned_by: vec![],
+                member_of: vec![],
+            };
+
+            results.push((node, member_count));
+        }
+
+        Ok(results)
+    }
+
     /// Create a stale embedding marker for a new root node
     ///
     /// Creates an embedding record with a placeholder vector marked as stale to queue it for processing.

@@ -20,8 +20,6 @@
  * ```
  */
 
-/* global fetch, crypto */
-
 import type { Node, NodeWithChildren, TaskNode, TaskNodeUpdate } from '$lib/types';
 import type { SchemaNode } from '$lib/types/schema-node';
 import { createLogger } from '$lib/utils/logger';

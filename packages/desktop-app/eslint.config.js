@@ -69,7 +69,9 @@ export default [
         AbortController: 'readonly',
         AbortSignal: 'readonly',
         RequestInit: 'readonly',
-        Response: 'readonly'
+        Response: 'readonly',
+        fetch: 'readonly',
+        crypto: 'readonly'
       }
     },
     plugins: {

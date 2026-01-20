@@ -485,6 +485,9 @@ async fn main() -> anyhow::Result<()> {
         // Schema endpoints (read-only - mutation endpoints removed Issue #690, not used by UI)
         .route("/api/schemas", get(get_all_schemas))
         .route("/api/schemas/:id", get(get_schema))
+        // Collection endpoints (Issue #807)
+        .route("/api/collections", get(get_all_collections))
+        .route("/api/collections/:id/members", get(get_collection_members))
         .with_state(state)
         .layer(CorsLayer::permissive()); // Allow CORS from frontend (localhost:5173)
 
@@ -1256,3 +1259,140 @@ async fn get_schema(
 // NOTE: Schema mutation functions (add_schema_field, remove_schema_field,
 // extend_schema_enum, remove_schema_enum_value) removed in Issue #690.
 // These were not used by any UI components.
+
+// ============================================================================
+// Collection Endpoints (Issue #807)
+// ============================================================================
+
+/// Collection info with member count for UI display
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectionInfo {
+    id: String,
+    content: String,
+    node_type: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    modified_at: chrono::DateTime<chrono::Utc>,
+    version: i64,
+    properties: serde_json::Value,
+    member_count: usize,
+}
+
+/// Get all collections with member counts
+///
+/// # HTTP Endpoint
+/// ```text
+/// GET /api/collections
+/// ```
+///
+/// # Response (200 OK)
+/// ```json
+/// [
+///   {
+///     "id": "col-1",
+///     "content": "Projects",
+///     "nodeType": "collection",
+///     "memberCount": 3,
+///     ...
+///   }
+/// ]
+/// ```
+async fn get_all_collections(State(state): State<AppState>) -> ApiResult<Vec<CollectionInfo>> {
+    use nodespace_core::services::CollectionService;
+
+    let store = state.node_service.store();
+    let collection_service = CollectionService::new(store);
+
+    // Try the optimized single-query method first
+    match collection_service.get_all_collections_with_counts().await {
+        Ok(collections_with_counts) => {
+            let result: Vec<CollectionInfo> = collections_with_counts
+                .into_iter()
+                .map(|(node, member_count)| CollectionInfo {
+                    id: node.id,
+                    content: node.content,
+                    node_type: node.node_type,
+                    created_at: node.created_at,
+                    modified_at: node.modified_at,
+                    version: node.version,
+                    properties: node.properties,
+                    member_count,
+                })
+                .collect();
+            Ok(Json(result))
+        }
+        Err(e) => {
+            // Fallback: query collections via node type query and count members individually
+            // This handles cases where the combined query has parsing issues in HTTP mode
+            tracing::warn!("Optimized collection query failed, using fallback: {}", e);
+
+            // Query all nodes with type 'collection'
+            let query = nodespace_core::NodeQuery {
+                node_type: Some("collection".to_string()),
+                ..Default::default()
+            };
+            let collections = state
+                .node_service
+                .query_nodes_simple(query)
+                .await
+                .map_err(map_node_service_error)?;
+
+            let mut result = Vec::with_capacity(collections.len());
+            for collection in collections {
+                let member_count = collection_service
+                    .get_collection_members(&collection.id)
+                    .await
+                    .map(|m| m.len())
+                    .unwrap_or(0);
+
+                result.push(CollectionInfo {
+                    id: collection.id,
+                    content: collection.content,
+                    node_type: collection.node_type,
+                    created_at: collection.created_at,
+                    modified_at: collection.modified_at,
+                    version: collection.version,
+                    properties: collection.properties,
+                    member_count,
+                });
+            }
+
+            Ok(Json(result))
+        }
+    }
+}
+
+/// Get members of a specific collection
+///
+/// # HTTP Endpoint
+/// ```text
+/// GET /api/collections/:id/members
+/// ```
+///
+/// # Response (200 OK)
+/// Returns array of member nodes
+async fn get_collection_members(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Vec<nodespace_core::Node>> {
+    use nodespace_core::services::CollectionService;
+
+    let store = state.node_service.store();
+    let collection_service = CollectionService::new(store);
+
+    // Get member IDs
+    let member_ids = collection_service
+        .get_collection_members(&id)
+        .await
+        .map_err(map_node_service_error)?;
+
+    // Fetch actual nodes for each member ID
+    let mut members = Vec::with_capacity(member_ids.len());
+    for member_id in member_ids {
+        if let Ok(Some(node)) = state.node_service.get_node(&member_id).await {
+            members.push(node);
+        }
+    }
+
+    Ok(Json(members))
+}

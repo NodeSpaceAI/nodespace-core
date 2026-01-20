@@ -6,20 +6,69 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
 import {
   collectionsState,
+  collectionsData,
   selectedCollection,
   selectedCollectionMembers,
   findCollectionById,
-  mockCollections,
-  mockMembers,
   type CollectionsState,
   type CollectionItem,
   type CollectionMember
 } from '$lib/stores/collections';
+import type { CollectionInfo } from '$lib/services/collection-service';
+import type { Node } from '$lib/types';
+import { mockCollections, mockMembers } from '../fixtures/collections-fixtures';
+
+// Convert mock data to CollectionInfo format for testing
+function createTestCollectionInfo(item: CollectionItem): CollectionInfo {
+  return {
+    id: item.id,
+    content: item.name,
+    memberCount: item.memberCount,
+    nodeType: 'collection',
+    createdAt: new Date().toISOString(),
+    modifiedAt: new Date().toISOString(),
+    version: 1,
+    properties: {}
+  };
+}
+
+// Flatten collections tree to list for the data store
+function flattenCollections(items: CollectionItem[]): CollectionInfo[] {
+  const result: CollectionInfo[] = [];
+  for (const item of items) {
+    result.push(createTestCollectionInfo(item));
+    if (item.children) {
+      result.push(...flattenCollections(item.children));
+    }
+  }
+  return result;
+}
+
+// Convert mock members to Node format
+function createTestMembers(): Map<string, Node[]> {
+  const result = new Map<string, Node[]>();
+  for (const [collectionId, members] of Object.entries(mockMembers)) {
+    result.set(
+      collectionId,
+      members.map((m) => ({
+        id: m.id,
+        content: m.name,
+        nodeType: m.nodeType,
+        createdAt: new Date().toISOString(),
+        modifiedAt: new Date().toISOString(),
+        version: 1,
+        properties: {}
+      }))
+    );
+  }
+  return result;
+}
 
 describe('Collections Store', () => {
   beforeEach(() => {
-    // Reset the collectionsState to initial state before each test
+    // Reset both stores to initial state before each test
     collectionsState.reset();
+    collectionsData.reset();
   });
 
   describe('Initial State', () => {
@@ -53,6 +102,9 @@ describe('Collections Store', () => {
     });
 
     it('updates selectedCollection derived store', () => {
+      // Set up test data
+      collectionsData._setTestData(flattenCollections(mockCollections), createTestMembers());
+
       collectionsState.selectCollection('col-1');
 
       const selected = get(selectedCollection);
@@ -62,6 +114,9 @@ describe('Collections Store', () => {
     });
 
     it('updates selectedCollectionMembers derived store', () => {
+      // Set up test data
+      collectionsData._setTestData(flattenCollections(mockCollections), createTestMembers());
+
       collectionsState.selectCollection('col-1');
 
       const members = get(selectedCollectionMembers);
@@ -70,6 +125,9 @@ describe('Collections Store', () => {
     });
 
     it('selecting a different collection replaces the selection', () => {
+      // Set up test data
+      collectionsData._setTestData(flattenCollections(mockCollections), createTestMembers());
+
       collectionsState.selectCollection('col-1');
       collectionsState.selectCollection('col-2');
 
@@ -82,6 +140,9 @@ describe('Collections Store', () => {
     });
 
     it('selecting a nested collection works correctly', () => {
+      // Set up test data
+      collectionsData._setTestData(flattenCollections(mockCollections), createTestMembers());
+
       collectionsState.selectCollection('col-1-1');
 
       const selected = get(selectedCollection);
@@ -91,6 +152,9 @@ describe('Collections Store', () => {
     });
 
     it('selecting a deeply nested collection works correctly', () => {
+      // Set up test data
+      collectionsData._setTestData(flattenCollections(mockCollections), createTestMembers());
+
       collectionsState.selectCollection('col-1-1-1');
 
       const selected = get(selectedCollection);
@@ -316,6 +380,9 @@ describe('Collections Store', () => {
 
   describe('Derived Stores', () => {
     it('selectedCollection updates reactively when selection changes', () => {
+      // Set up test data
+      collectionsData._setTestData(flattenCollections(mockCollections), createTestMembers());
+
       expect(get(selectedCollection)).toBeUndefined();
 
       collectionsState.selectCollection('col-1');
@@ -329,6 +396,9 @@ describe('Collections Store', () => {
     });
 
     it('selectedCollectionMembers updates reactively when selection changes', () => {
+      // Set up test data
+      collectionsData._setTestData(flattenCollections(mockCollections), createTestMembers());
+
       expect(get(selectedCollectionMembers)).toEqual([]);
 
       collectionsState.selectCollection('col-1');
@@ -354,11 +424,13 @@ describe('Collections Store', () => {
       const item: CollectionItem = {
         id: 'test-id',
         name: 'Test Name',
-        children: [{ id: 'child-id', name: 'Child Name' }]
+        memberCount: 5,
+        children: [{ id: 'child-id', name: 'Child Name', memberCount: 2 }]
       };
 
       expect(item.id).toBe('test-id');
       expect(item.name).toBe('Test Name');
+      expect(item.memberCount).toBe(5);
       expect(item.children).toHaveLength(1);
     });
 

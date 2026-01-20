@@ -5,8 +5,8 @@
  */
 
 // Node types - ONLY source of truth
-export type { Node, NodeUpdate, NodeUIState } from './node';
-export { isNode, createDefaultUIState } from './node';
+export type { Node, NodeUpdate, NodeUIState, CollectionNode } from './node';
+export { isNode, createDefaultUIState, isCollectionNode } from './node';
 
 // Type-safe node wrappers - Simple types (extend Node with nodeType narrowing only)
 export type { TextNode } from './text-node';

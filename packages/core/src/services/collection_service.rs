@@ -654,6 +654,23 @@ where
             .await
             .map_err(|e| db_error(e, "Failed to get all collection names"))
     }
+
+    /// Get all collections with their member counts in a single query
+    ///
+    /// Uses batch query to avoid N+1 pattern when fetching collections for UI.
+    /// Each collection is returned with its member count pre-computed.
+    ///
+    /// # Returns
+    ///
+    /// Vec of (Node, member_count) tuples for all collection nodes
+    pub async fn get_all_collections_with_counts(
+        &self,
+    ) -> Result<Vec<(Node, usize)>, NodeServiceError> {
+        self.store
+            .get_all_collections_with_member_counts()
+            .await
+            .map_err(|e| db_error(e, "Failed to get collections with member counts"))
+    }
 }
 
 #[cfg(test)]
