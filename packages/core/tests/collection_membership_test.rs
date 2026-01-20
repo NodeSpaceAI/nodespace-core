@@ -360,7 +360,8 @@ mod collection_membership_tests {
     }
 
     #[tokio::test]
-    async fn test_nested_collections() -> Result<()> {
+    async fn test_nested_collections_via_member_of() -> Result<()> {
+        // Issue #808: Collection hierarchy uses member_of edges, not has_child
         let (store, _temp_dir) = create_test_db().await?;
 
         // Create nested collection hierarchy: hr -> policy -> vacation
@@ -402,21 +403,25 @@ mod collection_membership_tests {
             .await?
             .check()?;
 
-        // Create parent-child relationships using has_child edges
-        // This establishes the collection hierarchy
+        // Issue #808: Create hierarchy using member_of edges (child -> member_of -> parent)
+        // policy is member_of hr, vacation is member_of policy
         store
             .db()
             .query(
                 r#"
-                RELATE node:coll_hr->has_child->node:coll_policy CONTENT {
-                    order: 1.0,
+                RELATE node:coll_policy->relationship->node:coll_hr CONTENT {
+                    relationship_type: 'member_of',
+                    properties: {},
                     created_at: time::now(),
+                    modified_at: time::now(),
                     version: 1
                 };
 
-                RELATE node:coll_policy->has_child->node:coll_vacation CONTENT {
-                    order: 1.0,
+                RELATE node:coll_vacation->relationship->node:coll_policy CONTENT {
+                    relationship_type: 'member_of',
+                    properties: {},
                     created_at: time::now(),
+                    modified_at: time::now(),
                     version: 1
                 };
                 "#,
@@ -424,29 +429,27 @@ mod collection_membership_tests {
             .await?
             .check()?;
 
-        // Verify hierarchy by traversing from root
+        // Verify hierarchy: policy is member_of hr
         let result = store
             .db()
-            .query("SELECT out.content FROM has_child WHERE in = node:coll_hr")
+            .query("SELECT VALUE out.content FROM relationship WHERE in = node:coll_policy AND relationship_type = 'member_of'")
             .await?;
 
         let mut result = result.check()?;
-        let children: Vec<serde_json::Value> = result.take(0)?;
-        assert_eq!(children.len(), 1, "HR should have 1 child (policy)");
+        let parents: Vec<String> = result.take(0)?;
+        assert_eq!(parents.len(), 1, "Policy should have 1 parent (HR)");
+        assert_eq!(parents[0], "HR");
 
-        // Verify policy -> vacation link
+        // Verify hierarchy: vacation is member_of policy
         let result = store
             .db()
-            .query("SELECT out.content FROM has_child WHERE in = node:coll_policy")
+            .query("SELECT VALUE out.content FROM relationship WHERE in = node:coll_vacation AND relationship_type = 'member_of'")
             .await?;
 
         let mut result = result.check()?;
-        let grandchildren: Vec<serde_json::Value> = result.take(0)?;
-        assert_eq!(
-            grandchildren.len(),
-            1,
-            "Policy should have 1 child (vacation)"
-        );
+        let parents: Vec<String> = result.take(0)?;
+        assert_eq!(parents.len(), 1, "Vacation should have 1 parent (Policy)");
+        assert_eq!(parents[0], "Policy");
 
         Ok(())
     }
@@ -1086,7 +1089,9 @@ mod collection_service_tests {
     }
 
     #[tokio::test]
-    async fn test_collections_are_flat_no_hierarchy() -> Result<()> {
+    async fn test_collection_hierarchy_via_member_of() -> Result<()> {
+        // Issue #808: Collection path resolution creates hierarchy between collections
+        // using member_of edges, not has_child edges.
         let (store, _temp_dir) = create_test_store().await?;
         let collection_service = CollectionService::new(&store);
 
@@ -1103,19 +1108,178 @@ mod collection_service_tests {
             .await?
             .unwrap();
 
-        // Verify child has no parent (collections are flat)
+        // Verify child has no has_child parent (collections don't use has_child for hierarchy)
         let child_parent = store.get_parent(&child.id).await?;
         assert!(
             child_parent.is_none(),
-            "Collections should be flat - 'child' should have no parent node"
+            "Collections should NOT use has_child - 'child' should have no has_child parent"
         );
 
-        // Verify parent has no children (in the has_child sense)
+        // Verify parent has no has_child children
         let parent_children = store.get_children(Some(&parent.id)).await?;
         assert!(
             parent_children.is_empty(),
-            "Collections should be flat - 'parent' should have no child nodes"
+            "Collections should NOT use has_child - 'parent' should have no has_child children"
         );
+
+        // Issue #808: Verify hierarchy exists via member_of edges
+        // child should be a member_of parent
+        let child_memberships = collection_service.get_node_collections(&child.id).await?;
+        assert_eq!(
+            child_memberships.len(),
+            1,
+            "Child collection should belong to 1 parent collection via member_of"
+        );
+        assert_eq!(
+            child_memberships[0], parent.id,
+            "Child should be member_of parent collection"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_collection_hierarchy_three_levels() -> Result<()> {
+        // Issue #808: Test deeper hierarchy creation
+        let (store, _temp_dir) = create_test_store().await?;
+        let collection_service = CollectionService::new(&store);
+
+        // Create a 3-level path
+        collection_service
+            .resolve_path("grandparent:parent:child")
+            .await?;
+
+        // Get all collections
+        let grandparent = collection_service
+            .get_collection_by_name("grandparent")
+            .await?
+            .unwrap();
+        let parent = collection_service
+            .get_collection_by_name("parent")
+            .await?
+            .unwrap();
+        let child = collection_service
+            .get_collection_by_name("child")
+            .await?
+            .unwrap();
+
+        // Verify grandparent has no parent (root of hierarchy)
+        let grandparent_memberships = collection_service
+            .get_node_collections(&grandparent.id)
+            .await?;
+        assert!(
+            grandparent_memberships.is_empty(),
+            "Grandparent should have no parent collection"
+        );
+
+        // Verify parent is member_of grandparent
+        let parent_memberships = collection_service.get_node_collections(&parent.id).await?;
+        assert_eq!(parent_memberships.len(), 1);
+        assert_eq!(parent_memberships[0], grandparent.id);
+
+        // Verify child is member_of parent
+        let child_memberships = collection_service.get_node_collections(&child.id).await?;
+        assert_eq!(child_memberships.len(), 1);
+        assert_eq!(child_memberships[0], parent.id);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_collection_multi_parent_dag() -> Result<()> {
+        // Issue #808: Collections can have multiple parents (DAG structure)
+        // Example: "berlin" can be reached via multiple paths
+        let (store, _temp_dir) = create_test_store().await?;
+        let collection_service = CollectionService::new(&store);
+
+        // First path: hr:policy:vacation:berlin
+        collection_service
+            .resolve_path("hr:policy:vacation:berlin")
+            .await?;
+
+        // Second path: engineering:offices:berlin (berlin already exists, adds second parent)
+        collection_service
+            .resolve_path("engineering:offices:berlin")
+            .await?;
+
+        // Get berlin collection
+        let berlin = collection_service
+            .get_collection_by_name("berlin")
+            .await?
+            .unwrap();
+
+        // Verify berlin has TWO parents: vacation and offices
+        let berlin_memberships = collection_service.get_node_collections(&berlin.id).await?;
+        assert_eq!(
+            berlin_memberships.len(),
+            2,
+            "Berlin should have 2 parent collections (DAG structure)"
+        );
+
+        // Get parent collections
+        let vacation = collection_service
+            .get_collection_by_name("vacation")
+            .await?
+            .unwrap();
+        let offices = collection_service
+            .get_collection_by_name("offices")
+            .await?
+            .unwrap();
+
+        // Verify both parents are present
+        assert!(
+            berlin_memberships.contains(&vacation.id),
+            "Berlin should be member_of vacation"
+        );
+        assert!(
+            berlin_memberships.contains(&offices.id),
+            "Berlin should be member_of offices"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_collection_hierarchy_idempotent() -> Result<()> {
+        // Issue #808: Resolving the same path multiple times should not create duplicate relationships
+        let (store, _temp_dir) = create_test_store().await?;
+        let collection_service = CollectionService::new(&store);
+
+        // Resolve the same path multiple times
+        collection_service.resolve_path("a:b:c").await?;
+        collection_service.resolve_path("a:b:c").await?;
+        collection_service.resolve_path("a:b:c").await?;
+
+        // Get collections
+        let a = collection_service
+            .get_collection_by_name("a")
+            .await?
+            .unwrap();
+        let b = collection_service
+            .get_collection_by_name("b")
+            .await?
+            .unwrap();
+        let c = collection_service
+            .get_collection_by_name("c")
+            .await?
+            .unwrap();
+
+        // Verify each relationship exists exactly once
+        let b_memberships = collection_service.get_node_collections(&b.id).await?;
+        assert_eq!(
+            b_memberships.len(),
+            1,
+            "b should have exactly 1 parent despite multiple resolve_path calls"
+        );
+        assert_eq!(b_memberships[0], a.id);
+
+        let c_memberships = collection_service.get_node_collections(&c.id).await?;
+        assert_eq!(
+            c_memberships.len(),
+            1,
+            "c should have exactly 1 parent despite multiple resolve_path calls"
+        );
+        assert_eq!(c_memberships[0], b.id);
 
         Ok(())
     }

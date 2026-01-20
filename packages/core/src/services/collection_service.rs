@@ -372,7 +372,23 @@ where
     /// Resolve a collection path, creating collections as needed
     ///
     /// This method parses the path, finds or creates each segment in order,
-    /// and establishes parent-child relationships between them.
+    /// and establishes hierarchy relationships between them using `member_of` edges.
+    ///
+    /// # Collection Hierarchy (Issue #808)
+    ///
+    /// Collections form a DAG (Directed Acyclic Graph) where:
+    /// - Path `hr:policy:vacation` creates hierarchy using `member_of` edges
+    /// - `policy` is a member of `hr`, `vacation` is a member of `policy`
+    /// - Each collection can have multiple parents (DAG, not tree)
+    /// - Collection names are globally unique (case-insensitive)
+    ///
+    /// # Why `member_of` instead of `has_child`?
+    ///
+    /// Collections are nodes, and all nodes inherit `has_child` for document tree structure.
+    /// However, collection hierarchy uses `member_of` because:
+    /// 1. It's the same pattern as nodes belonging to collections (consistent semantics)
+    /// 2. It supports multi-parent DAG naturally (a collection can be in multiple paths)
+    /// 3. It distinguishes collection hierarchy from document tree hierarchy
     ///
     /// # Arguments
     ///
@@ -387,6 +403,7 @@ where
     /// ```ignore
     /// let service = CollectionService::new(&store);
     /// let resolved = service.resolve_path("hr:policy:vacation").await?;
+    /// // Creates: vacation -member_of-> policy -member_of-> hr
     /// println!("Leaf collection: {}", resolved.leaf.content);
     /// ```
     pub async fn resolve_path(&self, path: &str) -> Result<ResolvedPath, NodeServiceError> {
@@ -401,23 +418,36 @@ where
             .map_err(|e| db_error(e, "Failed to batch fetch collections"))?;
 
         let mut collections = Vec::with_capacity(parsed.segments.len());
+        let mut previous_collection_id: Option<String> = None;
 
-        // Collections are flat - paths are just naming conventions for navigation.
-        // Each segment is an independent collection with a globally unique name.
-        // No parent-child hierarchy between collections - a collection can be
-        // referenced via multiple paths (e.g., "hr:policy:vacation:berlin" and
-        // "engineering:office:berlin" both reference the same "berlin" collection).
+        // Issue #808: Collections form a hierarchical DAG structure.
+        // Each segment in the path is a member of the previous segment (its parent).
+        // Collection names are globally unique, so the same collection can
+        // appear in multiple paths (e.g., "hr:policy:vacation:berlin" and
+        // "engineering:offices:berlin" both reference the same "berlin" collection,
+        // which would have two parents: "vacation" and "offices").
         for segment in &parsed.segments {
             // Check if this segment exists (case-insensitive via normalized name)
             let (node, created) = match existing_collections.get(&segment.normalized_name) {
                 Some(existing) => (existing.clone(), false),
                 None => {
-                    // Create new collection (no parent - collections are flat)
-                    let new_node = self.create_collection(&segment.name, None).await?;
+                    // Create new collection
+                    let new_node = self.create_collection(&segment.name).await?;
                     (new_node, true)
                 }
             };
 
+            // Create hierarchy relationship: current collection is member_of parent collection
+            // Direction: child -> member_of -> parent (same as nodes belonging to collections)
+            // This is idempotent - if the relationship already exists, nothing happens
+            if let Some(parent_id) = &previous_collection_id {
+                self.store
+                    .add_to_collection(&node.id, parent_id)
+                    .await
+                    .map_err(|e| db_error(e, "Failed to create collection hierarchy"))?;
+            }
+
+            previous_collection_id = Some(node.id.clone());
             collections.push(ResolvedCollection { node, created });
         }
 
@@ -448,20 +478,16 @@ where
 
     /// Create a collection node
     ///
-    /// Collections are flat (no hierarchy between them). Paths like "hr:policy:vacation"
-    /// are naming conventions for navigation, not structural relationships.
+    /// Creates a new collection node with the given name. Hierarchy relationships
+    /// (member_of edges) are established separately in `resolve_path()`.
     ///
     /// # Arguments
     ///
     /// * `name` - The collection name (will be validated, must be globally unique)
-    async fn create_collection(
-        &self,
-        name: &str,
-        _parent_id: Option<&str>,
-    ) -> Result<Node, NodeServiceError> {
+    async fn create_collection(&self, name: &str) -> Result<Node, NodeServiceError> {
         let validated_name = validate_collection_name(name)?;
 
-        // Create the collection node (no parent - collections are flat)
+        // Create the collection node
         let node = Node::new("collection".to_string(), validated_name, json!({}));
 
         // Create in database
