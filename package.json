@@ -12,6 +12,8 @@
     "dev:browser": "bun run --cwd packages/desktop-app dev:browser",
     "dev:tauri": "bun run --cwd packages/desktop-app dev:tauri",
     "dev": "bun run dev:browser",
+    "demo:browser": "bun run --cwd packages/desktop-app demo:browser",
+    "demo:tauri": "bun run --cwd packages/desktop-app demo:tauri",
     "build": "bun run --cwd packages/desktop-app build",
     "test": "bun run --cwd packages/desktop-app test",
     "test:watch": "bun run --cwd packages/desktop-app test:watch",
