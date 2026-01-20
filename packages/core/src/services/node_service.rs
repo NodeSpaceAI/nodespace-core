@@ -2366,7 +2366,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust
+    /// ```no_run
     /// # use nodespace_core::services::NodeService;
     /// # use nodespace_core::db::SurrealStore;
     /// # use std::path::PathBuf;
