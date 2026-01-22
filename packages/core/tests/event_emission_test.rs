@@ -287,6 +287,7 @@ mod event_emission_tests {
             .expect("Should receive event");
 
         // Verify it's a RelationshipDeleted event with correct client_id
+        // Issue #813: Relationship IDs are now from universal `relationship` table
         match event {
             DomainEvent::RelationshipDeleted {
                 id,
@@ -295,7 +296,12 @@ mod event_emission_tests {
                 relationship_type,
                 source_client_id,
             } => {
-                assert!(id.contains("mentions"));
+                // Universal relationship table IDs contain "relationship:"
+                assert!(
+                    id.contains("relationship:"),
+                    "Expected relationship table ID, got: {}",
+                    id
+                );
                 assert_eq!(from_id, source_node.id);
                 assert_eq!(to_id, target_node.id);
                 assert_eq!(relationship_type, "mentions");

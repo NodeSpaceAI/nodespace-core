@@ -636,16 +636,18 @@ mod collection_membership_tests {
 mod collection_service_tests {
     use anyhow::Result;
     use nodespace_core::db::SurrealStore;
-    use nodespace_core::services::CollectionService;
+    use nodespace_core::services::{CollectionService, NodeService};
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    /// Helper to create test database with SurrealStore
-    async fn create_test_store() -> Result<(Arc<SurrealStore>, TempDir)> {
+    /// Helper to create test database with SurrealStore and NodeService
+    /// Issue #813: CollectionService now requires both store and node_service
+    async fn create_test_services() -> Result<(Arc<SurrealStore>, NodeService, TempDir)> {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
-        let store = Arc::new(SurrealStore::new(db_path).await?);
-        Ok((store, temp_dir))
+        let mut store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = NodeService::new(&mut store).await?;
+        Ok((store, node_service, temp_dir))
     }
 
     /// Helper to create a text node via raw SQL
@@ -672,8 +674,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_resolve_path_creates_collections() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Resolve a multi-level path - should create all collections
         let resolved = collection_service
@@ -697,8 +699,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_resolve_path_reuses_existing() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Resolve path twice
         let first = collection_service.resolve_path("engineering").await?;
@@ -716,8 +718,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_add_to_collection_by_path() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create a text node via raw SQL
         let node_id = "test-doc-1";
@@ -737,8 +739,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_add_to_collection_by_id() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create a collection first
         let resolved = collection_service.resolve_path("team").await?;
@@ -763,8 +765,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_remove_from_collection() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create node
         let node_id = "temp-doc-1";
@@ -798,8 +800,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_get_collection_members() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create collection
         let resolved = collection_service.resolve_path("docs").await?;
@@ -833,8 +835,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_node_multiple_collections() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create a node
         let node_id = "multi-coll-doc";
@@ -860,8 +862,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_find_collection_by_path() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // First verify collection doesn't exist
         let not_found = collection_service
@@ -883,8 +885,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_add_to_collection_idempotent() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create node
         let node_id = "idem-doc";
@@ -914,8 +916,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_resolve_nested_path_creates_hierarchy() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Resolve a 3-level path
         let resolved = collection_service.resolve_path("company:dept:team").await?;
@@ -942,8 +944,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_collection_with_special_characters() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create collection with spaces and special chars (but not colon)
         let _resolved = collection_service
@@ -961,8 +963,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_collection_name_uniqueness_enforced() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create first collection
         let resolved = collection_service.resolve_path("unique-test").await?;
@@ -998,8 +1000,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_collection_uniqueness_case_insensitive() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create collection with lowercase name
         collection_service.resolve_path("engineering").await?;
@@ -1022,8 +1024,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_collection_multi_path_same_leaf() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Scenario: "berlin" can be reached via multiple paths
         // hr:policy:vacation:berlin - creates hr, policy, vacation, berlin
@@ -1092,8 +1094,8 @@ mod collection_service_tests {
     async fn test_collection_hierarchy_via_member_of() -> Result<()> {
         // Issue #808: Collection path resolution creates hierarchy between collections
         // using member_of edges, not has_child edges.
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create collections via path
         collection_service.resolve_path("parent:child").await?;
@@ -1141,8 +1143,8 @@ mod collection_service_tests {
     #[tokio::test]
     async fn test_collection_hierarchy_three_levels() -> Result<()> {
         // Issue #808: Test deeper hierarchy creation
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create a 3-level path
         collection_service
@@ -1189,8 +1191,8 @@ mod collection_service_tests {
     async fn test_collection_multi_parent_dag() -> Result<()> {
         // Issue #808: Collections can have multiple parents (DAG structure)
         // Example: "berlin" can be reached via multiple paths
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // First path: hr:policy:vacation:berlin
         collection_service
@@ -1242,8 +1244,8 @@ mod collection_service_tests {
     #[tokio::test]
     async fn test_collection_hierarchy_idempotent() -> Result<()> {
         // Issue #808: Resolving the same path multiple times should not create duplicate relationships
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Resolve the same path multiple times
         collection_service.resolve_path("a:b:c").await?;
@@ -1286,8 +1288,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_member_of_only_allows_collection_targets() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create a text node (not a collection)
         create_text_node(&store, "text-node", "Just a text node").await?;
@@ -1316,8 +1318,8 @@ mod collection_service_tests {
 
     #[tokio::test]
     async fn test_member_of_nonexistent_collection_fails() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-        let collection_service = CollectionService::new(&store);
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create a text node
         create_text_node(&store, "doc-node", "Document").await?;
@@ -1341,65 +1343,70 @@ mod collection_service_tests {
         Ok(())
     }
 
-    /// Test that collection membership operations emit unified relationship events (Issue #811)
+    /// Test that collection membership operations emit unified relationship events
     ///
-    /// Events are now emitted at the store level as RelationshipCreated/RelationshipDeleted
-    /// with relationship_type="member_of", replacing the old CollectionMemberAdded/Removed events.
+    /// **Issue #813**: CollectionService now delegates to NodeService for event emission.
+    /// This test verifies that events are properly emitted via NodeService.
     #[tokio::test]
     async fn test_collection_membership_events_emitted() -> Result<()> {
         use nodespace_core::db::events::DomainEvent;
+        use tokio::time::{timeout, Duration};
 
-        let (store, _temp_dir) = create_test_store().await?;
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
-        // Subscribe to store events (Issue #811: events now emitted from store)
-        let mut event_rx = store.subscribe_to_events();
-
-        // Create service with client_id for source tracking
-        let collection_service =
-            CollectionService::with_client(&store, Some("test-client".to_string()));
+        // Subscribe to NodeService events (Issue #813: events come from NodeService)
+        let mut event_rx = node_service.subscribe_to_events();
 
         // Create a collection
         let resolved = collection_service.resolve_path("events-test").await?;
         let collection_id = resolved.leaf_id().to_string();
 
-        // Create a text node
+        // Drain creation events from resolve_path
+        while event_rx.try_recv().is_ok() {}
+
+        // Create a text node via raw SQL (doesn't go through NodeService)
         create_text_node(&store, "event-doc", "Event Test Doc").await?;
 
-        // Add node to collection - should emit RelationshipCreated (Issue #811)
+        // Add node to collection - should emit RelationshipCreated via NodeService
         collection_service
             .add_to_collection("event-doc", &collection_id)
             .await?;
 
-        // Check for RelationshipCreated event (unified format)
-        let event = event_rx.try_recv()?;
+        // Check for RelationshipCreated event (unified format from NodeService)
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("Event should be emitted within 1 second")
+            .expect("Should receive event");
         match event {
             DomainEvent::RelationshipCreated {
                 relationship,
-                source_client_id,
+                source_client_id: _,
             } => {
                 assert_eq!(relationship.from_id, "event-doc");
                 assert_eq!(relationship.to_id, collection_id);
                 assert_eq!(relationship.relationship_type, "member_of");
-                assert_eq!(source_client_id, Some("test-client".to_string()));
             }
             other => panic!("Expected RelationshipCreated, got {:?}", other),
         }
 
-        // Remove node from collection - should emit RelationshipDeleted (Issue #811)
+        // Remove node from collection - should emit RelationshipDeleted via NodeService
         collection_service
             .remove_from_collection("event-doc", &collection_id)
             .await?;
 
-        // Check for RelationshipDeleted event (unified format)
-        let event = event_rx.try_recv()?;
+        // Check for RelationshipDeleted event (unified format from NodeService)
+        let event = timeout(Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("Event should be emitted within 1 second")
+            .expect("Should receive event");
         match event {
             DomainEvent::RelationshipDeleted {
                 relationship_type,
-                source_client_id,
+                source_client_id: _,
                 ..
             } => {
                 assert_eq!(relationship_type, "member_of");
-                assert_eq!(source_client_id, Some("test-client".to_string()));
             }
             other => panic!("Expected RelationshipDeleted, got {:?}", other),
         }
@@ -1407,32 +1414,45 @@ mod collection_service_tests {
         Ok(())
     }
 
+    /// Test that collection membership operations work correctly end-to-end
+    ///
+    /// Issue #813: This test verifies basic add/remove membership operations
+    /// work through the CollectionService -> NodeService delegation pattern.
     #[tokio::test]
-    async fn test_collection_service_without_events_does_not_fail() -> Result<()> {
-        let (store, _temp_dir) = create_test_store().await?;
-
-        // Create service WITHOUT event emission (default constructor)
-        let collection_service = CollectionService::new(&store);
+    async fn test_collection_membership_add_remove_operations() -> Result<()> {
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
 
         // Create a collection
-        let resolved = collection_service.resolve_path("no-events-test").await?;
+        let resolved = collection_service.resolve_path("operations-test").await?;
         let collection_id = resolved.leaf_id().to_string();
 
         // Create a text node
-        create_text_node(&store, "no-event-doc", "No Event Test Doc").await?;
+        create_text_node(&store, "ops-doc", "Operations Test Doc").await?;
 
-        // Operations should succeed without event emission configured
+        // Add node to collection
         collection_service
-            .add_to_collection("no-event-doc", &collection_id)
+            .add_to_collection("ops-doc", &collection_id)
             .await?;
 
-        collection_service
-            .remove_from_collection("no-event-doc", &collection_id)
-            .await?;
-
-        // Verify the membership was removed (operations worked correctly)
+        // Verify membership was added
         let memberships = collection_service
-            .get_node_collections("no-event-doc")
+            .get_node_collections("ops-doc")
+            .await?;
+        assert_eq!(memberships.len(), 1, "Node should have one membership");
+        assert!(
+            memberships.iter().any(|id| id.contains(&collection_id)),
+            "Node should be member of the created collection"
+        );
+
+        // Remove from collection
+        collection_service
+            .remove_from_collection("ops-doc", &collection_id)
+            .await?;
+
+        // Verify the membership was removed
+        let memberships = collection_service
+            .get_node_collections("ops-doc")
             .await?;
         assert!(
             memberships.is_empty(),

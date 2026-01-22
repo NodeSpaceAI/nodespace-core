@@ -90,7 +90,8 @@ where
 
     // Fetch all available collection names for AI agent awareness
     // This enables agents to use collection-based filtering in search_semantic
-    let collection_service = CollectionService::new(node_service.store());
+    // Issue #813: CollectionService now requires NodeService for event emission
+    let collection_service = CollectionService::new(node_service.store(), node_service);
     let collections = collection_service
         .get_all_collection_names()
         .await

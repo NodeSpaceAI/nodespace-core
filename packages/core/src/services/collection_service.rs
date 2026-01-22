@@ -303,19 +303,20 @@ impl ResolvedPath {
 /// High-level collection operations
 ///
 /// This service provides path resolution, membership management, and collection
-/// queries. It uses `SurrealStore` for database operations.
+/// queries. It delegates to `NodeService` for relationship operations to ensure
+/// proper event emission.
 ///
-/// # Event Emission (Issue #811)
+/// # Event Emission (Issue #813)
 ///
-/// Domain events are now emitted at the store level via unified RelationshipCreated/
-/// RelationshipDeleted events. The client_id is passed to store methods for source tracking.
+/// Per service-layer-architecture.md, event emission happens in NodeService.
+/// CollectionService delegates `member_of` operations to NodeService, which
+/// emits RelationshipCreated/RelationshipDeleted events.
 pub struct CollectionService<'a, C = surrealdb::engine::local::Db>
 where
     C: surrealdb::Connection,
 {
     store: &'a Arc<SurrealStore<C>>,
-    /// Optional client identifier for event source tracking (passed to store methods)
-    client_id: Option<String>,
+    node_service: &'a super::NodeService<C>,
 }
 
 impl<'a, C> CollectionService<'a, C>
@@ -327,21 +328,9 @@ where
     /// # Arguments
     ///
     /// * `store` - The database store
-    pub fn new(store: &'a Arc<SurrealStore<C>>) -> Self {
-        Self {
-            store,
-            client_id: None,
-        }
-    }
-
-    /// Create a CollectionService with client ID for event source tracking
-    ///
-    /// # Arguments
-    ///
-    /// * `store` - The database store
-    /// * `client_id` - Client ID for event source tracking (passed to store methods)
-    pub fn with_client(store: &'a Arc<SurrealStore<C>>, client_id: Option<String>) -> Self {
-        Self { store, client_id }
+    /// * `node_service` - NodeService for relationship operations and event emission
+    pub fn new(store: &'a Arc<SurrealStore<C>>, node_service: &'a super::NodeService<C>) -> Self {
+        Self { store, node_service }
     }
 
     /// Resolve a collection path, creating collections as needed
@@ -376,7 +365,7 @@ where
     /// # Example
     ///
     /// ```ignore
-    /// let service = CollectionService::new(&store);
+    /// let service = CollectionService::new(&store, &node_service);
     /// let resolved = service.resolve_path("hr:policy:vacation").await?;
     /// // Creates: vacation -member_of-> policy -member_of-> hr
     /// println!("Leaf collection: {}", resolved.leaf.content);
@@ -415,12 +404,12 @@ where
             // Create hierarchy relationship: current collection is member_of parent collection
             // Direction: child -> member_of -> parent (same as nodes belonging to collections)
             // This is idempotent - if the relationship already exists, nothing happens
-            // Issue #811: Store now emits unified RelationshipCreated event
+            // Issue #813: Delegate to NodeService for event emission
             if let Some(parent_id) = &previous_collection_id {
-                self.store
-                    .add_to_collection(&node.id, parent_id, self.client_id.clone())
+                self.node_service
+                    .create_builtin_relationship(&node.id, "member_of", parent_id, json!({}))
                     .await
-                    .map_err(|e| db_error(e, "Failed to create collection hierarchy"))?;
+                    .map_err(|e| NodeServiceError::query_failed(format!("Failed to create collection hierarchy: {}", e)))?;
             }
 
             previous_collection_id = Some(node.id.clone());
@@ -460,20 +449,26 @@ where
     /// # Arguments
     ///
     /// * `name` - The collection name (will be validated, must be globally unique)
+    ///
+    /// # Issue #813
+    ///
+    /// Uses NodeService.create_node() to ensure NodeCreated event emission.
+    /// The pattern is "read from store, write through NodeService".
     async fn create_collection(&self, name: &str) -> Result<Node, NodeServiceError> {
         let validated_name = validate_collection_name(name)?;
 
         // Create the collection node
         let node = Node::new("collection".to_string(), validated_name, json!({}));
+        let node_id = node.id.clone();
 
-        // Create in database
-        let created = self
-            .store
-            .create_node(node, None)
-            .await
-            .map_err(|e| db_error(e, "Failed to create collection node"))?;
+        // Issue #813: Use NodeService for node creation (emits NodeCreated event)
+        self.node_service.create_node(node).await?;
 
-        Ok(created)
+        // Fetch and return the created node
+        self.node_service
+            .get_node(&node_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(&node_id))
     }
 
     /// Add a node to a collection by path
@@ -492,11 +487,10 @@ where
     ) -> Result<ResolvedPath, NodeServiceError> {
         let resolved = self.resolve_path(collection_path).await?;
 
-        // Issue #811: Store now emits unified RelationshipCreated event
-        self.store
-            .add_to_collection(node_id, &resolved.leaf.id, self.client_id.clone())
-            .await
-            .map_err(|e| db_error(e, "Failed to add node to collection"))?;
+        // Issue #813: Delegate to NodeService for event emission
+        self.node_service
+            .create_builtin_relationship(node_id, "member_of", &resolved.leaf.id, json!({}))
+            .await?;
 
         Ok(resolved)
     }
@@ -538,11 +532,10 @@ where
             )));
         }
 
-        // Issue #811: Store now emits unified RelationshipCreated event
-        self.store
-            .add_to_collection(node_id, collection_id, self.client_id.clone())
-            .await
-            .map_err(|e| db_error(e, "Failed to add node to collection"))?;
+        // Issue #813: Delegate to NodeService for event emission
+        self.node_service
+            .create_builtin_relationship(node_id, "member_of", collection_id, json!({}))
+            .await?;
 
         Ok(())
     }
@@ -558,11 +551,10 @@ where
         node_id: &str,
         collection_id: &str,
     ) -> Result<(), NodeServiceError> {
-        // Issue #811: Store now emits unified RelationshipDeleted event
-        self.store
-            .remove_from_collection(node_id, collection_id, self.client_id.clone())
-            .await
-            .map_err(|e| db_error(e, "Failed to remove node from collection"))?;
+        // Issue #813: Delegate to NodeService for event emission
+        self.node_service
+            .delete_builtin_relationship(node_id, "member_of", collection_id)
+            .await?;
 
         Ok(())
     }

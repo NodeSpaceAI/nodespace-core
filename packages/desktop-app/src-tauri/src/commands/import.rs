@@ -366,10 +366,10 @@ async fn import_markdown_content(
         nodes_created += created_ids.len();
     }
 
-    // Add to collection if specified
+    // Add to collection if specified (Issue #813: CollectionService needs NodeService for event emission)
     if let Some(collection_path) = collection {
         use nodespace_core::services::CollectionService;
-        let collection_service = CollectionService::new(node_service.store());
+        let collection_service = CollectionService::new(node_service.store(), node_service);
         collection_service
             .add_to_collection_by_path(&root_id, collection_path)
             .await

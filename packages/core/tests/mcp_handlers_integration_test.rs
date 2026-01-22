@@ -2965,8 +2965,8 @@ async fn test_handle_get_node_collections_with_membership() {
     .unwrap();
     let node_id = node["node_id"].as_str().unwrap();
 
-    // Add node to collection
-    let collection_service = nodespace_core::services::CollectionService::new(node_service.store());
+    // Add node to collection (Issue #813: CollectionService now requires NodeService reference)
+    let collection_service = nodespace_core::services::CollectionService::new(node_service.store(), &node_service);
     let _ = collection_service
         .add_to_collection(node_id, collection_id)
         .await;
@@ -3122,8 +3122,8 @@ async fn test_handle_query_nodes_with_collection_id() {
     .unwrap();
     let node_id = node["node_id"].as_str().unwrap();
 
-    // Add to collection
-    let collection_service = nodespace_core::services::CollectionService::new(node_service.store());
+    // Add to collection (Issue #813: CollectionService now requires NodeService reference)
+    let collection_service = nodespace_core::services::CollectionService::new(node_service.store(), &node_service);
     let _ = collection_service
         .add_to_collection(node_id, collection_id)
         .await;

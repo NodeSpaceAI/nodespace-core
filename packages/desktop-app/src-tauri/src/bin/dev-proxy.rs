@@ -1320,7 +1320,7 @@ async fn get_all_collections(State(state): State<AppState>) -> ApiResult<Vec<Col
     use nodespace_core::services::CollectionService;
 
     let store = state.node_service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &state.node_service);
 
     // Try the optimized single-query method first
     match collection_service.get_all_collections_with_counts().await {
@@ -1397,7 +1397,7 @@ async fn get_collection_members(
     use nodespace_core::services::CollectionService;
 
     let store = state.node_service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &state.node_service);
 
     // Get member IDs
     let member_ids = collection_service

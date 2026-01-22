@@ -857,7 +857,7 @@ where
 
     // Add root node to collection if specified
     let _collection_id = if let Some(path) = &params.collection {
-        let collection_service = CollectionService::new(&node_service.store);
+        let collection_service = CollectionService::new(&node_service.store, node_service);
         let resolved = collection_service
             .add_to_collection_by_path(&root_id, path)
             .await

@@ -260,7 +260,7 @@ where
 
     // Add to collection if specified
     let collection_id = if let Some(path) = &collection_path {
-        let collection_service = CollectionService::new(&node_service.store);
+        let collection_service = CollectionService::new(&node_service.store, node_service);
         let resolved = collection_service
             .add_to_collection_by_path(&node_id, path)
             .await
@@ -392,7 +392,7 @@ where
     };
 
     // Handle collection operations
-    let collection_service = CollectionService::new(&node_service.store);
+    let collection_service = CollectionService::new(&node_service.store, node_service);
     let mut collection_added = None;
     let mut collection_removed = None;
 
@@ -493,7 +493,7 @@ where
 
     // Resolve collection ID if path provided
     let collection_id = if let Some(path) = &params.collection {
-        let collection_service = CollectionService::new(&node_service.store);
+        let collection_service = CollectionService::new(&node_service.store, node_service);
         // Use resolve_path to find the collection (don't create if doesn't exist)
         match collection_service.resolve_path(path).await {
             Ok(resolved) => Some(resolved.leaf_id().to_string()),
@@ -514,7 +514,7 @@ where
     // If filtering by collection, get member IDs first
     let collection_member_ids: Option<std::collections::HashSet<String>> =
         if let Some(coll_id) = &collection_id {
-            let collection_service = CollectionService::new(&node_service.store);
+            let collection_service = CollectionService::new(&node_service.store, node_service);
             let members = collection_service
                 .get_collection_members(coll_id)
                 .await
@@ -1285,7 +1285,7 @@ where
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Get collection memberships via CollectionService
-    let collection_service = CollectionService::new(&node_service.store);
+    let collection_service = CollectionService::new(&node_service.store, node_service);
     let collection_ids = collection_service
         .get_node_collections(&params.node_id)
         .await

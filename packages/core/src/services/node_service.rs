@@ -1508,16 +1508,26 @@ where
             &root_id
         };
 
-        // Issue #811: Store now emits unified RelationshipCreated event
-        self.store
-            .create_mention(
-                mentioning_node_id,
-                mentioned_node_id,
-                final_root_id,
-                self.client_id.clone(),
-            )
+        // Issue #813: Store returns relationship ID, service emits event
+        let relationship_id = self
+            .store
+            .create_mention(mentioning_node_id, mentioned_node_id, final_root_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // Emit event if relationship was created (not already existing)
+        if let Some(rel_id) = relationship_id {
+            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+                relationship: crate::db::events::RelationshipEvent {
+                    id: rel_id,
+                    from_id: mentioning_node_id.to_string(),
+                    to_id: mentioned_node_id.to_string(),
+                    relationship_type: "mentions".to_string(),
+                    properties: serde_json::json!({"root_id": final_root_id}),
+                },
+                source_client_id: self.client_id.clone(),
+            });
+        }
 
         Ok(())
     }
@@ -1555,15 +1565,157 @@ where
         mentioning_node_id: &str,
         mentioned_node_id: &str,
     ) -> Result<(), NodeServiceError> {
-        // Issue #811: Store now emits unified RelationshipDeleted event
-        self.store
-            .delete_mention(
-                mentioning_node_id,
-                mentioned_node_id,
-                self.client_id.clone(),
-            )
+        // Issue #813: Store returns relationship ID, service emits event
+        let relationship_id = self
+            .store
+            .delete_mention(mentioning_node_id, mentioned_node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // Emit event if relationship was deleted (existed)
+        if let Some(rel_id) = relationship_id {
+            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
+                id: rel_id,
+                from_id: mentioning_node_id.to_string(),
+                to_id: mentioned_node_id.to_string(),
+                relationship_type: "mentions".to_string(),
+                source_client_id: self.client_id.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Builtin Relationship Operations (Issue #813)
+    // ========================================================================
+    //
+    // These methods handle builtin relationship types: member_of, has_child
+    // They use the universal `relationship` table with `relationship_type` discriminator.
+    // Event emission happens here, not in SurrealStore (service layer architecture).
+
+    /// Create a builtin relationship between two nodes
+    ///
+    /// Creates a relationship in the universal `relationship` table with the specified type.
+    /// This is idempotent - if the relationship already exists, nothing happens.
+    ///
+    /// # Arguments
+    ///
+    /// * `from_id` - The source node ID
+    /// * `relationship_type` - The relationship type (e.g., "member_of", "has_child")
+    /// * `to_id` - The target node ID
+    /// * `properties` - Optional properties for the relationship
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful or relationship already exists
+    ///
+    /// # Supported Relationship Types
+    ///
+    /// - `member_of` - Node belongs to a collection (node → collection)
+    /// - `has_child` - Parent-child hierarchy (parent → child)
+    ///
+    /// Note: For `mentions`, use `create_mention()` which handles root_id context.
+    ///
+    /// # Validation (Issue #814)
+    ///
+    /// - `member_of`: Target must be a collection node
+    /// - `has_child`: Validates parent-child hierarchy constraints
+    /// - `mentions`: Creates link between nodes (no type restriction)
+    pub async fn create_builtin_relationship(
+        &self,
+        from_id: &str,
+        relationship_type: &str,
+        to_id: &str,
+        properties: Value,
+    ) -> Result<(), NodeServiceError> {
+        // Type-specific validation (Issue #814)
+        match relationship_type {
+            "member_of" => {
+                // Target must be a collection node
+                let target = self
+                    .get_node(to_id)
+                    .await?
+                    .ok_or_else(|| NodeServiceError::node_not_found(to_id))?;
+                if target.node_type != "collection" {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "member_of target must be a collection node, got '{}'",
+                        target.node_type
+                    )));
+                }
+            }
+            "has_child" | "mentions" => {
+                // No type restrictions for these relationships
+            }
+            _ => {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "Unknown built-in relationship type: {}",
+                    relationship_type
+                )));
+            }
+        }
+
+        // Issue #813: Store returns relationship ID, service emits event
+        let relationship_id = self
+            .store
+            .create_builtin_relationship(from_id, relationship_type, to_id, &properties)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // Emit event if relationship was created (not already existing)
+        if let Some(rel_id) = relationship_id {
+            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+                relationship: crate::db::events::RelationshipEvent {
+                    id: rel_id,
+                    from_id: from_id.to_string(),
+                    to_id: to_id.to_string(),
+                    relationship_type: relationship_type.to_string(),
+                    properties: properties.clone(),
+                },
+                source_client_id: self.client_id.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Delete a builtin relationship between two nodes
+    ///
+    /// Removes a relationship from the universal `relationship` table.
+    /// This is idempotent - succeeds even if relationship doesn't exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `from_id` - The source node ID
+    /// * `relationship_type` - The relationship type (e.g., "member_of", "has_child")
+    /// * `to_id` - The target node ID
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if successful
+    pub async fn delete_builtin_relationship(
+        &self,
+        from_id: &str,
+        relationship_type: &str,
+        to_id: &str,
+    ) -> Result<(), NodeServiceError> {
+        // Issue #813: Store returns relationship ID, service emits event
+        let relationship_id = self
+            .store
+            .delete_builtin_relationship(from_id, relationship_type, to_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // Emit event if relationship was deleted (existed)
+        if let Some(rel_id) = relationship_id {
+            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
+                id: rel_id,
+                from_id: from_id.to_string(),
+                to_id: to_id.to_string(),
+                relationship_type: relationship_type.to_string(),
+                source_client_id: self.client_id.clone(),
+            });
+        }
 
         Ok(())
     }
@@ -4189,13 +4341,28 @@ where
             }
         }
 
-        // Issue #811: Store now emits unified RelationshipCreated event
-        self.store
-            .create_mention(source_id, target_id, source_id, self.client_id.clone())
+        // Issue #813: Store returns relationship ID, service emits event
+        let relationship_id = self
+            .store
+            .create_mention(source_id, target_id, source_id)
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to insert mention: {}", e))
             })?;
+
+        // Emit event if relationship was created (not already existing)
+        if let Some(rel_id) = relationship_id {
+            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+                relationship: crate::db::events::RelationshipEvent {
+                    id: rel_id,
+                    from_id: source_id.to_string(),
+                    to_id: target_id.to_string(),
+                    relationship_type: "mentions".to_string(),
+                    properties: serde_json::json!({"root_id": source_id}),
+                },
+                source_client_id: self.client_id.clone(),
+            });
+        }
 
         Ok(())
     }
@@ -4229,13 +4396,25 @@ where
         source_id: &str,
         target_id: &str,
     ) -> Result<(), NodeServiceError> {
-        // Issue #811: Store now emits unified RelationshipDeleted event
-        self.store
-            .delete_mention(source_id, target_id, self.client_id.clone())
+        // Issue #813: Store returns relationship ID, service emits event
+        let relationship_id = self
+            .store
+            .delete_mention(source_id, target_id)
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to delete mention: {}", e))
             })?;
+
+        // Emit event if relationship was deleted (existed)
+        if let Some(rel_id) = relationship_id {
+            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
+                id: rel_id,
+                from_id: source_id.to_string(),
+                to_id: target_id.to_string(),
+                relationship_type: "mentions".to_string(),
+                source_client_id: self.client_id.clone(),
+            });
+        }
 
         Ok(())
     }
@@ -4521,140 +4700,6 @@ where
         Ok(())
     }
 
-    /// Create a built-in relationship (member_of, has_child, mentions)
-    ///
-    /// Built-in relationships are universally available on ALL node types and
-    /// use the unified `relationship` table with a `relationship_type` discriminator.
-    ///
-    /// # Arguments
-    ///
-    /// * `source_id` - ID of the source node
-    /// * `relationship_name` - One of: "member_of", "has_child", "mentions"
-    /// * `target_id` - ID of the target node
-    /// * `edge_data` - Optional properties for the relationship
-    ///
-    /// # Validation
-    ///
-    /// - `member_of`: Target must be a collection node
-    /// - `has_child`: Validates parent-child hierarchy constraints
-    /// - `mentions`: Creates bidirectional link between nodes
-    async fn create_builtin_relationship(
-        &self,
-        source_id: &str,
-        relationship_name: &str,
-        target_id: &str,
-        edge_data: Value,
-    ) -> Result<(), NodeServiceError> {
-        // Validate target node exists
-        let target = self
-            .get_node(target_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
-
-        // Type-specific validation
-        match relationship_name {
-            "member_of" => {
-                // Target must be a collection node
-                if target.node_type != "collection" {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "member_of target must be a collection node, got '{}'",
-                        target.node_type
-                    )));
-                }
-            }
-            "has_child" => {
-                // has_child is managed by the hierarchy system - validate but allow
-                // This enables MCP clients to establish parent-child relationships
-            }
-            "mentions" => {
-                // mentions can link any two nodes - no type restriction
-            }
-            _ => {
-                return Err(NodeServiceError::invalid_update(format!(
-                    "Unknown built-in relationship type: {}",
-                    relationship_name
-                )));
-            }
-        }
-
-        // Create SurrealDB Things for source and target
-        let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
-        let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
-
-        // Check if relationship already exists (idempotent)
-        let check_query = r#"
-            SELECT VALUE id FROM relationship
-            WHERE in = $source AND out = $target AND relationship_type = $rel_type
-        "#;
-
-        // Convert to owned String to satisfy lifetime requirements
-        let rel_type_owned = relationship_name.to_string();
-
-        let mut check_result = self
-            .store
-            .db()
-            .query(check_query)
-            .bind(("source", source_thing.clone()))
-            .bind(("target", target_thing.clone()))
-            .bind(("rel_type", rel_type_owned.clone()))
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!(
-                    "Failed to check existing relationship: {}",
-                    e
-                ))
-            })?;
-
-        let existing: Vec<surrealdb::sql::Thing> = check_result.take(0).map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to parse relationship check: {}", e))
-        })?;
-
-        if !existing.is_empty() {
-            // Relationship already exists - idempotent success
-            return Ok(());
-        }
-
-        // Merge edge_data with required fields
-        let properties =
-            if edge_data.is_null() || edge_data.as_object().is_none_or(|o| o.is_empty()) {
-                serde_json::json!({})
-            } else {
-                edge_data
-            };
-
-        // Create the relationship in the unified relationship table
-        let create_query = r#"
-            RELATE $source->relationship->$target CONTENT {
-                relationship_type: $rel_type,
-                properties: $properties,
-                created_at: time::now(),
-                modified_at: time::now(),
-                version: 1
-            } RETURN id
-        "#;
-
-        self.store
-            .db()
-            .query(create_query)
-            .bind(("source", source_thing))
-            .bind(("target", target_thing))
-            .bind(("rel_type", rel_type_owned))
-            .bind(("properties", properties))
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!(
-                    "Failed to create built-in relationship: {}",
-                    e
-                ))
-            })?;
-
-        // Note: Event emission for built-in relationships is handled by the store layer
-        // (SurrealStore.add_to_collection emits RelationshipCreated for member_of)
-        // Issue #813 will move all event emission to NodeService
-
-        Ok(())
-    }
-
     /// Delete a relationship between two nodes
     ///
     /// Removes the edge between the source and target nodes for the specified relationship.
@@ -4760,48 +4805,6 @@ where
         // TODO: Emit RelationshipDeleted event for custom relationships
         // The unified event system (Issue #811) supports custom relationship types,
         // but we need to capture the relationship ID from the query result.
-
-        Ok(())
-    }
-
-    /// Delete a built-in relationship (member_of, has_child, mentions)
-    ///
-    /// Built-in relationships use the universal `relationship` table.
-    /// This method is idempotent - succeeds even if the relationship doesn't exist.
-    async fn delete_builtin_relationship(
-        &self,
-        source_id: &str,
-        relationship_name: &str,
-        target_id: &str,
-    ) -> Result<(), NodeServiceError> {
-        let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
-        let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
-
-        // Delete from the unified relationship table
-        let delete_query = r#"
-            DELETE FROM relationship
-            WHERE in = $source AND out = $target AND relationship_type = $rel_type
-        "#;
-
-        // Convert to owned String to satisfy lifetime requirements
-        let rel_type_owned = relationship_name.to_string();
-
-        self.store
-            .db()
-            .query(delete_query)
-            .bind(("source", source_thing))
-            .bind(("target", target_thing))
-            .bind(("rel_type", rel_type_owned))
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!(
-                    "Failed to delete built-in relationship: {}",
-                    e
-                ))
-            })?;
-
-        // Note: Event emission for built-in relationships is handled by the store layer
-        // Issue #813 will move all event emission to NodeService
 
         Ok(())
     }

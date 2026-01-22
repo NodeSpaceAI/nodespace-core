@@ -182,7 +182,7 @@ where
     // Resolve collection ID and get member IDs if filtering by collection
     let (collection_id, collection_member_ids): (Option<String>, Option<HashSet<String>>) =
         if let Some(path) = &params.collection {
-            let collection_service = CollectionService::new(embedding_service.store());
+            let collection_service = CollectionService::new(embedding_service.store(), node_service);
             match collection_service.resolve_path(path).await {
                 Ok(resolved) => {
                     let coll_id = resolved.leaf_id().to_string();
@@ -215,7 +215,7 @@ where
                 }
             }
         } else if let Some(coll_id) = &params.collection_id {
-            let collection_service = CollectionService::new(embedding_service.store());
+            let collection_service = CollectionService::new(embedding_service.store(), node_service);
             let members = collection_service
                 .get_collection_members(coll_id)
                 .await
@@ -231,7 +231,7 @@ where
     let excluded_node_ids: HashSet<String> = if let Some(exclude_paths) =
         &params.exclude_collections
     {
-        let collection_service = CollectionService::new(embedding_service.store());
+        let collection_service = CollectionService::new(embedding_service.store(), node_service);
         let mut excluded = HashSet::new();
 
         for path in exclude_paths {

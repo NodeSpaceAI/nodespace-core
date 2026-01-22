@@ -70,7 +70,7 @@ pub async fn get_all_collections(
     service: State<'_, NodeService>,
 ) -> Result<Vec<CollectionInfo>, CommandError> {
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     // Single batch query fetches collections with member counts (avoids N+1 pattern)
     let collections_with_counts = collection_service
@@ -118,7 +118,7 @@ pub async fn get_collection_members(
     collection_id: String,
 ) -> Result<Vec<Value>, CommandError> {
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     // Get member IDs
     let member_ids = collection_service
@@ -168,7 +168,7 @@ pub async fn get_collection_members_recursive(
     collection_id: String,
 ) -> Result<Vec<Value>, CommandError> {
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     let member_ids = collection_service
         .get_collection_members_recursive(&collection_id)
@@ -223,7 +223,7 @@ pub async fn get_node_collections(
     node_id: String,
 ) -> Result<Vec<String>, CommandError> {
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     collection_service
         .get_node_collections(&node_id)
@@ -262,7 +262,7 @@ pub async fn add_node_to_collection(
     collection_id: String,
 ) -> Result<(), CommandError> {
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     collection_service
         .add_to_collection(&node_id, &collection_id)
@@ -301,7 +301,7 @@ pub async fn add_node_to_collection_path(
     collection_path: String,
 ) -> Result<String, CommandError> {
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     let resolved = collection_service
         .add_to_collection_by_path(&node_id, &collection_path)
@@ -342,7 +342,7 @@ pub async fn remove_node_from_collection(
     collection_id: String,
 ) -> Result<(), CommandError> {
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     collection_service
         .remove_from_collection(&node_id, &collection_id)
@@ -372,7 +372,7 @@ pub async fn find_collection_by_path(
     collection_path: String,
 ) -> Result<Option<Value>, CommandError> {
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     let result = collection_service
         .find_collection_by_path(&collection_path)
@@ -405,7 +405,7 @@ pub async fn get_collection_by_name(
     name: String,
 ) -> Result<Option<Value>, CommandError> {
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     let result = collection_service
         .get_collection_by_name(&name)
@@ -445,7 +445,7 @@ pub async fn create_collection(
 
     // Check if collection with this name already exists
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     if collection_service
         .get_collection_by_name(&name)
@@ -514,7 +514,7 @@ pub async fn rename_collection(
 
     // Check if name is already taken by another collection
     let store = service.store();
-    let collection_service = CollectionService::new(store);
+    let collection_service = CollectionService::new(store, &service);
 
     if let Some(existing) = collection_service
         .get_collection_by_name(&new_name)

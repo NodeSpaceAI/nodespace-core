@@ -45,7 +45,7 @@
 //! }
 //! ```
 
-use crate::db::events::{DomainEvent, RelationshipEvent};
+use crate::db::events::DomainEvent;
 use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
 use anyhow::{Context, Result};
@@ -527,15 +527,6 @@ where
     }
 
     /// Emit a unified relationship event (Issue #811)
-    ///
-    /// Called internally by relationship mutation methods to broadcast
-    /// `RelationshipCreated`, `RelationshipUpdated`, or `RelationshipDeleted` events.
-    /// This ensures all relationship types emit events from a single location.
-    fn emit_relationship_event(&self, event: DomainEvent) {
-        // Ignore send errors (no subscribers)
-        let _ = self.event_tx.send(event);
-    }
-
     /// Get the underlying database connection
     ///
     /// This is used by services (like SchemaService) that need direct database access
@@ -2858,21 +2849,25 @@ where
     /// Create a mention relationship between two nodes
     ///
     /// Issue #788: Universal Relationship Architecture - mentions stored in relationship table.
-    /// Issue #811: Emits unified RelationshipCreated event.
+    /// Issue #813: Pure data layer - no event emission, returns relationship ID for service layer.
     ///
     /// # Arguments
     ///
     /// * `source_id` - The ID of the node that contains the mention
     /// * `target_id` - The ID of the node being mentioned
     /// * `root_id` - The root node ID for context
-    /// * `source_client_id` - Optional client ID for event source tracking
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(id))` - Relationship ID if newly created
+    /// * `Ok(None)` - If mention already existed (idempotent)
+    /// * `Err` - Database error
     pub async fn create_mention(
         &self,
         source_id: &str,
         target_id: &str,
         root_id: &str,
-        source_client_id: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
         let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
 
@@ -2912,7 +2907,7 @@ where
                 .await
                 .context("Failed to create mention")?;
 
-            // Extract relationship ID for event (Issue #811)
+            // Extract relationship ID for caller (Issue #813)
             #[derive(Debug, Deserialize)]
             struct RelateResult {
                 id: Thing,
@@ -2922,43 +2917,33 @@ where
                 .context("Failed to extract relationship ID")?;
 
             if let Some(result) = results.first() {
-                // Emit unified RelationshipCreated event (Issue #811)
-                self.emit_relationship_event(DomainEvent::RelationshipCreated {
-                    relationship: RelationshipEvent {
-                        id: result.id.to_string(),
-                        from_id: source_id.to_string(),
-                        to_id: target_id.to_string(),
-                        relationship_type: "mentions".to_string(),
-                        properties: serde_json::json!({"root_id": root_id}),
-                    },
-                    source_client_id,
-                });
+                return Ok(Some(result.id.to_string()));
             }
         }
 
-        Ok(())
+        Ok(None)
     }
 
     /// Delete a mention relationship between two nodes
     ///
     /// Issue #788: Universal Relationship Architecture - delete from relationship table.
-    /// Issue #811: Emits unified RelationshipDeleted event.
+    /// Issue #813: Pure data layer - no event emission, returns relationship ID for service layer.
     ///
     /// # Arguments
     ///
     /// * `source_id` - The ID of the node that contains the mention
     /// * `target_id` - The ID of the node being mentioned
-    /// * `source_client_id` - Optional client ID for event source tracking
-    pub async fn delete_mention(
-        &self,
-        source_id: &str,
-        target_id: &str,
-        source_client_id: Option<String>,
-    ) -> Result<()> {
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(id))` - Relationship ID if deleted
+    /// * `Ok(None)` - If mention didn't exist
+    /// * `Err` - Database error
+    pub async fn delete_mention(&self, source_id: &str, target_id: &str) -> Result<Option<String>> {
         let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
         let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
 
-        // First get the relationship ID before deleting (Issue #811)
+        // First get the relationship ID before deleting (Issue #813)
         let check_query = "SELECT VALUE id FROM relationship WHERE in = $source AND out = $target AND relationship_type = 'mentions';";
         let mut check_response = self
             .db
@@ -2980,18 +2965,12 @@ where
             .await
             .context("Failed to delete mention")?;
 
-        // Emit unified RelationshipDeleted event (Issue #811)
+        // Return relationship ID for caller to emit event (Issue #813)
         if let Some(rel_id) = existing_ids.first() {
-            self.emit_relationship_event(DomainEvent::RelationshipDeleted {
-                id: rel_id.to_string(),
-                from_id: source_id.to_string(),
-                to_id: target_id.to_string(),
-                relationship_type: "mentions".to_string(),
-                source_client_id,
-            });
+            return Ok(Some(rel_id.to_string()));
         }
 
-        Ok(())
+        Ok(None)
     }
 
     pub async fn get_outgoing_mentions(&self, node_id: &str) -> Result<Vec<String>> {
@@ -4231,6 +4210,152 @@ where
     }
 
     // ========================================================================
+    // Generic Builtin Relationship Operations (Issue #813)
+    // ========================================================================
+
+    /// Create a builtin relationship between two nodes
+    ///
+    /// Creates a relationship in the universal `relationship` table with the specified type.
+    /// This is idempotent - if the relationship already exists, returns None.
+    ///
+    /// # Arguments
+    ///
+    /// * `from_id` - The source node ID
+    /// * `relationship_type` - The relationship type (e.g., "member_of", "has_child")
+    /// * `to_id` - The target node ID
+    /// * `properties` - Properties for the relationship
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(id))` - Relationship ID if newly created
+    /// * `Ok(None)` - If relationship already existed (idempotent)
+    /// * `Err` - Database error
+    pub async fn create_builtin_relationship(
+        &self,
+        from_id: &str,
+        relationship_type: &str,
+        to_id: &str,
+        properties: &Value,
+    ) -> Result<Option<String>> {
+        let from_thing = Thing::from(("node".to_string(), from_id.to_string()));
+        let to_thing = Thing::from(("node".to_string(), to_id.to_string()));
+        let rel_type_owned = relationship_type.to_string();
+
+        // Check if relationship already exists (for idempotency)
+        let check_query =
+            "SELECT VALUE id FROM relationship WHERE in = $from AND out = $to AND relationship_type = $rel_type;";
+        let mut check_response = self
+            .db
+            .query(check_query)
+            .bind(("from", from_thing.clone()))
+            .bind(("to", to_thing.clone()))
+            .bind(("rel_type", rel_type_owned.clone()))
+            .await
+            .context("Failed to check for existing relationship")?;
+
+        let existing_ids: Vec<Thing> = check_response
+            .take(0)
+            .context("Failed to extract relationship check results")?;
+
+        // Only create relationship if it doesn't exist
+        if existing_ids.is_empty() {
+            let properties_json =
+                serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
+            let query = format!(
+                r#"RELATE $from->relationship->$to CONTENT {{
+                    relationship_type: $rel_type,
+                    properties: {},
+                    created_at: time::now(),
+                    modified_at: time::now(),
+                    version: 1
+                }} RETURN id;"#,
+                properties_json
+            );
+
+            let mut response = self
+                .db
+                .query(&query)
+                .bind(("from", from_thing))
+                .bind(("to", to_thing))
+                .bind(("rel_type", rel_type_owned))
+                .await
+                .context("Failed to create relationship")?;
+
+            #[derive(Debug, Deserialize)]
+            struct RelateResult {
+                id: Thing,
+            }
+            let results: Vec<RelateResult> = response
+                .take(0)
+                .context("Failed to extract relationship ID")?;
+
+            if let Some(result) = results.first() {
+                return Ok(Some(result.id.to_string()));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Delete a builtin relationship between two nodes
+    ///
+    /// Removes a relationship from the universal `relationship` table.
+    /// This is idempotent - succeeds even if relationship doesn't exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `from_id` - The source node ID
+    /// * `relationship_type` - The relationship type (e.g., "member_of", "has_child")
+    /// * `to_id` - The target node ID
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(id))` - Relationship ID if deleted
+    /// * `Ok(None)` - If relationship didn't exist
+    /// * `Err` - Database error
+    pub async fn delete_builtin_relationship(
+        &self,
+        from_id: &str,
+        relationship_type: &str,
+        to_id: &str,
+    ) -> Result<Option<String>> {
+        let from_thing = Thing::from(("node".to_string(), from_id.to_string()));
+        let to_thing = Thing::from(("node".to_string(), to_id.to_string()));
+        let rel_type_owned = relationship_type.to_string();
+
+        // First get the relationship ID before deleting
+        let check_query = "SELECT VALUE id FROM relationship WHERE in = $from AND out = $to AND relationship_type = $rel_type;";
+        let mut check_response = self
+            .db
+            .query(check_query)
+            .bind(("from", from_thing.clone()))
+            .bind(("to", to_thing.clone()))
+            .bind(("rel_type", rel_type_owned.clone()))
+            .await
+            .context("Failed to get relationship ID")?;
+
+        let existing_ids: Vec<Thing> = check_response
+            .take(0)
+            .context("Failed to extract relationship IDs")?;
+
+        // Delete the relationship
+        self.db
+            .query("DELETE FROM relationship WHERE in = $from AND out = $to AND relationship_type = $rel_type;")
+            .bind(("from", from_thing))
+            .bind(("to", to_thing))
+            .bind(("rel_type", rel_type_owned))
+            .await
+            .context("Failed to delete relationship")?;
+
+        // Return relationship ID for caller to emit event
+        if let Some(rel_id) = existing_ids.first() {
+            return Ok(Some(rel_id.to_string()));
+        }
+
+        Ok(None)
+    }
+
+    // ========================================================================
     // Collection Membership Operations (member_of relationships)
     // ========================================================================
 
@@ -4240,26 +4365,25 @@ where
     /// Direction: member -> collection (node X belongs to collection Y)
     ///
     /// Issue #788: Universal Relationship Architecture - stored in relationship table with relationship_type='member_of'
-    /// Issue #811: Emits unified RelationshipCreated event.
+    /// Issue #813: Pure data layer - no event emission, returns relationship ID for service layer.
     ///
-    /// This is idempotent - if the membership already exists, nothing happens.
+    /// This is idempotent - if the membership already exists, returns None.
     ///
     /// # Arguments
     ///
     /// * `member_id` - The ID of the node to add to the collection
     /// * `collection_id` - The ID of the collection node
-    /// * `source_client_id` - Optional client ID for event source tracking
     ///
     /// # Returns
     ///
-    /// * `Ok(())` - Membership created or already exists
+    /// * `Ok(Some(id))` - Relationship ID if newly created
+    /// * `Ok(None)` - If membership already existed (idempotent)
     /// * `Err` - Database error
     pub async fn add_to_collection(
         &self,
         member_id: &str,
         collection_id: &str,
-        source_client_id: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         let member_thing = Thing::from(("node".to_string(), member_id.to_string()));
         let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
 
@@ -4300,7 +4424,7 @@ where
                 .await
                 .context("Failed to create membership")?;
 
-            // Extract relationship ID for event (Issue #811)
+            // Extract relationship ID for caller (Issue #813)
             #[derive(Debug, Deserialize)]
             struct RelateResult {
                 id: Thing,
@@ -4310,44 +4434,38 @@ where
                 .context("Failed to extract relationship ID")?;
 
             if let Some(result) = results.first() {
-                // Emit unified RelationshipCreated event (Issue #811)
-                self.emit_relationship_event(DomainEvent::RelationshipCreated {
-                    relationship: RelationshipEvent {
-                        id: result.id.to_string(),
-                        from_id: member_id.to_string(),
-                        to_id: collection_id.to_string(),
-                        relationship_type: "member_of".to_string(),
-                        properties: serde_json::json!({}),
-                    },
-                    source_client_id,
-                });
+                return Ok(Some(result.id.to_string()));
             }
         }
 
-        Ok(())
+        Ok(None)
     }
 
     /// Remove a node from a collection (delete member_of relationship)
     ///
     /// Deletes the member_of relationship from the member node to the collection node.
     /// Issue #788: Universal Relationship Architecture - deletes from relationship table.
-    /// Issue #811: Emits unified RelationshipDeleted event.
+    /// Issue #813: Pure data layer - no event emission, returns relationship ID for service layer.
     ///
     /// # Arguments
     ///
     /// * `member_id` - The ID of the node to remove from the collection
     /// * `collection_id` - The ID of the collection node
-    /// * `source_client_id` - Optional client ID for event source tracking
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Some(id))` - Relationship ID if deleted
+    /// * `Ok(None)` - If membership didn't exist
+    /// * `Err` - Database error
     pub async fn remove_from_collection(
         &self,
         member_id: &str,
         collection_id: &str,
-        source_client_id: Option<String>,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         let member_thing = Thing::from(("node".to_string(), member_id.to_string()));
         let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
 
-        // First get the relationship ID before deleting (Issue #811)
+        // First get the relationship ID before deleting (Issue #813)
         let check_query = "SELECT VALUE id FROM relationship WHERE in = $member AND out = $collection AND relationship_type = 'member_of';";
         let mut check_response = self
             .db
@@ -4369,18 +4487,12 @@ where
             .await
             .context("Failed to delete membership")?;
 
-        // Emit unified RelationshipDeleted event (Issue #811)
+        // Return relationship ID for caller to emit event (Issue #813)
         if let Some(rel_id) = existing_ids.first() {
-            self.emit_relationship_event(DomainEvent::RelationshipDeleted {
-                id: rel_id.to_string(),
-                from_id: member_id.to_string(),
-                to_id: collection_id.to_string(),
-                relationship_type: "member_of".to_string(),
-                source_client_id,
-            });
+            return Ok(Some(rel_id.to_string()));
         }
 
-        Ok(())
+        Ok(None)
     }
 
     /// Get all collections a node belongs to
