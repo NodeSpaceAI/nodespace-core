@@ -20,12 +20,13 @@ fn test_tools_list_returns_tier1_core_tools() {
 
     let tools = response["tools"].as_array().unwrap();
 
-    // Verify exactly 12 Tier 1 (Core) tools are present
+    // Verify exactly 13 Tier 1 (Core) tools are present
     // Tier 2 tools are discoverable via search_tools
+    // Issue #814: Added create_relationship for built-in relationship support
     assert_eq!(
         tools.len(),
-        12,
-        "Expected 12 Tier 1 tools, got {}",
+        13,
+        "Expected 13 Tier 1 tools, got {}",
         tools.len()
     );
 
@@ -55,6 +56,12 @@ fn test_tools_list_returns_tier1_core_tools() {
     // Tier 1: Schema & Discovery
     assert!(tool_names.contains(&"get_all_schemas"));
     assert!(tool_names.contains(&"search_tools"));
+
+    // Tier 1: Core Relationships (Issue #814)
+    assert!(
+        tool_names.contains(&"create_relationship"),
+        "create_relationship tool should be in Tier 1"
+    );
 
     // Verify deprecated tools are NOT present (removed in cleanup)
     assert!(!tool_names.contains(&"search_containers")); // Removed

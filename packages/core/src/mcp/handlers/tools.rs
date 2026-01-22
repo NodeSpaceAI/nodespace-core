@@ -102,6 +102,11 @@ fn get_tool_tier(tool_name: &str) -> ToolTier {
         // Tier 1: Discovery
         "get_all_schemas" | "search_tools" => ToolTier::Core,
 
+        // Tier 1: Core relationships (Issue #814)
+        // create_relationship handles built-in types (member_of, has_child, mentions)
+        // that are essential for collection membership and node linking
+        "create_relationship" => ToolTier::Core,
+
         // Tier 2: Everything else is discoverable
         _ => ToolTier::Discoverable,
     }
@@ -1004,10 +1009,10 @@ fn get_tool_schemas() -> Value {
                 "required": ["name"]
             }
         },
-        // Relationship CRUD tools (Issue #703)
+        // Relationship CRUD tools (Issue #703, #814)
         {
             "name": "create_relationship",
-            "description": "Create a relationship between two nodes. The relationship must be defined in the source node's schema. Edge data can include field values defined in the relationship's edgeFields.",
+            "description": "Create a relationship between two nodes. BUILT-IN RELATIONSHIPS: 'member_of' (add any node to a collection - target must be collection type), 'has_child' (parent-child hierarchy), 'mentions' (bidirectional link between any nodes). These are universally available on ALL node types. SCHEMA-DEFINED: Custom relationships must be defined in the source node's schema.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1017,11 +1022,11 @@ fn get_tool_schemas() -> Value {
                     },
                     "relationship_name": {
                         "type": "string",
-                        "description": "Name of the relationship (must be defined in source node's schema)"
+                        "description": "Name of the relationship. Built-in: 'member_of' (collection membership), 'has_child' (hierarchy), 'mentions' (links). Custom: must be defined in source node's schema."
                     },
                     "target_id": {
                         "type": "string",
-                        "description": "ID of the target node"
+                        "description": "ID of the target node. For 'member_of', target must be a collection node."
                     },
                     "edge_data": {
                         "type": "object",

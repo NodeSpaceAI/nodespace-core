@@ -148,7 +148,7 @@ where
         "collections": collections,  // Available collections for filtering
         "instructions": format!(
             "NodeSpace is a knowledge management system where all content is stored as nodes in a hierarchical tree structure.\n\n\
-            PROGRESSIVE TOOL DISCOVERY: The tools/list response includes only 12 core tools (create_node, get_node, update_node, delete_node, query_nodes, get_children, insert_child_at_index, search_semantic, create_nodes_from_markdown, get_markdown_from_node_id, get_all_schemas, search_tools). Use search_tools to discover additional specialized tools by category, keyword, or node type. This reduces initial context and improves performance.\n\n\
+            PROGRESSIVE TOOL DISCOVERY: The tools/list response includes 13 core tools (create_node, get_node, update_node, delete_node, query_nodes, get_children, insert_child_at_index, search_semantic, create_nodes_from_markdown, get_markdown_from_node_id, get_all_schemas, search_tools, create_relationship). Use search_tools to discover additional specialized tools by category, keyword, or node type.\n\n\
             SEMANTIC SEARCH: Use search_semantic (core tool) to find relevant content across your knowledge base using natural language queries. Examples: 'Q4 planning documents', 'machine learning research notes'. This is a core value proposition of NodeSpace.\n\n\
             MARKDOWN WORKFLOWS: Use create_nodes_from_markdown (core tool) to import markdown documents as hierarchical nodes. Use get_markdown_from_node_id (core tool) to export nodes back to markdown format. These are primary workflows for NodeSpace.\n\n\
             NODE ARCHITECTURE: Nodes are generic data structures with a type field. You can create custom node types via create_schema tool (discoverable via search_tools).\n\n\
@@ -158,7 +158,11 @@ where
             DATE NODES: YYYY-MM-DD roots auto-exist. Just reference them as parent_id or root_id - no need to create them explicitly. Perfect for daily notes and time-based organization.\n\n\
             HIERARCHY CONTROL: Core tools include insert_child_at_index and get_children. For advanced operations (move_child_to_index, get_node_tree), use search_tools with category='hierarchy'.\n\n\
             LINKING NODES: Use nodespace://node-id syntax to create bidirectional links. Example: 'See nodespace://abc-123' - automatically tracked in mentions/mentioned_by fields for graph navigation.\n\n\
-            RELATIONSHIPS: For explicit typed relationships between nodes (beyond hierarchy), use search_tools with category='relationships' to discover create_relationship, get_related_nodes, and graph discovery tools.",
+            BUILT-IN RELATIONSHIPS (available on ALL node types):\n\
+            - member_of: Add ANY node to a collection. Example: create_relationship(source_id: 'doc-123', relationship_name: 'member_of', target_id: 'collection-456')\n\
+            - has_child: Parent-child hierarchy within documents (prefer insert_child_at_index for creating nodes with hierarchy)\n\
+            - mentions: Bidirectional links between nodes (auto-tracked when using nodespace:// URIs)\n\n\
+            CUSTOM RELATIONSHIPS: For schema-defined relationships (e.g., 'assigned_to', 'billed_to'), the relationship must be defined in the source node's schema. Use search_tools with category='relationships' for get_related_nodes and graph discovery tools.",
             node_types_str,
             collections_str
         )

@@ -158,6 +158,8 @@ fn test_tier1_core_tools_present() {
         // Schema & Discovery
         "get_all_schemas",
         "search_tools",
+        // Relationships (Issue #814 - member_of, has_child, mentions are universal)
+        "create_relationship",
     ];
 
     for expected_tool in &expected_tier1_tools {
@@ -168,9 +170,9 @@ fn test_tier1_core_tools_present() {
         );
     }
 
-    // Verify we have exactly 12 Tier 1 tools (reduced from 26 for token savings)
+    // Verify we have exactly 13 Tier 1 tools (12 original + create_relationship)
     // Other tools are discoverable via search_tools
-    assert_eq!(tools.len(), 12, "Expected exactly 12 Tier 1 (Core) tools");
+    assert_eq!(tools.len(), 13, "Expected exactly 13 Tier 1 (Core) tools");
 }
 
 #[test]
@@ -180,6 +182,7 @@ fn test_search_tools_discovers_tier2_tools() {
     let tools = result["tools"].as_array().unwrap();
 
     // Should find some discoverable tools (not exhaustive check)
+    // Note: create_relationship is now Tier 1, so it's not discoverable via search_tools
     let discoverable_examples = [
         "get_child_at_index",
         "move_child_to_index",
@@ -188,7 +191,6 @@ fn test_search_tools_discovers_tier2_tools() {
         "update_nodes_batch",
         "update_root_from_markdown",
         "create_schema",
-        "create_relationship",
         "delete_relationship",
         "get_related_nodes",
     ];
@@ -200,8 +202,8 @@ fn test_search_tools_discovers_tier2_tools() {
         .count();
 
     assert!(
-        found_count >= 8,
-        "Expected at least 8 discoverable tools, found {}",
+        found_count >= 7,
+        "Expected at least 7 discoverable tools, found {}",
         found_count
     );
 }
@@ -214,8 +216,8 @@ fn test_all_schemas_have_required_fields() {
 
     assert_eq!(
         tools.len(),
-        12,
-        "Should have exactly 12 Tier 1 tool schemas, found {}",
+        13,
+        "Should have exactly 13 Tier 1 tool schemas, found {}",
         tools.len()
     );
 

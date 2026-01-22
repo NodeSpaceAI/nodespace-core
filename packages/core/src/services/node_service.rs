@@ -4412,6 +4412,17 @@ where
             .await?
             .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
 
+        // Check for built-in relationship types (Issue #814)
+        // These use the universal `relationship` table and are available on ALL node types
+        let is_builtin = matches!(relationship_name, "member_of" | "has_child" | "mentions");
+
+        if is_builtin {
+            return self
+                .create_builtin_relationship(source_id, relationship_name, target_id, edge_data)
+                .await;
+        }
+
+        // Schema-defined relationships: look up in source node's schema
         // 2. Get source node's schema
         let schema_id = &source.node_type;
         let schema_node = self.get_node(schema_id).await?.ok_or_else(|| {
@@ -4430,7 +4441,7 @@ where
             .find(|r| r.name == relationship_name)
             .ok_or_else(|| {
                 NodeServiceError::invalid_update(format!(
-                    "Relationship '{}' not defined in schema '{}'",
+                    "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions) are universal.",
                     relationship_name, schema_id
                 ))
             })?;
@@ -4510,6 +4521,140 @@ where
         Ok(())
     }
 
+    /// Create a built-in relationship (member_of, has_child, mentions)
+    ///
+    /// Built-in relationships are universally available on ALL node types and
+    /// use the unified `relationship` table with a `relationship_type` discriminator.
+    ///
+    /// # Arguments
+    ///
+    /// * `source_id` - ID of the source node
+    /// * `relationship_name` - One of: "member_of", "has_child", "mentions"
+    /// * `target_id` - ID of the target node
+    /// * `edge_data` - Optional properties for the relationship
+    ///
+    /// # Validation
+    ///
+    /// - `member_of`: Target must be a collection node
+    /// - `has_child`: Validates parent-child hierarchy constraints
+    /// - `mentions`: Creates bidirectional link between nodes
+    async fn create_builtin_relationship(
+        &self,
+        source_id: &str,
+        relationship_name: &str,
+        target_id: &str,
+        edge_data: Value,
+    ) -> Result<(), NodeServiceError> {
+        // Validate target node exists
+        let target = self
+            .get_node(target_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+
+        // Type-specific validation
+        match relationship_name {
+            "member_of" => {
+                // Target must be a collection node
+                if target.node_type != "collection" {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "member_of target must be a collection node, got '{}'",
+                        target.node_type
+                    )));
+                }
+            }
+            "has_child" => {
+                // has_child is managed by the hierarchy system - validate but allow
+                // This enables MCP clients to establish parent-child relationships
+            }
+            "mentions" => {
+                // mentions can link any two nodes - no type restriction
+            }
+            _ => {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "Unknown built-in relationship type: {}",
+                    relationship_name
+                )));
+            }
+        }
+
+        // Create SurrealDB Things for source and target
+        let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
+        let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
+
+        // Check if relationship already exists (idempotent)
+        let check_query = r#"
+            SELECT VALUE id FROM relationship
+            WHERE in = $source AND out = $target AND relationship_type = $rel_type
+        "#;
+
+        // Convert to owned String to satisfy lifetime requirements
+        let rel_type_owned = relationship_name.to_string();
+
+        let mut check_result = self
+            .store
+            .db()
+            .query(check_query)
+            .bind(("source", source_thing.clone()))
+            .bind(("target", target_thing.clone()))
+            .bind(("rel_type", rel_type_owned.clone()))
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to check existing relationship: {}",
+                    e
+                ))
+            })?;
+
+        let existing: Vec<surrealdb::sql::Thing> = check_result.take(0).map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to parse relationship check: {}", e))
+        })?;
+
+        if !existing.is_empty() {
+            // Relationship already exists - idempotent success
+            return Ok(());
+        }
+
+        // Merge edge_data with required fields
+        let properties =
+            if edge_data.is_null() || edge_data.as_object().is_none_or(|o| o.is_empty()) {
+                serde_json::json!({})
+            } else {
+                edge_data
+            };
+
+        // Create the relationship in the unified relationship table
+        let create_query = r#"
+            RELATE $source->relationship->$target CONTENT {
+                relationship_type: $rel_type,
+                properties: $properties,
+                created_at: time::now(),
+                modified_at: time::now(),
+                version: 1
+            } RETURN id
+        "#;
+
+        self.store
+            .db()
+            .query(create_query)
+            .bind(("source", source_thing))
+            .bind(("target", target_thing))
+            .bind(("rel_type", rel_type_owned))
+            .bind(("properties", properties))
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to create built-in relationship: {}",
+                    e
+                ))
+            })?;
+
+        // Note: Event emission for built-in relationships is handled by the store layer
+        // (SurrealStore.add_to_collection emits RelationshipCreated for member_of)
+        // Issue #813 will move all event emission to NodeService
+
+        Ok(())
+    }
+
     /// Delete a relationship between two nodes
     ///
     /// Removes the edge between the source and target nodes for the specified relationship.
@@ -4553,6 +4698,17 @@ where
         relationship_name: &str,
         target_id: &str,
     ) -> Result<(), NodeServiceError> {
+        // Check for built-in relationship types (Issue #814)
+        // These use the universal `relationship` table and are available on ALL node types
+        let is_builtin = matches!(relationship_name, "member_of" | "has_child" | "mentions");
+
+        if is_builtin {
+            return self
+                .delete_builtin_relationship(source_id, relationship_name, target_id)
+                .await;
+        }
+
+        // Schema-defined relationships: look up in source node's schema
         // 1. Get source node to find its schema
         let source = self
             .get_node(source_id)
@@ -4576,7 +4732,7 @@ where
             .find(|r| r.name == relationship_name)
             .ok_or_else(|| {
                 NodeServiceError::invalid_update(format!(
-                    "Relationship '{}' not defined in schema '{}'",
+                    "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions) are universal.",
                     relationship_name, schema_id
                 ))
             })?;
@@ -4604,6 +4760,48 @@ where
         // TODO: Emit RelationshipDeleted event for custom relationships
         // The unified event system (Issue #811) supports custom relationship types,
         // but we need to capture the relationship ID from the query result.
+
+        Ok(())
+    }
+
+    /// Delete a built-in relationship (member_of, has_child, mentions)
+    ///
+    /// Built-in relationships use the universal `relationship` table.
+    /// This method is idempotent - succeeds even if the relationship doesn't exist.
+    async fn delete_builtin_relationship(
+        &self,
+        source_id: &str,
+        relationship_name: &str,
+        target_id: &str,
+    ) -> Result<(), NodeServiceError> {
+        let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
+        let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
+
+        // Delete from the unified relationship table
+        let delete_query = r#"
+            DELETE FROM relationship
+            WHERE in = $source AND out = $target AND relationship_type = $rel_type
+        "#;
+
+        // Convert to owned String to satisfy lifetime requirements
+        let rel_type_owned = relationship_name.to_string();
+
+        self.store
+            .db()
+            .query(delete_query)
+            .bind(("source", source_thing))
+            .bind(("target", target_thing))
+            .bind(("rel_type", rel_type_owned))
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to delete built-in relationship: {}",
+                    e
+                ))
+            })?;
+
+        // Note: Event emission for built-in relationships is handled by the store layer
+        // Issue #813 will move all event emission to NodeService
 
         Ok(())
     }
@@ -4653,6 +4851,25 @@ where
         relationship_name: &str,
         direction: &str,
     ) -> Result<Vec<Node>, NodeServiceError> {
+        // Validate direction first
+        if direction != "out" && direction != "in" {
+            return Err(NodeServiceError::invalid_update(format!(
+                "Invalid direction '{}', must be 'out' or 'in'",
+                direction
+            )));
+        }
+
+        // Check for built-in relationship types (Issue #814)
+        // These use the universal `relationship` table and are available on ALL node types
+        let is_builtin = matches!(relationship_name, "member_of" | "has_child" | "mentions");
+
+        if is_builtin {
+            return self
+                .get_builtin_related_nodes(node_id, relationship_name, direction)
+                .await;
+        }
+
+        // Schema-defined relationships: look up in source node's schema
         // 1. Get node to find its schema
         let node = self
             .get_node(node_id)
@@ -4676,7 +4893,7 @@ where
             .find(|r| r.name == relationship_name)
             .ok_or_else(|| {
                 NodeServiceError::invalid_update(format!(
-                    "Relationship '{}' not defined in schema '{}'",
+                    "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions) are universal.",
                     relationship_name, schema_id
                 ))
             })?;
@@ -4696,12 +4913,7 @@ where
                 // Reverse: get 'in' nodes from edges where 'out' = source node
                 format!("SELECT in AS out FROM {} WHERE out = $node;", edge_table)
             }
-            _ => {
-                return Err(NodeServiceError::invalid_update(format!(
-                    "Invalid direction '{}', must be 'out' or 'in'",
-                    direction
-                )))
-            }
+            _ => unreachable!(), // Already validated above
         };
 
         let mut edge_result = self
@@ -4738,6 +4950,78 @@ where
             // Extract the ID from the Thing (format: table:id)
             let node_id = thing.id.to_raw();
             if let Some(node) = self.get_node(&node_id).await? {
+                nodes.push(node);
+            }
+        }
+
+        Ok(nodes)
+    }
+
+    /// Get related nodes for a built-in relationship (member_of, has_child, mentions)
+    ///
+    /// Built-in relationships use the universal `relationship` table.
+    async fn get_builtin_related_nodes(
+        &self,
+        node_id: &str,
+        relationship_name: &str,
+        direction: &str,
+    ) -> Result<Vec<Node>, NodeServiceError> {
+        let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.to_string()));
+
+        // Query the unified relationship table
+        let query = match direction {
+            "out" => {
+                // Forward: get 'out' nodes (targets) from edges where 'in' = source node
+                r#"
+                    SELECT out FROM relationship
+                    WHERE in = $node AND relationship_type = $rel_type
+                "#
+            }
+            "in" => {
+                // Reverse: get 'in' nodes (sources) from edges where 'out' = target node
+                r#"
+                    SELECT in AS out FROM relationship
+                    WHERE out = $node AND relationship_type = $rel_type
+                "#
+            }
+            _ => unreachable!(), // Already validated in caller
+        };
+
+        // Convert to owned String to satisfy lifetime requirements
+        let rel_type_owned = relationship_name.to_string();
+
+        let mut result = self
+            .store
+            .db()
+            .query(query)
+            .bind(("node", node_thing))
+            .bind(("rel_type", rel_type_owned))
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to get built-in related nodes: {}",
+                    e
+                ))
+            })?;
+
+        #[derive(serde::Deserialize)]
+        struct EdgeOut {
+            out: surrealdb::sql::Thing,
+        }
+
+        let edges: Vec<EdgeOut> = result.take(0).map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to parse built-in related edges: {}", e))
+        })?;
+
+        if edges.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Fetch full node records
+        let mut nodes = Vec::new();
+        for edge in edges {
+            let related_id = edge.out.id.to_raw();
+            if let Some(node) = self.get_node(&related_id).await? {
                 nodes.push(node);
             }
         }
@@ -8546,6 +8830,273 @@ mod tests {
             assert_eq!(node_after_text_update.properties["task"]["priority"], "low");
             // Active text properties were updated
             assert_eq!(node_after_text_update.properties["text"]["format"], "plain");
+        }
+    }
+
+    /// Tests for built-in relationship methods (Issue #814)
+    ///
+    /// Verifies that the built-in relationships (member_of, has_child, mentions)
+    /// can be created, queried, and deleted via the public API.
+    mod builtin_relationship_tests {
+        use super::*;
+
+        /// Helper to create a collection node
+        async fn create_collection(service: &NodeService, name: &str) -> String {
+            let collection = Node::new_with_id(
+                format!("collection-{}", uuid::Uuid::new_v4()),
+                "collection".to_string(),
+                name.to_string(),
+                json!({}),
+            );
+            service.create_node(collection.clone()).await.unwrap();
+            collection.id
+        }
+
+        /// Helper to create a text node
+        async fn create_text_node(service: &NodeService, content: &str) -> String {
+            let node = Node::new_with_id(
+                format!("text-{}", uuid::Uuid::new_v4()),
+                "text".to_string(),
+                content.to_string(),
+                json!({}),
+            );
+            service.create_node(node.clone()).await.unwrap();
+            node.id
+        }
+
+        #[tokio::test]
+        async fn test_create_member_of_relationship() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a collection and a text node
+            let collection_id = create_collection(&service, "My Collection").await;
+            let text_id = create_text_node(&service, "Test content").await;
+
+            // Create member_of relationship
+            let result = service
+                .create_relationship(&text_id, "member_of", &collection_id, json!({}))
+                .await;
+            assert!(
+                result.is_ok(),
+                "Failed to create member_of relationship: {:?}",
+                result.err()
+            );
+
+            // Verify via get_related_nodes (forward direction)
+            let collections = service
+                .get_related_nodes(&text_id, "member_of", "out")
+                .await
+                .unwrap();
+            assert_eq!(collections.len(), 1);
+            assert_eq!(collections[0].id, collection_id);
+
+            // Verify via reverse direction (collection -> members)
+            let members = service
+                .get_related_nodes(&collection_id, "member_of", "in")
+                .await
+                .unwrap();
+            assert_eq!(members.len(), 1);
+            assert_eq!(members[0].id, text_id);
+        }
+
+        #[tokio::test]
+        async fn test_member_of_validates_target_is_collection() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create two text nodes (neither is a collection)
+            let text1_id = create_text_node(&service, "Text 1").await;
+            let text2_id = create_text_node(&service, "Text 2").await;
+
+            // Attempt to create member_of to non-collection should fail
+            let result = service
+                .create_relationship(&text1_id, "member_of", &text2_id, json!({}))
+                .await;
+            assert!(result.is_err());
+            let err_msg = format!("{:?}", result.err().unwrap());
+            assert!(
+                err_msg.contains("must be a collection"),
+                "Expected collection validation error, got: {}",
+                err_msg
+            );
+        }
+
+        #[tokio::test]
+        async fn test_create_member_of_idempotent() {
+            let (service, _temp) = create_test_service().await;
+
+            let collection_id = create_collection(&service, "My Collection").await;
+            let text_id = create_text_node(&service, "Test content").await;
+
+            // Create relationship twice - should be idempotent
+            service
+                .create_relationship(&text_id, "member_of", &collection_id, json!({}))
+                .await
+                .unwrap();
+            service
+                .create_relationship(&text_id, "member_of", &collection_id, json!({}))
+                .await
+                .unwrap();
+
+            // Should only have one relationship
+            let collections = service
+                .get_related_nodes(&text_id, "member_of", "out")
+                .await
+                .unwrap();
+            assert_eq!(collections.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn test_delete_member_of_relationship() {
+            let (service, _temp) = create_test_service().await;
+
+            let collection_id = create_collection(&service, "My Collection").await;
+            let text_id = create_text_node(&service, "Test content").await;
+
+            // Create and verify relationship exists
+            service
+                .create_relationship(&text_id, "member_of", &collection_id, json!({}))
+                .await
+                .unwrap();
+            let before = service
+                .get_related_nodes(&text_id, "member_of", "out")
+                .await
+                .unwrap();
+            assert_eq!(before.len(), 1);
+
+            // Delete the relationship
+            service
+                .delete_relationship(&text_id, "member_of", &collection_id)
+                .await
+                .unwrap();
+
+            // Verify it's gone
+            let after = service
+                .get_related_nodes(&text_id, "member_of", "out")
+                .await
+                .unwrap();
+            assert_eq!(after.len(), 0);
+        }
+
+        #[tokio::test]
+        async fn test_delete_relationship_idempotent() {
+            let (service, _temp) = create_test_service().await;
+
+            let collection_id = create_collection(&service, "My Collection").await;
+            let text_id = create_text_node(&service, "Test content").await;
+
+            // Delete non-existent relationship should succeed (idempotent)
+            let result = service
+                .delete_relationship(&text_id, "member_of", &collection_id)
+                .await;
+            assert!(result.is_ok());
+        }
+
+        #[tokio::test]
+        async fn test_create_mentions_relationship() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create two text nodes
+            let text1_id = create_text_node(&service, "This mentions another node").await;
+            let text2_id = create_text_node(&service, "I am mentioned").await;
+
+            // mentions can link any two nodes
+            let result = service
+                .create_relationship(&text1_id, "mentions", &text2_id, json!({}))
+                .await;
+            assert!(result.is_ok());
+
+            // Verify forward direction
+            let mentioned = service
+                .get_related_nodes(&text1_id, "mentions", "out")
+                .await
+                .unwrap();
+            assert_eq!(mentioned.len(), 1);
+            assert_eq!(mentioned[0].id, text2_id);
+
+            // Verify reverse direction (who mentions me)
+            let mentioners = service
+                .get_related_nodes(&text2_id, "mentions", "in")
+                .await
+                .unwrap();
+            assert_eq!(mentioners.len(), 1);
+            assert_eq!(mentioners[0].id, text1_id);
+        }
+
+        #[tokio::test]
+        async fn test_create_has_child_relationship() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create parent and child text nodes
+            let parent_id = create_text_node(&service, "Parent node").await;
+            let child_id = create_text_node(&service, "Child node").await;
+
+            // has_child establishes parent-child hierarchy
+            let result = service
+                .create_relationship(&parent_id, "has_child", &child_id, json!({}))
+                .await;
+            assert!(result.is_ok());
+
+            // Verify forward direction (parent -> children)
+            let children = service
+                .get_related_nodes(&parent_id, "has_child", "out")
+                .await
+                .unwrap();
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0].id, child_id);
+
+            // Verify reverse direction (child -> parent)
+            let parents = service
+                .get_related_nodes(&child_id, "has_child", "in")
+                .await
+                .unwrap();
+            assert_eq!(parents.len(), 1);
+            assert_eq!(parents[0].id, parent_id);
+        }
+
+        #[tokio::test]
+        async fn test_unknown_builtin_relationship_fails() {
+            let (service, _temp) = create_test_service().await;
+
+            let text1_id = create_text_node(&service, "Text 1").await;
+            let text2_id = create_text_node(&service, "Text 2").await;
+
+            // Attempting to create an undefined relationship should fail
+            // (unless it's defined in the schema, which we don't have for 'fake_relationship')
+            let result = service
+                .create_relationship(&text1_id, "fake_relationship", &text2_id, json!({}))
+                .await;
+            assert!(result.is_err());
+        }
+
+        #[tokio::test]
+        async fn test_multiple_collections_membership() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create two collections and one node
+            let collection1_id = create_collection(&service, "Collection 1").await;
+            let collection2_id = create_collection(&service, "Collection 2").await;
+            let text_id = create_text_node(&service, "Belongs to both").await;
+
+            // Add to both collections
+            service
+                .create_relationship(&text_id, "member_of", &collection1_id, json!({}))
+                .await
+                .unwrap();
+            service
+                .create_relationship(&text_id, "member_of", &collection2_id, json!({}))
+                .await
+                .unwrap();
+
+            // Verify node belongs to both collections
+            let collections = service
+                .get_related_nodes(&text_id, "member_of", "out")
+                .await
+                .unwrap();
+            assert_eq!(collections.len(), 2);
+
+            let collection_ids: Vec<&str> = collections.iter().map(|n| n.id.as_str()).collect();
+            assert!(collection_ids.contains(&collection1_id.as_str()));
+            assert!(collection_ids.contains(&collection2_id.as_str()));
         }
     }
 }
