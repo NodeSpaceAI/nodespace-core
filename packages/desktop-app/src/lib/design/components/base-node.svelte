@@ -372,10 +372,10 @@
       if (result.id === 'new') {
         const newNodeId = await createNewNodeFromMention(result.title);
         if (newNodeId) {
-          controller.insertNodeReference(newNodeId);
+          controller.insertNodeReference(newNodeId, result.title);
         }
       } else {
-        controller.insertNodeReference(result.id);
+        controller.insertNodeReference(result.id, result.title);
       }
     }
 
@@ -444,6 +444,12 @@
    */
   async function handleDateSelection(date: Date) {
     const dateStr = formatDate(date);
+    // Use actual date format (e.g., "January 22, 2026") - not relative ("Today") which would become stale
+    const dateTitle = date.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
 
     // Re-enter edit mode if we've lost focus (shouldn't happen with preventDefault, but safety check)
     if (!isEditing && textareaElement) {
@@ -452,8 +458,8 @@
     }
 
     if (controller) {
-      // Insert as a node reference (date nodes are virtual, no DB creation needed)
-      controller.insertNodeReference(dateStr);
+      // Insert as a node reference with human-readable title (date nodes are virtual, no DB creation needed)
+      controller.insertNodeReference(dateStr, dateTitle);
     }
 
     // Hide date picker and autocomplete
@@ -465,7 +471,7 @@
     // Emit event
     dispatch('nodeReferenceSelected', {
       nodeId: dateStr,
-      nodeTitle: dateStr
+      nodeTitle: dateTitle
     });
   }
 

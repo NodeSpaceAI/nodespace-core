@@ -2257,6 +2257,21 @@ where
                 }
             }
 
+            // Auto-create date nodes when mentioned (Issue #814 fix).
+            // Date nodes are lazily created, but we need them to exist for the
+            // "Mentioned by" panel to work. This ensures the relationship can be created.
+            if is_date_node_id(mentioned_id) {
+                if let Err(e) = self.ensure_date_exists(mentioned_id).await {
+                    tracing::warn!(
+                        "Failed to ensure date node exists for mention: {} -> {}: {}",
+                        node_id,
+                        mentioned_id,
+                        e
+                    );
+                    // Continue anyway - the mention creation will fail if node doesn't exist
+                }
+            }
+
             if let Err(e) = self.create_mention(node_id, mentioned_id).await {
                 tracing::warn!(
                     "Failed to create mention: {} -> {}: {}",

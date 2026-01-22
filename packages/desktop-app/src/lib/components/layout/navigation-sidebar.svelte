@@ -27,7 +27,6 @@
   let collectionsExpanded = $derived($layoutState.collectionsExpanded);
 
   // Collections state from collections store (UI-only, not persisted)
-  let selectedCollectionId = $derived($collectionsState.selectedCollectionId);
   let subPanelOpen = $derived($collectionsState.subPanelOpen);
   let expandedCollectionIds = $derived($collectionsState.expandedCollectionIds);
 
@@ -188,8 +187,7 @@
   function handleNavItemClick(itemId: string) {
     // Close sub-panel when clicking non-collection nav items
     if (subPanelOpen) {
-      subPanelOpen = false;
-      selectedCollectionId = null;
+      collectionsState.clearSelection();
     }
 
     // Special handling for Daily Journal
@@ -280,10 +278,7 @@
             {#each collections as collection (collection.id)}
               {@const hasChildren = collection.children && collection.children.length > 0}
               {@const isExpanded = isCollectionExpanded(collection.id)}
-              <div
-                class="collection-item"
-                class:selected={selectedCollectionId === collection.id}
-              >
+              <div class="collection-item">
                 {#if hasChildren}
                   <button
                     class="expand-btn"
@@ -315,10 +310,7 @@
                 {#each collection.children as child (child.id)}
                   {@const childHasChildren = child.children && child.children.length > 0}
                   {@const childIsExpanded = isCollectionExpanded(child.id)}
-                  <div
-                    class="collection-item level-2"
-                    class:selected={selectedCollectionId === child.id}
-                  >
+                  <div class="collection-item level-2">
                     {#if childHasChildren}
                       <button
                         class="expand-btn"
@@ -348,10 +340,7 @@
                   <!-- Level 3 -->
                   {#if childHasChildren && childIsExpanded && child.children}
                     {#each child.children as grandchild (grandchild.id)}
-                      <div
-                        class="collection-item level-3"
-                        class:selected={selectedCollectionId === grandchild.id}
-                      >
+                      <div class="collection-item level-3">
                         <button
                           class="collection-name-btn"
                           onclick={() => handleCollectionClick(grandchild.id)}
@@ -597,6 +586,7 @@
     overflow-x: auto; /* Allow horizontal scroll for long names */
     scrollbar-width: none; /* Firefox */
     -ms-overflow-style: none; /* IE/Edge */
+    background: hsl(var(--active-nav-background)); /* Subtle background to group collection items */
   }
 
   .collection-list::-webkit-scrollbar {
@@ -610,7 +600,7 @@
     gap: 0;
     min-width: 100%; /* Allow growing beyond container width */
     width: max-content; /* Size to content for horizontal scrolling */
-    padding: 0 1rem 0 1.5rem; /* Base indent under Collections */
+    padding: 0 1rem 0 3.5rem; /* Indent clearly inside Collections group */
     font-size: 0.8125rem;
     color: hsl(var(--muted-foreground));
     transition:
@@ -623,18 +613,13 @@
     color: hsl(var(--foreground));
   }
 
-  .collection-item.selected {
-    background: hsl(var(--active-nav-background));
-    color: hsl(var(--foreground));
-  }
-
   /* Nested level indentation */
   .collection-item.level-2 {
-    padding-left: 2.25rem;
+    padding-left: 4.25rem;
   }
 
   .collection-item.level-3 {
-    padding-left: 3rem;
+    padding-left: 5rem;
   }
 
   /* Expand/collapse button */

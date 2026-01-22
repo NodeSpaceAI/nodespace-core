@@ -189,6 +189,8 @@
     background-color: hsl(var(--content-background));
     /* Subtle border to indicate pane boundary */
     border-right: 1px solid hsl(var(--border));
+    /* Override browser default cursor for role="button" - pane is clickable but not a typical button */
+    cursor: default;
   }
 
   /* Remove border from last pane */

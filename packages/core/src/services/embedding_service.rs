@@ -498,6 +498,22 @@ where
         Ok(success_count)
     }
 
+    /// Check if there are stale embeddings that haven't passed the debounce window yet
+    ///
+    /// Returns true if there are pending embeddings that will need processing
+    /// after the debounce period expires.
+    pub async fn has_pending_stale_embeddings(&self) -> Result<bool, NodeServiceError> {
+        self.store
+            .has_pending_stale_embeddings(self.config.debounce_duration_secs)
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to check pending stale embeddings: {}",
+                    e
+                ))
+            })
+    }
+
     // =========================================================================
     // Queue Management
     // =========================================================================

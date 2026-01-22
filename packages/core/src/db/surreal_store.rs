@@ -3989,6 +3989,7 @@ where
         };
 
         // Format debounce as SurrealDB duration string (e.g., "30s")
+        // Safety: debounce_secs is a u64 from config, not user input - validated at config layer
         let debounce_str = format!("{}s", debounce_secs);
 
         let mut query_builder = self.db.query(sql).bind(("debounce", debounce_str));
@@ -4011,6 +4012,34 @@ where
             .context("Failed to extract stale root IDs")?;
 
         Ok(results.into_iter().map(|r| r.node_id).collect())
+    }
+
+    /// Check if there are stale embeddings that haven't passed the debounce window yet
+    ///
+    /// Returns true if there are embeddings marked stale within the last `debounce_secs`.
+    /// This is used to determine if a delayed wake should be scheduled.
+    pub async fn has_pending_stale_embeddings(&self, debounce_secs: u64) -> Result<bool> {
+        #[derive(Debug, Deserialize)]
+        struct CountResult {
+            count: i64,
+        }
+
+        // Count stale embeddings modified within the debounce window
+        // Safety: debounce_secs is a u64 from config, not user input - validated at config layer
+        let debounce_str = format!("{}s", debounce_secs);
+
+        let mut response = self
+            .db
+            .query("SELECT count() AS count FROM embedding WHERE stale = true AND modified_at >= time::now() - type::duration($debounce) GROUP ALL;")
+            .bind(("debounce", debounce_str))
+            .await
+            .context("Failed to check for pending stale embeddings")?;
+
+        let result: Option<CountResult> = response
+            .take(0)
+            .context("Failed to extract pending stale count")?;
+
+        Ok(result.map(|r| r.count > 0).unwrap_or(false))
     }
 
     /// Check if a node has any embeddings

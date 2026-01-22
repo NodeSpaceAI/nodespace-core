@@ -1,22 +1,24 @@
 //! Background Embedding Processor (Issue #729)
 //!
 //! Provides event-driven background processing of stale root-aggregate embeddings:
-//! - Event-driven with periodic debounce checking
+//! - Purely event-driven: only wakes when nodes change
 //! - Per-root debounce: each root waits 30s after last change before embedding
 //! - Processes embeddings that have passed their debounce window
 //! - Graceful shutdown support
 //!
 //! ## Event-Driven Model with Per-Root Debounce
 //!
-//! The processor combines event-driven wake with periodic debounce checking:
+//! The processor is purely event-driven with smart debounce scheduling:
 //! 1. Woken by triggers when nodes change (marks stale, resets debounce timer)
-//! 2. Checks periodically (every debounce_duration) for embeddings ready to process
-//! 3. Only processes embeddings marked stale > debounce_duration ago
+//! 2. When woken, processes any embeddings that have passed their debounce window
+//! 3. If stale embeddings exist but haven't passed debounce, schedules a delayed wake
+//! 4. Zero CPU overhead when idle - no polling
 //!
 //! This ensures:
 //! - Rapid edits don't trigger constant re-embedding (debounce per root)
 //! - Bulk imports wait until complete before embedding (all children created)
 //! - Independent documents don't block each other (per-root timers)
+//! - No wasted cycles polling when there's no work
 //!
 //! ## Root-Aggregate Model
 //!
@@ -89,8 +91,9 @@ where
     ///
     /// Spawns an event-driven background task that:
     /// 1. Sleeps until triggered via `wake()` or `trigger_batch_embed()`
-    /// 2. Processes ALL stale embeddings until queue is empty
-    /// 3. Returns to sleep waiting for next trigger
+    /// 2. Processes ALL stale embeddings that have passed their debounce window
+    /// 3. If pending embeddings exist, schedules a delayed wake for when debounce expires
+    /// 4. Returns to sleep waiting for next trigger
     ///
     /// ## Event-Driven Model
     ///
@@ -110,25 +113,19 @@ where
     /// # Returns
     /// A new EmbeddingProcessor instance with active background task
     pub fn new(embedding_service: Arc<NodeEmbeddingService<C>>) -> Result<Self, NodeServiceError> {
-        tracing::info!(
-            "EmbeddingProcessor initializing (event-driven model with per-root debounce)"
-        );
+        tracing::info!("EmbeddingProcessor initializing (purely event-driven model)");
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(10);
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
 
         // Get debounce duration from config (default 30s)
         let debounce_secs = embedding_service.config().debounce_duration_secs;
-        let check_interval = Duration::from_secs(debounce_secs);
+        let debounce_duration = Duration::from_secs(debounce_secs);
 
-        // Spawn event-driven background task with periodic debounce check
+        // Spawn purely event-driven background task
         let service_clone = embedding_service.clone();
+        let trigger_tx_clone = trigger_tx.clone();
         tokio::spawn(async move {
-            // Interval for checking debounced embeddings
-            // Fires every debounce_duration to catch embeddings that have passed their window
-            let mut interval = tokio::time::interval(check_interval);
-            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
             loop {
                 tokio::select! {
                     biased; // Check shutdown first
@@ -144,14 +141,22 @@ where
                         while trigger_rx.try_recv().is_ok() {}
 
                         // Process embeddings that have passed their debounce window
-                        Self::process_until_empty(&service_clone).await;
-                    }
+                        let has_pending = Self::process_until_empty(&service_clone).await;
 
-                    _ = interval.tick() => {
-                        // Periodic check for embeddings that have passed their debounce window
-                        // This catches embeddings marked stale during bulk operations
-                        // where the wake signal happened before debounce expired
-                        Self::process_until_empty(&service_clone).await;
+                        // If there are pending embeddings that haven't passed debounce yet,
+                        // schedule a delayed wake to process them later
+                        if has_pending {
+                            let tx = trigger_tx_clone.clone();
+                            let delay = debounce_duration;
+                            tokio::spawn(async move {
+                                tokio::time::sleep(delay).await;
+                                let _ = tx.try_send(());
+                            });
+                            tracing::debug!(
+                                "Scheduled delayed wake in {}s for pending embeddings",
+                                debounce_secs
+                            );
+                        }
                     }
                 }
             }
@@ -179,23 +184,38 @@ where
     /// Keeps processing batches until `process_stale_embeddings` returns 0.
     /// This ensures the queue is fully drained before returning to sleep.
     /// Yields between batches to prevent starving other async tasks.
-    async fn process_until_empty(service: &Arc<NodeEmbeddingService<C>>) {
+    ///
+    /// Returns true if there are pending stale embeddings that haven't passed
+    /// their debounce window yet (requiring a delayed wake to be scheduled).
+    async fn process_until_empty(service: &Arc<NodeEmbeddingService<C>>) -> bool {
         const BATCH_SIZE: usize = 10;
         let mut total_processed = 0;
 
         loop {
             match service.process_stale_embeddings(Some(BATCH_SIZE)).await {
                 Ok(0) => {
-                    // No more stale embeddings - done
+                    // No more stale embeddings ready to process
                     if total_processed > 0 {
                         tracing::info!(
                             "EmbeddingProcessor finished - processed {} total embeddings",
                             total_processed
                         );
-                    } else {
-                        tracing::debug!("EmbeddingProcessor woke but no stale embeddings found");
                     }
-                    break;
+                    // Check if there are pending embeddings that haven't passed debounce yet
+                    match service.has_pending_stale_embeddings().await {
+                        Ok(has_pending) => {
+                            if has_pending {
+                                tracing::debug!(
+                                    "Pending stale embeddings exist, will schedule delayed wake"
+                                );
+                            }
+                            return has_pending;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to check pending embeddings: {}", e);
+                            return false;
+                        }
+                    }
                 }
                 Ok(count) => {
                     total_processed += count;
@@ -214,7 +234,7 @@ where
                         e
                     );
                     // Stop processing on error - will retry on next wake
-                    break;
+                    return false;
                 }
             }
         }

@@ -156,7 +156,7 @@ export interface TextareaControllerState {
   enterFromArrowNavigation(direction: 'up' | 'down', pixelOffset: number): void;
   setSlashCommandDropdownActive(active: boolean): void;
   setAutocompleteDropdownActive(active: boolean): void;
-  insertNodeReference(nodeId: string): void;
+  insertNodeReference(nodeId: string, title?: string): void;
   insertSlashCommand(content: string, skipDetection: boolean, targetNodeType?: string): number;
   toggleFormatting(marker: string): void;
   isProcessingInput(): boolean;
@@ -954,14 +954,16 @@ export class TextareaController {
       this.autocompleteDropdownActive = active;
     }
 
-    public insertNodeReference(nodeId: string): void {
+    public insertNodeReference(nodeId: string, title?: string): void {
       if (!this.mentionSession) return;
 
       const content = this.element.value;
       const before = content.substring(0, this.mentionSession.startPosition);
       const after = content.substring(this.getCursorPosition());
 
-      const reference = `[](nodespace://${nodeId})`;
+      // Use title as display text, falling back to empty (will show nodeId in view mode)
+      const displayText = title || '';
+      const reference = `[${displayText}](nodespace://${nodeId})`;
       const newContent = before + reference + after;
 
       this.element.value = newContent;
@@ -1281,8 +1283,8 @@ export function createTextareaController(
       }
     },
 
-    insertNodeReference(nodeId: string): void {
-      controller?.insertNodeReference(nodeId);
+    insertNodeReference(nodeId: string, title?: string): void {
+      controller?.insertNodeReference(nodeId, title);
     },
 
     insertSlashCommand(content: string, skipDetection: boolean, targetNodeType?: string): number {

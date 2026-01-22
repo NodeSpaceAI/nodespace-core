@@ -128,12 +128,10 @@
   // Drag-and-drop handlers using @thisux/sveltednd
 
   /**
-   * Handle drag start - track which tab is being dragged
+   * Handle drag start from library - don't set draggingTabId here as this fires on pointerdown
    */
-  function handleDragStart(state: DragDropState<{ tab: Tab; paneId: string }>): void {
-    if (state.draggedItem) {
-      draggingTabId = state.draggedItem.tab.id;
-    }
+  function handleDragStart(_state: DragDropState<{ tab: Tab; paneId: string }>): void {
+    // Intentionally empty - we use native dragstart event instead
   }
 
   /**
@@ -142,6 +140,13 @@
   function handleDragEnd(): void {
     draggingTabId = null;
     dragOverIndex = null;
+  }
+
+  /**
+   * Handle native HTML5 dragstart event - set dragging state for visual feedback
+   */
+  function handleNativeDragStart(_event: DragEvent, tabId: string): void {
+    draggingTabId = tabId;
   }
 
   /**
@@ -261,6 +266,9 @@
         // Cross-pane move
         moveTabBetweenPanes(tabId, sourcePaneId, currentPaneId, targetIndex);
       }
+
+      // Set the dragged tab as active after drop
+      setActiveTab(tabId, currentPaneId);
     } catch (error) {
       log.error('Drop operation failed:', error);
       // Could show user-facing toast notification here in the future
@@ -311,6 +319,8 @@
       aria-controls={`tab-panel-${tab.id}`}
       aria-grabbed={isDragging}
       aria-dropeffect={showDropIndicator ? 'move' : 'none'}
+      onclick={() => handleTabClick(tab.id)}
+      ondragstart={(e) => handleNativeDragStart(e, tab.id)}
       onkeydown={(event: KeyboardEvent) => handleTabKeydown(event, tab.id)}
       use:droppable={{
         container: `tab-${i}`,
@@ -321,28 +331,18 @@
           onDrop: handleDrop
         }
       }}
+      use:draggable={{
+        container: `tab-${i}`,
+        dragData: { tab, paneId: currentPaneId },
+        disabled: !isDraggable,
+        interactive: ['.tab-close-btn'],
+        callbacks: {
+          onDragStart: handleDragStart,
+          onDragEnd: handleDragEnd
+        }
+      }}
     >
-      <span
-        class="tab-title"
-        role="button"
-        tabindex="0"
-        onclick={() => handleTabClick(tab.id)}
-        onkeydown={(e: KeyboardEvent) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            handleTabClick(tab.id);
-          }
-        }}
-        use:draggable={{
-          container: `tab-${i}`,
-          dragData: { tab, paneId: currentPaneId },
-          disabled: !isDraggable,
-          callbacks: {
-            onDragStart: handleDragStart,
-            onDragEnd: handleDragEnd
-          }
-        }}
-      >
+      <span class="tab-title">
         {truncateTitle(tab.title)}
       </span>
 
@@ -427,7 +427,7 @@
     height: 40px;
     min-width: 0;
     flex-shrink: 0;
-    cursor: pointer;
+    cursor: default; /* Standard arrow cursor - tabs are clickable but not "buttons" */
     background-color: hsl(var(--inactive-tab-background));
     color: hsl(var(--muted-foreground));
     font-weight: 500;
@@ -493,6 +493,7 @@
     text-overflow: ellipsis;
     min-width: 0;
     flex: 1;
+    cursor: inherit; /* Inherit from parent tab-item, override browser's role="button" default */
   }
 
   /* Close button - positioned in upper right corner of tab */
@@ -594,17 +595,22 @@
 
   /* Drag-and-drop styles - minimal styling, library handles states */
   .tab-item {
-    cursor: grab;
     user-select: none;
     -webkit-user-select: none;
+    /* cursor: default is set above */
   }
 
-  .tab-item:active {
-    cursor: grabbing;
+  /* Override sveltednd library's cursor styles.
+     The library adds 'dragging' class on pointerdown which shows grab cursor.
+     We want default cursor - HTML5 drag API controls cursor during actual drag. */
+  .tab-item,
+  .tab-item:global([draggable='true']),
+  .tab-item:global(.dragging) {
+    cursor: default !important;
   }
 
-  /* Make the original tab more transparent while dragging */
-  .tab-item--dragging {
+  /* Visual feedback when dragging - reduced opacity on source tab */
+  .tab-item.tab-item--dragging {
     opacity: 0.4;
     transition: opacity 0.15s ease;
   }
