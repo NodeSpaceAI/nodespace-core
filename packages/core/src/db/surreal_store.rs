@@ -2683,14 +2683,19 @@ where
 
         let new_order = if let Some(ref parent_id) = new_parent_id {
             let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
+            let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.clone()));
 
             // Get all child edges for this parent, ordered by properties.order field
+            // IMPORTANT: Exclude the node being moved to avoid corrupting order calculation
+            // when doing same-parent reorders. Otherwise, if the node being moved is at
+            // position after_index+1, we'd use its current order as the "next" boundary.
             let mut rels_response = self
                 .db
                 .query(
-                    "SELECT out, properties.order AS order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' ORDER BY properties.order ASC;",
+                    "SELECT out, properties.order AS order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' AND out != $node_thing ORDER BY properties.order ASC;",
                 )
                 .bind(("parent_thing", parent_thing.clone()))
+                .bind(("node_thing", node_thing.clone()))
                 .await
                 .context("Failed to get child relationships")?;
 
@@ -2730,8 +2735,9 @@ where
                         // transactions with deferred constraint checking, which isn't available.
                         let mut rels_response = self
                             .db
-                            .query("SELECT out, properties.order AS order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' ORDER BY properties.order ASC;")
+                            .query("SELECT out, properties.order AS order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' AND out != $node_thing ORDER BY properties.order ASC;")
                             .bind(("parent_thing", parent_thing.clone()))
+                            .bind(("node_thing", node_thing.clone()))
                             .await
                             .context("Failed to get child relationships after rebalancing")?;
 
