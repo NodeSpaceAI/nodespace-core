@@ -672,8 +672,9 @@ mod integration_tests {
             .unwrap();
 
         // Create three children: A → B → C using index-based insertion
-        // NOTE: Using handle_insert_child_at_index with delays to ensure
-        // SurrealDB write visibility between operations.
+        // IMPORTANT: We verify state after each insertion to ensure SurrealDB
+        // has made the write visible before proceeding. This eliminates flakiness
+        // from eventual consistency.
         let params_a = json!({
             "parent_id": date,
             "index": 0,
@@ -686,7 +687,10 @@ mod integration_tests {
             .unwrap();
         let node_a = result_a["node_id"].as_str().unwrap().to_string();
 
-        sleep(Duration::from_millis(500)).await;
+        // Verify A is visible before inserting B
+        wait_for_children_order(&node_service, &date, &["A"], 10)
+            .await
+            .expect("A should be visible as first child");
 
         let params_b = json!({
             "parent_id": date,
@@ -699,7 +703,10 @@ mod integration_tests {
             .await
             .unwrap();
 
-        sleep(Duration::from_millis(500)).await;
+        // Verify [A, B] order before inserting C
+        wait_for_children_order(&node_service, &date, &["A", "B"], 10)
+            .await
+            .expect("Children should be [A, B] before inserting C");
 
         let params_c = json!({
             "parent_id": date,
@@ -712,7 +719,10 @@ mod integration_tests {
             .await
             .unwrap();
 
-        sleep(Duration::from_millis(500)).await;
+        // Verify [A, B, C] order before moving A
+        wait_for_children_order(&node_service, &date, &["A", "B", "C"], 10)
+            .await
+            .expect("Children should be [A, B, C] before move");
 
         // Move first node (A) to index 999 (should append at end)
         // Get node A to fetch its current version for OCC

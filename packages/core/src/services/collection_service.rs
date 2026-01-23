@@ -330,7 +330,10 @@ where
     /// * `store` - The database store
     /// * `node_service` - NodeService for relationship operations and event emission
     pub fn new(store: &'a Arc<SurrealStore<C>>, node_service: &'a super::NodeService<C>) -> Self {
-        Self { store, node_service }
+        Self {
+            store,
+            node_service,
+        }
     }
 
     /// Resolve a collection path, creating collections as needed
@@ -409,7 +412,12 @@ where
                 self.node_service
                     .create_builtin_relationship(&node.id, "member_of", parent_id, json!({}))
                     .await
-                    .map_err(|e| NodeServiceError::query_failed(format!("Failed to create collection hierarchy: {}", e)))?;
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to create collection hierarchy: {}",
+                            e
+                        ))
+                    })?;
             }
 
             previous_collection_id = Some(node.id.clone());

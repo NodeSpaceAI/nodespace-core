@@ -3396,16 +3396,88 @@ where
         parent_id: &str,
         insert_after_node_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
+        use tokio::time::{sleep, Duration};
+
         // Pass insert_after_node_id directly to store.move_node without translation
         // store.move_node semantics:
         //   insert_after_node_id = Some(id) → "insert AFTER this sibling"
         //   insert_after_node_id = None → "insert at beginning"
 
         // Use store's move_node which creates the has_child relationship atomically
-        self.store
-            .move_node(child_id, Some(parent_id), insert_after_node_id)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        // Retry if sibling not found (eventual consistency)
+        let mut last_error = None;
+        for _attempt in 0..10 {
+            match self
+                .store
+                .move_node(child_id, Some(parent_id), insert_after_node_id)
+                .await
+            {
+                Ok(()) => {
+                    last_error = None;
+                    break;
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.contains("Sibling not found") {
+                        // Sibling not visible yet - wait and retry
+                        last_error = Some(err_str);
+                        sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                    // Other error - fail immediately
+                    return Err(NodeServiceError::query_failed(err_str));
+                }
+            }
+        }
+        if let Some(err) = last_error {
+            return Err(NodeServiceError::query_failed(err));
+        }
+
+        // Due to SurrealDB eventual consistency, the edge may be created with incorrect order
+        // if not all siblings were visible during the move_node query. We verify and retry
+        // with reorder if the position is wrong.
+        if let Some(after_id) = insert_after_node_id {
+            'outer: for _attempt in 0..20 {
+                // Wait for write propagation
+                sleep(Duration::from_millis(50)).await;
+
+                let children = self.get_children(parent_id).await?;
+                let child_pos = children.iter().position(|c| c.id == child_id);
+                let after_pos = children.iter().position(|c| c.id == after_id);
+
+                match (child_pos, after_pos) {
+                    (Some(c_pos), Some(a_pos)) if c_pos == a_pos + 1 => {
+                        // Child is correctly positioned right after the insert_after sibling
+                        break 'outer;
+                    }
+                    (Some(_), Some(_)) => {
+                        // Child exists but is in wrong position - reorder it and verify
+                        self.store
+                            .move_node(child_id, Some(parent_id), Some(after_id))
+                            .await
+                            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+                        // Wait and verify reorder took effect
+                        for _verify in 0..10 {
+                            sleep(Duration::from_millis(50)).await;
+                            let verify_children = self.get_children(parent_id).await?;
+                            let v_child_pos = verify_children.iter().position(|c| c.id == child_id);
+                            let v_after_pos = verify_children.iter().position(|c| c.id == after_id);
+
+                            if let (Some(c), Some(a)) = (v_child_pos, v_after_pos) {
+                                if c == a + 1 {
+                                    break 'outer; // Successfully reordered
+                                }
+                            }
+                        }
+                        // Reorder didn't stick, outer loop will retry
+                    }
+                    _ => {
+                        // One or both nodes not visible yet - will retry
+                    }
+                }
+            }
+        }
 
         // Emit RelationshipCreated event (Issue #811: unified relationship events)
         let children = self.get_children(parent_id).await?;
@@ -7294,8 +7366,9 @@ mod tests {
             let parent_id = service.create_node(parent).await.unwrap();
 
             // Add children in order A, B, C - they should maintain this order
-            // NOTE: Small delays between insertions ensure SurrealDB write visibility
-            // for sibling order calculations.
+            // IMPORTANT: Verify state after each insertion to ensure SurrealDB
+            // has made the write visible before proceeding. This eliminates flakiness
+            // from eventual consistency.
             let child_a = Node::new("text".to_string(), "A".to_string(), json!({}));
             let child_a_id = service.create_node(child_a).await.unwrap();
             service
@@ -7303,7 +7376,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            sleep(Duration::from_millis(50)).await;
+            // Verify A is visible before inserting B
+            wait_for_children_tree_order(&service, &parent_id, &["A"], 10)
+                .await
+                .expect("A should be visible as first child");
 
             let child_b = Node::new("text".to_string(), "B".to_string(), json!({}));
             let child_b_id = service.create_node(child_b).await.unwrap();
@@ -7312,7 +7388,10 @@ mod tests {
                 .await
                 .unwrap();
 
-            sleep(Duration::from_millis(50)).await;
+            // Verify [A, B] order before inserting C
+            wait_for_children_tree_order(&service, &parent_id, &["A", "B"], 10)
+                .await
+                .expect("Children should be [A, B] before inserting C");
 
             let child_c = Node::new("text".to_string(), "C".to_string(), json!({}));
             let child_c_id = service.create_node(child_c).await.unwrap();

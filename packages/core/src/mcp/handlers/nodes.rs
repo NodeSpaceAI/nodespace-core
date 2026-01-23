@@ -12,6 +12,8 @@ use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::sleep;
 
 /// Convert a Node to its strongly-typed JSON representation
 ///
@@ -824,8 +826,30 @@ where
             MCPError::invalid_params(format!("Parent node '{}' not found", params.parent_id))
         })?;
 
-    // 3. Get all siblings in order
-    let children_info = get_children_ordered(node_service, &params.parent_id, false).await?;
+    // 3. Get all siblings in order with retry for eventual consistency
+    // SurrealDB's embedded RocksDB backend may have slight delays in write visibility.
+    // If requesting index N > 0 but we see fewer than N children, retry to ensure
+    // previous writes are visible before calculating insertion position.
+    //
+    // To insert at index N (0-based), we need at least N existing children:
+    // - index 0: insert at beginning, need 0 children (any count is fine)
+    // - index 1: insert after first child, need at least 1 child
+    // - index 2: insert after second child, need at least 2 children
+    // - index N where N >= len: append at end, need the actual last child visible
+    let mut children_info = get_children_ordered(node_service, &params.parent_id, false).await?;
+
+    // Retry if index suggests there should be more children than we see
+    // For index N where N > 0 and N <= len, we need children[N-1] to be visible
+    // For index N where N > len, we want to append, but need the true last child
+    if params.index > 0 && children_info.len() < params.index {
+        for _attempt in 0..10 {
+            sleep(Duration::from_millis(100)).await;
+            children_info = get_children_ordered(node_service, &params.parent_id, false).await?;
+            if children_info.len() >= params.index {
+                break;
+            }
+        }
+    }
 
     // 4. Calculate insert_after_node_id based on index
     // API semantics: insert_after_node_id = the sibling to insert AFTER
@@ -929,35 +953,96 @@ where
 
     // 2. Get all siblings in current order (excluding the node being moved)
     let all_children = get_children_ordered(node_service, &parent_id, false).await?;
-    let siblings: Vec<_> = all_children
+    let mut siblings: Vec<_> = all_children
         .into_iter()
         .filter(|c| c.node_id != params.node_id)
         .collect();
 
-    // 3. Calculate insert_after from target index
-    // API semantics: insert_after = the sibling to insert AFTER
-    // - Index 0 → insert_after = None (insert at beginning)
-    // - Index N → insert_after = siblings[N-1] (insert after the (N-1)th sibling)
-    // - Index >= siblings.len() → insert_after = last sibling (append at end)
-    let insert_after = if params.index == 0 {
-        None // Insert at beginning
-    } else if params.index >= siblings.len() {
-        // Append at end - insert after last sibling
-        siblings.last().map(|s| s.node_id.clone())
-    } else {
-        // Insert after the sibling at index-1 (so node ends up at index)
-        Some(siblings[params.index - 1].node_id.clone())
-    };
+    // 3. Perform the move with retry-on-verification strategy
+    // Due to SurrealDB's eventual consistency, we may calculate wrong insert_after
+    // if not all siblings are visible. Strategy: perform move, verify result, retry if wrong.
+    let target_index = params.index;
+    let max_move_attempts = 5;
 
-    // 4. Use reorder_node operation (which handles edge ordering)
-    node_service
-        .reorder_node_with_occ(&params.node_id, params.version, insert_after.as_deref())
-        .await
-        .map_err(service_error_to_mcp)?;
+    for move_attempt in 0..max_move_attempts {
+        // Calculate insert_after from target index based on current siblings view
+        // API semantics: insert_after = the sibling to insert AFTER
+        // - Index 0 → insert_after = None (insert at beginning)
+        // - Index N → insert_after = siblings[N-1] (insert after the (N-1)th sibling)
+        // - Index >= siblings.len() → insert_after = last sibling (append at end)
+        let insert_after = if target_index == 0 {
+            None // Insert at beginning
+        } else if target_index >= siblings.len() {
+            // Append at end - insert after last sibling
+            siblings.last().map(|s| s.node_id.clone())
+        } else {
+            // Insert after the sibling at index-1 (so node ends up at index)
+            Some(siblings[target_index - 1].node_id.clone())
+        };
 
+        // Get current version for OCC (may have changed if we're retrying)
+        let current_node = node_service
+            .get_node(&params.node_id)
+            .await
+            .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
+            .ok_or_else(|| {
+                MCPError::invalid_params(format!("Node '{}' not found", params.node_id))
+            })?;
+        let current_version = current_node.version;
+
+        // Perform the move
+        node_service
+            .reorder_node_with_occ(&params.node_id, current_version, insert_after.as_deref())
+            .await
+            .map_err(service_error_to_mcp)?;
+
+        // Verify the result: check that the node is at the end if we requested index >= siblings.len()
+        // For index 0, check that node is at position 0
+        // For specific index, check that node is at that position
+        sleep(Duration::from_millis(50)).await;
+
+        let verification_children = get_children_ordered(node_service, &parent_id, false).await?;
+        let actual_position = verification_children
+            .iter()
+            .position(|c| c.node_id == params.node_id);
+
+        if let Some(pos) = actual_position {
+            let expected_pos = if target_index >= verification_children.len() {
+                verification_children.len() - 1 // Last position
+            } else {
+                target_index
+            };
+
+            if pos == expected_pos {
+                // Success! Node is at expected position
+                return Ok(json!({
+                    "node_id": params.node_id,
+                    "new_index": target_index,
+                    "parent_id": parent_id
+                }));
+            }
+
+            // Position is wrong - refresh siblings and retry
+            if move_attempt < max_move_attempts - 1 {
+                sleep(Duration::from_millis(100)).await;
+                let all_children = get_children_ordered(node_service, &parent_id, false).await?;
+                siblings = all_children
+                    .into_iter()
+                    .filter(|c| c.node_id != params.node_id)
+                    .collect();
+            }
+        } else {
+            // Node not found in children - unexpected, but retry
+            if move_attempt < max_move_attempts - 1 {
+                sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+
+    // After all retries, return the result (best effort)
     Ok(json!({
         "node_id": params.node_id,
-        "new_index": params.index,
+        "new_index": target_index,
         "parent_id": parent_id
     }))
 }

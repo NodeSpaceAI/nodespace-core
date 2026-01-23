@@ -1436,9 +1436,7 @@ mod collection_service_tests {
             .await?;
 
         // Verify membership was added
-        let memberships = collection_service
-            .get_node_collections("ops-doc")
-            .await?;
+        let memberships = collection_service.get_node_collections("ops-doc").await?;
         assert_eq!(memberships.len(), 1, "Node should have one membership");
         assert!(
             memberships.iter().any(|id| id.contains(&collection_id)),
@@ -1451,9 +1449,7 @@ mod collection_service_tests {
             .await?;
 
         // Verify the membership was removed
-        let memberships = collection_service
-            .get_node_collections("ops-doc")
-            .await?;
+        let memberships = collection_service.get_node_collections("ops-doc").await?;
         assert!(
             memberships.is_empty(),
             "Node should have no memberships after removal"
