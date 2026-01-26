@@ -27,6 +27,7 @@ import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
 import { backendAdapter } from './backend-adapter';
 import { createLogger } from '$lib/utils/logger';
+import { scheduleCollectionRefresh } from '$lib/utils/collection-refresh';
 
 const log = createLogger('BrowserSyncService');
 
@@ -225,7 +226,13 @@ class BrowserSyncService {
 
     switch (event.type) {
       case 'nodeCreated': {
-        log.debug('Node created:', event.nodeId);
+        log.debug(`Node created: ${event.nodeId} (type: ${event.nodeType})`);
+
+        // Issue #832: If a collection node is created, refresh collections sidebar
+        if (event.nodeType === 'collection') {
+          scheduleCollectionRefresh();
+        }
+
         // Issue #724: Fetch full node data only if we need to display it
         // For now, always fetch since the node might be in the current view
         this.fetchAndUpdateNode(event.nodeId, 'nodeCreated');
@@ -247,6 +254,9 @@ class BrowserSyncService {
       case 'nodeDeleted':
         log.debug('Node deleted:', event.nodeId);
         sharedNodeStore.deleteNode(event.nodeId, { type: 'database', reason: 'sse-sync' }, true);
+        // Issue #832: We don't know if deleted node was a collection without fetching,
+        // but if we have it cached in collectionsData, we should refresh
+        // For simplicity, we rely on the UI to handle stale data gracefully
         break;
 
       // ======================================================================
@@ -272,8 +282,9 @@ class BrowserSyncService {
             }
           }
         } else if (event.relationshipType === 'member_of') {
-          // Collection membership - log for now
+          // Collection membership changed - refresh collections sidebar
           log.debug(`Member added: ${event.fromId} to collection ${event.toId}`);
+          scheduleCollectionRefresh(event.toId);
         } else if (event.relationshipType === 'mentions') {
           // Mention relationship - log for now
           log.debug(`Mention created: ${event.fromId} mentions ${event.toId}`);
@@ -307,7 +318,9 @@ class BrowserSyncService {
             });
           }
         } else if (event.relationshipType === 'member_of') {
+          // Collection membership removed - refresh collections sidebar
           log.debug(`Member removed from collection: ${event.id}`);
+          scheduleCollectionRefresh(event.toId);
         } else if (event.relationshipType === 'mentions') {
           log.debug(`Mention deleted: ${event.id}`);
         }

@@ -75,12 +75,15 @@ mod event_emission_tests {
             .expect("Should receive event");
 
         // Verify it's a NodeCreated event with correct client_id (Issue #724: ID-only events)
+        // Issue #832: node_type is now included for reactive UI updates
         match event {
             DomainEvent::NodeCreated {
                 node_id,
+                node_type,
                 source_client_id,
             } => {
                 assert_eq!(node_id, expected_id);
+                assert_eq!(node_type, "text");
                 assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
             }
             _ => panic!("Expected NodeCreated event, got {:?}", event),

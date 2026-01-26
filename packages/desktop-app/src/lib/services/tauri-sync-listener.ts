@@ -29,6 +29,7 @@ import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
 import { backendAdapter } from './backend-adapter';
 import { createLogger } from '$lib/utils/logger';
+import { scheduleCollectionRefresh } from '$lib/utils/collection-refresh';
 
 const log = createLogger('TauriSync');
 
@@ -92,8 +93,15 @@ export async function initializeTauriSyncListeners(): Promise<void> {
   try {
     // Listen for node events and update SharedNodeStore
     // Issue #724: Events now send only node_id, fetch full data if needed
+    // Issue #832: node:created includes nodeType for reactive UI updates
     await listen<NodeEventData>('node:created', (event) => {
-      log.debug(`Node created: ${event.payload.id}`);
+      log.debug(`Node created: ${event.payload.id} (type: ${event.payload.nodeType})`);
+
+      // Issue #832: If a collection node is created, refresh collections sidebar
+      if (event.payload.nodeType === 'collection') {
+        scheduleCollectionRefresh();
+      }
+
       // Fetch full node data since the node might be in the current view
       fetchAndUpdateNode(event.payload.id, 'node:created');
     });
@@ -111,6 +119,11 @@ export async function initializeTauriSyncListeners(): Promise<void> {
     await listen<{ id: string }>('node:deleted', (event) => {
       log.debug(`Node deleted: ${event.payload.id}`);
       sharedNodeStore.deleteNode(event.payload.id, { type: 'database', reason: 'domain-event' }, true);
+
+      // Issue #832: We don't know if deleted node was a collection without fetching,
+      // but if we have it cached in collectionsData, we should refresh
+      // For simplicity, we rely on the UI to handle stale data gracefully
+      // A more robust solution would cache node types or include type in delete events
     });
 
     // ========================================================================
@@ -138,8 +151,9 @@ export async function initializeTauriSyncListeners(): Promise<void> {
           }
         }
       } else if (rel.relationshipType === 'member_of') {
-        // Collection membership - currently just log, could update collection state if needed
+        // Collection membership changed - refresh collections sidebar
         log.debug(`Member added: ${rel.fromId} to collection ${rel.toId}`);
+        scheduleCollectionRefresh(rel.toId);
       } else if (rel.relationshipType === 'mentions') {
         // Mention relationship - currently just log
         log.debug(`Mention created: ${rel.fromId} mentions ${rel.toId}`);
@@ -174,7 +188,9 @@ export async function initializeTauriSyncListeners(): Promise<void> {
           });
         }
       } else if (relationshipType === 'member_of') {
+        // Collection membership removed - refresh collections sidebar
         log.debug(`Member removed from collection: ${id}`);
+        scheduleCollectionRefresh(toId);
       } else if (relationshipType === 'mentions') {
         log.debug(`Mention deleted: ${id}`);
       }

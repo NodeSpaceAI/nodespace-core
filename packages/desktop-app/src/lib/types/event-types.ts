@@ -19,9 +19,14 @@
  *
  * Events now send only node ID for efficiency.
  * Frontend fetches full node data via get_node() API if needed.
+ *
+ * Issue #832: node:created events include nodeType for reactive UI updates
+ * (e.g., collections sidebar needs to know when collection nodes are created)
  */
 export interface NodeEventData {
   id: string;
+  /** Node type - included in node:created events for reactive UI updates */
+  nodeType?: string;
 }
 
 // ============================================================================

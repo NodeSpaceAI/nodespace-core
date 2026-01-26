@@ -12,8 +12,13 @@ use tracing::{debug, error, info};
 /// Used for all node events (created, updated, deleted) to minimize payload size.
 /// Frontend fetches full node data via get_node() API if needed.
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct NodeIdPayload {
     id: String,
+    /// Optional node type - included for node:created to enable reactive UI updates
+    /// (e.g., collections sidebar reacts to new collection nodes without fetching)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_type: Option<String>,
 }
 
 /// Service for forwarding domain events to the Tauri frontend
@@ -133,10 +138,13 @@ impl DomainEventForwarder {
 
         // Forward the event to the frontend (Issue #724: ID-only payloads)
         match event {
-            DomainEvent::NodeCreated { node_id, .. } => {
-                // Send only node_id - frontend fetches full data if needed
+            DomainEvent::NodeCreated {
+                node_id, node_type, ..
+            } => {
+                // Include node_type for reactive UI updates (e.g., collections sidebar)
                 let payload = NodeIdPayload {
                     id: node_id.clone(),
+                    node_type: Some(node_type.clone()),
                 };
                 if let Err(e) = self.app.emit("node:created", &payload) {
                     error!("Failed to emit node:created for {}: {}", node_id, e);
@@ -146,13 +154,17 @@ impl DomainEventForwarder {
                 // Send only node_id - frontend fetches full data if needed
                 let payload = NodeIdPayload {
                     id: node_id.clone(),
+                    node_type: None,
                 };
                 if let Err(e) = self.app.emit("node:updated", &payload) {
                     error!("Failed to emit node:updated for {}: {}", node_id, e);
                 }
             }
             DomainEvent::NodeDeleted { id, .. } => {
-                let payload = NodeIdPayload { id: id.clone() };
+                let payload = NodeIdPayload {
+                    id: id.clone(),
+                    node_type: None,
+                };
                 if let Err(e) = self.app.emit("node:deleted", &payload) {
                     error!("Failed to emit node:deleted: {}", e);
                 }

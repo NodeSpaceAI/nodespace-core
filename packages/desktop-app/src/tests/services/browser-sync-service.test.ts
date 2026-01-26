@@ -144,6 +144,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Then, the node event arrives (Issue #724: ID-only)
       const nodeEvent: SseEvent = {
         type: 'nodeCreated',
+        nodeType: 'text',
         nodeId: 'node1'
       };
 
@@ -198,6 +199,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Now create the node event (Issue #724: ID-only)
       const nodeEvent: SseEvent = {
         type: 'nodeCreated',
+        nodeType: 'text',
         nodeId: 'child1'
       };
 
@@ -254,6 +256,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Now create the node (Issue #724: ID-only)
       testableService.handleEvent({
         type: 'nodeCreated',
+        nodeType: 'text',
         nodeId: 'child'
       });
 
@@ -377,9 +380,9 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
 
       // Now nodes arrive in random order (Issue #724: ID-only)
       const nodes: SseEvent[] = [
-        { type: 'nodeCreated', nodeId: 'N2' },
-        { type: 'nodeCreated', nodeId: 'N1' },
-        { type: 'nodeCreated', nodeId: 'N3' }
+        { type: 'nodeCreated', nodeType: 'text', nodeId: 'N2' },
+        { type: 'nodeCreated', nodeType: 'text', nodeId: 'N1' },
+        { type: 'nodeCreated', nodeType: 'text', nodeId: 'N3' }
       ];
 
       for (const node of nodes) {
@@ -477,15 +480,15 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Interleaved events (Issue #724: ID-only for node events, Issue #811: unified relationships)
       const events: SseEvent[] = [
         // Tree 1 setup
-        { type: 'nodeCreated', nodeId: 'P1' },
+        { type: 'nodeCreated', nodeType: 'text', nodeId: 'P1' },
         // Tree 2 setup
-        { type: 'nodeCreated', nodeId: 'P2' },
+        { type: 'nodeCreated', nodeType: 'text', nodeId: 'P2' },
         // Tree 1 relationships and nodes
         { type: 'relationshipCreated', id: 'rel:P1:N1', fromId: 'P1', toId: 'N1', relationshipType: 'has_child', properties: { order: 1 } },
-        { type: 'nodeCreated', nodeId: 'N1' },
+        { type: 'nodeCreated', nodeType: 'text', nodeId: 'N1' },
         // Tree 2 relationships and nodes
         { type: 'relationshipCreated', id: 'rel:P2:N3', fromId: 'P2', toId: 'N3', relationshipType: 'has_child', properties: { order: 1 } },
-        { type: 'nodeCreated', nodeId: 'N3' }
+        { type: 'nodeCreated', nodeType: 'text', nodeId: 'N3' }
       ];
 
       for (const event of events) {
@@ -544,6 +547,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Issue #724: ID-only event
       const event: SseEvent = {
         type: 'nodeCreated',
+        nodeType: 'text',
         nodeId: 'other-client-node',
         clientId: 'different-client-123' // Different from our test-client ID
       };
@@ -571,6 +575,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Issue #724: ID-only event, no clientId
       const event: SseEvent = {
         type: 'nodeCreated',
+        nodeType: 'text',
         nodeId: 'legacy-node'
         // Note: no clientId field
       };
@@ -700,6 +705,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Send create event
       testableService.handleEvent({
         type: 'nodeCreated',
+        nodeType: 'text',
         nodeId: 'failed-node'
       });
 
@@ -717,6 +723,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Send create event
       testableService.handleEvent({
         type: 'nodeCreated',
+        nodeType: 'text',
         nodeId: 'deleted-node'
       });
 
@@ -750,6 +757,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Send create event
       testableService.handleEvent({
         type: 'nodeCreated',
+        nodeType: 'text',
         nodeId: 'task1'
       });
 
@@ -772,6 +780,7 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       // Send create event
       testableService.handleEvent({
         type: 'nodeCreated',
+        nodeType: 'text',
         nodeId: 'text1'
       });
 

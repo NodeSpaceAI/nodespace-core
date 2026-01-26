@@ -455,6 +455,7 @@ where
                 let event = match change.operation {
                     StoreOperation::Created => DomainEvent::NodeCreated {
                         node_id: change.node.id.clone(),
+                        node_type: change.node.node_type.clone(),
                         source_client_id: change.source,
                     },
                     StoreOperation::Updated => DomainEvent::NodeUpdated {

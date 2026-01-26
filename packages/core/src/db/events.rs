@@ -76,6 +76,9 @@ pub enum DomainEvent {
     /// A new node was created
     NodeCreated {
         node_id: String,
+        /// Node type (e.g., "collection", "task", "text") - included for reactive UI updates
+        /// that need to know the type without fetching the full node
+        node_type: String,
         source_client_id: Option<String>,
     },
 

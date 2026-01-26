@@ -18,10 +18,13 @@ export interface SseEventBase {
 
 /**
  * Event sent when a new node is created (ID only)
+ * Issue #832: Includes nodeType for reactive UI updates (e.g., collections sidebar)
  */
 export interface NodeCreatedEvent extends SseEventBase {
   type: 'nodeCreated';
   nodeId: string;
+  /** Node type for reactive UI updates (e.g., "collection", "task", "text") */
+  nodeType: string;
   clientId?: string;
 }
 

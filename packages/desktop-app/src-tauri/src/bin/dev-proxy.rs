@@ -72,6 +72,9 @@ pub enum SseEvent {
     NodeCreated {
         #[serde(rename = "nodeId")]
         node_id: String,
+        /// Node type for reactive UI updates (e.g., collections sidebar)
+        #[serde(rename = "nodeType")]
+        node_type: String,
         #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
         client_id: Option<String>,
     },
@@ -567,6 +570,7 @@ async fn domain_event_to_sse_bridge(
                 match event {
                     DomainEvent::NodeCreated {
                         node_id,
+                        node_type,
                         source_client_id,
                     } => {
                         // Filter out events from dev-proxy (browser operations)
@@ -579,8 +583,10 @@ async fn domain_event_to_sse_bridge(
                         }
 
                         // Issue #724: Send only node_id (no payload)
+                        // Issue #832: Include node_type for reactive UI updates (collections)
                         let _ = sse_tx.send(SseEvent::NodeCreated {
                             node_id: node_id.clone(),
+                            node_type: node_type.clone(),
                             client_id: source_client_id,
                         });
                     }
