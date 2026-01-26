@@ -745,17 +745,17 @@ fn get_tool_schemas() -> Value {
         },
         {
             "name": "create_nodes_from_markdown",
-            "description": "Parse markdown and create hierarchical nodes. If 'title' is provided, it becomes the root node and markdown_content becomes children. If 'title' is omitted, the first line of markdown_content is used as the root node title.",
+            "description": "Parse markdown and create hierarchical nodes. IMPORTANT: When 'title' is provided, ALL of markdown_content becomes children - the title is NOT auto-removed from content. When 'title' is omitted, the first line of markdown_content is extracted as the root and removed from children.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "markdown_content": {
                         "type": "string",
-                        "description": "Markdown content to parse into nodes. If title is provided, this becomes children of the title node. If title is omitted, the first line becomes the root and the rest become children."
+                        "description": "Markdown content to parse into nodes. IMPORTANT: When title is provided separately, do NOT duplicate it here - start markdown_content AFTER the title to avoid redundant nodes. When title is omitted, the first line becomes the root."
                     },
                     "title": {
                         "type": "string",
-                        "description": "Optional root node title. Can be: (1) A date string in 'YYYY-MM-DD' format to use/create a date root, or (2) Markdown text (e.g., '# Project Alpha' or 'Meeting Notes') to create a text/header root. If omitted, the first line of markdown_content is used as the root."
+                        "description": "Optional root node title as plain text (e.g., 'Project Alpha', 'Meeting Notes'). Markdown syntax is optional but not recommended. Can also be a date 'YYYY-MM-DD' for date roots. When omitted, the first line of markdown_content is used as the root."
                     },
                     "collection": {
                         "type": "string",

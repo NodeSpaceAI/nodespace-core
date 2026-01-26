@@ -410,32 +410,35 @@ pub fn prepare_nodes_from_markdown(
 pub struct CreateNodesFromMarkdownParams {
     /// Markdown content to parse into nodes.
     ///
-    /// If `title` is provided, all nodes from markdown_content become children of the title node.
-    /// If `title` is NOT provided, the first line of markdown_content becomes the root node,
-    /// and remaining content becomes children of that root.
+    /// IMPORTANT: When `title` is provided, ALL of markdown_content becomes children
+    /// of the title node - the title is NOT auto-removed from content. When `title`
+    /// is NOT provided, the first line of markdown_content is extracted as the root
+    /// and removed from children.
     ///
-    /// Example with title:
+    /// Example with title (start content AFTER the title):
     /// ```text
-    /// title: "# Project Alpha"
+    /// title: "Project Alpha"
     /// markdown_content: "## Task 1\nDescription here"
-    /// // Creates: "# Project Alpha" (root) -> "## Task 1" (child) -> "Description" (child)
+    /// // Creates: "Project Alpha" (root) -> "## Task 1" (child) -> "Description" (child)
     /// ```
     ///
-    /// Example without title (auto-extract first line):
+    /// Example without title (first line auto-extracted):
     /// ```text
     /// markdown_content: "# Project Alpha\n## Task 1\nDescription here"
     /// // Creates: "# Project Alpha" (root) -> "## Task 1" (child) -> "Description" (child)
     /// ```
     pub markdown_content: String,
 
-    /// Optional title for the root node.
+    /// Optional title for the root node as plain text.
     ///
-    /// If provided, creates a separate root node that all markdown_content nodes
-    /// will be children of. Can be:
+    /// If provided, creates a root node and ALL markdown_content becomes children.
+    /// Can be:
+    /// - Plain text (recommended): "Project Alpha", "Meeting Notes"
     /// - A date string (YYYY-MM-DD) to use/create a date root
-    /// - Markdown text (e.g., "# My Document" or "Project Notes") to create a text/header root
+    /// - Markdown syntax is accepted but plain text is preferred
     ///
-    /// If NOT provided, the first line of markdown_content is used as the root node title.
+    /// If NOT provided, the first line of markdown_content is extracted and used
+    /// as the root node (and removed from children).
     ///
     /// The parsed root type must be text, header, or date.
     /// Multi-line types (code-block, quote-block, ordered-list) cannot be roots.
