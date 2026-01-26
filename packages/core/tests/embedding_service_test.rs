@@ -827,3 +827,139 @@ async fn test_multi_chunk_scoring_breadth_boost() -> Result<()> {
 
     Ok(())
 }
+
+/// Test that threshold filters by composite score, not raw similarity (Issue #787)
+///
+/// This test verifies that the threshold parameter filters results based on the
+/// composite score (which includes breadth boost) rather than raw similarity.
+///
+/// A document with:
+/// - raw max_similarity below the threshold
+/// - but composite_score above the threshold (due to multiple matching chunks)
+/// SHOULD be returned (this was the bug - it was being filtered out).
+#[tokio::test]
+async fn test_threshold_filters_by_composite_score_not_raw_similarity() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Create a document that will have multiple matching chunks
+    let doc = create_root_node(
+        &node_service,
+        "text",
+        "Multi-chunk document for threshold test",
+    )
+    .await?;
+
+    // Create a normalized query vector (unit vector in first dimension)
+    let mut query_vec = vec![0.0f32; 768];
+    query_vec[0] = 1.0;
+
+    // Create 5 chunks with carefully calculated similarity
+    // For cosine similarity with query [1,0,0,...]:
+    // cos(θ) = v[0] / ||v||
+    // To get similarity ~0.68, we need v[0]/||v|| = 0.68
+    // If v = [0.68, 0.73, 0, ...], ||v|| = sqrt(0.68^2 + 0.73^2) = sqrt(0.9953) ≈ 0.9976
+    // cos(θ) = 0.68 / 0.9976 ≈ 0.682
+    let chunks: Vec<NewEmbedding> = (0..5)
+        .map(|i| {
+            let mut vec = vec![0.0f32; 768];
+            // Base component aligned with query
+            vec[0] = 0.68;
+            // Orthogonal component to control the magnitude (and thus similarity)
+            // Higher orthogonal component = lower similarity
+            vec[1] = 0.73 + (i as f32 * 0.02); // Slightly varying similarities
+
+            NewEmbedding {
+                node_id: doc.id.clone(),
+                vector: vec,
+                model_name: Some("test-model".to_string()),
+                chunk_index: i,
+                chunk_start: i * 200,
+                chunk_end: (i + 1) * 200,
+                total_chunks: 5,
+                content_hash: "hash-787".to_string(),
+                token_count: 100,
+            }
+        })
+        .collect();
+
+    store.upsert_embeddings(&doc.id, chunks).await?;
+
+    // First, get the document with a low threshold to see its actual scores
+    let low_threshold_results = store.search_embeddings(&query_vec, 10, Some(0.3)).await?;
+    assert!(
+        !low_threshold_results.is_empty(),
+        "Should find document with low threshold"
+    );
+
+    let result = &low_threshold_results[0];
+    assert_eq!(result.node_id, doc.id);
+
+    // Log the actual values for debugging
+    println!(
+        "Document scores - max_similarity: {:.4}, matching_chunks: {}, composite_score: {:.4}",
+        result.max_similarity, result.matching_chunks, result.score
+    );
+
+    // Verify the composite score formula is applied correctly
+    let expected_composite =
+        result.max_similarity * (1.0 + 0.3 * (result.matching_chunks as f64).log10());
+    assert!(
+        (result.score - expected_composite).abs() < 0.01,
+        "Composite score should match formula: expected {}, got {}",
+        expected_composite,
+        result.score
+    );
+
+    // KEY TEST (Issue #787): Find a threshold between raw_similarity and composite_score
+    // With 5 chunks, breadth_factor = 1 + 0.3 * log10(5) ≈ 1.21
+    // If max_similarity = 0.68, composite = 0.68 * 1.21 ≈ 0.82
+    // We choose a threshold between them
+    let threshold = (result.max_similarity + result.score) / 2.0;
+
+    println!(
+        "Using threshold {:.4} (between raw {:.4} and composite {:.4})",
+        threshold, result.max_similarity, result.score
+    );
+
+    // Verify our test setup: raw_similarity < threshold < composite_score
+    assert!(
+        result.max_similarity < threshold,
+        "Test setup: raw_similarity ({}) should be below threshold ({})",
+        result.max_similarity,
+        threshold
+    );
+    assert!(
+        result.score > threshold,
+        "Test setup: composite_score ({}) should be above threshold ({})",
+        result.score,
+        threshold
+    );
+
+    // Now the actual test - search with the threshold
+    let threshold_results = store
+        .search_embeddings(&query_vec, 10, Some(threshold))
+        .await?;
+
+    // The document SHOULD be returned (Issue #787 fix)
+    // OLD behavior (bug): document NOT returned because raw_similarity < threshold
+    // NEW behavior (fix): document IS returned because composite_score > threshold
+    assert!(
+        !threshold_results.is_empty(),
+        "Document with raw_similarity {:.4} and composite_score {:.4} should be returned with threshold {:.4}",
+        result.max_similarity,
+        result.score,
+        threshold
+    );
+
+    let threshold_result = threshold_results.iter().find(|r| r.node_id == doc.id);
+    assert!(
+        threshold_result.is_some(),
+        "Document should be in results because composite_score ({:.4}) > threshold ({:.4})",
+        result.score,
+        threshold
+    );
+
+    Ok(())
+}

@@ -4081,11 +4081,7 @@ where
         Ok(())
     }
 
-    /// Breadth boost factor for multi-chunk scoring (Issue #778)
-    /// Formula: score = max_similarity * (1 + BREADTH_BOOST * log10(matching_chunks))
-    const BREADTH_BOOST: f64 = 0.3;
-
-    /// Search embeddings by vector similarity with multi-chunk scoring (Issue #778)
+    /// Search embeddings by vector similarity with multi-chunk scoring (Issue #778, #787)
     ///
     /// Returns nodes ranked by a composite score that considers both:
     /// 1. Maximum chunk similarity (primary signal)
@@ -4094,10 +4090,18 @@ where
     /// Documents with multiple relevant chunks rank higher than those with
     /// a single high-scoring chunk, ensuring broader relevance is rewarded.
     ///
-    /// ## Scoring Formula
+    /// ## Scoring Formula (calculated in SQL)
     /// ```text
     /// score = max_similarity * (1 + 0.3 * log10(matching_chunks))
     /// ```
+    ///
+    /// ## Threshold Behavior (Issue #787)
+    /// The threshold filters by **composite score**, not raw similarity.
+    /// This means users see results with score > threshold, as expected.
+    ///
+    /// Example: A document with raw similarity 0.68 and 3 chunks has
+    /// composite score ~0.78. With threshold 0.7, it IS returned because
+    /// 0.78 > 0.7 (unlike the old behavior which filtered by raw 0.68 < 0.7).
     ///
     /// ## Examples
     /// - Doc A: 1 chunk @ 0.85 → score = 0.85
@@ -4106,14 +4110,14 @@ where
     /// # Arguments
     /// * `query_vector` - The query embedding vector
     /// * `limit` - Maximum number of results
-    /// * `threshold` - Minimum similarity threshold (0.0-1.0)
+    /// * `threshold` - Minimum composite score threshold (0.0-1.0)
     pub async fn search_embeddings(
         &self,
         query_vector: &[f32],
         limit: i64,
         threshold: Option<f64>,
     ) -> Result<Vec<crate::models::EmbeddingSearchResult>> {
-        let min_similarity = threshold.unwrap_or(0.5);
+        let min_score = threshold.unwrap_or(0.5);
 
         // Intermediate struct for raw SurrealDB results with chunk count and fetched node
         // Note: Using FETCH node to get full node data in a single query (eliminates N+1 queries)
@@ -4121,47 +4125,66 @@ where
         // Uses SurrealNode internally because FETCH returns the full node including its
         // `id` field as a SurrealDB Thing type (see FETCH data Limitation comments above).
         // We then convert SurrealNode -> Node which extracts the UUID from the Thing.
+        //
+        // Issue #787: composite_score is now calculated in SQL and used for filtering/sorting
         #[derive(Debug, serde::Deserialize)]
         struct RawSearchResult {
             node: SurrealNode,
             max_similarity: f64,
             matching_chunks: i64,
+            composite_score: f64,
         }
 
         // Query using KNN operator for MTREE-indexed vector search (Issue #776)
-        // Enhanced for multi-chunk scoring (Issue #778):
-        // - We calculate similarity for each chunk
-        // - Count how many chunks exceed the threshold
+        // Enhanced for multi-chunk scoring (Issue #778) with SQL-side composite score (Issue #787):
+        // - Calculate similarity for each chunk via KNN
         // - Group by node, taking max similarity and count
+        // - Calculate composite score in SQL: max_similarity * (1 + 0.3 * log10(chunks))
+        // - Filter by composite score in outer WHERE (SurrealDB doesn't support HAVING)
+        // - Sort by composite score (not max_similarity)
         //
         // The <|K|> operator leverages the MTREE index for fast approximate nearest neighbor search.
-        // We fetch more candidates (limit * 5) to account for:
-        // 1. Multiple chunks per node (grouped later)
-        // 2. Threshold filtering (some may not meet similarity threshold)
+        // We fetch more candidates (limit * 5) to account for multiple chunks per node.
         // Note: SurrealDB's KNN operator <|K|> requires a literal integer, not a bind parameter.
-        // We interpolate knn_limit directly into the query string.
         //
         // PERFORMANCE: Using FETCH node to retrieve full node data in the same query,
         // eliminating the need for separate get_node() calls (saves ~300ms for 5 results).
-        let knn_limit = limit * 5; // Increased to capture more chunks per node
+        //
+        // BREADTH_BOOST = 0.3 is inlined in SQL (previously was a Rust constant)
+        // Note: SurrealDB doesn't support referencing aliases in the same-level WHERE clause,
+        // so we use nested subqueries to calculate composite_score once, then filter on it:
+        // 1. Innermost: KNN search to get candidate chunks with similarity scores
+        // 2. Middle-inner: GROUP BY node with aggregate calculations (max_similarity, matching_chunks)
+        // 3. Middle-outer: Calculate composite_score from aggregates (defined once here)
+        // 4. Outermost: Filter by composite_score > threshold (no duplication)
+        let knn_limit = limit * 5;
         let query = format!(
             r#"
             SELECT * FROM (
-                SELECT
-                    node,
-                    math::max(similarity) AS max_similarity,
-                    count() AS matching_chunks
-                FROM (
+                SELECT * FROM (
                     SELECT
                         node,
-                        vector::similarity::cosine(vector, $query_vector) AS similarity
-                    FROM embedding
-                    WHERE stale = false AND vector <|{knn_limit}|> $query_vector
+                        max_similarity,
+                        matching_chunks,
+                        max_similarity * (1.0 + 0.3 * math::log10(matching_chunks)) AS composite_score
+                    FROM (
+                        SELECT
+                            node,
+                            math::max(similarity) AS max_similarity,
+                            count() AS matching_chunks
+                        FROM (
+                            SELECT
+                                node,
+                                vector::similarity::cosine(vector, $query_vector) AS similarity
+                            FROM embedding
+                            WHERE stale = false AND vector <|{knn_limit}|> $query_vector
+                        )
+                        GROUP BY node
+                    )
                 )
-                WHERE similarity > $threshold
-                GROUP BY node
+                WHERE composite_score > $threshold
             )
-            ORDER BY max_similarity DESC
+            ORDER BY composite_score DESC
             LIMIT $limit
             FETCH node;
         "#
@@ -4171,7 +4194,7 @@ where
             .db
             .query(&query)
             .bind(("query_vector", query_vector.to_vec()))
-            .bind(("threshold", min_similarity))
+            .bind(("threshold", min_score))
             .bind(("limit", limit))
             .await
             .context("Failed to execute embedding search")?;
@@ -4180,37 +4203,23 @@ where
             .take(0)
             .context("Failed to extract embedding search results")?;
 
-        // Convert to EmbeddingSearchResult with composite score calculation
-        // Score formula: max_similarity * (1 + BREADTH_BOOST * log10(matching_chunks))
-        let mut results: Vec<crate::models::EmbeddingSearchResult> = raw_results
+        // Convert to EmbeddingSearchResult using SQL-calculated composite score
+        // No Rust-side calculation or re-sorting needed (Issue #787)
+        let results: Vec<crate::models::EmbeddingSearchResult> = raw_results
             .into_iter()
             .map(|r| {
-                // Calculate breadth factor: log10(chunks) gives 0 for 1 chunk, ~0.70 for 5, ~1.0 for 10
-                // Note: matching_chunks comes from SQL count() which always returns >= 1,
-                // but .max(1.0) guards against edge cases and prevents log10(0) = -inf
-                let breadth_factor =
-                    1.0 + Self::BREADTH_BOOST * (r.matching_chunks as f64).max(1.0).log10();
-                let score = r.max_similarity * breadth_factor;
-
                 // Convert SurrealNode -> Node (extracts UUID from Thing, handles properties)
                 let node: Node = r.node.into();
 
                 crate::models::EmbeddingSearchResult {
                     node_id: node.id.clone(),
-                    score,
+                    score: r.composite_score,
                     max_similarity: r.max_similarity,
                     matching_chunks: r.matching_chunks,
                     node: Some(node),
                 }
             })
             .collect();
-
-        // Re-sort by composite score (DB sorted by max_similarity, we need score order)
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
 
         Ok(results)
     }
