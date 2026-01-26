@@ -1457,4 +1457,79 @@ mod collection_service_tests {
 
         Ok(())
     }
+
+    /// Test get_all_collections_with_member_counts (Issue #817)
+    ///
+    /// This test validates that the optimized single-query method for fetching
+    /// all collections with their member counts works correctly.
+    #[tokio::test]
+    async fn test_get_all_collections_with_member_counts() -> Result<()> {
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
+
+        // Create multiple collections
+        let resolved_a = collection_service.resolve_path("collection-a").await?;
+        let collection_a_id = resolved_a.leaf_id().to_string();
+
+        let resolved_b = collection_service.resolve_path("collection-b").await?;
+        let collection_b_id = resolved_b.leaf_id().to_string();
+
+        let resolved_empty = collection_service.resolve_path("empty-collection").await?;
+        let _empty_collection_id = resolved_empty.leaf_id().to_string();
+
+        // Create some text nodes
+        create_text_node(&store, "doc-a1", "Document A1").await?;
+        create_text_node(&store, "doc-a2", "Document A2").await?;
+        create_text_node(&store, "doc-b1", "Document B1").await?;
+
+        // Add nodes to collections:
+        // - collection-a: 2 members (doc-a1, doc-a2)
+        // - collection-b: 1 member (doc-b1)
+        // - empty-collection: 0 members
+        collection_service
+            .add_to_collection("doc-a1", &collection_a_id)
+            .await?;
+        collection_service
+            .add_to_collection("doc-a2", &collection_a_id)
+            .await?;
+        collection_service
+            .add_to_collection("doc-b1", &collection_b_id)
+            .await?;
+
+        // Get all collections with member counts
+        let collections_with_counts = collection_service.get_all_collections_with_counts().await?;
+
+        // Should have 3 collections
+        assert_eq!(
+            collections_with_counts.len(),
+            3,
+            "Should have 3 collections"
+        );
+
+        // Verify member counts
+        let find_count = |name: &str| -> Option<usize> {
+            collections_with_counts
+                .iter()
+                .find(|(node, _)| node.content == name)
+                .map(|(_, count)| *count)
+        };
+
+        assert_eq!(
+            find_count("collection-a"),
+            Some(2),
+            "collection-a should have 2 members"
+        );
+        assert_eq!(
+            find_count("collection-b"),
+            Some(1),
+            "collection-b should have 1 member"
+        );
+        assert_eq!(
+            find_count("empty-collection"),
+            Some(0),
+            "empty-collection should have 0 members"
+        );
+
+        Ok(())
+    }
 }

@@ -4825,6 +4825,24 @@ where
     ///
     /// Vec of (Node, member_count) tuples for all collection nodes
     pub async fn get_all_collections_with_member_counts(&self) -> Result<Vec<(Node, usize)>> {
+        // Issue #817: Use typed struct for deserialization instead of serde_json::Value
+        // The SurrealDB Rust client cannot deserialize computed count() fields to serde_json::Value
+        // because SurrealDB's internal number representation uses an enum type.
+        #[derive(Debug, Deserialize)]
+        struct CollectionWithCount {
+            id: Thing,
+            node_type: String,
+            content: String,
+            version: i64,
+            created_at: String,
+            modified_at: String,
+            #[serde(default)]
+            properties: Value,
+            #[serde(default)]
+            title: Option<String>,
+            member_count: i64,
+        }
+
         // Single query that fetches collections and counts their members via graph traversal
         let query = r#"
             SELECT
@@ -4841,83 +4859,48 @@ where
             .await
             .context("Failed to get collections with member counts")?;
 
-        // Parse results - each row has node fields plus member_count
-        let rows: Vec<Value> = response
+        // Parse results using typed struct
+        let rows: Vec<CollectionWithCount> = response
             .take(0)
             .context("Failed to extract collection results")?;
 
-        let mut results = Vec::with_capacity(rows.len());
-        for row in rows {
-            // Extract member_count from the row
-            let member_count = row
-                .get("member_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
+        let results = rows
+            .into_iter()
+            .map(|row| {
+                // Extract UUID from Thing record ID (e.g., node:⟨uuid⟩ -> uuid)
+                // Node IDs are always stored as String variants. Other Id variants
+                // (Number, Array, Object) are not expected but handled via to_string() fallback.
+                let id = match &row.id.id {
+                    Id::String(s) => s.clone(),
+                    _ => row.id.id.to_string(),
+                };
 
-            // Build Node from hub fields
-            let id = row
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| {
-                    // Handle Thing format: node:xxx -> xxx
-                    if s.starts_with("node:") {
-                        s.strip_prefix("node:").unwrap_or(s)
-                    } else {
-                        s
-                    }
-                })
-                .unwrap_or("")
-                .to_string();
+                let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
 
-            let node_type = row
-                .get("node_type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("collection")
-                .to_string();
+                let modified_at = chrono::DateTime::parse_from_rfc3339(&row.modified_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
 
-            let content = row
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+                let node = Node {
+                    id,
+                    node_type: row.node_type,
+                    content: row.content,
+                    version: row.version,
+                    properties: row.properties,
+                    created_at,
+                    modified_at,
+                    mentions: vec![],
+                    mentioned_by: vec![],
+                    member_of: vec![],
+                    title: row.title,
+                };
 
-            let version = row.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
-
-            let properties = row
-                .get("properties")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-
-            let created_at = row
-                .get("created_at")
-                .and_then(|v| v.as_str())
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(chrono::Utc::now);
-
-            let modified_at = row
-                .get("modified_at")
-                .and_then(|v| v.as_str())
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(chrono::Utc::now);
-
-            let node = Node {
-                id,
-                node_type,
-                content,
-                version,
-                properties,
-                created_at,
-                modified_at,
-                mentions: vec![],
-                mentioned_by: vec![],
-                member_of: vec![],
-                title: None, // Collection query doesn't need titles
-            };
-
-            results.push((node, member_count));
-        }
+                let member_count = row.member_count.max(0) as usize;
+                (node, member_count)
+            })
+            .collect();
 
         Ok(results)
     }
