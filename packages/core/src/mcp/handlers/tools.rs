@@ -896,6 +896,11 @@ fn get_tool_schemas() -> Value {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Exclude results from these collections (by path, e.g., ['archived', 'drafts']). Useful for filtering out deprecated or draft content."
+                    },
+                    "include_archived": {
+                        "type": "boolean",
+                        "description": "Include archived nodes in search results (default: false). By default, search only returns active nodes. Set to true to also include archived content.",
+                        "default": false
                     }
                 },
                 "required": ["query"]

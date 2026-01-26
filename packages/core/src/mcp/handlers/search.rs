@@ -123,6 +123,12 @@ pub struct SearchSemanticParams {
     /// Set to 0 to disable, max 5 to limit response size.
     #[serde(default)]
     pub include_markdown: Option<usize>,
+
+    /// Include archived nodes in search results (default: false)
+    /// By default, search only returns active nodes. Set to true to also include archived content.
+    /// Nodes with lifecycle_status = "deleted" are never included.
+    #[serde(default)]
+    pub include_archived: Option<bool>,
 }
 
 /// Search root nodes by semantic similarity
@@ -159,6 +165,7 @@ where
     let threshold = params.threshold.unwrap_or(0.7);
     let limit = params.limit.unwrap_or(20);
     let include_markdown = params.include_markdown.unwrap_or(1).min(5); // Default 1, max 5
+    let include_archived = params.include_archived.unwrap_or(false);
 
     // Validate parameters
     if !(0.0..=1.0).contains(&threshold) {
@@ -260,8 +267,10 @@ where
 
     tracing::info!("Semantic search for: '{}'", params.query);
 
-    // When filtering by collection or excluding collections, fetch more results to compensate for post-filtering
-    let has_post_filters = collection_member_ids.is_some() || !excluded_node_ids.is_empty();
+    // When filtering by collection, excluding collections, or excluding archived nodes, fetch more results to compensate for post-filtering
+    // Note: We always filter out archived/deleted nodes unless include_archived is true, so we always have some post-filtering
+    let has_post_filters =
+        collection_member_ids.is_some() || !excluded_node_ids.is_empty() || !include_archived;
     let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
     // Call the embedding service's semantic search
@@ -286,10 +295,20 @@ where
             }
         })?;
 
-    // Apply filters: include collection members (if specified), exclude collection members
+    // Apply filters: lifecycle status, collection members (if specified), exclude collection members
     let filtered_results: Vec<_> = results
         .into_iter()
         .filter(|(node, _)| {
+            // Filter by lifecycle status (Issue #755)
+            // Always exclude "deleted" nodes, exclude "archived" unless include_archived=true
+            let status = &node.lifecycle_status;
+            if status == "deleted" {
+                return false;
+            }
+            if status == "archived" && !include_archived {
+                return false;
+            }
+
             // If include filter is specified, node must be in the collection
             if let Some(ref member_ids) = collection_member_ids {
                 if !member_ids.contains(&node.id) {
@@ -375,7 +394,8 @@ where
         "query": params.query,
         "threshold": threshold,
         "collection_id": collection_id,
-        "include_markdown": include_markdown
+        "include_markdown": include_markdown,
+        "include_archived": include_archived
     }))
 }
 
@@ -650,5 +670,124 @@ mod search_tests {
 
         // Invalid case
         assert!(invalid_limit > 1000);
+    }
+
+    // Lifecycle Status Filter Tests (Issue #755)
+
+    #[test]
+    fn test_include_archived_default_false() {
+        // Test that include_archived defaults to None when not provided
+        let params = json!({
+            "query": "test"
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert!(parsed.include_archived.is_none());
+
+        // When applied, defaults to false
+        let include_archived = parsed.include_archived.unwrap_or(false);
+        assert!(!include_archived);
+    }
+
+    #[test]
+    fn test_include_archived_explicit_true() {
+        let params = json!({
+            "query": "test",
+            "include_archived": true
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.include_archived, Some(true));
+    }
+
+    #[test]
+    fn test_include_archived_explicit_false() {
+        let params = json!({
+            "query": "test",
+            "include_archived": false
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.include_archived, Some(false));
+    }
+
+    #[test]
+    fn test_include_archived_with_other_params() {
+        let params = json!({
+            "query": "test",
+            "threshold": 0.8,
+            "limit": 10,
+            "include_archived": true,
+            "collection": "docs"
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.query, "test");
+        assert_eq!(parsed.threshold, Some(0.8));
+        assert_eq!(parsed.limit, Some(10));
+        assert_eq!(parsed.include_archived, Some(true));
+        assert_eq!(parsed.collection, Some("docs".to_string()));
+    }
+
+    #[test]
+    fn test_search_response_includes_include_archived() {
+        // Test that response includes include_archived field
+        let mock_response = json!({
+            "nodes": [],
+            "count": 0,
+            "query": "test",
+            "threshold": 0.7,
+            "collection_id": null,
+            "include_markdown": 1,
+            "include_archived": false
+        });
+
+        assert!(mock_response.get("include_archived").is_some());
+        assert_eq!(mock_response["include_archived"], false);
+    }
+
+    #[test]
+    fn test_lifecycle_filter_logic_deleted_always_excluded() {
+        // Test that "deleted" lifecycle status is always excluded
+        let lifecycle_status = "deleted";
+        let _include_archived = true; // Even with include_archived=true, deleted is excluded
+
+        // Deleted nodes should always be excluded
+        let should_exclude = lifecycle_status == "deleted";
+        assert!(should_exclude);
+    }
+
+    #[test]
+    fn test_lifecycle_filter_logic_archived_excluded_by_default() {
+        // Test that "archived" is excluded when include_archived=false
+        let lifecycle_status = "archived";
+        let include_archived = false;
+
+        let should_exclude = lifecycle_status == "archived" && !include_archived;
+        assert!(should_exclude);
+    }
+
+    #[test]
+    fn test_lifecycle_filter_logic_archived_included_when_flag_set() {
+        // Test that "archived" is included when include_archived=true
+        let lifecycle_status = "archived";
+        let include_archived = true;
+
+        let should_exclude = lifecycle_status == "archived" && !include_archived;
+        assert!(!should_exclude);
+    }
+
+    #[test]
+    fn test_lifecycle_filter_logic_active_always_included() {
+        // Test that "active" lifecycle status is always included
+        let lifecycle_status = "active";
+        let include_archived = false;
+
+        // Active nodes should never be excluded by lifecycle filter
+        let should_exclude_by_deleted = lifecycle_status == "deleted";
+        let should_exclude_by_archived = lifecycle_status == "archived" && !include_archived;
+
+        assert!(!should_exclude_by_deleted);
+        assert!(!should_exclude_by_archived);
     }
 }

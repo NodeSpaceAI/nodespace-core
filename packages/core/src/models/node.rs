@@ -45,6 +45,16 @@ fn default_version() -> i64 {
     1
 }
 
+/// Default lifecycle status for serde deserialization ("active")
+fn default_lifecycle_status() -> String {
+    "active".to_string()
+}
+
+/// Check if lifecycle status is "active" (for skip_serializing_if)
+fn is_active_lifecycle(status: &str) -> bool {
+    status == "active"
+}
+
 /// Validation errors for Node operations
 #[derive(Error, Debug)]
 pub enum ValidationError {
@@ -172,6 +182,15 @@ pub struct Node {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+
+    /// Lifecycle status for knowledge governance (Issue #755)
+    /// Controls node visibility in search and queries:
+    ///   - "active" (default): Included in search, visible in UI
+    ///   - "archived": Excluded from search by default, hidden from default views, restorable
+    ///   - "deleted": Soft-deleted, in trash, excluded from all queries, purgeable
+    #[serde(default = "default_lifecycle_status")]
+    #[serde(skip_serializing_if = "is_active_lifecycle")]
+    pub lifecycle_status: String,
 }
 
 impl Node {
@@ -218,6 +237,7 @@ impl Node {
             mentioned_by: Vec::new(),
             member_of: Vec::new(),
             title: None, // Title is set by NodeService based on root/task status
+            lifecycle_status: "active".to_string(),
         }
     }
 
@@ -262,6 +282,7 @@ impl Node {
             mentioned_by: Vec::new(),
             member_of: Vec::new(),
             title: None, // Title is set by NodeService based on root/task status
+            lifecycle_status: "active".to_string(),
         }
     }
 
@@ -1184,5 +1205,102 @@ mod tests {
         assert_eq!(task.node_type, "task");
         assert_eq!(task.properties["status"], "in_progress");
         assert_eq!(task.properties["priority"], "high");
+    }
+
+    // Lifecycle Status Tests (Issue #755)
+
+    #[test]
+    fn test_node_lifecycle_status_default() {
+        // Test that lifecycle_status defaults to "active" for new nodes
+        let node = Node::new("text".to_string(), "Test".to_string(), json!({}));
+        assert_eq!(node.lifecycle_status, "active");
+    }
+
+    #[test]
+    fn test_node_lifecycle_status_default_with_id() {
+        // Test that lifecycle_status defaults to "active" for nodes with explicit ID
+        let node = Node::new_with_id(
+            "2025-01-26".to_string(),
+            "date".to_string(),
+            "2025-01-26".to_string(),
+            json!({}),
+        );
+        assert_eq!(node.lifecycle_status, "active");
+    }
+
+    #[test]
+    fn test_node_lifecycle_status_serialization_active_skipped() {
+        // Test that "active" lifecycle_status is skipped during serialization
+        let node = Node::new("text".to_string(), "Test".to_string(), json!({}));
+        let json = serde_json::to_string(&node).unwrap();
+
+        // "active" should be skipped (not serialized)
+        assert!(!json.contains("lifecycleStatus"));
+    }
+
+    #[test]
+    fn test_node_lifecycle_status_serialization_archived_included() {
+        // Test that non-"active" lifecycle_status is serialized
+        let mut node = Node::new("text".to_string(), "Test".to_string(), json!({}));
+        node.lifecycle_status = "archived".to_string();
+
+        let json = serde_json::to_string(&node).unwrap();
+
+        // "archived" should be serialized
+        assert!(json.contains("lifecycleStatus"));
+        assert!(json.contains("archived"));
+    }
+
+    #[test]
+    fn test_node_lifecycle_status_deserialization_default() {
+        // Test that missing lifecycle_status defaults to "active" during deserialization
+        let json = r#"{
+            "id": "123",
+            "nodeType": "text",
+            "content": "Test",
+            "version": 1,
+            "createdAt": "2025-01-26T00:00:00Z",
+            "modifiedAt": "2025-01-26T00:00:00Z",
+            "properties": {}
+        }"#;
+
+        let node: Node = serde_json::from_str(json).unwrap();
+        assert_eq!(node.lifecycle_status, "active");
+    }
+
+    #[test]
+    fn test_node_lifecycle_status_deserialization_archived() {
+        // Test that lifecycle_status is properly deserialized when present
+        let json = r#"{
+            "id": "123",
+            "nodeType": "text",
+            "content": "Test",
+            "version": 1,
+            "createdAt": "2025-01-26T00:00:00Z",
+            "modifiedAt": "2025-01-26T00:00:00Z",
+            "properties": {},
+            "lifecycleStatus": "archived"
+        }"#;
+
+        let node: Node = serde_json::from_str(json).unwrap();
+        assert_eq!(node.lifecycle_status, "archived");
+    }
+
+    #[test]
+    fn test_node_lifecycle_status_deserialization_deleted() {
+        // Test that lifecycle_status "deleted" is properly deserialized
+        let json = r#"{
+            "id": "123",
+            "nodeType": "text",
+            "content": "Test",
+            "version": 1,
+            "createdAt": "2025-01-26T00:00:00Z",
+            "modifiedAt": "2025-01-26T00:00:00Z",
+            "properties": {},
+            "lifecycleStatus": "deleted"
+        }"#;
+
+        let node: Node = serde_json::from_str(json).unwrap();
+        assert_eq!(node.lifecycle_status, "deleted");
     }
 }

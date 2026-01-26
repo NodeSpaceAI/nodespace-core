@@ -186,6 +186,14 @@ struct SurrealNode {
     /// Populated for root nodes and task nodes with markdown-stripped content
     #[serde(default)]
     title: Option<String>,
+    /// Lifecycle status for knowledge governance (Issue #755)
+    #[serde(default = "default_lifecycle_status")]
+    lifecycle_status: String,
+}
+
+/// Default lifecycle status ("active") for serde
+fn default_lifecycle_status() -> String {
+    "active".to_string()
 }
 
 impl From<SurrealNode> for Node {
@@ -222,6 +230,7 @@ impl From<SurrealNode> for Node {
             mentioned_by: sn.mentioned_by,
             member_of: Vec::new(),
             title: sn.title,
+            lifecycle_status: sn.lifecycle_status,
         }
     }
 }
@@ -1018,6 +1027,10 @@ where
             mentioned_by,
             member_of: Vec::new(),
             title: hub["title"].as_str().map(String::from),
+            lifecycle_status: hub["lifecycle_status"]
+                .as_str()
+                .unwrap_or("active")
+                .to_string(),
         }
     }
 
@@ -3386,6 +3399,7 @@ where
                 mentioned_by: vec![],
                 member_of: vec![],
                 title: None, // Child nodes don't have titles
+                lifecycle_status: "active".to_string(),
             };
             self.notify(StoreChange {
                 operation: StoreOperation::Created,
@@ -3481,6 +3495,7 @@ where
             mentioned_by: vec![],
             member_of: vec![],
             title: None, // Streaming nodes don't have titles (typically child nodes)
+            lifecycle_status: "active".to_string(),
         };
         self.notify(StoreChange {
             operation: StoreOperation::Created,
@@ -4695,6 +4710,8 @@ where
             properties: Value,
             #[serde(default)]
             title: Option<String>,
+            #[serde(default = "default_lifecycle_status")]
+            lifecycle_status: String,
             member_count: i64,
         }
 
@@ -4750,6 +4767,7 @@ where
                     mentioned_by: vec![],
                     member_of: vec![],
                     title: row.title,
+                    lifecycle_status: row.lifecycle_status,
                 };
 
                 let member_count = row.member_count.max(0) as usize;

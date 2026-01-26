@@ -35,9 +35,17 @@ DEFINE FIELD IF NOT EXISTS modified_at ON TABLE node TYPE datetime DEFAULT time:
 -- Contains markdown-stripped content for clean display and efficient search
 DEFINE FIELD IF NOT EXISTS title ON TABLE node TYPE option<string>;
 
+-- Lifecycle status for knowledge governance (Issue #755)
+-- Controls node visibility in search and queries:
+--   - "active" (default): Included in search, visible in UI
+--   - "archived": Excluded from search by default, hidden from default views, restorable
+--   - "deleted": Soft-deleted, in trash, excluded from all queries, purgeable
+DEFINE FIELD IF NOT EXISTS lifecycle_status ON TABLE node TYPE string DEFAULT "active";
+
 -- Indexes for performance
 DEFINE INDEX IF NOT EXISTS idx_node_type ON TABLE node COLUMNS node_type;
 DEFINE INDEX IF NOT EXISTS idx_node_modified ON TABLE node COLUMNS modified_at;
+DEFINE INDEX IF NOT EXISTS idx_node_lifecycle ON TABLE node COLUMNS lifecycle_status;
 
 -- Standard index for @mention autocomplete (Issue #821)
 -- Full-text search with ANALYZER requires SurrealDB 2.x+ with proper configuration

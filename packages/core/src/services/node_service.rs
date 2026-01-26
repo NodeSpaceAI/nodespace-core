@@ -1358,6 +1358,7 @@ where
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
             title,
+            lifecycle_status: "active".to_string(),
         };
 
         let created_id = self.create_node(node).await?;
@@ -1668,6 +1669,7 @@ where
                     mentioned_by: vec![],
                     member_of: vec![],
                     title: None, // Date nodes don't have indexed titles
+                    lifecycle_status: "active".to_string(),
                 };
                 return Ok(Some(virtual_date));
             }
@@ -3931,6 +3933,7 @@ where
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 title: None, // Bulk nodes don't need titles (validated only)
+                lifecycle_status: "active".to_string(),
             };
 
             // Validate via behaviors
@@ -4235,6 +4238,7 @@ where
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 title: None, // Title managed by NodeService for root/task nodes
+                lifecycle_status: "active".to_string(),
             };
             self.store
                 .create_node(node, self.client_id.clone())
