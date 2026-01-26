@@ -279,24 +279,26 @@
               {@const hasChildren = collection.children && collection.children.length > 0}
               {@const isExpanded = isCollectionExpanded(collection.id)}
               <div class="collection-item">
-                {#if hasChildren}
-                  <button
-                    class="expand-btn"
-                    onclick={() => collectionsState.toggleCollectionExpanded(collection.id)}
-                    aria-label={isExpanded ? 'Collapse' : 'Expand'}
-                  >
-                    <svg
-                      class="expand-chevron"
-                      class:rotate-90={isExpanded}
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="2"
+                <div class="expand-area">
+                  {#if hasChildren}
+                    <button
+                      class="expand-btn"
+                      onclick={() => collectionsState.toggleCollectionExpanded(collection.id)}
+                      aria-label={isExpanded ? 'Collapse' : 'Expand'}
                     >
-                      <path d="M9 18l6-6-6-6" />
-                    </svg>
-                  </button>
-                {/if}
+                      <svg
+                        class="expand-chevron"
+                        class:rotate-90={isExpanded}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                      >
+                        <path d="M9 18l6-6-6-6" />
+                      </svg>
+                    </button>
+                  {/if}
+                </div>
                 <button
                   class="collection-name-btn"
                   onclick={() => handleCollectionClick(collection.id)}
@@ -311,24 +313,26 @@
                   {@const childHasChildren = child.children && child.children.length > 0}
                   {@const childIsExpanded = isCollectionExpanded(child.id)}
                   <div class="collection-item level-2">
-                    {#if childHasChildren}
-                      <button
-                        class="expand-btn"
-                        onclick={() => collectionsState.toggleCollectionExpanded(child.id)}
-                        aria-label={childIsExpanded ? 'Collapse' : 'Expand'}
-                      >
-                        <svg
-                          class="expand-chevron"
-                          class:rotate-90={childIsExpanded}
-                          viewBox="0 0 24 24"
-                          fill="none"
-                          stroke="currentColor"
-                          stroke-width="2"
+                    <div class="expand-area">
+                      {#if childHasChildren}
+                        <button
+                          class="expand-btn"
+                          onclick={() => collectionsState.toggleCollectionExpanded(child.id)}
+                          aria-label={childIsExpanded ? 'Collapse' : 'Expand'}
                         >
-                          <path d="M9 18l6-6-6-6" />
-                        </svg>
-                      </button>
-                    {/if}
+                          <svg
+                            class="expand-chevron"
+                            class:rotate-90={childIsExpanded}
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                          >
+                            <path d="M9 18l6-6-6-6" />
+                          </svg>
+                        </button>
+                      {/if}
+                    </div>
                     <button
                       class="collection-name-btn"
                       onclick={() => handleCollectionClick(child.id)}
@@ -341,6 +345,7 @@
                   {#if childHasChildren && childIsExpanded && child.children}
                     {#each child.children as grandchild (grandchild.id)}
                       <div class="collection-item level-3">
+                        <div class="expand-area"></div>
                         <button
                           class="collection-name-btn"
                           onclick={() => handleCollectionClick(grandchild.id)}
@@ -600,7 +605,7 @@
     gap: 0;
     min-width: 100%; /* Allow growing beyond container width */
     width: max-content; /* Size to content for horizontal scrolling */
-    padding: 0 1rem 0 3.5rem; /* Indent clearly inside Collections group */
+    padding: 0 1rem 0 2.25rem; /* Reduced by 1.25rem (20px) since expand-area now provides that space */
     font-size: 0.8125rem;
     color: hsl(var(--muted-foreground));
     transition:
@@ -615,11 +620,21 @@
 
   /* Nested level indentation */
   .collection-item.level-2 {
-    padding-left: 4.25rem;
+    padding-left: 3rem; /* Reduced accordingly */
   }
 
   .collection-item.level-3 {
-    padding-left: 5rem;
+    padding-left: 3.75rem; /* Reduced accordingly */
+  }
+
+  /* Expand area - reserves consistent space for chevron whether item has children or not */
+  .expand-area {
+    width: 20px;
+    height: 28px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 
   /* Expand/collapse button */
