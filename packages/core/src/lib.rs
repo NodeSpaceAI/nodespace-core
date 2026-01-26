@@ -24,6 +24,7 @@ pub mod db;
 pub mod mcp;
 pub mod models;
 pub mod services;
+pub mod utils;
 
 // Re-exports
 pub use behaviors::{

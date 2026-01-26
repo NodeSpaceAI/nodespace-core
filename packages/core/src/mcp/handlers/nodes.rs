@@ -350,6 +350,7 @@ where
         content: params.content,
         node_type: params.node_type,
         properties: params.properties,
+        title: None, // Title is managed by NodeService
     };
 
     // If version not provided, fetch current version (convenient for AI agents)
@@ -1328,6 +1329,7 @@ where
             content: update.content,
             node_type: update.node_type,
             properties: update.properties,
+            title: None, // Title is managed by NodeService
         };
 
         // Apply update via NodeService (enforces all business rules)

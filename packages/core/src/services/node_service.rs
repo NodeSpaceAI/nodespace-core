@@ -1168,6 +1168,14 @@ where
 
         // NOTE: root_id filtering removed - hierarchy now managed via relationships
 
+        // Issue #821: Populate title for @mention search
+        // Task nodes always get indexed (regardless of hierarchy level)
+        // Other node types will have title set by create_node_with_parent if they're root nodes
+        // Only set title if not already set (create_node_with_parent may have set it for root nodes)
+        if node.node_type == "task" && node.title.is_none() {
+            node.title = Some(crate::utils::strip_markdown(&node.content));
+        }
+
         // For schema nodes, use atomic creation with DDL generation (Issue #691, #703)
         if node.node_type == "schema" {
             // Parse schema relationships from properties (Issue #703)
@@ -1321,6 +1329,23 @@ where
         // Step 5: Create the node
         // Save node_type before moving into Node (needed for embedding check)
         let node_type = params.node_type.clone();
+
+        // Issue #821: Determine title for @mention search
+        // Title is set for: task nodes (always) OR root nodes (no parent)
+        // Note: create_node will also set title for task nodes, but we set it here too
+        // for root non-task nodes that won't go through the task check in create_node
+        // TODO #824: Refactor to schema-driven title_template approach
+        let title = if params.node_type == "task" || params.parent_id.is_none() {
+            // Exclude certain types from having titles
+            // TODO #824: Replace hardcoded exclusions with schema-driven title_template
+            match params.node_type.as_str() {
+                "date" | "schema" | "collection" => None,
+                _ => Some(crate::utils::strip_markdown(&params.content)),
+            }
+        } else {
+            None
+        };
+
         let node = Node {
             id: node_id,
             node_type: params.node_type,
@@ -1332,6 +1357,7 @@ where
             member_of: vec![],
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
+            title,
         };
 
         let created_id = self.create_node(node).await?;
@@ -1775,6 +1801,7 @@ where
                     mentions: vec![],
                     mentioned_by: vec![],
                     member_of: vec![],
+                    title: None, // Date nodes don't have indexed titles
                 };
                 return Ok(Some(virtual_date));
             }
@@ -2070,11 +2097,41 @@ where
             self.validate_node_against_schema(&updated).await?;
         }
 
+        // Issue #821: Sync title when content or node_type changes
+        // Title is indexed for @mention search on task nodes and root nodes
+        // TODO #824: Refactor to schema-driven title_template approach
+        let title_update = if content_changed || node_type_changed {
+            // Determine if this node should have a title
+            // 1. Task nodes always get titles (regardless of hierarchy)
+            // 2. Root nodes (no parent) get titles
+            // 3. Date, schema, and collection nodes never get titles
+            // TODO #824: Replace hardcoded exclusions with schema-driven title_template
+            let should_have_title = match updated.node_type.as_str() {
+                "date" | "schema" | "collection" => false,
+                "task" => true,
+                _ => {
+                    // Check if root node (no parent)
+                    self.get_parent(id).await?.is_none()
+                }
+            };
+
+            if should_have_title {
+                Some(Some(crate::utils::strip_markdown(&updated.content)))
+            } else {
+                // Clear title for nodes that shouldn't have one
+                // (e.g., when changing from task to text child node)
+                Some(None)
+            }
+        } else {
+            None // No title update needed
+        };
+
         // Update node via store
         let node_update = crate::models::NodeUpdate {
             node_type: Some(updated.node_type.clone()),
             content: Some(updated.content.clone()),
             properties: Some(updated.properties.clone()),
+            title: title_update,
         };
 
         // For schema nodes, use atomic update with DDL generation (Issue #690, #703)
@@ -2194,8 +2251,10 @@ where
         // Build updated node state
         let mut updated = existing.clone();
         let mut content_changed = false;
+        let mut node_type_changed = false;
 
         if let Some(node_type) = update.node_type {
+            node_type_changed = updated.node_type != node_type;
             updated.node_type = node_type;
         }
 
@@ -2222,11 +2281,33 @@ where
             self.validate_node_against_schema(&updated).await?;
         }
 
+        // Issue #821: Sync title when content or node_type changes
+        // Title is indexed for @mention search on task nodes and root nodes
+        // TODO #824: Refactor to schema-driven title_template approach
+        let title_update = if content_changed || node_type_changed {
+            // Determine if this node should have a title
+            // TODO #824: Replace hardcoded exclusions with schema-driven title_template
+            let should_have_title = match updated.node_type.as_str() {
+                "date" | "schema" | "collection" => false,
+                "task" => true,
+                _ => self.get_parent(id).await?.is_none(),
+            };
+
+            if should_have_title {
+                Some(Some(crate::utils::strip_markdown(&updated.content)))
+            } else {
+                Some(None)
+            }
+        } else {
+            None
+        };
+
         // Create node update
         let node_update = crate::models::NodeUpdate {
             node_type: Some(updated.node_type.clone()),
             content: Some(updated.content.clone()),
             properties: Some(updated.properties.clone()),
+            title: title_update,
         };
 
         // Perform atomic update with version check
@@ -3609,6 +3690,7 @@ where
             node_type: Some(node.node_type.clone()),
             content: Some(node.content.clone()),
             properties: Some(node.properties.clone()),
+            title: None, // Don't update title on version bump
         };
 
         // Perform atomic update with version check
@@ -3982,6 +4064,7 @@ where
                 member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
+                title: None, // Bulk nodes don't need titles (validated only)
             };
 
             // Validate via behaviors
@@ -4285,6 +4368,7 @@ where
                 member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
+                title: None, // Title managed by NodeService for root/task nodes
             };
             self.store
                 .create_node(node, self.client_id.clone())

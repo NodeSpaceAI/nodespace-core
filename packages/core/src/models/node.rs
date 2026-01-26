@@ -165,6 +165,13 @@ pub struct Node {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub member_of: Vec<String>,
+
+    /// Indexed title for efficient @mention autocomplete search (Issue #821)
+    /// Populated only for root nodes and task nodes with markdown-stripped content.
+    /// None for child nodes and non-task types.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 impl Node {
@@ -210,6 +217,7 @@ impl Node {
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
             member_of: Vec::new(),
+            title: None, // Title is set by NodeService based on root/task status
         }
     }
 
@@ -253,6 +261,7 @@ impl Node {
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
             member_of: Vec::new(),
+            title: None, // Title is set by NodeService based on root/task status
         }
     }
 
@@ -367,6 +376,11 @@ pub struct NodeUpdate {
     /// Update or merge properties
     #[serde(skip_serializing_if = "Option::is_none")]
     pub properties: Option<serde_json::Value>,
+
+    /// Update indexed title for @mention search (Issue #821)
+    /// Use Some(Some(title)) to set a title, Some(None) to clear it
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<Option<String>>,
 }
 
 impl NodeUpdate {
@@ -393,9 +407,18 @@ impl NodeUpdate {
         self
     }
 
+    /// Set title update (for @mention search)
+    pub fn with_title(mut self, title: Option<String>) -> Self {
+        self.title = Some(title);
+        self
+    }
+
     /// Check if update contains any changes
     pub fn is_empty(&self) -> bool {
-        self.node_type.is_none() && self.content.is_none() && self.properties.is_none()
+        self.node_type.is_none()
+            && self.content.is_none()
+            && self.properties.is_none()
+            && self.title.is_none()
     }
 }
 

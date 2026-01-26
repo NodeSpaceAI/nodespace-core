@@ -530,7 +530,7 @@ impl TaskNode {
         Node {
             id: self.id,
             node_type: "task".to_string(),
-            content: self.content,
+            content: self.content.clone(),
             version: self.version,
             created_at: self.created_at,
             modified_at: self.modified_at,
@@ -538,6 +538,7 @@ impl TaskNode {
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
             member_of: Vec::new(),
+            title: Some(crate::utils::strip_markdown(&self.content)), // Task nodes have indexed titles
         }
     }
 

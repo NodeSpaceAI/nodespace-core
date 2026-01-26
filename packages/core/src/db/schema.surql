@@ -30,9 +30,19 @@ DEFINE FIELD IF NOT EXISTS version ON TABLE node TYPE int DEFAULT 1 ASSERT $valu
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE node TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS modified_at ON TABLE node TYPE datetime DEFAULT time::now();
 
+-- Title field for efficient @mention autocomplete search (Issue #821)
+-- Optional field populated for root nodes and task nodes only
+-- Contains markdown-stripped content for clean display and efficient search
+DEFINE FIELD IF NOT EXISTS title ON TABLE node TYPE option<string>;
+
 -- Indexes for performance
 DEFINE INDEX IF NOT EXISTS idx_node_type ON TABLE node COLUMNS node_type;
 DEFINE INDEX IF NOT EXISTS idx_node_modified ON TABLE node COLUMNS modified_at;
+
+-- Standard index for @mention autocomplete (Issue #821)
+-- Full-text search with ANALYZER requires SurrealDB 2.x+ with proper configuration
+-- For now, use a standard index which still enables efficient exact-match and prefix queries
+DEFINE INDEX IF NOT EXISTS idx_node_title ON TABLE node COLUMNS title;
 
 -- Note: Partial indexes (WHERE clause) are not supported in SurrealDB 2.x
 -- Properties are queried via node_type filter + properties.field access

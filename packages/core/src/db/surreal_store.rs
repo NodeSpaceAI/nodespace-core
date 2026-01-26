@@ -182,6 +182,10 @@ struct SurrealNode {
     /// Properties field stores all type-specific properties directly on the node
     #[serde(default)]
     properties: Value,
+    /// Indexed title for @mention autocomplete search (Issue #821)
+    /// Populated for root nodes and task nodes with markdown-stripped content
+    #[serde(default)]
+    title: Option<String>,
 }
 
 impl From<SurrealNode> for Node {
@@ -217,6 +221,7 @@ impl From<SurrealNode> for Node {
             mentions: sn.mentions,
             mentioned_by: sn.mentioned_by,
             member_of: Vec::new(),
+            title: sn.title,
         }
     }
 }
@@ -736,7 +741,8 @@ where
                 modified_at: time::now(),
                 mentions: [],
                 mentioned_by: [],
-                properties: $properties
+                properties: $properties,
+                title: $title
             }};
         "#,
             node.id
@@ -749,6 +755,7 @@ where
             .bind(("content", node.content.clone()))
             .bind(("version", node.version))
             .bind(("properties", node.properties.clone()))
+            .bind(("title", node.title.clone()))
             .await
             .context("Failed to create node in universal table")?;
 
@@ -1010,6 +1017,7 @@ where
             mentions,
             mentioned_by,
             member_of: Vec::new(),
+            title: hub["title"].as_str().map(String::from),
         }
     }
 
@@ -1142,41 +1150,41 @@ where
             None
         };
 
-        // Build update query - include properties if they're being updated
-        let (query, bind_properties) = if properties_update.is_some() {
-            (
-                "
-                UPDATE type::thing('node', $id) SET
-                    content = $content,
-                    node_type = $node_type,
-                    modified_at = time::now(),
-                    version = version + 1,
-                    properties = $properties;
-            ",
-                true,
-            )
-        } else {
-            (
-                "
-                UPDATE type::thing('node', $id) SET
-                    content = $content,
-                    node_type = $node_type,
-                    modified_at = time::now(),
-                    version = version + 1;
-            ",
-                false,
-            )
-        };
+        // Title update: Some(Some(title)) = set title, Some(None) = clear title
+        let title_update = update.title;
+
+        // Build SET clauses dynamically based on what's being updated
+        let mut set_clauses = vec![
+            "content = $content".to_string(),
+            "node_type = $node_type".to_string(),
+            "modified_at = time::now()".to_string(),
+            "version = version + 1".to_string(),
+        ];
+
+        if properties_update.is_some() {
+            set_clauses.push("properties = $properties".to_string());
+        }
+        if title_update.is_some() {
+            set_clauses.push("title = $title".to_string());
+        }
+
+        let query = format!(
+            "UPDATE type::thing('node', $id) SET {};",
+            set_clauses.join(", ")
+        );
 
         let mut query_builder = self
             .db
-            .query(query)
+            .query(&query)
             .bind(("id", id.to_string()))
             .bind(("content", updated_content))
             .bind(("node_type", updated_node_type.clone()));
 
-        if bind_properties {
-            query_builder = query_builder.bind(("properties", properties_update.unwrap()));
+        if let Some(props) = properties_update {
+            query_builder = query_builder.bind(("properties", props));
+        }
+        if let Some(title) = title_update {
+            query_builder = query_builder.bind(("title", title));
         }
 
         query_builder.await.context("Failed to update node")?;
@@ -1259,6 +1267,8 @@ where
         }
 
         // Create schema node with all schema data in properties
+        // Schema nodes don't have titles (not referenceable via @mentions)
+        // Omit the title field - it will default to NONE/null per schema definition
         transaction_parts.push(format!(
             r#"CREATE node:`{}` CONTENT {{
                 node_type: $node_type,
@@ -1277,7 +1287,8 @@ where
         let transaction_query = transaction_parts.join("\n");
 
         // Execute atomic transaction
-        self.db
+        let response = self
+            .db
             .query(&transaction_query)
             .bind(("id", node.id.clone()))
             .bind(("node_type", node.node_type.clone()))
@@ -1285,6 +1296,12 @@ where
             .bind(("properties", node.properties.clone()))
             .await
             .context("Failed to execute atomic schema creation transaction")?;
+
+        // Check for transaction errors
+        response.check().context(format!(
+            "Schema creation transaction failed for node '{}'. Query: {}",
+            node.id, transaction_query
+        ))?;
 
         // Fetch and return the created node
         let created_node = self
@@ -2399,43 +2416,34 @@ where
     ///
     /// # Arguments
     ///
-    /// * `search_query` - Content search string (case-insensitive)
+    /// * `search_query` - Title search string (case-insensitive, matches indexed title field)
     /// * `limit` - Maximum number of results
     ///
     /// # Returns
     ///
     /// Filtered nodes matching mention autocomplete criteria
+    ///
+    /// # Performance (Issue #821)
+    ///
+    /// Uses indexed `title` field with full-text search (BM25) for efficient queries.
+    /// Only root nodes and task nodes have titles populated, so child nodes are
+    /// automatically excluded without expensive relationship traversal.
     pub async fn mention_autocomplete(
         &self,
         search_query: &str,
         limit: Option<i64>,
     ) -> Result<Vec<Node>> {
-        // Node types that are always excluded from mention autocomplete
-        const EXCLUDED_TYPES: &[&str] = &["date", "schema"];
-
-        // Text-based types that must be root nodes (no parent) to be included
-        const TEXT_TYPES: &[&str] = &[
-            "text",
-            "header",
-            "code-block",
-            "quote-block",
-            "ordered-list",
-        ];
-
-        // Build SQL with filtering logic (Issue #788: universal relationship table):
-        // 1. Content search (case-insensitive)
-        // 2. Exclude date and schema types
-        // 3. For text types: only include if root (no incoming has_child relationship)
-        // 4. For other types: include regardless of hierarchy
+        // Issue #821: Use indexed title field for efficient @mention search
+        // The title field is only populated for:
+        // 1. Task nodes (always, regardless of hierarchy)
+        // 2. Root nodes (no parent) - excludes date and schema types
+        //
+        // This eliminates the need for expensive relationship traversal to filter child nodes
+        // since child nodes simply don't have a title to match against.
         let sql = r#"
             SELECT * FROM node
-            WHERE string::lowercase(content) CONTAINS string::lowercase($search_query)
-              AND node_type NOT IN $excluded_types
-              AND (
-                node_type NOT IN $text_types
-                OR
-                count(<-relationship[WHERE relationship_type = 'has_child']) = 0
-              )
+            WHERE title != NONE
+              AND string::lowercase(title) CONTAINS string::lowercase($search_query)
             LIMIT $limit;
         "#;
 
@@ -2445,8 +2453,6 @@ where
             .db
             .query(sql)
             .bind(("search_query", search_query.to_string()))
-            .bind(("excluded_types", EXCLUDED_TYPES.to_vec()))
-            .bind(("text_types", TEXT_TYPES.to_vec()))
             .bind(("limit", effective_limit))
             .await
             .context("Failed to search nodes for mention autocomplete")?;
@@ -3316,6 +3322,7 @@ where
             let props_json = serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
 
             // Create node with embedded properties
+            // Title is NONE for bulk hierarchy nodes (child nodes don't have titles)
             query.push_str(&format!(
                 r#"CREATE node:`{id}` CONTENT {{
                     node_type: "{node_type}",
@@ -3323,7 +3330,8 @@ where
                     properties: {props},
                     version: 1,
                     created_at: time::now(),
-                    modified_at: time::now()
+                    modified_at: time::now(),
+                    title: NONE
                 }};
 "#,
                 id = id,
@@ -3377,6 +3385,7 @@ where
                 mentions: vec![],
                 mentioned_by: vec![],
                 member_of: vec![],
+                title: None, // Child nodes don't have titles
             };
             self.notify(StoreChange {
                 operation: StoreOperation::Created,
@@ -3415,6 +3424,7 @@ where
         // Build single query for node + relationship (properties embedded)
         let mut query = String::new();
 
+        // Title is NONE for streaming nodes (typically child nodes during import)
         query.push_str(&format!(
             r#"CREATE node:`{id}` CONTENT {{
                 node_type: "{node_type}",
@@ -3422,7 +3432,8 @@ where
                 properties: {props},
                 version: 1,
                 created_at: time::now(),
-                modified_at: time::now()
+                modified_at: time::now(),
+                title: NONE
             }};
 "#,
             id = id,
@@ -3469,6 +3480,7 @@ where
             mentions: vec![],
             mentioned_by: vec![],
             member_of: vec![],
+            title: None, // Streaming nodes don't have titles (typically child nodes)
         };
         self.notify(StoreChange {
             operation: StoreOperation::Created,
@@ -4901,6 +4913,7 @@ where
                 mentions: vec![],
                 mentioned_by: vec![],
                 member_of: vec![],
+                title: None, // Collection query doesn't need titles
             };
 
             results.push((node, member_count));
@@ -5553,33 +5566,41 @@ mod tests {
         let (store, _temp) = create_test_store().await?;
 
         // Create nodes of different types with matching content
-        let text_node = Node::new(
+        // Note: title field must be set for mention_autocomplete to find nodes (Issue #821)
+        let mut text_node = Node::new(
             "text".to_string(),
             "searchable content".to_string(),
             json!({}),
         );
+        text_node.title = Some("searchable content".to_string());
+
         let date_node = Node::new(
             "date".to_string(),
             "searchable content".to_string(),
             json!({}),
         );
+        // date nodes don't get titles
+
         let schema_node = Node::new(
             "schema".to_string(),
             "searchable content".to_string(),
             json!({}),
         );
-        let task_node = Node::new(
+        // schema nodes don't get titles
+
+        let mut task_node = Node::new(
             "task".to_string(),
             "searchable content".to_string(),
             json!({}),
         );
+        task_node.title = Some("searchable content".to_string());
 
         store.create_node(text_node.clone(), None).await?;
         store.create_node(date_node.clone(), None).await?;
         store.create_node(schema_node.clone(), None).await?;
         store.create_node(task_node.clone(), None).await?;
 
-        // Search for matching content
+        // Search for matching content (searches title field)
         let results = store.mention_autocomplete("searchable", None).await?;
 
         // Should find text and task, but NOT date or schema
@@ -5608,31 +5629,43 @@ mod tests {
     async fn test_mention_autocomplete_text_types_only_root_nodes() -> Result<()> {
         let (store, _temp) = create_test_store().await?;
 
-        // Create root text nodes
-        let root_text = Node::new("text".to_string(), "findable root".to_string(), json!({}));
-        let root_header = Node::new(
+        // Create root text nodes with titles (root nodes get titles for @mention search)
+        let mut root_text = Node::new("text".to_string(), "findable root".to_string(), json!({}));
+        root_text.title = Some("findable root".to_string());
+
+        let mut root_header = Node::new(
             "header".to_string(),
             "findable header".to_string(),
             json!({}),
         );
-        let root_code = Node::new(
+        root_header.title = Some("findable header".to_string());
+
+        let mut root_code = Node::new(
             "code-block".to_string(),
             "findable code".to_string(),
             json!({}),
         );
-        let root_quote = Node::new(
+        root_code.title = Some("findable code".to_string());
+
+        let mut root_quote = Node::new(
             "quote-block".to_string(),
             "findable quote root".to_string(),
             json!({}),
         );
-        let root_ordered = Node::new(
+        root_quote.title = Some("findable quote root".to_string());
+
+        let mut root_ordered = Node::new(
             "ordered-list".to_string(),
             "1. findable ordered".to_string(),
             json!({}),
         );
+        root_ordered.title = Some("findable ordered".to_string()); // Markdown stripped
 
-        // Create nested text nodes (have parent)
-        let parent = Node::new("text".to_string(), "parent node".to_string(), json!({}));
+        // Create parent node with title (it's a root node)
+        let mut parent = Node::new("text".to_string(), "parent node".to_string(), json!({}));
+        parent.title = Some("parent node".to_string());
+
+        // Create nested text nodes (no titles - they're child nodes)
         let nested_text = Node::new("text".to_string(), "findable nested".to_string(), json!({}));
         let nested_quote = Node::new(
             "quote-block".to_string(),
@@ -5657,7 +5690,7 @@ mod tests {
             .move_node(&nested_quote.id, Some(&parent.id), None)
             .await?;
 
-        // Search for "findable"
+        // Search for "findable" (searches title field)
         let results = store.mention_autocomplete("findable", None).await?;
 
         let result_ids: Vec<_> = results.iter().map(|n| &n.id).collect();
@@ -5701,27 +5734,32 @@ mod tests {
     async fn test_mention_autocomplete_non_text_types_include_nested() -> Result<()> {
         let (store, _temp) = create_test_store().await?;
 
-        // Create parent node
-        let parent = Node::new("text".to_string(), "parent node".to_string(), json!({}));
+        // Create parent node with title (it's a root node)
+        let mut parent = Node::new("text".to_string(), "parent node".to_string(), json!({}));
+        parent.title = Some("parent node".to_string());
 
-        // Create task nodes - one root, one nested
-        let root_task = Node::new(
+        // Create task nodes - tasks always get titles regardless of nesting
+        let mut root_task = Node::new(
             "task".to_string(),
             "findme root task".to_string(),
             json!({}),
         );
-        let nested_task = Node::new(
+        root_task.title = Some("findme root task".to_string());
+
+        let mut nested_task = Node::new(
             "task".to_string(),
             "findme nested task".to_string(),
             json!({}),
         );
+        nested_task.title = Some("findme nested task".to_string());
 
-        // Create query node - nested
-        let nested_query = Node::new(
+        // Create query node - nested but non-text type, gets title
+        let mut nested_query = Node::new(
             "query".to_string(),
             "findme nested query".to_string(),
             json!({}),
         );
+        nested_query.title = Some("findme nested query".to_string());
 
         store.create_node(parent.clone(), None).await?;
         store.create_node(root_task.clone(), None).await?;
@@ -5736,7 +5774,7 @@ mod tests {
             .move_node(&nested_query.id, Some(&parent.id), None)
             .await?;
 
-        // Search for "findme"
+        // Search for "findme" (searches title field)
         let results = store.mention_autocomplete("findme", None).await?;
 
         let result_ids: Vec<_> = results.iter().map(|n| &n.id).collect();
@@ -5762,21 +5800,27 @@ mod tests {
     async fn test_mention_autocomplete_case_insensitive() -> Result<()> {
         let (store, _temp) = create_test_store().await?;
 
-        let node1 = Node::new(
+        // All nodes need titles set for mention_autocomplete to find them
+        let mut node1 = Node::new(
             "text".to_string(),
             "UPPERCASE content".to_string(),
             json!({}),
         );
-        let node2 = Node::new(
+        node1.title = Some("UPPERCASE content".to_string());
+
+        let mut node2 = Node::new(
             "task".to_string(),
             "lowercase content".to_string(),
             json!({}),
         );
-        let node3 = Node::new(
+        node2.title = Some("lowercase content".to_string());
+
+        let mut node3 = Node::new(
             "text".to_string(),
             "MixedCase Content".to_string(),
             json!({}),
         );
+        node3.title = Some("MixedCase Content".to_string());
 
         store.create_node(node1.clone(), None).await?;
         store.create_node(node2.clone(), None).await?;
@@ -5801,13 +5845,14 @@ mod tests {
     async fn test_mention_autocomplete_respects_limit() -> Result<()> {
         let (store, _temp) = create_test_store().await?;
 
-        // Create multiple matching nodes
+        // Create multiple matching nodes with titles
         for i in 0..5 {
-            let node = Node::new(
+            let mut node = Node::new(
                 "task".to_string(),
                 format!("searchterm item {}", i),
                 json!({}),
             );
+            node.title = Some(format!("searchterm item {}", i));
             store.create_node(node, None).await?;
         }
 

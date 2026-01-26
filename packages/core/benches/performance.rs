@@ -175,6 +175,7 @@ fn bench_occ_overhead(c: &mut Criterion) {
                             content: Some("warmup".to_string()),
                             node_type: None,
                             properties: None,
+                            title: None,
                         },
                     )
                     .await
@@ -192,6 +193,7 @@ fn bench_occ_overhead(c: &mut Criterion) {
                                 content: Some(format!("Update {}", i)),
                                 node_type: None,
                                 properties: None,
+                                title: None,
                             },
                         )
                         .await
@@ -359,6 +361,7 @@ fn bench_batch_update(c: &mut Criterion) {
                                     content: Some("- [x] Updated task".to_string()),
                                     node_type: None,
                                     properties: None,
+                                    title: None,
                                 },
                             )
                             .await

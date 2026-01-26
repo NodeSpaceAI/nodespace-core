@@ -193,6 +193,7 @@ impl SchemaNode {
             mentions: Vec::new(),
             mentioned_by: Vec::new(),
             member_of: Vec::new(),
+            title: None, // Schema nodes don't have indexed titles
         }
     }
 
