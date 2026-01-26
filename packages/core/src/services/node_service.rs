@@ -1612,140 +1612,6 @@ where
         Ok(())
     }
 
-    // ========================================================================
-    // Builtin Relationship Operations (Issue #813)
-    // ========================================================================
-    //
-    // These methods handle builtin relationship types: member_of, has_child
-    // They use the universal `relationship` table with `relationship_type` discriminator.
-    // Event emission happens here, not in SurrealStore (service layer architecture).
-
-    /// Create a builtin relationship between two nodes
-    ///
-    /// Creates a relationship in the universal `relationship` table with the specified type.
-    /// This is idempotent - if the relationship already exists, nothing happens.
-    ///
-    /// # Arguments
-    ///
-    /// * `from_id` - The source node ID
-    /// * `relationship_type` - The relationship type (e.g., "member_of", "has_child")
-    /// * `to_id` - The target node ID
-    /// * `properties` - Optional properties for the relationship
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if successful or relationship already exists
-    ///
-    /// # Supported Relationship Types
-    ///
-    /// - `member_of` - Node belongs to a collection (node → collection)
-    /// - `has_child` - Parent-child hierarchy (parent → child)
-    ///
-    /// Note: For `mentions`, use `create_mention()` which handles root_id context.
-    ///
-    /// # Validation (Issue #814)
-    ///
-    /// - `member_of`: Target must be a collection node
-    /// - `has_child`: Validates parent-child hierarchy constraints
-    /// - `mentions`: Creates link between nodes (no type restriction)
-    pub async fn create_builtin_relationship(
-        &self,
-        from_id: &str,
-        relationship_type: &str,
-        to_id: &str,
-        properties: Value,
-    ) -> Result<(), NodeServiceError> {
-        // Type-specific validation (Issue #814)
-        match relationship_type {
-            "member_of" => {
-                // Target must be a collection node
-                let target = self
-                    .get_node(to_id)
-                    .await?
-                    .ok_or_else(|| NodeServiceError::node_not_found(to_id))?;
-                if target.node_type != "collection" {
-                    return Err(NodeServiceError::invalid_update(format!(
-                        "member_of target must be a collection node, got '{}'",
-                        target.node_type
-                    )));
-                }
-            }
-            "has_child" | "mentions" => {
-                // No type restrictions for these relationships
-            }
-            _ => {
-                return Err(NodeServiceError::invalid_update(format!(
-                    "Unknown built-in relationship type: {}",
-                    relationship_type
-                )));
-            }
-        }
-
-        // Issue #813: Store returns relationship ID, service emits event
-        let relationship_id = self
-            .store
-            .create_builtin_relationship(from_id, relationship_type, to_id, &properties)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-
-        // Emit event if relationship was created (not already existing)
-        if let Some(rel_id) = relationship_id {
-            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
-                relationship: crate::db::events::RelationshipEvent {
-                    id: rel_id,
-                    from_id: from_id.to_string(),
-                    to_id: to_id.to_string(),
-                    relationship_type: relationship_type.to_string(),
-                    properties: properties.clone(),
-                },
-                source_client_id: self.client_id.clone(),
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Delete a builtin relationship between two nodes
-    ///
-    /// Removes a relationship from the universal `relationship` table.
-    /// This is idempotent - succeeds even if relationship doesn't exist.
-    ///
-    /// # Arguments
-    ///
-    /// * `from_id` - The source node ID
-    /// * `relationship_type` - The relationship type (e.g., "member_of", "has_child")
-    /// * `to_id` - The target node ID
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` if successful
-    pub async fn delete_builtin_relationship(
-        &self,
-        from_id: &str,
-        relationship_type: &str,
-        to_id: &str,
-    ) -> Result<(), NodeServiceError> {
-        // Issue #813: Store returns relationship ID, service emits event
-        let relationship_id = self
-            .store
-            .delete_builtin_relationship(from_id, relationship_type, to_id)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-
-        // Emit event if relationship was deleted (existed)
-        if let Some(rel_id) = relationship_id {
-            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
-                id: rel_id,
-                from_id: from_id.to_string(),
-                to_id: to_id.to_string(),
-                relationship_type: relationship_type.to_string(),
-                source_client_id: self.client_id.clone(),
-            });
-        }
-
-        Ok(())
-    }
-
     /// Get a node by ID
     ///
     /// # Arguments
@@ -4741,117 +4607,177 @@ where
         target_id: &str,
         edge_data: Value,
     ) -> Result<(), NodeServiceError> {
-        // 1. Validate source node exists
-        let source = self
-            .get_node(source_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
+        // Issue #825: Unified relationship creation - ALL relationships use the `relationship` table
+        // The relationship_type field distinguishes between different relationship types
 
-        // Check for built-in relationship types (Issue #814)
-        // These use the universal `relationship` table and are available on ALL node types
+        // Built-in type validation
         let is_builtin = matches!(relationship_name, "member_of" | "has_child" | "mentions");
 
         if is_builtin {
-            return self
-                .create_builtin_relationship(source_id, relationship_name, target_id, edge_data)
-                .await;
-        }
+            // Built-in type-specific validation
+            if relationship_name == "member_of" {
+                let target = self
+                    .get_node(target_id)
+                    .await?
+                    .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+                if target.node_type != "collection" {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "member_of target must be a collection node, got '{}'",
+                        target.node_type
+                    )));
+                }
+            }
+        } else {
+            // Custom relationship: validate against source node's schema
+            let source = self
+                .get_node(source_id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
 
-        // Schema-defined relationships: look up in source node's schema
-        // 2. Get source node's schema
-        let schema_id = &source.node_type;
-        let schema_node = self.get_node(schema_id).await?.ok_or_else(|| {
-            NodeServiceError::query_failed(format!("Schema '{}' not found", schema_id))
-        })?;
-
-        // 3. Find relationship definition in schema
-        let relationships: Vec<SchemaRelationship> = schema_node
-            .properties
-            .get("relationships")
-            .and_then(|r| serde_json::from_value(r.clone()).ok())
-            .unwrap_or_default();
-
-        let relationship = relationships
-            .iter()
-            .find(|r| r.name == relationship_name)
-            .ok_or_else(|| {
-                NodeServiceError::invalid_update(format!(
-                    "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions) are universal.",
-                    relationship_name, schema_id
-                ))
+            let schema_id = &source.node_type;
+            let schema_node = self.get_node(schema_id).await?.ok_or_else(|| {
+                NodeServiceError::query_failed(format!("Schema '{}' not found", schema_id))
             })?;
 
-        // 4. Validate target node exists
-        let target = self
-            .get_node(target_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+            let relationships: Vec<SchemaRelationship> = schema_node
+                .properties
+                .get("relationships")
+                .and_then(|r| serde_json::from_value(r.clone()).ok())
+                .unwrap_or_default();
 
-        // 5. Validate target node type matches schema definition
-        if target.node_type != relationship.target_type {
-            return Err(NodeServiceError::invalid_update(format!(
-                "Target node type '{}' doesn't match expected type '{}' for relationship '{}'",
-                target.node_type, relationship.target_type, relationship_name
-            )));
+            let relationship = relationships
+                .iter()
+                .find(|r| r.name == relationship_name)
+                .ok_or_else(|| {
+                    NodeServiceError::invalid_update(format!(
+                        "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions) are universal.",
+                        relationship_name, schema_id
+                    ))
+                })?;
+
+            // Validate target node type
+            let target = self
+                .get_node(target_id)
+                .await?
+                .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+
+            if target.node_type != relationship.target_type {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "Target node type '{}' doesn't match expected type '{}' for relationship '{}'",
+                    target.node_type, relationship.target_type, relationship_name
+                )));
+            }
+
+            // Check cardinality constraint
+            if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
+                let source_thing =
+                    surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
+                let query = "SELECT * FROM relationship WHERE in = $source AND relationship_type = $rel_type";
+
+                let mut result = self
+                    .store
+                    .db()
+                    .query(query)
+                    .bind(("source", source_thing))
+                    .bind(("rel_type", relationship_name.to_string()))
+                    .await
+                    .map_err(|e| {
+                        NodeServiceError::query_failed(format!(
+                            "Failed to check cardinality: {}",
+                            e
+                        ))
+                    })?;
+
+                let existing: Vec<Value> = result.take(0).map_err(|e| {
+                    NodeServiceError::query_failed(format!(
+                        "Failed to parse cardinality check: {}",
+                        e
+                    ))
+                })?;
+
+                if !existing.is_empty() {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "Relationship '{}' has cardinality 'one' but an edge already exists",
+                        relationship_name
+                    )));
+                }
+            }
         }
 
         // Create SurrealDB Thing (record ID) for source and target nodes
         let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
         let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
 
-        // 6. Check cardinality constraint (application-level enforcement)
-        if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
-            // Query existing edges to check if one already exists
-            let edge_table = relationship.compute_edge_table_name(schema_id);
-            let query = format!("SELECT * FROM {} WHERE in = $source", edge_table);
-
-            let mut result = self
-                .store
-                .db()
-                .query(&query)
-                .bind(("source", source_thing.clone()))
-                .await
-                .map_err(|e| {
-                    NodeServiceError::query_failed(format!("Failed to check cardinality: {}", e))
-                })?;
-
-            let existing: Vec<Value> = result.take(0).map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to parse cardinality check: {}", e))
+        // Check for existing relationship (idempotency)
+        let check_query =
+            "SELECT VALUE id FROM relationship WHERE in = $from AND out = $to AND relationship_type = $rel_type";
+        let mut check_response = self
+            .store
+            .db()
+            .query(check_query)
+            .bind(("from", source_thing.clone()))
+            .bind(("to", target_thing.clone()))
+            .bind(("rel_type", relationship_name.to_string()))
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to check existing relationship: {}",
+                    e
+                ))
             })?;
 
-            if !existing.is_empty() {
-                return Err(NodeServiceError::invalid_update(format!(
-                    "Relationship '{}' has cardinality 'one' but an edge already exists",
-                    relationship_name
-                )));
-            }
+        let existing_ids: Vec<surrealdb::sql::Thing> = check_response.take(0).unwrap_or_default();
+        if !existing_ids.is_empty() {
+            // Relationship already exists, idempotent success
+            return Ok(());
         }
 
-        // 7. Create the edge using RELATE
-        let edge_table = relationship.compute_edge_table_name(schema_id);
-        let relate_query =
-            if edge_data.is_null() || edge_data.as_object().is_none_or(|o| o.is_empty()) {
-                // No edge data, simple RELATE
-                format!("RELATE $source->{}->$target", edge_table)
-            } else {
-                // With edge data, use CONTENT clause
-                format!("RELATE $source->{}->$target CONTENT $edge_data", edge_table)
-            };
+        // Build and execute the RELATE query - all relationships use the same table
+        let properties_json =
+            serde_json::to_string(&edge_data).unwrap_or_else(|_| "{}".to_string());
 
-        self.store
+        let relate_query = format!(
+            r#"RELATE $source->relationship->$target CONTENT {{
+                relationship_type: $rel_type,
+                properties: {},
+                created_at: time::now(),
+                modified_at: time::now(),
+                version: 1
+            }} RETURN id"#,
+            properties_json
+        );
+
+        let mut result = self
+            .store
             .db()
             .query(&relate_query)
             .bind(("source", source_thing))
             .bind(("target", target_thing))
-            .bind(("edge_data", edge_data))
+            .bind(("rel_type", relationship_name.to_string()))
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
             })?;
 
-        // TODO: Emit RelationshipCreated event for custom relationships
-        // The unified event system (Issue #811) supports custom relationship types,
-        // but we need to capture the relationship ID from the query result.
+        // Extract relationship ID and emit event
+        #[derive(Debug, serde::Deserialize)]
+        struct RelateResult {
+            id: surrealdb::sql::Thing,
+        }
+        let results: Vec<RelateResult> = result.take(0).unwrap_or_default();
+
+        if let Some(rel_result) = results.first() {
+            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+                relationship: crate::db::events::RelationshipEvent {
+                    id: rel_result.id.to_string(),
+                    from_id: source_id.to_string(),
+                    to_id: target_id.to_string(),
+                    relationship_type: relationship_name.to_string(),
+                    properties: edge_data,
+                },
+                source_client_id: self.client_id.clone(),
+            });
+        }
 
         Ok(())
     }
@@ -4899,68 +4825,56 @@ where
         relationship_name: &str,
         target_id: &str,
     ) -> Result<(), NodeServiceError> {
-        // Check for built-in relationship types (Issue #814)
-        // These use the universal `relationship` table and are available on ALL node types
-        let is_builtin = matches!(relationship_name, "member_of" | "has_child" | "mentions");
+        // Issue #825: Unified relationship deletion - ALL relationships use the `relationship` table
+        // The relationship_type field distinguishes between different relationship types
 
-        if is_builtin {
-            return self
-                .delete_builtin_relationship(source_id, relationship_name, target_id)
-                .await;
-        }
-
-        // Schema-defined relationships: look up in source node's schema
-        // 1. Get source node to find its schema
-        let source = self
-            .get_node(source_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
-
-        let schema_id = &source.node_type;
-        let schema_node = self.get_node(schema_id).await?.ok_or_else(|| {
-            NodeServiceError::query_failed(format!("Schema '{}' not found", schema_id))
-        })?;
-
-        // 2. Find relationship definition
-        let relationships: Vec<SchemaRelationship> = schema_node
-            .properties
-            .get("relationships")
-            .and_then(|r| serde_json::from_value(r.clone()).ok())
-            .unwrap_or_default();
-
-        let relationship = relationships
-            .iter()
-            .find(|r| r.name == relationship_name)
-            .ok_or_else(|| {
-                NodeServiceError::invalid_update(format!(
-                    "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions) are universal.",
-                    relationship_name, schema_id
-                ))
-            })?;
-
-        // 3. Delete the edge
+        // Create SurrealDB Thing (record ID) for source and target nodes
         let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
         let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
 
-        let edge_table = relationship.compute_edge_table_name(schema_id);
-        let delete_query = format!(
-            "DELETE FROM {} WHERE in = $source AND out = $target",
-            edge_table
-        );
+        // Get relationship ID before deleting (for event emission)
+        let check_query =
+            "SELECT VALUE id FROM relationship WHERE in = $source AND out = $target AND relationship_type = $rel_type";
+
+        let mut check_result = self
+            .store
+            .db()
+            .query(check_query)
+            .bind(("source", source_thing.clone()))
+            .bind(("target", target_thing.clone()))
+            .bind(("rel_type", relationship_name.to_string()))
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to get relationship ID: {}", e))
+            })?;
+
+        let existing_ids: Vec<surrealdb::sql::Thing> = check_result.take(0).unwrap_or_default();
+
+        // Delete the edge
+        let delete_query =
+            "DELETE FROM relationship WHERE in = $source AND out = $target AND relationship_type = $rel_type";
 
         self.store
             .db()
-            .query(&delete_query)
+            .query(delete_query)
             .bind(("source", source_thing))
             .bind(("target", target_thing))
+            .bind(("rel_type", relationship_name.to_string()))
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
             })?;
 
-        // TODO: Emit RelationshipDeleted event for custom relationships
-        // The unified event system (Issue #811) supports custom relationship types,
-        // but we need to capture the relationship ID from the query result.
+        // Emit RelationshipDeleted event
+        if let Some(rel_id) = existing_ids.first() {
+            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
+                id: rel_id.to_string(),
+                from_id: source_id.to_string(),
+                to_id: target_id.to_string(),
+                relationship_type: relationship_name.to_string(),
+                source_client_id: self.client_id.clone(),
+            });
+        }
 
         Ok(())
     }
@@ -5018,113 +4932,7 @@ where
             )));
         }
 
-        // Check for built-in relationship types (Issue #814)
-        // These use the universal `relationship` table and are available on ALL node types
-        let is_builtin = matches!(relationship_name, "member_of" | "has_child" | "mentions");
-
-        if is_builtin {
-            return self
-                .get_builtin_related_nodes(node_id, relationship_name, direction)
-                .await;
-        }
-
-        // Schema-defined relationships: look up in source node's schema
-        // 1. Get node to find its schema
-        let node = self
-            .get_node(node_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
-
-        let schema_id = &node.node_type;
-        let schema_node = self.get_node(schema_id).await?.ok_or_else(|| {
-            NodeServiceError::query_failed(format!("Schema '{}' not found", schema_id))
-        })?;
-
-        // 2. Find relationship definition
-        let relationships: Vec<SchemaRelationship> = schema_node
-            .properties
-            .get("relationships")
-            .and_then(|r| serde_json::from_value(r.clone()).ok())
-            .unwrap_or_default();
-
-        let relationship = relationships
-            .iter()
-            .find(|r| r.name == relationship_name)
-            .ok_or_else(|| {
-                NodeServiceError::invalid_update(format!(
-                    "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions) are universal.",
-                    relationship_name, schema_id
-                ))
-            })?;
-
-        // 3. Query related node IDs via relationship table (same pattern as get_children)
-        let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.to_string()));
-
-        let edge_table = relationship.compute_edge_table_name(schema_id);
-
-        // First query the relationship table to get related node Things
-        let edge_query = match direction {
-            "out" => {
-                // Forward: get 'out' nodes from edges where 'in' = source node
-                format!("SELECT out FROM {} WHERE in = $node;", edge_table)
-            }
-            "in" => {
-                // Reverse: get 'in' nodes from edges where 'out' = source node
-                format!("SELECT in AS out FROM {} WHERE out = $node;", edge_table)
-            }
-            _ => unreachable!(), // Already validated above
-        };
-
-        let mut edge_result = self
-            .store
-            .db()
-            .query(&edge_query)
-            .bind(("node", node_thing))
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to get related edges: {}", e))
-            })?;
-
-        // Parse edge results to get Thing record IDs
-        #[derive(serde::Deserialize)]
-        struct EdgeOut {
-            out: surrealdb::sql::Thing,
-        }
-
-        let edges: Vec<EdgeOut> = edge_result.take(0).map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to parse related edges: {}", e))
-        })?;
-
-        if edges.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Collect Thing IDs for batch fetch
-        let node_things: Vec<surrealdb::sql::Thing> = edges.into_iter().map(|e| e.out).collect();
-
-        // Fetch full node records by calling get_node for each ID
-        // (This is the same N+1 pattern used elsewhere in the codebase for simplicity)
-        let mut nodes = Vec::new();
-        for thing in node_things {
-            // Extract the ID from the Thing (format: table:id)
-            let node_id = thing.id.to_raw();
-            if let Some(node) = self.get_node(&node_id).await? {
-                nodes.push(node);
-            }
-        }
-
-        Ok(nodes)
-    }
-
-    /// Get related nodes for a built-in relationship (member_of, has_child, mentions)
-    ///
-    /// Built-in relationships use the universal `relationship` table.
-    async fn get_builtin_related_nodes(
-        &self,
-        node_id: &str,
-        relationship_name: &str,
-        direction: &str,
-    ) -> Result<Vec<Node>, NodeServiceError> {
+        // Issue #825: ALL relationships use the universal `relationship` table
         let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.to_string()));
 
         // Query the unified relationship table
@@ -5157,10 +4965,7 @@ where
             .bind(("rel_type", rel_type_owned))
             .await
             .map_err(|e| {
-                NodeServiceError::query_failed(format!(
-                    "Failed to get built-in related nodes: {}",
-                    e
-                ))
+                NodeServiceError::query_failed(format!("Failed to get related nodes: {}", e))
             })?;
 
         #[derive(serde::Deserialize)]
@@ -5169,7 +4974,7 @@ where
         }
 
         let edges: Vec<EdgeOut> = result.take(0).map_err(|e| {
-            NodeServiceError::query_failed(format!("Failed to parse built-in related edges: {}", e))
+            NodeServiceError::query_failed(format!("Failed to parse related edges: {}", e))
         })?;
 
         if edges.is_empty() {

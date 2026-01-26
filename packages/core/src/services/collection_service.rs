@@ -410,7 +410,7 @@ where
             // Issue #813: Delegate to NodeService for event emission
             if let Some(parent_id) = &previous_collection_id {
                 self.node_service
-                    .create_builtin_relationship(&node.id, "member_of", parent_id, json!({}))
+                    .create_relationship(&node.id, "member_of", parent_id, json!({}))
                     .await
                     .map_err(|e| {
                         NodeServiceError::query_failed(format!(
@@ -495,9 +495,9 @@ where
     ) -> Result<ResolvedPath, NodeServiceError> {
         let resolved = self.resolve_path(collection_path).await?;
 
-        // Issue #813: Delegate to NodeService for event emission
+        // Issue #813, #825: Delegate to NodeService for event emission (unified method)
         self.node_service
-            .create_builtin_relationship(node_id, "member_of", &resolved.leaf.id, json!({}))
+            .create_relationship(node_id, "member_of", &resolved.leaf.id, json!({}))
             .await?;
 
         Ok(resolved)
@@ -540,9 +540,9 @@ where
             )));
         }
 
-        // Issue #813: Delegate to NodeService for event emission
+        // Issue #813, #825: Delegate to NodeService for event emission (unified method)
         self.node_service
-            .create_builtin_relationship(node_id, "member_of", collection_id, json!({}))
+            .create_relationship(node_id, "member_of", collection_id, json!({}))
             .await?;
 
         Ok(())
@@ -559,9 +559,9 @@ where
         node_id: &str,
         collection_id: &str,
     ) -> Result<(), NodeServiceError> {
-        // Issue #813: Delegate to NodeService for event emission
+        // Issue #813, #825: Delegate to NodeService for event emission (unified method)
         self.node_service
-            .delete_builtin_relationship(node_id, "member_of", collection_id)
+            .delete_relationship(node_id, "member_of", collection_id)
             .await?;
 
         Ok(())
