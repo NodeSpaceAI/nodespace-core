@@ -8,25 +8,19 @@
  *
  * This script:
  * 1. Phase 1: Finds all .md files in docs/ and imports them
- *    - Derives collection path from folder structure with intelligent routing
+ *    - Derives collection path from folder structure (folder names as-is)
  *    - Derives title from the first H1 heading in the file, or falls back to filename
  *    - Calls create_nodes_from_markdown MCP tool for each file
  *    - Builds a mapping of file paths to node IDs
  * 2. Phase 2: Resolves internal markdown links to nodespace:// URIs
  *    - Converts [text](./relative/path.md) to [text](nodespace://node-id)
  *    - Creates bidirectional mentions relationships for navigation
- * 3. Post-import: Updates archived docs to lifecycle_status: "archived"
  *
- * Collection Routing (Upper Case, No Prefix, Spaces Allowed):
- *   docs/architecture/decisions/foo.md -> "ADR"
- *   docs/path/to/archived/foo.md -> "Archived" (marked for lifecycle_status: "archived")
- *   docs/path/to/lessons/foo.md -> "Lessons"
- *   docs/troubleshooting/foo.md -> "Troubleshooting"
- *   docs/architecture/components/foo.md -> "Components"
- *   docs/architecture/business-logic/foo.md -> "Business Logic"
- *   docs/architecture/development/process/foo.md -> "Development:Process" (nested)
- *   docs/architecture/core/foo.md -> "Architecture:Core"
- *   docs/architecture/foo.md -> "Architecture"
+ * Collection Routing:
+ *   Folder names are used as-is for collection paths.
+ *   docs/architecture/core/foo.md -> "architecture:core"
+ *   docs/troubleshooting/foo.md -> "troubleshooting"
+ *   docs/foo.md -> (no collection, root level)
  */
 
 import { readdir, readFile } from "fs/promises";
@@ -49,16 +43,10 @@ interface MCPResponse {
 	error?: { code: number; message: string };
 }
 
-interface CollectionMetadata {
-	collection: string;
-	isArchived: boolean;
-}
-
 interface ImportResult {
 	success: boolean;
 	rootId?: string;
 	error?: string;
-	isArchived: boolean;
 	filePath: string;
 }
 
@@ -130,108 +118,24 @@ function extractTitlePreview(content: string, filename: string): string {
 }
 
 /**
- * Convert path segment to Title Case with spaces
- * e.g., "business-logic" -> "Business Logic"
- */
-function toTitleCase(segment: string): string {
-	return segment
-		.replace(/-/g, " ")
-		.replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-/**
- * Derive collection path and metadata from file path
- * Returns collection path (Upper Case, spaces allowed) and whether it's archived
+ * Derive collection path from file path
+ * Uses folder names as-is, joined with ":"
  *
- * Routing Rules:
- *   docs/architecture/decisions/foo.md -> "ADR"
- *   docs/path/to/archived/foo.md -> "Archived" (isArchived: true)
- *   docs/path/to/lessons/foo.md -> "Lessons"
- *   docs/troubleshooting/foo.md -> "Troubleshooting"
- *   docs/architecture/components/foo.md -> "Components"
- *   docs/architecture/business-logic/foo.md -> "Business Logic"
- *   docs/architecture/development/process/foo.md -> "Development:Process" (nested)
- *   docs/architecture/core/foo.md -> "Architecture:Core"
- *   docs/architecture/foo.md -> "Architecture"
+ * Examples:
+ *   docs/architecture/core/foo.md -> "architecture:core"
+ *   docs/troubleshooting/foo.md -> "troubleshooting"
+ *   docs/foo.md -> null (no collection for root level files)
  */
-function deriveCollectionAndMetadata(filePath: string): CollectionMetadata {
+function deriveCollection(filePath: string): string | null {
 	const relativePath = relative(DOCS_ROOT, filePath);
-	const normalizedPath = relativePath.replace(/\\/g, "/").toLowerCase();
 	const dirPath = dirname(relativePath);
 	const segments = dirPath.replace(/\\/g, "/").split("/").filter(s => s && s !== ".");
 
-	// Check for archived content anywhere in path
-	const isArchived = normalizedPath.includes("/archived/") || segments.some(s => s.toLowerCase() === "archived");
-	if (isArchived) {
-		return { collection: "Archived", isArchived: true };
-	}
-
-	// Architecture Decision Records
-	if (normalizedPath.includes("architecture/decisions/") || normalizedPath.startsWith("architecture/decisions")) {
-		return { collection: "ADR", isArchived: false };
-	}
-
-	// Lessons learned (can be nested under various paths)
-	if (normalizedPath.includes("/lessons/") || segments.some(s => s.toLowerCase() === "lessons")) {
-		return { collection: "Lessons", isArchived: false };
-	}
-
-	// Troubleshooting
-	if (normalizedPath.startsWith("troubleshooting/") || segments[0]?.toLowerCase() === "troubleshooting") {
-		return { collection: "Troubleshooting", isArchived: false };
-	}
-
-	// Architecture-specific routing
-	if (segments[0]?.toLowerCase() === "architecture") {
-		const subPath = segments.slice(1);
-
-		// Components
-		if (subPath[0]?.toLowerCase() === "components") {
-			return { collection: "Components", isArchived: false };
-		}
-
-		// Business Logic
-		if (subPath[0]?.toLowerCase() === "business-logic") {
-			return { collection: "Business Logic", isArchived: false };
-		}
-
-		// Development with nested structure
-		if (subPath[0]?.toLowerCase() === "development") {
-			const devSubPath = subPath.slice(1);
-			if (devSubPath.length > 0) {
-				const nestedCollection = devSubPath.map(s => toTitleCase(s)).join(":");
-				return { collection: `Development:${nestedCollection}`, isArchived: false };
-			}
-			return { collection: "Development", isArchived: false };
-		}
-
-		// Core architecture docs
-		if (subPath[0]?.toLowerCase() === "core") {
-			return { collection: "Architecture:Core", isArchived: false };
-		}
-
-		// Other architecture subdirectories
-		if (subPath.length > 0) {
-			const archSubCollection = subPath.map(s => toTitleCase(s)).join(":");
-			return { collection: `Architecture:${archSubCollection}`, isArchived: false };
-		}
-
-		// Root architecture docs
-		return { collection: "Architecture", isArchived: false };
-	}
-
-	// Performance docs
-	if (segments[0]?.toLowerCase() === "performance") {
-		return { collection: "Performance", isArchived: false };
-	}
-
-	// Default: convert path to Title Case collection
 	if (segments.length === 0) {
-		return { collection: "Docs", isArchived: false };
+		return null; // Root level file, no collection
 	}
 
-	const collection = segments.map(s => toTitleCase(s)).join(":");
-	return { collection, isArchived: false };
+	return segments.join(":");
 }
 
 /**
@@ -383,7 +287,7 @@ async function importFile(
 	dryRun: boolean
 ): Promise<ImportResult> {
 	const relativePath = relative(DOCS_ROOT, filePath);
-	const { collection, isArchived } = deriveCollectionAndMetadata(filePath);
+	const collection = deriveCollection(filePath);
 
 	try {
 		const content = await readFile(filePath, "utf-8");
@@ -391,24 +295,25 @@ async function importFile(
 
 		console.log(`[${index + 1}/${total}] ${dryRun ? "[DRY-RUN] " : ""}${relativePath}`);
 		console.log(`    Title: ${titlePreview}`);
-		console.log(`    Collection: ${collection}`);
-		if (isArchived) {
-			console.log(`    ⚠️ Will be marked as ARCHIVED`);
-		}
+		console.log(`    Collection: ${collection ?? "(none)"}`);
 
 		if (dryRun) {
-			console.log(`    → Would import to collection "${collection}"\n`);
-			return { success: true, isArchived, filePath: relativePath };
+			console.log(`    → Would import${collection ? ` to collection "${collection}"` : ""}\n`);
+			return { success: true, filePath: relativePath };
 		}
 
-		// Don't pass title - let the handler extract it from the first line
+		// Build arguments for create_nodes_from_markdown
+		const args: Record<string, unknown> = {
+			markdown_content: content,
+			sync_import: false, // Fire-and-forget for faster imports
+		};
+		if (collection) {
+			args.collection = collection;
+		}
+
 		const result = (await callMCP("tools/call", {
 			name: "create_nodes_from_markdown",
-			arguments: {
-				markdown_content: content,
-				collection: collection,
-				sync_import: false, // Fire-and-forget for faster imports
-			},
+			arguments: args,
 		})) as { content: Array<{ text: string }> };
 
 		// Parse the result
@@ -417,34 +322,15 @@ async function importFile(
 
 		if (parsed.root_id) {
 			console.log(`    ✓ Created root: ${parsed.root_id}\n`);
-			return { success: true, rootId: parsed.root_id, isArchived, filePath: relativePath };
+			return { success: true, rootId: parsed.root_id, filePath: relativePath };
 		} else {
 			console.log(`    ✗ No root_id in response\n`);
-			return { success: false, error: "No root_id in response", isArchived, filePath: relativePath };
+			return { success: false, error: "No root_id in response", filePath: relativePath };
 		}
 	} catch (error) {
 		const errorMsg = error instanceof Error ? error.message : String(error);
 		console.log(`    ✗ Error: ${errorMsg}\n`);
-		return { success: false, error: errorMsg, isArchived, filePath: relativePath };
-	}
-}
-
-/**
- * Update a node's lifecycle_status to "archived"
- */
-async function archiveNode(nodeId: string): Promise<boolean> {
-	try {
-		await callMCP("tools/call", {
-			name: "update_node",
-			arguments: {
-				node_id: nodeId,
-				lifecycle_status: "archived",
-			},
-		});
-		return true;
-	} catch (error) {
-		console.error(`    ✗ Failed to archive ${nodeId}:`, error);
-		return false;
+		return { success: false, error: errorMsg, filePath: relativePath };
 	}
 }
 
@@ -491,21 +377,17 @@ async function main() {
 	// Collection statistics for dry-run
 	if (dryRun) {
 		const collectionStats = new Map<string, number>();
-		let archivedCount = 0;
 
 		for (const file of files) {
-			const { collection, isArchived } = deriveCollectionAndMetadata(file);
+			const collection = deriveCollection(file) ?? "(root)";
 			collectionStats.set(collection, (collectionStats.get(collection) || 0) + 1);
-			if (isArchived) archivedCount++;
 		}
 
 		console.log("=== Collection Distribution ===");
 		const sortedCollections = [...collectionStats.entries()].sort((a, b) => b[1] - a[1]);
 		for (const [collection, count] of sortedCollections) {
-			const archivedIndicator = collection === "Archived" ? " 📦" : "";
-			console.log(`  ${collection}: ${count} files${archivedIndicator}`);
+			console.log(`  ${collection}: ${count} files`);
 		}
-		console.log(`\nTotal archived: ${archivedCount} files`);
 		console.log("\n=== File Mappings ===\n");
 	}
 
@@ -517,7 +399,6 @@ async function main() {
 	let successCount = 0;
 	let errorCount = 0;
 	const errors: Array<{ file: string; error: string }> = [];
-	const archivedRootIds: string[] = [];
 	const pathToNodeId: PathToNodeIdMap = new Map();
 	const importedResults: ImportResult[] = [];
 
@@ -530,10 +411,6 @@ async function main() {
 			// Build the path-to-nodeId mapping
 			if (result.rootId && result.filePath) {
 				pathToNodeId.set(result.filePath, result.rootId);
-			}
-			// Track archived nodes for post-import lifecycle update
-			if (result.isArchived && result.rootId) {
-				archivedRootIds.push(result.rootId);
 			}
 		} else {
 			errorCount++;
@@ -620,30 +497,11 @@ async function main() {
 		console.log("");
 	}
 
-	// Post-import: Update lifecycle_status for archived docs
-	if (!dryRun && archivedRootIds.length > 0) {
-		console.log("\n=== Marking Archived Documents ===");
-		console.log(`Updating ${archivedRootIds.length} documents to lifecycle_status: "archived"\n`);
-
-		let archiveSuccessCount = 0;
-		for (const rootId of archivedRootIds) {
-			console.log(`  Archiving: ${rootId}`);
-			if (await archiveNode(rootId)) {
-				archiveSuccessCount++;
-				console.log(`    ✓ Archived\n`);
-			}
-		}
-		console.log(`Archived ${archiveSuccessCount}/${archivedRootIds.length} documents`);
-	}
-
 	// Summary
 	console.log("\n=== Import Summary ===");
 	console.log(`Total files: ${files.length}`);
 	console.log(`Successful: ${successCount}`);
 	console.log(`Failed: ${errorCount}`);
-	if (archivedRootIds.length > 0) {
-		console.log(`Archived: ${archivedRootIds.length}`);
-	}
 
 	if (errors.length > 0) {
 		console.log("\nFailed files:");
