@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "NodeSpace - AI-Native Knowledge Management",
+        "title": "NodeSpace AI",
         "width": 1200,
         "height": 800,
         "minWidth": 800,
