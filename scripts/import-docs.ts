@@ -265,8 +265,8 @@ async function findMarkdownFiles(dir: string): Promise<string[]> {
 		const fullPath = join(dir, entry.name);
 
 		if (entry.isDirectory()) {
-			// Skip hidden directories and design-system
-			if (!entry.name.startsWith(".") && entry.name !== "design-system") {
+			// Skip hidden directories
+			if (!entry.name.startsWith(".")) {
 				files.push(...(await findMarkdownFiles(fullPath)));
 			}
 		} else if (entry.isFile() && entry.name.endsWith(".md")) {
