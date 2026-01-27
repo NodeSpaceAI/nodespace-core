@@ -124,6 +124,18 @@ export interface Node {
   /** Optional vector embedding for semantic search (F32 blob) */
   embeddingVector?: number[] | null;
 
+  /**
+   * Indexed title for efficient @mention autocomplete search (Issue #821)
+   *
+   * Contains markdown-stripped content for clean display and search.
+   * Populated only for:
+   * - Root nodes (no parent) - excludes date and schema types
+   * - Task nodes (always, regardless of hierarchy)
+   *
+   * For other nodes (child text, headers, etc.), this field is undefined.
+   */
+  title?: string | null;
+
   // ============================================================================
   // Computed Fields (NOT persisted, calculated on-demand)
   // ============================================================================

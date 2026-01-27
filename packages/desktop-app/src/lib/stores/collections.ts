@@ -56,6 +56,7 @@ export interface CollectionsState {
 
 interface CollectionsDataState {
   collections: CollectionInfo[];
+  /** Collection members - full Node data fetched in single query */
   members: Map<string, Node[]>;
   loading: boolean;
   error: string | null;
@@ -98,7 +99,7 @@ function createCollectionsDataStore() {
       }
     },
 
-    /** Load members for a specific collection */
+    /** Load members for a specific collection (single query for full Node data) */
     loadMembers: async (collectionId: string) => {
       try {
         const members = await collectionService.getCollectionMembers(collectionId);
@@ -113,6 +114,23 @@ function createCollectionsDataStore() {
         const message = err instanceof Error ? err.message : 'Failed to load members';
         log.error('Failed to load collection members', { collectionId, error: message });
       }
+    },
+
+    /** Invalidate cached members for a collection (triggers reload on next access) */
+    invalidateMembers: (collectionId: string) => {
+      update((state) => {
+        const newMembers = new Map(state.members);
+        newMembers.delete(collectionId);
+        return { ...state, members: newMembers };
+      });
+    },
+
+    /** Invalidate all cached members (e.g., on node update that might affect any collection) */
+    invalidateAllMembers: () => {
+      update((state) => ({
+        ...state,
+        members: new Map()
+      }));
     },
 
     /** Get cached members for a collection */
@@ -233,17 +251,57 @@ export const collectionsState = createCollectionsStore();
 
 /**
  * Transform flat collections into tree structure for UI display
- * Collections are flat in the database, but we display them in a tree
- * organized by path segments (e.g., "hr:policy" creates hr -> policy tree)
+ * Uses parentCollectionIds to build proper hierarchy
  */
 export const collectionsTree = derived(collectionsData, ($data): CollectionItem[] => {
-  // For now, display as a flat list until path-based hierarchy is needed
-  // The backend stores collections as flat, so this matches the data model
-  return $data.collections.map((c) => ({
-    id: c.id,
-    name: c.content, // Collection name is stored in content field
-    memberCount: c.memberCount
-  }));
+  const collections = $data.collections;
+
+  // Build a map of id -> CollectionItem for quick lookup
+  const itemMap = new Map<string, CollectionItem>();
+  for (const c of collections) {
+    itemMap.set(c.id, {
+      id: c.id,
+      name: c.content, // Collection name is stored in content field
+      memberCount: c.memberCount,
+      children: []
+    });
+  }
+
+  // Build a set of all IDs that are children of some other collection
+  const childIds = new Set<string>();
+
+  // For each collection, add it as a child to its parent(s)
+  // Note: A collection can have multiple parents, but for tree display
+  // we only show it under the first parent to avoid duplication
+  for (const c of collections) {
+    const parentIds = c.parentCollectionIds || [];
+    if (parentIds.length > 0) {
+      // Add to first parent only (to avoid showing same collection multiple times)
+      const firstParentId = parentIds[0];
+      const parent = itemMap.get(firstParentId);
+      const child = itemMap.get(c.id);
+      if (parent && child) {
+        parent.children = parent.children || [];
+        parent.children.push(child);
+        childIds.add(c.id);
+      }
+    }
+  }
+
+  // Sort children alphabetically within each parent
+  for (const item of itemMap.values()) {
+    if (item.children && item.children.length > 0) {
+      item.children.sort((a, b) => a.name.localeCompare(b.name));
+    }
+  }
+
+  // Return only top-level collections (those without parents)
+  const topLevel = collections
+    .filter((c) => !childIds.has(c.id))
+    .map((c) => itemMap.get(c.id)!)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return topLevel;
 });
 
 /**
@@ -285,11 +343,15 @@ export const selectedCollectionMembers = derived(
 
     const members = $data.members.get($state.selectedCollectionId);
     if (members && members.length > 0) {
-      return members.map((node) => ({
-        id: node.id,
-        name: node.content,
-        nodeType: node.nodeType
-      }));
+      return members
+        // Filter out collection nodes - they're already shown in the collection tree
+        .filter((node) => node.nodeType !== 'collection')
+        .map((node) => ({
+          id: node.id,
+          // Prefer title field (cleaned text without markdown) over raw content
+          name: node.title || node.content,
+          nodeType: node.nodeType
+        }));
     }
 
     return [];

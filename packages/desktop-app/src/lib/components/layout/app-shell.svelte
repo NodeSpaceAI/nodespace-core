@@ -4,6 +4,9 @@
   import { invoke } from '@tauri-apps/api/core';
   import NavigationSidebar from './navigation-sidebar.svelte';
   import PaneManager from './pane-manager.svelte';
+  import StatusBar from '$lib/components/status-bar.svelte';
+  import { importService } from '$lib/services/import-service';
+  import { statusBar } from '$lib/stores/status-bar';
   import ThemeProvider from '$lib/design/components/theme-provider.svelte';
   import NodeServiceContext from '$lib/contexts/node-service-context.svelte';
   import { initializeTheme } from '$lib/design/theme';
@@ -15,6 +18,7 @@
   import { browserSyncService } from '$lib/services/browser-sync-service';
   import { MCP_EVENTS } from '$lib/constants';
   import type { Node } from '$lib/types';
+  import { collectionsData } from '$lib/stores/collections';
   import { loadPersistedState } from '$lib/stores/navigation';
   import { TabPersistenceService } from '$lib/services/tab-persistence-service';
   import { createLogger } from '$lib/utils/logger';
@@ -51,6 +55,10 @@
           const node = await invoke<Node>('get_node', { id: event.payload.node_id });
           if (node) {
             sharedNodeStore.setNode(node, { type: 'mcp-server' }, false);
+
+            // Invalidate collection member caches since node title may have changed
+            // This is a lightweight operation - just clears the cache, members reload on demand
+            collectionsData.invalidateAllMembers();
           } else {
             log.warn(
               '[MCP] Node not found after update event:',
@@ -73,11 +81,48 @@
       );
     });
 
+    // Listen for relationship events to update collection sidebar
+    // When member_of relationships change, invalidate cached collection members
+    interface RelationshipPayload {
+      id: string;
+      fromId: string;
+      toId: string;
+      relationshipType: string;
+    }
+
+    const unlistenRelationshipCreated = listen<RelationshipPayload>(
+      MCP_EVENTS.RELATIONSHIP_CREATED,
+      (event) => {
+        if (event.payload.relationshipType === 'member_of') {
+          log.debug('[MCP] member_of relationship created, invalidating collection members:', event.payload.toId);
+          // Invalidate the collection that received a new member
+          collectionsData.invalidateMembers(event.payload.toId);
+          // Also reload collection counts
+          collectionsData.loadCollections();
+        }
+      }
+    );
+
+    const unlistenRelationshipDeleted = listen<RelationshipPayload>(
+      MCP_EVENTS.RELATIONSHIP_DELETED,
+      (event) => {
+        if (event.payload.relationshipType === 'member_of') {
+          log.debug('[MCP] member_of relationship deleted, invalidating collection members:', event.payload.toId);
+          // Invalidate the collection that lost a member
+          collectionsData.invalidateMembers(event.payload.toId);
+          // Also reload collection counts
+          collectionsData.loadCollections();
+        }
+      }
+    );
+
     // Return cleanup function
     return async () => {
       (await unlistenNodeCreated)();
       (await unlistenNodeUpdated)();
       (await unlistenNodeDeleted)();
+      (await unlistenRelationshipCreated)();
+      (await unlistenRelationshipDeleted)();
     };
   }
 
@@ -108,7 +153,10 @@
 
     // Listen for menu events from Tauri (only if running in Tauri environment)
     let unlistenMenu: Promise<() => void> | null = null;
+    let unlistenStatusBar: Promise<() => void> | null = null;
+    let unlistenImport: Promise<() => void> | null = null;
     let cleanupMCP: (() => Promise<void>) | null = null;
+    let staleNodesInterval: ReturnType<typeof setInterval> | null = null;
 
     if (
       typeof window !== 'undefined' &&
@@ -116,6 +164,61 @@
     ) {
       unlistenMenu = listen('menu-toggle-sidebar', () => {
         toggleSidebar();
+      });
+
+      // Listen for status bar toggle from View menu
+      unlistenStatusBar = listen('menu-toggle-status-bar', () => {
+        statusBar.toggle();
+      });
+
+      // Poll for stale nodes count (embedding queue) every 5 seconds
+      const updateStaleNodesCount = async () => {
+        try {
+          const count = await invoke<number>('get_stale_root_count');
+          statusBar.setStaleNodesCount(count);
+        } catch (error) {
+          log.error('Failed to get stale nodes count:', error);
+        }
+      };
+      // Initial fetch
+      updateStaleNodesCount();
+      // Set up polling interval
+      staleNodesInterval = setInterval(updateStaleNodesCount, 5000);
+
+      // Listen for import folder menu event
+      unlistenImport = listen('menu-import-folder', async () => {
+        const folderPath = await importService.selectFolder();
+        if (!folderPath) return;
+
+        // Subscribe to progress updates
+        const unsubProgress = importService.onProgress((event) => {
+          statusBar.show(
+            `${event.current} (of ${event.total}) docs imported`,
+            Math.round((event.current / event.total) * 100)
+          );
+        });
+
+        try {
+          const result = await importService.importDirectory(folderPath, {
+            auto_collection_routing: true,
+            exclude_patterns: ['design-system', 'node_modules', '.git'],
+          });
+
+          if (result.failed > 0) {
+            statusBar.error(`Import complete: ${result.successful} imported, ${result.failed} failed`);
+          } else {
+            statusBar.success(`${result.successful} docs imported in ${(result.duration_ms / 1000).toFixed(1)}s`);
+          }
+
+          // Refresh collections after import
+          const { collectionsData } = await import('$lib/stores/collections');
+          await collectionsData.loadCollections();
+        } catch (error) {
+          log.error('Import failed', error);
+          statusBar.error('Import failed: ' + (error instanceof Error ? error.message : String(error)));
+        } finally {
+          unsubProgress();
+        }
       });
 
       // Set up MCP event listeners for real-time UI updates
@@ -215,8 +318,18 @@
       if (unlistenMenu) {
         (await unlistenMenu)();
       }
+      if (unlistenStatusBar) {
+        (await unlistenStatusBar)();
+      }
+      if (unlistenImport) {
+        (await unlistenImport)();
+      }
       if (cleanupMCP) {
         await cleanupMCP();
+      }
+      // Cleanup stale nodes polling interval
+      if (staleNodesInterval) {
+        clearInterval(staleNodesInterval);
       }
       // Cleanup browser sync service (SSE connection)
       browserSyncService.destroy();
@@ -252,37 +365,51 @@
 
 <ThemeProvider>
   <NodeServiceContext>
-    <div
-      class="app-shell"
-      class:sidebar-collapsed={isCollapsed}
-      class:sidebar-expanded={!isCollapsed}
-      role="application"
-      aria-label="NodeSpace Application"
-    >
-      <!-- Navigation Sidebar -->
-      <NavigationSidebar />
+    <div class="app-container">
+      <div
+        class="app-shell"
+        class:sidebar-collapsed={isCollapsed}
+        class:sidebar-expanded={!isCollapsed}
+        role="application"
+        aria-label="NodeSpace Application"
+      >
+        <!-- Navigation Sidebar -->
+        <NavigationSidebar />
 
-      <!-- Pane Manager - positioned to span both tabs and content grid areas -->
-      <div class="pane-manager-wrapper">
-        <!-- PaneManager now renders content directly via PaneContent components -->
-        <PaneManager />
+        <!-- Pane Manager - positioned to span both tabs and content grid areas -->
+        <div class="pane-manager-wrapper">
+          <!-- PaneManager now renders content directly via PaneContent components -->
+          <PaneManager />
+        </div>
       </div>
+
+      <!-- Status Bar - shows import progress, etc. (pushes content up, not overlay) -->
+      <StatusBar />
     </div>
   </NodeServiceContext>
 </ThemeProvider>
 
 <style>
+  /* Container for app-shell and status bar (flexbox column) */
+  .app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+  }
+
   .app-shell {
     display: grid;
     grid-template-areas:
       'sidebar tabs'
       'sidebar content';
     grid-template-columns: auto 1fr;
-    grid-template-rows: auto 1fr;
-    height: 100vh;
+    grid-template-rows: auto minmax(0, 1fr); /* minmax(0, 1fr) prevents overflow */
+    flex: 1;
+    min-height: 0;
     overflow: hidden;
-    background: hsl(var(--background));
-    color: hsl(var(--foreground));
   }
 
   /* Navigation Sidebar */
@@ -297,6 +424,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    overflow: hidden; /* Ensure content doesn't overflow when status bar takes space */
     position: relative;
   }
 

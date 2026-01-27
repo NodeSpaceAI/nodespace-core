@@ -690,6 +690,68 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - Look at existing NodeSpace codebases for established patterns
 - Verify technology versions match current documentation
 
+### 9. Accessing NodeSpace Documentation (Semantic Search)
+
+**Project documentation is imported into NodeSpace and searchable via MCP tools.**
+
+When NodeSpace is running with the demo database (`bun run demo:tauri`), documentation is available via semantic search:
+
+**Using `search_semantic` tool:**
+```json
+{
+  "name": "search_semantic",
+  "arguments": {
+    "query": "how to add a new node type",
+    "limit": 5,
+    "include_markdown": 1
+  }
+}
+```
+
+**Collections Structure:**
+- `Architecture:Core` - Core system architecture docs
+- `Architecture:*` - Other architecture documentation
+- `Components` - Component specifications
+- `Business Logic` - Node behaviors, MCP handlers
+- `Development` - Process, standards, guides
+- `Development:Process` - Development workflow docs
+- `Development:Standards` - Code quality standards
+- `ADR` - Architecture Decision Records
+- `Lessons` - Lessons learned from implementations
+- `Troubleshooting` - Issue investigation guides
+- `Archived` - Superseded documents (excluded from search by default)
+
+**Filtering by Collection:**
+```json
+{
+  "name": "search_semantic",
+  "arguments": {
+    "query": "validation flow",
+    "collection": "Business Logic"
+  }
+}
+```
+
+**Including Archived Content:**
+```json
+{
+  "name": "search_semantic",
+  "arguments": {
+    "query": "turso migration",
+    "include_archived": true
+  }
+}
+```
+
+**Importing/Refreshing Documentation:**
+```bash
+# Preview what will be imported
+bun run scripts/import-docs.ts --dry-run
+
+# Perform actual import (requires NodeSpace running)
+bun run scripts/import-docs.ts
+```
+
 ## Updated Repository Structure (Post-2024 Restructure)
 
 ```

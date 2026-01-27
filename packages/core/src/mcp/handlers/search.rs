@@ -203,7 +203,11 @@ where
                                 e
                             ))
                         })?;
-                    (Some(coll_id), Some(members.into_iter().collect()))
+                    // Extract IDs from nodes for membership filtering
+                    (
+                        Some(coll_id),
+                        Some(members.into_iter().map(|n| n.id).collect()),
+                    )
                 }
                 Err(NodeServiceError::CollectionNotFound(_)) => {
                     // Collection doesn't exist, return empty result
@@ -231,7 +235,11 @@ where
                 .map_err(|e| {
                     MCPError::internal_error(format!("Failed to get collection members: {}", e))
                 })?;
-            (Some(coll_id.clone()), Some(members.into_iter().collect()))
+            // Extract IDs from nodes for membership filtering
+            (
+                Some(coll_id.clone()),
+                Some(members.into_iter().map(|n| n.id).collect()),
+            )
         } else {
             (None, None)
         };
@@ -248,7 +256,8 @@ where
                 Ok(resolved) => {
                     let coll_id = resolved.leaf_id().to_string();
                     if let Ok(members) = collection_service.get_collection_members(&coll_id).await {
-                        excluded.extend(members);
+                        // Extract IDs from nodes for exclusion filtering
+                        excluded.extend(members.into_iter().map(|n| n.id));
                     }
                 }
                 Err(NodeServiceError::CollectionNotFound(_)) => {
@@ -369,6 +378,7 @@ where
                 "id": node.id,
                 "nodeType": node.node_type,
                 "content": node.content,
+                "title": node.title,
                 "version": node.version,
                 "createdAt": node.created_at,
                 "modifiedAt": node.modified_at,

@@ -22,7 +22,7 @@ const log = createLogger('CollectionService');
 // ============================================================================
 
 /**
- * Collection with member count for UI display
+ * Collection with member count and hierarchy info for UI display
  */
 export interface CollectionInfo {
   /** The collection node data */
@@ -35,6 +35,8 @@ export interface CollectionInfo {
   properties: Record<string, unknown>;
   /** Number of direct members in this collection */
   memberCount: number;
+  /** IDs of parent collections (collections this collection is nested under) */
+  parentCollectionIds: string[];
 }
 
 /**

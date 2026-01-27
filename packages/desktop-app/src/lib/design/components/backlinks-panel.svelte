@@ -114,7 +114,8 @@
 
 <style>
   .backlinks-panel-container {
-    /* Fixed at bottom of viewer (outside scroll area) */
+    /* Push to bottom of flex parent and stay there */
+    margin-top: auto;
     flex-shrink: 0;
     background: hsl(var(--background));
     display: flex;

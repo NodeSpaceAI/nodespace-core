@@ -322,9 +322,10 @@
       const backendResults: NodeData[] = await tauriCommands.mentionAutocomplete(query, 10);
 
       // Convert to NodeResult format
+      // Use title field (markdown-stripped) if available, otherwise fall back to content
       const nodeResults: NodeResult[] = backendResults.map((node: NodeData) => ({
         id: node.id,
-        title: node.content.split('\n')[0] || 'Untitled',
+        title: node.title || node.content.split('\n')[0] || 'Untitled',
         // Backend ensures valid node types; fallback to 'text' for type safety
         nodeType: (node.nodeType || 'text') as NodeType
       }));

@@ -159,9 +159,18 @@ pub fn run() {
                 .accelerator("CmdOrCtrl+B")
                 .build(app)?;
 
+            let toggle_status_bar = MenuItemBuilder::new("Toggle Status Bar")
+                .id("toggle_status_bar")
+                .build(app)?;
+
             let quit = MenuItemBuilder::new("Quit")
                 .id("quit")
                 .accelerator("CmdOrCtrl+Q")
+                .build(app)?;
+
+            let import_folder = MenuItemBuilder::new("Import Folder...")
+                .id("import_folder")
+                .accelerator("CmdOrCtrl+Shift+I")
                 .build(app)?;
 
             // Standard Edit menu items for clipboard operations
@@ -174,20 +183,27 @@ pub fn run() {
             let redo = PredefinedMenuItem::redo(app, Some("Redo"))?;
 
             // Create submenus
-            let view_menu = SubmenuBuilder::new(app, "View")
-                .items(&[&toggle_sidebar])
+            // macOS app menu (first menu is always the app name on macOS)
+            let app_menu = SubmenuBuilder::new(app, "NodeSpace")
+                .items(&[&quit])
                 .build()?;
 
-            let file_menu = SubmenuBuilder::new(app, "File").items(&[&quit]).build()?;
+            let file_menu = SubmenuBuilder::new(app, "File")
+                .items(&[&import_folder])
+                .build()?;
 
             // Edit menu with standard shortcuts (required for macOS WebView clipboard)
             let edit_menu = SubmenuBuilder::new(app, "Edit")
                 .items(&[&undo, &redo, &cut, &copy, &paste, &select_all])
                 .build()?;
 
+            let view_menu = SubmenuBuilder::new(app, "View")
+                .items(&[&toggle_sidebar, &toggle_status_bar])
+                .build()?;
+
             // Create main menu
             let menu = MenuBuilder::new(app)
-                .items(&[&file_menu, &edit_menu, &view_menu])
+                .items(&[&app_menu, &file_menu, &edit_menu, &view_menu])
                 .build()?;
 
             // Set the menu
@@ -201,13 +217,27 @@ pub fn run() {
         })
         .on_menu_event(|app, event| {
             let toggle_sidebar_id = MenuId::new("toggle_sidebar");
+            let toggle_status_bar_id = MenuId::new("toggle_status_bar");
             let quit_id = MenuId::new("quit");
+            let import_folder_id = MenuId::new("import_folder");
 
             if *event.id() == toggle_sidebar_id {
                 // Emit an event to the frontend
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.emit("menu-toggle-sidebar", ());
                     println!("Sidebar toggle requested from menu");
+                }
+            } else if *event.id() == toggle_status_bar_id {
+                // Emit an event to the frontend to toggle status bar
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("menu-toggle-status-bar", ());
+                    println!("Status bar toggle requested from menu");
+                }
+            } else if *event.id() == import_folder_id {
+                // Emit an event to the frontend to open import dialog
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("menu-import-folder", ());
+                    println!("Import folder requested from menu");
                 }
             } else if *event.id() == quit_id {
                 std::process::exit(0);

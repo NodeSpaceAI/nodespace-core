@@ -76,6 +76,11 @@ pub struct MCPCreateNodeParams {
     /// Creates collections along the path if they don't exist.
     #[serde(default)]
     pub collection: Option<String>,
+    /// Optional lifecycle status (Issue #828, #770)
+    /// Valid values: "active" (default), "archived", "deleted"
+    /// Default is "active" if not specified.
+    #[serde(default)]
+    pub lifecycle_status: Option<String>,
 }
 
 /// Parameters for get_node method
@@ -106,6 +111,10 @@ pub struct UpdateNodeParams {
     /// Remove node from a collection by collection ID
     #[serde(default)]
     pub remove_from_collection: Option<String>,
+    /// Update lifecycle status (Issue #828, #770)
+    /// Valid values: "active" (default), "archived", "deleted"
+    #[serde(default)]
+    pub lifecycle_status: Option<String>,
 }
 
 /// Parameters for delete_node method
@@ -272,6 +281,28 @@ where
         None
     };
 
+    // Issue #828, #770: Apply lifecycle_status if specified (default is "active")
+    // Update the node with lifecycle_status if non-default value provided
+    if let Some(lifecycle_status) = &mcp_params.lifecycle_status {
+        if lifecycle_status != "active" {
+            let current_node = node_service
+                .get_node(&node_id)
+                .await
+                .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
+                .ok_or_else(|| MCPError::internal_error("Created node not found".to_string()))?;
+
+            let update = NodeUpdate {
+                lifecycle_status: Some(lifecycle_status.clone()),
+                ..Default::default()
+            };
+
+            node_service
+                .update_node_with_occ(&node_id, current_node.version, update)
+                .await
+                .map_err(service_error_to_mcp)?;
+        }
+    }
+
     // Fetch the created node for response (includes version, timestamps, member_of, etc.)
     let created_node = node_service
         .get_node(&node_id)
@@ -346,11 +377,13 @@ where
 
     // Build NodeUpdate from params
     // Note: Embeddings are auto-generated via root-aggregate model (Issue #729)
+    // Issue #828, #770: lifecycle_status can be updated to archive/restore nodes
     let update = NodeUpdate {
         content: params.content,
         node_type: params.node_type,
         properties: params.properties,
         title: None, // Title is managed by NodeService
+        lifecycle_status: params.lifecycle_status,
     };
 
     // If version not provided, fetch current version (convenient for AI agents)
@@ -522,7 +555,8 @@ where
                 .get_collection_members(coll_id)
                 .await
                 .map_err(service_error_to_mcp)?;
-            Some(members.into_iter().collect())
+            // Extract IDs from nodes for membership filtering
+            Some(members.into_iter().map(|n| n.id).collect())
         } else {
             None
         };
@@ -1329,7 +1363,8 @@ where
             content: update.content,
             node_type: update.node_type,
             properties: update.properties,
-            title: None, // Title is managed by NodeService
+            title: None,            // Title is managed by NodeService
+            lifecycle_status: None, // Batch update doesn't support lifecycle_status yet
         };
 
         // Apply update via NodeService (enforces all business rules)

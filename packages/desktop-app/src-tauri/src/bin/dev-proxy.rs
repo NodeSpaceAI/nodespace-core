@@ -1405,19 +1405,11 @@ async fn get_collection_members(
     let store = state.node_service.store();
     let collection_service = CollectionService::new(store, &state.node_service);
 
-    // Get member IDs
-    let member_ids = collection_service
+    // Get members directly (single query returns full Node structs)
+    let members = collection_service
         .get_collection_members(&id)
         .await
         .map_err(map_node_service_error)?;
-
-    // Fetch actual nodes for each member ID
-    let mut members = Vec::with_capacity(member_ids.len());
-    for member_id in member_ids {
-        if let Ok(Some(node)) = state.node_service.get_node(&member_id).await {
-            members.push(node);
-        }
-    }
 
     Ok(Json(members))
 }

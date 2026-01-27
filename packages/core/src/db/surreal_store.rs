@@ -1646,6 +1646,16 @@ where
                 .context("Failed to update properties")?;
         }
 
+        // Issue #828, #770: Update lifecycle_status if provided
+        if let Some(status) = update.lifecycle_status {
+            self.db
+                .query("UPDATE type::thing('node', $id) SET lifecycle_status = $lifecycle_status;")
+                .bind(("id", id.to_string()))
+                .bind(("lifecycle_status", status))
+                .await
+                .context("Failed to update lifecycle_status")?;
+        }
+
         // Fetch fresh node
         let node = self
             .get_node(id)
@@ -1660,6 +1670,21 @@ where
         });
 
         Ok(Some(node))
+    }
+
+    /// Update lifecycle_status directly (for bulk import operations)
+    ///
+    /// This is a lightweight method that skips validation and event emission,
+    /// useful for bulk operations like docs import where we need to mark
+    /// many documents as archived efficiently.
+    pub async fn update_lifecycle_status(&self, id: &str, status: &str) -> Result<()> {
+        self.db
+            .query("UPDATE type::thing('node', $id) SET lifecycle_status = $status;")
+            .bind(("id", id.to_string()))
+            .bind(("status", status.to_string()))
+            .await
+            .context("Failed to update lifecycle_status")?;
+        Ok(())
     }
 
     pub async fn delete_node(&self, id: &str, source: Option<String>) -> Result<DeleteResult> {
@@ -1943,58 +1968,29 @@ where
             use surrealdb::sql::Thing;
             let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
 
-            // Query children ordered by relationship.properties.order (Issue #788: universal relationship table)
-            let mut rel_response = self
-                .db
-                .query("SELECT out, properties.order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' ORDER BY properties.order ASC;")
-                .bind(("parent_thing", parent_thing.clone()))
-                .await
-                .context("Failed to get child relationships")?;
-
-            #[derive(serde::Deserialize)]
-            struct RelOut {
-                out: Thing,
-            }
-
-            let relationships: Vec<RelOut> = rel_response
-                .take(0)
-                .context("Failed to extract child relationships")?;
-
-            // Extract node Things in order
-            let mut ordered_node_things: Vec<Thing> = Vec::new();
-            let mut ordered_node_strs: Vec<String> = Vec::new();
-            for rel in relationships {
-                ordered_node_things.push(rel.out.clone());
-                ordered_node_strs.push(format!("{}", rel.out));
-            }
-
-            // Fetch all nodes using Things for proper ID matching
+            // Single query: get ordered children with full node data in one round-trip
+            // Uses LET to store ordered IDs, then fetches nodes preserving order
+            // Note: ORDER BY field must be included in SELECT, so we select out and properties.order
             let mut response = self
                 .db
-                .query("SELECT * FROM node WHERE id IN $ids;")
-                .bind(("ids", ordered_node_things))
+                .query(
+                    r#"
+                    LET $child_ids = (
+                        SELECT out, properties.order FROM relationship
+                        WHERE in = $parent_thing AND relationship_type = 'has_child'
+                        ORDER BY properties.order ASC
+                    ).out;
+                    SELECT * FROM $child_ids;
+                    "#,
+                )
+                .bind(("parent_thing", parent_thing))
                 .await
                 .context("Failed to get children")?;
 
-            let fetched_nodes: Vec<SurrealNode> = response
-                .take(0)
+            // Result is in second statement (index 1)
+            let nodes: Vec<SurrealNode> = response
+                .take(1)
                 .context("Failed to extract children from response")?;
-
-            // Create a hashmap of fetched nodes for quick lookup by ID
-            use std::collections::HashMap as IDHashMap;
-            let mut node_map: IDHashMap<String, SurrealNode> = IDHashMap::new();
-            for node in fetched_nodes {
-                let id_str = format!("{}", node.id);
-                node_map.insert(id_str, node);
-            }
-
-            // Reconstruct nodes in the exact order from the relationship query
-            let mut nodes: Vec<SurrealNode> = Vec::new();
-            for id_str in ordered_node_strs.iter() {
-                if let Some(node) = node_map.remove(id_str) {
-                    nodes.push(node);
-                }
-            }
 
             nodes
         } else {
@@ -2281,19 +2277,18 @@ where
         root_id: &str,
     ) -> Result<(Vec<Node>, Vec<RelationshipRecord>)> {
         use surrealdb::sql::Thing;
+        let start = std::time::Instant::now();
 
         let root_thing = Thing::from(("node".to_string(), root_id.to_string()));
 
         // Universal Graph Architecture (Issue #783, #788): Single query batch
-        // 1. All descendant node IDs (recursive collect via relationship table)
-        // 2. Root + all descendant nodes (properties embedded in node.properties)
-        // 3. All has_child relationships in subtree
-        // Note: Must include properties.order in SELECT when ordering by it (SurrealDB requirement)
+        // Uses recursive collect to get all descendants, then fetches nodes and relationships
+        // Optimized: SELECT * FROM $ids is faster than SELECT * FROM node WHERE id IN $ids
         let query = "
             LET $descendants = $root_thing.{..+collect}->relationship[WHERE relationship_type = 'has_child']->node;
-            LET $all_nodes = array::concat([$root_thing], $descendants);
-            SELECT * FROM node WHERE id IN $all_nodes;
-            SELECT id, in, out, relationship_type, properties, properties.order FROM relationship WHERE in IN $all_nodes AND relationship_type = 'has_child' ORDER BY properties.order ASC;
+            LET $all_node_ids = array::concat([$root_thing], $descendants);
+            SELECT * FROM $all_node_ids;
+            SELECT id, in, out, relationship_type, properties, properties.order FROM relationship WHERE in IN $all_node_ids AND relationship_type = 'has_child' ORDER BY properties.order ASC;
         ";
 
         let mut response = self
@@ -2302,6 +2297,12 @@ where
             .bind(("root_thing", root_thing))
             .await
             .context("Failed to query subtree")?;
+
+        tracing::debug!(
+            "get_subtree_with_relationships: query took {:?} for root_id={}",
+            start.elapsed(),
+            root_id
+        );
 
         // Query has 4 statements:
         // 0: LET $descendants
@@ -3411,6 +3412,116 @@ where
         Ok(nodes.into_iter().map(|(id, _, _, _, _, _)| id).collect())
     }
 
+    /// Bulk create with root-only notification (for large imports)
+    ///
+    /// Only emits a domain event for the root node, signaling other clients
+    /// to refresh. Much more efficient than per-node notifications for bulk operations.
+    pub async fn bulk_create_hierarchy_root_notify(
+        &self,
+        nodes: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            f64,
+            serde_json::Value,
+        )>,
+    ) -> Result<Vec<String>> {
+        if nodes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Universal Graph Architecture (Issue #783): All properties embedded in node.properties
+        // Build a single transaction query for all operations
+        let mut query = String::from("BEGIN TRANSACTION;\n");
+
+        for (id, node_type, content, parent_id, order, properties) in &nodes {
+            // Validate node type
+            self.validate_node_type(node_type)?;
+
+            // Escape content for SurrealQL
+            let escaped_content = Self::escape_surql_string(content);
+            let props_json = serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
+
+            // Create node with embedded properties
+            // Title is NONE for bulk hierarchy nodes (child nodes don't have titles)
+            query.push_str(&format!(
+                r#"CREATE node:`{id}` CONTENT {{
+                    node_type: "{node_type}",
+                    content: "{content}",
+                    properties: {props},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now(),
+                    title: NONE
+                }};
+"#,
+                id = id,
+                node_type = node_type,
+                content = escaped_content,
+                props = props_json
+            ));
+
+            // Create parent-child relationship in universal relationship table (Issue #788)
+            if let Some(parent) = parent_id {
+                query.push_str(&format!(
+                    r#"RELATE node:`{parent}`->relationship->node:`{id}` CONTENT {{
+                        relationship_type: 'has_child',
+                        properties: {{ order: {order} }},
+                        created_at: time::now(),
+                        modified_at: time::now(),
+                        version: 1
+                    }};
+"#,
+                    parent = parent,
+                    id = id,
+                    order = order
+                ));
+            }
+        }
+
+        query.push_str("COMMIT TRANSACTION;\n");
+
+        // Execute the single transaction
+        let response = self
+            .db
+            .query(&query)
+            .await
+            .context("Failed to execute bulk hierarchy creation transaction")?;
+
+        // Check for transaction errors
+        response
+            .check()
+            .context("Bulk hierarchy creation transaction failed")?;
+
+        // Only notify for root node (parent_id = None) - efficient for bulk imports
+        for (id, node_type, content, parent_id, _, properties) in &nodes {
+            if parent_id.is_none() {
+                let node = Node {
+                    id: id.clone(),
+                    node_type: node_type.clone(),
+                    content: content.clone(),
+                    version: 1,
+                    created_at: chrono::Utc::now(),
+                    modified_at: chrono::Utc::now(),
+                    properties: properties.clone(),
+                    mentions: vec![],
+                    mentioned_by: vec![],
+                    member_of: vec![],
+                    title: None,
+                    lifecycle_status: "active".to_string(),
+                };
+                self.notify(StoreChange {
+                    operation: StoreOperation::Created,
+                    node,
+                    source: Some("bulk_create_hierarchy".to_string()),
+                });
+            }
+        }
+
+        Ok(nodes.into_iter().map(|(id, _, _, _, _, _)| id).collect())
+    }
+
     /// Create a single node with parent relationship for streaming imports
     ///
     /// Universal Graph Architecture (Issue #783): All properties embedded in node.properties.
@@ -4440,9 +4551,9 @@ where
         Ok(collection_ids)
     }
 
-    /// Get all members of a collection
+    /// Get all members of a collection as full Node structs
     ///
-    /// Returns the IDs of all nodes that are members of the collection.
+    /// Single query that traverses the member_of relationship and returns full node data.
     /// Direction: member -> member_of -> collection
     /// Issue #788: Universal Relationship Architecture - queries relationship table.
     ///
@@ -4452,40 +4563,44 @@ where
     ///
     /// # Returns
     ///
-    /// Member node IDs
-    pub async fn get_collection_members(&self, collection_id: &str) -> Result<Vec<String>> {
-        let query =
-            "SELECT <-relationship[WHERE relationship_type = 'member_of']<-node.id AS member_ids FROM type::thing('node', $collection_id);";
+    /// Full Node structs for all collection members
+    pub async fn get_collection_members(&self, collection_id: &str) -> Result<Vec<Node>> {
+        // Single query using SurrealDB graph traversal for optimal performance
+        // Uses subquery to fetch full node data in one round-trip
+        use surrealdb::sql::Thing;
+        let start = std::time::Instant::now();
+        let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
 
+        // Single query: get relationship source nodes and fetch their full data
+        // This should use idx_rel_out index on (out, relationship_type)
         let mut response = self
             .db
-            .query(query)
-            .bind(("collection_id", collection_id.to_string()))
+            .query(
+                r#"
+                SELECT * FROM (
+                    SELECT VALUE in FROM relationship
+                    WHERE out = $collection_thing AND relationship_type = 'member_of'
+                );
+                "#,
+            )
+            .bind(("collection_thing", collection_thing))
             .await
             .context("Failed to get collection members")?;
 
-        #[derive(Debug, Deserialize)]
-        struct MemberResult {
-            member_ids: Vec<Thing>,
-        }
-
-        let results: Vec<MemberResult> = response
+        let surreal_nodes: Vec<SurrealNode> = response
             .take(0)
             .context("Failed to extract members from response")?;
 
-        let member_ids: Vec<String> = results
-            .into_iter()
-            .flat_map(|r| r.member_ids)
-            .filter_map(|thing| {
-                if let Id::String(id_str) = &thing.id {
-                    Some(id_str.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        tracing::debug!(
+            "get_collection_members: single query took {:?} for {} nodes",
+            start.elapsed(),
+            surreal_nodes.len()
+        );
 
-        Ok(member_ids)
+        // Convert to nodes (properties already embedded)
+        let nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
+
+        Ok(nodes)
     }
 
     /// Get collection by name (case-insensitive lookup)
@@ -4713,13 +4828,17 @@ where
             #[serde(default = "default_lifecycle_status")]
             lifecycle_status: String,
             member_count: i64,
+            #[serde(default)]
+            parent_collection_ids_raw: Vec<Thing>,
         }
 
         // Single query that fetches collections and counts their members via graph traversal
+        // Also fetches parent collection IDs for hierarchy display
         let query = r#"
             SELECT
                 *,
-                count(<-relationship[WHERE relationship_type = 'member_of']<-node) AS member_count
+                count(<-relationship[WHERE relationship_type = 'member_of']<-node) AS member_count,
+                ->relationship[WHERE relationship_type = 'member_of']->node[WHERE node_type = 'collection'].id AS parent_collection_ids_raw
             FROM node
             WHERE node_type = 'collection'
             ORDER BY content ASC;
@@ -4755,6 +4874,16 @@ where
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now());
 
+                // Extract parent collection IDs from Thing records
+                let parent_collection_ids: Vec<String> = row
+                    .parent_collection_ids_raw
+                    .iter()
+                    .map(|thing| match &thing.id {
+                        Id::String(s) => s.clone(),
+                        _ => thing.id.to_string(),
+                    })
+                    .collect();
+
                 let node = Node {
                     id,
                     node_type: row.node_type,
@@ -4765,7 +4894,7 @@ where
                     modified_at,
                     mentions: vec![],
                     mentioned_by: vec![],
-                    member_of: vec![],
+                    member_of: parent_collection_ids,
                     title: row.title,
                     lifecycle_status: row.lifecycle_status,
                 };

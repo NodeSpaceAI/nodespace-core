@@ -402,6 +402,11 @@ pub struct NodeUpdate {
     /// Use Some(Some(title)) to set a title, Some(None) to clear it
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<Option<String>>,
+
+    /// Update lifecycle status (Issue #828, #770)
+    /// Valid values: "active" (default), "archived", "deleted"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_status: Option<String>,
 }
 
 impl NodeUpdate {
@@ -434,12 +439,20 @@ impl NodeUpdate {
         self
     }
 
+    /// Set lifecycle status update (Issue #828, #770)
+    /// Valid values: "active", "archived", "deleted"
+    pub fn with_lifecycle_status(mut self, lifecycle_status: String) -> Self {
+        self.lifecycle_status = Some(lifecycle_status);
+        self
+    }
+
     /// Check if update contains any changes
     pub fn is_empty(&self) -> bool {
         self.node_type.is_none()
             && self.content.is_none()
             && self.properties.is_none()
             && self.title.is_none()
+            && self.lifecycle_status.is_none()
     }
 }
 

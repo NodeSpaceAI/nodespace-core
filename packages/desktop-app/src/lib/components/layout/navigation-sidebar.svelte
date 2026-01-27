@@ -589,8 +589,9 @@
     padding: 0; /* No gap between Collections header and sub-items */
     margin: 0 -1rem; /* Break out of sidebar padding */
     overflow-x: auto; /* Allow horizontal scroll for long names */
-    scrollbar-width: none; /* Firefox */
-    -ms-overflow-style: none; /* IE/Edge */
+    overflow-y: auto; /* Allow vertical scroll when list is tall */
+    max-height: calc(10 * 28px); /* ~10 items tall before scrolling (28px per item) */
+    scrollbar-width: thin; /* Firefox - show thin scrollbar */
     background: hsl(var(--active-nav-background)); /* Subtle background to group collection items */
   }
 

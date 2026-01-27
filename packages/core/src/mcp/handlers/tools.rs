@@ -512,6 +512,11 @@ fn get_tool_schemas() -> Value {
                     "collection": {
                         "type": "string",
                         "description": "Optional collection path to add this node to (e.g., 'hr:policy:vacation'). Creates collections along the path if they don't exist."
+                    },
+                    "lifecycle_status": {
+                        "type": "string",
+                        "enum": ["active", "archived", "deleted"],
+                        "description": "Optional lifecycle status (default: 'active'). 'archived': excluded from search by default. 'deleted': soft-deleted, excluded from all queries."
                     }
                 },
                 "required": ["node_type", "content"]
@@ -556,6 +561,11 @@ fn get_tool_schemas() -> Value {
                     "remove_from_collection": {
                         "type": "string",
                         "description": "Remove node from a collection by collection ID"
+                    },
+                    "lifecycle_status": {
+                        "type": "string",
+                        "enum": ["active", "archived", "deleted"],
+                        "description": "Update lifecycle status. 'active' (default): included in search, visible in UI. 'archived': excluded from search by default (use include_archived:true to search). 'deleted': soft-deleted, excluded from all queries."
                     }
                 },
                 "required": ["node_id"]

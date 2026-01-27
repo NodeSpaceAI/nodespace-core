@@ -826,9 +826,10 @@ mod collection_service_tests {
             .get_collection_members(&collection_id)
             .await?;
         assert_eq!(members.len(), 2, "Collection should have 2 members");
-        assert!(members.contains(&"doc-1".to_string()));
-        assert!(members.contains(&"doc-2".to_string()));
-        assert!(!members.contains(&"doc-3".to_string()));
+        let member_ids: Vec<_> = members.iter().map(|n| n.id.as_str()).collect();
+        assert!(member_ids.contains(&"doc-1"));
+        assert!(member_ids.contains(&"doc-2"));
+        assert!(!member_ids.contains(&"doc-3"));
 
         Ok(())
     }
@@ -1082,8 +1083,9 @@ mod collection_service_tests {
         let members = collection_service
             .get_collection_members(&berlin_id)
             .await?;
+        let member_ids: Vec<_> = members.iter().map(|n| n.id.as_str()).collect();
         assert!(
-            members.contains(&"berlin-doc".to_string()),
+            member_ids.contains(&"berlin-doc"),
             "Berlin collection should contain the document"
         );
 

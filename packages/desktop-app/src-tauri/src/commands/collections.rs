@@ -34,7 +34,7 @@ fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<Value>, CommandError> {
     })
 }
 
-/// Collection with member count for UI display
+/// Collection with member count and hierarchy info for UI display
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CollectionInfo {
@@ -43,6 +43,8 @@ pub struct CollectionInfo {
     pub node: Value,
     /// Number of direct members in this collection
     pub member_count: usize,
+    /// IDs of parent collections (collections this collection is nested under)
+    pub parent_collection_ids: Vec<String>,
 }
 
 /// Get all collection nodes in the database
@@ -84,10 +86,14 @@ pub async fn get_all_collections(
 
     let mut result = Vec::with_capacity(collections_with_counts.len());
     for (collection, member_count) in collections_with_counts {
+        // Extract parent collection IDs from member_of field
+        // Collections can be nested (a collection is member_of another collection)
+        let parent_collection_ids = collection.member_of.clone();
         let node_value = node_to_typed_value(collection)?;
         result.push(CollectionInfo {
             node: node_value,
             member_count,
+            parent_collection_ids,
         });
     }
 
@@ -97,6 +103,7 @@ pub async fn get_all_collections(
 /// Get members of a specific collection
 ///
 /// Returns all nodes that belong to the specified collection via member_of edge.
+/// Single query that traverses the relationship and returns full Node data.
 ///
 /// # Arguments
 /// * `service` - NodeService instance from Tauri state
@@ -118,10 +125,9 @@ pub async fn get_collection_members(
     collection_id: String,
 ) -> Result<Vec<Value>, CommandError> {
     let store = service.store();
-    let collection_service = CollectionService::new(store, &service);
 
-    // Get member IDs
-    let member_ids = collection_service
+    // Single query: traverse relationship and get full node data
+    let members = store
         .get_collection_members(&collection_id)
         .await
         .map_err(|e| CommandError {
@@ -129,23 +135,6 @@ pub async fn get_collection_members(
             code: "QUERY_ERROR".to_string(),
             details: Some(format!("{}", e)),
         })?;
-
-    // Fetch full node data for each member
-    let mut members = Vec::with_capacity(member_ids.len());
-    for id in member_ids {
-        if let Some(node) = service
-            .with_client(TAURI_CLIENT_ID)
-            .get_node(&id)
-            .await
-            .map_err(|e| CommandError {
-                message: format!("Failed to get node: {}", e),
-                code: "QUERY_ERROR".to_string(),
-                details: Some(format!("{}", e)),
-            })?
-        {
-            members.push(node);
-        }
-    }
 
     nodes_to_typed_values(members)
 }
@@ -179,22 +168,21 @@ pub async fn get_collection_members_recursive(
             details: Some(format!("{}", e)),
         })?;
 
-    // Fetch full node data for each member
-    let mut members = Vec::with_capacity(member_ids.len());
-    for id in member_ids {
-        if let Some(node) = service
-            .with_client(TAURI_CLIENT_ID)
-            .get_node(&id)
-            .await
-            .map_err(|e| CommandError {
-                message: format!("Failed to get node: {}", e),
-                code: "QUERY_ERROR".to_string(),
-                details: Some(format!("{}", e)),
-            })?
-        {
-            members.push(node);
-        }
-    }
+    // Batch fetch all nodes in a single query (avoids N+1 problem)
+    let nodes_map = store
+        .get_nodes_by_ids(&member_ids)
+        .await
+        .map_err(|e| CommandError {
+            message: format!("Failed to batch fetch nodes: {}", e),
+            code: "QUERY_ERROR".to_string(),
+            details: Some(format!("{}", e)),
+        })?;
+
+    // Preserve order from member_ids and collect found nodes
+    let members: Vec<Node> = member_ids
+        .into_iter()
+        .filter_map(|id| nodes_map.get(&id).cloned())
+        .collect();
 
     nodes_to_typed_values(members)
 }

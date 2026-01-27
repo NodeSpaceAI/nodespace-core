@@ -19,7 +19,7 @@ import type { Node } from '$lib/types';
 import { mockCollections, mockMembers } from '../fixtures/collections-fixtures';
 
 // Convert mock data to CollectionInfo format for testing
-function createTestCollectionInfo(item: CollectionItem): CollectionInfo {
+function createTestCollectionInfo(item: CollectionItem, parentId?: string): CollectionInfo {
   return {
     id: item.id,
     content: item.name,
@@ -28,17 +28,18 @@ function createTestCollectionInfo(item: CollectionItem): CollectionInfo {
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
     version: 1,
-    properties: {}
+    properties: {},
+    parentCollectionIds: parentId ? [parentId] : []
   };
 }
 
 // Flatten collections tree to list for the data store
-function flattenCollections(items: CollectionItem[]): CollectionInfo[] {
+function flattenCollections(items: CollectionItem[], parentId?: string): CollectionInfo[] {
   const result: CollectionInfo[] = [];
   for (const item of items) {
-    result.push(createTestCollectionInfo(item));
+    result.push(createTestCollectionInfo(item, parentId));
     if (item.children) {
-      result.push(...flattenCollections(item.children));
+      result.push(...flattenCollections(item.children, item.id));
     }
   }
   return result;
@@ -53,6 +54,7 @@ function createTestMembers(): Map<string, Node[]> {
       members.map((m) => ({
         id: m.id,
         content: m.name,
+        title: m.name,
         nodeType: m.nodeType,
         createdAt: new Date().toISOString(),
         modifiedAt: new Date().toISOString(),

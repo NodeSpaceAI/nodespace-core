@@ -185,6 +185,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    overflow: hidden; /* Critical: constrain height so children don't overflow */
     position: relative;
     background-color: hsl(var(--content-background));
     /* Subtle border to indicate pane boundary */

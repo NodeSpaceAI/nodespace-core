@@ -1095,6 +1095,9 @@ where
     }
 
     pub async fn create_node(&self, mut node: Node) -> Result<String, NodeServiceError> {
+        let start = std::time::Instant::now();
+        tracing::debug!(node_type = %node.node_type, node_id = %node.id, "create_node: START");
+
         // Auto-detect date nodes by ID format (YYYY-MM-DD) to ensure correct node_type.
         // This maintains data integrity regardless of caller mistakes.
         // NOTE: Per Issue #670, date nodes can have custom content (not required to match ID).
@@ -1107,9 +1110,13 @@ where
         // Step 1: Core behavior validation (PROTECTED)
         // Validates basic data integrity (non-empty content, correct types, etc.)
         self.behaviors.validate_node(&node)?;
+        tracing::debug!(
+            "create_node: behavior validation at {}ms",
+            start.elapsed().as_millis()
+        );
 
-        // Step 1.5: Apply schema defaults and validate
-        // Apply default values for missing fields before validation
+        // Step 1.5: Apply schema defaults, validate, and add version
+        // Fetch schema ONCE and reuse for all operations (performance fix)
         // Skip for schema nodes to avoid circular dependency
         //
         // NOTE: We ONLY apply schema defaults, NOT behavior defaults.
@@ -1117,8 +1124,13 @@ where
         // that should be handled client-side, not stored in database properties.
         // The properties field is for user data and schema-defined fields only.
         if node.node_type != "schema" {
-            // Fetch schema once and reuse it for both operations
+            let schema_start = std::time::Instant::now();
+            // Fetch schema ONCE and reuse it for all operations
             if let Some(schema_json) = self.get_schema_for_type(&node.node_type).await? {
+                tracing::debug!(
+                    "create_node: schema fetched in {}ms",
+                    schema_start.elapsed().as_millis()
+                );
                 // Parse schema fields
                 if let Some(fields_json) = schema_json.get("fields") {
                     if let Ok(fields) = serde_json::from_value::<Vec<crate::models::SchemaField>>(
@@ -1129,43 +1141,39 @@ where
 
                         // Validate with the same fields
                         self.validate_node_with_fields(&node, &fields)?;
-                    }
-                }
-            }
-            // If no schema exists, that's fine - just don't add any defaults
-            // Properties should contain only what the user explicitly provided
-        }
 
-        // NOTE: Parent/container validation removed - now handled by NodeOperations layer
-        // The graph-native architecture uses edges for hierarchy, not fields on Node struct
-
-        // Add schema version to type namespace ONLY if schema has fields (Issue #794)
-        // For empty schemas (text, date, header, etc.), don't pollute properties with version
-        // Schema versioning is only needed for types with schema-defined fields (task, person, etc.)
-        if let Some(schema) = self.get_schema_for_type(&node.node_type).await? {
-            // Check if schema has any fields
-            if let Some(fields) = schema.get("fields").and_then(|f| f.as_array()) {
-                if !fields.is_empty() {
-                    // Schema has fields - add version for migration tracking
-                    if let Some(version) = schema.get("version").and_then(|v| v.as_i64()) {
-                        if let Some(props_obj) = node.properties.as_object_mut() {
-                            // Get or create the type namespace
-                            let type_namespace = props_obj
-                                .entry(&node.node_type)
-                                .or_insert_with(|| serde_json::json!({}));
-                            if let Some(type_props) = type_namespace.as_object_mut() {
-                                type_props.insert(
-                                    "_schema_version".to_string(),
-                                    serde_json::json!(version),
-                                );
+                        // Add schema version if schema has fields (Issue #794)
+                        // Using the already-fetched schema instead of fetching again
+                        if !fields.is_empty() {
+                            if let Some(version) =
+                                schema_json.get("version").and_then(|v| v.as_i64())
+                            {
+                                if let Some(props_obj) = node.properties.as_object_mut() {
+                                    let type_namespace = props_obj
+                                        .entry(&node.node_type)
+                                        .or_insert_with(|| serde_json::json!({}));
+                                    if let Some(type_props) = type_namespace.as_object_mut() {
+                                        type_props.insert(
+                                            "_schema_version".to_string(),
+                                            serde_json::json!(version),
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
+            // If no schema exists, that's fine - just don't add any defaults
+            // Properties should contain only what the user explicitly provided
+            tracing::debug!(
+                "create_node: schema processing complete at {}ms",
+                start.elapsed().as_millis()
+            );
         }
-        // Note: No else clause - if no schema or empty schema, don't add version
-        // The backfill_schema_version function will add it on read if needed
+
+        // NOTE: Parent/container validation removed - now handled by NodeOperations layer
+        // The graph-native architecture uses edges for hierarchy, not fields on Node struct
 
         // NOTE: root_id filtering removed - hierarchy now managed via relationships
 
@@ -1205,16 +1213,26 @@ where
             tracing::info!("Atomically created schema node '{}' with DDL sync", node.id);
         } else {
             // Regular node creation
+            let db_start = std::time::Instant::now();
             self.store
                 .create_node(node.clone(), self.client_id.clone())
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to insert node: {}", e))
                 })?;
+            tracing::debug!(
+                "create_node: database insert completed in {}ms",
+                db_start.elapsed().as_millis()
+            );
         }
 
         // NOTE: NodeCreated event is now automatically emitted by store notifier (Issue #718)
 
+        tracing::debug!(
+            node_id = %node.id,
+            "create_node: COMPLETE at {}ms",
+            start.elapsed().as_millis()
+        );
         Ok(node.id)
     }
 
@@ -1270,6 +1288,13 @@ where
         &self,
         params: CreateNodeParams,
     ) -> Result<String, NodeServiceError> {
+        let start = std::time::Instant::now();
+        tracing::debug!(
+            node_type = %params.node_type,
+            has_parent = params.parent_id.is_some(),
+            "create_node_with_parent: START"
+        );
+
         // Step 1: Auto-create date container if parent is a date ID
         if let Some(ref parent_id) = params.parent_id {
             self.ensure_date_exists(parent_id).await?;
@@ -1362,7 +1387,16 @@ where
             lifecycle_status: "active".to_string(),
         };
 
+        tracing::debug!(
+            "create_node_with_parent: about to call create_node at {}ms",
+            start.elapsed().as_millis()
+        );
         let created_id = self.create_node(node).await?;
+        tracing::debug!(
+            node_id = %created_id,
+            "create_node_with_parent: create_node completed at {}ms",
+            start.elapsed().as_millis()
+        );
 
         // Step 6: Create parent relationship if parent specified
         if let Some(parent_id) = params.parent_id {
@@ -2001,6 +2035,7 @@ where
             content: Some(updated.content.clone()),
             properties: Some(updated.properties.clone()),
             title: title_update,
+            lifecycle_status: None, // Schema update doesn't change lifecycle_status
         };
 
         // For schema nodes, use atomic update with DDL generation (Issue #690, #703)
@@ -2172,11 +2207,13 @@ where
         };
 
         // Create node update
+        // Issue #828, #770: Pass through lifecycle_status if provided
         let node_update = crate::models::NodeUpdate {
             node_type: Some(updated.node_type.clone()),
             content: Some(updated.content.clone()),
             properties: Some(updated.properties.clone()),
             title: title_update,
+            lifecycle_status: update.lifecycle_status,
         };
 
         // Perform atomic update with version check
@@ -3559,7 +3596,8 @@ where
             node_type: Some(node.node_type.clone()),
             content: Some(node.content.clone()),
             properties: Some(node.properties.clone()),
-            title: None, // Don't update title on version bump
+            title: None,            // Don't update title on version bump
+            lifecycle_status: None, // Don't update lifecycle_status on version bump
         };
 
         // Perform atomic update with version check
@@ -3965,6 +4003,98 @@ where
 
         // Queue root for embedding regeneration once (Issue #729, #760)
         // All nodes share the same root, so we only need one queue operation
+        if let Some(root_id) = root_id {
+            self.queue_root_for_embedding(&root_id).await;
+        }
+
+        Ok(result)
+    }
+
+    /// Bulk create nodes with root-only notification (for large imports)
+    ///
+    /// Same as `bulk_create_hierarchy` but only emits domain events for the root node,
+    /// making it more efficient for bulk import scenarios where per-node notifications
+    /// would overwhelm the system.
+    pub async fn bulk_create_hierarchy_root_notify(
+        &self,
+        nodes: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            f64,
+            serde_json::Value,
+        )>,
+    ) -> Result<Vec<String>, NodeServiceError> {
+        if nodes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Performance optimization (Issue #760): Cache schema lookups by node_type
+        let unique_types: std::collections::HashSet<&str> = nodes
+            .iter()
+            .map(|(_, node_type, _, _, _, _)| node_type.as_str())
+            .collect();
+
+        // Pre-fetch schemas for all unique types (excluding "schema" type itself)
+        let mut schema_cache: std::collections::HashMap<
+            String,
+            Option<Vec<crate::models::SchemaField>>,
+        > = std::collections::HashMap::new();
+        for node_type in unique_types {
+            if node_type != "schema" {
+                let fields = match self.get_schema_for_type(node_type).await? {
+                    Some(schema_json) => match schema_json.get("fields") {
+                        Some(fields_json) => serde_json::from_value(fields_json.clone()).ok(),
+                        None => None,
+                    },
+                    None => None,
+                };
+                schema_cache.insert(node_type.to_string(), fields);
+            }
+        }
+
+        // Validate all nodes before insertion using cached schemas
+        for (id, node_type, content, _, _, properties) in &nodes {
+            let temp_node = Node {
+                id: id.clone(),
+                node_type: node_type.clone(),
+                content: content.clone(),
+                version: 1,
+                properties: properties.clone(),
+                mentions: vec![],
+                mentioned_by: vec![],
+                member_of: vec![],
+                created_at: chrono::Utc::now(),
+                modified_at: chrono::Utc::now(),
+                title: None,
+                lifecycle_status: "active".to_string(),
+            };
+
+            self.behaviors.validate_node(&temp_node)?;
+
+            if node_type != "schema" {
+                if let Some(Some(fields)) = schema_cache.get(node_type) {
+                    self.validate_node_with_fields(&temp_node, fields)?;
+                }
+            }
+        }
+
+        // Find the root ID once
+        let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes.first() {
+            self.get_root_id(first_parent).await.ok()
+        } else {
+            None
+        };
+
+        // Delegate to store - use root-only notify variant
+        let result = self
+            .store
+            .bulk_create_hierarchy_root_notify(nodes)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // Queue root for embedding regeneration once
         if let Some(root_id) = root_id {
             self.queue_root_for_embedding(&root_id).await;
         }

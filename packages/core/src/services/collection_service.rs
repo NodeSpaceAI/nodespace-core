@@ -582,11 +582,12 @@ where
 
     /// Get all members of a collection
     ///
-    /// Returns the IDs of all nodes that are members of the collection.
+    /// Returns full Node structs for all members of the collection.
+    /// Single query that traverses the member_of relationship.
     pub async fn get_collection_members(
         &self,
         collection_id: &str,
-    ) -> Result<Vec<String>, NodeServiceError> {
+    ) -> Result<Vec<Node>, NodeServiceError> {
         self.store
             .get_collection_members(collection_id)
             .await

@@ -147,7 +147,9 @@
   // Generate unique viewer ID for this viewer instance
   // Use IIFE to capture props at initialization and avoid Svelte state_referenced_locally warning
   // ViewerId is computed once at component creation - this is intentional one-time capture
-  const viewerId = (() => getViewerId(tabId, paneId))();
+  // Includes nodeId to ensure each node has its own scroll position, even when
+  // navigating between nodes in the same tab
+  const viewerId = (() => getViewerId(nodeId ?? 'default', tabId, paneId))();
 
   // Track expanded state for nodes (viewer-local UI state)
   // Use $state for reactive Map mutations

@@ -1,19 +1,20 @@
 /**
  * Scroll State Store
  *
- * Manages scroll positions for viewers across different tabs and panes.
- * Each viewer is identified by a composite key: `${tabId}-${paneId}`
+ * Manages scroll positions for viewers across different tabs, panes, and nodes.
+ * Each viewer is identified by a composite key: `${nodeId}-${tabId}-${paneId}`
  *
  * **Terminology:**
  * - **Pane**: A container in the split-pane layout (e.g., left pane, right pane)
- * - **Tab**: A document/node being viewed (can appear in multiple panes)
- * - **Viewer**: A BaseNodeViewer component instance (identified by tab + pane combination)
- * - **Viewer ID**: Unique identifier for a viewer instance: `${tabId}-${paneId}`
+ * - **Tab**: A browser-like tab within a pane
+ * - **Node**: The document/node being viewed
+ * - **Viewer**: A BaseNodeViewer component instance (identified by node + tab + pane combination)
+ * - **Viewer ID**: Unique identifier for a viewer instance: `${nodeId}-${tabId}-${paneId}`
  *
  * This ensures:
- * - Independent scroll positions per viewer instance
+ * - Independent scroll positions per node+tab+pane combination
  * - Scroll state preserved when switching tabs
- * - Scroll state preserved when switching panes
+ * - Scroll state preserved when switching between nodes in the same tab
  * - Same node in different tabs/panes maintains separate scroll positions
  */
 
@@ -21,27 +22,28 @@
 const scrollPositions = new Map<string, number>();
 
 /**
- * Generate unique viewer ID from tab and pane IDs
+ * Generate unique viewer ID from node, tab, and pane IDs
  *
  * A "viewer" is a BaseNodeViewer component instance displaying a specific
- * tab (document/node) within a specific pane (split-pane container).
- * The same tab can appear in multiple panes simultaneously, each maintaining
- * independent scroll state.
+ * node within a specific tab and pane. Each node+tab+pane combination maintains
+ * independent scroll state, ensuring that navigating to a different node
+ * within the same tab starts at the top of the document.
  *
- * @param tabId - The tab/document identifier
+ * @param nodeId - The node/document identifier being viewed
+ * @param tabId - The tab identifier
  * @param paneId - The pane/container identifier
- * @returns Composite viewer ID in format `${tabId}-${paneId}`
+ * @returns Composite viewer ID in format `${nodeId}-${tabId}-${paneId}`
  *
  * @example
  * ```typescript
- * // Same tab in two different panes
- * const leftViewerId = getViewerId('doc-123', 'pane-left');  // "doc-123-pane-left"
- * const rightViewerId = getViewerId('doc-123', 'pane-right'); // "doc-123-pane-right"
+ * // Same node in two different panes
+ * const leftViewerId = getViewerId('node-abc', 'tab-1', 'pane-left');
+ * const rightViewerId = getViewerId('node-abc', 'tab-1', 'pane-right');
  * // Each viewer maintains independent scroll position
  * ```
  */
-export function getViewerId(tabId: string, paneId: string): string {
-  return `${tabId}-${paneId}`;
+export function getViewerId(nodeId: string, tabId: string, paneId: string): string {
+  return `${nodeId}-${tabId}-${paneId}`;
 }
 
 /**
