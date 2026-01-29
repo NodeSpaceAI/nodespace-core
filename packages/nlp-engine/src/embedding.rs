@@ -50,7 +50,7 @@ static LLAMA_BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
 /// initialized once per process.
 #[cfg(feature = "embedding-service")]
 fn get_or_init_backend() -> Result<&'static LlamaBackend> {
-    use llama_cpp_2::LLamaCppError;
+    use llama_cpp_2::LlamaCppError;
 
     // Try to get existing backend first
     if let Some(backend) = LLAMA_BACKEND.get() {
@@ -72,7 +72,7 @@ fn get_or_init_backend() -> Result<&'static LlamaBackend> {
             // Return whatever is stored (either ours or the other thread's)
             Ok(LLAMA_BACKEND.get().expect("Backend must be initialized"))
         }
-        Err(LLamaCppError::BackendAlreadyInitialized) => {
+        Err(LlamaCppError::BackendAlreadyInitialized) => {
             // The C library backend is initialized, but our OnceLock might not have
             // the reference yet. This can happen when:
             // 1. Another thread is about to store the backend (race condition)
