@@ -90,6 +90,9 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
+      - name: Generate SvelteKit types
+        run: bun run --cwd packages/desktop-app sync
+
       # Download nomic-embed-text GGUF model for llama.cpp embeddings
       - name: Download embedding model for bundling (macOS)
         if: matrix.platform == 'macos-latest'
