@@ -1301,6 +1301,8 @@ struct CollectionInfo {
     version: i64,
     properties: serde_json::Value,
     member_count: usize,
+    /// IDs of parent collections (collections this collection is nested under)
+    parent_collection_ids: Vec<String>,
 }
 
 /// Get all collections with member counts
@@ -1333,15 +1335,19 @@ async fn get_all_collections(State(state): State<AppState>) -> ApiResult<Vec<Col
         Ok(collections_with_counts) => {
             let result: Vec<CollectionInfo> = collections_with_counts
                 .into_iter()
-                .map(|(node, member_count)| CollectionInfo {
-                    id: node.id,
-                    content: node.content,
-                    node_type: node.node_type,
-                    created_at: node.created_at,
-                    modified_at: node.modified_at,
-                    version: node.version,
-                    properties: node.properties,
-                    member_count,
+                .map(|(node, member_count)| {
+                    let parent_collection_ids = node.member_of.clone();
+                    CollectionInfo {
+                        id: node.id,
+                        content: node.content,
+                        node_type: node.node_type,
+                        created_at: node.created_at,
+                        modified_at: node.modified_at,
+                        version: node.version,
+                        properties: node.properties,
+                        member_count,
+                        parent_collection_ids,
+                    }
                 })
                 .collect();
             Ok(Json(result))
@@ -1379,6 +1385,7 @@ async fn get_all_collections(State(state): State<AppState>) -> ApiResult<Vec<Col
                     version: collection.version,
                     properties: collection.properties,
                     member_count,
+                    parent_collection_ids: collection.member_of.clone(),
                 });
             }
 

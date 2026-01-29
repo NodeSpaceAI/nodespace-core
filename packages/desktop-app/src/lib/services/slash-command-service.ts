@@ -94,8 +94,6 @@ export class SlashCommandService {
     switch (nodeType) {
       case 'task':
         return 'task';
-      case 'ai-chat':
-        return 'ai_chat';
       case 'text':
       default:
         return 'text';

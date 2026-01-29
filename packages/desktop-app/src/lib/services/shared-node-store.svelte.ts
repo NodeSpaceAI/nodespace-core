@@ -62,6 +62,9 @@ class SimplePersistenceCoordinator {
   private static instance: SimplePersistenceCoordinator | null = null;
   private pendingOperations = new Map<string, PendingOperation>();
   private executingOperations = new Set<string>(); // Track in-flight operations
+  // Track nodes that need re-persistence after current operation completes
+  // This prevents scheduling multiple operations while one is executing
+  private needsRerun = new Set<string>();
   private readonly DEBOUNCE_MS = 500;
   private operationCounter = 0; // For tracking operation IDs
 
@@ -93,7 +96,24 @@ class SimplePersistenceCoordinator {
       `hasPending=${hasPending}, isExecuting=${isExecuting}`
     );
 
-    // Cancel existing pending operation for this node
+    // If an operation is already executing for this node, just mark it for re-run
+    // This prevents multiple concurrent database operations and OCC conflicts
+    if (isExecuting) {
+      this.needsRerun.add(nodeId);
+      coordLog.debug(
+        `[op#${opId}] operation already executing for ${shortNodeId}, marked for re-run`
+      );
+      // Return a promise that resolves when the current operation completes
+      // The re-run will happen automatically after completion
+      const existingPending = this.pendingOperations.get(nodeId);
+      if (existingPending) {
+        return { promise: existingPending.promise };
+      }
+      // Fallback: return immediately resolved promise
+      return { promise: Promise.resolve() };
+    }
+
+    // Cancel existing pending operation for this node (only if not executing)
     this.cancelPending(nodeId, opId);
 
     let resolve: () => void = () => {};
@@ -133,6 +153,17 @@ class SimplePersistenceCoordinator {
       } finally {
         this.pendingOperations.delete(nodeId);
         this.executingOperations.delete(nodeId);
+
+        // Check if we need to re-run for this node (content changed while executing)
+        if (this.needsRerun.has(nodeId)) {
+          this.needsRerun.delete(nodeId);
+          coordLog.debug(`[op#${opId}] re-running persistence for ${shortNodeId} (content changed during execution)`);
+          // Schedule a new debounced operation - it will read current state
+          // Use setTimeout to avoid stack overflow from immediate recursion
+          setTimeout(() => {
+            this.persist(nodeId, operation, { mode: 'debounce' });
+          }, 0);
+        }
       }
     };
 
@@ -797,6 +828,10 @@ export class SharedNodeStore {
           }
 
           // Capture handle to catch cancellation errors
+          // CRITICAL: For content updates, we must read CURRENT state at execution time,
+          // not the stale state captured when persist() was called.
+          // This prevents race conditions where rapid typing causes earlier states to overwrite later ones.
+          const changedFields = Object.keys(changes);
           const handle = PersistenceCoordinator.getInstance().persist(
             nodeId,
             async () => {
@@ -808,13 +843,23 @@ export class SharedNodeStore {
                 const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
 
                 if (isPersistedToDatabase) {
-                  // IMPORTANT: For UPDATE, only send the changes (Partial<Node>), not the full node
+                  // CRITICAL: Read current node state at execution time, not capture time
+                  // This ensures we persist the latest content, not stale content from when persist() was called
+                  const currentNode = this.nodes.get(nodeId);
+                  if (!currentNode) {
+                    log.warn(`Node ${nodeId} no longer exists in store, skipping update persistence`);
+                    return;
+                  }
+
+                  // IMPORTANT: For UPDATE, only send the changed fields with CURRENT values
                   // The backend expects NodeUpdate which is a partial update of specific fields
-                  // Convert nullable fields properly (undefined = don't update, null = set to null)
-                  const updatePayload = { ...changes };
+                  // Build updatePayload from current node state for the fields that were marked as changed
+                  const updatePayload: Record<string, unknown> = {};
+                  for (const field of changedFields) {
+                    updatePayload[field] = (currentNode as unknown as Record<string, unknown>)[field];
+                  }
 
                   // Get current node version for optimistic concurrency control
-                  const currentNode = this.nodes.get(nodeId);
                   const currentVersion = currentNode?.version ?? 1;
 
                   // Debug: Log version being sent
@@ -884,7 +929,7 @@ export class SharedNodeStore {
                       log.warn(
                         `Node ${nodeId} not found in database, creating instead of updating`
                       );
-                      await tauriCommands.createNode(updatedNode);
+                      await tauriCommands.createNode(currentNode);
                       this.persistedNodeIds.add(nodeId); // Now it's persisted
                     } else {
                       // Re-throw other errors
@@ -893,7 +938,13 @@ export class SharedNodeStore {
                   }
                 } else {
                   // Node doesn't exist yet (was a placeholder or new node)
-                  await tauriCommands.createNode(updatedNode);
+                  // CRITICAL: Read current node state at execution time
+                  const currentNode = this.nodes.get(nodeId);
+                  if (!currentNode) {
+                    log.warn(`Node ${nodeId} no longer exists in store, skipping create persistence`);
+                    return;
+                  }
+                  await tauriCommands.createNode(currentNode);
                   this.persistedNodeIds.add(nodeId); // Track as persisted
 
                   // CRITICAL: Fetch the created node to get its version from backend
@@ -1050,17 +1101,30 @@ export class SharedNodeStore {
         // should persist with their full content, even if it's just syntax
 
         // Capture handle to catch cancellation errors
+        // CRITICAL: Only capture the node ID, not the node object itself.
+        // The operation closure must read CURRENT state from this.nodes at execution time,
+        // not the stale state captured when persist() was called.
+        // This prevents race conditions where rapid typing causes earlier states to overwrite later ones.
+        const nodeId = node.id;
         const handle = PersistenceCoordinator.getInstance().persist(
-          node.id,
+          nodeId,
           async () => {
             try {
+              // CRITICAL: Read current node state at execution time, not capture time
+              // This ensures we persist the latest content, not stale content from when persist() was called
+              const currentNode = this.nodes.get(nodeId);
+              if (!currentNode) {
+                log.warn(`Node ${nodeId} no longer exists in store, skipping persistence`);
+                return;
+              }
+
               // Check if node has been persisted - use in-memory tracking to avoid database query
-              const isPersistedToDatabase = this.persistedNodeIds.has(node.id);
+              const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
               if (isPersistedToDatabase) {
                 try {
                   // Get current version for optimistic concurrency control
-                  const currentVersion = node.version ?? 1;
-                  await tauriCommands.updateNode(node.id, currentVersion, node);
+                  const currentVersion = currentNode.version ?? 1;
+                  await tauriCommands.updateNode(nodeId, currentVersion, currentNode);
                 } catch (updateError) {
                   // If UPDATE fails because node doesn't exist, try CREATE instead
                   const errorMessage =
@@ -1074,24 +1138,24 @@ export class SharedNodeStore {
 
                   if (isNodeNotFound) {
                     log.warn(
-                      `Node ${node.id} not found in database, creating instead of updating (error: ${errorMessage})`
+                      `Node ${nodeId} not found in database, creating instead of updating (error: ${errorMessage})`
                     );
-                    await tauriCommands.createNode(node);
-                    this.persistedNodeIds.add(node.id);
+                    await tauriCommands.createNode(currentNode);
+                    this.persistedNodeIds.add(nodeId);
                   } else {
                     throw updateError;
                   }
                 }
               } else {
-                await tauriCommands.createNode(node);
-                this.persistedNodeIds.add(node.id); // Track as persisted
+                await tauriCommands.createNode(currentNode);
+                this.persistedNodeIds.add(nodeId); // Track as persisted
 
                 // CRITICAL: Fetch the created node to get its version from backend
                 // This prevents version conflicts on subsequent updates
-                const createdNode = await tauriCommands.getNode(node.id);
+                const createdNode = await tauriCommands.getNode(nodeId);
                 if (createdNode) {
-                  node.version = createdNode.version;
-                  this.nodes.set(node.id, node); // Update local node with backend version
+                  currentNode.version = createdNode.version;
+                  this.nodes.set(nodeId, currentNode); // Update local node with backend version
                 }
               }
             } catch (dbError) {

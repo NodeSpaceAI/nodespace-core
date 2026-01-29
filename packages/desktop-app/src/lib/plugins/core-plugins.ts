@@ -217,32 +217,6 @@ export const taskNodePlugin: PluginDefinition = {
   }
 };
 
-export const aiChatNodePlugin: PluginDefinition = {
-  id: 'ai-chat',
-  name: 'AI Chat Node',
-  description: 'Start an AI conversation',
-  version: '1.0.0',
-  config: {
-    slashCommands: [
-      {
-        id: 'ai-chat',
-        name: 'AI Chat',
-        description: 'Start an AI conversation',
-        shortcut: '⌘ + k',
-        contentTemplate: ''
-      }
-    ],
-    canHaveChildren: true,
-    canBeChild: true
-  },
-  // No viewer - ai-chat nodes use BaseNodeViewer (default) for page-level display
-  // No node component yet - needs to be created
-  reference: {
-    component: BaseNodeReference as NodeReferenceComponent,
-    priority: 1
-  }
-};
-
 // Date node - exists implicitly for all dates, cannot be created via slash commands
 export const dateNodePlugin: PluginDefinition = {
   id: 'date',
@@ -511,7 +485,6 @@ export const corePlugins = [
   textNodePlugin,
   headerNodePlugin,
   taskNodePlugin,
-  aiChatNodePlugin,
   dateNodePlugin,
   codeBlockNodePlugin,
   quoteBlockNodePlugin,

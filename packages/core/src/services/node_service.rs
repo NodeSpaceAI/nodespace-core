@@ -1036,6 +1036,52 @@ where
         Ok(())
     }
 
+    /// Backfill schema version using pre-fetched schema cache (no database calls).
+    /// Used by query_nodes for batch operations.
+    fn backfill_schema_version_with_cache(
+        &self,
+        node: &mut Node,
+        schema_cache: &std::collections::HashMap<String, Option<serde_json::Value>>,
+    ) {
+        // Get schema from cache
+        let schema = match schema_cache.get(&node.node_type) {
+            Some(Some(s)) => s,
+            _ => return, // No schema = no version needed
+        };
+
+        // Check if schema has any fields
+        let has_fields = schema
+            .get("fields")
+            .and_then(|f| f.as_array())
+            .map(|arr| !arr.is_empty())
+            .unwrap_or(false);
+
+        if !has_fields {
+            return; // Empty schema = no version needed
+        }
+
+        // Check if _schema_version exists in the type namespace
+        let has_version = node
+            .properties
+            .get(&node.node_type)
+            .and_then(|ns| ns.get("_schema_version"))
+            .is_some();
+
+        if !has_version {
+            let version = schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
+
+            // Add version to type namespace IN-MEMORY ONLY
+            if let Some(props_obj) = node.properties.as_object_mut() {
+                let type_namespace = props_obj
+                    .entry(&node.node_type)
+                    .or_insert_with(|| serde_json::json!({}));
+                if let Some(type_props) = type_namespace.as_object_mut() {
+                    type_props.insert("_schema_version".to_string(), serde_json::json!(version));
+                }
+            }
+        }
+    }
+
     /// Apply lazy migration to upgrade node to latest schema version
     ///
     /// Checks if the node's schema version is older than the current schema version,
@@ -1064,6 +1110,57 @@ where
             schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1) as u32
         } else {
             1 // No schema found - no migration needed
+        };
+
+        // Check if migration is needed
+        if current_version >= target_version {
+            return Ok(()); // Already up-to-date
+        }
+
+        // Apply migrations
+        let migrated_node = self
+            .migration_registry
+            .apply_migrations(node, target_version)?;
+
+        // Persist migrated node to database using SurrealStore
+        let update = NodeUpdate {
+            properties: Some(migrated_node.properties.clone()),
+            ..Default::default()
+        };
+        self.store
+            .update_node(&node.id, update, self.client_id.clone())
+            .await
+            .map_err(|e| {
+                NodeServiceError::query_failed(format!("Failed to persist migrated node: {}", e))
+            })?;
+
+        // Update the in-memory node
+        *node = migrated_node;
+
+        Ok(())
+    }
+
+    /// Apply lazy migration using pre-fetched schema cache.
+    /// Used by query_nodes for batch operations.
+    async fn apply_lazy_migration_with_cache(
+        &self,
+        node: &mut Node,
+        schema_cache: &std::collections::HashMap<String, Option<serde_json::Value>>,
+    ) -> Result<(), NodeServiceError> {
+        // Get current version from type namespace
+        let current_version = node
+            .properties
+            .get(&node.node_type)
+            .and_then(|ns| ns.get("_schema_version"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1) as u32;
+
+        // Get target version from cached schema
+        let target_version = match schema_cache.get(&node.node_type) {
+            Some(Some(schema)) => {
+                schema.get("version").and_then(|v| v.as_i64()).unwrap_or(1) as u32
+            }
+            _ => 1, // No schema found - no migration needed
         };
 
         // Check if migration is needed
@@ -3680,11 +3777,25 @@ where
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-        // Apply migrations
+        // OPTIMIZATION: Pre-fetch schemas for all unique node types in the result set.
+        // This avoids N*2 database calls (one per node for backfill + one for migration).
+        // Instead, we do at most K calls where K = number of unique node types.
+        let unique_types: std::collections::HashSet<&str> =
+            nodes.iter().map(|n| n.node_type.as_str()).collect();
+
+        let mut schema_cache: std::collections::HashMap<String, Option<serde_json::Value>> =
+            std::collections::HashMap::new();
+        for node_type in unique_types {
+            let schema = self.get_schema_for_type(node_type).await?;
+            schema_cache.insert(node_type.to_string(), schema);
+        }
+
+        // Apply migrations using cached schemas
         let mut migrated_nodes = Vec::new();
         for mut node in nodes {
-            self.backfill_schema_version(&mut node).await?;
-            self.apply_lazy_migration(&mut node).await?;
+            self.backfill_schema_version_with_cache(&mut node, &schema_cache);
+            self.apply_lazy_migration_with_cache(&mut node, &schema_cache)
+                .await?;
             migrated_nodes.push(node);
         }
 

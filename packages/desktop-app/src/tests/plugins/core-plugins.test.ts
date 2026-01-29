@@ -13,7 +13,6 @@ import {
   textNodePlugin,
   headerNodePlugin,
   taskNodePlugin,
-  aiChatNodePlugin,
   dateNodePlugin,
   userNodePlugin,
   documentNodePlugin,
@@ -79,20 +78,6 @@ describe('Core Plugins Integration', () => {
       expect(taskCommand.contentTemplate).toBe('');
     });
 
-    it('should have valid aiChatNodePlugin definition', () => {
-      expect(aiChatNodePlugin.id).toBe('ai-chat');
-      expect(aiChatNodePlugin.name).toBe('AI Chat Node');
-      expect(aiChatNodePlugin.config.slashCommands).toHaveLength(1);
-      // AI chat nodes use BaseNodeViewer (default) - no custom viewer needed yet
-      expect(aiChatNodePlugin.viewer).toBeUndefined();
-      // No node component yet either - will be created in future
-      expect(aiChatNodePlugin.node).toBeUndefined();
-      expect(aiChatNodePlugin.reference).toBeDefined();
-
-      const chatCommand = aiChatNodePlugin.config.slashCommands[0];
-      expect(chatCommand.shortcut).toBe('⌘ + k');
-    });
-
     it('should have valid dateNodePlugin definition', () => {
       expect(dateNodePlugin.id).toBe('date');
       expect(dateNodePlugin.name).toBe('Date Node');
@@ -121,11 +106,10 @@ describe('Core Plugins Integration', () => {
 
   describe('Core Plugins Collection', () => {
     it('should export all core plugins in corePlugins array', () => {
-      expect(corePlugins).toHaveLength(10); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, query, collection
+      expect(corePlugins).toHaveLength(9); // text, header, task, date, code-block, quote-block, ordered-list, query, collection
       expect(corePlugins).toContain(textNodePlugin);
       expect(corePlugins).toContain(headerNodePlugin);
       expect(corePlugins).toContain(taskNodePlugin);
-      expect(corePlugins).toContain(aiChatNodePlugin);
       expect(corePlugins).toContain(dateNodePlugin);
       // Note: userNodePlugin and documentNodePlugin are defined but not yet registered
       // They will be added when the user/document reference system is implemented
@@ -143,7 +127,7 @@ describe('Core Plugins Integration', () => {
     it('should register all core plugins successfully', () => {
       registerCorePlugins(registry);
 
-      expect(registry.getAllPlugins()).toHaveLength(10); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, query, collection
+      expect(registry.getAllPlugins()).toHaveLength(9); // text, header, task, date, code-block, quote-block, ordered-list, query, collection
 
       // Verify each core plugin is registered
       for (const plugin of corePlugins) {
@@ -158,10 +142,10 @@ describe('Core Plugins Integration', () => {
       // Verify registration statistics through the registry API
       // Note: Logger output is intentionally silenced during tests
       const stats = registry.getStats();
-      expect(stats.pluginsCount).toBe(10); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, query, collection
-      expect(stats.slashCommandsCount).toBe(10); // text: 1, header: 3, task: 1, ai-chat: 1, code-block: 1, quote-block: 1, ordered-list: 1, query: 1, collection: 0
+      expect(stats.pluginsCount).toBe(9); // text, header, task, date, code-block, quote-block, ordered-list, query, collection
+      expect(stats.slashCommandsCount).toBe(9); // text: 1, header: 3, task: 1, code-block: 1, quote-block: 1, ordered-list: 1, query: 1, collection: 0
       expect(stats.viewersCount).toBe(3); // date, task, and collection have custom viewers (CollectionNodeViewer added in Issue #757)
-      expect(stats.referencesCount).toBe(10); // all plugins have references
+      expect(stats.referencesCount).toBe(9); // all plugins have references
     });
 
     it('should provide correct slash command count', () => {
@@ -169,8 +153,8 @@ describe('Core Plugins Integration', () => {
 
       const stats = registry.getStats();
 
-      // text: 1, header: 3, task: 1, ai-chat: 1, code-block: 1, quote-block: 1, ordered-list: 1, query: 1, date: 0 = 10 total
-      expect(stats.slashCommandsCount).toBe(10);
+      // text: 1, header: 3, task: 1, code-block: 1, quote-block: 1, ordered-list: 1, query: 1, date: 0, collection: 0 = 9 total
+      expect(stats.slashCommandsCount).toBe(9);
     });
 
     it('should provide all slash commands with proper inheritance', () => {
@@ -178,7 +162,7 @@ describe('Core Plugins Integration', () => {
 
       const commands = registry.getAllSlashCommands();
 
-      expect(commands).toHaveLength(10); // text, header1-3, task, ai-chat, code, quote, ordered-list, query
+      expect(commands).toHaveLength(9); // text, header1-3, task, code, quote, ordered-list, query
 
       // Verify text node commands from BasicNodeTypeRegistry work
       const textCommands = commands.filter((cmd) =>
@@ -188,7 +172,6 @@ describe('Core Plugins Integration', () => {
 
       // Verify other core commands
       expect(commands.find((cmd) => cmd.id === 'task')).toBeDefined();
-      expect(commands.find((cmd) => cmd.id === 'ai-chat')).toBeDefined();
       // Date nodes do not have slash commands - they are created through other mechanisms
     });
   });
@@ -210,7 +193,7 @@ describe('Core Plugins Integration', () => {
       }
 
       // These plugins intentionally have no custom viewer - they use BaseNodeViewer
-      const noViewerPlugins = ['text', 'ai-chat'];
+      const noViewerPlugins = ['text'];
       for (const pluginId of noViewerPlugins) {
         expect(registry.hasViewer(pluginId)).toBe(false);
 
@@ -252,8 +235,7 @@ describe('Core Plugins Integration', () => {
         'header1',
         'header2',
         'header3', // text plugin
-        'task', // task plugin
-        'ai-chat' // ai-chat plugin
+        'task' // task plugin
         // date plugin has no slash commands
       ];
 
@@ -285,9 +267,6 @@ describe('Core Plugins Integration', () => {
 
       const taskCommand = registry.findSlashCommand('task');
       expect(taskCommand?.shortcut).toBe('[ ]');
-
-      const chatCommand = registry.findSlashCommand('ai-chat');
-      expect(chatCommand?.shortcut).toBe('⌘ + k');
     });
   });
 
@@ -356,7 +335,7 @@ describe('Core Plugins Integration', () => {
       registerExternalPlugin(registry, externalPlugin);
 
       expect(registry.getAllPlugins()).toHaveLength(initialCount + 1);
-      expect(registry.getAllSlashCommands()).toHaveLength(11); // 10 core + 1 external
+      expect(registry.getAllSlashCommands()).toHaveLength(10); // 9 core + 1 external
     });
   });
 
@@ -389,7 +368,7 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should handle registry clearing', () => {
-      expect(registry.getAllPlugins()).toHaveLength(10); // text, header, task, ai-chat, date, code-block, quote-block, ordered-list, query, collection
+      expect(registry.getAllPlugins()).toHaveLength(9); // text, header, task, date, code-block, quote-block, ordered-list, query, collection
 
       registry.clear();
 
@@ -403,7 +382,7 @@ describe('Core Plugins Integration', () => {
       registerCorePlugins(registry);
 
       // Verify all original BasicNodeTypeRegistry node types are present
-      const expectedNodeTypes = ['text', 'task', 'ai-chat'];
+      const expectedNodeTypes = ['text', 'task'];
 
       for (const nodeType of expectedNodeTypes) {
         expect(registry.hasPlugin(nodeType)).toBe(true);
@@ -421,7 +400,7 @@ describe('Core Plugins Integration', () => {
     it('should maintain all functionality from old ViewerRegistry', () => {
       registerCorePlugins(registry);
 
-      // Architecture changed: text, task, ai-chat now use BaseNodeViewer (default)
+      // Architecture changed: text, task now use BaseNodeViewer (default)
       // date and task have custom viewers (TaskNodeViewer added in Issue #715)
       const customViewerTypes = ['date', 'task'];
 
@@ -430,7 +409,7 @@ describe('Core Plugins Integration', () => {
       }
 
       // These types use BaseNodeViewer fallback (no custom viewer registered)
-      const baseViewerTypes = ['text', 'ai-chat'];
+      const baseViewerTypes = ['text'];
       for (const viewerType of baseViewerTypes) {
         expect(registry.hasViewer(viewerType)).toBe(false);
       }
@@ -441,7 +420,7 @@ describe('Core Plugins Integration', () => {
 
       // Verify currently implemented reference types have references
       // Note: 'user' and 'document' are not yet implemented - will be added when reference system is built
-      const expectedReferenceTypes = ['text', 'task', 'date', 'ai-chat', 'header', 'code-block', 'quote-block', 'ordered-list'];
+      const expectedReferenceTypes = ['text', 'task', 'date', 'header', 'code-block', 'quote-block', 'ordered-list'];
 
       for (const referenceType of expectedReferenceTypes) {
         expect(registry.hasReferenceComponent(referenceType)).toBe(true);

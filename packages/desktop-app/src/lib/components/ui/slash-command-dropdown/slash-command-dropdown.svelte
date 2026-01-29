@@ -224,10 +224,6 @@
                   <div class="task-icon">
                     <div class="task-circle task-circle-completed"></div>
                   </div>
-                {:else if command.id === 'ai-chat'}
-                  <div class="ai-icon">
-                    <div class="ai-square-alt"></div>
-                  </div>
                 {:else}
                   <div class="node-icon">
                     <div class="text-circle"></div>

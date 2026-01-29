@@ -370,6 +370,22 @@ pub async fn update_node(
     version: i64,
     update: NodeUpdate,
 ) -> Result<Value, CommandError> {
+    // DEBUG: Log incoming update to trace @mention persistence issue
+    let content_preview = update.content.as_ref().map(|c| {
+        if c.len() > 50 {
+            format!("{}...", &c[..50])
+        } else {
+            c.clone()
+        }
+    });
+    tracing::debug!(
+        "update_node: id={}, version={}, content={:?}, node_type={:?}",
+        id,
+        version,
+        content_preview,
+        update.node_type
+    );
+
     // Use update_node_with_occ for OCC-protected updates
     // Returns the updated Node so frontend can refresh its local version
     let node = service
@@ -377,6 +393,13 @@ pub async fn update_node(
         .update_node_with_occ(&id, version, update)
         .await
         .map_err(CommandError::from)?;
+
+    // DEBUG: Log successful update
+    tracing::debug!(
+        "update_node: SUCCESS id={}, new_version={}",
+        id,
+        node.version
+    );
 
     node_to_typed_value(node)
 }
