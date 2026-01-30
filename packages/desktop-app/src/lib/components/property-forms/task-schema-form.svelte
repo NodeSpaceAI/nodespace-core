@@ -271,24 +271,25 @@
   // ============================================================================
   // Type-Safe Core Field Update Functions
   // ============================================================================
+  // Use sharedNodeStore.updateTaskNode for type-safe spoke field updates
 
   function updateStatus(status: TaskStatus) {
     if (!node) return;
-    sharedNodeStore.updateNode(nodeId, { status }, { type: 'viewer', viewerId: 'task-schema-form' });
+    sharedNodeStore.updateTaskNode(nodeId, { status }, { type: 'viewer', viewerId: 'task-schema-form' });
   }
 
   function updatePriority(priority: string | undefined) {
     if (!node) return;
-    sharedNodeStore.updateNode(
+    sharedNodeStore.updateTaskNode(
       nodeId,
-      { priority: priority ?? null } as Record<string, unknown>,
+      { priority: priority ?? null },
       { type: 'viewer', viewerId: 'task-schema-form' }
     );
   }
 
   function updateDueDate(dueDate: string | null) {
     if (!node) return;
-    sharedNodeStore.updateNode(
+    sharedNodeStore.updateTaskNode(
       nodeId,
       { dueDate },
       { type: 'viewer', viewerId: 'task-schema-form' }
@@ -297,7 +298,7 @@
 
   function updateAssignee(assignee: string | null) {
     if (!node) return;
-    sharedNodeStore.updateNode(
+    sharedNodeStore.updateTaskNode(
       nodeId,
       { assignee },
       { type: 'viewer', viewerId: 'task-schema-form' }
@@ -306,18 +307,18 @@
 
   function updateStartedAt(startedAt: string | null) {
     if (!node) return;
-    sharedNodeStore.updateNode(
+    sharedNodeStore.updateTaskNode(
       nodeId,
-      { startedAt } as Record<string, unknown>,
+      { startedAt },
       { type: 'viewer', viewerId: 'task-schema-form' }
     );
   }
 
   function updateCompletedAt(completedAt: string | null) {
     if (!node) return;
-    sharedNodeStore.updateNode(
+    sharedNodeStore.updateTaskNode(
       nodeId,
-      { completedAt } as Record<string, unknown>,
+      { completedAt },
       { type: 'viewer', viewerId: 'task-schema-form' }
     );
   }

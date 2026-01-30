@@ -181,29 +181,29 @@ describe('SharedNodeStore - Coverage Completion', () => {
       expect(store.getNode('task-convert')?.nodeType).toBe('quote-block');
     });
 
-    it('should handle spoke field changes for nodes with updater', async () => {
-      const taskNode = {
+    it('should handle task property changes for nodes with updater', async () => {
+      const taskNode: Node = {
         ...mockNode,
-        id: 'task-spoke',
+        id: 'task-props',
         nodeType: 'task',
-        status: 'todo'
-      } as Node & { status?: string };
+        properties: { task: { status: 'todo' } }
+      };
 
       vi.spyOn(tauriCommands, 'updateNode').mockResolvedValue({
         ...taskNode,
-        status: 'done',
+        properties: { task: { status: 'done' } },
         version: 2
       });
 
       store.setNode(taskNode, databaseSource);
 
-      // Update spoke field (status) - should trigger persistence even from viewer
-      store.updateNode('task-spoke', { status: 'done' } as Partial<Node>, viewerSource);
+      // Update task status via properties - should trigger persistence even from viewer
+      store.updateNode('task-props', { properties: { task: { status: 'done' } } }, viewerSource);
 
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      const updated = store.getNode('task-spoke') as Node & { status?: string };
-      expect(updated?.status).toBe('done');
+      const updated = store.getNode('task-props');
+      expect((updated?.properties as Record<string, unknown>)?.task).toEqual({ status: 'done' });
     });
 
     it('should handle properties field changes', async () => {

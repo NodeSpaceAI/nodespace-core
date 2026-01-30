@@ -187,24 +187,6 @@ export interface Node {
    */
   memberOf?: string[];
 
-  // ============================================================================
-  // Spoke Fields (for typed nodes like TaskNode)
-  // ============================================================================
-  // These fields are populated when the backend returns a typed node.
-  // They're at the top level (flat structure) matching Rust serialization.
-  // See TaskNode interface for strong typing.
-
-  /** Task status (for task nodes) */
-  status?: string;
-
-  /** Task priority (for task nodes) */
-  priority?: number | string;
-
-  /** Task due date (for task nodes) */
-  dueDate?: string | null;
-
-  /** Task assignee (for task nodes) */
-  assignee?: string | null;
 }
 
 // ============================================================================

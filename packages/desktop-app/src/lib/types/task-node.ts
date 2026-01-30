@@ -49,9 +49,16 @@ export type CoreTaskPriority = 'low' | 'medium' | 'high';
 export type TaskPriority = CoreTaskPriority | string;
 
 /**
- * TaskNode - Flat structure matching Rust backend serialization
+ * TaskNode - The canonical type-safe interface for task nodes
  *
- * When the backend serializes a TaskNode, it produces a flat JSON structure:
+ * Use this interface instead of the generic `Node` type when you need type-safe
+ * access to task-specific fields (status, priority, dueDate, assignee).
+ *
+ * The generic `Node` interface does NOT include these fields - they must be
+ * accessed through `TaskNode` for type safety or via `properties.task.*` for
+ * dynamic access.
+ *
+ * Flat structure matching Rust backend serialization:
  * ```json
  * {
  *   "id": "task-123",
@@ -66,6 +73,9 @@ export type TaskPriority = CoreTaskPriority | string;
  *   "assignee": null
  * }
  * ```
+ *
+ * @see isTaskNode - Type guard to check if a node is a TaskNode
+ * @see nodeToTaskNode - Convert a generic Node to TaskNode
  */
 export interface TaskNode {
   // Hub fields (from node table)
