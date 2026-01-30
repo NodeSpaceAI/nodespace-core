@@ -1276,9 +1276,10 @@ where
 
         // Issue #821: Populate title for @mention search
         // Task nodes always get indexed (regardless of hierarchy level)
+        // Issue #844: Collection nodes always get titles (for indexed lookup)
         // Other node types will have title set by create_node_with_parent if they're root nodes
         // Only set title if not already set (create_node_with_parent may have set it for root nodes)
-        if node.node_type == "task" && node.title.is_none() {
+        if (node.node_type == "task" || node.node_type == "collection") && node.title.is_none() {
             node.title = Some(crate::utils::strip_markdown(&node.content));
         }
 
@@ -1454,15 +1455,19 @@ where
         let node_type = params.node_type.clone();
 
         // Issue #821: Determine title for @mention search
-        // Title is set for: task nodes (always) OR root nodes (no parent)
+        // Title is set for: task nodes (always), collection nodes (always), OR root nodes (no parent)
         // Note: create_node will also set title for task nodes, but we set it here too
         // for root non-task nodes that won't go through the task check in create_node
         // TODO #824: Refactor to schema-driven title_template approach
-        let title = if params.node_type == "task" || params.parent_id.is_none() {
+        // Issue #844: Collections now get titles (for indexed lookup) but are excluded from @mention
+        let title = if params.node_type == "task"
+            || params.node_type == "collection"
+            || params.parent_id.is_none()
+        {
             // Exclude certain types from having titles
             // TODO #824: Replace hardcoded exclusions with schema-driven title_template
             match params.node_type.as_str() {
-                "date" | "schema" | "collection" => None,
+                "date" | "schema" => None,
                 _ => Some(crate::utils::strip_markdown(&params.content)),
             }
         } else {
@@ -2099,16 +2104,18 @@ where
 
         // Issue #821: Sync title when content or node_type changes
         // Title is indexed for @mention search on task nodes and root nodes
+        // Issue #844: Collection nodes now get titles (for indexed lookup)
         // TODO #824: Refactor to schema-driven title_template approach
         let title_update = if content_changed || node_type_changed {
             // Determine if this node should have a title
             // 1. Task nodes always get titles (regardless of hierarchy)
-            // 2. Root nodes (no parent) get titles
-            // 3. Date, schema, and collection nodes never get titles
+            // 2. Collection nodes always get titles (for indexed lookup, but excluded from @mention)
+            // 3. Root nodes (no parent) get titles
+            // 4. Date and schema nodes never get titles
             // TODO #824: Replace hardcoded exclusions with schema-driven title_template
             let should_have_title = match updated.node_type.as_str() {
-                "date" | "schema" | "collection" => false,
-                "task" => true,
+                "date" | "schema" => false,
+                "task" | "collection" => true,
                 _ => {
                     // Check if root node (no parent)
                     self.get_parent(id).await?.is_none()
@@ -9407,6 +9414,121 @@ mod tests {
             let collection_ids: Vec<&str> = collections.iter().map(|n| n.id.as_str()).collect();
             assert!(collection_ids.contains(&collection1_id.as_str()));
             assert!(collection_ids.contains(&collection2_id.as_str()));
+        }
+    }
+
+    /// Tests for Issue #844: Collection title sync
+    ///
+    /// Verifies that collection nodes get their title field synced with content
+    /// for indexed lookup purposes.
+    mod collection_title_sync_tests {
+        use super::*;
+
+        /// Test that collection nodes get title set on creation
+        #[tokio::test]
+        async fn test_collection_title_set_on_create() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a collection node
+            let collection = Node::new(
+                "collection".to_string(),
+                "My Test Collection".to_string(),
+                json!({}),
+            );
+            let collection_id = collection.id.clone();
+
+            service.create_node(collection).await.unwrap();
+
+            // Verify title was set from content
+            let retrieved = service.get_node(&collection_id).await.unwrap().unwrap();
+            assert_eq!(
+                retrieved.title,
+                Some("My Test Collection".to_string()),
+                "Collection should have title set on create (Issue #844)"
+            );
+        }
+
+        /// Test that collection nodes get title updated when content changes
+        #[tokio::test]
+        async fn test_collection_title_updated_on_content_change() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a collection node
+            let collection = Node::new(
+                "collection".to_string(),
+                "Original Name".to_string(),
+                json!({}),
+            );
+            let collection_id = collection.id.clone();
+            service.create_node(collection).await.unwrap();
+
+            // Verify initial title
+            let initial = service.get_node(&collection_id).await.unwrap().unwrap();
+            assert_eq!(initial.title, Some("Original Name".to_string()));
+
+            // Update the content
+            let update = crate::models::NodeUpdate {
+                content: Some("Updated Name".to_string()),
+                ..Default::default()
+            };
+            service.update_node(&collection_id, update).await.unwrap();
+
+            // Verify title was updated
+            let updated = service.get_node(&collection_id).await.unwrap().unwrap();
+            assert_eq!(
+                updated.title,
+                Some("Updated Name".to_string()),
+                "Collection title should update with content (Issue #844)"
+            );
+        }
+
+        /// Test that collection title strips markdown
+        #[tokio::test]
+        async fn test_collection_title_strips_markdown() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a collection with markdown in name (unlikely but possible)
+            let collection = Node::new(
+                "collection".to_string(),
+                "**Bold** Collection".to_string(),
+                json!({}),
+            );
+            let collection_id = collection.id.clone();
+            service.create_node(collection).await.unwrap();
+
+            // Verify title has markdown stripped
+            let retrieved = service.get_node(&collection_id).await.unwrap().unwrap();
+            assert_eq!(
+                retrieved.title,
+                Some("Bold Collection".to_string()),
+                "Collection title should have markdown stripped"
+            );
+        }
+
+        /// Test create_node_with_parent also sets title for collections
+        #[tokio::test]
+        async fn test_collection_title_via_create_node_with_parent() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a collection via create_node_with_parent (no parent)
+            let params = CreateNodeParams {
+                node_type: "collection".to_string(),
+                content: "Root Collection".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({}),
+                id: None,
+            };
+
+            let collection_id = service.create_node_with_parent(params).await.unwrap();
+
+            // Verify title was set
+            let retrieved = service.get_node(&collection_id).await.unwrap().unwrap();
+            assert_eq!(
+                retrieved.title,
+                Some("Root Collection".to_string()),
+                "Collection created via create_node_with_parent should have title"
+            );
         }
     }
 }

@@ -2442,6 +2442,11 @@ where
     /// Uses indexed `title` field with full-text search (BM25) for efficient queries.
     /// Only root nodes and task nodes have titles populated, so child nodes are
     /// automatically excluded without expensive relationship traversal.
+    ///
+    /// # Issue #844
+    ///
+    /// Collection nodes are explicitly excluded from @mention results even though
+    /// they now have titles (for indexed lookup purposes).
     pub async fn mention_autocomplete(
         &self,
         search_query: &str,
@@ -2450,13 +2455,16 @@ where
         // Issue #821: Use indexed title field for efficient @mention search
         // The title field is only populated for:
         // 1. Task nodes (always, regardless of hierarchy)
-        // 2. Root nodes (no parent) - excludes date and schema types
+        // 2. Collection nodes (Issue #844 - for indexed lookup, but excluded from @mention)
+        // 3. Root nodes (no parent) - excludes date and schema types
         //
         // This eliminates the need for expensive relationship traversal to filter child nodes
         // since child nodes simply don't have a title to match against.
+        // Issue #844: Exclude collection nodes from @mention results
         let sql = r#"
             SELECT * FROM node
             WHERE title != NONE
+              AND node_type != 'collection'
               AND string::lowercase(title) CONTAINS string::lowercase($search_query)
             LIMIT $limit;
         "#;
@@ -4605,8 +4613,13 @@ where
 
     /// Get collection by name (case-insensitive lookup)
     ///
-    /// Finds a collection node by its content field (collection name).
+    /// Finds a collection node by its title field (indexed, collection name).
     /// Uses case-insensitive matching.
+    ///
+    /// # Issue #844
+    ///
+    /// Uses indexed `title` field instead of unindexed `content` field for performance.
+    /// Collection nodes now have their title synced with content on create/update.
     ///
     /// # Arguments
     ///
@@ -4618,12 +4631,12 @@ where
     pub async fn get_collection_by_name(&self, name: &str) -> Result<Option<Node>> {
         let normalized_name = name.to_lowercase();
 
-        // Use string::lowercase for case-insensitive matching
+        // Issue #844: Use indexed title field for case-insensitive matching
         // Return only the ID so we can use get_node for consistent handling
         let query = r#"
             SELECT VALUE record::id(id) FROM node
             WHERE node_type = 'collection'
-            AND string::lowercase(content) = $name
+            AND string::lowercase(title) = $name
             LIMIT 1;
         "#;
 
@@ -4648,8 +4661,13 @@ where
 
     /// Batch get collections by names (case-insensitive lookup)
     ///
-    /// Finds collection nodes by their content fields in a single query.
+    /// Finds collection nodes by their title fields in a single query.
     /// Returns a map of normalized name -> Node for collections that exist.
+    ///
+    /// # Issue #844
+    ///
+    /// Uses indexed `title` field instead of unindexed `content` field for performance.
+    /// Collection nodes now have their title synced with content on create/update.
     ///
     /// # Arguments
     ///
@@ -4670,13 +4688,13 @@ where
 
         let normalized_names: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
 
-        // Use CONTAINS operator for batch lookup
-        // Return only IDs and content, then use get_node for consistent node construction
+        // Issue #844: Use indexed title field for batch lookup
+        // Return only IDs and title, then use get_node for consistent node construction
         let query = r#"
-            SELECT VALUE { id: record::id(id), content: content }
+            SELECT VALUE { id: record::id(id), title: title }
             FROM node
             WHERE node_type = 'collection'
-            AND $names CONTAINS string::lowercase(content);
+            AND $names CONTAINS string::lowercase(title);
         "#;
 
         let mut response = self
@@ -4686,13 +4704,13 @@ where
             .await
             .context("Failed to batch search for collections by names")?;
 
-        // Parse as objects with id and content fields
+        // Parse as objects with id and title fields
         let results: Vec<Value> = response.take(0).unwrap_or_default();
 
         let mut collections = HashMap::new();
         for row in results {
             let node_id = row["id"].as_str().unwrap_or("").to_string();
-            let content = row["content"].as_str().unwrap_or("").to_string();
+            let title = row["title"].as_str().unwrap_or("").to_string();
 
             if node_id.is_empty() {
                 continue;
@@ -4700,8 +4718,8 @@ where
 
             // Use get_node for consistent node construction
             if let Ok(Some(node)) = self.get_node(&node_id).await {
-                let normalized_content = content.to_lowercase();
-                collections.insert(normalized_content, node);
+                let normalized_title = title.to_lowercase();
+                collections.insert(normalized_title, node);
             }
         }
 
@@ -5866,6 +5884,145 @@ mod tests {
         // Search for non-existent term
         let results = store.mention_autocomplete("nonexistent", None).await?;
         assert!(results.is_empty(), "Should return empty for no matches");
+
+        Ok(())
+    }
+
+    /// Issue #844: Collection nodes should be excluded from @mention autocomplete
+    /// even though they now have titles (for indexed lookup purposes)
+    #[tokio::test]
+    async fn test_mention_autocomplete_excludes_collection_nodes() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create a collection node with title (Issue #844: collections now get titles)
+        let mut collection_node = Node::new(
+            "collection".to_string(),
+            "searchable collection".to_string(),
+            json!({}),
+        );
+        collection_node.title = Some("searchable collection".to_string());
+
+        // Create a regular text node with title for comparison
+        let mut text_node = Node::new("text".to_string(), "searchable text".to_string(), json!({}));
+        text_node.title = Some("searchable text".to_string());
+
+        // Create a task node with title for comparison
+        let mut task_node = Node::new("task".to_string(), "searchable task".to_string(), json!({}));
+        task_node.title = Some("searchable task".to_string());
+
+        store.create_node(collection_node.clone(), None).await?;
+        store.create_node(text_node.clone(), None).await?;
+        store.create_node(task_node.clone(), None).await?;
+
+        // Search for matching content (searches title field)
+        let results = store.mention_autocomplete("searchable", None).await?;
+
+        // Should find text and task, but NOT collection
+        let result_ids: Vec<_> = results.iter().map(|n| &n.id).collect();
+        assert!(
+            result_ids.contains(&&text_node.id),
+            "Should include text node"
+        );
+        assert!(
+            result_ids.contains(&&task_node.id),
+            "Should include task node"
+        );
+        assert!(
+            !result_ids.contains(&&collection_node.id),
+            "Should NOT include collection node (Issue #844)"
+        );
+
+        Ok(())
+    }
+
+    // ==================== Collection Lookup Tests (Issue #844) ====================
+
+    /// Issue #844: get_collection_by_name should use indexed title field
+    #[tokio::test]
+    async fn test_get_collection_by_name_uses_title_field() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create a collection node with title set (simulating Issue #844 behavior)
+        let mut collection_node = Node::new(
+            "collection".to_string(),
+            "Test Collection".to_string(),
+            json!({}),
+        );
+        collection_node.title = Some("Test Collection".to_string());
+
+        store.create_node(collection_node.clone(), None).await?;
+
+        // Should find by name (case-insensitive via title)
+        let result = store.get_collection_by_name("Test Collection").await?;
+        assert!(result.is_some(), "Should find collection by exact name");
+        assert_eq!(result.unwrap().id, collection_node.id);
+
+        // Should find case-insensitively
+        let result = store.get_collection_by_name("test collection").await?;
+        assert!(
+            result.is_some(),
+            "Should find collection case-insensitively"
+        );
+
+        let result = store.get_collection_by_name("TEST COLLECTION").await?;
+        assert!(result.is_some(), "Should find collection in uppercase");
+
+        // Should not find non-existent
+        let result = store.get_collection_by_name("Nonexistent").await?;
+        assert!(result.is_none(), "Should not find non-existent collection");
+
+        Ok(())
+    }
+
+    /// Issue #844: get_collections_by_names should use indexed title field
+    #[tokio::test]
+    async fn test_get_collections_by_names_uses_title_field() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create multiple collection nodes with titles set
+        let mut collection1 = Node::new(
+            "collection".to_string(),
+            "Architecture".to_string(),
+            json!({}),
+        );
+        collection1.title = Some("Architecture".to_string());
+
+        let mut collection2 = Node::new(
+            "collection".to_string(),
+            "Development".to_string(),
+            json!({}),
+        );
+        collection2.title = Some("Development".to_string());
+
+        let mut collection3 = Node::new("collection".to_string(), "Testing".to_string(), json!({}));
+        collection3.title = Some("Testing".to_string());
+
+        store.create_node(collection1.clone(), None).await?;
+        store.create_node(collection2.clone(), None).await?;
+        store.create_node(collection3.clone(), None).await?;
+
+        // Batch fetch by names (case-insensitive)
+        let names = vec![
+            "Architecture".to_string(),
+            "development".to_string(), // lowercase to test case-insensitivity
+            "Nonexistent".to_string(),
+        ];
+        let result = store.get_collections_by_names(&names).await?;
+
+        // Should find the two existing collections (keyed by normalized name)
+        assert_eq!(result.len(), 2, "Should find 2 of 3 requested collections");
+        assert!(
+            result.contains_key("architecture"),
+            "Should contain Architecture"
+        );
+        assert!(
+            result.contains_key("development"),
+            "Should contain Development"
+        );
+        assert!(
+            !result.contains_key("nonexistent"),
+            "Should not contain Nonexistent"
+        );
 
         Ok(())
     }
