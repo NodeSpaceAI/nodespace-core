@@ -58,13 +58,19 @@ interface PendingOperation {
 
 const coordLog = createLogger('PersistenceCoordinator');
 
+/** Pending operation to run after current execution completes */
+interface QueuedOperation {
+  operation: () => Promise<void>;
+  options: { mode: 'immediate' | 'debounce'; dependencies?: Array<string | (() => Promise<void>)> };
+}
+
 class SimplePersistenceCoordinator {
   private static instance: SimplePersistenceCoordinator | null = null;
   private pendingOperations = new Map<string, PendingOperation>();
   private executingOperations = new Set<string>(); // Track in-flight operations
   // Track nodes that need re-persistence after current operation completes
-  // This prevents scheduling multiple operations while one is executing
-  private needsRerun = new Set<string>();
+  // Stores the QUEUED operation so DELETE isn't overwritten by UPDATE re-run
+  private queuedOperations = new Map<string, QueuedOperation>();
   private readonly DEBOUNCE_MS = 500;
   private operationCounter = 0; // For tracking operation IDs
 
@@ -96,15 +102,17 @@ class SimplePersistenceCoordinator {
       `hasPending=${hasPending}, isExecuting=${isExecuting}`
     );
 
-    // If an operation is already executing for this node, just mark it for re-run
+    // If an operation is already executing for this node, queue the new operation
     // This prevents multiple concurrent database operations and OCC conflicts
+    // CRITICAL: We store the NEW operation so DELETE isn't lost when UPDATE is executing
     if (isExecuting) {
-      this.needsRerun.add(nodeId);
+      // Queue the new operation - it will supersede any previously queued operation
+      this.queuedOperations.set(nodeId, { operation, options });
       coordLog.debug(
-        `[op#${opId}] operation already executing for ${shortNodeId}, marked for re-run`
+        `[op#${opId}] operation already executing for ${shortNodeId}, queued new operation (mode=${options.mode})`
       );
       // Return a promise that resolves when the current operation completes
-      // The re-run will happen automatically after completion
+      // The queued operation will run automatically after completion
       const existingPending = this.pendingOperations.get(nodeId);
       if (existingPending) {
         return { promise: existingPending.promise };
@@ -154,14 +162,17 @@ class SimplePersistenceCoordinator {
         this.pendingOperations.delete(nodeId);
         this.executingOperations.delete(nodeId);
 
-        // Check if we need to re-run for this node (content changed while executing)
-        if (this.needsRerun.has(nodeId)) {
-          this.needsRerun.delete(nodeId);
-          coordLog.debug(`[op#${opId}] re-running persistence for ${shortNodeId} (content changed during execution)`);
-          // Schedule a new debounced operation - it will read current state
-          // Use setTimeout to avoid stack overflow from immediate recursion
+        // Check if there's a queued operation for this node (e.g., DELETE queued during UPDATE)
+        const queued = this.queuedOperations.get(nodeId);
+        if (queued) {
+          this.queuedOperations.delete(nodeId);
+          coordLog.debug(
+            `[op#${opId}] executing queued operation for ${shortNodeId} (mode=${queued.options.mode})`
+          );
+          // Execute the queued operation - use setTimeout to avoid stack overflow
+          // CRITICAL: Use the QUEUED operation, not the original one
           setTimeout(() => {
-            this.persist(nodeId, operation, { mode: 'debounce' });
+            this.persist(nodeId, queued.operation, queued.options);
           }, 0);
         }
       }
@@ -1154,8 +1165,14 @@ export class SharedNodeStore {
                 // This prevents version conflicts on subsequent updates
                 const createdNode = await tauriCommands.getNode(nodeId);
                 if (createdNode) {
-                  currentNode.version = createdNode.version;
-                  this.nodes.set(nodeId, currentNode); // Update local node with backend version
+                  // BUG FIX: Only update the VERSION, not the entire node!
+                  // The user may have continued typing while createNode was in flight.
+                  // We must preserve their local changes and only take the version from backend.
+                  const latestLocalNode = this.nodes.get(nodeId);
+                  if (latestLocalNode) {
+                    latestLocalNode.version = createdNode.version;
+                    this.nodes.set(nodeId, latestLocalNode);
+                  }
                 }
               }
             } catch (dbError) {
@@ -2494,8 +2511,14 @@ export class SharedNodeStore {
               // This prevents version conflicts on subsequent updates
               const createdNode = await tauriCommands.getNode(nodeId);
               if (createdNode) {
-                finalNode.version = createdNode.version;
-                this.nodes.set(nodeId, finalNode); // Update local node with backend version
+                // BUG FIX: Only update the VERSION, not the entire node!
+                // The user may have continued typing while createNode was in flight.
+                // We must preserve their local changes and only take the version from backend.
+                const latestLocalNode = this.nodes.get(nodeId);
+                if (latestLocalNode) {
+                  latestLocalNode.version = createdNode.version;
+                  this.nodes.set(nodeId, latestLocalNode);
+                }
               }
             } catch (createError) {
               // If CREATE fails (node already exists from race), try UPDATE with batched changes

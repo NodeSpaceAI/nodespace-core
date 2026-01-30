@@ -622,6 +622,195 @@ describe('SharedNodeStore - Coverage Completion', () => {
   });
 
   // ========================================================================
+  // CREATE Operation Race Condition (Issue: content overwritten mid-typing)
+  // ========================================================================
+
+  describe('CREATE Operation - User Typing Race Condition', () => {
+    /**
+     * REGRESSION TEST: Content overwritten during CREATE operation
+     *
+     * Bug scenario:
+     * 1. User creates new node with content "## " (header)
+     * 2. User deletes "## " (becomes text node)
+     * 3. User presses Tab to indent
+     * 4. User starts typing "Hello World"
+     * 5. CREATE operation completes and fetches version from backend
+     * 6. BUG: nodes.set() was called with stale `currentNode` captured at step 1
+     * 7. User's typing ("Hello World") was overwritten with stale content ("## ")
+     *
+     * Fix: Only update the VERSION from backend, preserve local content
+     */
+    it('should preserve user typing when CREATE completes (setNode path)', async () => {
+      let createNodeResolve: (value: string) => void;
+      const createNodePromise = new Promise<string>((resolve) => {
+        createNodeResolve = resolve;
+      });
+
+      // Mock createNode to delay so we can simulate user typing during the operation
+      vi.spyOn(tauriCommands, 'createNode').mockImplementation(async () => {
+        return createNodePromise;
+      });
+
+      vi.spyOn(tauriCommands, 'getNode').mockResolvedValue({
+        ...mockNode,
+        id: 'typing-race-node',
+        content: '## ', // Backend has OLD content
+        nodeType: 'header',
+        version: 1
+      });
+
+      // Step 1: Create new node with initial content (NOT persisted yet)
+      // The node is new because persistedNodeIds doesn't have it
+      const newNode = {
+        ...mockNode,
+        id: 'typing-race-node',
+        content: '## ',
+        nodeType: 'header' as const,
+        version: 0
+      };
+      store.setNode(newNode, viewerSource); // Will trigger CREATE persistence
+
+      // Step 2: Simulate user typing WHILE createNode is in flight
+      // This updates the store directly (as the UI would via updateNode)
+      // The store update happens immediately, but CREATE is still pending
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Directly modify the store's node to simulate what the UI does
+      // (updateNode would queue its own persistence which complicates the test)
+      const nodeInStore = store.getNode('typing-race-node');
+      if (nodeInStore) {
+        nodeInStore.content = 'Hello World';
+        nodeInStore.nodeType = 'text';
+        store.nodes.set('typing-race-node', nodeInStore);
+      }
+
+      // Verify store has user's typed content
+      const beforeCreate = store.getNode('typing-race-node');
+      expect(beforeCreate?.content).toBe('Hello World');
+      expect(beforeCreate?.nodeType).toBe('text');
+
+      // Step 3: Now complete the CREATE operation
+      createNodeResolve!('typing-race-node');
+
+      // Wait for persistence to complete (debounce is 500ms for new viewer nodes)
+      await new Promise(resolve => setTimeout(resolve, 700));
+
+      // Step 4: CRITICAL CHECK - User's content MUST be preserved!
+      const afterCreate = store.getNode('typing-race-node');
+      expect(afterCreate?.content).toBe('Hello World'); // NOT '## '!
+      expect(afterCreate?.nodeType).toBe('text'); // NOT 'header'!
+      expect(afterCreate?.version).toBe(1); // Version updated from backend
+    });
+
+    it('should preserve user typing when batch CREATE completes (commitBatch path)', async () => {
+      let createNodeResolve: (value: string) => void;
+      const createNodePromise = new Promise<string>((resolve) => {
+        createNodeResolve = resolve;
+      });
+
+      vi.spyOn(tauriCommands, 'createNode').mockImplementation(async () => {
+        return createNodePromise;
+      });
+
+      vi.spyOn(tauriCommands, 'getNode').mockResolvedValue({
+        ...mockNode,
+        id: 'batch-typing-race',
+        content: '> Quote', // Backend has OLD content from batch
+        nodeType: 'quote-block',
+        version: 1
+      });
+
+      // Step 1: Create node with batch mode (quote-block uses batching)
+      const quoteNode = {
+        ...mockNode,
+        id: 'batch-typing-race',
+        content: '> Quote',
+        nodeType: 'quote-block' as const,
+        version: 0
+      };
+      store.setNode(quoteNode, viewerSource, true);
+
+      // Start a batch operation
+      store.startBatch('batch-typing-race');
+      store.addToBatch('batch-typing-race', { content: '> Original batch content' });
+      store.commitBatch('batch-typing-race');
+
+      // Step 2: User types more content while batch is processing
+      await new Promise(resolve => setTimeout(resolve, 10));
+      store.updateNode('batch-typing-race', {
+        content: '> User typed this after batch'
+      }, viewerSource);
+
+      // Verify store has user's typed content
+      const beforeComplete = store.getNode('batch-typing-race');
+      expect(beforeComplete?.content).toBe('> User typed this after batch');
+
+      // Step 3: Complete the CREATE operation
+      createNodeResolve!('batch-typing-race');
+
+      // Wait for persistence to complete
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Step 4: CRITICAL CHECK - User's content MUST be preserved!
+      const afterComplete = store.getNode('batch-typing-race');
+      expect(afterComplete?.content).toBe('> User typed this after batch');
+      expect(afterComplete?.version).toBe(1);
+    });
+
+    it('should handle rapid typing with multiple content changes during CREATE', async () => {
+      let createNodeResolve: (value: string) => void;
+      const createNodePromise = new Promise<string>((resolve) => {
+        createNodeResolve = resolve;
+      });
+
+      vi.spyOn(tauriCommands, 'createNode').mockImplementation(async () => {
+        return createNodePromise;
+      });
+
+      vi.spyOn(tauriCommands, 'getNode').mockResolvedValue({
+        ...mockNode,
+        id: 'rapid-typing',
+        content: 'A',
+        version: 1
+      });
+
+      // Create initial node (will trigger CREATE persistence)
+      const node = { ...mockNode, id: 'rapid-typing', content: 'A', version: 0 };
+      store.setNode(node, viewerSource);
+
+      // Simulate rapid typing - directly modify store content
+      // This simulates what happens when user types faster than persistence
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const nodeInStore = store.getNode('rapid-typing');
+      if (nodeInStore) {
+        nodeInStore.content = 'AB';
+        store.nodes.set('rapid-typing', nodeInStore);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        nodeInStore.content = 'ABC';
+        store.nodes.set('rapid-typing', nodeInStore);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        nodeInStore.content = 'ABCD';
+        store.nodes.set('rapid-typing', nodeInStore);
+        await new Promise(resolve => setTimeout(resolve, 5));
+        nodeInStore.content = 'ABCDE';
+        store.nodes.set('rapid-typing', nodeInStore);
+      }
+
+      // Verify latest content
+      expect(store.getNode('rapid-typing')?.content).toBe('ABCDE');
+
+      // Complete CREATE
+      createNodeResolve!('rapid-typing');
+      await new Promise(resolve => setTimeout(resolve, 700)); // debounce is 500ms
+
+      // Final content must be the LATEST user typed, not initial 'A'
+      const final = store.getNode('rapid-typing');
+      expect(final?.content).toBe('ABCDE');
+      expect(final?.version).toBe(1);
+    });
+  });
+
+  // ========================================================================
   // Concurrent Resync Prevention
   // ========================================================================
 
