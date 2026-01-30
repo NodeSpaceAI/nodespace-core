@@ -8071,6 +8071,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_node_service_idempotent_seeding() -> Result<(), Box<dyn std::error::Error>> {
+            use std::time::Duration;
             use tempfile::TempDir;
 
             let temp_dir = TempDir::new()?;
@@ -8083,12 +8084,40 @@ mod tests {
                 // Service and store dropped at end of scope (simulates app shutdown)
             }
 
-            // Wait for RocksDB to release file lock (async drop may not be instant)
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            // Retry opening the store with exponential backoff
+            // RocksDB file lock release is asynchronous and timing can vary
+            let mut store = None;
+            let mut delay_ms = 50;
+            let max_retries = 5;
+
+            for attempt in 1..=max_retries {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                match SurrealStore::new(db_path.clone()).await {
+                    Ok(s) => {
+                        store = Some(Arc::new(s));
+                        break;
+                    }
+                    Err(e) if attempt < max_retries => {
+                        // Double the delay for next attempt (exponential backoff)
+                        delay_ms *= 2;
+                        eprintln!(
+                            "Retry {}/{}: RocksDB lock not released, waiting {}ms: {}",
+                            attempt, max_retries, delay_ms, e
+                        );
+                    }
+                    Err(e) => {
+                        return Err(format!(
+                            "Failed to open store after {} retries: {}",
+                            max_retries, e
+                        )
+                        .into());
+                    }
+                }
+            }
 
             // Second "launch" - should NOT re-seed (idempotent)
             {
-                let mut store = Arc::new(SurrealStore::new(db_path).await?);
+                let mut store = store.expect("Store should be opened");
                 let _service = NodeService::new(&mut store).await?;
 
                 // Verify schemas still exist and weren't duplicated
