@@ -1,0 +1,31 @@
+[package]
+name = "nodespace-dev-tools"
+version = "0.1.0"
+description = "Development tools for NodeSpace (proxy server, MCP server)"
+authors = ["NodeSpace Team"]
+edition = "2021"
+
+[[bin]]
+name = "dev-proxy"
+path = "src/bin/dev-proxy.rs"
+
+[[bin]]
+name = "dev-mcp"
+path = "src/bin/dev-mcp.rs"
+
+[dependencies]
+nodespace-core = { workspace = true }
+nodespace-nlp-engine = { workspace = true }
+axum = { version = "0.7", features = ["default"] }
+tower-http = { version = "0.6", features = ["cors"] }
+tokio = { workspace = true }
+tokio-stream = "0.1"
+futures = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+surrealdb = { workspace = true }
+async-stream = "0.3"

@@ -2,7 +2,8 @@
 members = [
     "packages/core",
     "packages/nlp-engine",
-    "packages/desktop-app/src-tauri"
+    "packages/desktop-app/src-tauri",
+    "packages/dev-tools"
 ]
 resolver = "2"
 
