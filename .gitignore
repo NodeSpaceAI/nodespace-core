@@ -2,7 +2,7 @@
 target/
 **/*.rs.bk
 *.pdb
-# Note: Cargo.lock IS committed for reproducible builds (this is an application, not a library)
+Cargo.lock
 
 # Rust debug/profiling
 *.prof
