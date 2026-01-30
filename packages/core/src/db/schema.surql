@@ -93,6 +93,11 @@ DEFINE INDEX IF NOT EXISTS idx_rel_out ON TABLE relationship COLUMNS out, relati
 -- Query: SELECT * FROM relationship WHERE in = $parent AND relationship_type = 'has_child' ORDER BY properties.order
 DEFINE INDEX IF NOT EXISTS idx_rel_child_order ON TABLE relationship COLUMNS in, relationship_type, properties.order;
 
+-- Composite index for ordered collection member lookup (member_of relationships)
+-- Issue #839: member_of uses out (collection) as lookup key, unlike has_child which uses in (parent)
+-- Query: SELECT * FROM relationship WHERE out = $collection AND relationship_type = 'member_of' ORDER BY properties.order
+DEFINE INDEX IF NOT EXISTS idx_rel_member_order ON TABLE relationship COLUMNS out, relationship_type, properties.order;
+
 -- Unique constraint for all relationship types
 -- Design Decision (Issue #788): We use a universal unique constraint on (in, out, relationship_type)
 -- rather than a partial index only for has_child. This prevents duplicate relationships between

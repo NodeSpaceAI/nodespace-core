@@ -33,7 +33,7 @@ use crate::models::{Node, NodeFilter, NodeUpdate};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
 use regex::Regex;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::broadcast;
@@ -5103,9 +5103,46 @@ where
             return Ok(());
         }
 
+        // Issue #839: Auto-calculate order for built-in ordered relationships if not provided
+        let final_edge_data = if is_builtin {
+            let mut data = edge_data.as_object().cloned().unwrap_or_default();
+
+            // Auto-calculate order if not provided for ordered relationship types
+            if data.get("order").is_none() {
+                let order = match relationship_name {
+                    "member_of" => Some(
+                        self.store
+                            .get_next_member_order(target_id)
+                            .await
+                            .map_err(|e| {
+                                NodeServiceError::query_failed(format!(
+                                    "Failed to calculate member order: {}",
+                                    e
+                                ))
+                            })?,
+                    ),
+                    "has_child" => Some(self.store.get_next_child_order(source_id).await.map_err(
+                        |e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to calculate child order: {}",
+                                e
+                            ))
+                        },
+                    )?),
+                    _ => None, // "mentions" doesn't need ordering
+                };
+                if let Some(ord) = order {
+                    data.insert("order".to_string(), json!(ord));
+                }
+            }
+            json!(data)
+        } else {
+            edge_data.clone()
+        };
+
         // Build and execute the RELATE query - all relationships use the same table
         let properties_json =
-            serde_json::to_string(&edge_data).unwrap_or_else(|_| "{}".to_string());
+            serde_json::to_string(&final_edge_data).unwrap_or_else(|_| "{}".to_string());
 
         let relate_query = format!(
             r#"RELATE $source->relationship->$target CONTENT {{
@@ -5144,7 +5181,7 @@ where
                     from_id: source_id.to_string(),
                     to_id: target_id.to_string(),
                     relationship_type: relationship_name.to_string(),
-                    properties: edge_data,
+                    properties: final_edge_data,
                 },
                 source_client_id: self.client_id.clone(),
             });
@@ -9536,6 +9573,229 @@ mod tests {
             let collection_ids: Vec<&str> = collections.iter().map(|n| n.id.as_str()).collect();
             assert!(collection_ids.contains(&collection1_id.as_str()));
             assert!(collection_ids.contains(&collection2_id.as_str()));
+        }
+
+        /// Issue #839: create_relationship should auto-calculate order for member_of
+        #[tokio::test]
+        async fn test_create_relationship_member_of_auto_order() {
+            let (service, _temp) = create_test_service().await;
+
+            let collection_id = create_collection(&service, "Ordered Collection").await;
+            let text1_id = create_text_node(&service, "First member").await;
+            let text2_id = create_text_node(&service, "Second member").await;
+            let text3_id = create_text_node(&service, "Third member").await;
+
+            // Create member_of relationships without explicit order
+            service
+                .create_relationship(&text1_id, "member_of", &collection_id, json!({}))
+                .await
+                .unwrap();
+            service
+                .create_relationship(&text2_id, "member_of", &collection_id, json!({}))
+                .await
+                .unwrap();
+            service
+                .create_relationship(&text3_id, "member_of", &collection_id, json!({}))
+                .await
+                .unwrap();
+
+            // Query relationships directly to verify order was assigned
+            let collection_thing =
+                surrealdb::sql::Thing::from(("node".to_string(), collection_id.clone()));
+
+            #[derive(Debug, serde::Deserialize)]
+            #[allow(dead_code)] // member is used for deserialization but not accessed
+            struct RelWithOrder {
+                #[serde(rename = "in")]
+                member: surrealdb::sql::Thing,
+                order: Option<f64>,
+            }
+
+            let mut response = service
+                .store
+                .db()
+                .query(
+                    "SELECT in, properties.order AS order FROM relationship WHERE out = $collection AND relationship_type = 'member_of' ORDER BY properties.order ASC;",
+                )
+                .bind(("collection", collection_thing))
+                .await
+                .unwrap();
+
+            let rels: Vec<RelWithOrder> = response.take(0).unwrap();
+
+            assert_eq!(rels.len(), 3, "Should have 3 relationships");
+
+            // All should have order values
+            for rel in &rels {
+                assert!(
+                    rel.order.is_some(),
+                    "All member_of relationships should have order"
+                );
+            }
+
+            // Verify orders were assigned correctly - focus on the ordering invariant
+            // Issue #839: The actual values don't matter as long as they're strictly increasing
+            // and maintain insertion order. The fractional ordering system guarantees this.
+            let orders: Vec<f64> = rels.iter().map(|r| r.order.unwrap()).collect();
+
+            // Orders are already sorted by the query (ORDER BY properties.order ASC)
+            assert!(
+                orders[0] < orders[1],
+                "Orders should be distinct: {} < {}",
+                orders[0],
+                orders[1]
+            );
+            assert!(
+                orders[1] < orders[2],
+                "Orders should be distinct: {} < {}",
+                orders[1],
+                orders[2]
+            );
+
+            // Verify order via get_collection_members too (should return in order)
+            let members = service
+                .store
+                .get_collection_members(&collection_id)
+                .await
+                .unwrap();
+            assert_eq!(members.len(), 3);
+            assert_eq!(members[0].id, text1_id, "First member should be first");
+            assert_eq!(members[1].id, text2_id, "Second member should be second");
+            assert_eq!(members[2].id, text3_id, "Third member should be third");
+        }
+
+        /// Issue #839: create_relationship should respect explicit order for member_of
+        #[tokio::test]
+        async fn test_create_relationship_member_of_explicit_order() {
+            let (service, _temp) = create_test_service().await;
+
+            let collection_id = create_collection(&service, "Explicit Order Collection").await;
+            let text1_id = create_text_node(&service, "Should be third").await;
+            let text2_id = create_text_node(&service, "Should be first").await;
+            let text3_id = create_text_node(&service, "Should be second").await;
+
+            // Create member_of relationships with explicit order (out of insertion order)
+            service
+                .create_relationship(
+                    &text1_id,
+                    "member_of",
+                    &collection_id,
+                    json!({"order": 3.0}),
+                )
+                .await
+                .unwrap();
+            service
+                .create_relationship(
+                    &text2_id,
+                    "member_of",
+                    &collection_id,
+                    json!({"order": 1.0}),
+                )
+                .await
+                .unwrap();
+            service
+                .create_relationship(
+                    &text3_id,
+                    "member_of",
+                    &collection_id,
+                    json!({"order": 2.0}),
+                )
+                .await
+                .unwrap();
+
+            // Verify order via get_collection_members (should respect explicit order)
+            let members = service
+                .store
+                .get_collection_members(&collection_id)
+                .await
+                .unwrap();
+            assert_eq!(members.len(), 3);
+            assert_eq!(members[0].id, text2_id, "First (order 1.0) should be text2");
+            assert_eq!(
+                members[1].id, text3_id,
+                "Second (order 2.0) should be text3"
+            );
+            assert_eq!(members[2].id, text1_id, "Third (order 3.0) should be text1");
+        }
+
+        /// Issue #839: create_relationship should auto-calculate order for has_child
+        #[tokio::test]
+        async fn test_create_relationship_has_child_auto_order() {
+            let (service, _temp) = create_test_service().await;
+
+            let parent_id = create_text_node(&service, "Parent node").await;
+            let child1_id = create_text_node(&service, "First child").await;
+            let child2_id = create_text_node(&service, "Second child").await;
+            let child3_id = create_text_node(&service, "Third child").await;
+
+            // Create has_child relationships without explicit order
+            service
+                .create_relationship(&parent_id, "has_child", &child1_id, json!({}))
+                .await
+                .unwrap();
+            service
+                .create_relationship(&parent_id, "has_child", &child2_id, json!({}))
+                .await
+                .unwrap();
+            service
+                .create_relationship(&parent_id, "has_child", &child3_id, json!({}))
+                .await
+                .unwrap();
+
+            // Query relationships directly to verify order was assigned
+            let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
+
+            #[derive(Debug, serde::Deserialize)]
+            #[allow(dead_code)] // out is used for deserialization but not accessed
+            struct RelWithOrder {
+                out: surrealdb::sql::Thing,
+                order: Option<f64>,
+            }
+
+            let mut response = service
+                .store
+                .db()
+                .query(
+                    "SELECT out, properties.order AS order FROM relationship WHERE in = $parent AND relationship_type = 'has_child' ORDER BY properties.order ASC;",
+                )
+                .bind(("parent", parent_thing))
+                .await
+                .unwrap();
+
+            let rels: Vec<RelWithOrder> = response.take(0).unwrap();
+
+            assert_eq!(rels.len(), 3, "Should have 3 has_child relationships");
+
+            // All should have order values
+            for rel in &rels {
+                assert!(
+                    rel.order.is_some(),
+                    "All has_child relationships should have order"
+                );
+            }
+
+            // Verify orders were assigned correctly
+            let mut orders: Vec<f64> = rels.iter().map(|r| r.order.unwrap()).collect();
+
+            // All orders should be non-zero (assigned by FractionalOrderCalculator)
+            for (i, order) in orders.iter().enumerate() {
+                assert!(*order > 0.5, "Order {} should be >= 1.0, got {}", i, order);
+            }
+
+            // Sort and verify all distinct (fractional ordering guarantees uniqueness via jitter)
+            orders.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            assert!(
+                orders[0] < orders[1],
+                "Orders should be distinct: {} < {}",
+                orders[0],
+                orders[1]
+            );
+            assert!(
+                orders[1] < orders[2],
+                "Orders should be distinct: {} < {}",
+                orders[1],
+                orders[2]
+            );
         }
     }
 

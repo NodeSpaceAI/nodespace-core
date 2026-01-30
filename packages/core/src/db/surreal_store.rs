@@ -4419,6 +4419,103 @@ where
     // Collection Membership Operations (member_of relationships)
     // ========================================================================
 
+    /// Get the next order value for an ordered relationship.
+    ///
+    /// Issue #839: Common helper for fractional ordering of relationships.
+    /// Queries for the highest order value in the specified relationship type
+    /// and calculates the next value using FractionalOrderCalculator.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The ID of the anchor node (collection for member_of, parent for has_child)
+    /// * `relationship_type` - The type of relationship ("member_of" or "has_child")
+    /// * `use_out_as_anchor` - If true, query by `out` field; if false, query by `in` field
+    ///
+    /// # Returns
+    ///
+    /// The next order value for appending to this relationship set
+    async fn get_next_order_for_relationship(
+        &self,
+        node_id: &str,
+        relationship_type: &str,
+        use_out_as_anchor: bool,
+    ) -> Result<f64> {
+        #[derive(Deserialize)]
+        struct EdgeOrder {
+            order: f64,
+        }
+
+        let node_thing = Thing::from(("node".to_string(), node_id.to_string()));
+
+        // Build query based on anchor direction
+        // member_of: collection is the OUT target (node -> relationship -> collection)
+        // has_child: parent is the IN source (parent -> relationship -> child)
+        let anchor_field = if use_out_as_anchor { "out" } else { "in" };
+        let query = format!(
+            "SELECT properties.order AS order FROM relationship WHERE {} = $node_thing AND relationship_type = $rel_type ORDER BY properties.order DESC LIMIT 1;",
+            anchor_field
+        );
+
+        let mut response = self
+            .db
+            .query(&query)
+            .bind(("node_thing", node_thing))
+            .bind(("rel_type", relationship_type.to_string()))
+            .await
+            .context(format!("Failed to get last {} order", relationship_type))?;
+
+        let last_order: Option<EdgeOrder> = response.take(0).context(format!(
+            "Failed to extract last {} order",
+            relationship_type
+        ))?;
+
+        let new_order = if let Some(rel) = last_order {
+            FractionalOrderCalculator::calculate_order(Some(rel.order), None)
+        } else {
+            FractionalOrderCalculator::calculate_order(None, None)
+        };
+
+        Ok(new_order)
+    }
+
+    /// Get the next order value for appending a member to a collection.
+    ///
+    /// Issue #839: Fractional ordering for member_of relationships.
+    /// Queries for the highest order value in the collection's member_of relationships
+    /// and calculates the next value using FractionalOrderCalculator.
+    ///
+    /// # Arguments
+    ///
+    /// * `collection_id` - The ID of the collection node
+    ///
+    /// # Returns
+    ///
+    /// The next order value for appending to this collection
+    pub async fn get_next_member_order(&self, collection_id: &str) -> Result<f64> {
+        // member_of: collection is the OUT target (node -> relationship -> collection)
+        self.get_next_order_for_relationship(collection_id, "member_of", true)
+            .await
+    }
+
+    /// Get the next order value for appending a child to a parent.
+    ///
+    /// Issue #839: Factored out from add_child for reuse in NodeService.
+    /// Queries for the highest order value in the parent's has_child relationships
+    /// and calculates the next value using FractionalOrderCalculator.
+    ///
+    /// # Arguments
+    ///
+    /// * `parent_id` - The ID of the parent node
+    ///
+    /// # Returns
+    ///
+    /// The next order value for appending to this parent
+    pub async fn get_next_child_order(&self, parent_id: &str) -> Result<f64> {
+        // has_child: parent is the IN source (parent -> relationship -> child)
+        self.get_next_order_for_relationship(parent_id, "has_child", false)
+            .await
+    }
+
     /// Add a node to a collection (create member_of relationship)
     ///
     /// Creates a member_of relationship from the member node to the collection node.
@@ -4468,9 +4565,12 @@ where
 
         // Only create membership if it doesn't exist - Issue #788: use relationship table
         if existing_membership_ids.is_empty() {
+            // Issue #839: Calculate order for new member (append to end)
+            let new_order = self.get_next_member_order(collection_id).await?;
+
             let query = r#"RELATE $member->relationship->$collection CONTENT {
                 relationship_type: 'member_of',
-                properties: {},
+                properties: { order: $order },
                 created_at: time::now(),
                 modified_at: time::now(),
                 version: 1
@@ -4481,6 +4581,7 @@ where
                 .query(query)
                 .bind(("member", member_thing))
                 .bind(("collection", collection_thing))
+                .bind(("order", new_order))
                 .await
                 .context("Failed to create membership")?;
 
@@ -4608,6 +4709,7 @@ where
     /// Single query that traverses the member_of relationship and returns full node data.
     /// Direction: member -> member_of -> collection
     /// Issue #788: Universal Relationship Architecture - queries relationship table.
+    /// Issue #839: Returns members in order by properties.order field.
     ///
     /// # Arguments
     ///
@@ -4615,32 +4717,38 @@ where
     ///
     /// # Returns
     ///
-    /// Full Node structs for all collection members
+    /// Full Node structs for all collection members, ordered by their membership order
     pub async fn get_collection_members(&self, collection_id: &str) -> Result<Vec<Node>> {
         // Single query using SurrealDB graph traversal for optimal performance
         // Uses subquery to fetch full node data in one round-trip
+        // Issue #839: Uses idx_rel_member_order index and preserves order
         use surrealdb::sql::Thing;
         let start = std::time::Instant::now();
         let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
 
-        // Single query: get relationship source nodes and fetch their full data
-        // This should use idx_rel_out index on (out, relationship_type)
+        // Single query: get member IDs ordered by properties.order, then fetch full node data
+        // Must SELECT both `in` and `properties.order` so ORDER BY works in SurrealDB
+        // Uses LET to preserve the ordered array, then SELECT * FROM array preserves order
+        // This should use idx_rel_member_order index on (out, relationship_type, properties.order)
         let mut response = self
             .db
             .query(
                 r#"
-                SELECT * FROM (
-                    SELECT VALUE in FROM relationship
+                LET $member_ids = (
+                    SELECT in, properties.order FROM relationship
                     WHERE out = $collection_thing AND relationship_type = 'member_of'
-                );
+                    ORDER BY properties.order ASC
+                ).in;
+                SELECT * FROM $member_ids;
                 "#,
             )
             .bind(("collection_thing", collection_thing))
             .await
             .context("Failed to get collection members")?;
 
+        // Skip the LET result (statement 0), take the SELECT result (statement 1)
         let surreal_nodes: Vec<SurrealNode> = response
-            .take(0)
+            .take(1)
             .context("Failed to extract members from response")?;
 
         tracing::debug!(
@@ -4649,7 +4757,7 @@ where
             surreal_nodes.len()
         );
 
-        // Convert to nodes (properties already embedded)
+        // Convert to nodes (properties already embedded) - order is preserved
         let nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
         Ok(nodes)
@@ -6066,6 +6174,241 @@ mod tests {
         assert!(
             !result.contains_key("nonexistent"),
             "Should not contain Nonexistent"
+        );
+
+        Ok(())
+    }
+
+    // ==================== Collection Member Ordering Tests (Issue #839) ====================
+
+    /// Issue #839: add_to_collection should auto-assign order values
+    #[tokio::test]
+    async fn test_add_to_collection_assigns_order() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create a collection node
+        let mut collection = Node::new(
+            "collection".to_string(),
+            "Test Collection".to_string(),
+            json!({}),
+        );
+        collection.title = Some("Test Collection".to_string());
+        let collection = store.create_node(collection, None).await?;
+
+        // Create member nodes
+        let member1 = Node::new("text".to_string(), "Member 1".to_string(), json!({}));
+        let member2 = Node::new("text".to_string(), "Member 2".to_string(), json!({}));
+        let member3 = Node::new("text".to_string(), "Member 3".to_string(), json!({}));
+
+        let member1 = store.create_node(member1, None).await?;
+        let member2 = store.create_node(member2, None).await?;
+        let member3 = store.create_node(member3, None).await?;
+
+        // Add members to collection
+        let rel1_id = store.add_to_collection(&member1.id, &collection.id).await?;
+        let rel2_id = store.add_to_collection(&member2.id, &collection.id).await?;
+        let rel3_id = store.add_to_collection(&member3.id, &collection.id).await?;
+
+        assert!(rel1_id.is_some(), "First membership should be created");
+        assert!(rel2_id.is_some(), "Second membership should be created");
+        assert!(rel3_id.is_some(), "Third membership should be created");
+
+        // Verify order values by querying the relationships directly
+        let collection_thing =
+            surrealdb::sql::Thing::from(("node".to_string(), collection.id.clone()));
+
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)] // member is used for deserialization but not accessed
+        struct RelWithOrder {
+            #[serde(rename = "in")]
+            member: surrealdb::sql::Thing,
+            order: Option<f64>,
+        }
+
+        let mut response = store
+            .db
+            .query(
+                "SELECT in, properties.order AS order FROM relationship WHERE out = $collection AND relationship_type = 'member_of' ORDER BY properties.order ASC;",
+            )
+            .bind(("collection", collection_thing))
+            .await?;
+
+        let rels: Vec<RelWithOrder> = response.take(0)?;
+
+        assert_eq!(rels.len(), 3, "Should have 3 relationships");
+
+        // All should have order values
+        for rel in &rels {
+            assert!(
+                rel.order.is_some(),
+                "All member_of relationships should have order"
+            );
+        }
+
+        // Verify orders were assigned correctly
+        let mut orders: Vec<f64> = rels.iter().map(|r| r.order.unwrap()).collect();
+
+        // First, check that all orders are distinct and approximately 1.0, 2.0, 3.0
+        assert!(
+            (orders[0] - 1.0).abs() < 0.01
+                || (orders[1] - 1.0).abs() < 0.01
+                || (orders[2] - 1.0).abs() < 0.01,
+            "One order should be ~1.0, got {:?}",
+            orders
+        );
+        assert!(
+            (orders[0] - 2.0).abs() < 0.01
+                || (orders[1] - 2.0).abs() < 0.01
+                || (orders[2] - 2.0).abs() < 0.01,
+            "One order should be ~2.0, got {:?}",
+            orders
+        );
+        assert!(
+            (orders[0] - 3.0).abs() < 0.01
+                || (orders[1] - 3.0).abs() < 0.01
+                || (orders[2] - 3.0).abs() < 0.01,
+            "One order should be ~3.0, got {:?}",
+            orders
+        );
+
+        // Sort to verify they're all distinct
+        orders.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert!(
+            orders[0] < orders[1],
+            "Orders should be distinct: {} < {}",
+            orders[0],
+            orders[1]
+        );
+        assert!(
+            orders[1] < orders[2],
+            "Orders should be distinct: {} < {}",
+            orders[1],
+            orders[2]
+        );
+
+        Ok(())
+    }
+
+    /// Issue #839: get_collection_members should return members in order
+    #[tokio::test]
+    async fn test_get_collection_members_returns_ordered() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create a collection node
+        let mut collection = Node::new(
+            "collection".to_string(),
+            "Ordered Collection".to_string(),
+            json!({}),
+        );
+        collection.title = Some("Ordered Collection".to_string());
+        let collection = store.create_node(collection, None).await?;
+
+        // Create member nodes with distinct content
+        let member_a = Node::new("text".to_string(), "AAA - First".to_string(), json!({}));
+        let member_b = Node::new("text".to_string(), "BBB - Second".to_string(), json!({}));
+        let member_c = Node::new("text".to_string(), "CCC - Third".to_string(), json!({}));
+
+        let member_a = store.create_node(member_a, None).await?;
+        let member_b = store.create_node(member_b, None).await?;
+        let member_c = store.create_node(member_c, None).await?;
+
+        // Add members in specific order: A, B, C
+        store
+            .add_to_collection(&member_a.id, &collection.id)
+            .await?;
+        store
+            .add_to_collection(&member_b.id, &collection.id)
+            .await?;
+        store
+            .add_to_collection(&member_c.id, &collection.id)
+            .await?;
+
+        // Retrieve members - should be in insertion order
+        let members = store.get_collection_members(&collection.id).await?;
+
+        assert_eq!(members.len(), 3, "Should have 3 members");
+        assert_eq!(
+            members[0].id, member_a.id,
+            "First member should be A (first added)"
+        );
+        assert_eq!(
+            members[1].id, member_b.id,
+            "Second member should be B (second added)"
+        );
+        assert_eq!(
+            members[2].id, member_c.id,
+            "Third member should be C (third added)"
+        );
+
+        Ok(())
+    }
+
+    /// Issue #839: get_next_member_order should calculate correct values
+    #[tokio::test]
+    async fn test_get_next_member_order() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create a collection node
+        let mut collection = Node::new(
+            "collection".to_string(),
+            "Order Test Collection".to_string(),
+            json!({}),
+        );
+        collection.title = Some("Order Test Collection".to_string());
+        let collection = store.create_node(collection, None).await?;
+
+        // First call should return ~1.0 (first child pattern)
+        let order1 = store.get_next_member_order(&collection.id).await?;
+        assert!(
+            (order1 - 1.0).abs() < 0.01,
+            "First order should be ~1.0, got {}",
+            order1
+        );
+
+        // Add a member
+        let member = Node::new("text".to_string(), "Test Member".to_string(), json!({}));
+        let member = store.create_node(member, None).await?;
+        store.add_to_collection(&member.id, &collection.id).await?;
+
+        // Second call should return ~2.0 (after first)
+        let order2 = store.get_next_member_order(&collection.id).await?;
+        assert!(
+            (order2 - 2.0).abs() < 0.01,
+            "Second order should be ~2.0, got {}",
+            order2
+        );
+
+        Ok(())
+    }
+
+    /// Issue #839: get_next_child_order should calculate correct values
+    #[tokio::test]
+    async fn test_get_next_child_order() -> Result<()> {
+        let (store, _temp) = create_test_store().await?;
+
+        // Create a parent node
+        let parent = Node::new("text".to_string(), "Parent Node".to_string(), json!({}));
+        let parent = store.create_node(parent, None).await?;
+
+        // First call should return ~1.0 (first child pattern)
+        let order1 = store.get_next_child_order(&parent.id).await?;
+        assert!(
+            (order1 - 1.0).abs() < 0.01,
+            "First child order should be ~1.0, got {}",
+            order1
+        );
+
+        // Add a child using create_child_node_atomic (which creates has_child relationship with order)
+        let _child = store
+            .create_child_node_atomic(&parent.id, "text", "Child 1", json!({}), None)
+            .await?;
+
+        // Second call should return ~2.0 (after first child)
+        let order2 = store.get_next_child_order(&parent.id).await?;
+        assert!(
+            (order2 - 2.0).abs() < 0.01,
+            "Second child order should be ~2.0, got {}",
+            order2
         );
 
         Ok(())
