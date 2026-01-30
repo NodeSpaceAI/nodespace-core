@@ -377,6 +377,115 @@ describe('Core Plugins Integration', () => {
     });
   });
 
+  describe('Task Node extractMetadata (Issue #838)', () => {
+    it('should extract status from top-level field (TaskNode format)', () => {
+      // TaskNode format: status is at top level (from typed APIs like updateTaskNode)
+      const node = {
+        nodeType: 'task',
+        status: 'in_progress',
+        priority: 'high',
+        properties: {}
+      };
+
+      const metadata = taskNodePlugin.extractMetadata!(node);
+
+      expect(metadata.taskState).toBe('inProgress');
+      expect(metadata.status).toBe('in_progress');
+      expect(metadata.priority).toBe('high');
+    });
+
+    it('should extract status from properties (generic Node format)', () => {
+      // Generic Node format: status is in properties (from SSE events or generic APIs)
+      const node = {
+        nodeType: 'task',
+        properties: {
+          status: 'done',
+          priority: 'low'
+        }
+      };
+
+      const metadata = taskNodePlugin.extractMetadata!(node);
+
+      expect(metadata.taskState).toBe('completed');
+      expect(metadata.status).toBe('done');
+      expect(metadata.priority).toBe('low');
+    });
+
+    it('should prefer top-level status over properties.status', () => {
+      // When both exist, top-level takes precedence
+      const node = {
+        nodeType: 'task',
+        status: 'open',
+        properties: {
+          status: 'done' // This should be ignored
+        }
+      };
+
+      const metadata = taskNodePlugin.extractMetadata!(node);
+
+      expect(metadata.taskState).toBe('pending');
+      expect(metadata.status).toBe('open');
+    });
+
+    it('should map all status values to correct taskState', () => {
+      const statusMappings = [
+        { status: 'open', expectedTaskState: 'pending' },
+        { status: 'OPEN', expectedTaskState: 'pending' },
+        { status: 'in_progress', expectedTaskState: 'inProgress' },
+        { status: 'IN_PROGRESS', expectedTaskState: 'inProgress' },
+        { status: 'done', expectedTaskState: 'completed' },
+        { status: 'DONE', expectedTaskState: 'completed' },
+        { status: 'cancelled', expectedTaskState: 'pending' }, // Unknown status defaults to pending
+        { status: undefined, expectedTaskState: 'pending' }
+      ];
+
+      for (const { status, expectedTaskState } of statusMappings) {
+        const node = {
+          nodeType: 'task',
+          status,
+          properties: {}
+        };
+
+        const metadata = taskNodePlugin.extractMetadata!(node);
+        expect(metadata.taskState).toBe(expectedTaskState);
+      }
+    });
+
+    it('should handle missing properties gracefully', () => {
+      const node = {
+        nodeType: 'task'
+        // No status, no properties
+      };
+
+      const metadata = taskNodePlugin.extractMetadata!(node);
+
+      expect(metadata.taskState).toBe('pending');
+      expect(metadata.status).toBeUndefined();
+    });
+
+    it('should include all properties in returned metadata', () => {
+      const node = {
+        nodeType: 'task',
+        status: 'open',
+        priority: 'medium',
+        properties: {
+          dueDate: '2025-12-31',
+          assignee: 'user-123',
+          customField: 'custom-value'
+        }
+      };
+
+      const metadata = taskNodePlugin.extractMetadata!(node);
+
+      expect(metadata.taskState).toBe('pending');
+      expect(metadata.status).toBe('open');
+      expect(metadata.priority).toBe('medium');
+      expect(metadata.dueDate).toBe('2025-12-31');
+      expect(metadata.assignee).toBe('user-123');
+      expect(metadata.customField).toBe('custom-value');
+    });
+  });
+
   describe('Backward Compatibility', () => {
     it('should maintain all functionality from old BasicNodeTypeRegistry', () => {
       registerCorePlugins(registry);

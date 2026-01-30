@@ -898,6 +898,89 @@ where
         }
     }
 
+    /// Normalize flat properties input into namespaced storage format (Issue #838)
+    ///
+    /// Clients send flat properties: `{ "status": "open", "priority": "high" }`
+    /// This normalizes them into: `{ "task": { "status": "open", "priority": "high" } }`
+    ///
+    /// The namespace is determined by the node_type. Properties that are already
+    /// namespaced (contain an object value matching a known namespace pattern) are
+    /// preserved as-is to support dormant namespaces from type changes.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_type` - The current node type (determines the namespace)
+    /// * `properties` - The flat properties from the client
+    /// * `schema_fields` - Optional schema fields to identify known properties
+    ///
+    /// # Returns
+    ///
+    /// Namespaced properties ready for storage
+    fn normalize_flat_properties_to_namespace(
+        node_type: &str,
+        properties: &Value,
+        schema_fields: Option<&[crate::models::SchemaField]>,
+    ) -> Value {
+        let Some(props_obj) = properties.as_object() else {
+            return properties.clone();
+        };
+
+        // Build a set of known schema field names for the current type
+        let schema_field_names: std::collections::HashSet<&str> = schema_fields
+            .map(|fields| fields.iter().map(|f| f.name.as_str()).collect())
+            .unwrap_or_default();
+
+        // Check if properties are already namespaced by looking for the node_type key
+        // with an object value containing schema fields
+        if let Some(type_namespace) = props_obj.get(node_type) {
+            if type_namespace.is_object() {
+                // Already namespaced - return as-is (preserves dormant namespaces too)
+                return properties.clone();
+            }
+        }
+
+        // Separate flat properties (to be namespaced) from already-namespaced ones
+        let mut namespaced = serde_json::Map::new();
+        let mut flat_props = serde_json::Map::new();
+
+        for (key, value) in props_obj {
+            // Check if this key looks like a namespace (an object with nested properties)
+            // Namespaces are typically node types like "task", "text", "custom", etc.
+            //
+            // CONSTRAINT: This heuristic assumes client properties are simple values
+            // (strings, numbers, booleans, arrays). If a property has an object value
+            // and isn't a known schema field, it's treated as a namespace. This works
+            // because NodeSpace schema fields are designed to be simple types. If
+            // object-typed custom properties are needed in the future, consider adding
+            // an explicit namespace marker (e.g., `_is_namespace: true`) to distinguish
+            // namespaces from complex property values.
+            if value.is_object() && !schema_field_names.contains(key.as_str()) {
+                // This is likely a namespace (dormant or active) - preserve it
+                namespaced.insert(key.clone(), value.clone());
+            } else {
+                // This is a flat property - collect for namespacing
+                flat_props.insert(key.clone(), value.clone());
+            }
+        }
+
+        // Move flat properties into the current type's namespace
+        if !flat_props.is_empty() {
+            let type_ns = namespaced
+                .entry(node_type.to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(type_obj) = type_ns.as_object_mut() {
+                for (key, value) in flat_props {
+                    type_obj.insert(key, value);
+                }
+            }
+        } else if !namespaced.contains_key(node_type) {
+            // Ensure the current type namespace exists even if empty
+            namespaced.insert(node_type.to_string(), serde_json::json!({}));
+        }
+
+        Value::Object(namespaced)
+    }
+
     /// Validate a node against pre-loaded schema fields
     ///
     /// # Arguments
@@ -1233,6 +1316,15 @@ where
                     if let Ok(fields) = serde_json::from_value::<Vec<crate::models::SchemaField>>(
                         fields_json.clone(),
                     ) {
+                        // Issue #838: Normalize flat properties to namespaced format before processing
+                        // Clients send: { "status": "open" }
+                        // Storage format: { "task": { "status": "open" } }
+                        node.properties = Self::normalize_flat_properties_to_namespace(
+                            &node.node_type,
+                            &node.properties,
+                            Some(&fields),
+                        );
+
                         // Apply defaults from schema fields only
                         self.apply_schema_defaults_with_fields(&mut node, &fields)?;
 
@@ -1260,9 +1352,15 @@ where
                         }
                     }
                 }
+            } else {
+                // Issue #838: No schema exists, but still normalize properties to namespaced format
+                // This ensures consistent storage even for types without schemas
+                node.properties = Self::normalize_flat_properties_to_namespace(
+                    &node.node_type,
+                    &node.properties,
+                    None,
+                );
             }
-            // If no schema exists, that's fine - just don't add any defaults
-            // Properties should contain only what the user explicitly provided
             tracing::debug!(
                 "create_node: schema processing complete at {}ms",
                 start.elapsed().as_millis()
@@ -2071,8 +2169,25 @@ where
         // Use reorder_siblings() or move_node() for ordering changes.
 
         if let Some(properties) = update.properties {
-            // Deep-merge namespaced properties (Issue #794)
-            Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
+            // Issue #838: Normalize flat client properties to namespaced format before merging
+            // Skip for schema nodes - they use a special non-namespaced format
+            if updated.node_type == "schema" {
+                // Schema nodes use flat properties format (relationships, fields, etc.)
+                Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
+            } else {
+                // Client sends: { "status": "done" }
+                // We convert to: { "task": { "status": "done" } } before merging with existing namespaced properties
+                let normalized_properties = Self::normalize_flat_properties_to_namespace(
+                    &updated.node_type,
+                    &properties,
+                    None, // Schema fields are fetched later if needed
+                );
+                // Deep-merge namespaced properties (Issue #794)
+                Self::deep_merge_namespaced_properties(
+                    &mut updated.properties,
+                    normalized_properties,
+                );
+            }
         }
 
         // Step 1: Core behavior validation (PROTECTED)
@@ -2277,8 +2392,23 @@ where
         // Use reorder_siblings() or move_node() for ordering changes.
 
         if let Some(properties) = update.properties {
-            // Deep-merge namespaced properties (Issue #794)
-            Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
+            // Issue #838: Normalize flat client properties to namespaced format before merging
+            // Skip for schema nodes - they use a special non-namespaced format
+            if updated.node_type == "schema" {
+                // Schema nodes use flat properties format (relationships, fields, etc.)
+                Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
+            } else {
+                let normalized_properties = Self::normalize_flat_properties_to_namespace(
+                    &updated.node_type,
+                    &properties,
+                    None,
+                );
+                // Deep-merge namespaced properties (Issue #794)
+                Self::deep_merge_namespaced_properties(
+                    &mut updated.properties,
+                    normalized_properties,
+                );
+            }
         }
 
         // Step 1: Core behavior validation (PROTECTED)
@@ -5500,6 +5630,7 @@ mod tests {
     async fn test_create_task_node() {
         let (service, _temp) = create_test_service().await;
 
+        // Issue #838: Client sends flat properties, backend normalizes to namespaced storage
         let node = Node::new(
             "task".to_string(),
             "Implement NodeService".to_string(),
@@ -5510,8 +5641,9 @@ mod tests {
         let retrieved = service.get_node(&id).await.unwrap().unwrap();
 
         assert_eq!(retrieved.node_type, "task");
-        assert_eq!(retrieved.properties["status"], "in_progress");
-        assert_eq!(retrieved.properties["priority"], "high");
+        // Internal API returns namespaced properties (client-facing API flattens)
+        assert_eq!(retrieved.properties["task"]["status"], "in_progress");
+        assert_eq!(retrieved.properties["task"]["priority"], "high");
     }
 
     #[tokio::test]
@@ -5872,9 +6004,10 @@ mod tests {
         // Verify content was updated
         assert_eq!(updated1.content, "Updated Task 1");
         assert_eq!(updated2.content, "Updated Task 2");
+        // Issue #838: Internal API returns namespaced properties
         // Verify properties are preserved (status should still be "open")
-        assert_eq!(updated1.properties["status"], "open");
-        assert_eq!(updated2.properties["status"], "open");
+        assert_eq!(updated1.properties["task"]["status"], "open");
+        assert_eq!(updated2.properties["task"]["status"], "open");
     }
 
     #[tokio::test]
@@ -5915,8 +6048,9 @@ mod tests {
         assert_eq!(updated_text.node_type, "text");
         assert_eq!(updated_task.content, "Updated task");
         assert_eq!(updated_task.node_type, "task");
+        // Issue #838: Internal API returns namespaced properties
         // Properties are preserved, not updated by bulk_update
-        assert_eq!(updated_task.properties["status"], "open");
+        assert_eq!(updated_task.properties["task"]["status"], "open");
     }
 
     #[tokio::test]

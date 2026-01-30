@@ -90,6 +90,12 @@ pub use text_node::TextNode;
 /// node_to_typed_value(node).map_err(|e| CommandError { message: e, ... })?
 /// ```
 pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
+    // Issue #838: Flatten namespaced properties for API response
+    // Storage format: { "task": { "status": "open" } }
+    // API format: { "status": "open" }
+    let mut node = node;
+    flatten_properties_for_api(&mut node);
+
     match node.node_type.as_str() {
         "task" => {
             let task = TaskNode::from_node(node).map_err(|e| e.to_string())?;
@@ -102,6 +108,54 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
         _ => serde_json::to_value(node),
     }
     .map_err(|e| format!("Failed to serialize node: {}", e))
+}
+
+/// Flatten namespaced properties for API response (Issue #838)
+///
+/// Internal storage uses namespaced format for type-change safety:
+/// `{ "task": { "status": "open" }, "text": {} }`
+///
+/// API clients receive flat properties from the current type's namespace:
+/// `{ "status": "open" }`
+///
+/// Dormant namespaces (from previous type changes) are NOT exposed to clients.
+fn flatten_properties_for_api(node: &mut Node) {
+    let node_type = node.node_type.clone();
+
+    let Some(props_obj) = node.properties.as_object() else {
+        return;
+    };
+
+    // Extract properties from the current type's namespace
+    if let Some(type_namespace) = props_obj.get(&node_type) {
+        if let Some(type_props) = type_namespace.as_object() {
+            // Clone the namespaced properties as the new flat properties
+            // Exclude internal fields like _schema_version
+            let flat: serde_json::Map<String, serde_json::Value> = type_props
+                .iter()
+                .filter(|(k, _)| !k.starts_with('_'))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            node.properties = serde_json::Value::Object(flat);
+            return;
+        }
+    }
+
+    // No namespace found - properties might already be flat or empty
+    // Filter out any namespace objects and internal fields
+    //
+    // CONSTRAINT: This fallback path filters out ALL object-typed values as a
+    // defensive measure. This ensures no nested namespaces leak through if the
+    // data format is unexpected. Since NodeSpace properties are designed to be
+    // simple types (strings, numbers, booleans, arrays), this is safe. If
+    // object-typed properties are added in the future, this filter would need
+    // to distinguish between namespace objects and legitimate complex properties.
+    let flat: serde_json::Map<String, serde_json::Value> = props_obj
+        .iter()
+        .filter(|(k, v)| !v.is_object() && !k.starts_with('_'))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    node.properties = serde_json::Value::Object(flat);
 }
 
 /// Convert a list of Nodes to their strongly-typed JSON representations (Issue #673)

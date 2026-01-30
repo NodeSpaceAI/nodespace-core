@@ -3689,16 +3689,17 @@ where
     /// ```
     pub async fn get_task_node(&self, id: &str) -> Result<Option<crate::models::TaskNode>> {
         // Universal Graph Architecture (Issue #783): Properties embedded in node.properties
+        // Issue #838: Properties are namespaced under properties[node_type]
         // Note: Column aliases use camelCase to match TaskNode's #[serde(rename_all = "camelCase")]
         let query = format!(
             r#"
             SELECT
                 record::id(id) AS id,
                 node_type AS nodeType,
-                properties.status AS status,
-                properties.priority AS priority,
-                properties.due_date AS dueDate,
-                properties.assignee AS assignee,
+                properties.task.status AS status,
+                properties.task.priority AS priority,
+                properties.task.due_date AS dueDate,
+                properties.task.assignee AS assignee,
                 content AS content,
                 version AS version,
                 created_at AS createdAt,
@@ -3778,29 +3779,29 @@ where
         update: crate::models::TaskNodeUpdate,
     ) -> Result<crate::models::TaskNode> {
         // Universal Graph Architecture (Issue #783): Properties embedded in node.properties
+        // Issue #838: Properties are namespaced under properties[node_type]
         // Build SET clauses for properties update
         let mut property_set_clauses: Vec<String> = Vec::new();
 
         if let Some(ref status) = update.status {
-            property_set_clauses.push(format!("properties.status = '{}'", status.as_str()));
+            property_set_clauses.push(format!("properties.task.status = '{}'", status.as_str()));
         }
 
         if let Some(ref priority_opt) = update.priority {
             match priority_opt {
-                Some(p) => {
-                    property_set_clauses.push(format!("properties.priority = '{}'", p.as_str()))
-                }
-                None => property_set_clauses.push("properties.priority = NONE".to_string()),
+                Some(p) => property_set_clauses
+                    .push(format!("properties.task.priority = '{}'", p.as_str())),
+                None => property_set_clauses.push("properties.task.priority = NONE".to_string()),
             }
         }
 
         if let Some(ref due_date_opt) = update.due_date {
             match due_date_opt {
                 Some(dt) => property_set_clauses.push(format!(
-                    "properties.due_date = <datetime>'{}'",
+                    "properties.task.due_date = <datetime>'{}'",
                     dt.to_rfc3339()
                 )),
-                None => property_set_clauses.push("properties.due_date = NONE".to_string()),
+                None => property_set_clauses.push("properties.task.due_date = NONE".to_string()),
             }
         }
 
@@ -3808,30 +3809,32 @@ where
             match assignee_opt {
                 // Escape single quotes to prevent SQL injection
                 Some(a) => property_set_clauses.push(format!(
-                    "properties.assignee = '{}'",
+                    "properties.task.assignee = '{}'",
                     a.replace('\'', "\\'")
                 )),
-                None => property_set_clauses.push("properties.assignee = NONE".to_string()),
+                None => property_set_clauses.push("properties.task.assignee = NONE".to_string()),
             }
         }
 
         if let Some(ref started_at_opt) = update.started_at {
             match started_at_opt {
                 Some(dt) => property_set_clauses.push(format!(
-                    "properties.started_at = <datetime>'{}'",
+                    "properties.task.started_at = <datetime>'{}'",
                     dt.to_rfc3339()
                 )),
-                None => property_set_clauses.push("properties.started_at = NONE".to_string()),
+                None => property_set_clauses.push("properties.task.started_at = NONE".to_string()),
             }
         }
 
         if let Some(ref completed_at_opt) = update.completed_at {
             match completed_at_opt {
                 Some(dt) => property_set_clauses.push(format!(
-                    "properties.completed_at = <datetime>'{}'",
+                    "properties.task.completed_at = <datetime>'{}'",
                     dt.to_rfc3339()
                 )),
-                None => property_set_clauses.push("properties.completed_at = NONE".to_string()),
+                None => {
+                    property_set_clauses.push("properties.task.completed_at = NONE".to_string())
+                }
             }
         }
 

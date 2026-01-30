@@ -241,17 +241,24 @@ export interface PluginDefinition {
    * Extract and transform node properties into component-compatible metadata
    * Used to handle type-specific property transformations without hardcoding in BaseNodeViewer
    *
-   * Example: Task nodes transform properties.task.status → metadata.taskState
+   * Issue #838: Backend returns typed nodes (e.g., TaskNode) with spoke fields at top level.
+   * The function receives node with optional top-level spoke fields AND properties.
    *
-   * @param node - Node with properties from database
+   * @param node - Node with optional top-level spoke fields and properties from database
    * @returns Metadata object compatible with node component expectations
    * @example
-   * // Task node example:
-   * extractMetadata({ nodeType: 'task', properties: { task: { status: 'IN_PROGRESS' } } })
-   * // Returns: { taskState: 'inProgress', task: { status: 'IN_PROGRESS' } }
+   * // TaskNode format (status at top level):
+   * extractMetadata({ nodeType: 'task', status: 'in_progress', properties: {} })
+   * // Returns: { taskState: 'inProgress', status: 'in_progress' }
+   *
+   * // Generic Node format (status in properties):
+   * extractMetadata({ nodeType: 'task', properties: { status: 'in_progress' } })
+   * // Returns: { taskState: 'inProgress', status: 'in_progress' }
    */
   extractMetadata?: (node: {
     nodeType: string;
+    status?: string;
+    priority?: string | number;
     properties?: Record<string, unknown>;
   }) => Record<string, unknown>;
 

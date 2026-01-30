@@ -426,10 +426,11 @@ mod occ_tests {
         let result = handle_update_node(&node_service, params).await.unwrap();
         assert_eq!(result["version"], 2);
 
+        // Issue #838: Internal API returns namespaced properties
         let updated = node_service.get_node(&node_id).await.unwrap().unwrap();
         assert_eq!(updated.version, 2);
-        assert_eq!(updated.properties["status"], "done");
-        assert_eq!(updated.properties["priority"], "high");
+        assert_eq!(updated.properties["task"]["status"], "done");
+        assert_eq!(updated.properties["task"]["priority"], "high");
     }
 
     /// Verifies update SUCCEEDS without version parameter (auto-fetches current version)
@@ -1365,10 +1366,11 @@ mod integration_tests {
 
         assert_eq!(result["count"].as_u64().unwrap(), 1);
 
+        // Issue #838: Internal API returns namespaced properties
         // Verify property update
         let updated = node_service.get_node(&node).await.unwrap().unwrap();
-        assert_eq!(updated.properties["priority"], "high");
-        assert_eq!(updated.properties["status"], "done");
+        assert_eq!(updated.properties["task"]["priority"], "high");
+        assert_eq!(updated.properties["task"]["status"], "done");
     }
 }
 
@@ -1554,5 +1556,256 @@ mod typed_response_tests {
         let text_node = nodes.iter().find(|n| n["id"] == text_id).unwrap();
         assert_eq!(text_node["nodeType"], "text");
         assert!(text_node.get("properties").is_some()); // Generic Node has properties
+    }
+}
+
+// =========================================================================
+// Property Namespace Encapsulation Tests (Issue #838)
+// =========================================================================
+
+#[cfg(test)]
+mod property_namespace_tests {
+    use crate::db::SurrealStore;
+    use crate::mcp::handlers::nodes::{handle_create_node, handle_get_node, handle_update_node};
+    use crate::NodeService;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn setup_test_service() -> Result<(Arc<NodeService>, TempDir), Box<dyn std::error::Error>>
+    {
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("test.db");
+
+        let mut store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = Arc::new(NodeService::new(&mut store).await?);
+        Ok((node_service, temp_dir))
+    }
+
+    /// Issue #838: Full round-trip test for property namespace encapsulation
+    ///
+    /// This test verifies the complete client API cycle:
+    /// 1. Client sends FLAT properties (e.g., { "status": "open" })
+    /// 2. Backend stores as NAMESPACED properties (e.g., { "task": { "status": "open" } })
+    /// 3. Client receives FLAT properties back (e.g., { "status": "open" })
+    ///
+    /// The namespace is an internal implementation detail invisible to clients.
+    #[tokio::test]
+    async fn test_property_namespace_round_trip() {
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+
+        // Step 1: Create node with FLAT properties (client API format)
+        let create_params = json!({
+            "node_type": "task",
+            "content": "Test namespace encapsulation",
+            "properties": {
+                "status": "open",
+                "priority": "high",
+                "custom_field": "user_value"
+            }
+        });
+
+        let create_result = handle_create_node(&node_service, create_params)
+            .await
+            .unwrap();
+        let node_id = create_result["node_id"].as_str().unwrap();
+
+        // Step 2: Verify internal storage uses namespaced format
+        // The internal get_node (without API transformation) should return namespaced
+        let internal_node = node_service.get_node(node_id).await.unwrap().unwrap();
+        assert!(
+            internal_node.properties.get("task").is_some(),
+            "Internal storage should use 'task' namespace for properties"
+        );
+        assert_eq!(
+            internal_node.properties["task"]["status"], "open",
+            "Status should be stored under task namespace"
+        );
+        assert_eq!(
+            internal_node.properties["task"]["priority"], "high",
+            "Priority should be stored under task namespace"
+        );
+        assert_eq!(
+            internal_node.properties["task"]["custom_field"], "user_value",
+            "Custom fields should be stored under task namespace"
+        );
+
+        // Step 3: Verify client API returns FLAT properties
+        let get_params = json!({ "node_id": node_id });
+        let get_result = handle_get_node(&node_service, get_params).await.unwrap();
+
+        // For TaskNode, status is promoted to top-level field
+        assert_eq!(
+            get_result["status"], "open",
+            "TaskNode should have status as top-level field"
+        );
+
+        // TaskNode.properties should contain the flat properties (without namespace wrapper)
+        let api_properties = &get_result["properties"];
+
+        // Properties should NOT have the "task" namespace wrapper
+        assert!(
+            api_properties.get("task").is_none() || !api_properties["task"].is_object(),
+            "Client API should NOT expose 'task' namespace wrapper in properties"
+        );
+
+        // Step 4: Update with flat properties and verify round-trip
+        let update_params = json!({
+            "node_id": node_id,
+            "properties": {
+                "status": "done",
+                "priority": "low",
+                "new_field": "added_value"
+            }
+        });
+
+        let update_result = handle_update_node(&node_service, update_params)
+            .await
+            .unwrap();
+
+        // Verify update succeeded
+        assert!(update_result["version"].as_i64().unwrap() > 1);
+
+        // Step 5: Verify internal storage still uses namespace after update
+        let updated_internal = node_service.get_node(node_id).await.unwrap().unwrap();
+        assert_eq!(
+            updated_internal.properties["task"]["status"], "done",
+            "Updated status should be stored under task namespace"
+        );
+        assert_eq!(
+            updated_internal.properties["task"]["new_field"], "added_value",
+            "New fields should be stored under task namespace"
+        );
+
+        // Step 6: Verify client API returns flat properties after update
+        let get_params2 = json!({ "node_id": node_id });
+        let get_result2 = handle_get_node(&node_service, get_params2).await.unwrap();
+
+        assert_eq!(
+            get_result2["status"], "done",
+            "Updated status should be returned flat via client API"
+        );
+    }
+
+    /// Issue #838: Test that dormant namespaces are preserved but invisible to clients
+    ///
+    /// When a node changes type (e.g., task → text), the old type's properties
+    /// should be preserved internally (dormant namespace) but not exposed via API.
+    #[tokio::test]
+    async fn test_dormant_namespace_preserved_but_invisible() {
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+
+        // Create a task node with properties
+        let create_params = json!({
+            "node_type": "task",
+            "content": "Task with properties",
+            "properties": {
+                "status": "open",
+                "priority": "high"
+            }
+        });
+
+        let create_result = handle_create_node(&node_service, create_params)
+            .await
+            .unwrap();
+        let node_id = create_result["node_id"].as_str().unwrap();
+
+        // Change type to text - task namespace becomes dormant
+        let update_params = json!({
+            "node_id": node_id,
+            "node_type": "text",
+            "properties": {
+                "text_specific": "new_value"
+            }
+        });
+
+        handle_update_node(&node_service, update_params)
+            .await
+            .unwrap();
+
+        // Verify internal storage preserves dormant task namespace
+        let internal_node = node_service.get_node(node_id).await.unwrap().unwrap();
+        assert_eq!(internal_node.node_type, "text");
+
+        // Dormant task namespace should be preserved internally
+        assert!(
+            internal_node.properties.get("task").is_some(),
+            "Dormant task namespace should be preserved internally"
+        );
+        assert_eq!(
+            internal_node.properties["task"]["status"], "open",
+            "Dormant task properties should be preserved"
+        );
+
+        // Active text namespace should have new properties
+        assert!(
+            internal_node.properties.get("text").is_some(),
+            "Active text namespace should exist"
+        );
+
+        // Verify client API only returns properties from active namespace
+        let get_params = json!({ "node_id": node_id });
+        let get_result = handle_get_node(&node_service, get_params).await.unwrap();
+
+        // Client should NOT see dormant task properties
+        assert!(
+            get_result.get("status").is_none() || get_result["status"].is_null(),
+            "Dormant task status should NOT be exposed to client"
+        );
+
+        // Client API returns flat properties from text namespace
+        let api_properties = &get_result["properties"];
+        assert!(
+            api_properties.get("task").is_none() || !api_properties["task"].is_object(),
+            "Dormant task namespace should NOT be in client response properties"
+        );
+    }
+
+    /// Issue #838: Test generic (non-task) nodes also use namespace encapsulation
+    #[tokio::test]
+    async fn test_generic_node_namespace_round_trip() {
+        let (node_service, _temp_dir) = setup_test_service().await.unwrap();
+
+        // Create a text node with flat properties
+        let create_params = json!({
+            "node_type": "text",
+            "content": "Text node with properties",
+            "properties": {
+                "custom_key": "custom_value",
+                "another_key": 123
+            }
+        });
+
+        let create_result = handle_create_node(&node_service, create_params)
+            .await
+            .unwrap();
+        let node_id = create_result["node_id"].as_str().unwrap();
+
+        // Verify internal storage uses "text" namespace
+        let internal_node = node_service.get_node(node_id).await.unwrap().unwrap();
+        assert!(
+            internal_node.properties.get("text").is_some(),
+            "Internal storage should use 'text' namespace"
+        );
+        assert_eq!(
+            internal_node.properties["text"]["custom_key"], "custom_value",
+            "Properties should be stored under text namespace"
+        );
+
+        // Verify client API returns flat properties (via generic Node)
+        let get_params = json!({ "node_id": node_id });
+        let get_result = handle_get_node(&node_service, get_params).await.unwrap();
+
+        let api_properties = &get_result["properties"];
+
+        // For generic Node, properties should be flat (no namespace wrapper)
+        assert!(
+            api_properties.get("text").is_none() || !api_properties["text"].is_object(),
+            "Client API should NOT expose 'text' namespace wrapper"
+        );
+        assert_eq!(
+            api_properties["custom_key"], "custom_value",
+            "Client should receive flat properties"
+        );
     }
 }

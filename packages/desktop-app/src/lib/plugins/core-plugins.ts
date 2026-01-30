@@ -156,14 +156,17 @@ export const taskNodePlugin: PluginDefinition = {
     component: BaseNodeReference as NodeReferenceComponent,
     priority: 1
   },
-  // Type-specific metadata extraction (Issue #698, #794)
-  // Issue #794: Properties are now namespaced under properties[node_type]
-  extractMetadata: (node: { nodeType: string; properties?: Record<string, unknown> }) => {
+  // Type-specific metadata extraction (Issue #698, #794, #838)
+  // Issue #838: Backend returns TaskNode with status at TOP LEVEL (flat spoke fields)
+  // Also supports generic Node where status is in properties (for SSE events)
+  extractMetadata: (node: { nodeType: string; status?: string; priority?: string | number; properties?: Record<string, unknown> }) => {
     const properties = node.properties || {};
-    const taskProps = properties[node.nodeType] as Record<string, unknown> | undefined;
-    const status = taskProps?.status;
+    // Issue #838: Check top-level status first (TaskNode format), fall back to properties.status
+    // TaskNode has status at node.status, generic Node has it at node.properties.status
+    const status = node.status ?? properties.status;
+    const priority = node.priority ?? properties.priority;
 
-    // Map task status to NodeState expected by TaskNode
+    // Map task status to NodeState expected by TaskNode component
     let taskState: 'pending' | 'inProgress' | 'completed' = 'pending';
     if (status === 'IN_PROGRESS' || status === 'in_progress') {
       taskState = 'inProgress';
@@ -173,7 +176,9 @@ export const taskNodePlugin: PluginDefinition = {
       taskState = 'pending';
     }
 
-    return { taskState, ...properties };
+    // Spread properties first, then override with resolved top-level values
+    // This ensures top-level spoke fields take precedence over properties
+    return { ...properties, taskState, status, priority };
   },
   // Type-specific state mapping (Issue #698)
   mapStateToSchema: (state: string, _fieldName: string): CoreTaskStatus => {
