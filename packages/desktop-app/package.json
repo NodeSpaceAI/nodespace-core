@@ -10,7 +10,7 @@
     "dev:browser:db": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info rocksdb:~/.nodespace/database/nodespace-dev",
     "dev:browser:db:prod": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info rocksdb:~/.nodespace/database/nodespace",
     "dev:browser:db:demo": "surreal start --bind 127.0.0.1:8000 --user root --pass root --log info rocksdb:~/.nodespace/database/demo",
-    "dev:browser:proxy": "cd src-tauri && cargo run --bin dev-proxy",
+    "dev:browser:proxy": "cd src-tauri && cargo run --features dev-tools --bin dev-proxy",
     "dev:browser:frontend": "BROWSERSLIST_IGNORE_OLD_DATA=1 bunx vite dev --port 5173",
     "dev:browser": "bun run dev:check && bunx concurrently --success first --names 'DB,Proxy,UI' --prefix-colors 'blue,yellow,green' 'bun run dev:browser:db' 'sleep 2 && bun run dev:browser:proxy' 'sleep 4 && bun run dev:browser:frontend'",
     "dev:browser:prod": "bun run dev:check && bunx concurrently --success first --names 'DB,Proxy,UI' --prefix-colors 'blue,yellow,green' 'bun run dev:browser:db:prod' 'sleep 2 && bun run dev:browser:proxy' 'sleep 4 && bun run dev:browser:frontend'",

@@ -17,13 +17,17 @@ tauri-build = { version = "2", features = [] }
 name = "nodespace-app"
 path = "src/main.rs"
 
+# Development-only binaries - not included in release builds
+# Run with: cargo build --features dev-tools
 [[bin]]
 name = "dev-proxy"
 path = "src/bin/dev-proxy.rs"
+required-features = ["dev-tools"]
 
 [[bin]]
 name = "dev-mcp"
 path = "src/bin/dev-mcp.rs"
+required-features = ["dev-tools"]
 
 [dependencies]
 tauri = { version = "2", features = [] }
@@ -47,4 +51,8 @@ tokio-stream = "0.1"
 async-stream = "0.3"
 tower-http = { version = "0.6", features = ["cors"] }
 surrealdb = { workspace = true }
+
+[features]
+default = []
+dev-tools = []
 
