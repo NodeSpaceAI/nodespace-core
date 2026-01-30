@@ -10,7 +10,8 @@ repository.workspace = true
 [dependencies]
 # llama.cpp for embeddings via Rust bindings
 # Supports Metal (macOS), CUDA (NVIDIA), Vulkan (cross-platform)
-llama-cpp-2 = { version = "0.1", optional = true }
+# Pinned to 0.1.132+ for LlamaCppError naming (was LLamaCppError in older versions)
+llama-cpp-2 = { version = ">=0.1.132", optional = true }
 
 # Caching layer
 lru = "0.12"
@@ -45,4 +46,4 @@ vulkan = ["llama-cpp-2/vulkan"]
 
 # Platform-specific: Enable Metal acceleration on macOS by default
 [target.'cfg(target_os = "macos")'.dependencies]
-llama-cpp-2 = { version = "0.1", features = ["metal"], optional = true }
+llama-cpp-2 = { version = ">=0.1.132", features = ["metal"], optional = true }
