@@ -518,14 +518,6 @@ where
     ///
     /// * `notifier` - Callback function that receives `StoreChange` on mutations
     ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let store = SurrealStore::new(db_path).await?;
-    /// store.set_notifier(Arc::new(|change| {
-    ///     println!("Store change: {:?}", change.operation);
-    /// }));
-    /// ```
     pub fn set_notifier(&mut self, notifier: StoreNotifier) {
         self.notifier = Some(notifier);
     }

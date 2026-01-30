@@ -15,14 +15,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust,ignore
-//! use nodespace_core::models::core_schemas::get_core_schemas;
-//!
-//! let schemas = get_core_schemas();
-//! for schema in schemas {
-//!     println!("Schema: {} - {}", schema.id, schema.description);
-//! }
-//! ```
+//! Call `get_core_schemas()` to get all core schema definitions.
 
 use crate::models::schema::{EnumValue, SchemaField, SchemaProtectionLevel};
 use crate::models::SchemaNode;

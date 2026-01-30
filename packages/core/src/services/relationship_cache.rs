@@ -20,16 +20,6 @@
 //! - **Cache refresh**: ~50-200ms (loads all schemas once)
 //! - **Memory overhead**: ~10KB per 100 schemas
 //!
-//! # Example
-//!
-//! ```rust,ignore
-//! let cache = InboundRelationshipCache::new(store.clone());
-//!
-//! // What relationships point TO customer nodes?
-//! let inbound = cache.get_inbound_relationships("customer").await?;
-//! // Returns: [InboundRelationship { source_type: "invoice", relationship_name: "billed_to", ... }]
-//! ```
-
 use crate::db::SurrealStore;
 use crate::models::schema::RelationshipCardinality;
 use serde::{Deserialize, Serialize};
@@ -132,16 +122,6 @@ impl InboundRelationshipCache {
     ///
     /// Vector of InboundRelationship structs describing relationships that point to this type.
     ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// // What relationships point TO customer?
-    /// let inbound = cache.get_inbound_relationships("customer").await?;
-    /// for rel in inbound {
-    ///     println!("{}.{} -> customer (reverse: {:?})",
-    ///         rel.source_type, rel.relationship_name, rel.reverse_name);
-    /// }
-    /// ```
     pub async fn get_inbound_relationships(
         &self,
         target_type: &str,
