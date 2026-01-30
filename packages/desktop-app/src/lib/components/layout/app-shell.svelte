@@ -22,6 +22,7 @@
   import { loadPersistedState } from '$lib/stores/navigation';
   import { TabPersistenceService } from '$lib/services/tab-persistence-service';
   import { createLogger } from '$lib/utils/logger';
+  import { openUrl, isExternalUrl, isNodespaceUrl } from '$lib/utils/external-links';
 
   // Logger instance for AppShell component
   const log = createLogger('AppShell');
@@ -231,7 +232,7 @@
       });
     }
 
-    // Global click handler for nodespace:// links
+    // Global click handler for links (nodespace://, http://, https://)
     const handleLinkClick = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
 
@@ -240,9 +241,22 @@
       if (!anchor) return;
 
       const href = anchor.getAttribute('href');
+      if (!href) return;
 
-      // Only support nodespace:// protocol
-      if (!href || !href.startsWith('nodespace://')) return;
+      // Handle external links (http/https) - open in system browser
+      if (isExternalUrl(href)) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        openUrl(href).catch((error) => {
+          log.error('Failed to open external link:', error);
+          statusBar.error('Failed to open link in browser');
+        });
+        return;
+      }
+
+      // Only handle nodespace:// protocol from here
+      if (!isNodespaceUrl(href)) return;
 
       // Prevent default browser navigation
       event.preventDefault();
@@ -268,6 +282,7 @@
       // NavigationService will handle resolution (UUIDs, date nodes, etc.)
       if (!nodeId || nodeId.trim() === '') {
         log.error('Empty node ID in link');
+        statusBar.error('Invalid link: empty document reference');
         return;
       }
 
@@ -287,7 +302,7 @@
         event.preventDefault();
       }
 
-      // Phase 2-3: Actually navigate using NavigationService (lazy import)
+      // Navigate using NavigationService (lazy import)
       (async () => {
         const { getNavigationService } = await import('$lib/services/navigation-service');
         const navService = getNavigationService();
@@ -295,6 +310,18 @@
         // Find which pane the click originated from by traversing up the DOM
         const sourcePaneElement = (event.target as HTMLElement).closest('[data-pane-id]');
         const sourcePaneId = sourcePaneElement?.getAttribute('data-pane-id') ?? undefined;
+
+        // Pre-resolve node target to provide user feedback before navigation.
+        // Note: Navigation methods call resolveNodeTarget again internally, but the result
+        // is cached in SharedNodeStore so this doesn't cause redundant database queries.
+        const target = await navService.resolveNodeTarget(nodeId);
+
+        if (!target) {
+          // Node not found - show user-friendly error instead of crashing
+          log.warn(`Broken link: node ${nodeId} not found`);
+          statusBar.error('This link points to a deleted or non-existent document');
+          return;
+        }
 
         if (openInOtherPane) {
           // Cmd+Shift+Click: Open in OTHER pane (not the source pane)
