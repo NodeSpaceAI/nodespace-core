@@ -2876,24 +2876,19 @@ where
     ///
     /// Issue #788: Universal Relationship Architecture - mentions stored in relationship table.
     /// Issue #813: Pure data layer - no event emission, returns relationship ID for service layer.
+    /// Issue #834: Removed root_id storage - roots computed dynamically via graph traversal.
     ///
     /// # Arguments
     ///
     /// * `source_id` - The ID of the node that contains the mention
     /// * `target_id` - The ID of the node being mentioned
-    /// * `root_id` - The root node ID for context
     ///
     /// # Returns
     ///
     /// * `Ok(Some(id))` - Relationship ID if newly created
     /// * `Ok(None)` - If mention already existed (idempotent)
     /// * `Err` - Database error
-    pub async fn create_mention(
-        &self,
-        source_id: &str,
-        target_id: &str,
-        root_id: &str,
-    ) -> Result<Option<String>> {
+    pub async fn create_mention(&self, source_id: &str, target_id: &str) -> Result<Option<String>> {
         let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
         let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
 
@@ -2913,21 +2908,19 @@ where
 
         // Only create mention if it doesn't exist
         if existing_mention_ids.is_empty() {
-            // Issue #788: Universal Relationship Architecture - use CONTENT for properties
-            let query = format!(
-                r#"RELATE $source->relationship->$target CONTENT {{
+            // Issue #834: Simplified mention relationship - no properties.root_id
+            // Root/container is computed dynamically via graph traversal in get_mentioning_containers
+            let query = r#"RELATE $source->relationship->$target CONTENT {
                     relationship_type: 'mentions',
-                    properties: {{ root_id: '{}' }},
+                    properties: {},
                     created_at: time::now(),
                     modified_at: time::now(),
                     version: 1
-                }} RETURN id;"#,
-                root_id.replace('\'', "''")
-            );
+                } RETURN id;"#;
 
             let mut response = self
                 .db
-                .query(&query)
+                .query(query)
                 .bind(("source", source_thing))
                 .bind(("target", target_thing))
                 .await
@@ -3080,43 +3073,99 @@ where
     }
 
     pub async fn get_mentioning_containers(&self, node_id: &str) -> Result<Vec<Node>> {
-        // Issue #788: Universal Relationship Architecture - query relationship table for mentions
+        // Issue #834: Compute roots dynamically via graph traversal instead of reading properties.root_id
+        // This eliminates denormalized/cached data that could become stale.
         let target_thing = Thing::from(("node".to_string(), node_id.to_string()));
-        let query = "SELECT properties.root_id AS root_id FROM relationship WHERE out = $target AND relationship_type = 'mentions';";
+
+        // Step 1: Get all source nodes that mention the target
+        let query =
+            "SELECT in FROM relationship WHERE out = $target AND relationship_type = 'mentions';";
 
         let mut response = self
             .db
             .query(query)
             .bind(("target", target_thing))
             .await
-            .context("Failed to get mentioning roots")?;
+            .context("Failed to get mentioning sources")?;
 
-        // Parse the response - each row has a root_id field from properties
         #[derive(Debug, Deserialize)]
         struct MentionRow {
-            root_id: Option<String>,
+            #[serde(rename = "in")]
+            source: Thing,
         }
 
         let results: Vec<MentionRow> = response
             .take(0)
-            .context("Failed to extract root IDs from response")?;
+            .context("Failed to extract source IDs from response")?;
 
-        // Collect root IDs
-        let mut root_ids: Vec<String> = results.into_iter().filter_map(|r| r.root_id).collect();
+        // Extract source IDs as strings
+        let source_ids: Vec<String> = results
+            .into_iter()
+            .filter_map(|r| {
+                if let Id::String(id_str) = r.source.id {
+                    Some(id_str)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-        // Deduplicate root IDs
-        root_ids.sort();
-        root_ids.dedup();
+        // Step 2: For each source, find its container (root or task)
+        // Tasks are their own containers; other nodes traverse up to find root
+        // Performance: O(N * depth) where N = mention count, depth = tree depth
+        // Typical case: N < 10, depth < 5 - acceptable for knowledge management workloads
+        let mut container_ids: Vec<String> = Vec::new();
+        for source_id in source_ids {
+            let container_id = self.get_container_for_mention(&source_id).await?;
+            container_ids.push(container_id);
+        }
 
-        // Fetch full node records
+        // Deduplicate container IDs
+        container_ids.sort();
+        container_ids.dedup();
+
+        // Step 3: Fetch full node records
         let mut nodes = Vec::new();
-        for root_id in root_ids {
-            if let Some(node) = self.get_node(&root_id).await? {
+        for container_id in container_ids {
+            if let Some(node) = self.get_node(&container_id).await? {
                 nodes.push(node);
             }
         }
 
         Ok(nodes)
+    }
+
+    /// Find the container for a mentioning node
+    ///
+    /// Tasks are treated as their own containers (they're self-contained items).
+    /// For all other nodes, traverse UP via has_child relationships to find the root.
+    ///
+    /// # Issue #834
+    ///
+    /// This replaces reading `properties.root_id` from the mention relationship,
+    /// ensuring container resolution is always accurate even if nodes have moved.
+    async fn get_container_for_mention(&self, source_id: &str) -> Result<String> {
+        // First, check if the source is a task (tasks are their own containers)
+        if let Some(source_node) = self.get_node(source_id).await? {
+            if source_node.node_type == "task" {
+                return Ok(source_id.to_string());
+            }
+        }
+
+        // For non-task nodes, traverse up to find root
+        let mut current_id = source_id.to_string();
+        loop {
+            let parent = self.get_parent(&current_id).await?;
+            match parent {
+                Some(parent_node) => {
+                    current_id = parent_node.id;
+                }
+                None => {
+                    // Found the root
+                    return Ok(current_id);
+                }
+            }
+        }
     }
 
     pub async fn get_schema(&self, node_type: &str) -> Result<Option<Value>> {

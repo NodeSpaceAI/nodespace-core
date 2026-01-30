@@ -67,7 +67,7 @@ DEFINE INDEX IF NOT EXISTS idx_node_title ON TABLE node COLUMNS title;
 --
 -- Core relationship_types:
 --   - has_child: Document tree hierarchy (order in properties)
---   - mentions: @references and [[links]] (context, offset, root_id in properties)
+--   - mentions: @references and [[links]] (context, offset in properties)
 --   - member_of: Collection membership
 -- ============================================================================
 

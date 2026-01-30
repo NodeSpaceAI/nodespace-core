@@ -1745,15 +1745,9 @@ where
         }
 
         // Prevent root-level self-references (child mentioning its own root)
-        let mentioning_node = self
-            .get_node(mentioning_node_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(mentioning_node_id))?;
-
-        // Get root ID via edge traversal
+        // Get root ID via edge traversal for validation only
         let root_id = self.get_root_id(mentioning_node_id).await?;
 
-        // Prevent root-level self-references (child mentioning its own root)
         if root_id == mentioned_node_id {
             return Err(NodeServiceError::ValidationFailed(
                 crate::models::ValidationError::InvalidParent(
@@ -1762,18 +1756,11 @@ where
             ));
         }
 
-        // Get root ID with special handling for tasks
-        // Tasks are always treated as their own roots (exception rule)
-        let final_root_id = if mentioning_node.node_type == "task" {
-            mentioning_node_id
-        } else {
-            &root_id
-        };
-
         // Issue #813: Store returns relationship ID, service emits event
+        // Issue #834: root_id no longer stored - computed dynamically via graph traversal
         let relationship_id = self
             .store
-            .create_mention(mentioning_node_id, mentioned_node_id, final_root_id)
+            .create_mention(mentioning_node_id, mentioned_node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -1785,7 +1772,7 @@ where
                     from_id: mentioning_node_id.to_string(),
                     to_id: mentioned_node_id.to_string(),
                     relationship_type: "mentions".to_string(),
-                    properties: serde_json::json!({"root_id": final_root_id}),
+                    properties: serde_json::json!({}),
                 },
                 source_client_id: self.client_id.clone(),
             });
@@ -4747,9 +4734,10 @@ where
         }
 
         // Issue #813: Store returns relationship ID, service emits event
+        // Issue #834: root_id no longer stored - computed dynamically via graph traversal
         let relationship_id = self
             .store
-            .create_mention(source_id, target_id, source_id)
+            .create_mention(source_id, target_id)
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to insert mention: {}", e))
@@ -4763,7 +4751,7 @@ where
                     from_id: source_id.to_string(),
                     to_id: target_id.to_string(),
                     relationship_type: "mentions".to_string(),
-                    properties: serde_json::json!({"root_id": source_id}),
+                    properties: serde_json::json!({}),
                 },
                 source_client_id: self.client_id.clone(),
             });
