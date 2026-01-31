@@ -110,6 +110,17 @@
     cachedPlaceholderId = null;
   }
 
+  /**
+   * Normalize content for code-block conversion by adding closing fence if missing.
+   * Handles pattern conversion where user types "```\n" before existing content.
+   */
+  function normalizeCodeBlockContent(content: string | undefined): string | undefined {
+    if (content && !content.endsWith('```')) {
+      return content + '\n```';
+    }
+    return content;
+  }
+
   // Viewer-local placeholder (not in sharedNodeStore until it gets content)
   // This placeholder is only visible to this viewer instance
   // Issue #653: Now uses lazy ID generation instead of $effect-managed state
@@ -1443,7 +1454,7 @@
                   }>
                 ) => {
                   const newNodeType = e.detail.nodeType;
-                  const cleanedContent = e.detail.cleanedContent;
+                  let cleanedContent = e.detail.cleanedContent;
                   // Use cursor position from event (captured by TextareaController)
                   const cursorPosition = e.detail.cursorPosition ?? 0;
 
@@ -1456,6 +1467,11 @@
                   // CRITICAL: Set editing state BEFORE updating node type
                   // This ensures focus manager state is ready when the new component mounts
                   focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition, paneId);
+
+                  // Normalize content for code-block conversion
+                  if (newNodeType === 'code-block') {
+                    cleanedContent = normalizeCodeBlockContent(cleanedContent);
+                  }
 
                   // Update content if cleanedContent is provided (e.g., from contentTemplate)
                   if (cleanedContent !== undefined) {
@@ -1636,7 +1652,7 @@
                   }>
                 ) => {
                   const newNodeType = e.detail.nodeType;
-                  const cleanedContent = e.detail.cleanedContent;
+                  let cleanedContent = e.detail.cleanedContent;
                   // Use cursor position from event (captured by TextareaController)
                   const cursorPosition = e.detail.cursorPosition ?? 0;
 
@@ -1649,6 +1665,11 @@
                   // CRITICAL: Set editing state BEFORE updating node type
                   // This ensures focus manager state is ready when the new component mounts
                   focusManager.setEditingNodeFromTypeConversion(node.id, cursorPosition, paneId);
+
+                  // Normalize content for code-block conversion
+                  if (newNodeType === 'code-block') {
+                    cleanedContent = normalizeCodeBlockContent(cleanedContent);
+                  }
 
                   // Handle placeholder nodes - promote them to real nodes with the new type
                   if (

@@ -272,11 +272,14 @@ export class TextareaController {
         effectiveSource = 'user';
       }
 
-      // For inherited nodes, lookup the plugin to respect its canRevert setting
-      // This fixes the bug where inherited task nodes would revert to text on first keystroke
-      // because the legacy canRevert fallback returned true unconditionally
+      // For pattern-detected and inherited nodes, lookup the plugin to respect its canRevert setting
+      // This fixes bugs where:
+      // 1. Inherited task nodes would revert to text on first keystroke (legacy canRevert fallback)
+      // 2. Pattern-detected nodes (e.g., quote-block) couldn't revert because plugin wasn't set
       const plugin =
-        effectiveSource === 'inherited' ? pluginRegistry.getPlugin(nodeType) ?? undefined : undefined;
+        (effectiveSource === 'inherited' || effectiveSource === 'pattern')
+          ? pluginRegistry.getPlugin(nodeType) ?? undefined
+          : undefined;
 
       this.patternState = new PatternState(effectiveSource, plugin);
 

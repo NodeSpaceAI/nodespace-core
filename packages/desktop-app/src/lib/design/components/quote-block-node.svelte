@@ -80,35 +80,29 @@
 
   /**
    * Handle content changes from BaseNode
-   * Add "> " prefix to all lines before saving (users only type it on first line)
+   *
+   * IMPORTANT: We pass through content as-is to allow TextareaController to detect
+   * pattern changes for reversion (e.g., "> Hello" → ">Hello" should revert to text).
+   *
+   * The "> " prefix is added to NEW lines via Shift+Enter (handled by handleKeyDown
+   * and the pattern's prefix-inheritance splitting strategy), not by transforming
+   * existing content.
+   *
    * REFACTOR: Using $bindable() prop - update content directly via two-way binding
    */
   function handleContentChange(event: CustomEvent<{ content: string }>) {
     const userContent = event.detail.content;
 
-    // Add "> " prefix to every line that doesn't have it
-    const lines = userContent.split('\n');
-    const prefixedLines = lines.map((line) => {
-      const trimmed = line.trim();
-
-      if (trimmed === '') {
-        return '> '; // Empty line becomes "> " (with space for cursor)
-      }
-      if (trimmed.startsWith('> ')) {
-        return line; // Already has "> " (with space)
-      }
-      if (trimmed.startsWith('>')) {
-        // Has ">" but no space - add space
-        return line.replace(/^>/, '> ');
-      }
-      // Add "> " prefix
-      return `> ${line}`;
-    });
-    const prefixedContent = prefixedLines.join('\n');
-
-    // Update via $bindable() prop - this updates the parent's state directly
-    content = prefixedContent;
-    dispatch('contentChanged', { content: prefixedContent });
+    // Pass through content as-is - don't transform!
+    // This allows TextareaController to detect when the pattern no longer matches
+    // (e.g., ">Hello" doesn't match /^>\s/) and trigger reversion to text type.
+    //
+    // The quote "> " prefix is handled by:
+    // 1. Initial conversion: User types "> " which triggers pattern detection
+    // 2. New lines: Shift+Enter uses prefix-inheritance strategy to add "> "
+    // 3. Enter key: Creates new quote-block node with "> " content (via handleCreateNewNode)
+    content = userContent;
+    dispatch('contentChanged', { content: userContent });
 
     // If we have a pending cursor adjustment (from Shift+Enter), apply it
     if (pendingCursorAdjustment !== null) {

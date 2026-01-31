@@ -254,14 +254,14 @@ export const codeBlockNodePlugin: PluginDefinition = {
   version: '1.0.0',
   // Plugin-owned pattern behavior (Issue #667)
   pattern: {
-    detect: /^```(\w+)?\n/,  // Matches ``` or ```language followed by newline
+    detect: /^```\n/,  // Matches ``` followed immediately by newline (language set via dropdown only)
     canRevert: true,
     revert: /^```$/,  // "```" alone should revert to text
     onEnter: 'none',  // Code blocks don't inherit on Enter
     splittingStrategy: 'simple-split',
     cursorPlacement: 'start',
-    extractMetadata: (match: RegExpMatchArray) => ({
-      language: match[1]?.toLowerCase() || 'plaintext'
+    extractMetadata: () => ({
+      language: 'plaintext'  // Default language; user selects via dropdown
     })
   },
   config: {

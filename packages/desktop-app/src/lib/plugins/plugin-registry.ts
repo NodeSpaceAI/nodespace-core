@@ -403,22 +403,19 @@ export class PluginRegistry {
         );
 
         // Create backward-compatible PatternDetectionConfig
-        // NOTE: contentTemplate is only included if desiredCursorPosition is set,
-        // indicating auto-completion behavior (e.g., code-block's closing fence).
-        // Headers don't have desiredCursorPosition in slash commands, so their
-        // content is preserved during pattern detection.
+        // NOTE: contentTemplate should NEVER be used for pattern detection.
+        // Pattern detection preserves user-typed content (e.g., "> Hello" stays as "> Hello").
+        // contentTemplate is ONLY for slash commands (e.g., /quote creates "> ").
+        // When canRevert is true, we preserve content for bidirectional conversion.
         const config: PatternDetectionConfig = {
           pattern: pattern.detect,
           targetNodeType: plugin.id,
           cleanContent: !pattern.canRevert, // canRevert=true means cleanContent=false
           extractMetadata: pattern.extractMetadata,
           priority: 10,
-          desiredCursorPosition: slashCommand?.desiredCursorPosition,
-          // Only include contentTemplate if desiredCursorPosition is set
-          // This indicates auto-completion behavior (e.g., code-block's closing fence)
-          contentTemplate: slashCommand?.desiredCursorPosition !== undefined
-            ? slashCommand.contentTemplate
-            : undefined
+          desiredCursorPosition: slashCommand?.desiredCursorPosition
+          // contentTemplate intentionally NOT included for pattern detection
+          // User-typed content must be preserved, not replaced with template
         };
 
         return { plugin, config, match, metadata };
