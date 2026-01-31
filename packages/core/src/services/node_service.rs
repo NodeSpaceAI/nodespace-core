@@ -4192,8 +4192,24 @@ where
             }
         }
 
+        // Issue #854: Normalize flat properties to namespaced format before validation
+        // Parser emits: { "status": "open" }
+        // Storage expects: { "task": { "status": "open" } }
+        let nodes_normalized: Vec<_> = nodes
+            .into_iter()
+            .map(|(id, node_type, content, parent_id, order, properties)| {
+                let schema_fields = schema_cache.get(&node_type).and_then(|opt| opt.as_ref());
+                let normalized_props = Self::normalize_flat_properties_to_namespace(
+                    &node_type,
+                    &properties,
+                    schema_fields.map(|v| v.as_slice()),
+                );
+                (id, node_type, content, parent_id, order, normalized_props)
+            })
+            .collect();
+
         // Validate all nodes before insertion using cached schemas
-        for (id, node_type, content, _, _, properties) in &nodes {
+        for (id, node_type, content, _, _, properties) in &nodes_normalized {
             // Build temporary Node for validation
             let temp_node = Node {
                 id: id.clone(),
@@ -4223,7 +4239,7 @@ where
 
         // Find the root ID once - all nodes in a bulk import share the same root
         // Performance optimization (Issue #760): Single DB query instead of N queries
-        let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes.first() {
+        let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes_normalized.first() {
             self.get_root_id(first_parent).await.ok()
         } else {
             None
@@ -4232,7 +4248,7 @@ where
         // Delegate to store for atomic batch insert
         let result = self
             .store
-            .bulk_create_hierarchy(nodes)
+            .bulk_create_hierarchy(nodes_normalized)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
@@ -4289,8 +4305,24 @@ where
             }
         }
 
+        // Issue #854: Normalize flat properties to namespaced format before validation
+        // Parser emits: { "status": "open" }
+        // Storage expects: { "task": { "status": "open" } }
+        let nodes_normalized: Vec<_> = nodes
+            .into_iter()
+            .map(|(id, node_type, content, parent_id, order, properties)| {
+                let schema_fields = schema_cache.get(&node_type).and_then(|opt| opt.as_ref());
+                let normalized_props = Self::normalize_flat_properties_to_namespace(
+                    &node_type,
+                    &properties,
+                    schema_fields.map(|v| v.as_slice()),
+                );
+                (id, node_type, content, parent_id, order, normalized_props)
+            })
+            .collect();
+
         // Validate all nodes before insertion using cached schemas
-        for (id, node_type, content, _, _, properties) in &nodes {
+        for (id, node_type, content, _, _, properties) in &nodes_normalized {
             let temp_node = Node {
                 id: id.clone(),
                 node_type: node_type.clone(),
@@ -4316,7 +4348,7 @@ where
         }
 
         // Find the root ID once
-        let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes.first() {
+        let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes_normalized.first() {
             self.get_root_id(first_parent).await.ok()
         } else {
             None
@@ -4325,7 +4357,106 @@ where
         // Delegate to store - use root-only notify variant
         let result = self
             .store
-            .bulk_create_hierarchy_root_notify(nodes)
+            .bulk_create_hierarchy_root_notify(nodes_normalized)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // Queue root for embedding regeneration once
+        if let Some(root_id) = root_id {
+            self.queue_root_for_embedding(&root_id).await;
+        }
+
+        Ok(result)
+    }
+
+    /// Bulk create nodes with trusted input (skips schema validation)
+    ///
+    /// Optimized for import paths where the source is trusted (like markdown parser).
+    /// This method:
+    /// - Normalizes flat properties to namespaced format (Issue #854)
+    /// - Skips schema DB queries (no lookup overhead)
+    /// - Skips schema validation (parser output is trusted)
+    /// - Still validates via behaviors (type-specific rules)
+    ///
+    /// # Issue #854: Import Pipeline Optimization
+    ///
+    /// The markdown parser only creates known node types with correct properties:
+    /// - Task nodes get `{"status": "open"}`
+    /// - Header, text, code-block nodes get `{}`
+    ///
+    /// Since the parser is trusted, we skip the expensive schema lookup and
+    /// validation, but still normalize properties to the correct storage format.
+    ///
+    /// # Arguments
+    ///
+    /// * `nodes` - Vector of (id, node_type, content, parent_id, order, properties) tuples
+    ///
+    /// # Returns
+    ///
+    /// Vector of created node IDs
+    pub async fn bulk_create_hierarchy_trusted(
+        &self,
+        nodes: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            f64,
+            serde_json::Value,
+        )>,
+    ) -> Result<Vec<String>, NodeServiceError> {
+        if nodes.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Issue #854: Normalize flat properties to namespaced format
+        // Parser emits: { "status": "open" }
+        // Storage expects: { "task": { "status": "open" } }
+        // No schema fields needed - import properties are always simple values
+        let nodes_normalized: Vec<_> = nodes
+            .into_iter()
+            .map(|(id, node_type, content, parent_id, order, properties)| {
+                let normalized_props = Self::normalize_flat_properties_to_namespace(
+                    &node_type,
+                    &properties,
+                    None, // No schema fields - import properties are simple
+                );
+                (id, node_type, content, parent_id, order, normalized_props)
+            })
+            .collect();
+
+        // Validate via behaviors only (type-specific rules, no schema)
+        for (id, node_type, content, _, _, properties) in &nodes_normalized {
+            let temp_node = Node {
+                id: id.clone(),
+                node_type: node_type.clone(),
+                content: content.clone(),
+                version: 1,
+                properties: properties.clone(),
+                mentions: vec![],
+                mentioned_by: vec![],
+                member_of: vec![],
+                created_at: chrono::Utc::now(),
+                modified_at: chrono::Utc::now(),
+                title: None,
+                lifecycle_status: "active".to_string(),
+            };
+
+            // Only behavior validation - skip schema validation
+            self.behaviors.validate_node(&temp_node)?;
+        }
+
+        // Find the root ID once
+        let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes_normalized.first() {
+            self.get_root_id(first_parent).await.ok()
+        } else {
+            None
+        };
+
+        // Delegate to store - use root-only notify variant for efficiency
+        let result = self
+            .store
+            .bulk_create_hierarchy_root_notify(nodes_normalized)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 

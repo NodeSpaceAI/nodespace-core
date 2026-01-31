@@ -151,6 +151,185 @@ impl PrepareContext {
     }
 }
 
+// ============================================================================
+// Link Transformation (Issue #854)
+// ============================================================================
+
+use regex::Regex;
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+
+/// Static regex for matching markdown links: [text](url)
+/// Compiled once and reused across all calls to transform_links_in_nodes.
+static LINK_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\(([^)]+)\)").unwrap());
+
+/// Transform inter-file markdown links in node content
+///
+/// During bulk import, markdown files often contain relative links to other files:
+/// ```markdown
+/// See the [architecture docs](./architecture/overview.md) for details.
+/// ```
+///
+/// This function transforms such links:
+/// - Internal links (to files in the import batch) → `nodespace://uuid`
+/// - Dead links (file not in batch) → text only (link removed)
+/// - External URLs (http/https) → preserved as-is
+///
+/// # Arguments
+///
+/// * `nodes` - Mutable slice of PreparedNodes to transform
+/// * `file_to_root_id` - Map from file path to root node UUID for the import batch
+/// * `current_file_path` - Optional path of the current file being processed
+///
+/// # Example
+///
+/// ```ignore
+/// let mut nodes = parse_file("docs/intro.md");
+/// let file_map = build_file_to_uuid_map(&all_files);
+/// transform_links_in_nodes(&mut nodes, &file_map, Some(Path::new("docs/intro.md")));
+/// ```
+pub fn transform_links_in_nodes(
+    nodes: &mut [PreparedNode],
+    file_to_root_id: &HashMap<PathBuf, String>,
+    current_file_path: Option<&Path>,
+) {
+    for node in nodes.iter_mut() {
+        node.content = transform_links_in_content(
+            &node.content,
+            file_to_root_id,
+            current_file_path,
+            &LINK_REGEX,
+        );
+    }
+}
+
+/// Transform links in a single content string
+fn transform_links_in_content(
+    content: &str,
+    file_to_root_id: &HashMap<PathBuf, String>,
+    current_file_path: Option<&Path>,
+    link_regex: &Regex,
+) -> String {
+    link_regex
+        .replace_all(content, |caps: &regex::Captures| {
+            let link_text = &caps[1];
+            let link_url = &caps[2];
+
+            transform_single_link(link_text, link_url, file_to_root_id, current_file_path)
+        })
+        .to_string()
+}
+
+/// Transform a single link based on its target
+fn transform_single_link(
+    link_text: &str,
+    link_url: &str,
+    file_to_root_id: &HashMap<PathBuf, String>,
+    current_file_path: Option<&Path>,
+) -> String {
+    // Check if it's already a nodespace link
+    if link_url.starts_with("nodespace://") {
+        return format!("[{}]({})", link_text, link_url);
+    }
+
+    // Check if it's an external URL (http/https/mailto/etc.)
+    if is_external_url(link_url) {
+        return format!("[{}]({})", link_text, link_url);
+    }
+
+    // Check if it's an anchor link (starts with #)
+    if link_url.starts_with('#') {
+        return format!("[{}]({})", link_text, link_url);
+    }
+
+    // It's a relative or absolute file path - try to resolve it
+    let resolved_path = resolve_relative_path(link_url, current_file_path);
+
+    // Check if the resolved path exists in our import batch
+    if let Some(target_id) = file_to_root_id.get(&resolved_path) {
+        // Transform to nodespace:// link
+        format!("[{}](nodespace://{})", link_text, target_id)
+    } else {
+        // Dead link - file not in import batch, remove link but keep text
+        link_text.to_string()
+    }
+}
+
+/// Check if a URL is external (http, https, mailto, etc.)
+fn is_external_url(url: &str) -> bool {
+    url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("mailto:")
+        || url.starts_with("tel:")
+        || url.starts_with("ftp://")
+        || url.starts_with("data:")
+}
+
+/// Resolve a relative path against the current file's directory
+fn resolve_relative_path(link_path: &str, current_file_path: Option<&Path>) -> PathBuf {
+    // Strip leading "./" from link path for cleaner matching
+    let clean_link = link_path.strip_prefix("./").unwrap_or(link_path);
+    let link_path_buf = PathBuf::from(clean_link);
+
+    // If the link is absolute, return as-is
+    if link_path_buf.is_absolute() {
+        return link_path_buf;
+    }
+
+    // If no current file path provided, return the link path as-is (normalized)
+    let base_dir = match current_file_path.and_then(|p| p.parent()) {
+        Some(dir) => dir,
+        None => return link_path_buf,
+    };
+
+    // Resolve the relative path against the current file's directory
+    let mut resolved = base_dir.to_path_buf();
+    for component in link_path_buf.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                resolved.pop();
+            }
+            std::path::Component::Normal(name) => {
+                resolved.push(name);
+            }
+            std::path::Component::CurDir => {
+                // Skip "." components
+            }
+            _ => {}
+        }
+    }
+
+    resolved
+}
+
+/// Build a map from file path to root node UUID for link transformation
+///
+/// Used during batch import to enable inter-file link resolution.
+///
+/// # Arguments
+///
+/// * `files` - Iterator of (file_path, root_node_id) pairs
+///
+/// # Returns
+///
+/// HashMap for O(1) lookup during link transformation
+pub fn build_file_to_uuid_map<I, P, S>(files: I) -> HashMap<PathBuf, String>
+where
+    I: IntoIterator<Item = (P, S)>,
+    P: AsRef<Path>,
+    S: AsRef<str>,
+{
+    files
+        .into_iter()
+        .map(|(path, id)| (path.as_ref().to_path_buf(), id.as_ref().to_string()))
+        .collect()
+}
+
+// ============================================================================
+// Markdown Parsing
+// ============================================================================
+
 /// Parse markdown into prepared nodes without any database access (Phase 1)
 ///
 /// This is the first phase of the two-phase batch creation optimization.

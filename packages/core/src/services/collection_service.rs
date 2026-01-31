@@ -650,6 +650,124 @@ where
             .await
             .map_err(|e| db_error(e, "Failed to get collections with member counts"))
     }
+
+    /// Resolve multiple collection paths in a single pass
+    ///
+    /// This is an optimized version of `resolve_path` for bulk import operations.
+    /// Instead of resolving paths one at a time (with repeated DB lookups for shared
+    /// prefixes), this method:
+    ///
+    /// 1. Parses all paths to extract unique collection names
+    /// 2. Batch-fetches all existing collections in ONE query
+    /// 3. Creates missing collections in hierarchy order
+    /// 4. Returns a map from path → leaf collection ID
+    ///
+    /// # Performance (Issue #854)
+    ///
+    /// For 100 files with paths like "Architecture:Core", "Architecture:Components":
+    /// - Before: 100 separate resolve_path calls, each querying for "Architecture"
+    /// - After: 1 batch query for all unique collection names, then create missing
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - Collection paths to resolve (e.g., ["hr:policy", "hr:vacation", "engineering"])
+    ///
+    /// # Returns
+    ///
+    /// HashMap from original path string to the leaf collection ID
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let paths = vec!["hr:policy", "hr:vacation", "engineering"];
+    /// let resolved = service.bulk_resolve_collections(&paths).await?;
+    /// // resolved["hr:policy"] = "collection_id_1"
+    /// // resolved["hr:vacation"] = "collection_id_2"
+    /// // resolved["engineering"] = "collection_id_3"
+    /// ```
+    pub async fn bulk_resolve_collections(
+        &self,
+        paths: &[String],
+    ) -> Result<std::collections::HashMap<String, String>, NodeServiceError> {
+        use std::collections::{HashMap, HashSet};
+
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Phase 1: Parse all paths and collect unique collection names
+        let mut parsed_paths: Vec<CollectionPath> = Vec::with_capacity(paths.len());
+        let mut all_segment_names: HashSet<String> = HashSet::new();
+
+        for path in paths {
+            let parsed = parse_collection_path(path)?;
+            for segment in &parsed.segments {
+                all_segment_names.insert(segment.name.clone());
+            }
+            parsed_paths.push(parsed);
+        }
+
+        // Phase 2: Batch fetch ALL existing collections at once
+        let segment_names_vec: Vec<String> = all_segment_names.into_iter().collect();
+        let existing_collections = self
+            .store
+            .get_collections_by_names(&segment_names_vec)
+            .await
+            .map_err(|e| db_error(e, "Failed to batch fetch collections for bulk resolve"))?;
+
+        // Phase 3: Build collection ID cache (normalized_name → id)
+        // Start with existing collections, add newly created ones as we go
+        let mut collection_id_cache: HashMap<String, String> = existing_collections
+            .iter()
+            .map(|(norm_name, node)| (norm_name.clone(), node.id.clone()))
+            .collect();
+
+        // Phase 4: Process each path, creating missing collections and hierarchy
+        // Track which paths we've already resolved to avoid duplicate work
+        let mut path_to_leaf_id: HashMap<String, String> = HashMap::new();
+
+        for parsed in &parsed_paths {
+            let mut previous_collection_id: Option<String> = None;
+
+            for segment in &parsed.segments {
+                let norm_name = &segment.normalized_name;
+
+                // Check if we already have this collection (from existing or created this session)
+                let collection_id = if let Some(id) = collection_id_cache.get(norm_name) {
+                    id.clone()
+                } else {
+                    // Create new collection
+                    let new_node = self.create_collection(&segment.name).await?;
+                    let new_id = new_node.id.clone();
+                    collection_id_cache.insert(norm_name.clone(), new_id.clone());
+                    new_id
+                };
+
+                // Create hierarchy relationship if there's a parent
+                // (idempotent - won't duplicate if already exists)
+                if let Some(parent_id) = &previous_collection_id {
+                    self.node_service
+                        .create_relationship(&collection_id, "member_of", parent_id, json!({}))
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to create collection hierarchy in bulk resolve: {}",
+                                e
+                            ))
+                        })?;
+                }
+
+                previous_collection_id = Some(collection_id);
+            }
+
+            // Map the original path to the leaf collection ID
+            if let Some(leaf_id) = previous_collection_id {
+                path_to_leaf_id.insert(parsed.original.clone(), leaf_id);
+            }
+        }
+
+        Ok(path_to_leaf_id)
+    }
 }
 
 #[cfg(test)]

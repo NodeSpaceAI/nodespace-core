@@ -423,10 +423,12 @@ code block
                     node.content
                 );
 
-                // Check the status property (status: "done" means completed)
+                // Check the status property - Issue #854: properties are now namespaced
+                // Status is stored at properties.task.status
                 let status = node
                     .properties
-                    .get("status")
+                    .get("task")
+                    .and_then(|t| t.get("status"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("open");
 
@@ -2050,5 +2052,242 @@ Some content"#;
         assert_eq!(lines[0], "> Line 1");
         assert_eq!(lines[1], ">");
         assert_eq!(lines[2], "> Line 2");
+    }
+}
+
+/// Tests for link transformation (Issue #854)
+///
+/// These tests verify that inter-file links are correctly transformed
+/// during bulk import operations.
+#[cfg(test)]
+mod link_transformation_tests {
+    use crate::mcp::handlers::markdown::{
+        build_file_to_uuid_map, transform_links_in_nodes, PreparedNode,
+    };
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn test_external_urls_preserved() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "Check [Google](https://google.com) and [email](mailto:test@example.com)".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let file_map = HashMap::new();
+        transform_links_in_nodes(&mut nodes, &file_map, None);
+
+        assert_eq!(
+            nodes[0].content,
+            "Check [Google](https://google.com) and [email](mailto:test@example.com)"
+        );
+    }
+
+    #[test]
+    fn test_nodespace_links_preserved() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "See [related](nodespace://abc-123-def) for details".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let file_map = HashMap::new();
+        transform_links_in_nodes(&mut nodes, &file_map, None);
+
+        assert_eq!(
+            nodes[0].content,
+            "See [related](nodespace://abc-123-def) for details"
+        );
+    }
+
+    #[test]
+    fn test_anchor_links_preserved() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "Jump to [Section 1](#section-1) below".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let file_map = HashMap::new();
+        transform_links_in_nodes(&mut nodes, &file_map, None);
+
+        assert_eq!(nodes[0].content, "Jump to [Section 1](#section-1) below");
+    }
+
+    #[test]
+    fn test_internal_link_transformed() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "See [architecture](./docs/architecture.md) for details".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let mut file_map = HashMap::new();
+        file_map.insert(
+            PathBuf::from("docs/architecture.md"),
+            "uuid-123".to_string(),
+        );
+
+        let current_file = Path::new("README.md");
+        transform_links_in_nodes(&mut nodes, &file_map, Some(current_file));
+
+        assert_eq!(
+            nodes[0].content,
+            "See [architecture](nodespace://uuid-123) for details"
+        );
+    }
+
+    #[test]
+    fn test_dead_link_removed() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "See [missing file](./nonexistent.md) for details".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let file_map = HashMap::new(); // No files in map
+        let current_file = Path::new("README.md");
+        transform_links_in_nodes(&mut nodes, &file_map, Some(current_file));
+
+        // Dead link should be replaced with just the text
+        assert_eq!(nodes[0].content, "See missing file for details");
+    }
+
+    #[test]
+    fn test_relative_path_resolution() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "See [parent](../overview.md) and [sibling](./sibling.md)".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let mut file_map = HashMap::new();
+        file_map.insert(PathBuf::from("overview.md"), "uuid-parent".to_string());
+        file_map.insert(PathBuf::from("docs/sibling.md"), "uuid-sibling".to_string());
+
+        let current_file = Path::new("docs/chapter1.md");
+        transform_links_in_nodes(&mut nodes, &file_map, Some(current_file));
+
+        assert_eq!(
+            nodes[0].content,
+            "See [parent](nodespace://uuid-parent) and [sibling](nodespace://uuid-sibling)"
+        );
+    }
+
+    #[test]
+    fn test_multiple_links_in_same_content() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "Read [intro](intro.md), then [guide](guide.md), and [external](https://docs.rs)"
+                .to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let mut file_map = HashMap::new();
+        file_map.insert(PathBuf::from("intro.md"), "uuid-1".to_string());
+        file_map.insert(PathBuf::from("guide.md"), "uuid-2".to_string());
+
+        transform_links_in_nodes(&mut nodes, &file_map, None);
+
+        assert_eq!(
+            nodes[0].content,
+            "Read [intro](nodespace://uuid-1), then [guide](nodespace://uuid-2), and [external](https://docs.rs)"
+        );
+    }
+
+    #[test]
+    fn test_build_file_to_uuid_map() {
+        let files = vec![
+            (PathBuf::from("docs/intro.md"), "uuid-1"),
+            (PathBuf::from("docs/guide.md"), "uuid-2"),
+            (PathBuf::from("README.md"), "uuid-3"),
+        ];
+
+        let map = build_file_to_uuid_map(files);
+
+        assert_eq!(map.len(), 3);
+        assert_eq!(
+            map.get(&PathBuf::from("docs/intro.md")),
+            Some(&"uuid-1".to_string())
+        );
+        assert_eq!(
+            map.get(&PathBuf::from("docs/guide.md")),
+            Some(&"uuid-2".to_string())
+        );
+        assert_eq!(
+            map.get(&PathBuf::from("README.md")),
+            Some(&"uuid-3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_transform_multiple_nodes() {
+        let mut nodes = vec![
+            PreparedNode::new(
+                "node1".to_string(),
+                "text",
+                "See [intro](intro.md)".to_string(),
+                None,
+                1.0,
+                json!({}),
+            ),
+            PreparedNode::new(
+                "node2".to_string(),
+                "text",
+                "Also [guide](guide.md)".to_string(),
+                Some("node1".to_string()),
+                2.0,
+                json!({}),
+            ),
+        ];
+
+        let mut file_map = HashMap::new();
+        file_map.insert(PathBuf::from("intro.md"), "uuid-1".to_string());
+        file_map.insert(PathBuf::from("guide.md"), "uuid-2".to_string());
+
+        transform_links_in_nodes(&mut nodes, &file_map, None);
+
+        assert_eq!(nodes[0].content, "See [intro](nodespace://uuid-1)");
+        assert_eq!(nodes[1].content, "Also [guide](nodespace://uuid-2)");
+    }
+
+    #[test]
+    fn test_no_links_unchanged() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "Just plain text without any links.".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let file_map = HashMap::new();
+        transform_links_in_nodes(&mut nodes, &file_map, None);
+
+        assert_eq!(nodes[0].content, "Just plain text without any links.");
     }
 }
