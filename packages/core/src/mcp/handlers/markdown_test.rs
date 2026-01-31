@@ -1872,4 +1872,183 @@ Some content"#;
         assert!(result["nodes"].is_array());
         assert!(result["duration_ms"].is_number());
     }
+
+    // Issue #855: Test multi-paragraph quote blocks with empty continuation lines
+    #[tokio::test]
+    async fn test_quote_block_with_empty_continuation_lines() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        // Test case from issue #855: Multi-line quote with empty continuation line
+        let markdown = r#"> **First line of quote**
+>
+> **Second line of quote**
+> **Third line of quote**"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "sync_import": true,
+            "title": "Quote Block Test"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        // Container from title + ONE quote-block node (not split into multiple)
+        assert_eq!(
+            result["nodes_created"], 2,
+            "Should have 2 nodes: container + single quote-block"
+        );
+
+        // Verify the quote-block node content
+        let node_ids = result["node_ids"].as_array().unwrap();
+        let quote_node = node_service
+            .get_node(node_ids[1].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(quote_node.node_type, "quote-block");
+        // Content should contain all lines including the empty continuation
+        assert!(
+            quote_node.content.contains("> **First line of quote**"),
+            "Missing first line of quote"
+        );
+        // Verify we have 4 lines including the empty continuation line
+        let lines: Vec<&str> = quote_node.content.lines().collect();
+        assert_eq!(
+            lines.len(),
+            4,
+            "Should have 4 lines including empty continuation"
+        );
+        assert_eq!(lines[1], ">", "Second line should be empty continuation");
+        assert!(
+            quote_node.content.contains("> **Second line of quote**"),
+            "Missing second line of quote"
+        );
+        assert!(
+            quote_node.content.contains("> **Third line of quote**"),
+            "Missing third line of quote"
+        );
+    }
+
+    // Issue #855: Test quote block starting with empty continuation line (edge case)
+    #[tokio::test]
+    async fn test_quote_block_starting_with_empty_line() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        // Edge case: Quote starting with just ">"
+        let markdown = r#">
+> Content after empty start"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "sync_import": true,
+            "title": "Empty Start Quote Test"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        // Should be ONE quote-block node
+        assert_eq!(
+            result["nodes_created"], 2,
+            "Should have 2 nodes: container + single quote-block"
+        );
+
+        let node_ids = result["node_ids"].as_array().unwrap();
+        let quote_node = node_service
+            .get_node(node_ids[1].as_str().unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(quote_node.node_type, "quote-block");
+        assert!(
+            quote_node.content.contains("> Content after empty start"),
+            "Missing content line"
+        );
+    }
+
+    // Issue #855: Test production example from testing guide
+    #[tokio::test]
+    async fn test_quote_block_production_example() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        // Production example from testing guide document
+        let markdown = r#"> **✅ AUTHORITATIVE DOCUMENT**: This is the single source of truth...
+>
+> **Status**: Active (Updated 2025-01-16)
+> **Scope**: Covers actual implementation approach..."#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "sync_import": true,
+            "title": "Testing Guide"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        // Should be ONE quote-block node, not split
+        assert_eq!(
+            result["nodes_created"], 2,
+            "Should have 2 nodes: container + single quote-block"
+        );
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes[1]["node_type"], "quote-block");
+    }
+
+    // Issue #855: Test quote block via update path (handle_update_root_from_markdown)
+    // This ensures the parse_markdown function (used for updates) also handles empty continuations
+    #[tokio::test]
+    async fn test_update_root_with_quote_block_empty_continuation() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        // Create root with simple content
+        let create_params = json!({
+            "markdown_content": "Simple text",
+            "sync_import": true,
+            "title": "Quote Update Test"
+        });
+        let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
+            .await
+            .unwrap();
+        let root_id = create_result["root_id"].as_str().unwrap();
+
+        // Update with multi-line quote containing empty continuation (issue #855 pattern)
+        let update_params = json!({
+            "root_id": root_id,
+            "markdown": "> Line 1\n>\n> Line 2"
+        });
+
+        let result = handle_update_root_from_markdown(&node_service, update_params)
+            .await
+            .unwrap();
+
+        // Should create exactly ONE quote-block node (not split into multiple)
+        assert_eq!(
+            result["nodes_created"].as_u64().unwrap(),
+            1,
+            "Should create single quote-block node, not split on empty continuation"
+        );
+
+        // Verify the quote-block structure
+        let children = node_service.get_children(root_id).await.unwrap();
+        assert_eq!(children.len(), 1, "Should have one child node");
+        assert_eq!(children[0].node_type, "quote-block");
+
+        // Verify all lines are preserved including empty continuation
+        let lines: Vec<&str> = children[0].content.lines().collect();
+        assert_eq!(lines.len(), 3, "Should have 3 lines");
+        assert_eq!(lines[0], "> Line 1");
+        assert_eq!(lines[1], ">");
+        assert_eq!(lines[2], "> Line 2");
+    }
 }

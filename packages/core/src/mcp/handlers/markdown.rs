@@ -249,12 +249,18 @@ pub fn prepare_nodes_from_markdown(
                     i += 1;
                 }
                 ("code-block", code_lines.join("\n"), None, true, None)
-            } else if content_line.starts_with("> ") {
-                // Quote block
+            } else if content_line.starts_with("> ") || content_line == ">" {
+                // Quote block - collect consecutive quote lines including empty continuation lines
+                // Empty quote continuation lines are just ">" without trailing space
                 let mut quote_lines = vec![content_line];
-                while i + 1 < lines.len() && lines[i + 1].trim_start().starts_with("> ") {
-                    i += 1;
-                    quote_lines.push(lines[i].trim_start());
+                while i + 1 < lines.len() {
+                    let next_trimmed = lines[i + 1].trim_start();
+                    if next_trimmed.starts_with("> ") || next_trimmed == ">" {
+                        i += 1;
+                        quote_lines.push(next_trimmed);
+                    } else {
+                        break;
+                    }
                 }
                 ("quote-block", quote_lines.join("\n"), None, true, None)
             } else if let Some(num_end) = detect_ordered_list(content_line) {
@@ -1249,12 +1255,18 @@ where
                 }
                 let code_content = code_lines.join("\n");
                 ("code-block", code_content, None, true, None)
-            } else if content_line.starts_with("> ") {
-                // Quote block - collect consecutive quote lines
+            } else if content_line.starts_with("> ") || content_line == ">" {
+                // Quote block - collect consecutive quote lines including empty continuation lines
+                // Empty quote continuation lines are just ">" without trailing space
                 let mut quote_lines = vec![content_line];
-                while i + 1 < lines.len() && lines[i + 1].trim_start().starts_with("> ") {
-                    i += 1;
-                    quote_lines.push(lines[i].trim_start());
+                while i + 1 < lines.len() {
+                    let next_trimmed = lines[i + 1].trim_start();
+                    if next_trimmed.starts_with("> ") || next_trimmed == ">" {
+                        i += 1;
+                        quote_lines.push(next_trimmed);
+                    } else {
+                        break;
+                    }
                 }
                 let quote_content = quote_lines.join("\n");
                 ("quote-block", quote_content, None, true, None)
