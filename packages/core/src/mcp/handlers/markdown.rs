@@ -1323,9 +1323,10 @@ fn is_task_line(line: &str) -> bool {
     line.starts_with("- [ ] ") || line.starts_with("- [x] ")
 }
 
-/// Check if a line is a bullet list item (not a task or link)
+/// Check if a line is a bullet list item (not a task)
 ///
-/// Bullets start with "- " but are not tasks ("- [ ]") or links ("- [text](url)").
+/// Bullets start with "- " but are not tasks ("- [ ]").
+/// Note: Lines like "- [Link](url)" ARE valid bullets - the link is the content.
 fn is_bullet_line(line: &str) -> bool {
     if !line.starts_with("- ") {
         return false;
@@ -1333,11 +1334,6 @@ fn is_bullet_line(line: &str) -> bool {
 
     // Exclude tasks
     if is_task_line(line) {
-        return false;
-    }
-
-    // Exclude markdown links: "- [text](url)"
-    if line.starts_with("- [") && line.contains("](") {
         return false;
     }
 

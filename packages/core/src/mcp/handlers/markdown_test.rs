@@ -1310,6 +1310,8 @@ Text under section 1
     async fn test_bullet_with_link() {
         let (node_service, _temp_dir) = setup_test_service().await;
 
+        // Issue #871: Bullet items containing links should have "- " stripped
+        // The link IS the bullet content, not a special case to exclude
         let markdown = r#"Text paragraph
 - [Click here](https://example.com)
 - Regular bullet"#;
@@ -1328,22 +1330,21 @@ Text under section 1
 
         let nodes = result["nodes"].as_array().unwrap();
 
-        // Container + text paragraph + link (stored as text) + bullet
+        // Container + text paragraph + link bullet + regular bullet
         assert_eq!(nodes.len(), 4);
 
-        // Link should be stored as text (not incorrectly identified as a bullet)
-        // The "- [link](url)" format should be preserved with the "- " prefix
+        // Link bullet should have "- " stripped - the link is the content
         let link_node = node_service
             .get_node(nodes[2]["id"].as_str().unwrap())
             .await
             .unwrap()
             .unwrap();
         assert_eq!(link_node.node_type, "text");
-        assert!(link_node.content.contains("[Click here]"));
-        // Verify the link preserved the "- " prefix (it wasn't treated as a bullet)
-        assert!(link_node.content.starts_with("- ["));
+        // The "- " prefix should be stripped, leaving just the link
+        assert_eq!(link_node.content, "[Click here](https://example.com)");
+        assert!(!link_node.content.starts_with("- "));
 
-        // Regular bullet should have "- " stripped
+        // Regular bullet should also have "- " stripped
         let bullet_node = node_service
             .get_node(nodes[3]["id"].as_str().unwrap())
             .await
@@ -1353,9 +1354,8 @@ Text under section 1
         assert_eq!(bullet_node.content, "Regular bullet");
 
         // Graph Architecture Note: Parent-child relationships are now managed via graph edges
-        // in the SurrealDB schema, not via parent_id fields. The bullet node's relationship
-        // to the text paragraph or link node would be verified via edge queries.
-        // The key verification here is that the "- " prefix was stripped from the bullet content.
+        // in the SurrealDB schema, not via parent_id fields. Both bullet nodes are children
+        // of the text paragraph, represented by edges in the graph.
     }
 
     #[tokio::test]
