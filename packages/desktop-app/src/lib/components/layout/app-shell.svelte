@@ -191,12 +191,27 @@
         const folderPath = await importService.selectFolder();
         if (!folderPath) return;
 
-        // Subscribe to progress updates
+        // Subscribe to progress updates - show step-based messages
         const unsubProgress = importService.onProgress((event) => {
-          statusBar.show(
-            `${event.current} (of ${event.total}) docs imported`,
-            Math.round((event.current / event.total) * 100)
-          );
+          // Calculate overall progress based on step (9 steps total)
+          // Steps 2-3 have per-file progress, others are single events
+          let progress: number;
+          if (event.step <= 3 && event.total > 0) {
+            // For reading/parsing steps, use item progress within the step
+            const stepBase = (event.step - 1) * (100 / 9);
+            const stepProgress = (event.current / event.total) * (100 / 9);
+            progress = Math.round(stepBase + stepProgress);
+          } else {
+            // For other steps, progress is just the step percentage
+            progress = Math.round((event.step / 9) * 100);
+          }
+
+          // Step 9 (complete) shows success message
+          if (event.step === 9) {
+            statusBar.success(event.message);
+          } else {
+            statusBar.show(event.message, progress);
+          }
         });
 
         try {
@@ -205,10 +220,10 @@
             exclude_patterns: ['design-system', 'node_modules', '.git'],
           });
 
+          // The completion message is now handled by the progress event (step 9)
+          // But if there were failures, show an error message
           if (result.failed > 0) {
             statusBar.error(`Import complete: ${result.successful} imported, ${result.failed} failed`);
-          } else {
-            statusBar.success(`${result.successful} docs imported in ${(result.duration_ms / 1000).toFixed(1)}s`);
           }
 
           // Refresh collections after import

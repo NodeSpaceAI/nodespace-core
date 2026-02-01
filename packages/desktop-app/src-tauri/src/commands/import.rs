@@ -83,21 +83,29 @@ pub struct ImportOptions {
 }
 
 /// Progress event emitted during import
+///
+/// Shows 9 distinct steps during import:
+/// 1. Scanning folder
+/// 2. Reading files (shows each filename)
+/// 3. Parsing markdown (shows each filename)
+/// 4. Resolving links
+/// 5. Creating collections
+/// 6. Importing nodes
+/// 7. Assigning to collections
+/// 8. Creating references
+/// 9. Complete (shows summary)
 #[derive(Debug, Clone, Serialize)]
 pub struct ImportProgressEvent {
-    /// Current file being processed (1-indexed)
+    /// Step number (1-9)
+    pub step: u8,
+    /// Step name (e.g., "scanning", "reading", "parsing", etc.)
+    pub step_name: String,
+    /// User-friendly message (e.g., "Reading: overview.md")
+    pub message: String,
+    /// Current item in step (if applicable)
     pub current: usize,
-    /// Total number of files to process
+    /// Total items in step (if applicable)
     pub total: usize,
-    /// Current file path (relative)
-    pub file_path: String,
-    /// Status of the current file (parsing, inserting, complete)
-    pub status: String,
-    /// Collection assigned (if any)
-    pub collection: Option<String>,
-    /// Current phase of the import (parsing, inserting, assigning, complete)
-    #[serde(default)]
-    pub phase: Option<String>,
 }
 
 /// Prepared file data for batched import (Issue #854)
@@ -125,6 +133,24 @@ struct CollectionMetadata {
     /// Collection path (e.g., "Architecture:Core")
     collection: String,
     /// Whether the file should be marked as archived
+    is_archived: bool,
+}
+
+/// Intermediate result from reading a file (before parsing)
+///
+/// Holds file content and metadata between the "reading" and "parsing" phases,
+/// enabling per-step progress events.
+#[derive(Debug)]
+struct FileReadResult {
+    /// Full path to the file
+    path: PathBuf,
+    /// Raw file content
+    content: String,
+    /// Path relative to base directory (for display)
+    relative_path: String,
+    /// Collection path for assignment (if auto-routing enabled)
+    collection_path: Option<String>,
+    /// Whether this file is in an archived directory
     is_archived: bool,
 }
 
@@ -509,19 +535,22 @@ pub async fn import_markdown_files(
     let mut results: Vec<FileImportResult> = Vec::with_capacity(total_files);
     let mut failed = 0;
 
-    // Emit parsing phase start
+    // Step 1: Scanning folder
     let _ = app.emit(
         "import-progress",
         ImportProgressEvent {
+            step: 1,
+            step_name: "scanning".to_string(),
+            message: "Scanning folder...".to_string(),
             current: 0,
             total: total_files,
-            file_path: "".to_string(),
-            status: "parsing".to_string(),
-            collection: None,
-            phase: Some("parsing".to_string()),
         },
     );
 
+    // Store file contents for reading/parsing phases
+    let mut file_contents: Vec<FileReadResult> = Vec::new();
+
+    // Step 2: Reading files (emit per-file progress)
     for (index, file_path) in file_paths.iter().enumerate() {
         let path = PathBuf::from(file_path);
         let relative_path = path
@@ -530,20 +559,27 @@ pub async fn import_markdown_files(
             .to_string_lossy()
             .to_string();
 
+        // Extract just the filename for display
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&relative_path)
+            .to_string();
+
+        // Emit reading progress
+        let _ = app.emit(
+            "import-progress",
+            ImportProgressEvent {
+                step: 2,
+                step_name: "reading".to_string(),
+                message: format!("Reading: {}", filename),
+                current: index + 1,
+                total: total_files,
+            },
+        );
+
         // Skip non-existent files
         if !path.exists() || !path.is_file() {
-            let _ = app.emit(
-                "import-progress",
-                ImportProgressEvent {
-                    current: index + 1,
-                    total: total_files,
-                    file_path: relative_path.clone(),
-                    status: "skipped".to_string(),
-                    collection: None,
-                    phase: Some("parsing".to_string()),
-                },
-            );
-
             results.push(FileImportResult {
                 file_path: file_path.clone(),
                 root_id: None,
@@ -582,6 +618,44 @@ pub async fn import_markdown_files(
                 continue;
             }
         };
+
+        file_contents.push(FileReadResult {
+            path,
+            content,
+            relative_path,
+            collection_path,
+            is_archived,
+        });
+    }
+
+    // Step 3: Parsing markdown (emit per-file progress)
+    for (index, file_read) in file_contents.iter().enumerate() {
+        let FileReadResult {
+            path,
+            content,
+            relative_path,
+            collection_path,
+            is_archived,
+        } = file_read;
+
+        // Extract just the filename for display
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(relative_path)
+            .to_string();
+
+        // Emit parsing progress
+        let _ = app.emit(
+            "import-progress",
+            ImportProgressEvent {
+                step: 3,
+                step_name: "parsing".to_string(),
+                message: format!("Parsing: {}", filename),
+                current: index + 1,
+                total: file_contents.len(),
+            },
+        );
 
         // Determine title
         let title = if options.use_filename_as_title {
@@ -625,7 +699,7 @@ pub async fn import_markdown_files(
                 Ok(nodes) => nodes,
                 Err(e) => {
                     results.push(FileImportResult {
-                        file_path: file_path.clone(),
+                        file_path: path.to_string_lossy().to_string(),
                         root_id: None,
                         nodes_created: 0,
                         success: false,
@@ -638,25 +712,12 @@ pub async fn import_markdown_files(
                 }
             };
 
-        // Emit parsing progress
-        let _ = app.emit(
-            "import-progress",
-            ImportProgressEvent {
-                current: index + 1,
-                total: total_files,
-                file_path: relative_path,
-                status: "parsed".to_string(),
-                collection: collection_path.clone(),
-                phase: Some("parsing".to_string()),
-            },
-        );
-
         prepared_files.push(PreparedFileImport {
-            file_path: path,
+            file_path: path.clone(),
             root_id,
             root_content,
-            is_archived,
-            collection_path,
+            is_archived: *is_archived,
+            collection_path: collection_path.clone(),
             children,
         });
     }
@@ -666,6 +727,18 @@ pub async fn import_markdown_files(
         .iter()
         .map(|f| (f.file_path.clone(), f.root_id.clone()))
         .collect();
+
+    // Step 4: Resolving links
+    let _ = app.emit(
+        "import-progress",
+        ImportProgressEvent {
+            step: 4,
+            step_name: "resolving".to_string(),
+            message: "Resolving internal links...".to_string(),
+            current: 0,
+            total: prepared_files.len(),
+        },
+    );
 
     // Transform inter-file links in all nodes and collect mentions (Issue #868)
     let mut all_mentions: Vec<(String, String)> = Vec::new();
@@ -707,30 +780,36 @@ pub async fn import_markdown_files(
 
     let parsing_duration = start.elapsed().as_millis();
 
-    // Clone data for the spawned task
+    // Clone data for the spawned task.
+    // These values are computed before tokio::spawn because:
+    // 1. The async block uses `move`, which takes ownership of captured variables
+    // 2. Computing lengths/counts here avoids borrowing issues in the async context
+    // 3. Cloning Arc/handles is cheap and allows the original references to be dropped
     let store = Arc::clone(node_service.store());
     let node_service_clone = node_service.inner().clone();
     let app_clone = app.clone();
     let total_files_clone = total_files;
+    let successful_files_clone = prepared_files.len();
+    let total_nodes_clone: usize = prepared_files.iter().map(|f| 1 + f.children.len()).sum();
+    let all_mentions_count = all_mentions.len();
+    let unique_collections_count = unique_collections.len();
 
     // Spawn background task for DB operations
     tokio::spawn(async move {
         let insert_start = std::time::Instant::now();
 
-        // Emit insertion phase start
+        // Step 5: Creating collections
         let _ = app_clone.emit(
             "import-progress",
             ImportProgressEvent {
+                step: 5,
+                step_name: "collections".to_string(),
+                message: format!("Creating {} collections...", unique_collections_count),
                 current: 0,
-                total: total_files_clone,
-                file_path: "".to_string(),
-                status: "inserting".to_string(),
-                collection: None,
-                phase: Some("inserting".to_string()),
+                total: unique_collections_count,
             },
         );
 
-        // Step 1: Bulk resolve all unique collections
         let collection_service = CollectionService::new(&store, &node_service_clone);
         let collection_map = match collection_service
             .bulk_resolve_collections(&unique_collections)
@@ -743,7 +822,7 @@ pub async fn import_markdown_files(
             }
         };
 
-        // Step 2: Build all nodes for bulk insertion
+        // Build all nodes for bulk insertion
         let mut all_nodes: Vec<(
             String,
             String,
@@ -793,7 +872,19 @@ pub async fn import_markdown_files(
             }
         }
 
-        // Step 3: Bulk create all nodes using trusted import (skips schema validation)
+        // Step 6: Importing nodes
+        let _ = app_clone.emit(
+            "import-progress",
+            ImportProgressEvent {
+                step: 6,
+                step_name: "importing".to_string(),
+                message: format!("Importing {} nodes...", all_nodes.len()),
+                current: 0,
+                total: all_nodes.len(),
+            },
+        );
+
+        // Bulk create all nodes using trusted import (skips schema validation)
         match node_service_clone
             .bulk_create_hierarchy_trusted(all_nodes)
             .await
@@ -810,7 +901,18 @@ pub async fn import_markdown_files(
             }
         }
 
-        // Step 4: Bulk add to collections
+        // Step 7: Assigning to collections
+        let _ = app_clone.emit(
+            "import-progress",
+            ImportProgressEvent {
+                step: 7,
+                step_name: "assigning".to_string(),
+                message: "Assigning to collections...".to_string(),
+                current: 0,
+                total: collection_assignments.len(),
+            },
+        );
+
         if !collection_assignments.is_empty() {
             match store.bulk_add_to_collections(&collection_assignments).await {
                 Ok(count) => {
@@ -822,7 +924,18 @@ pub async fn import_markdown_files(
             }
         }
 
-        // Step 5: Bulk create mention relationships (Issue #868)
+        // Step 8: Creating references (mentions)
+        let _ = app_clone.emit(
+            "import-progress",
+            ImportProgressEvent {
+                step: 8,
+                step_name: "references".to_string(),
+                message: format!("Creating {} references...", all_mentions_count),
+                current: 0,
+                total: all_mentions_count,
+            },
+        );
+
         if !all_mentions.is_empty() {
             match store.bulk_create_mentions(&all_mentions).await {
                 Ok(count) => {
@@ -850,16 +963,21 @@ pub async fn import_markdown_files(
             }
         }
 
-        // Emit completion event
+        // Step 9: Complete
+        let total_duration = insert_start.elapsed();
         let _ = app_clone.emit(
             "import-progress",
             ImportProgressEvent {
+                step: 9,
+                step_name: "complete".to_string(),
+                message: format!(
+                    "Imported {} files ({} nodes) in {:.1}s",
+                    successful_files_clone,
+                    total_nodes_clone,
+                    total_duration.as_secs_f64()
+                ),
                 current: total_files_clone,
                 total: total_files_clone,
-                file_path: "".to_string(),
-                status: "complete".to_string(),
-                collection: None,
-                phase: Some("complete".to_string()),
             },
         );
 
@@ -870,7 +988,7 @@ pub async fn import_markdown_files(
                 .iter()
                 .map(|f| 1 + f.children.len())
                 .sum::<usize>(),
-            insert_start.elapsed()
+            total_duration
         );
     });
 

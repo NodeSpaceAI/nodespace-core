@@ -47,12 +47,31 @@ export interface BatchImportResult {
   duration_ms: number;
 }
 
+/**
+ * Progress event emitted during import
+ *
+ * Shows 9 distinct steps during import:
+ * 1. Scanning folder
+ * 2. Reading files (shows each filename)
+ * 3. Parsing markdown (shows each filename)
+ * 4. Resolving links
+ * 5. Creating collections
+ * 6. Importing nodes
+ * 7. Assigning to collections
+ * 8. Creating references
+ * 9. Complete (shows summary)
+ */
 export interface ImportProgressEvent {
+  /** Step number (1-9) */
+  step: number;
+  /** Step name (e.g., "scanning", "reading", "parsing", etc.) */
+  step_name: string;
+  /** User-friendly message (e.g., "Reading: overview.md") */
+  message: string;
+  /** Current item in step (if applicable) */
   current: number;
+  /** Total items in step (if applicable) */
   total: number;
-  file_path: string;
-  status: string;
-  collection: string | null;
 }
 
 // ============================================================================
