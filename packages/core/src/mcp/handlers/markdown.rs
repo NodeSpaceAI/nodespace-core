@@ -152,12 +152,23 @@ impl PrepareContext {
 }
 
 // ============================================================================
-// Link Transformation (Issue #854)
+// Link Transformation (Issue #854, #868)
 // ============================================================================
 
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
+
+/// Result of link transformation containing collected mentions (Issue #868)
+///
+/// During link transformation, we collect (source_node_id, target_node_id) pairs
+/// for creating mention relationships after nodes are inserted into the database.
+#[derive(Debug, Clone, Default)]
+pub struct LinkTransformResult {
+    /// Collected mentions as (source_node_id, target_node_id) pairs
+    /// These are links that were successfully resolved to nodespace:// format
+    pub mentions: Vec<(String, String)>,
+}
 
 /// Static regex for matching markdown links: [text](url)
 /// Compiled once and reused across all calls to transform_links_in_nodes.
@@ -194,53 +205,114 @@ pub fn transform_links_in_nodes(
     file_to_root_id: &HashMap<PathBuf, String>,
     current_file_path: Option<&Path>,
 ) {
+    // Delegate to the mentions-aware version and discard the mentions result (DRY principle)
+    // The overhead of collecting mentions is negligible (just Vec allocation)
+    let _ = transform_links_in_nodes_with_mentions(nodes, file_to_root_id, current_file_path, "");
+}
+
+/// Transform inter-file markdown links and collect mention relationships (Issue #868)
+///
+/// Same as `transform_links_in_nodes` but also returns a `LinkTransformResult`
+/// containing (source_node_id, target_node_id) pairs for creating mention relationships.
+///
+/// # Arguments
+///
+/// * `nodes` - Mutable slice of PreparedNodes to transform
+/// * `file_to_root_id` - Map from file path to root node UUID for the import batch
+/// * `current_file_path` - Optional path of the current file being processed
+/// * `source_root_id` - The root node ID of the source document (for mention relationships)
+///
+/// # Returns
+///
+/// `LinkTransformResult` containing mentions collected during transformation
+pub fn transform_links_in_nodes_with_mentions(
+    nodes: &mut [PreparedNode],
+    file_to_root_id: &HashMap<PathBuf, String>,
+    current_file_path: Option<&Path>,
+    source_root_id: &str,
+) -> LinkTransformResult {
+    let mut result = LinkTransformResult::default();
+
     for node in nodes.iter_mut() {
-        node.content = transform_links_in_content(
+        let (new_content, target_ids) = transform_links_in_content_with_mentions(
             &node.content,
             file_to_root_id,
             current_file_path,
             &LINK_REGEX,
         );
+        node.content = new_content;
+
+        // Collect mentions, skipping self-references
+        for target_id in target_ids {
+            if target_id != source_root_id {
+                result
+                    .mentions
+                    .push((source_root_id.to_string(), target_id));
+            }
+        }
     }
+
+    result
 }
 
-/// Transform links in a single content string
-fn transform_links_in_content(
+/// Transform links in a single content string and collect target IDs (Issue #868)
+fn transform_links_in_content_with_mentions(
     content: &str,
     file_to_root_id: &HashMap<PathBuf, String>,
     current_file_path: Option<&Path>,
     link_regex: &Regex,
-) -> String {
-    link_regex
+) -> (String, Vec<String>) {
+    let mut target_ids = Vec::new();
+
+    let transformed = link_regex
         .replace_all(content, |caps: &regex::Captures| {
             let link_text = &caps[1];
             let link_url = &caps[2];
 
-            transform_single_link(link_text, link_url, file_to_root_id, current_file_path)
+            let (transformed_link, target_id) = transform_single_link_with_target(
+                link_text,
+                link_url,
+                file_to_root_id,
+                current_file_path,
+            );
+
+            if let Some(id) = target_id {
+                target_ids.push(id);
+            }
+
+            transformed_link
         })
-        .to_string()
+        .to_string();
+
+    (transformed, target_ids)
 }
 
-/// Transform a single link based on its target
-fn transform_single_link(
+/// Transform a single link and return the target ID if it resolves to a nodespace link (Issue #868)
+///
+/// Returns a tuple of (transformed_link, Option<target_id>)
+/// - For existing nodespace:// links: returns the link and extracts the target ID
+/// - For resolved file links: returns nodespace:// link and the target ID
+/// - For external/anchor/dead links: returns appropriate link and None
+fn transform_single_link_with_target(
     link_text: &str,
     link_url: &str,
     file_to_root_id: &HashMap<PathBuf, String>,
     current_file_path: Option<&Path>,
-) -> String {
-    // Check if it's already a nodespace link
+) -> (String, Option<String>) {
+    // Check if it's already a nodespace link - extract target ID for mention creation
     if link_url.starts_with("nodespace://") {
-        return format!("[{}]({})", link_text, link_url);
+        let target_id = link_url.strip_prefix("nodespace://").map(|s| s.to_string());
+        return (format!("[{}]({})", link_text, link_url), target_id);
     }
 
     // Check if it's an external URL (http/https/mailto/etc.)
     if is_external_url(link_url) {
-        return format!("[{}]({})", link_text, link_url);
+        return (format!("[{}]({})", link_text, link_url), None);
     }
 
     // Check if it's an anchor link (starts with #)
     if link_url.starts_with('#') {
-        return format!("[{}]({})", link_text, link_url);
+        return (format!("[{}]({})", link_text, link_url), None);
     }
 
     // It's a relative or absolute file path - try to resolve it
@@ -248,11 +320,14 @@ fn transform_single_link(
 
     // Check if the resolved path exists in our import batch
     if let Some(target_id) = file_to_root_id.get(&resolved_path) {
-        // Transform to nodespace:// link
-        format!("[{}](nodespace://{})", link_text, target_id)
+        // Transform to nodespace:// link and return target ID for mention
+        (
+            format!("[{}](nodespace://{})", link_text, target_id),
+            Some(target_id.clone()),
+        )
     } else {
         // Dead link - file not in import batch, remove link but keep text
-        link_text.to_string()
+        (link_text.to_string(), None)
     }
 }
 

@@ -28,7 +28,7 @@
 //! This returns immediately to the UI while heavy database work happens in background.
 
 use nodespace_core::mcp::handlers::markdown::{
-    prepare_nodes_from_markdown, transform_links_in_nodes, PreparedNode,
+    prepare_nodes_from_markdown, transform_links_in_nodes_with_mentions, PreparedNode,
 };
 use nodespace_core::services::{CollectionService, CreateNodeParams, NodeService};
 use serde::{Deserialize, Serialize};
@@ -667,13 +667,16 @@ pub async fn import_markdown_files(
         .map(|f| (f.file_path.clone(), f.root_id.clone()))
         .collect();
 
-    // Transform inter-file links in all nodes
+    // Transform inter-file links in all nodes and collect mentions (Issue #868)
+    let mut all_mentions: Vec<(String, String)> = Vec::new();
     for prepared in &mut prepared_files {
-        transform_links_in_nodes(
+        let result = transform_links_in_nodes_with_mentions(
             &mut prepared.children,
             &file_to_uuid_map,
             Some(&prepared.file_path),
+            &prepared.root_id,
         );
+        all_mentions.extend(result.mentions);
     }
 
     // Collect unique collection paths
@@ -815,6 +818,18 @@ pub async fn import_markdown_files(
                 }
                 Err(e) => {
                     tracing::error!("Failed to bulk add to collections: {:?}", e);
+                }
+            }
+        }
+
+        // Step 5: Bulk create mention relationships (Issue #868)
+        if !all_mentions.is_empty() {
+            match store.bulk_create_mentions(&all_mentions).await {
+                Ok(count) => {
+                    tracing::info!("Bulk created {} mentions", count);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to bulk create mentions: {:?}", e);
                 }
             }
         }

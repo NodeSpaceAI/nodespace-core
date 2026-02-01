@@ -2291,3 +2291,239 @@ mod link_transformation_tests {
         assert_eq!(nodes[0].content, "Just plain text without any links.");
     }
 }
+
+/// Tests for mention collection during link transformation (Issue #868)
+///
+/// These tests verify that mention relationships are correctly collected
+/// when inter-file links are transformed to nodespace:// format.
+#[cfg(test)]
+mod mention_collection_tests {
+    use crate::mcp::handlers::markdown::{transform_links_in_nodes_with_mentions, PreparedNode};
+    use serde_json::json;
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn test_mention_collected_from_resolved_link() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "See [architecture](./docs/architecture.md) for details".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let mut file_map = HashMap::new();
+        file_map.insert(
+            PathBuf::from("docs/architecture.md"),
+            "target-uuid-123".to_string(),
+        );
+
+        let current_file = Path::new("README.md");
+        let result = transform_links_in_nodes_with_mentions(
+            &mut nodes,
+            &file_map,
+            Some(current_file),
+            "source-root-uuid",
+        );
+
+        // Should collect one mention from source to target
+        assert_eq!(result.mentions.len(), 1);
+        assert_eq!(result.mentions[0].0, "source-root-uuid");
+        assert_eq!(result.mentions[0].1, "target-uuid-123");
+    }
+
+    #[test]
+    fn test_self_references_skipped() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "Link to [self](./self.md)".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let mut file_map = HashMap::new();
+        // Map the link target to the same ID as the source root
+        file_map.insert(PathBuf::from("self.md"), "root-uuid".to_string());
+
+        let current_file = Path::new("root.md");
+        let result = transform_links_in_nodes_with_mentions(
+            &mut nodes,
+            &file_map,
+            Some(current_file),
+            "root-uuid", // Same as target - self-reference
+        );
+
+        // Self-reference should be filtered out
+        assert_eq!(result.mentions.len(), 0);
+    }
+
+    #[test]
+    fn test_external_links_no_mention() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "Check [Google](https://google.com) and [email](mailto:test@example.com)".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let file_map = HashMap::new();
+        let result =
+            transform_links_in_nodes_with_mentions(&mut nodes, &file_map, None, "source-uuid");
+
+        // External URLs should not produce mentions
+        assert_eq!(result.mentions.len(), 0);
+    }
+
+    #[test]
+    fn test_anchor_links_no_mention() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "Jump to [Section 1](#section-1) below".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let file_map = HashMap::new();
+        let result =
+            transform_links_in_nodes_with_mentions(&mut nodes, &file_map, None, "source-uuid");
+
+        // Anchor links should not produce mentions
+        assert_eq!(result.mentions.len(), 0);
+    }
+
+    #[test]
+    fn test_dead_links_no_mention() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "See [missing file](./nonexistent.md) for details".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let file_map = HashMap::new(); // No files in map
+        let current_file = Path::new("README.md");
+        let result = transform_links_in_nodes_with_mentions(
+            &mut nodes,
+            &file_map,
+            Some(current_file),
+            "source-uuid",
+        );
+
+        // Dead links should not produce mentions
+        assert_eq!(result.mentions.len(), 0);
+    }
+
+    #[test]
+    fn test_existing_nodespace_link_produces_mention() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "See [related](nodespace://target-abc-123) for details".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let file_map = HashMap::new();
+        let result =
+            transform_links_in_nodes_with_mentions(&mut nodes, &file_map, None, "source-uuid");
+
+        // Existing nodespace:// links SHOULD produce mentions (handles re-imports)
+        assert_eq!(result.mentions.len(), 1);
+        assert_eq!(result.mentions[0].0, "source-uuid");
+        assert_eq!(result.mentions[0].1, "target-abc-123");
+    }
+
+    #[test]
+    fn test_multiple_mentions_collected() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "Read [intro](intro.md), then [guide](guide.md), and [external](https://docs.rs)"
+                .to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let mut file_map = HashMap::new();
+        file_map.insert(PathBuf::from("intro.md"), "uuid-1".to_string());
+        file_map.insert(PathBuf::from("guide.md"), "uuid-2".to_string());
+
+        let result =
+            transform_links_in_nodes_with_mentions(&mut nodes, &file_map, None, "source-uuid");
+
+        // Should collect 2 mentions (intro and guide), external URL doesn't count
+        assert_eq!(result.mentions.len(), 2);
+
+        let mention_targets: Vec<&str> = result.mentions.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(mention_targets.contains(&"uuid-1"));
+        assert!(mention_targets.contains(&"uuid-2"));
+    }
+
+    #[test]
+    fn test_mentions_from_multiple_nodes() {
+        let mut nodes = vec![
+            PreparedNode::new(
+                "node1".to_string(),
+                "text",
+                "See [intro](intro.md)".to_string(),
+                None,
+                1.0,
+                json!({}),
+            ),
+            PreparedNode::new(
+                "node2".to_string(),
+                "text",
+                "Also [guide](guide.md)".to_string(),
+                Some("node1".to_string()),
+                2.0,
+                json!({}),
+            ),
+        ];
+
+        let mut file_map = HashMap::new();
+        file_map.insert(PathBuf::from("intro.md"), "uuid-1".to_string());
+        file_map.insert(PathBuf::from("guide.md"), "uuid-2".to_string());
+
+        let result =
+            transform_links_in_nodes_with_mentions(&mut nodes, &file_map, None, "source-root");
+
+        // Should collect mentions from both nodes
+        assert_eq!(result.mentions.len(), 2);
+
+        // All mentions should have the same source (root)
+        for (source, _) in &result.mentions {
+            assert_eq!(source, "source-root");
+        }
+    }
+
+    #[test]
+    fn test_no_links_empty_mentions() {
+        let mut nodes = vec![PreparedNode::new(
+            "node1".to_string(),
+            "text",
+            "Just plain text without any links.".to_string(),
+            None,
+            1.0,
+            json!({}),
+        )];
+
+        let file_map = HashMap::new();
+        let result =
+            transform_links_in_nodes_with_mentions(&mut nodes, &file_map, None, "source-uuid");
+
+        // No links = no mentions
+        assert!(result.mentions.is_empty());
+    }
+}
