@@ -123,13 +123,14 @@ export async function getChildrenTree(parentId: string): Promise<NodeWithChildre
  * @param version - Expected version for optimistic concurrency control
  * @param newParentId - New parent ID (null = make root node)
  * @param insertAfterNodeId - Sibling to insert after (null = append at end)
+ * @returns Updated node with new version (critical for frontend to sync local state)
  */
 export async function moveNode(
   nodeId: string,
   version: number,
   newParentId: string | null,
   insertAfterNodeId?: string | null
-): Promise<void> {
+): Promise<Node> {
   return backendAdapter.moveNode(nodeId, version, newParentId, insertAfterNodeId ?? null);
 }
 

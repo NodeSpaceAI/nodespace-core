@@ -464,17 +464,18 @@ pub async fn delete_node(
 /// * `insert_after_node_id` - New position in sibling chain
 ///
 /// # Returns
-/// * `Ok(())` - Move completed successfully
+/// * `Ok(Node)` - Updated node with new version (critical for frontend to sync local state)
 /// * `Err(CommandError)` - Error if move validation fails or version conflict
 ///
 /// # Example Frontend Usage
 /// ```typescript
-/// await invoke('move_node', {
+/// const updatedNode = await invoke('move_node', {
 ///   nodeId: 'node-123',
 ///   version: 5,
 ///   newParentId: 'parent-456',
 ///   insertAfterNodeId: 'node-789'
 /// });
+/// // Frontend syncs local version from updatedNode.version
 /// ```
 #[tauri::command]
 pub async fn move_node(
@@ -483,8 +484,8 @@ pub async fn move_node(
     version: i64,
     new_parent_id: Option<String>,
     insert_after_node_id: Option<String>,
-) -> Result<(), CommandError> {
-    service
+) -> Result<Value, CommandError> {
+    let node = service
         .with_client(TAURI_CLIENT_ID)
         .move_node_with_occ(
             &node_id,
@@ -493,7 +494,9 @@ pub async fn move_node(
             insert_after_node_id.as_deref(),
         )
         .await
-        .map_err(Into::into)
+        .map_err(CommandError::from)?;
+
+    node_to_typed_value(node)
 }
 
 /// Reorder a node by changing its sibling position

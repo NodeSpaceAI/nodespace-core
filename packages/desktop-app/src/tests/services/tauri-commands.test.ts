@@ -231,27 +231,24 @@ describe('Tauri Commands Service - API Surface', () => {
 
   describe('moveNode', () => {
     it('should accept node ID, version, and new parent', async () => {
-      await expect(
-        tauriCommands.moveNode('node-1', 1, 'new-parent', null)
-      ).resolves.toBeUndefined();
+      // moveNode now returns the updated Node with new version
+      const result = await tauriCommands.moveNode('node-1', 1, 'new-parent', null);
+      expect(result).toBeDefined();
     });
 
     it('should handle moving to root (null parent)', async () => {
-      await expect(
-        tauriCommands.moveNode('node-1', 1, null, null)
-      ).resolves.toBeUndefined();
+      const result = await tauriCommands.moveNode('node-1', 1, null, null);
+      expect(result).toBeDefined();
     });
 
     it('should handle sibling positioning', async () => {
-      await expect(
-        tauriCommands.moveNode('node-1', 1, 'parent-1', 'sibling-2')
-      ).resolves.toBeUndefined();
+      const result = await tauriCommands.moveNode('node-1', 1, 'parent-1', 'sibling-2');
+      expect(result).toBeDefined();
     });
 
     it('should handle undefined insertAfterNodeId', async () => {
-      await expect(
-        tauriCommands.moveNode('node-1', 1, 'parent-1', undefined)
-      ).resolves.toBeUndefined();
+      const result = await tauriCommands.moveNode('node-1', 1, 'parent-1', undefined);
+      expect(result).toBeDefined();
     });
   });
 

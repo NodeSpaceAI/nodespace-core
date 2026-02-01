@@ -146,13 +146,13 @@ describe('Backend Adapter - MockAdapter (Test Environment)', () => {
       expect(result).toBeNull();
     });
 
-    it('should handle moveNode without error', async () => {
+    it('should handle moveNode and return updated node', async () => {
       const { getBackendAdapter } = await import('$lib/services/backend-adapter');
       const adapter = getBackendAdapter();
 
-      await expect(
-        adapter.moveNode('node-1', 1, 'new-parent', null)
-      ).resolves.toBeUndefined();
+      // moveNode now returns the updated Node with new version
+      const result = await adapter.moveNode('node-1', 1, 'new-parent', null);
+      expect(result).toBeDefined();
     });
   });
 

@@ -880,43 +880,12 @@ async fn update_node(
     Path(id): Path<String>,
     Json(request): Json<UpdateNodeRequest>,
 ) -> ApiResult<serde_json::Value> {
-    // Use optimistic concurrency control via version check
-    let rows_affected = state
-        .node_service
-        .update_with_version_check(&id, request.version, request.update)
-        .await
-        .map_err(map_node_service_error)?;
-
-    // Check if update succeeded (version matched)
-    if rows_affected == 0 {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ApiError::new(
-                "VERSION_CONFLICT",
-                format!(
-                    "Version conflict: node {} has been modified by another client",
-                    id
-                ),
-            )),
-        ));
-    }
-
-    // Retrieve and return the updated node
-    // This includes all business logic (populate_mentions, backfill_schema_version, etc.)
+    // Use optimistic concurrency control - returns updated node directly
     let updated_node = state
         .node_service
-        .get_node(&id)
+        .update_node_with_occ(&id, request.version, request.update)
         .await
-        .map_err(map_node_service_error)?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ApiError::new(
-                    "RESOURCE_NOT_FOUND",
-                    format!("Node {} not found after update", id),
-                )),
-            )
-        })?;
+        .map_err(map_node_service_error)?;
 
     // NOTE: No SSE broadcast needed here - NodeService emits DomainEvent
     // which is converted to SSE by the domain_event_to_sse_bridge
@@ -1030,10 +999,12 @@ async fn delete_node(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Set parent request
+/// Set parent request (with OCC version)
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SetParentRequest {
+    /// Expected version for optimistic concurrency control
+    pub version: i64,
     /// New parent ID (null to make node a root)
     pub parent_id: Option<String>,
     /// Optional sibling to insert after (None = insert at beginning)
@@ -1044,11 +1015,12 @@ async fn set_parent(
     State(state): State<AppState>,
     Path(node_id): Path<String>,
     Json(request): Json<SetParentRequest>,
-) -> ApiStatusResult {
-    state
+) -> ApiResult<serde_json::Value> {
+    let node = state
         .node_service
-        .move_node(
+        .move_node_with_occ(
             &node_id,
+            request.version,
             request.parent_id.as_deref(),
             request.insert_after_node_id.as_deref(),
         )
@@ -1059,7 +1031,10 @@ async fn set_parent(
     // (RelationshipCreated/Deleted) which is converted to SSE by the domain_event_to_sse_bridge
     // This prevents duplicate events and enables proper client filtering
 
-    Ok(StatusCode::NO_CONTENT)
+    // Return the updated node with new version (critical for frontend to sync local state)
+    let typed =
+        node_to_typed_value(node).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, Json(e)))?;
+    Ok(Json(typed))
 }
 
 async fn get_children(

@@ -1297,13 +1297,15 @@ where
 
         // Step 1.5: Apply schema defaults, validate, and add version
         // Fetch schema ONCE and reuse for all operations (performance fix)
-        // Skip for schema nodes to avoid circular dependency
+        // Schema processing: Only fetch schema from DB for types with meaningful schema fields.
+        // Currently only "task" has schema-defined fields; text, date, etc. have no fields.
+        // This avoids a ~760ms database lookup for every node creation.
         //
         // NOTE: We ONLY apply schema defaults, NOT behavior defaults.
         // Behavior defaults (markdown_enabled, auto_save, etc.) are UI preferences
         // that should be handled client-side, not stored in database properties.
         // The properties field is for user data and schema-defined fields only.
-        if node.node_type != "schema" {
+        if node.node_type == "task" {
             let schema_start = std::time::Instant::now();
             // Fetch schema ONCE and reuse it for all operations
             if let Some(schema_json) = self.get_schema_for_type(&node.node_type).await? {
@@ -1352,18 +1354,17 @@ where
                         }
                     }
                 }
-            } else {
-                // Issue #838: No schema exists, but still normalize properties to namespaced format
-                // This ensures consistent storage even for types without schemas
-                node.properties = Self::normalize_flat_properties_to_namespace(
-                    &node.node_type,
-                    &node.properties,
-                    None,
-                );
             }
             tracing::debug!(
                 "create_node: schema processing complete at {}ms",
                 start.elapsed().as_millis()
+            );
+        } else if node.node_type != "schema" {
+            // Non-task, non-schema types: normalize properties without DB lookup
+            node.properties = Self::normalize_flat_properties_to_namespace(
+                &node.node_type,
+                &node.properties,
+                None,
             );
         }
 
@@ -1453,8 +1454,11 @@ where
     /// Returns error if:
     /// - Parent doesn't exist (and isn't a valid date format)
     /// - Node validation fails
-    /// - Sibling doesn't exist or has different parent
     /// - ID format is invalid (non-UUID for production nodes)
+    ///
+    /// Note: If `insert_after_node_id` references a sibling that no longer exists
+    /// or has moved to a different parent (stale hint from race condition), the
+    /// operation falls back to appending at the end rather than failing.
     ///
     /// # Examples
     ///
@@ -1484,6 +1488,8 @@ where
         &self,
         params: CreateNodeParams,
     ) -> Result<String, NodeServiceError> {
+        // Make params mutable so we can clear insert_after_node_id if stale
+        let mut params = params;
         let start = std::time::Instant::now();
         tracing::debug!(
             node_type = %params.node_type,
@@ -1504,22 +1510,31 @@ where
             }
         }
 
-        // Step 3: Validate sibling exists and has same parent (if provided)
-        if let Some(ref sibling_id) = params.insert_after_node_id {
-            let _sibling = self
-                .get_node(sibling_id)
-                .await?
-                .ok_or_else(|| NodeServiceError::node_not_found(sibling_id))?;
+        // Step 3: Validate sibling (if provided) - treat as best-effort hint
+        // If sibling doesn't exist or has moved to different parent, fall back to append
+        // This prevents data loss from race conditions during rapid indent/outdent operations
+        if let Some(ref sibling_id) = params.insert_after_node_id.clone() {
+            let sibling_valid = match self.get_node(sibling_id).await {
+                Ok(Some(_)) => {
+                    // Sibling exists, verify it has same parent
+                    match self.get_parent(sibling_id).await {
+                        Ok(sibling_parent) => {
+                            let sibling_parent_id = sibling_parent.as_ref().map(|p| p.id.as_str());
+                            sibling_parent_id == params.parent_id.as_deref()
+                        }
+                        Err(_) => false,
+                    }
+                }
+                _ => false,
+            };
 
-            // Verify sibling has same parent
-            let sibling_parent = self.get_parent(sibling_id).await?;
-            let sibling_parent_id = sibling_parent.as_ref().map(|p| p.id.as_str());
-
-            if sibling_parent_id != params.parent_id.as_deref() {
-                return Err(NodeServiceError::hierarchy_violation(format!(
-                    "Sibling '{}' has different parent than the node being created",
-                    sibling_id
-                )));
+            if !sibling_valid {
+                tracing::warn!(
+                    sibling_id = %sibling_id,
+                    parent_id = ?params.parent_id,
+                    "insert_after_node_id is stale (sibling moved or deleted), falling back to append"
+                );
+                params.insert_after_node_id = None;
             }
         }
 
@@ -2296,13 +2311,15 @@ where
 
     /// Update node with optimistic concurrency control (version check)
     ///
-    /// This method performs an atomic update with version checking to prevent
-    /// race conditions when multiple clients modify the same node concurrently.
+    /// Internal method that returns the updated node directly to avoid redundant fetches.
+    ///
+    /// Performs an atomic update with version checking to prevent race conditions
+    /// when multiple clients modify the same node concurrently.
     ///
     /// The version check ensures that:
     /// 1. The node hasn't been modified since the client last read it
     /// 2. Updates are applied atomically with version increment
-    /// 3. Conflicts are detected via rows_affected = 0
+    /// 3. Conflicts are detected via `None` return (version mismatch)
     ///
     /// # Arguments
     ///
@@ -2312,40 +2329,15 @@ where
     ///
     /// # Returns
     ///
-    /// * `Ok(rows_affected)` - Number of rows updated (0 = version mismatch, 1 = success)
+    /// * `Ok(Some(node))` - Successfully updated node with incremented version
+    /// * `Ok(None)` - Version conflict (node was modified by another client)
     /// * `Err(NodeServiceError)` - Database or validation errors
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::SurrealStore;
-    /// # use nodespace_core::NodeUpdate;
-    /// # use std::path::PathBuf;
-    /// # use std::sync::Arc;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
-    /// # let service = NodeService::new(&mut db).await?;
-    /// let rows = service.update_with_version_check(
-    ///     "node-123",
-    ///     5,  // Expected version
-    ///     NodeUpdate::new().with_content("New content".into())
-    /// ).await?;
-    ///
-    /// if rows == 0 {
-    ///     // Version conflict - node was modified by another client
-    ///     // Caller should fetch current state and handle conflict
-    /// }
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn update_with_version_check(
+    async fn update_with_version_check_returning_node(
         &self,
         id: &str,
         expected_version: i64,
         update: NodeUpdate,
-    ) -> Result<usize, NodeServiceError> {
+    ) -> Result<Option<Node>, NodeServiceError> {
         if update.is_empty() {
             return Err(NodeServiceError::invalid_update(
                 "Update contains no changes",
@@ -2402,7 +2394,10 @@ where
         self.behaviors.validate_node(&updated)?;
 
         // Step 2: Schema validation (USER-EXTENSIBLE)
-        if updated.node_type != "schema" {
+        // Only validate against schema for node types that have meaningful schema fields.
+        // Currently only "task" has schema-defined fields; text, date, etc. have no fields.
+        // This avoids a ~760ms database lookup for every update.
+        if updated.node_type == "task" {
             self.validate_node_against_schema(&updated).await?;
         }
 
@@ -2412,10 +2407,16 @@ where
         let title_update = if content_changed || node_type_changed {
             // Determine if this node should have a title
             // TODO #824: Replace hardcoded exclusions with schema-driven title_template
+            // Use optimized get_parent_id() instead of get_parent() for root check
             let should_have_title = match updated.node_type.as_str() {
                 "date" | "schema" | "collection" => false,
                 "task" => true,
-                _ => self.get_parent(id).await?.is_none(),
+                _ => self
+                    .store
+                    .get_parent_id(id)
+                    .await
+                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .is_none(),
             };
 
             if should_have_title {
@@ -2450,18 +2451,24 @@ where
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         // Check if update succeeded (version matched)
-        let rows_affected = if result.is_some() { 1 } else { 0 };
-
-        // If update failed due to version mismatch, return early
-        if rows_affected == 0 {
-            return Ok(0);
-        }
+        // If None, version mismatch occurred - return None for caller to handle
+        let updated_node = match result {
+            Some(node) => node,
+            None => return Ok(None),
+        };
 
         // NOTE: NodeUpdated event is now automatically emitted by store notifier (Issue #718)
 
         // Queue root for embedding regeneration if content changed (Issue #729 - root-aggregate model)
+        // Fire-and-forget: don't block the update response on embedding queue operations
         if content_changed {
-            self.queue_root_for_embedding(id).await;
+            let store = self.store.clone();
+            let node_id = id.to_string();
+            let embedding_waker = self.embedding_waker.clone();
+            tokio::spawn(async move {
+                Self::queue_root_for_embedding_async(&store, &node_id, embedding_waker.as_ref())
+                    .await;
+            });
         }
 
         // Sync mentions if content changed
@@ -2475,7 +2482,7 @@ where
             }
         }
 
-        Ok(rows_affected as usize)
+        Ok(Some(updated_node))
     }
 
     /// Update a node with OCC and return the updated node
@@ -2534,38 +2541,32 @@ where
             ));
         }
 
-        // Verify node exists
-        let _current = self
-            .get_node(node_id)
+        // NOTE: Removed redundant get_node() call here - update_with_version_check_returning_node
+        // already fetches the node and handles not-found case
+
+        // Apply update with version check - returns the updated node directly
+        match self
+            .update_with_version_check_returning_node(node_id, expected_version, update)
             .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
+        {
+            Some(updated_node) => Ok(updated_node),
+            None => {
+                // Version conflict - need to fetch current version for error message
+                let current_version = self
+                    .store
+                    .get_node(node_id)
+                    .await
+                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .map(|n| n.version)
+                    .unwrap_or(0);
 
-        // Apply update with version check
-        let rows_affected = self
-            .update_with_version_check(node_id, expected_version, update)
-            .await?;
-
-        // Handle version conflict
-        if rows_affected == 0 {
-            let current = self
-                .get_node(node_id)
-                .await?
-                .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
-
-            return Err(NodeServiceError::version_conflict(
-                node_id,
-                expected_version,
-                current.version,
-            ));
+                Err(NodeServiceError::version_conflict(
+                    node_id,
+                    expected_version,
+                    current_version,
+                ))
+            }
         }
-
-        // Return updated node
-        let updated_node = self
-            .get_node(node_id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
-
-        Ok(updated_node)
     }
 
     /// Sync mention relationships when node content changes
@@ -2596,6 +2597,13 @@ where
         let to_add: Vec<&String> = new_mentions.difference(&old_mentions).collect();
         let to_remove: Vec<&String> = old_mentions.difference(&new_mentions).collect();
 
+        // Get parent ID once for all mention checks (optimized: use get_parent_id instead of get_parent)
+        let parent_id = self
+            .store
+            .get_parent_id(node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
         // Add new mentions (filter out self-references and root-level self-references)
         for mentioned_id in to_add {
             // Skip direct self-references
@@ -2605,13 +2613,13 @@ where
             }
 
             // Skip root-level self-references (child mentioning its own parent)
-            if let Ok(Some(parent)) = self.get_parent(node_id).await {
-                if mentioned_id.as_str() == parent.id.as_str() {
+            if let Some(ref pid) = parent_id {
+                if mentioned_id.as_str() == pid.as_str() {
                     tracing::debug!(
                         "Skipping root-level self-reference: {} -> {} (parent: {})",
                         node_id,
                         mentioned_id,
-                        parent.id
+                        pid
                     );
                     continue;
                 }
@@ -2815,14 +2823,17 @@ where
         node_id: &str,
         expected_version: i64,
     ) -> Result<crate::models::DeleteResult, NodeServiceError> {
-        // 1. Get the node being deleted (if it exists)
-        let _node = match self.get_node(node_id).await? {
-            Some(n) => n,
-            None => {
-                // Node doesn't exist - return false immediately (idempotent delete)
-                return Ok(crate::models::DeleteResult { existed: false });
-            }
-        };
+        // 1. Check if node exists
+        if self
+            .store
+            .get_node(node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .is_none()
+        {
+            // Node doesn't exist - return false immediately (idempotent delete)
+            return Ok(crate::models::DeleteResult { existed: false });
+        }
 
         // 1b. Capture root ID BEFORE deletion (Issue #729 - root-aggregate model)
         // After deletion, we can't traverse up to find the root
@@ -2843,7 +2854,12 @@ where
         // 4. Handle version conflict
         if rows_affected == 0 {
             // Node might have been deleted or modified by another client
-            match self.get_node(node_id).await? {
+            match self
+                .store
+                .get_node(node_id)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            {
                 Some(current) => {
                     // Node exists but version mismatch - return conflict error
                     return Err(NodeServiceError::version_conflict(
@@ -3135,12 +3151,18 @@ where
         let mut current_id = node_id.to_string();
 
         // Traverse up the parent chain until we find a root
+        // Uses get_parent_id for efficiency (no full node fetch)
         loop {
-            let parent = self.get_parent(&current_id).await?;
-            match parent {
-                Some(parent_node) => {
+            let parent_id = self
+                .store
+                .get_parent_id(&current_id)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+            match parent_id {
+                Some(pid) => {
                     // Keep traversing up
-                    current_id = parent_node.id;
+                    current_id = pid;
                 }
                 None => {
                     // Found the root
@@ -3181,16 +3203,16 @@ where
             }
         };
 
-        // Get root node to check if it's an embeddable type
-        let root = match self.get_node(&root_id).await {
-            Ok(Some(node)) => node,
+        // Get root node type to check if it's embeddable (optimized - no full node fetch)
+        let root_type = match self.store.get_node_type(&root_id).await {
+            Ok(Some(node_type)) => node_type,
             Ok(None) => {
                 tracing::warn!("Root node {} not found (embedding not queued)", root_id);
                 return;
             }
             Err(e) => {
                 tracing::warn!(
-                    "Failed to get root node {} (embedding not queued): {}",
+                    "Failed to get root node type {} (embedding not queued): {}",
                     root_id,
                     e
                 );
@@ -3199,11 +3221,11 @@ where
         };
 
         // Only queue if root is an embeddable type
-        if !is_embeddable_type(&root.node_type) {
+        if !is_embeddable_type(&root_type) {
             tracing::debug!(
                 "Root {} is not embeddable (type: {}), skipping embedding queue",
                 root_id,
-                root.node_type
+                root_type
             );
             return;
         }
@@ -3251,6 +3273,103 @@ where
                     "⚠️ No embedding waker configured - root {} will not be processed automatically",
                     root_id
                 );
+            }
+        }
+    }
+
+    /// Static async version of queue_root_for_embedding for use in spawned tasks
+    ///
+    /// This is used when we want to fire-and-forget the embedding queue operation
+    /// without blocking the calling thread (e.g., during node updates).
+    async fn queue_root_for_embedding_async(
+        store: &Arc<SurrealStore<C>>,
+        node_id: &str,
+        embedding_waker: Option<&crate::services::EmbeddingWaker>,
+    ) {
+        // Find the root of this node's tree using optimized parent ID traversal
+        let root_id = {
+            let mut current_id = node_id.to_string();
+            loop {
+                match store.get_parent_id(&current_id).await {
+                    Ok(Some(pid)) => current_id = pid,
+                    Ok(None) => break current_id, // Found root
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to find root for node {} (embedding not queued): {}",
+                            node_id,
+                            e
+                        );
+                        return;
+                    }
+                }
+            }
+        };
+
+        // Get root node type to check if it's embeddable (optimized - no full node fetch)
+        let root_type = match store.get_node_type(&root_id).await {
+            Ok(Some(node_type)) => node_type,
+            Ok(None) => {
+                tracing::warn!("Root node {} not found (embedding not queued)", root_id);
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to get root node type {} (embedding not queued): {}",
+                    root_id,
+                    e
+                );
+                return;
+            }
+        };
+
+        // Only queue if root is an embeddable type
+        if !is_embeddable_type(&root_type) {
+            tracing::debug!(
+                "Root {} is not embeddable (type: {}), skipping embedding queue",
+                root_id,
+                root_type
+            );
+            return;
+        }
+
+        // Check if embedding exists for this root
+        let has_embedding = match store.has_embeddings(&root_id).await {
+            Ok(has) => has,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to check embeddings for root {} (assuming none exist): {}",
+                    root_id,
+                    e
+                );
+                false
+            }
+        };
+
+        // Mark existing embedding as stale or create new stale marker
+        let result = if has_embedding {
+            store.mark_root_embedding_stale(&root_id).await
+        } else {
+            store.create_stale_embedding_marker(&root_id).await
+        };
+
+        if let Err(e) = result {
+            tracing::warn!(
+                "Failed to queue root {} for embedding (via node {}): {}",
+                root_id,
+                node_id,
+                e
+            );
+        } else {
+            tracing::debug!(
+                "📥 Queued root {} for embedding (triggered by node {})",
+                root_id,
+                node_id
+            );
+
+            // Wake the embedding processor (fire-and-forget)
+            if let Some(waker) = embedding_waker {
+                tracing::debug!("🔔 Waking embedding processor for root {}", root_id);
+                waker.wake();
             }
         }
     }
@@ -3441,7 +3560,7 @@ where
         expected_version: i64,
         new_parent: Option<&str>,
         insert_after_node_id: Option<&str>,
-    ) -> Result<(), NodeServiceError> {
+    ) -> Result<Node, NodeServiceError> {
         // Get current node and verify version
         let node = self
             .get_node(node_id)
@@ -3507,10 +3626,9 @@ where
         // Bump the node's version to support OCC
         // Even though we're only modifying edge relationships, we bump the node version
         // so that concurrent move operations will fail with version conflict
+        // Returns the updated node with new version so frontend can sync its local state
         self.update_node_with_version_bump(node_id, expected_version)
-            .await?;
-
-        Ok(())
+            .await
     }
 
     /// Reorder a node within its siblings with OCC
@@ -3582,7 +3700,9 @@ where
         // Bump the node's version to support OCC
         // Even though we're only modifying edge ordering, we bump the node version
         // so that concurrent reorder operations will fail with version conflict
-        self.update_node_with_version_bump(node_id, expected_version)
+        // Note: We discard the returned Node since reorder_node_with_occ returns ()
+        let _ = self
+            .update_node_with_version_bump(node_id, expected_version)
             .await?;
 
         Ok(())
@@ -3605,6 +3725,13 @@ where
         insert_after_node_id: Option<&str>,
     ) -> Result<(), NodeServiceError> {
         use tokio::time::{sleep, Duration};
+        let start = std::time::Instant::now();
+        tracing::debug!(
+            child_id = %child_id,
+            parent_id = %parent_id,
+            insert_after = ?insert_after_node_id,
+            "create_parent_edge: START"
+        );
 
         // Pass insert_after_node_id directly to store.move_node without translation
         // store.move_node semantics:
@@ -3614,13 +3741,20 @@ where
         // Use store's move_node which creates the has_child relationship atomically
         // Retry if sibling not found (eventual consistency)
         let mut last_error = None;
+        let mut attempt_count = 0;
         for _attempt in 0..10 {
+            attempt_count += 1;
             match self
                 .store
                 .move_node(child_id, Some(parent_id), insert_after_node_id)
                 .await
             {
                 Ok(()) => {
+                    tracing::debug!(
+                        "create_parent_edge: move_node succeeded on attempt {} at {}ms",
+                        attempt_count,
+                        start.elapsed().as_millis()
+                    );
                     last_error = None;
                     break;
                 }
@@ -3628,6 +3762,11 @@ where
                     let err_str = e.to_string();
                     if err_str.contains("Sibling not found") {
                         // Sibling not visible yet - wait and retry
+                        tracing::debug!(
+                            "create_parent_edge: sibling not found, retry {} at {}ms",
+                            attempt_count,
+                            start.elapsed().as_millis()
+                        );
                         last_error = Some(err_str);
                         sleep(Duration::from_millis(100)).await;
                         continue;
@@ -3645,7 +3784,13 @@ where
         // if not all siblings were visible during the move_node query. We verify and retry
         // with reorder if the position is wrong.
         if let Some(after_id) = insert_after_node_id {
+            tracing::debug!(
+                "create_parent_edge: starting position verification at {}ms",
+                start.elapsed().as_millis()
+            );
+            let mut verify_attempt = 0;
             'outer: for _attempt in 0..20 {
+                verify_attempt += 1;
                 // Wait for write propagation
                 sleep(Duration::from_millis(50)).await;
 
@@ -3656,10 +3801,19 @@ where
                 match (child_pos, after_pos) {
                     (Some(c_pos), Some(a_pos)) if c_pos == a_pos + 1 => {
                         // Child is correctly positioned right after the insert_after sibling
+                        tracing::debug!(
+                            "create_parent_edge: position verified on attempt {} at {}ms",
+                            verify_attempt,
+                            start.elapsed().as_millis()
+                        );
                         break 'outer;
                     }
                     (Some(_), Some(_)) => {
                         // Child exists but is in wrong position - reorder it and verify
+                        tracing::debug!(
+                            "create_parent_edge: wrong position, reordering at {}ms",
+                            start.elapsed().as_millis()
+                        );
                         self.store
                             .move_node(child_id, Some(parent_id), Some(after_id))
                             .await
@@ -3682,12 +3836,26 @@ where
                     }
                     _ => {
                         // One or both nodes not visible yet - will retry
+                        tracing::debug!(
+                            "create_parent_edge: nodes not visible, retry {} at {}ms",
+                            verify_attempt,
+                            start.elapsed().as_millis()
+                        );
                     }
                 }
             }
+        } else {
+            tracing::debug!(
+                "create_parent_edge: no insert_after, skipping verification at {}ms",
+                start.elapsed().as_millis()
+            );
         }
 
         // Emit RelationshipCreated event (Issue #811: unified relationship events)
+        tracing::debug!(
+            "create_parent_edge: getting children for event at {}ms",
+            start.elapsed().as_millis()
+        );
         let children = self.get_children(parent_id).await?;
         if let Some(child_pos) = children.iter().position(|c| c.id == child_id) {
             self.emit_event(DomainEvent::RelationshipCreated {
@@ -3702,6 +3870,10 @@ where
             });
         }
 
+        tracing::debug!(
+            "create_parent_edge: COMPLETE at {}ms",
+            start.elapsed().as_millis()
+        );
         Ok(())
     }
 
@@ -3800,12 +3972,12 @@ where
     ///
     /// # Returns
     ///
-    /// Ok(()) if version bump succeeds, Err if version mismatch or node not found
+    /// Ok(Node) with updated version if bump succeeds, Err if version mismatch or node not found
     pub async fn update_node_with_version_bump(
         &self,
         node_id: &str,
         expected_version: i64,
-    ) -> Result<(), NodeServiceError> {
+    ) -> Result<Node, NodeServiceError> {
         // Get current node to preserve its values
         let node = self
             .get_node(node_id)
@@ -3834,16 +4006,16 @@ where
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         // Check if update succeeded (version matched)
-        if result.is_none() {
-            return Err(NodeServiceError::query_failed(format!(
+        let updated_node = result.ok_or_else(|| {
+            NodeServiceError::query_failed(format!(
                 "Version conflict: expected version {} for node {}",
                 expected_version, node_id
-            )));
-        }
+            ))
+        })?;
 
         // NOTE: NodeUpdated event is now automatically emitted by store notifier (Issue #718)
 
-        Ok(())
+        Ok(updated_node)
     }
 
     /// Query nodes with filtering
@@ -4446,12 +4618,18 @@ where
             self.behaviors.validate_node(&temp_node)?;
         }
 
-        // Find the root ID once
-        let root_id = if let Some((_, _, _, Some(first_parent), _, _)) = nodes_normalized.first() {
-            self.get_root_id(first_parent).await.ok()
-        } else {
-            None
-        };
+        // Collect embeddable root node IDs (nodes with no parent AND embeddable type)
+        // Only these need embedding markers - matches single-create logic
+        let root_ids: Vec<String> = nodes_normalized
+            .iter()
+            .filter_map(|(id, node_type, _, parent_id, _, _)| {
+                if parent_id.is_none() && is_embeddable_type(node_type) {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         // Delegate to store - use root-only notify variant for efficiency
         let result = self
@@ -4460,9 +4638,29 @@ where
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-        // Queue root for embedding regeneration once
-        if let Some(root_id) = root_id {
-            self.queue_root_for_embedding(&root_id).await;
+        // Create stale embedding markers in bulk (single transaction)
+        if !root_ids.is_empty() {
+            match self
+                .store
+                .create_stale_embedding_markers_bulk(&root_ids)
+                .await
+            {
+                Ok(count) => {
+                    tracing::debug!("Created {} stale embedding markers", count);
+                    // Wake the embedding processor once for all new roots
+                    if let Some(ref waker) = self.embedding_waker {
+                        tracing::debug!(
+                            "🔔 Waking embedding processor for {} bulk-imported roots",
+                            count
+                        );
+                        waker.wake();
+                    }
+                }
+                Err(e) => {
+                    // Log but don't fail - embeddings can be regenerated later
+                    tracing::warn!("Failed to create stale embedding markers: {}", e);
+                }
+            }
         }
 
         Ok(result)
@@ -8128,7 +8326,7 @@ mod tests {
         /// Test sibling validation - sibling must have same parent
         #[tokio::test]
         #[serial(sibling_ordering)]
-        async fn test_sibling_must_have_same_parent() {
+        async fn test_sibling_with_different_parent_falls_back_to_append() {
             let (service, _temp) = create_test_service().await;
 
             // Create two different parent nodes
@@ -8147,22 +8345,31 @@ mod tests {
                 .unwrap();
 
             // Try to create a node under parent2 with sibling from parent1
+            // This should succeed (fall back to append) rather than fail
+            // This prevents data loss from race conditions during rapid indent/outdent
             let params = CreateNodeParams {
                 id: None,
                 node_type: "text".to_string(),
                 content: "New node".to_string(),
-                parent_id: Some(parent2_id),
+                parent_id: Some(parent2_id.clone()),
                 insert_after_node_id: Some(sibling_id),
                 properties: json!({}),
             };
 
             let result = service.create_node_with_parent(params).await;
-            assert!(result.is_err());
-            let err = result.unwrap_err();
             assert!(
-                format!("{:?}", err).contains("different parent"),
-                "Error should indicate sibling has different parent: {:?}",
-                err
+                result.is_ok(),
+                "Should succeed with fallback to append: {:?}",
+                result
+            );
+
+            // Verify node was created under parent2
+            let new_node_id = result.unwrap();
+            let parent = service.get_parent(&new_node_id).await.unwrap();
+            assert_eq!(
+                parent.map(|p| p.id),
+                Some(parent2_id),
+                "Node should be under parent2"
             );
         }
 

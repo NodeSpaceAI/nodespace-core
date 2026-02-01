@@ -93,7 +93,7 @@ export interface BackendAdapter {
   getChildren(parentId: string): Promise<Node[]>;
   getDescendants(rootNodeId: string): Promise<Node[]>;
   getChildrenTree(parentId: string): Promise<NodeWithChildren | null>;
-  moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<void>;
+  moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<Node>;
 
   // Mentions
   createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void>;
@@ -228,12 +228,12 @@ class TauriAdapter implements BackendAdapter {
     );
   }
 
-  async moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<void> {
+  async moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<Node> {
     const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
     return withDiagnosticLogging(
       'moveNode',
-      () => invoke<void>('move_node', {
+      () => invoke<Node>('move_node', {
         nodeId,
         version,
         newParentId,
@@ -479,13 +479,13 @@ class HttpAdapter implements BackendAdapter {
     return result as NodeWithChildren;
   }
 
-  async moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<void> {
+  async moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<Node> {
     const response = await fetch(`${this.baseUrl}/api/nodes/${encodeURIComponent(nodeId)}/parent`, {
       method: 'POST',
       headers: this.getHeaders(),
       body: JSON.stringify({ version, parentId: newParentId, insertAfterNodeId })
     });
-    await this.handleResponse<void>(response);
+    return this.handleResponse<Node>(response);
   }
 
   async createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
@@ -604,7 +604,9 @@ class MockAdapter implements BackendAdapter {
   async getDescendants(_rootNodeId: string): Promise<Node[]> {
     return [];
   }
-  async moveNode(_nodeId: string, _version: number, _newParentId: string | null, _insertAfterNodeId: string | null): Promise<void> {}
+  async moveNode(_nodeId: string, _version: number, _newParentId: string | null, _insertAfterNodeId: string | null): Promise<Node> {
+    return {} as Node;
+  }
   async createMention(_mentioningNodeId: string, _mentionedNodeId: string): Promise<void> {}
   async deleteMention(_mentioningNodeId: string, _mentionedNodeId: string): Promise<void> {}
   async getOutgoingMentions(_nodeId: string): Promise<string[]> {

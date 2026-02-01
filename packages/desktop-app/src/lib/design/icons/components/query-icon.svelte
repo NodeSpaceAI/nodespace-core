@@ -12,7 +12,7 @@
 -->
 
 <script lang="ts">
-	let { size = 20, className = '' }: { size?: number; className?: string } = $props();
+	let { size = 20, className = "" }: { size?: number; className?: string } = $props();
 </script>
 
 <svg

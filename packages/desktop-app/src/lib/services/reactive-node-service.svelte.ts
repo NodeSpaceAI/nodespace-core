@@ -29,6 +29,7 @@ import type { Node, NodeUIState } from '$lib/types';
 import { createDefaultUIState } from '$lib/types';
 import type { UpdateSource } from '$lib/types/update-protocol';
 import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
+import { waitForPendingMoveOperations, trackMoveOperation } from './pending-operations';
 
 const log = createLogger('ReactiveNodeService');
 // Schema defaults extraction removed in Issue #690 simplification
@@ -36,42 +37,31 @@ const log = createLogger('ReactiveNodeService');
 import { moveNode as moveNodeCommand } from './tauri-commands';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 
+/**
+ * Calculate the insert order for an outdented node in its new parent's children list.
+ * The outdented node should appear right after its old parent among the new parent's children.
+ *
+ * @param newParentId - The new parent (grandparent of the node being outdented)
+ * @param oldParentId - The old parent (the node is moving out from under this parent)
+ * @returns The calculated fractional order for insertion
+ */
+function calculateOutdentInsertOrder(newParentId: string, oldParentId: string): number {
+  const newParentChildren = structureTree.getChildrenWithOrder(newParentId);
+  const oldParentIndex = newParentChildren.findIndex(c => c.nodeId === oldParentId);
+  if (oldParentIndex >= 0) {
+    const oldParentOrder = newParentChildren[oldParentIndex].order;
+    const nextSibling = newParentChildren[oldParentIndex + 1];
+    return nextSibling ? (oldParentOrder + nextSibling.order) / 2 : oldParentOrder + 1.0;
+  }
+  // Fallback: append to end
+  return newParentChildren.length > 0 ? newParentChildren[newParentChildren.length - 1].order + 1.0 : 1.0;
+}
 
 export interface NodeManagerEvents {
   focusRequested: (nodeId: string, position?: number) => void;
   hierarchyChanged: () => void;
   nodeCreated: (nodeId: string) => void;
   nodeDeleted: (nodeId: string) => void;
-}
-
-// Track pending move operations to prevent race conditions
-// When indent/outdent fires a moveNodeCommand, subsequent operations must wait for it
-const pendingMoveOperations: Map<string, Promise<void>> = new Map();
-
-/**
- * Wait for all pending move operations to complete before starting a new hierarchy change.
- * This prevents "Sibling not found" errors during rapid Enter+Tab+Shift+Tab sequences.
- *
- * Race condition scenario:
- * 1. User indents B under A (fires moveNodeCommand async)
- * 2. User immediately outdents C (which references B as insertAfterNodeId)
- * 3. If step 1's moveNodeCommand hasn't completed, edge A→B doesn't exist yet
- * 4. Backend fails with "Sibling not found: B" because B isn't in A's has_child edges
- */
-async function waitForPendingMoveOperations(): Promise<void> {
-  if (pendingMoveOperations.size === 0) return;
-  await Promise.all(pendingMoveOperations.values());
-}
-
-/**
- * Track a move operation and automatically clean up when done
- */
-function trackMoveOperation(nodeId: string, operation: Promise<void>): Promise<void> {
-  const trackedPromise = operation.finally(() => {
-    pendingMoveOperations.delete(nodeId);
-  });
-  pendingMoveOperations.set(nodeId, trackedPromise);
-  return trackedPromise;
 }
 
 export function createReactiveNodeService(events: NodeManagerEvents) {
@@ -407,7 +397,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
               // Import moveNode dynamically to avoid circular dependency
               const { moveNode } = await import('$lib/services/tauri-commands');
               // Move child to be under the new node in database (with OCC)
-              await moveNode(child.id, child.version, nodeId, null);
+              // Backend returns updated child with new version
+              const updatedChild = await moveNode(child.id, child.version, nodeId, null);
+              // Sync child's local version from backend response
+              sharedNodeStore.updateNode(
+                child.id,
+                { version: updatedChild.version },
+                { type: 'database', reason: 'move-version-sync' },
+                { skipPersistence: true, skipConflictDetection: true }
+              );
               // Note: No need to call structureTree.moveInMemoryRelationship() again
               // It was already done synchronously above for instant UI update
             }
@@ -890,9 +888,10 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // Check if node has been persisted to database yet
     const isNodePersisted = sharedNodeStore.isNodePersisted(nodeId);
+    const isOperationExecuting = sharedNodeStore.isNodePersistenceExecuting(nodeId);
 
-    if (!isNodePersisted) {
-      // OPTIMIZATION: Node hasn't been persisted yet (just created via Enter key).
+    if (!isNodePersisted && !isOperationExecuting) {
+      // OPTIMIZATION: Node hasn't been persisted yet AND no operation in flight.
       // Instead of CREATE + MOVE (two operations), we can:
       // 1. Cancel the pending CREATE
       // 2. Re-trigger setNode with updated parentId
@@ -921,6 +920,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       return true;
     }
 
+    // If operation is executing but node not marked persisted yet, fall through to MOVE logic.
+    // The moveOperation will wait for pending saves which includes the executing CREATE.
+
     // Node is already persisted - need to MOVE it in the database
     // Track move operation to prevent race conditions with subsequent indent/outdent
     // CRITICAL: Other hierarchy operations must wait for this move to complete
@@ -931,9 +933,15 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         // This ensures move operations are processed in order, preventing edge conflicts.
         await waitForPendingMoveOperations();
 
-        // CRITICAL: Flush and wait for any pending updates before moving
-        // This prevents race conditions with content updates
-        await sharedNodeStore.flushNodeSaves([nodeId]);
+        // CRITICAL: Flush and wait for any pending saves before moving
+        // This prevents race conditions where:
+        // 1. Content updates race with the move (node's own saves)
+        // 2. Parent doesn't exist in DB yet (parent's CREATE still pending)
+        const nodesToFlush = [nodeId];
+        if (targetParentId) {
+          nodesToFlush.push(targetParentId);
+        }
+        await sharedNodeStore.flushNodeSaves(nodesToFlush);
 
         // Get fresh node data to ensure we have the latest version
         const freshNode = sharedNodeStore.getNode(nodeId);
@@ -943,7 +951,16 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
         }
 
         // Now safe to move the node (with OCC)
-        await moveNodeCommand(nodeId, freshNode.version, targetParentId, null);
+        // Backend returns updated node with new version
+        const updatedNode = await moveNodeCommand(nodeId, freshNode.version, targetParentId, null);
+
+        // Sync local version from backend response
+        sharedNodeStore.updateNode(
+          nodeId,
+          { version: updatedNode.version },
+          { type: 'database', reason: 'move-version-sync' },
+          { skipPersistence: true, skipConflictDetection: true }
+        );
       } catch (error) {
         // Check if error is ignorable (unit test environment or unpersisted nodes)
         const isIgnorableError =
@@ -1004,6 +1021,91 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
     // NOTE: Cache management removed (Issue #557) - ReactiveStructureTree handles hierarchy via domain events
 
+    // Check if node has been persisted to database yet
+    const isNodePersisted = sharedNodeStore.isNodePersisted(nodeId);
+    const isOperationExecuting = sharedNodeStore.isNodePersistenceExecuting(nodeId);
+
+    if (!isNodePersisted) {
+      if (!isOperationExecuting) {
+        // OPTIMIZATION: Node hasn't been persisted yet AND no operation in flight.
+        // Instead of CREATE + MOVE (two operations), we can:
+        // 1. Cancel the pending CREATE
+        // 2. Re-trigger setNode with updated parentId
+        // 3. The CREATE will happen with the correct parent - no MOVE needed!
+        //
+        // This is more efficient and avoids race conditions where the CREATE
+        // fires with stale insertAfterNodeId while parentId has been updated.
+        log.debug(`[outdentNode] Node ${nodeId.substring(0, 8)} not persisted yet, updating parentId for CREATE`);
+
+        // Get the current node with updated parentId
+        const updatedNode = sharedNodeStore.getNode(nodeId);
+        if (updatedNode) {
+          // Update the node's parentId and clear insertAfterNodeId
+          // IMPORTANT: insertAfterNodeId referenced a sibling under the OLD parent,
+          // so it's invalid for the new parent. Set to null to append at end of new parent's children.
+          const nodeWithNewParent = {
+            ...updatedNode,
+            parentId: newParentId,
+            insertAfterNodeId: null  // Clear - old sibling reference is invalid for new parent
+          } as typeof updatedNode & { insertAfterNodeId?: string | null };
+          // Re-set the node to trigger a new CREATE with correct parentId
+          // The previous pending CREATE will be cancelled by the new one
+          sharedNodeStore.setNode(nodeWithNewParent, { type: 'database', reason: 'outdent-node' });
+        }
+
+        // Update structure tree for browser mode
+        if (newParentId) {
+          const insertOrder = calculateOutdentInsertOrder(newParentId, oldParentId);
+          structureTree.moveInMemoryRelationship(oldParentId, newParentId, nodeId, insertOrder);
+        }
+
+        events.hierarchyChanged();
+        _updateTrigger++;
+
+        // No moveOperation needed - the CREATE will include the correct parent
+        return true;
+      } else {
+        // CREATE is in-flight! This is a tricky race condition.
+        // The CREATE operation reads current node state at execution time (from this.nodes).
+        // We need to update the node in the store NOW so the CREATE sees the updated parent
+        // and cleared insertAfterNodeId.
+        log.debug(`[outdentNode] Node ${nodeId.substring(0, 8)} CREATE in-flight, updating store for in-flight CREATE`);
+
+        // Get current node and update it in-place with new parent and cleared insertAfterNodeId
+        const currentNode = sharedNodeStore.getNode(nodeId);
+        if (currentNode) {
+          // Update the store so the in-flight CREATE sees the new parentId
+          // Use 'database' source with isComputedField to avoid triggering another persistence operation
+          sharedNodeStore.updateNode(
+            nodeId,
+            { parentId: newParentId },
+            { type: 'database', reason: 'outdent-node-inflight-fix' },
+            { isComputedField: true }
+          );
+
+          // CRITICAL: Clear insertAfterNodeId since it references a sibling under the OLD parent
+          // The CREATE operation reads current node state at execution time, so we need to
+          // directly clear this on the node object in the store.
+          // Since sharedNodeStore.getNode returns a reference to the actual object, we can mutate it.
+          (currentNode as typeof currentNode & { insertAfterNodeId?: string | null }).insertAfterNodeId = null;
+        }
+
+        // Update structure tree for browser mode (same as non-executing case)
+        if (newParentId) {
+          const insertOrder = calculateOutdentInsertOrder(newParentId, oldParentId);
+          structureTree.moveInMemoryRelationship(oldParentId, newParentId, nodeId, insertOrder);
+        }
+
+        events.hierarchyChanged();
+        _updateTrigger++;
+
+        // The in-flight CREATE will read the updated state and create with correct parent.
+        // No additional MOVE needed since we updated before the CREATE reads the state.
+        return true;
+      }
+    }
+
+    // Node is already persisted - proceed with MOVE operation
     // Update local state and transfer siblings (BEFORE backend for instant UI)
     // Update node's parentId to move it to the new parent
     // NOTE: beforeSiblingId removed from node - backend handles ordering via fractional ordering
@@ -1018,17 +1120,7 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     if (newParentId) {
       // Calculate correct order: insert right after oldParentId among newParentId's children
       // This matches backend behavior which uses insertAfterNodeId = oldParentId
-      const newParentChildren = structureTree.getChildrenWithOrder(newParentId);
-      const oldParentIndex = newParentChildren.findIndex(c => c.nodeId === oldParentId);
-      let insertOrder: number;
-      if (oldParentIndex >= 0) {
-        const oldParentOrder = newParentChildren[oldParentIndex].order;
-        const nextSibling = newParentChildren[oldParentIndex + 1];
-        insertOrder = nextSibling ? (oldParentOrder + nextSibling.order) / 2 : oldParentOrder + 1.0;
-      } else {
-        // Fallback: append to end
-        insertOrder = newParentChildren.length > 0 ? newParentChildren[newParentChildren.length - 1].order + 1.0 : 1.0;
-      }
+      const insertOrder = calculateOutdentInsertOrder(newParentId, oldParentId);
       structureTree.moveInMemoryRelationship(oldParentId, newParentId, nodeId, insertOrder);
     }
 
@@ -1088,17 +1180,35 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
 
         // Now safe to move the node and its siblings (with OCC)
         // When outdenting, insert after the old parent (so it appears right below it)
-        const backendPromises = [moveNodeCommand(nodeId, freshNode.version, newParentId, oldParentId)];
+        // Backend returns updated node with new version
+        const updatedNode = await moveNodeCommand(nodeId, freshNode.version, newParentId, oldParentId);
 
-        // Add sibling transfer backend calls (get fresh versions for each)
+        // Sync local version from backend response
+        sharedNodeStore.updateNode(
+          nodeId,
+          { version: updatedNode.version },
+          { type: 'database', reason: 'move-version-sync' },
+          { skipPersistence: true, skipConflictDetection: true }
+        );
+
+        // Move sibling transfers (get fresh versions for each)
+        // NOTE: Sequential to preserve sibling order. Parallel execution is possible but requires
+        // pre-calculating fractional order values upfront to guarantee ordering. For typical
+        // outdent operations (0-3 siblings), sequential latency is negligible.
         for (const siblingId of siblingsBelow) {
           const freshSibling = sharedNodeStore.getNode(siblingId);
           if (freshSibling) {
-            backendPromises.push(moveNodeCommand(siblingId, freshSibling.version, nodeId, null));
+            // Backend returns updated sibling with new version
+            const updatedSibling = await moveNodeCommand(siblingId, freshSibling.version, nodeId, null);
+            // Sync sibling's version from backend response
+            sharedNodeStore.updateNode(
+              siblingId,
+              { version: updatedSibling.version },
+              { type: 'database', reason: 'move-version-sync' },
+              { skipPersistence: true, skipConflictDetection: true }
+            );
           }
         }
-
-        await Promise.all(backendPromises);
       } catch (error) {
         // Check if error is ignorable
         const isIgnorableError =
@@ -1207,9 +1317,20 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
       // Use moveNodeCommand to properly update the has_child edge in the backend (with OCC)
       // Insert after the node at the same depth to maintain visual order
       // Don't await - let PersistenceCoordinator handle sequencing via deletionDependencies
-      moveNodeCommand(child.id, child.version, newParentForChild, insertAfterNodeId).catch((error) => {
-        log.error(`[promoteChildren] Failed to move child ${child.id} to parent ${newParentForChild}:`, error);
-      });
+      const childVersion = child.version;
+      moveNodeCommand(child.id, childVersion, newParentForChild, insertAfterNodeId)
+        .then((updatedChild) => {
+          // Sync child's local version from backend response
+          sharedNodeStore.updateNode(
+            child.id,
+            { version: updatedChild.version },
+            { type: 'database', reason: 'move-version-sync' },
+            { skipPersistence: true, skipConflictDetection: true }
+          );
+        })
+        .catch((error) => {
+          log.error(`[promoteChildren] Failed to move child ${child.id} to parent ${newParentForChild}:`, error);
+        });
 
       // Update local state for immediate UI feedback
       sharedNodeStore.updateNode(

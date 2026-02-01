@@ -235,85 +235,6 @@ impl From<SurrealNode> for Node {
     }
 }
 
-/// Batch fetch collection memberships for multiple nodes
-///
-/// **Purpose**: Avoid N+1 query pattern when populating member_of for multiple nodes.
-///
-/// **Performance**:
-/// - Old: 100 nodes = 100 individual queries
-/// - New: 100 nodes = 1 batch query
-///
-/// # Arguments
-///
-/// * `db` - SurrealDB connection
-/// * `node_ids` - Vector of node IDs to fetch memberships for
-///
-/// # Returns
-///
-/// HashMap mapping node ID to its collection membership IDs
-async fn batch_fetch_memberships<C: surrealdb::Connection>(
-    db: &Surreal<C>,
-    node_ids: &[String],
-) -> Result<std::collections::HashMap<String, Vec<String>>> {
-    use surrealdb::sql::{Id, Thing};
-
-    if node_ids.is_empty() {
-        return Ok(std::collections::HashMap::new());
-    }
-
-    // Build Things for all node IDs
-    let node_things: Vec<Thing> = node_ids
-        .iter()
-        .map(|id| Thing::from(("node".to_string(), id.to_string())))
-        .collect();
-
-    // Query all membership relationships in one batch (Issue #788: use relationship table)
-    // Returns: [{ node_id: "xxx", collection_ids: [Thing, Thing] }, ...]
-    let query = r#"
-        SELECT
-            record::id(id) AS node_id,
-            ->relationship[WHERE relationship_type = 'member_of']->node.id AS collection_ids
-        FROM node
-        WHERE id IN $node_ids;
-    "#;
-
-    let mut response = db
-        .query(query)
-        .bind(("node_ids", node_things))
-        .await
-        .context("Failed to batch fetch memberships")?;
-
-    #[derive(Debug, serde::Deserialize)]
-    struct MembershipRow {
-        node_id: String,
-        #[serde(default)]
-        collection_ids: Vec<Thing>,
-    }
-
-    let rows: Vec<MembershipRow> = response
-        .take(0)
-        .context("Failed to extract membership results")?;
-
-    // Convert to HashMap<node_id, Vec<collection_id>>
-    let mut result = std::collections::HashMap::new();
-    for row in rows {
-        let collection_ids: Vec<String> = row
-            .collection_ids
-            .into_iter()
-            .filter_map(|thing| {
-                if let Id::String(id_str) = thing.id {
-                    Some(id_str)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        result.insert(row.node_id, collection_ids);
-    }
-
-    Ok(result)
-}
-
 /// SurrealStore implements NodeStore trait for SurrealDB backend
 ///
 /// Supports two connection modes:
@@ -1029,8 +950,8 @@ where
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {
         // Universal Graph Architecture (Issue #783): Single query for node + properties
         // Properties are embedded directly in node.properties field
+        // Note: member_of is populated separately when needed (e.g., by populate_memberships)
 
-        // Query 1: Get node (properties included)
         let node_query = format!("SELECT * OMIT id FROM node:`{id}` LIMIT 1;", id = id);
         let mut response = self
             .db
@@ -1050,15 +971,24 @@ where
             .cloned()
             .unwrap_or(serde_json::json!({}));
 
-        let mut node = self.build_node_from_hub(id.to_string(), node_type, &hub, properties);
-
-        // Query 2: Get collection memberships
-        let memberships = batch_fetch_memberships(&self.db, &[id.to_string()]).await?;
-        if let Some(collections) = memberships.get(id) {
-            node.member_of = collections.clone();
-        }
+        let node = self.build_node_from_hub(id.to_string(), node_type, &hub, properties);
 
         Ok(Some(node))
+    }
+
+    /// Check if a node exists without fetching its full data.
+    ///
+    /// This is more efficient than `get_node()` when you only need to verify existence.
+    /// Returns true if the node exists, false otherwise.
+    pub async fn node_exists(&self, id: &str) -> Result<bool> {
+        let query = format!("SELECT VALUE true FROM node:`{id}` LIMIT 1;", id = id);
+        let mut response = self
+            .db
+            .query(&query)
+            .await
+            .context("Failed to check node existence")?;
+        let results: Vec<bool> = response.take(0).unwrap_or_default();
+        Ok(!results.is_empty())
     }
 
     /// Batch-fetch multiple nodes by their IDs in a single query.
@@ -1110,16 +1040,7 @@ where
             result_map.insert(node_id, node);
         }
 
-        // Batch fetch collection memberships for all nodes
-        let all_node_ids: Vec<String> = result_map.keys().cloned().collect();
-        let memberships = batch_fetch_memberships(&self.db, &all_node_ids).await?;
-
-        // Hydrate member_of into nodes
-        for (node_id, node) in result_map.iter_mut() {
-            if let Some(collections) = memberships.get(node_id) {
-                node.member_of = collections.clone();
-            }
-        }
+        // Note: member_of is populated separately when needed (e.g., by populate_memberships)
 
         Ok(result_map)
     }
@@ -1932,22 +1853,8 @@ where
             .context("Failed to extract nodes from query response")?;
 
         // Universal Graph Architecture (Issue #783): Properties embedded in node.properties
-        let mut nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
-
-        // Batch fetch collection memberships for all nodes
-        let all_node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
-        match batch_fetch_memberships(&self.db, &all_node_ids).await {
-            Ok(memberships) => {
-                for node in &mut nodes {
-                    if let Some(collections) = memberships.get(&node.id) {
-                        node.member_of = collections.clone();
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to batch fetch memberships: {}", e);
-            }
-        }
+        // Note: member_of is populated separately when needed (e.g., by populate_memberships)
+        let nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
         Ok(nodes)
     }
@@ -2001,22 +1908,8 @@ where
         };
 
         // Convert to nodes (properties already embedded)
-        let mut nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
-
-        // Batch fetch collection memberships for all nodes
-        let all_node_ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
-        match batch_fetch_memberships(&self.db, &all_node_ids).await {
-            Ok(memberships) => {
-                for node in &mut nodes {
-                    if let Some(collections) = memberships.get(&node.id) {
-                        node.member_of = collections.clone();
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to batch fetch memberships for children: {}", e);
-            }
-        }
+        // Note: member_of is populated separately when needed (e.g., by populate_memberships)
+        let nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
         Ok(nodes)
     }
@@ -2057,6 +1950,76 @@ where
         let node: Node = nodes.into_iter().next().unwrap().into();
 
         Ok(Some(node))
+    }
+
+    /// Get parent node ID only (optimized for tree traversal)
+    ///
+    /// This is a performance-optimized version of `get_parent` that only returns
+    /// the parent ID without fetching the full node data. Use this when you only
+    /// need to traverse the tree structure, not access node content.
+    ///
+    /// # Arguments
+    ///
+    /// * `child_id` - The child node ID
+    ///
+    /// # Returns
+    ///
+    /// `Some(parent_id)` if the node has a parent, `None` if it's a root node
+    pub async fn get_parent_id(&self, child_id: &str) -> Result<Option<String>> {
+        use surrealdb::sql::Thing;
+        let child_thing = Thing::from(("node".to_string(), child_id.to_string()));
+
+        // Query just the relationship to get parent ID (no node fetch)
+        let mut response = self
+            .db
+            .query("SELECT VALUE in FROM relationship WHERE out = $child_thing AND relationship_type = 'has_child' LIMIT 1;")
+            .bind(("child_thing", child_thing))
+            .await
+            .context("Failed to get parent ID")?;
+
+        let parent_ids: Vec<Thing> = response
+            .take(0)
+            .context("Failed to extract parent ID from response")?;
+
+        if parent_ids.is_empty() {
+            return Ok(None);
+        }
+
+        // Extract ID string from Thing
+        let parent_thing = parent_ids.into_iter().next().unwrap();
+        let parent_id = match &parent_thing.id {
+            surrealdb::sql::Id::String(s) => s.clone(),
+            _ => parent_thing.id.to_string(),
+        };
+
+        Ok(Some(parent_id))
+    }
+
+    /// Get node type only (optimized for type checking without full node fetch)
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The node ID
+    ///
+    /// # Returns
+    ///
+    /// `Some(node_type)` if the node exists, `None` if not found
+    pub async fn get_node_type(&self, node_id: &str) -> Result<Option<String>> {
+        use surrealdb::sql::Thing;
+        let node_thing = Thing::from(("node".to_string(), node_id.to_string()));
+
+        let mut response = self
+            .db
+            .query("SELECT VALUE node_type FROM node WHERE id = $node_id LIMIT 1;")
+            .bind(("node_id", node_thing))
+            .await
+            .context("Failed to get node type")?;
+
+        let node_types: Vec<String> = response
+            .take(0)
+            .context("Failed to extract node type from response")?;
+
+        Ok(node_types.into_iter().next())
     }
 
     /// Get entire node tree recursively in a SINGLE query
@@ -2667,16 +2630,14 @@ where
         let new_parent_id = new_parent_id.map(|s| s.to_string());
         let insert_after_sibling_id = insert_after_sibling_id.map(|s| s.to_string());
 
-        // Validate node exists
-        let _node = self
-            .get_node(&node_id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Node not found: {}", node_id))?;
+        // Validate node exists (use efficient existence check, not full node fetch)
+        if !self.node_exists(&node_id).await? {
+            return Err(anyhow::anyhow!("Node not found: {}", node_id));
+        }
 
         // Get current parent to determine if this is same-parent reorder vs cross-parent move
         // Issue #795: Preserve created_at and increment version for same-parent reorders
-        let current_parent = self.get_parent(&node_id).await?;
-        let current_parent_id = current_parent.map(|p| p.id);
+        let current_parent_id = self.get_parent_id(&node_id).await?;
         let is_same_parent_reorder = match (&new_parent_id, &current_parent_id) {
             (Some(new_pid), Some(cur_pid)) => new_pid == cur_pid,
             (None, None) => true, // Both root - same "parent" (no parent)
@@ -2685,9 +2646,9 @@ where
 
         // Validate that moving won't create a cycle
         if let Some(ref parent_id) = new_parent_id {
-            // Validate parent exists
-            let parent_exists = self.get_node(parent_id).await?;
-            if parent_exists.is_none() {
+            // Validate parent exists - use optimized node_exists check
+            let parent_exists = self.node_exists(parent_id).await?;
+            if !parent_exists {
                 return Err(anyhow::anyhow!("Parent node not found: {}", parent_id));
             }
 
@@ -2727,59 +2688,70 @@ where
                 // Find the sibling we're inserting after
                 let after_thing =
                     surrealdb::sql::Thing::from(("node".to_string(), after_id.clone()));
-                let after_index = relationships
-                    .iter()
-                    .position(|e| e.out == after_thing)
-                    .ok_or_else(|| anyhow::anyhow!("Sibling not found: {}", after_id))?;
 
-                // Get orders before and after insertion point
-                let prev_order = relationships[after_index].order;
-                let next_order = relationships.get(after_index + 1).map(|e| e.order);
+                // If sibling not found, fall back to append at end (best-effort hint)
+                // This prevents data loss from race conditions during rapid operations
+                if let Some(after_index) = relationships.iter().position(|e| e.out == after_thing) {
+                    // Get orders before and after insertion point
+                    let prev_order = relationships[after_index].order;
+                    let next_order = relationships.get(after_index + 1).map(|e| e.order);
 
-                // Calculate new order between them
-                let calculated =
-                    FractionalOrderCalculator::calculate_order(Some(prev_order), next_order);
+                    // Calculate new order between them
+                    let calculated =
+                        FractionalOrderCalculator::calculate_order(Some(prev_order), next_order);
 
-                // Check if rebalancing is needed
-                if let Some(next) = next_order {
-                    if (next - prev_order) < 0.0001 {
-                        // Gap too small, need to rebalance before inserting
-                        self.rebalance_children_for_parent(parent_id).await?;
+                    // Check if rebalancing is needed
+                    if let Some(next) = next_order {
+                        if (next - prev_order) < 0.0001 {
+                            // Gap too small, need to rebalance before inserting
+                            self.rebalance_children_for_parent(parent_id).await?;
 
-                        // Re-query relationships after rebalancing (Issue #788: universal relationship table)
-                        // NOTE: There is a small race condition window here - between rebalancing
-                        // completion and this re-query, another client could move/delete the sibling.
-                        // If this occurs, we'll get "Sibling not found after rebalancing" error and
-                        // the operation fails. This is an accepted limitation - clients can retry.
-                        // A fully atomic solution would require SurrealDB to support multi-step
-                        // transactions with deferred constraint checking, which isn't available.
-                        let mut rels_response = self
-                            .db
-                            .query("SELECT out, properties.order AS order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' AND out != $node_thing ORDER BY properties.order ASC;")
-                            .bind(("parent_thing", parent_thing.clone()))
-                            .bind(("node_thing", node_thing.clone()))
-                            .await
-                            .context("Failed to get child relationships after rebalancing")?;
+                            // Re-query relationships after rebalancing
+                            let mut rels_response = self
+                                .db
+                                .query("SELECT out, properties.order AS order FROM relationship WHERE in = $parent_thing AND relationship_type = 'has_child' AND out != $node_thing ORDER BY properties.order ASC;")
+                                .bind(("parent_thing", parent_thing.clone()))
+                                .bind(("node_thing", node_thing.clone()))
+                                .await
+                                .context("Failed to get child relationships after rebalancing")?;
 
-                        let relationships: Vec<RelWithOrder> = rels_response
-                            .take(0)
-                            .context("Failed to extract child relationships after rebalancing")?;
+                            let relationships: Vec<RelWithOrder> = rels_response.take(0).context(
+                                "Failed to extract child relationships after rebalancing",
+                            )?;
 
-                        let after_index = relationships
-                            .iter()
-                            .position(|e| e.out == after_thing)
-                            .ok_or_else(|| {
-                            anyhow::anyhow!("Sibling not found after rebalancing: {}", after_id)
-                        })?;
-
-                        let prev_order = relationships[after_index].order;
-                        let next_order = relationships.get(after_index + 1).map(|e| e.order);
-                        FractionalOrderCalculator::calculate_order(Some(prev_order), next_order)
+                            // If sibling disappeared after rebalancing, fall back to append
+                            if let Some(after_index) =
+                                relationships.iter().position(|e| e.out == after_thing)
+                            {
+                                let prev_order = relationships[after_index].order;
+                                let next_order =
+                                    relationships.get(after_index + 1).map(|e| e.order);
+                                FractionalOrderCalculator::calculate_order(
+                                    Some(prev_order),
+                                    next_order,
+                                )
+                            } else {
+                                tracing::warn!(
+                                    sibling_id = %after_id,
+                                    "sibling disappeared after rebalancing, falling back to append"
+                                );
+                                let last_order = relationships.last().map(|e| e.order);
+                                FractionalOrderCalculator::calculate_order(last_order, None)
+                            }
+                        } else {
+                            calculated
+                        }
                     } else {
                         calculated
                     }
                 } else {
-                    calculated
+                    tracing::warn!(
+                        sibling_id = %after_id,
+                        parent_id = %parent_id,
+                        "insert_after_sibling_id not found in parent's children, falling back to append"
+                    );
+                    let last_order = relationships.last().map(|e| e.order);
+                    FractionalOrderCalculator::calculate_order(last_order, None)
                 }
             } else {
                 // No insert_after_sibling specified, insert at beginning
@@ -2868,7 +2840,6 @@ where
             ))?;
 
         // Note: Domain events are now emitted at NodeService layer for client filtering
-
         Ok(())
     }
 
@@ -3384,8 +3355,11 @@ where
             let escaped_content = Self::escape_surql_string(content);
             let props_json = serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
 
+            // Compute title using shared helper to avoid logic duplication
+            let title_value =
+                Self::compute_title_for_bulk_insert(node_type, parent_id.as_deref(), content);
+
             // Create node with embedded properties
-            // Title is NONE for bulk hierarchy nodes (child nodes don't have titles)
             query.push_str(&format!(
                 r#"CREATE node:`{id}` CONTENT {{
                     node_type: "{node_type}",
@@ -3394,13 +3368,15 @@ where
                     version: 1,
                     created_at: time::now(),
                     modified_at: time::now(),
-                    title: NONE
+                    title: {title},
+                    lifecycle_status: "active"
                 }};
 "#,
                 id = id,
                 node_type = node_type,
                 content = escaped_content,
-                props = props_json
+                props = props_json,
+                title = title_value
             ));
 
             // Create parent-child relationship in universal relationship table (Issue #788)
@@ -3492,8 +3468,11 @@ where
             let escaped_content = Self::escape_surql_string(content);
             let props_json = serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
 
+            // Compute title using shared helper to avoid logic duplication
+            let title_value =
+                Self::compute_title_for_bulk_insert(node_type, parent_id.as_deref(), content);
+
             // Create node with embedded properties
-            // Title is NONE for bulk hierarchy nodes (child nodes don't have titles)
             query.push_str(&format!(
                 r#"CREATE node:`{id}` CONTENT {{
                     node_type: "{node_type}",
@@ -3502,13 +3481,15 @@ where
                     version: 1,
                     created_at: time::now(),
                     modified_at: time::now(),
-                    title: NONE
+                    title: {title},
+                    lifecycle_status: "active"
                 }};
 "#,
                 id = id,
                 node_type = node_type,
                 content = escaped_content,
-                props = props_json
+                props = props_json,
+                title = title_value
             ));
 
             // Create parent-child relationship in universal relationship table (Issue #788)
@@ -3607,7 +3588,8 @@ where
                 version: 1,
                 created_at: time::now(),
                 modified_at: time::now(),
-                title: NONE
+                title: NONE,
+                lifecycle_status: "active"
             }};
 "#,
             id = id,
@@ -3673,6 +3655,27 @@ where
             .replace('\n', "\\n")
             .replace('\r', "\\r")
             .replace('\t', "\\t")
+    }
+
+    /// Compute title value for bulk node creation queries.
+    ///
+    /// Root nodes (no parent) and task/collection nodes get titles computed from content.
+    /// Date and schema types never get titles.
+    /// Returns a SurrealQL-ready string: either "NONE" or a quoted escaped title.
+    fn compute_title_for_bulk_insert(
+        node_type: &str,
+        parent_id: Option<&str>,
+        content: &str,
+    ) -> String {
+        if node_type == "date" || node_type == "schema" {
+            "NONE".to_string()
+        } else if parent_id.is_none() || node_type == "task" || node_type == "collection" {
+            let stripped = crate::utils::strip_markdown(content);
+            let escaped_title = Self::escape_surql_string(&stripped);
+            format!("\"{}\"", escaped_title)
+        } else {
+            "NONE".to_string()
+        }
     }
 
     pub fn close(&self) -> Result<()> {
@@ -4844,6 +4847,10 @@ where
         }
 
         let normalized_names: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        tracing::debug!(
+            "get_collections_by_names: querying for {} names",
+            normalized_names.len()
+        );
 
         // Issue #844: Use indexed title field for batch lookup
         // Return only IDs and title, then use get_node for consistent node construction
@@ -4854,18 +4861,24 @@ where
             AND $names CONTAINS string::lowercase(title);
         "#;
 
+        tracing::debug!("get_collections_by_names: executing query...");
         let mut response = self
             .db
             .query(query)
             .bind(("names", normalized_names))
             .await
             .context("Failed to batch search for collections by names")?;
+        tracing::debug!("get_collections_by_names: query complete, parsing results...");
 
         // Parse as objects with id and title fields
         let results: Vec<Value> = response.take(0).unwrap_or_default();
+        tracing::debug!(
+            "get_collections_by_names: found {} results, fetching full nodes...",
+            results.len()
+        );
 
         let mut collections = HashMap::new();
-        for row in results {
+        for (i, row) in results.iter().enumerate() {
             let node_id = row["id"].as_str().unwrap_or("").to_string();
             let title = row["title"].as_str().unwrap_or("").to_string();
 
@@ -4873,6 +4886,12 @@ where
                 continue;
             }
 
+            tracing::debug!(
+                "get_collections_by_names: fetching node {}/{}: {}",
+                i + 1,
+                results.len(),
+                node_id
+            );
             // Use get_node for consistent node construction
             if let Ok(Some(node)) = self.get_node(&node_id).await {
                 let normalized_title = title.to_lowercase();
@@ -4880,6 +4899,10 @@ where
             }
         }
 
+        tracing::debug!(
+            "get_collections_by_names: returning {} collections",
+            collections.len()
+        );
         Ok(collections)
     }
 
@@ -5137,58 +5160,38 @@ where
             }
         }
 
-        // Build batch RELATE statements
-        // We use individual RELATE statements combined into one query for atomicity
-        // Each statement is conditional on the relationship not existing (idempotent)
-        let mut statements: Vec<String> = Vec::with_capacity(ordered_memberships.len());
-        let mut bindings: Vec<(String, serde_json::Value)> = Vec::new();
+        // Build batch RELATE statements using string interpolation (like bulk_create_hierarchy)
+        // This avoids binding issues with Thing types across many parameters
+        let mut query = String::from("BEGIN TRANSACTION;\n");
 
-        for (i, (node_id, collection_id, order)) in ordered_memberships.iter().enumerate() {
-            // Create unique parameter names for this membership
-            let member_param = format!("member_{}", i);
-            let collection_param = format!("collection_{}", i);
-            let order_param = format!("order_{}", i);
-
-            // Conditional RELATE: only create if not exists
-            statements.push(format!(
+        for (node_id, collection_id, order) in &ordered_memberships {
+            // Use the same RELATE pattern as add_to_collection but with string interpolation
+            // Format: RELATE node:`uuid`->relationship->node:`uuid`
+            query.push_str(&format!(
                 r#"
-                LET $existing_{i} = (SELECT id FROM relationship WHERE in = ${member_param} AND out = ${collection_param} AND relationship_type = 'member_of');
-                IF array::len($existing_{i}) = 0 THEN
-                    RELATE ${member_param}->relationship->${collection_param} CONTENT {{
+                LET $existing = (SELECT id FROM relationship WHERE in = node:`{member}` AND out = node:`{collection}` AND relationship_type = 'member_of');
+                IF array::len($existing) = 0 THEN
+                    RELATE node:`{member}`->relationship->node:`{collection}` CONTENT {{
                         relationship_type: 'member_of',
-                        properties: {{ order: ${order_param} }},
+                        properties: {{ order: {order} }},
                         created_at: time::now(),
                         modified_at: time::now(),
                         version: 1
                     }};
                 END;
                 "#,
-                i = i,
-                member_param = member_param,
-                collection_param = collection_param,
-                order_param = order_param,
+                member = node_id,
+                collection = collection_id,
+                order = order,
             ));
-
-            bindings.push((
-                member_param,
-                serde_json::json!(Thing::from(("node".to_string(), node_id.clone()))),
-            ));
-            bindings.push((
-                collection_param,
-                serde_json::json!(Thing::from(("node".to_string(), collection_id.clone()))),
-            ));
-            bindings.push((order_param, serde_json::json!(order)));
         }
 
-        // Execute all statements in one query
-        let combined_query = statements.join("\n");
-        let mut query = self.db.query(&combined_query);
+        query.push_str("COMMIT TRANSACTION;\n");
 
-        for (name, value) in bindings {
-            query = query.bind((name, value));
-        }
-
-        query.await.context("Failed to bulk add to collections")?;
+        self.db
+            .query(&query)
+            .await
+            .context("Failed to bulk add to collections")?;
 
         tracing::debug!(
             "bulk_add_to_collections: {} memberships in {:?}",
@@ -5238,6 +5241,66 @@ where
             .context("Failed to create stale embedding marker")?;
 
         Ok(())
+    }
+
+    /// Bulk create stale embedding markers for multiple root nodes
+    ///
+    /// Creates placeholder embeddings marked as stale for all provided node IDs
+    /// in a single transaction. Used by bulk import to efficiently queue many
+    /// roots for embedding processing.
+    ///
+    /// # Performance
+    ///
+    /// Single transaction for all markers vs N individual calls.
+    /// For 175 roots: ~1 DB call vs 175 DB calls.
+    pub async fn create_stale_embedding_markers_bulk(&self, node_ids: &[String]) -> Result<usize> {
+        if node_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let start = std::time::Instant::now();
+
+        // Build batch CREATE statements using string interpolation
+        let mut query = String::from("BEGIN TRANSACTION;\n");
+
+        for node_id in node_ids {
+            query.push_str(&format!(
+                r#"CREATE embedding CONTENT {{
+                    node: type::thing('node', '{node_id}'),
+                    vector: array::concat([1.0], array::repeat(0.0, 767)),
+                    dimension: 768,
+                    model_name: 'nomic-embed-text-v1.5',
+                    chunk_index: 0,
+                    chunk_start: 0,
+                    chunk_end: NONE,
+                    total_chunks: 1,
+                    content_hash: NONE,
+                    token_count: NONE,
+                    stale: true,
+                    error_count: 0,
+                    last_error: NONE,
+                    created_at: time::now(),
+                    modified_at: time::now()
+                }};
+"#,
+                node_id = node_id
+            ));
+        }
+
+        query.push_str("COMMIT TRANSACTION;\n");
+
+        self.db
+            .query(&query)
+            .await
+            .context("Failed to create bulk stale embedding markers")?;
+
+        tracing::debug!(
+            "create_stale_embedding_markers_bulk: {} markers in {:?}",
+            node_ids.len(),
+            start.elapsed()
+        );
+
+        Ok(node_ids.len())
     }
 }
 

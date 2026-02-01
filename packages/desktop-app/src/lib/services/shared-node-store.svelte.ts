@@ -29,6 +29,7 @@ import * as tauriCommands from './tauri-commands';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { isVersionConflict } from '$lib/types/errors';
 import { createLogger } from '$lib/utils/logger';
+import { getPendingMoveOperation } from './pending-operations';
 import type { Node } from '$lib/types';
 import type {
   NodeUpdate,
@@ -182,7 +183,9 @@ class SimplePersistenceCoordinator {
       coordLog.debug(`[op#${opId}] scheduling IMMEDIATE for ${shortNodeId}`);
       const pending: PendingOperation = {
         nodeId,
-        operation,
+        // Store the wrapper that tracks executingOperations, not the raw operation
+        // This ensures flushAndWaitForNodes() properly tracks execution state
+        operation: executeOperation,
         timeoutId: setTimeout(() => {}, 0),
         promise,
         resolve,
@@ -195,7 +198,9 @@ class SimplePersistenceCoordinator {
       const timeoutId = setTimeout(executeOperation, this.DEBOUNCE_MS);
       const pending: PendingOperation = {
         nodeId,
-        operation,
+        // Store the wrapper that tracks executingOperations, not the raw operation
+        // This ensures flushAndWaitForNodes() properly tracks execution state
+        operation: executeOperation,
         timeoutId,
         promise,
         resolve,
@@ -223,6 +228,10 @@ class SimplePersistenceCoordinator {
 
   isPending(nodeId: string): boolean {
     return this.pendingOperations.has(nodeId);
+  }
+
+  isExecuting(nodeId: string): boolean {
+    return this.executingOperations.has(nodeId);
   }
 
   /**
@@ -295,18 +304,22 @@ class SimplePersistenceCoordinator {
     for (const nodeId of nodeIds) {
       const pending = this.pendingOperations.get(nodeId);
       if (pending) {
-        // Clear the debounce timeout and execute immediately
+        // Clear the debounce timeout to prevent it from firing
         clearTimeout(pending.timeoutId);
 
-        // Start the operation now (if it hasn't started yet)
-        pending.operation().then(
-          () => pending.resolve(),
-          (error) => pending.reject(error instanceof Error ? error : new Error(String(error)))
-        ).finally(() => {
-          this.pendingOperations.delete(nodeId);
-        });
+        // Only start the operation if it's not already executing
+        // This prevents double-execution when the timeout fires just before clearTimeout
+        if (!this.executingOperations.has(nodeId)) {
+          // Start the operation now
+          pending.operation().then(
+            () => pending.resolve(),
+            (error) => pending.reject(error instanceof Error ? error : new Error(String(error)))
+          ).finally(() => {
+            this.pendingOperations.delete(nodeId);
+          });
+        }
 
-        // Wait for completion with timeout
+        // Wait for completion with timeout (whether we started it or it was already running)
         promises.push(
           Promise.race([
             pending.promise,
@@ -856,10 +869,24 @@ export class SharedNodeStore {
                 if (isPersistedToDatabase) {
                   // CRITICAL: Read current node state at execution time, not capture time
                   // This ensures we persist the latest content, not stale content from when persist() was called
-                  const currentNode = this.nodes.get(nodeId);
+                  let currentNode = this.nodes.get(nodeId);
                   if (!currentNode) {
                     log.warn(`Node ${nodeId} no longer exists in store, skipping update persistence`);
                     return;
+                  }
+
+                  // CRITICAL: Wait for any pending move operation to complete before UPDATE.
+                  // Move operations (indent/outdent) increment the version in the backend.
+                  // If we UPDATE before the move completes, we'll have a version mismatch.
+                  const pendingMove = getPendingMoveOperation(nodeId);
+                  if (pendingMove) {
+                    log.debug(`[UPDATE] Waiting for pending move operation on ${nodeId.substring(0, 8)}`);
+                    await pendingMove;
+                    // Re-read current node to get updated version after move
+                    const refreshedNode = this.nodes.get(nodeId);
+                    if (refreshedNode) {
+                      currentNode = refreshedNode;
+                    }
                   }
 
                   // IMPORTANT: For UPDATE, only send the changed fields with CURRENT values
@@ -931,14 +958,16 @@ export class SharedNodeStore {
                   } catch (updateError) {
                     // If UPDATE fails because node doesn't exist, try CREATE instead
                     // This handles cases where persistedNodeIds is out of sync (page reload, database reset)
-                    // Match both "NodeNotFound" and "does not exist" error messages
-                    if (
-                      updateError instanceof Error &&
-                      (updateError.message.includes('NodeNotFound') ||
-                        updateError.message.includes('does not exist'))
-                    ) {
+                    // Match various error message formats for "node not found"
+                    const errorMsg = updateError instanceof Error ? updateError.message.toLowerCase() : '';
+                    const isNodeNotFound =
+                      errorMsg.includes('not found') ||
+                      errorMsg.includes('does not exist') ||
+                      errorMsg.includes('nodenotfound');
+
+                    if (updateError instanceof Error && isNodeNotFound) {
                       log.warn(
-                        `Node ${nodeId} not found in database, creating instead of updating`
+                        `Node ${nodeId} not found in database, creating instead of updating (error: ${updateError.message})`
                       );
                       await tauriCommands.createNode(currentNode);
                       this.persistedNodeIds.add(nodeId); // Now it's persisted
@@ -1123,7 +1152,7 @@ export class SharedNodeStore {
             try {
               // CRITICAL: Read current node state at execution time, not capture time
               // This ensures we persist the latest content, not stale content from when persist() was called
-              const currentNode = this.nodes.get(nodeId);
+              let currentNode = this.nodes.get(nodeId);
               if (!currentNode) {
                 log.warn(`Node ${nodeId} no longer exists in store, skipping persistence`);
                 return;
@@ -1132,6 +1161,20 @@ export class SharedNodeStore {
               // Check if node has been persisted - use in-memory tracking to avoid database query
               const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
               if (isPersistedToDatabase) {
+                // CRITICAL: Wait for any pending move operation to complete before UPDATE.
+                // Move operations (indent/outdent) increment the version in the backend.
+                // If we UPDATE before the move completes, we'll have a version mismatch.
+                const pendingMove = getPendingMoveOperation(nodeId);
+                if (pendingMove) {
+                  log.debug(`[UPDATE] Waiting for pending move operation on ${nodeId.substring(0, 8)}`);
+                  await pendingMove;
+                  // Re-read current node to get updated version after move
+                  const refreshedNode = this.nodes.get(nodeId);
+                  if (refreshedNode) {
+                    currentNode = refreshedNode;
+                  }
+                }
+
                 try {
                   // Get current version for optimistic concurrency control
                   const currentVersion = currentNode.version ?? 1;
@@ -1158,6 +1201,26 @@ export class SharedNodeStore {
                   }
                 }
               } else {
+                // RACE CONDITION FIX: Validate insertAfterNodeId before CREATE
+                // If the node was moved (indent/outdent) after the CREATE was scheduled,
+                // insertAfterNodeId may reference a sibling under a different parent.
+                // The backend will reject this with "Sibling has different parent" error.
+                // Solution: Clear insertAfterNodeId if it's no longer a valid sibling.
+                const nodeWithInsertHint = currentNode as Node & { insertAfterNodeId?: string | null };
+                if (nodeWithInsertHint.insertAfterNodeId) {
+                  const siblingNode = this.nodes.get(nodeWithInsertHint.insertAfterNodeId);
+                  if (siblingNode && siblingNode.parentId !== currentNode.parentId) {
+                    log.debug(
+                      `[CREATE] Clearing stale insertAfterNodeId for ${nodeId.substring(0, 8)}: ` +
+                      `sibling ${nodeWithInsertHint.insertAfterNodeId.substring(0, 8)} has parentId ` +
+                      `${siblingNode.parentId?.substring(0, 8) ?? 'null'} but node has parentId ` +
+                      `${currentNode.parentId?.substring(0, 8) ?? 'null'}`
+                    );
+                    // Clear the stale hint - backend will use sortOrder instead
+                    nodeWithInsertHint.insertAfterNodeId = null;
+                  }
+                }
+
                 await tauriCommands.createNode(currentNode);
                 this.persistedNodeIds.add(nodeId); // Track as persisted
 
@@ -1665,6 +1728,15 @@ export class SharedNodeStore {
    */
   isNodePersisted(nodeId: string): boolean {
     return this.persistedNodeIds.has(nodeId);
+  }
+
+  /**
+   * Check if a node has a persistence operation currently executing
+   * @param nodeId - Node ID to check
+   * @returns True if an operation is in-flight for this node
+   */
+  isNodePersistenceExecuting(nodeId: string): boolean {
+    return PersistenceCoordinator.getInstance().isExecuting(nodeId);
   }
 
   /**
@@ -2488,8 +2560,23 @@ export class SharedNodeStore {
           //
           // STRATEGY: Try UPDATE first if we know node is persisted, otherwise CREATE
           if (isPersistedToDatabase) {
+            // CRITICAL: Wait for any pending move operation to complete before UPDATE.
+            // Move operations (indent/outdent) increment the version in the backend.
+            // If we UPDATE before the move completes, we'll have a version mismatch.
+            let currentNode = this.nodes.get(nodeId);
+            const pendingMove = getPendingMoveOperation(nodeId);
+            if (pendingMove) {
+              log.debug(`[BATCH UPDATE] Waiting for pending move operation on ${nodeId.substring(0, 8)}`);
+              await pendingMove;
+              // Re-read current node to get updated version after move
+              const refreshedNode = this.nodes.get(nodeId);
+              if (refreshedNode) {
+                currentNode = refreshedNode;
+              }
+            }
+
             // Get current version for optimistic concurrency control
-            const currentVersion = finalNode.version ?? 1;
+            const currentVersion = currentNode?.version ?? finalNode.version ?? 1;
 
             // CRITICAL: Capture updated node to get new version from backend
             // This prevents version conflicts on subsequent updates
@@ -2529,7 +2616,18 @@ export class SharedNodeStore {
               ) {
                 // Race detected: Old debounced path persisted before batch started
                 // Update with batched changes to fix inconsistent state
-                const currentVersion = finalNode.version ?? 1;
+                // First check for pending move operations
+                let raceCurrentNode = this.nodes.get(nodeId);
+                const raceMove = getPendingMoveOperation(nodeId);
+                if (raceMove) {
+                  log.debug(`[BATCH RACE] Waiting for pending move operation on ${nodeId.substring(0, 8)}`);
+                  await raceMove;
+                  const refreshed = this.nodes.get(nodeId);
+                  if (refreshed) {
+                    raceCurrentNode = refreshed;
+                  }
+                }
+                const currentVersion = raceCurrentNode?.version ?? finalNode.version ?? 1;
                 const updatedNodeFromBackend = await tauriCommands.updateNode(nodeId, currentVersion, changes);
                 this.persistedNodeIds.add(nodeId);
 

@@ -36,5 +36,5 @@ criterion = { version = "0.5", features = ["html_reports"] }
 panic = "abort"
 codegen-units = 1
 lto = true
-opt-level = "s"
+opt-level = 3  # Use speed optimization, not size - critical for SurrealDB performance
 strip = true
