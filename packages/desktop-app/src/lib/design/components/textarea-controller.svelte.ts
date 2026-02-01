@@ -431,7 +431,12 @@ export class TextareaController {
     }
 
     public focus(): void {
-      this.element.focus();
+      // Use preventScroll to avoid browser auto-scrolling when focusing
+      // This is critical for:
+      // 1. New tab opening - scroll should start at top, not at first focused node
+      // 2. Tab switching - scroll position should be restored, not overridden by focus
+      // 3. Arrow navigation - maintains scroll state during node-to-node navigation
+      this.element.focus({ preventScroll: true });
 
       if (this.pendingCursorPosition !== null) {
         this.setCursorPosition(this.pendingCursorPosition);

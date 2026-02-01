@@ -96,8 +96,10 @@ export class CursorPositioningService {
       }
 
       // Focus if requested
+      // Use preventScroll to avoid browser auto-scrolling when focusing
+      // This preserves scroll state during tab switching and new tab opening
       if (focus) {
-        textarea.focus();
+        textarea.focus({ preventScroll: true });
       }
 
       // Set cursor position
@@ -132,8 +134,10 @@ export class CursorPositioningService {
       const clampedPosition = Math.max(0, Math.min(position, maxPosition));
 
       // Focus if requested
+      // Use preventScroll to avoid browser auto-scrolling when focusing
+      // This preserves scroll state during tab switching and new tab opening
       if (focus) {
-        textarea.focus();
+        textarea.focus({ preventScroll: true });
       }
 
       // Set cursor position
@@ -187,8 +191,10 @@ export class CursorPositioningService {
       absolutePosition += column;
 
       // Focus if requested
+      // Use preventScroll to avoid browser auto-scrolling when focusing
+      // This preserves scroll state during tab switching and new tab opening
       if (focus) {
-        textarea.focus();
+        textarea.focus({ preventScroll: true });
       }
 
       // Set cursor position

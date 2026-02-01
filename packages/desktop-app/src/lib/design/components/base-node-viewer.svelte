@@ -849,7 +849,9 @@
           range.collapse(true);
           selection.removeAllRanges();
           selection.addRange(range);
-          element.focus();
+          // Use preventScroll to avoid browser auto-scrolling when focusing
+          // This preserves scroll state during tab switching and cursor restoration
+          element.focus({ preventScroll: true });
           return;
         }
         currentOffset += nodeLength;
@@ -862,7 +864,9 @@
         range.collapse(true);
         selection.removeAllRanges();
         selection.addRange(range);
-        element.focus();
+        // Use preventScroll to avoid browser auto-scrolling when focusing
+        // This preserves scroll state during tab switching and cursor restoration
+        element.focus({ preventScroll: true });
       }
     } catch {
       // Silently handle cursor restoration errors
