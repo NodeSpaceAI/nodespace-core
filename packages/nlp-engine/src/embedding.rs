@@ -227,8 +227,10 @@ unsafe impl Sync for LlamaState {}
 /// Main embedding service using llama.cpp
 pub struct EmbeddingService {
     config: EmbeddingConfig,
+    /// Model and context state, wrapped in Mutex<Option<>> to allow taking ownership
+    /// for cleanup without requiring &mut self (needed for Arc<EmbeddingService>).
     #[cfg(feature = "embedding-service")]
-    state: Option<Mutex<LlamaState>>,
+    state: Mutex<Option<LlamaState>>,
     cache: Arc<Mutex<LruCache<String, Vec<f32>>>>,
     initialized: bool,
     #[cfg(feature = "embedding-service")]
@@ -246,7 +248,7 @@ impl EmbeddingService {
         Ok(Self {
             config,
             #[cfg(feature = "embedding-service")]
-            state: None,
+            state: Mutex::new(None),
             cache: Arc::new(Mutex::new(LruCache::new(cache_capacity))),
             initialized: false,
             #[cfg(feature = "embedding-service")]
@@ -306,7 +308,7 @@ impl EmbeddingService {
             // Create LlamaState to hold model and context together
             // (backend is a global singleton, accessed via get_or_init_backend())
             let state = LlamaState::new(model, self.config.context_size, self.config.n_threads);
-            self.state = Some(Mutex::new(state));
+            *self.state.lock().unwrap_or_else(|p| p.into_inner()) = Some(state);
 
             tracing::info!(
                 "Embedding service initialized with persistent context (Issue #776 optimization)"
@@ -406,8 +408,11 @@ impl EmbeddingService {
         #[cfg(feature = "embedding-service")]
         {
             // If state isn't loaded (stub mode), return zero vector
-            if self.state.is_none() {
-                return Ok(vec![0.0; self.embedding_dimension]);
+            {
+                let state_guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if state_guard.is_none() {
+                    return Ok(vec![0.0; self.embedding_dimension]);
+                }
             }
 
             let embedding = self.generate_embedding_llama(prefixed_text)?;
@@ -440,12 +445,10 @@ impl EmbeddingService {
 
         // Lock the state to access model and context
         let lock_start = std::time::Instant::now();
-        let state_lock = self
-            .state
-            .as_ref()
+        let mut state_guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let state = state_guard
+            .as_mut()
             .ok_or(EmbeddingError::ModelNotInitialized)?;
-
-        let mut state = state_lock.lock().unwrap_or_else(|p| p.into_inner());
         let lock_time = lock_start.elapsed();
 
         // Tokenize using the model
@@ -555,6 +558,64 @@ impl EmbeddingService {
     /// Check if service is initialized
     pub fn is_initialized(&self) -> bool {
         self.initialized
+    }
+
+    /// Shutdown the embedding service and release GPU resources.
+    ///
+    /// This must be called before application exit to properly clean up Metal/GPU
+    /// contexts. Failure to call this before exit may result in crashes during
+    /// static destruction (e.g., SIGABRT from ggml_metal_rsets_free).
+    ///
+    /// After shutdown, the service cannot be used until re-initialized.
+    pub fn shutdown(&mut self) {
+        tracing::info!("Shutting down embedding service...");
+
+        #[cfg(feature = "embedding-service")]
+        {
+            // Drop the LlamaState which holds the context and model
+            // This must happen before the global LLAMA_BACKEND is destroyed
+            let mut state_guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(state) = state_guard.take() {
+                // Explicitly drop the state to release Metal resources
+                drop(state);
+                tracing::info!("LlamaState dropped, Metal resources released");
+            }
+        }
+
+        // Clear cache
+        self.clear_cache();
+
+        self.initialized = false;
+        tracing::info!("Embedding service shutdown complete");
+    }
+
+    /// Release ALL GPU resources (model + context) without requiring mutable access.
+    ///
+    /// This method can be called on an `Arc<EmbeddingService>` to release
+    /// the entire LlamaState (model and context) before application exit.
+    /// Both the model and context hold Metal GPU resources (residency sets)
+    /// that must be released before the global llama backend is destroyed
+    /// to prevent SIGABRT crashes from ggml_metal_rsets_free.
+    ///
+    /// After calling this, the embedding service cannot be used until re-initialized.
+    /// This is a one-way operation intended for application shutdown.
+    pub fn release_gpu_context(&self) {
+        tracing::info!("Releasing ALL GPU resources (model + context)...");
+
+        #[cfg(feature = "embedding-service")]
+        {
+            let mut state_guard = self.state.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(state) = state_guard.take() {
+                // Drop the entire LlamaState to release ALL Metal resources
+                // This includes both the model and context, ensuring no residency
+                // sets remain when the global backend is destroyed
+                drop(state);
+                tracing::info!("LlamaState (model + context) dropped, Metal resources freed");
+            }
+        }
+
+        // Also clear the cache to reduce memory pressure
+        self.clear_cache();
     }
 
     /// Get the embedding dimension
