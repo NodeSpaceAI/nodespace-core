@@ -101,6 +101,11 @@ class ImportService {
 
   /**
    * Import all markdown files from a directory
+   *
+   * NOTE: This method returns after Phase 1 (parsing) completes, but Phase 2
+   * (database operations) continues in background. Progress events will continue
+   * to be emitted until step 9 (complete). Callers should NOT unsubscribe from
+   * progress until they receive the step 9 event.
    */
   async importDirectory(
     directoryPath: string,
@@ -108,27 +113,25 @@ class ImportService {
   ): Promise<BatchImportResult> {
     log.info('Starting directory import', { path: directoryPath, options });
 
-    // Set up progress listener
+    // Set up progress listener (kept alive for background Phase 2)
     await this.setupProgressListener();
 
-    try {
-      const result = await invoke<BatchImportResult>('import_markdown_directory', {
-        directoryPath,
-        options: options || {},
-      });
+    const result = await invoke<BatchImportResult>('import_markdown_directory', {
+      directoryPath,
+      options: options || {},
+    });
 
-      log.info('Directory import complete', {
-        total: result.total_files,
-        successful: result.successful,
-        failed: result.failed,
-        duration_ms: result.duration_ms,
-      });
+    log.info('Directory import Phase 1 complete (Phase 2 running in background)', {
+      total: result.total_files,
+      successful: result.successful,
+      failed: result.failed,
+      duration_ms: result.duration_ms,
+    });
 
-      return result;
-    } finally {
-      // Clean up progress listener
-      this.teardownProgressListener();
-    }
+    // NOTE: Do NOT teardown listener here - Phase 2 is still running in background
+    // The listener will be cleaned up when the caller unsubscribes after step 9
+
+    return result;
   }
 
   /**

@@ -191,8 +191,14 @@
         const folderPath = await importService.selectFolder();
         if (!folderPath) return;
 
+        // Track if we've received step 9 (complete) to know when to unsubscribe
+        let unsubProgress: (() => void) | null = null;
+        let importFailed = false;
+
         // Subscribe to progress updates - show step-based messages
-        const unsubProgress = importService.onProgress((event) => {
+        // NOTE: Phase 2 runs in background after importDirectory returns,
+        // so we must NOT unsubscribe until step 9 is received
+        unsubProgress = importService.onProgress(async (event) => {
           // Calculate overall progress based on step (9 steps total)
           // Steps 2-3 have per-file progress, others are single events
           let progress: number;
@@ -206,9 +212,18 @@
             progress = Math.round((event.step / 9) * 100);
           }
 
-          // Step 9 (complete) shows success message
+          // Step 9 (complete) shows success message and triggers cleanup
           if (event.step === 9) {
-            statusBar.success(event.message);
+            if (!importFailed) {
+              statusBar.success(event.message);
+            }
+            // Unsubscribe now that import is fully complete
+            if (unsubProgress) {
+              unsubProgress();
+              unsubProgress = null;
+            }
+            // Refresh collections after background import completes
+            await collectionsData.loadCollections();
           } else {
             statusBar.show(event.message, progress);
           }
@@ -220,20 +235,27 @@
             exclude_patterns: ['design-system', 'node_modules', '.git'],
           });
 
-          // The completion message is now handled by the progress event (step 9)
-          // But if there were failures, show an error message
+          // Phase 1 complete - Phase 2 runs in background
+          // If there were parsing failures, show error (but don't override progress)
           if (result.failed > 0) {
+            importFailed = true;
             statusBar.error(`Import complete: ${result.successful} imported, ${result.failed} failed`);
+            // Unsubscribe since we're showing error
+            if (unsubProgress) {
+              unsubProgress();
+              unsubProgress = null;
+            }
           }
-
-          // Refresh collections after import
-          const { collectionsData } = await import('$lib/stores/collections');
-          await collectionsData.loadCollections();
+          // NOTE: Do NOT unsubProgress here - Phase 2 still running
         } catch (error) {
           log.error('Import failed', error);
+          importFailed = true;
           statusBar.error('Import failed: ' + (error instanceof Error ? error.message : String(error)));
-        } finally {
-          unsubProgress();
+          // Unsubscribe on error
+          if (unsubProgress) {
+            unsubProgress();
+            unsubProgress = null;
+          }
         }
       });
 
