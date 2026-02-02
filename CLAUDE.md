@@ -52,19 +52,27 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > 2. **Pull latest changes**: `git fetch origin && git pull origin main` - ensure you're working from the latest codebase
 > 3. **Run test baseline**: `bun run test & bun run rust:test & wait` - run frontend AND backend tests in parallel
 > 4. **Document baseline**: Add comment to issue with baseline test status
+>
+>    > ⚠️ **CRITICAL: All `bun run gh:*` commands MUST be run from the repository root (`nodespace-core/`), NOT from subdirectories like `packages/desktop-app/`. The scripts are defined in the root package.json and will fail with "Script not found" if run from the wrong directory.**
+>
 >    ```bash
->    # ✅ CORRECT - pass comment text as direct argument
+>    # ✅ CORRECT - from repository root
+>    cd /path/to/nodespace-core  # Ensure you're at repo root first!
 >    bun run gh:comment <number> "Frontend: X passed, Rust: Y passed"
 >
 >    # ❌ WRONG - do NOT pipe to gh:comment (it doesn't read stdin)
 >    echo "text" | bun run gh:comment <number>
+>
+>    # ❌ WRONG - running from subdirectory (will fail: "Script not found")
+>    cd packages/desktop-app
+>    bun run gh:comment <number> "..."
 >    ```
 >    - ⚠️ **WAIT for complete test output** - look for "Test Files X passed" summary line
 >    - ⚠️ **Verify final "Duration" line is visible** - if missing, output was truncated
 > 5. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
 > 6. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
-> 7. **Assign issue**: `bun run gh:assign <number> "@me"`
-> 8. **Update project status**: `bun run gh:status <number> "In Progress"`
+> 7. **Assign issue**: `bun run gh:assign <number> "@me"` *(run from repo root)*
+> 8. **Update project status**: `bun run gh:status <number> "In Progress"` *(run from repo root)*
 > 9. **Select subagent**: Choose appropriate specialized agent based on task complexity and type
 > 10. **Read issue requirements**: Understand all acceptance criteria
 > 11. **Plan implementation**: Self-contained approach with appropriate subagent
@@ -101,6 +109,7 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > **Common mistakes agents make:**
 > - **Skipping `git pull`** - Starting work without pulling latest changes leads to merge conflicts
 > - **Skipping test baseline** - Not recording initial test status leads to regressions
+> - **Running `bun run gh:*` from wrong directory** - These scripts only work from repo root, not from `packages/desktop-app/`
 > - Reading files before creating feature branch
 > - Planning implementation before assigning issue
 > - Using TodoWrite without including startup sequence as first item

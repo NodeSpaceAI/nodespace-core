@@ -7205,4 +7205,173 @@ mod tests {
 
         Ok(())
     }
+
+    // ========================================================================
+    // Tests for node_exists (Issue #870)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_node_exists_returns_true_for_existing_node() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
+        let created = store.create_node(node.clone(), None).await?;
+
+        let exists = store.node_exists(&created.id).await?;
+        assert!(exists, "node_exists should return true for existing node");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_node_exists_returns_false_for_nonexistent_node() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let exists = store.node_exists("nonexistent-node-id").await?;
+        assert!(
+            !exists,
+            "node_exists should return false for non-existent node"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_node_exists_returns_false_after_deletion() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
+        let created = store.create_node(node.clone(), None).await?;
+
+        // Verify exists before deletion
+        let exists_before = store.node_exists(&created.id).await?;
+        assert!(exists_before, "node should exist before deletion");
+
+        // Delete the node
+        store.delete_node(&created.id, None).await?;
+
+        // Verify doesn't exist after deletion
+        let exists_after = store.node_exists(&created.id).await?;
+        assert!(!exists_after, "node should not exist after deletion");
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Tests for get_parent_id (Issue #870)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_get_parent_id_returns_none_for_root_node() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create a root node (no parent)
+        let root = Node::new("text".to_string(), "Root node".to_string(), json!({}));
+        let created = store.create_node(root.clone(), None).await?;
+
+        let parent_id = store.get_parent_id(&created.id).await?;
+        assert!(parent_id.is_none(), "Root node should have no parent");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_parent_id_returns_correct_parent_for_child() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create parent node
+        let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
+        let created_parent = store.create_node(parent.clone(), None).await?;
+
+        // Create child with parent using create_child_node_atomic (creates has_child relationship)
+        let created_child = store
+            .create_child_node_atomic(&created_parent.id, "text", "Child", json!({}), None)
+            .await?;
+
+        let parent_id = store.get_parent_id(&created_child.id).await?;
+        assert!(parent_id.is_some(), "Child node should have a parent");
+        assert_eq!(
+            parent_id.unwrap(),
+            created_parent.id,
+            "Parent ID should match"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_parent_id_returns_none_for_nonexistent_node() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let parent_id = store.get_parent_id("nonexistent-node").await?;
+        assert!(
+            parent_id.is_none(),
+            "Non-existent node should return None for parent"
+        );
+
+        Ok(())
+    }
+
+    // ========================================================================
+    // Tests for get_node_type (Issue #870)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_get_node_type_returns_correct_type_for_text() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let node = Node::new("text".to_string(), "Test".to_string(), json!({}));
+        let created = store.create_node(node.clone(), None).await?;
+
+        let node_type = store.get_node_type(&created.id).await?;
+        assert!(node_type.is_some(), "Should return node type");
+        assert_eq!(node_type.unwrap(), "text", "Node type should be 'text'");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_node_type_returns_correct_type_for_task() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let node = Node::new(
+            "task".to_string(),
+            "[ ] Task item".to_string(),
+            json!({"status": "todo"}),
+        );
+        let created = store.create_node(node.clone(), None).await?;
+
+        let node_type = store.get_node_type(&created.id).await?;
+        assert!(node_type.is_some(), "Should return node type");
+        assert_eq!(node_type.unwrap(), "task", "Node type should be 'task'");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_node_type_returns_correct_type_for_date() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let node = Node::new("date".to_string(), "2024-01-15".to_string(), json!({}));
+        let created = store.create_node(node.clone(), None).await?;
+
+        let node_type = store.get_node_type(&created.id).await?;
+        assert!(node_type.is_some(), "Should return node type");
+        assert_eq!(node_type.unwrap(), "date", "Node type should be 'date'");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_node_type_returns_none_for_nonexistent_node() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        let node_type = store.get_node_type("nonexistent-node").await?;
+        assert!(
+            node_type.is_none(),
+            "Non-existent node should return None for type"
+        );
+
+        Ok(())
+    }
 }

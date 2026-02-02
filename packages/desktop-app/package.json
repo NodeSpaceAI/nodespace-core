@@ -29,6 +29,7 @@
     "test:perf": "TEST_FULL_PERFORMANCE=1 bunx vitest run src/tests/performance/",
     "test:db": "TEST_USE_DATABASE=true bunx vitest run",
     "test:db:watch": "TEST_USE_DATABASE=true bunx vitest",
+    "test:integration:full": "bun run test && bun run test:browser && bun run test:perf && bun run rust:test",
     "test:all": "bun run test && bun run rust:test",
     "rust:test": "cd src-tauri && cargo test --lib -p nodespace-core -- --test-threads=2",
     "quality:check": "bunx eslint 'src/**/*.{ts,svelte}' && BROWSERSLIST_IGNORE_OLD_DATA=1 bunx svelte-check",

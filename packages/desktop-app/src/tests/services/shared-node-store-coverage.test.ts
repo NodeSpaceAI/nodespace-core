@@ -562,6 +562,101 @@ describe('SharedNodeStore - Coverage Completion', () => {
       // Should have failed due to timeout
       expect(failed.size).toBeGreaterThanOrEqual(0);
     });
+
+    it('should flush specific nodes while leaving others pending', async () => {
+      const node1 = { ...mockNode, id: 'flush-node-1' };
+      const node2 = { ...mockNode, id: 'flush-node-2' };
+      const node3 = { ...mockNode, id: 'flush-node-3' };
+
+      let updateCount = 0;
+      vi.spyOn(tauriCommands, 'updateNode').mockImplementation(async (id) => {
+        updateCount++;
+        return { ...mockNode, id, version: 2 };
+      });
+
+      // Set up all nodes
+      store.setNode(node1, databaseSource);
+      store.setNode(node2, databaseSource);
+      store.setNode(node3, databaseSource);
+
+      // Make updates to trigger pending operations
+      store.updateNode(node1.id, { content: 'Updated 1' }, viewerSource);
+      store.updateNode(node2.id, { content: 'Updated 2' }, viewerSource);
+      store.updateNode(node3.id, { content: 'Updated 3' }, viewerSource);
+
+      // Flush only specific nodes
+      const failed = await store.flushNodeSaves([node1.id, node3.id], 1000);
+
+      expect(failed.size).toBe(0);
+      // At minimum node1 and node3 should have been flushed
+      expect(updateCount).toBeGreaterThanOrEqual(2);
+    });
+
+    it('should return empty set for empty node list', async () => {
+      const failed = await store.flushNodeSaves([], 1000);
+      expect(failed.size).toBe(0);
+    });
+
+    it('should handle concurrent flush requests for same node', async () => {
+      let resolveUpdate: (() => void) | undefined;
+      const updatePromise = new Promise<void>(resolve => {
+        resolveUpdate = resolve;
+      });
+
+      vi.spyOn(tauriCommands, 'updateNode').mockImplementation(async () => {
+        await updatePromise;
+        return { ...mockNode, version: 2 };
+      });
+
+      store.setNode(mockNode, databaseSource);
+      store.updateNode(mockNode.id, { content: 'Concurrent test' }, viewerSource);
+
+      // Start two concurrent flush operations for the same node
+      const flush1 = store.flushNodeSaves([mockNode.id], 5000);
+      const flush2 = store.flushNodeSaves([mockNode.id], 5000);
+
+      // Release the update
+      resolveUpdate!();
+
+      // Both should complete without error
+      const [failed1, failed2] = await Promise.all([flush1, flush2]);
+
+      expect(failed1.size).toBe(0);
+      expect(failed2.size).toBe(0);
+    });
+
+    it('should handle mix of pending and non-pending nodes', async () => {
+      const pendingNode = { ...mockNode, id: 'pending-node' };
+      const noPendingNode = { ...mockNode, id: 'no-pending-node' };
+
+      vi.spyOn(tauriCommands, 'updateNode').mockResolvedValue({
+        ...pendingNode,
+        version: 2
+      });
+
+      // Only set up pending operation for one node
+      store.setNode(pendingNode, databaseSource);
+      store.setNode(noPendingNode, databaseSource);
+      store.updateNode(pendingNode.id, { content: 'Has pending' }, viewerSource);
+      // noPendingNode has no pending update
+
+      // Flush both - should handle missing pending gracefully
+      const failed = await store.flushNodeSaves([pendingNode.id, noPendingNode.id], 1000);
+
+      expect(failed.size).toBe(0);
+    });
+
+    it('should report failed nodes when operation errors', async () => {
+      vi.spyOn(tauriCommands, 'updateNode').mockRejectedValue(new Error('Update failed'));
+
+      store.setNode(mockNode, databaseSource);
+      store.updateNode(mockNode.id, { content: 'Will fail' }, viewerSource);
+
+      const failed = await store.flushNodeSaves([mockNode.id], 1000);
+
+      // Should report the node as failed
+      expect(failed.has(mockNode.id)).toBe(true);
+    });
   });
 
   // ========================================================================

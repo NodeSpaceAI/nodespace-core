@@ -38,8 +38,42 @@ import { moveNode as moveNodeCommand } from './tauri-commands';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 
 /**
- * Calculate the insert order for an outdented node in its new parent's children list.
+ * Pure function to calculate the insert order for an outdented node.
  * The outdented node should appear right after its old parent among the new parent's children.
+ *
+ * @param children - Array of children with order, sorted by order
+ * @param oldParentId - The old parent (the node is moving out from under this parent)
+ * @returns The calculated fractional order for insertion
+ *
+ * @example
+ * // Old parent at order 2.0, next sibling at 3.0 -> insert at 2.5
+ * calculateOutdentInsertOrderPure([{nodeId: 'old', order: 2.0}, {nodeId: 'next', order: 3.0}], 'old') // 2.5
+ *
+ * @example
+ * // Old parent at order 2.0, no next sibling -> insert at 3.0
+ * calculateOutdentInsertOrderPure([{nodeId: 'old', order: 2.0}], 'old') // 3.0
+ *
+ * @example
+ * // Old parent not found, append to end
+ * calculateOutdentInsertOrderPure([{nodeId: 'other', order: 5.0}], 'missing') // 6.0
+ */
+export function calculateOutdentInsertOrderPure(
+  children: Array<{ nodeId: string; order: number }>,
+  oldParentId: string
+): number {
+  const oldParentIndex = children.findIndex(c => c.nodeId === oldParentId);
+  if (oldParentIndex >= 0) {
+    const oldParentOrder = children[oldParentIndex].order;
+    const nextSibling = children[oldParentIndex + 1];
+    return nextSibling ? (oldParentOrder + nextSibling.order) / 2 : oldParentOrder + 1.0;
+  }
+  // Fallback: append to end
+  return children.length > 0 ? children[children.length - 1].order + 1.0 : 1.0;
+}
+
+/**
+ * Calculate the insert order for an outdented node in its new parent's children list.
+ * Wrapper that uses the structureTree to get children.
  *
  * @param newParentId - The new parent (grandparent of the node being outdented)
  * @param oldParentId - The old parent (the node is moving out from under this parent)
@@ -47,14 +81,7 @@ import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
  */
 function calculateOutdentInsertOrder(newParentId: string, oldParentId: string): number {
   const newParentChildren = structureTree.getChildrenWithOrder(newParentId);
-  const oldParentIndex = newParentChildren.findIndex(c => c.nodeId === oldParentId);
-  if (oldParentIndex >= 0) {
-    const oldParentOrder = newParentChildren[oldParentIndex].order;
-    const nextSibling = newParentChildren[oldParentIndex + 1];
-    return nextSibling ? (oldParentOrder + nextSibling.order) / 2 : oldParentOrder + 1.0;
-  }
-  // Fallback: append to end
-  return newParentChildren.length > 0 ? newParentChildren[newParentChildren.length - 1].order + 1.0 : 1.0;
+  return calculateOutdentInsertOrderPure(newParentChildren, oldParentId);
 }
 
 export interface NodeManagerEvents {

@@ -10,12 +10,17 @@
  * 3. User immediately presses Shift+Tab to outdent B
  * 4. Without proper coordination, outdent may fail with "Sibling not found"
  *    because indent's moveNodeCommand hasn't completed yet
+ *
+ * NOTE: This file tests the race condition patterns using a local reimplementation
+ * of the coordination mechanism. For tests of the actual pending-operations module
+ * exports, see pending-operations.test.ts.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Replicate the module-level coordination mechanism for testing
-// (These would be internal to reactive-node-service.svelte.ts)
+// NOTE: This test file intentionally reimplements the tracking logic locally
+// to test the PATTERN without depending on global module state.
+// See pending-operations.test.ts for tests of the actual module exports.
 describe('Indent/Outdent Race Condition Prevention (Issue #662)', () => {
   let pendingMoveOperations: Map<string, Promise<void>>;
 
