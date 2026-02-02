@@ -24,6 +24,7 @@ import type { Node, NodeWithChildren, TaskNode, TaskNodeUpdate } from '$lib/type
 import type { SchemaNode } from '$lib/types/schema-node';
 import { createLogger } from '$lib/utils/logger';
 import { withDiagnosticLogging } from './diagnostic-logger';
+import { invoke } from '@tauri-apps/api/core';
 
 const log = createLogger('BackendAdapter');
 
@@ -120,18 +121,7 @@ export interface BackendAdapter {
 // ============================================================================
 
 class TauriAdapter implements BackendAdapter {
-  private _invoke: typeof import('@tauri-apps/api/core').invoke | null = null;
-
-  private async getInvoke(): Promise<typeof import('@tauri-apps/api/core').invoke> {
-    if (!this._invoke) {
-      const tauriCore = await import('@tauri-apps/api/core');
-      this._invoke = tauriCore.invoke;
-    }
-    return this._invoke;
-  }
-
   async createNode(input: CreateNodeInput | Node): Promise<string> {
-    const invoke = await this.getInvoke();
     // Tauri 2.x with #[serde(rename_all = "camelCase")] expects camelCase field names
     const nodeInput = {
       id: input.id,
@@ -150,7 +140,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async getNode(id: string): Promise<Node | null> {
-    const invoke = await this.getInvoke();
     return withDiagnosticLogging(
       'getNode',
       () => invoke<Node | null>('get_node', { id }),
@@ -159,7 +148,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async updateNode(id: string, version: number, update: UpdateNodeInput): Promise<Node> {
-    const invoke = await this.getInvoke();
     return withDiagnosticLogging(
       'updateNode',
       () => invoke<Node>('update_node', { id, version, update }),
@@ -168,7 +156,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async updateTaskNode(id: string, version: number, update: TaskNodeUpdate): Promise<TaskNode> {
-    const invoke = await this.getInvoke();
     return withDiagnosticLogging(
       'updateTaskNode',
       () => invoke<TaskNode>('update_task_node', { id, version, update }),
@@ -177,7 +164,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async deleteNode(id: string, version: number): Promise<DeleteResult> {
-    const invoke = await this.getInvoke();
     return withDiagnosticLogging(
       'deleteNode',
       () => invoke<DeleteResult>('delete_node', { id, version }),
@@ -186,7 +172,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async getChildren(parentId: string): Promise<Node[]> {
-    const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
     return withDiagnosticLogging(
       'getChildren',
@@ -212,7 +197,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async getChildrenTree(parentId: string): Promise<NodeWithChildren | null> {
-    const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
     return withDiagnosticLogging(
       'getChildrenTree',
@@ -229,7 +213,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async moveNode(nodeId: string, version: number, newParentId: string | null, insertAfterNodeId: string | null): Promise<Node> {
-    const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
     return withDiagnosticLogging(
       'moveNode',
@@ -244,7 +227,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async createMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
-    const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
     return withDiagnosticLogging(
       'createMention',
@@ -257,7 +239,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async deleteMention(mentioningNodeId: string, mentionedNodeId: string): Promise<void> {
-    const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
     return withDiagnosticLogging(
       'deleteMention',
@@ -270,7 +251,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async getOutgoingMentions(nodeId: string): Promise<string[]> {
-    const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
     return withDiagnosticLogging(
       'getOutgoingMentions',
@@ -280,7 +260,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async getIncomingMentions(nodeId: string): Promise<string[]> {
-    const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case to camelCase
     return withDiagnosticLogging(
       'getIncomingMentions',
@@ -290,7 +269,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async getMentioningContainers(nodeId: string): Promise<string[]> {
-    const invoke = await this.getInvoke();
     // Tauri 2.x auto-converts snake_case Rust params to camelCase JS params
     return withDiagnosticLogging(
       'getMentioningContainers',
@@ -300,7 +278,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async queryNodes(query: NodeQuery): Promise<Node[]> {
-    const invoke = await this.getInvoke();
     return withDiagnosticLogging(
       'queryNodes',
       () => invoke<Node[]>('query_nodes_simple', { query }),
@@ -309,7 +286,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
-    const invoke = await this.getInvoke();
     return withDiagnosticLogging(
       'mentionAutocomplete',
       () => invoke<Node[]>('mention_autocomplete', { query, limit }),
@@ -318,7 +294,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async createContainerNode(input: CreateContainerInput): Promise<string> {
-    const invoke = await this.getInvoke();
     // Keep snake_case for struct fields to match Rust serde expectations
     const rustInput = {
       content: input.content,
@@ -334,7 +309,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async getAllSchemas(): Promise<SchemaNode[]> {
-    const invoke = await this.getInvoke();
     return withDiagnosticLogging(
       'getAllSchemas',
       () => invoke<SchemaNode[]>('get_all_schemas'),
@@ -343,7 +317,6 @@ class TauriAdapter implements BackendAdapter {
   }
 
   async getSchema(schemaId: string): Promise<SchemaNode> {
-    const invoke = await this.getInvoke();
     return withDiagnosticLogging(
       'getSchema',
       () => invoke<SchemaNode>('get_schema_definition', { schemaId }),

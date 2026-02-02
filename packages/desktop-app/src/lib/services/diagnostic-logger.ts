@@ -12,6 +12,7 @@
  */
 
 import { createLogger } from '$lib/utils/logger';
+import { invoke } from '@tauri-apps/api/core';
 
 const log = createLogger('DiagnosticLogger');
 
@@ -281,7 +282,6 @@ export async function getDatabaseDiagnostics(): Promise<DatabaseDiagnostics | nu
   }
 
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
     return await withDiagnosticLogging(
       'get_database_diagnostics',
       () => invoke<DatabaseDiagnostics>('get_database_diagnostics'),
@@ -304,7 +304,6 @@ export async function testNodePersistence(): Promise<TestPersistenceResult | nul
   }
 
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
     return await withDiagnosticLogging(
       'test_node_persistence',
       () => invoke<TestPersistenceResult>('test_node_persistence'),

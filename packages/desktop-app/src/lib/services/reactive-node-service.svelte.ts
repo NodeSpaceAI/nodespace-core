@@ -394,11 +394,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
             // Persist child transfers to database
             // Structure tree already updated above, so UI is already correct
             for (const child of children) {
-              // Import moveNode dynamically to avoid circular dependency
-              const { moveNode } = await import('$lib/services/tauri-commands');
               // Move child to be under the new node in database (with OCC)
               // Backend returns updated child with new version
-              const updatedChild = await moveNode(child.id, child.version, nodeId, null);
+              const updatedChild = await moveNodeCommand(child.id, child.version, nodeId, null);
               // Sync child's local version from backend response
               sharedNodeStore.updateNode(
                 child.id,

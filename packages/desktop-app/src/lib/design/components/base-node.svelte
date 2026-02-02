@@ -403,7 +403,6 @@
       }
 
       const { v4: uuidv4 } = await import('uuid');
-      const tauriCommands = await import('$lib/services/tauri-commands');
 
       const newNodeId = uuidv4();
 
