@@ -7416,4 +7416,297 @@ mod tests {
 
         Ok(())
     }
+
+    // ========================================================================
+    // Tests for get_incoming_mention_containers (Issue #882)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_get_incoming_mention_containers_basic() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create a root node (container)
+        let root = Node::new("text".to_string(), "Root page".to_string(), json!({}));
+        let root = store.create_node(root, None).await?;
+
+        // Create a child text node that will mention the target
+        let child = Node::new_with_id(
+            format!("child-{}", uuid::Uuid::new_v4()),
+            "text".to_string(),
+            "See @target-node".to_string(),
+            json!({}),
+        );
+        let child = store.create_node(child, None).await?;
+
+        // Establish parent-child relationship
+        store.move_node(&child.id, Some(&root.id), None).await?;
+
+        // Create target node (separate root, will be mentioned)
+        let target = Node::new_with_id(
+            "target-basic".to_string(),
+            "text".to_string(),
+            "Target page".to_string(),
+            json!({}),
+        );
+        let target = store.create_node(target, None).await?;
+
+        // Create mention relationship from child to target
+        store.create_mention(&child.id, &target.id).await?;
+
+        // Get incoming mention containers for target
+        let containers = store.get_incoming_mention_containers(&target.id).await?;
+
+        // Should return the root (container) not the child
+        assert_eq!(containers.len(), 1, "Should return exactly one container");
+        assert_eq!(
+            containers[0].id, root.id,
+            "Should return root node as container"
+        );
+        assert_eq!(containers[0].node_type, "text");
+        // Title may be None for text nodes without title field
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_incoming_mention_containers_task_exception() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create a root node
+        let root = Node::new("text".to_string(), "Root page".to_string(), json!({}));
+        let root = store.create_node(root, None).await?;
+
+        // Create a task node that will mention the target
+        // Tasks are their own containers even when nested
+        let task = Node::new_with_id(
+            format!("task-{}", uuid::Uuid::new_v4()),
+            "task".to_string(),
+            "Review @target-task".to_string(),
+            json!({"status": "open"}),
+        );
+        let task = store.create_node(task, None).await?;
+
+        // Make task a child of root
+        store.move_node(&task.id, Some(&root.id), None).await?;
+
+        // Create target node
+        let target = Node::new_with_id(
+            "target-task-exc".to_string(),
+            "text".to_string(),
+            "Target page".to_string(),
+            json!({}),
+        );
+        let target = store.create_node(target, None).await?;
+
+        // Task mentions target
+        store.create_mention(&task.id, &target.id).await?;
+
+        // Get incoming mention containers
+        let containers = store.get_incoming_mention_containers(&target.id).await?;
+
+        // Should return the task (not root) because tasks are their own containers
+        assert_eq!(containers.len(), 1, "Should return exactly one container");
+        assert_eq!(
+            containers[0].id, task.id,
+            "Task should be its own container"
+        );
+        assert_eq!(containers[0].node_type, "task");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_incoming_mention_containers_deep_nesting() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create hierarchy: root -> level1 -> level2 -> level3 (mentions target)
+        let root = Node::new_with_id(
+            "deep-root".to_string(),
+            "text".to_string(),
+            "Root page".to_string(),
+            json!({}),
+        );
+        let root = store.create_node(root, None).await?;
+
+        let level1 = Node::new_with_id(
+            "deep-level1".to_string(),
+            "text".to_string(),
+            "Level 1".to_string(),
+            json!({}),
+        );
+        let level1 = store.create_node(level1, None).await?;
+        store.move_node(&level1.id, Some(&root.id), None).await?;
+
+        let level2 = Node::new_with_id(
+            "deep-level2".to_string(),
+            "text".to_string(),
+            "Level 2".to_string(),
+            json!({}),
+        );
+        let level2 = store.create_node(level2, None).await?;
+        store.move_node(&level2.id, Some(&level1.id), None).await?;
+
+        let level3 = Node::new_with_id(
+            "deep-level3".to_string(),
+            "text".to_string(),
+            "Level 3 mentions @target".to_string(),
+            json!({}),
+        );
+        let level3 = store.create_node(level3, None).await?;
+        store.move_node(&level3.id, Some(&level2.id), None).await?;
+
+        // Create target node
+        let target = Node::new_with_id(
+            "deep-target".to_string(),
+            "text".to_string(),
+            "Target page".to_string(),
+            json!({}),
+        );
+        let target = store.create_node(target, None).await?;
+
+        // Level3 mentions target
+        store.create_mention(&level3.id, &target.id).await?;
+
+        // Get incoming mention containers
+        let containers = store.get_incoming_mention_containers(&target.id).await?;
+
+        // Should return the root (traverses all ancestors to find root)
+        assert_eq!(containers.len(), 1, "Should return exactly one container");
+        assert_eq!(
+            containers[0].id, root.id,
+            "Should traverse to root node (3+ levels deep)"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_incoming_mention_containers_no_mentions() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create a node with no incoming mentions
+        let target = Node::new_with_id(
+            "lonely-target".to_string(),
+            "text".to_string(),
+            "Nobody mentions me".to_string(),
+            json!({}),
+        );
+        let target = store.create_node(target, None).await?;
+
+        // Get incoming mention containers
+        let containers = store.get_incoming_mention_containers(&target.id).await?;
+
+        // Should return empty vector
+        assert_eq!(containers.len(), 0, "Should return no containers");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_incoming_mention_containers_deduplication() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create a root node
+        let root = Node::new_with_id(
+            "dedup-root".to_string(),
+            "text".to_string(),
+            "Root page".to_string(),
+            json!({}),
+        );
+        let root = store.create_node(root, None).await?;
+
+        // Create two child nodes that both mention the target
+        let child1 = Node::new_with_id(
+            "dedup-child1".to_string(),
+            "text".to_string(),
+            "First mention @target".to_string(),
+            json!({}),
+        );
+        let child1 = store.create_node(child1, None).await?;
+        store.move_node(&child1.id, Some(&root.id), None).await?;
+
+        let child2 = Node::new_with_id(
+            "dedup-child2".to_string(),
+            "text".to_string(),
+            "Second mention @target".to_string(),
+            json!({}),
+        );
+        let child2 = store.create_node(child2, None).await?;
+        store.move_node(&child2.id, Some(&root.id), None).await?;
+
+        // Create target node
+        let target = Node::new_with_id(
+            "dedup-target".to_string(),
+            "text".to_string(),
+            "Target page".to_string(),
+            json!({}),
+        );
+        let target = store.create_node(target, None).await?;
+
+        // Both children mention target
+        store.create_mention(&child1.id, &target.id).await?;
+        store.create_mention(&child2.id, &target.id).await?;
+
+        // Get incoming mention containers
+        let containers = store.get_incoming_mention_containers(&target.id).await?;
+
+        // Should return only ONE container (deduplicated)
+        assert_eq!(
+            containers.len(),
+            1,
+            "Should deduplicate to single root despite two children mentioning target"
+        );
+        assert_eq!(containers[0].id, root.id, "Should return the root node");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_get_incoming_mention_containers_returns_node_reference_data() -> Result<()> {
+        let (store, _temp_dir) = create_test_store().await?;
+
+        // Create a root node with title (text node - title from content)
+        let root = Node::new_with_id(
+            "ref-root".to_string(),
+            "text".to_string(),
+            "Document with references".to_string(),
+            json!({}),
+        );
+        let root = store.create_node(root, None).await?;
+
+        // Create child that mentions target
+        let child = Node::new_with_id(
+            "ref-child".to_string(),
+            "text".to_string(),
+            "Link to @target".to_string(),
+            json!({}),
+        );
+        let child = store.create_node(child, None).await?;
+        store.move_node(&child.id, Some(&root.id), None).await?;
+
+        // Create target
+        let target = Node::new_with_id(
+            "ref-target".to_string(),
+            "text".to_string(),
+            "Target".to_string(),
+            json!({}),
+        );
+        let target = store.create_node(target, None).await?;
+
+        // Create mention
+        store.create_mention(&child.id, &target.id).await?;
+
+        // Get containers
+        let containers = store.get_incoming_mention_containers(&target.id).await?;
+
+        // Verify NodeReference structure
+        assert_eq!(containers.len(), 1);
+        let container = &containers[0];
+
+        assert_eq!(container.id, root.id, "ID should match");
+        assert_eq!(container.node_type, "text", "node_type should be 'text'");
+        // Title field may or may not be populated depending on index state
+
+        Ok(())
+    }
 }
