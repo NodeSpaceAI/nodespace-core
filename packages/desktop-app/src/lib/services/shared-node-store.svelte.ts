@@ -30,7 +30,10 @@ import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { isVersionConflict } from '$lib/types/errors';
 import { createLogger } from '$lib/utils/logger';
 import { getPendingMoveOperation } from './pending-operations';
+import { contentProcessor } from './content-processor';
+import { stripMarkdown } from './markdown-utils';
 import type { Node } from '$lib/types';
+import type { NodeReference } from '$lib/types/node';
 import type {
   NodeUpdate,
   UpdateSource,
@@ -436,6 +439,8 @@ interface ActiveBatch {
   createdAt: number;
   timeout: ReturnType<typeof setTimeout>;
   timeoutMs: number;
+  /** Original content at batch start, for mention diff on commit */
+  originalContent?: string;
 }
 
 /**
@@ -838,6 +843,10 @@ export class SharedNodeStore {
         const hasBatchActive = this.activeBatches.has(nodeId);
 
         if (shouldPersist && !hasBatchActive) {
+          // Issue #880: Capture old content for immediate backlinks reactivity
+          // This must be captured BEFORE the debounced persistence, from existingNode (line 747)
+          const oldContentForMentions = isContentChange ? existingNode.content : undefined;
+
           // Delegate to PersistenceCoordinator for coordinated persistence
           // Use debounced mode for content changes (typing), immediate for structural changes
           const dependencies: Array<string | (() => Promise<void>)> = [];
@@ -999,6 +1008,18 @@ export class SharedNodeStore {
                   }
 
                 }
+
+                // Issue #880: Update mentionedIn on target nodes after successful persistence
+                // This enables immediate backlinks reactivity without requiring navigation
+                if (oldContentForMentions !== undefined) {
+                  const persistedNode = this.nodes.get(nodeId);
+                  this.updateMentionedInOnContentChange(
+                    nodeId,
+                    oldContentForMentions,
+                    persistedNode?.content
+                  );
+                }
+
                 // Mark update as persisted
                 this.markUpdatePersisted(nodeId, update);
               } catch (dbError) {
@@ -2220,6 +2241,145 @@ export class SharedNodeStore {
   }
 
   /**
+   * Update mentionedIn on target nodes when content changes (Issue #880)
+   *
+   * When a mention is created/removed in content, the target node's mentionedIn
+   * should update immediately without requiring navigation away and back.
+   *
+   * @param sourceNodeId - The node whose content changed
+   * @param oldContent - Content before the change
+   * @param newContent - Content after the change
+   */
+  private updateMentionedInOnContentChange(
+    sourceNodeId: string,
+    oldContent: string | undefined,
+    newContent: string | undefined
+  ): void {
+    // Skip if no content to compare
+    if (oldContent === undefined && newContent === undefined) return;
+    if (oldContent === newContent) return;
+
+    // Extract mentions from old and new content
+    const oldMentions = new Set(
+      contentProcessor.detectNodespaceURIs(oldContent ?? '').map(link => link.nodeId)
+    );
+    const newMentions = new Set(
+      contentProcessor.detectNodespaceURIs(newContent ?? '').map(link => link.nodeId)
+    );
+
+    // Calculate added and removed mentions
+    const added = [...newMentions].filter(id => !oldMentions.has(id));
+    const removed = [...oldMentions].filter(id => !newMentions.has(id));
+
+    // Skip if no changes
+    if (added.length === 0 && removed.length === 0) return;
+
+    // Find the container (root node or task) for the source node
+    // The container is what appears in backlinks - it's the navigable entry point
+    const sourceContainer = this.findContainer(sourceNodeId);
+    if (!sourceContainer) {
+      log.debug(`Could not find container for source node ${sourceNodeId}, skipping mentionedIn update`);
+      return;
+    }
+
+    // Build NodeReference for the container
+    const containerRef: NodeReference = {
+      id: sourceContainer.id,
+      title: sourceContainer.title ?? (stripMarkdown(sourceContainer.content).substring(0, 50) || null),
+      nodeType: sourceContainer.nodeType
+    };
+
+    // Update mentionedIn for added mentions
+    for (const targetId of added) {
+      // Skip self-mentions - a node shouldn't appear in its own backlinks
+      if (targetId === sourceContainer.id) continue;
+
+      const targetNode = this.nodes.get(targetId);
+      if (targetNode) {
+        const mentionedIn = [...(targetNode.mentionedIn ?? [])];
+        // Avoid duplicates (same container can mention via multiple child nodes)
+        if (!mentionedIn.some(ref => ref.id === containerRef.id)) {
+          mentionedIn.push(containerRef);
+          const updatedTarget = { ...targetNode, mentionedIn };
+          this.nodes.set(targetId, updatedTarget);
+          this.notifySubscribers(targetId, updatedTarget, { type: 'database', reason: 'mention-added' });
+          log.debug(`Added ${containerRef.id} to mentionedIn of ${targetId}`);
+        }
+      }
+    }
+
+    // Update mentionedIn for removed mentions
+    for (const targetId of removed) {
+      // Skip self-mentions - consistency with added mentions handling
+      if (targetId === sourceContainer.id) continue;
+
+      const targetNode = this.nodes.get(targetId);
+      if (targetNode?.mentionedIn) {
+        const mentionedIn = targetNode.mentionedIn.filter(ref => ref.id !== containerRef.id);
+        // Only update if actually changed
+        if (mentionedIn.length !== targetNode.mentionedIn.length) {
+          const updatedTarget = { ...targetNode, mentionedIn };
+          this.nodes.set(targetId, updatedTarget);
+          this.notifySubscribers(targetId, updatedTarget, { type: 'database', reason: 'mention-removed' });
+          log.debug(`Removed ${containerRef.id} from mentionedIn of ${targetId}`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Find the container (root or task) for a given node
+   *
+   * The container is the entry point that appears in backlinks.
+   * For most nodes, this is the root of their tree (no parent).
+   * For task nodes, the task itself is the container regardless of hierarchy.
+   *
+   * @param nodeId - Node to find container for
+   * @returns The container node, or null if not found
+   */
+  private findContainer(nodeId: string): Node | null {
+    const node = this.nodes.get(nodeId);
+    if (!node) return null;
+
+    // Task nodes are their own container
+    if (node.nodeType === 'task') {
+      return node;
+    }
+
+    // Walk up the tree to find root or a task
+    let currentId = nodeId;
+    const visited = new Set<string>();
+
+    while (currentId) {
+      if (visited.has(currentId)) {
+        log.warn(`Cycle detected in hierarchy for node ${nodeId}`);
+        break;
+      }
+      visited.add(currentId);
+
+      const current = this.nodes.get(currentId);
+      if (!current) break;
+
+      // If we hit a task, that's the container
+      if (current.nodeType === 'task') {
+        return current;
+      }
+
+      // Check parent
+      const parentId = structureTree?.getParent(currentId);
+      if (!parentId || parentId === '__root__') {
+        // No parent - this node is the root container
+        return current;
+      }
+
+      currentId = parentId;
+    }
+
+    // Fallback: return the original node
+    return node;
+  }
+
+  /**
    * Determine the type of update based on which fields changed
    *
    * @param changes - Partial node data representing the changes
@@ -2352,13 +2512,18 @@ export class SharedNodeStore {
       this.commitBatch(nodeId);
     }, timeoutMs);
 
+    // Capture original content for mention diffing on batch commit
+    const existingNode = this.nodes.get(nodeId);
+    const originalContent = existingNode?.content;
+
     this.activeBatches.set(nodeId, {
       nodeId,
       changes: {},
       batchId,
       createdAt,
       timeout,
-      timeoutMs
+      timeoutMs,
+      originalContent
     });
 
     return batchId;
@@ -2448,7 +2613,7 @@ export class SharedNodeStore {
       // Issue #479: Always persist batched changes - even blank/syntax-only nodes
       // Real nodes (created by user actions) should always be persisted
       // The viewer-local placeholder never enters batch system
-      this.persistBatchedChanges(nodeId, batch.changes, finalNode);
+      this.persistBatchedChanges(nodeId, batch.changes, finalNode, batch.originalContent);
     } catch (error) {
       log.error(' Batch commit error', {
         nodeId,
@@ -2532,8 +2697,14 @@ export class SharedNodeStore {
    * @param nodeId - Node to persist
    * @param changes - Accumulated changes from batch
    * @param finalNode - Final node state after batch
+   * @param originalContent - Content before batch started (for mention diffing)
    */
-  private persistBatchedChanges(nodeId: string, changes: Partial<Node>, finalNode: Node): void {
+  private persistBatchedChanges(
+    nodeId: string,
+    changes: Partial<Node>,
+    finalNode: Node,
+    originalContent?: string
+  ): void {
     const isPersistedToDatabase = this.persistedNodeIds.has(nodeId);
 
     // Use PersistenceCoordinator for coordinated persistence
@@ -2641,6 +2812,17 @@ export class SharedNodeStore {
                 throw createError;
               }
             }
+          }
+
+          // Issue #880: Update mentionedIn on target nodes after successful batch persistence
+          // This enables immediate backlinks reactivity without requiring navigation
+          if (originalContent !== undefined && 'content' in changes) {
+            const persistedNode = this.nodes.get(nodeId);
+            this.updateMentionedInOnContentChange(
+              nodeId,
+              originalContent,
+              persistedNode?.content
+            );
           }
         } catch (dbError) {
           const error = dbError instanceof Error ? dbError : new Error(String(dbError));
