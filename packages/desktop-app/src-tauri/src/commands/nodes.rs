@@ -6,7 +6,7 @@
 //! As of Issue #690, SchemaService was removed. Schema validation is done
 //! via NodeService.get_schema_for_type() and SchemaNodeBehavior.
 
-use nodespace_core::models;
+use nodespace_core::models::{self, NodeReference};
 use nodespace_core::services::CreateNodeParams;
 use nodespace_core::{Node, NodeQuery, NodeService, NodeServiceError, NodeUpdate};
 use serde::{Deserialize, Serialize};
@@ -917,20 +917,20 @@ pub async fn get_incoming_mentions(
 ///
 /// # Example
 /// If nodes A and B (both children of Root X) mention target node,
-/// returns `['root-x-id']` instead of `['node-a-id', 'node-b-id']`
+/// returns `[{ id: 'root-x-id', title: '...', nodeType: 'text' }]` instead of just IDs
 ///
 /// # Example Frontend Usage
 /// ```typescript
-/// const roots = await invoke('get_mentioning_roots', {
+/// const containers = await invoke('get_mentioning_roots', {
 ///   nodeId: 'node-123'
 /// });
+/// // containers: Array<{ id: string, title: string | null, nodeType: string }>
 /// ```
 #[tauri::command]
 pub async fn get_mentioning_roots(
     service: State<'_, NodeService>,
     node_id: String,
-) -> Result<Vec<String>, CommandError> {
-    // Note: NodeService method still uses legacy name, will be updated in Phase 6
+) -> Result<Vec<NodeReference>, CommandError> {
     service
         .get_mentioning_containers(&node_id)
         .await

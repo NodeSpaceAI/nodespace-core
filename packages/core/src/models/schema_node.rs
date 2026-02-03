@@ -191,7 +191,7 @@ impl SchemaNode {
             modified_at: self.modified_at,
             properties,
             mentions: Vec::new(),
-            mentioned_by: Vec::new(),
+            mentioned_in: Vec::new(),
             member_of: Vec::new(),
             title: None, // Schema nodes don't have indexed titles
             lifecycle_status: "active".to_string(),

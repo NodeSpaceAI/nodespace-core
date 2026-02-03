@@ -8,6 +8,54 @@
  */
 
 /**
+ * Lightweight reference to a node for backlinks display
+ *
+ * Contains minimal data needed to show a link: id, title, and type.
+ * Used by the `mentionedIn` field to provide backlinks without N+1 queries.
+ */
+export interface NodeReference {
+  /** Node ID */
+  id: string;
+  /** Display title (markdown-stripped content for root/task nodes) */
+  title: string | null;
+  /** Node type (e.g., "text", "task", "date") */
+  nodeType: string;
+}
+
+/**
+ * Direction of a relationship relative to a node
+ *
+ * - `out`: The relationship points FROM this node TO another (outgoing)
+ * - `in`: The relationship points FROM another node TO this node (incoming)
+ */
+export type RelationshipDirection = 'out' | 'in';
+
+/**
+ * Represents a relationship with another node, including direction
+ *
+ * Used for returning relationships in subtree queries where we need to know
+ * both the related node and the direction of the relationship.
+ *
+ * For outgoing relationships (direction = 'out'):
+ * - `id` is the target node ID
+ * - The current node points TO this node
+ *
+ * For incoming relationships (direction = 'in'):
+ * - `id` is the source node ID
+ * - This node points TO the current node
+ */
+export interface NodeRelationship {
+  /** The related node's ID */
+  id: string;
+  /** The related node's title (for display) */
+  title: string | null;
+  /** Direction of the relationship relative to the node this is attached to */
+  direction: RelationshipDirection;
+  /** Type of relationship (e.g., "mentions", "has_child", "member_of") */
+  relationshipType: string;
+}
+
+/**
  * Node - Matches Rust backend schema exactly
  *
  * This is the authoritative node type. All services and components
@@ -187,6 +235,27 @@ export interface Node {
    */
   memberOf?: string[];
 
+  /**
+   * Nodes that mention this node (backlinks) with preview data
+   *
+   * Populated during root fetch (get_children_tree) for efficient UI display.
+   * Contains {id, title, nodeType} for each mentioning node's container (root or task).
+   *
+   * This eliminates N+1 queries - backlink data comes with the initial node fetch.
+   * The SharedNodeStore caches this data, and domain events trigger refetch on changes.
+   *
+   * ## Usage in BacklinksPanel
+   *
+   * ```typescript
+   * let node = $derived(sharedNodeStore.getNode(nodeId));
+   * let backlinks = $derived(node?.mentionedIn ?? []);
+   *
+   * {#each backlinks as backlink}
+   *   <a href="nodespace://{backlink.id}">{backlink.title || backlink.id}</a>
+   * {/each}
+   * ```
+   */
+  mentionedIn?: NodeReference[];
 }
 
 // ============================================================================

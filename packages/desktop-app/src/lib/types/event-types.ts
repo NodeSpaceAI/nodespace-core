@@ -107,8 +107,11 @@ export interface NodeWithChildren {
   embeddingVector?: number[];
   embeddingStale?: boolean;
   mentions?: string[];
-  mentionedBy?: string[];
+  /** Nodes that mention this node (backlinks) with {id, title, nodeType} */
+  mentionedIn?: Array<{ id: string; title: string | null; nodeType: string }>;
   _schema_version?: number;
+  /** Indexed title for @mention autocomplete search */
+  title?: string | null;
 
   // Nested children (recursive)
   children?: NodeWithChildren[];

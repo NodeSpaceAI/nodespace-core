@@ -1152,14 +1152,14 @@ async fn get_incoming_mentions(
 async fn get_mentioning_containers(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> ApiResult<Vec<String>> {
-    let container_ids = state
+) -> ApiResult<Vec<nodespace_core::models::NodeReference>> {
+    let containers = state
         .node_service
         .get_mentioning_containers(&id)
         .await
         .map_err(map_node_service_error)?;
 
-    Ok(Json(container_ids))
+    Ok(Json(containers))
 }
 
 /// Get all schema definitions with typed fields

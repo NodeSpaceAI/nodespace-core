@@ -155,8 +155,14 @@ export async function initializeTauriSyncListeners(): Promise<void> {
         log.debug(`Member added: ${rel.fromId} to collection ${rel.toId}`);
         scheduleCollectionRefresh(rel.toId);
       } else if (rel.relationshipType === 'mentions') {
-        // Mention relationship - currently just log
+        // Mention relationship created - target node's mentionedIn needs refresh
+        // mentionedIn is populated by get_children_tree, so we need to refetch the tree
+        // for the target node to get updated backlinks
         log.debug(`Mention created: ${rel.fromId} mentions ${rel.toId}`);
+
+        // If the target node is currently displayed, its mentionedIn will update
+        // on next tree load. For immediate reactivity, the user can refresh the view.
+        // Future enhancement: call loadChildrenTree for toId if it's the current view.
       } else {
         // Custom relationship type
         log.debug(`Custom relationship created: ${rel.relationshipType}`);
@@ -192,7 +198,11 @@ export async function initializeTauriSyncListeners(): Promise<void> {
         log.debug(`Member removed from collection: ${id}`);
         scheduleCollectionRefresh(toId);
       } else if (relationshipType === 'mentions') {
-        log.debug(`Mention deleted: ${id}`);
+        // Mention relationship deleted - target node's mentionedIn needs refresh
+        log.debug(`Mention deleted: ${id} (${fromId} -> ${toId})`);
+
+        // Same as creation: mentionedIn updates on next tree load for toId.
+        // Future enhancement: call loadChildrenTree for toId if it's the current view.
       }
     });
 

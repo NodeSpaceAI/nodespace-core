@@ -53,8 +53,8 @@ mod ordered_list_node_test;
 
 pub use code_block_node::{CodeBlockNode, CodeBlockValidationError};
 pub use node::{
-    DeleteResult, FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter,
-    ValidationError,
+    DeleteResult, FilterOperator, Node, NodeFilter, NodeQuery, NodeReference, NodeRelationship,
+    NodeUpdate, OrderBy, PropertyFilter, RelationshipDirection, ValidationError,
 };
 pub use ordered_list_node::{OrderedListNode, OrderedListValidationError};
 pub use quote_block_node::{QuoteBlockNode, QuoteBlockValidationError};

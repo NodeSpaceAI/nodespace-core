@@ -5,43 +5,43 @@
   - Simple collapsible trigger with count and chevron
   - List of node links with icons (like node tree, but without children)
   - Clean, minimal styling
+
+  Uses SharedNodeStore subscription pattern:
+  - mentionedIn is populated during root fetch (get_children_tree)
+  - Data includes {id, title, nodeType} for efficient display without N+1 queries
+  - Subscribes to node changes via store.subscribe() for reliable updates
+  - Updates when domain events trigger node refetch
 -->
 
 <script lang="ts">
   import { Collapsible } from 'bits-ui';
-  import * as tauriCommands from '$lib/services/tauri-commands';
   import Icon, { type IconName } from '$lib/design/icons/icon.svelte';
-  import { onMount } from 'svelte';
-  import type { Node } from '$lib/types/node';
-  import { createLogger } from '$lib/utils/logger';
-
-  const log = createLogger('BacklinksPanel');
+  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+  import type { NodeReference } from '$lib/types/node';
 
   let { nodeId }: { nodeId: string } = $props();
 
-  let backlinks = $state<Node[]>([]);
-  let loading = $state(true);
-  let error = $state<string | null>(null);
-  let isOpen = $state(false);
+  // Use local state updated via store subscription for reliable reactivity
+  // Svelte 5's $derived doesn't reliably track Map.set() mutations
+  let backlinks = $state<NodeReference[]>([]);
 
-  onMount(async () => {
-    try {
-      // Get root IDs that mention this node
-      const rootIds = await tauriCommands.getMentioningRoots(nodeId);
+  // Helper to update backlinks from store
+  function updateBacklinks(id: string) {
+    const node = sharedNodeStore.nodes.get(id);
+    backlinks = node?.mentionedIn ?? [];
+  }
 
-      // Fetch full node data for each root explicitly
-      // (don't rely on cache - ensure we always have the latest data)
-      const nodes = await Promise.all(rootIds.map((id) => tauriCommands.getNode(id)));
-
-      // Filter out null values (nodes that no longer exist)
-      backlinks = nodes.filter((node): node is Node => node !== null);
-    } catch (err) {
-      log.error('Failed to load backlinks:', err);
-      error = err instanceof Error ? err.message : 'Failed to load backlinks';
-    } finally {
-      loading = false;
-    }
+  // Reactive subscription: re-subscribes when nodeId changes
+  // Uses $effect cleanup to unsubscribe from previous nodeId
+  $effect(() => {
+    updateBacklinks(nodeId);
+    const unsubscribe = sharedNodeStore.subscribe(nodeId, () => {
+      updateBacklinks(nodeId);
+    });
+    return unsubscribe;
   });
+
+  let isOpen = $state(false);
 
   function getNodeIcon(nodeType: string): IconName {
     const iconMap: Record<string, IconName> = {
@@ -61,7 +61,7 @@
     <Collapsible.Trigger aria-label="Toggle backlinks panel" aria-expanded={isOpen}>
       <div class="flex items-center justify-between">
         <span class="text-sm text-muted-foreground">
-          Mentioned by: ({loading ? '...' : backlinks.length}
+          Mentioned in: ({backlinks.length}
           {backlinks.length === 1 ? 'node' : 'nodes'})
         </span>
 
@@ -86,11 +86,7 @@
     <!-- Content expands above trigger -->
     <Collapsible.Content class="backlinks-content-wrapper">
       <div class="backlinks-content">
-        {#if loading}
-          <div class="px-4 py-3 text-sm text-muted-foreground">Loading backlinks...</div>
-        {:else if error}
-          <div class="px-4 py-3 text-sm text-destructive">{error}</div>
-        {:else if backlinks.length > 0}
+        {#if backlinks.length > 0}
           <ul class="flex flex-col gap-1">
             {#each backlinks as backlink}
               <li>
@@ -100,7 +96,7 @@
                 >
                   <Icon name={getNodeIcon(backlink.nodeType)} size={16} />
                   <span class="flex-1 truncate">
-                    {backlink.content || backlink.id}
+                    {backlink.title || backlink.id}
                   </span>
                 </a>
               </li>

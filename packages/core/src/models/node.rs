@@ -55,6 +55,57 @@ fn is_active_lifecycle(status: &str) -> bool {
     status == "active"
 }
 
+/// Lightweight reference to a node for backlinks display
+/// Contains minimal data needed to show a link: id, title, and type
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeReference {
+    /// Node ID
+    pub id: String,
+    /// Display title (markdown-stripped content for root/task nodes)
+    pub title: Option<String>,
+    /// Node type (e.g., "text", "task", "date")
+    pub node_type: String,
+}
+
+/// Direction of a relationship relative to a node
+///
+/// - `Out`: The relationship points FROM this node TO another (outgoing)
+/// - `In`: The relationship points FROM another node TO this node (incoming)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RelationshipDirection {
+    /// Outgoing relationship: this node -> other node
+    Out,
+    /// Incoming relationship: other node -> this node
+    In,
+}
+
+/// Represents a relationship with another node, including direction
+///
+/// Used for returning relationships in subtree queries where we need to know
+/// both the related node and the direction of the relationship.
+///
+/// For outgoing relationships (direction = Out):
+/// - `id` is the target node ID
+/// - The current node points TO this node
+///
+/// For incoming relationships (direction = In):
+/// - `id` is the source node ID
+/// - This node points TO the current node
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NodeRelationship {
+    /// The related node's ID
+    pub id: String,
+    /// The related node's title (for display)
+    pub title: Option<String>,
+    /// Direction of the relationship relative to the node this is attached to
+    pub direction: RelationshipDirection,
+    /// Type of relationship (e.g., "mentions", "has_child", "member_of")
+    pub relationship_type: String,
+}
+
 /// Validation errors for Node operations
 #[derive(Error, Debug)]
 pub enum ValidationError {
@@ -161,13 +212,13 @@ pub struct Node {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<String>,
 
-    /// Incoming mentions - IDs of nodes that reference THIS node (backlinks)
-    /// Example: If node-456 mentions this node, then mentioned_by = ["node-456"]
-    /// Computed from node_mentions table WHERE mentions_node_id = this.id
-    /// Read-only field, populated on query
+    /// Nodes that mention THIS node (backlinks) with preview data
+    /// Contains {id, title, nodeType} for efficient UI display without N+1 queries
+    /// Populated during root fetch (get_children_tree) for the root node only
+    /// Read-only field, computed from mentions relationships
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub mentioned_by: Vec<String>,
+    pub mentioned_in: Vec<NodeReference>,
 
     /// Collection memberships - IDs of collections this node belongs to
     /// Computed from member_of edges (member_of.in = this.id)
@@ -234,7 +285,7 @@ impl Node {
             modified_at: now,
             properties,
             mentions: Vec::new(),
-            mentioned_by: Vec::new(),
+            mentioned_in: Vec::new(),
             member_of: Vec::new(),
             title: None, // Title is set by NodeService based on root/task status
             lifecycle_status: "active".to_string(),
@@ -279,7 +330,7 @@ impl Node {
             modified_at: now,
             properties,
             mentions: Vec::new(),
-            mentioned_by: Vec::new(),
+            mentioned_in: Vec::new(),
             member_of: Vec::new(),
             title: None, // Title is set by NodeService based on root/task status
             lifecycle_status: "active".to_string(),
