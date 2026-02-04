@@ -199,7 +199,6 @@ NodeSpace is licensed under the [Functional Source License 1.1 (Apache 2.0)](htt
 - ✅ Use NodeSpace freely for any purpose
 - ✅ Modify the code to fit your needs
 - ✅ Self-host for personal or internal business use
-- ❌ You cannot use NodeSpace to build a competing product or service
 - 🔓 Each release converts to Apache 2.0 after two years
 
 See [LICENSE](LICENSE) for the full text.
