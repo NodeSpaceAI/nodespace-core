@@ -2,17 +2,27 @@
 
 > **Faster context. Fewer tokens.**
 
-NodeSpace is a local-first knowledge workspace with built-in semantic search. Capture, organize, and connect your thoughts — then let your AI tools query them intelligently.
+AI coding assistants forget everything between sessions. NodeSpace gives them persistent, searchable access to your project knowledge — so you stop re-explaining your codebase every time you start a conversation.
 
-**[Learn more at nodespace.ai](https://nodespace.ai)**
+**[nodespace.ai](https://nodespace.ai)** · **[Download](https://github.com/NodeSpaceAI/nodespace-core/releases)**
 
-- **80% fewer roundtrips** compared to grep/ripgrep on local documents
+[![NodeSpace Screenshot](docs/images/screenshot-alpha-preview.png)](docs/images/screenshot-alpha-preview.png)
+
+> ⚠️ **Alpha Preview** — NodeSpace is in early development. Features may change and data formats are not yet stable.
+
+---
+
+## Why NodeSpace
+
+Developers using AI assistants waste time copying files, re-explaining architecture, and watching context degrade mid-session. NodeSpace fixes this by sitting between your knowledge and your AI tools:
+
+- **80% fewer roundtrips** — AI agents query your knowledge base via MCP instead of scanning files with grep/ripgrep
 - **Runs entirely on your machine** — no cloud accounts, no API calls, no data leaving localhost
 - **Works offline** — on planes, behind VPNs, anywhere
 
-![NodeSpace Screenshot](docs/images/screenshot-alpha-preview.png)
+You write things down once. Every AI tool you use can find them instantly.
 
-> ⚠️ **Alpha Preview** — NodeSpace is in early development. Features may change and data formats are not yet stable.
+---
 
 ## Features
 
@@ -35,13 +45,15 @@ Markdown-style tasks (`[ ]`, `[x]`, `[~]`) with visual checkboxes. Track progres
 Find what you mean, not just what you typed. Ask "Where do we handle authentication?" and find relevant content without exact keyword matches.
 
 ### 🤖 MCP Integration
-Drop-in context provider for AI tools. Works with Claude Code, Cursor, Codex, and any MCP-compatible assistant.
+Built-in MCP server for AI tools. Opens with the app — Claude Code, Cursor, Codex, and any MCP-compatible assistant can query your knowledge base locally.
+
+---
 
 ## Installation
 
 ### Download the Desktop App
 
-**[Download NodeSpace](https://github.com/NodeSpaceAI/nodespace-core/releases)**
+**[Download NodeSpace →](https://github.com/NodeSpaceAI/nodespace-core/releases)**
 
 | Platform | Format |
 |----------|--------|
@@ -49,8 +61,6 @@ Drop-in context provider for AI tools. Works with Claude Code, Cursor, Codex, an
 | Windows | `.exe` or `.msi` |
 
 ### Build from Source
-
-If you prefer to build from source:
 
 **Prerequisites:**
 - [Bun 1.0+](https://bun.sh) — `curl -fsSL https://bun.sh/install | bash`
@@ -63,9 +73,13 @@ bun install
 bun run tauri:dev
 ```
 
+---
+
 ## MCP Setup
 
-NodeSpace provides semantic search to AI assistants via MCP (Model Context Protocol). When the app is running, it exposes an MCP server on `localhost:3100`.
+NodeSpace includes a built-in MCP server that starts automatically when you open the app. Your AI tools connect to it locally — there's nothing to deploy or host.
+
+> **Note:** The MCP server binds to `localhost` only and is accessible to other processes on your machine. Authentication is planned for a future release.
 
 ### Claude Code
 
@@ -106,6 +120,8 @@ curl -X POST http://localhost:3100/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
+
+---
 
 ## Semantic Search
 
@@ -150,29 +166,34 @@ Narrow searches to specific areas:
 }
 ```
 
+---
+
 ## Quick Start
 
 1. **Open Daily Journal** — Click "Daily Journal" in the sidebar to start today's entry
-
 2. **Create content** — Just start typing. Press `Enter` to create a new block below
-
 3. **Organize with nesting** — Press `Tab` to indent a block under the one above. Press `Shift+Tab` to outdent
-
-4. **Link your knowledge** — Type `@` to search and link to any other node. This builds connections between your ideas
-
+4. **Link your knowledge** — Type `@` to search and link to any other node
 5. **Use Collections** — Expand "Collections" in the sidebar to organize content into categories
-
 6. **Connect your AI** — Configure MCP (see above) and ask your AI assistant to search your knowledge base
 
-## For Developers
+---
 
-NodeSpace is built with Rust, Svelte, and Tauri.
+## Roadmap
 
-- **Contributing**: See [CLAUDE.md](CLAUDE.md) for development workflow
-- **Architecture**: See [docs/architecture/](docs/architecture/) for technical details
-- **Tech Stack**: Rust backend, Svelte frontend, SurrealDB database, Tauri desktop framework
+| Feature | Status | Description |
+|---------|--------|-------------|
+| **Custom Node Types** | 🚧 In Progress | Define your own entity types with custom fields and behaviors |
+| **Playbooks** | 📋 Planned | Installable workflow templates (ERP, Creator, Dev Team) |
+| **Cloud Sync** | 📋 Planned | Real-time collaboration and cross-device sync |
 
-### Development Commands
+See the [open issues](https://github.com/NodeSpaceAI/nodespace-core/issues) for the full backlog.
+
+---
+
+## Contributing
+
+NodeSpace is built with Rust, Svelte 5, SurrealDB, and Tauri.
 
 ```bash
 bun run dev          # Browser development mode
@@ -181,24 +202,25 @@ bun run test         # Run tests
 bun run build        # Production build
 ```
 
-## Roadmap
+- **Architecture docs**: [`docs/architecture/`](docs/architecture/)
+- **AI agent dev guide**: [`CLAUDE.md`](CLAUDE.md) — conventions and workflow for developing with AI assistants
 
-What's coming next:
+We welcome contributions. If you're thinking about a larger change, open an issue first so we can discuss the approach.
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| **Custom Node Types** | 🚧 In Progress | Define your own entity types with custom fields and behaviors |
-| **Playbooks** | 📋 Planned | Workflow templates for common use cases (ERP, Creator, Dev Team) |
-| **Cloud Sync** | 📋 Planned | Real-time collaboration and cross-device synchronization |
+---
+
+## Community
+
+- 🌟 [Star this repo](https://github.com/NodeSpaceAI/nodespace-core) if NodeSpace is useful to you
+- 🐛 [Report a bug](https://github.com/NodeSpaceAI/nodespace-core/issues/new)
+
+---
 
 ## License
 
 NodeSpace is licensed under the [Functional Source License 1.1 (Apache 2.0)](https://fsl.software/).
 
-**What this means:**
 - ✅ Use NodeSpace freely for any purpose
 - ✅ Modify the code to fit your needs
-- ✅ Self-host for personal or internal business use
-- 🔓 Each release converts to Apache 2.0 after two years
 
 See [LICENSE](LICENSE) for the full text.
