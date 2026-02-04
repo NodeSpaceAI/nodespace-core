@@ -17,16 +17,16 @@ NodeSpace is a local-first knowledge workspace with built-in semantic search. Ca
 ## Features
 
 ### 📅 Daily Journal
-Quick access to today's notes. One click opens a new entry for the current date, making it easy to capture thoughts throughout the day.
+Quick access to today's context. One click opens a new entry for the current date, making it easy to capture thoughts throughout the day.
 
-### 📝 Hierarchical Notes
+### 📝 Hierarchical Nodes
 Create nested, indented blocks of content. Organize complex ideas with unlimited depth — like Logseq or Roam Research.
 
 ### 🏷️ Collections
-Flexible organization that combines the best of folders and tags. A single note can belong to multiple collections without duplicating content.
+Flexible organization that combines the best of folders and tags. A single node can belong to multiple collections without duplicating content.
 
 ### 🔗 @Mentions & Linking
-Type `@` to link to any note. Build a knowledge graph by connecting related ideas. A backlinks panel shows what references each note.
+Type `@` to link to any node. Build a knowledge graph by connecting related ideas. A backlinks panel shows everything that references each node.
 
 ### ✅ Task Management
 Markdown-style tasks (`[ ]`, `[x]`, `[~]`) with visual checkboxes. Track progress on projects while keeping tasks connected to their context.
@@ -118,7 +118,7 @@ Ask your AI assistant questions like:
 - *"What is our development process for picking up issues?"*
 - *"How do we handle authentication in the backend?"*
 - *"What are the coding standards for this project?"*
-- *"Find notes related to the quarterly planning meeting"*
+- *"Find context related to the quarterly planning meeting"*
 
 ### Using the `search_semantic` Tool
 
@@ -158,11 +158,11 @@ Narrow searches to specific areas:
 
 3. **Organize with nesting** — Press `Tab` to indent a block under the one above. Press `Shift+Tab` to outdent
 
-4. **Link your notes** — Type `@` to search and link to any other note. This builds connections between your ideas
+4. **Link your knowledge** — Type `@` to search and link to any other node. This builds connections between your ideas
 
-5. **Use Collections** — Expand "Collections" in the sidebar to organize notes into categories
+5. **Use Collections** — Expand "Collections" in the sidebar to organize content into categories
 
-6. **Connect your AI** — Configure MCP (see above) and ask your AI assistant to search your notes
+6. **Connect your AI** — Configure MCP (see above) and ask your AI assistant to search your knowledge base
 
 ## For Developers
 
