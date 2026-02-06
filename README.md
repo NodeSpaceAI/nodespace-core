@@ -44,6 +44,9 @@ Markdown-style tasks (`[ ]`, `[x]`, `[~]`) with visual checkboxes. Track progres
 ### 🔍 Semantic Search
 Find what you mean, not just what you typed. Ask "Where do we handle authentication?" and find relevant content without exact keyword matches.
 
+### 📂 Batch Import
+Drop a folder of markdown files and import them in seconds. Semantic embeddings are generated in the background, so everything becomes searchable within minutes.
+
 ### 🤖 MCP Integration
 Built-in MCP server for AI tools. Opens with the app — Claude Code, Cursor, Codex, and any MCP-compatible assistant can query your knowledge base locally.
 
@@ -160,7 +163,8 @@ Narrow searches to specific areas:
 3. **Organize with nesting** — Press `Tab` to indent a block under the one above. Press `Shift+Tab` to outdent
 4. **Link your knowledge** — Type `@` to search and link to any other node
 5. **Use Collections** — Expand "Collections" in the sidebar to organize content into categories
-6. **Connect your AI** — Configure MCP (see above) and ask your AI assistant to search your knowledge base
+6. **Import existing docs** — Use File > Import to batch-import a folder of `.md` files. Hundreds of documents import in seconds; semantic indexing runs automatically in the background
+7. **Connect your AI** — Configure MCP (see above) and ask your AI assistant to search your knowledge base
 
 ---
 
