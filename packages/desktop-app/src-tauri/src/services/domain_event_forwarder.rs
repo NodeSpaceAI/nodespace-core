@@ -60,7 +60,10 @@ impl DomainEventForwarder {
     ///
     /// Filters out events where source_client_id matches this client's ID
     /// to prevent feedback loops from the Tauri frontend receiving its own changes.
-    pub async fn run(self) -> Result<()> {
+    ///
+    /// The `cancel_token` allows graceful shutdown - when cancelled, the loop exits
+    /// cleanly instead of being killed when the Tokio runtime drops.
+    pub async fn run(self, cancel_token: tokio_util::sync::CancellationToken) -> Result<()> {
         info!(
             "🔧 Starting domain event forwarding service (client_id: {})",
             self.client_id
@@ -74,22 +77,29 @@ impl DomainEventForwarder {
 
         info!("✅ Event subscription established successfully");
 
-        // Listen for events and forward to frontend
+        // Listen for events and forward to frontend, with graceful shutdown support
         loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    debug!("Received domain event: {:?}", event);
-                    self.forward_event(&event);
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Ok(event) => {
+                            debug!("Received domain event: {:?}", event);
+                            self.forward_event(&event);
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            debug!("Event queue lagged, some events may have been skipped");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            error!("Event broadcast channel closed, stopping synchronization service");
+                            self.emit_status("disconnected", Some("channel-closed"));
+                            return Err(anyhow::anyhow!("Event broadcast channel closed"));
+                        }
+                    }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    // Event queue was too long, skip missed events
-                    debug!("Event queue lagged, some events may have been skipped");
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    // Broadcast channel closed, service should shut down
-                    error!("Event broadcast channel closed, stopping synchronization service");
-                    self.emit_status("disconnected", Some("channel-closed"));
-                    return Err(anyhow::anyhow!("Event broadcast channel closed"));
+                _ = cancel_token.cancelled() => {
+                    info!("Domain event forwarder received shutdown signal, exiting gracefully");
+                    self.emit_status("disconnected", Some("shutdown"));
+                    return Ok(());
                 }
             }
         }

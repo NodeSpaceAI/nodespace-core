@@ -39,5 +39,5 @@ pub mod error;
 
 // Re-export main types
 pub use config::EmbeddingConfig;
-pub use embedding::{EmbeddingService, EMBEDDING_DIMENSION};
+pub use embedding::{release_llama_backend, EmbeddingService, EMBEDDING_DIMENSION};
 pub use error::{EmbeddingError, Result};

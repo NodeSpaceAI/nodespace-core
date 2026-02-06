@@ -36,10 +36,14 @@ mod tests;
 /// achieving real-time sync through event-driven architecture.
 ///
 /// Events that originated from this Tauri client are filtered out (prevents feedback loop).
+///
+/// The `cancel_token` is used for graceful shutdown - when cancelled, the forwarder
+/// will stop its event loop and exit cleanly before the Tokio runtime drops.
 pub fn initialize_domain_event_forwarder(
     app: tauri::AppHandle,
     node_service: std::sync::Arc<nodespace_core::NodeService>,
     client_id: String,
+    cancel_token: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
     use crate::services::DomainEventForwarder;
     use futures::FutureExt;
@@ -53,7 +57,7 @@ pub fn initialize_domain_event_forwarder(
     tauri::async_runtime::spawn(async move {
         let result = std::panic::AssertUnwindSafe(async {
             let forwarder = DomainEventForwarder::new(node_service, app, client_id);
-            forwarder.run().await
+            forwarder.run(cancel_token).await
         })
         .catch_unwind()
         .await;
@@ -84,8 +88,14 @@ pub fn initialize_domain_event_forwarder(
 /// and NodeEmbeddingService and spawns the MCP server task with them,
 /// ensuring MCP and Tauri commands operate on the same database.
 ///
+/// The `cancel_token` is used for graceful shutdown - when cancelled, the MCP
+/// server task will be aborted before the Tokio runtime drops.
+///
 /// As of Issue #715, uses McpServerService from nodespace-core for managed lifecycle.
-pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
+pub fn initialize_mcp_server(
+    app: tauri::AppHandle,
+    cancel_token: tokio_util::sync::CancellationToken,
+) -> anyhow::Result<()> {
     use crate::commands::embeddings::EmbeddingState;
     use futures::FutureExt;
     use nodespace_core::NodeService;
@@ -119,13 +129,22 @@ pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
 
     // Spawn MCP server task with Tauri event emissions
     // Uses panic protection to prevent silent background task failures
+    // Monitors cancel_token for graceful shutdown before runtime drops
     tauri::async_runtime::spawn(async move {
         // Use FutureExt::catch_unwind for proper async panic catching
         // This avoids the deadlock risk of using block_on inside an async task
         // AssertUnwindSafe is needed because services contain non-UnwindSafe types
-        let result = std::panic::AssertUnwindSafe(mcp_service.start_with_callback(callback))
-            .catch_unwind()
-            .await;
+        let result = std::panic::AssertUnwindSafe(async {
+            tokio::select! {
+                res = mcp_service.start_with_callback(callback) => res,
+                _ = cancel_token.cancelled() => {
+                    tracing::info!("MCP server received shutdown signal");
+                    Ok(())
+                }
+            }
+        })
+        .catch_unwind()
+        .await;
 
         match result {
             Ok(Ok(_)) => {
@@ -133,11 +152,9 @@ pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
             }
             Ok(Err(e)) => {
                 tracing::error!("❌ MCP server error: {}", e);
-                // TODO: Consider emitting Tauri event to notify UI of MCP failure
             }
             Err(panic_info) => {
                 tracing::error!("💥 MCP server panicked: {:?}", panic_info);
-                // TODO: Consider attempting automatic restart or notifying user
             }
         }
     });
@@ -145,14 +162,45 @@ pub fn initialize_mcp_server(app: tauri::AppHandle) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Shared shutdown token for graceful background task termination.
+///
+/// Managed as Tauri state so it can be accessed from both the setup phase
+/// (where background tasks are spawned) and the run event handler (where
+/// shutdown is triggered). When cancelled, all background tasks (MCP server,
+/// domain event forwarder) exit their loops before the Tokio runtime drops.
+#[derive(Clone)]
+pub struct ShutdownToken(tokio_util::sync::CancellationToken);
+
+impl ShutdownToken {
+    fn new() -> Self {
+        Self(tokio_util::sync::CancellationToken::new())
+    }
+
+    /// Create a child token for a background task.
+    /// Cancelling the parent automatically cancels all children.
+    pub fn child_token(&self) -> tokio_util::sync::CancellationToken {
+        self.0.child_token()
+    }
+
+    /// Signal all background tasks to shut down.
+    /// Idempotent - safe to call multiple times.
+    pub fn cancel(&self) {
+        self.0.cancel();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     use tauri::{menu::*, Emitter, Manager, RunEvent};
 
+    // Create shutdown token for coordinating graceful background task termination
+    let shutdown_token = ShutdownToken::new();
+    let shutdown_token_for_setup = shutdown_token.clone();
+
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             // Create menu items
             let toggle_sidebar = MenuItemBuilder::new("Toggle Sidebar")
                 .id("toggle_sidebar")
@@ -208,6 +256,10 @@ pub fn run() {
 
             // Set the menu
             app.set_menu(menu)?;
+
+            // Register shutdown token as managed state so commands/db.rs can access it
+            // when spawning background tasks (MCP server, domain event forwarder)
+            app.manage(shutdown_token_for_setup);
 
             // Note: MCP server initialization is deferred until database is initialized
             // See commands/db.rs::init_services() which calls initialize_mcp_server()
@@ -308,26 +360,34 @@ pub fn run() {
         .expect("error while building tauri application");
 
     // Run with event handler for graceful shutdown
-    // This allows proper cleanup of Metal/GPU resources before exit
+    // This allows proper cleanup of Metal/GPU resources and background tasks before exit
     //
     // Note: On macOS, RunEvent::ExitRequested may not fire reliably (Tauri issue #9198)
-    // We handle cleanup in multiple places to ensure GPU resources are released:
+    // We handle cleanup in multiple places to ensure resources are released:
     // 1. WindowEvent::CloseRequested - when user clicks X or Cmd+Q
     // 2. RunEvent::ExitRequested - when app is about to exit
     // 3. RunEvent::Exit - final cleanup before process termination
-    app.run(|app_handle, event| {
+    //
+    // The shutdown_token is cancelled to signal background tasks (MCP server,
+    // domain event forwarder) to exit their loops before the Tokio runtime drops.
+    let shutdown_token_for_events = shutdown_token.clone();
+    app.run(move |app_handle, event| {
         match event {
             RunEvent::WindowEvent {
                 label,
                 event: tauri::WindowEvent::CloseRequested { .. },
                 ..
             } => {
-                // Window close requested - release GPU resources before the window closes
+                // Window close requested - signal background tasks and release GPU resources
                 // This is the most reliable place to do cleanup on macOS
                 tracing::info!(
-                    "Window '{}' close requested, releasing GPU context...",
+                    "Window '{}' close requested, signaling shutdown and releasing GPU context...",
                     label
                 );
+                shutdown_token_for_events.cancel();
+                // Brief pause to let background tasks exit their loops before
+                // releasing GPU resources they may still reference
+                std::thread::sleep(std::time::Duration::from_millis(50));
                 release_gpu_resources(app_handle);
             }
             RunEvent::ExitRequested { code, .. } => {
@@ -336,23 +396,32 @@ pub fn run() {
                     "App exit requested (code: {:?}), performing cleanup...",
                     code
                 );
+                shutdown_token_for_events.cancel();
                 release_gpu_resources(app_handle);
                 tracing::info!("Cleanup complete, exiting...");
             }
             RunEvent::Exit => {
-                // Final exit - last chance to cleanup (may be too late for GPU resources)
-                tracing::info!("App exiting normally");
+                // Final exit - ensure shutdown signal is sent (idempotent)
+                tracing::info!("App exiting, ensuring shutdown signal sent...");
+                shutdown_token_for_events.cancel();
             }
             _ => {}
         }
     });
 }
 
-/// Release GPU resources (Metal context) to prevent SIGABRT crash on exit.
+/// Release GPU resources (Metal context and backend) to prevent SIGABRT crash on exit.
 ///
 /// This must be called before the app exits to properly clean up Metal/GPU
 /// resources. The crash occurs when ggml_metal_rsets_free is called during
 /// static destruction (__cxa_finalize_ranges) while resources are still in use.
+///
+/// Cleanup order is critical:
+/// 1. Release LlamaState (context + model) - frees Metal residency sets
+/// 2. Release global LLAMA_BACKEND - frees the Metal backend itself
+///
+/// This prevents __cxa_finalize_ranges from encountering Metal resources during
+/// static destruction, which would cause SIGABRT in production builds.
 fn release_gpu_resources(app_handle: &tauri::AppHandle) {
     use tauri::Manager;
 
@@ -360,9 +429,12 @@ fn release_gpu_resources(app_handle: &tauri::AppHandle) {
         app_handle.try_state::<crate::commands::embeddings::EmbeddingState>()
     {
         tracing::info!("Releasing GPU context to prevent Metal crash...");
-        // Release the LlamaContext which holds Metal residency sets
-        // This must happen before the global LLAMA_BACKEND static is destroyed
+        // Step 1: Release the LlamaState (context + model) which holds Metal residency sets
         embedding_state.service.nlp_engine().release_gpu_context();
         tracing::info!("GPU context released successfully");
     }
+
+    // Step 2: Release the global llama backend itself
+    // Must happen AFTER all models/contexts are dropped (step 1)
+    nodespace_nlp_engine::release_llama_backend();
 }

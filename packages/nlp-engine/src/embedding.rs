@@ -13,7 +13,7 @@ use crate::config::EmbeddingConfig;
 use crate::error::{EmbeddingError, Result};
 use lru::LruCache;
 use std::num::NonZeroUsize;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 /// Embedding vector dimension for nomic-embed-vision-v1.5
 pub const EMBEDDING_DIMENSION: usize = 768;
@@ -36,76 +36,57 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 
 /// Global llama backend singleton.
-/// The llama.cpp backend can only be initialized once per process, so we use a OnceLock
-/// to ensure thread-safe initialization and allow multiple EmbeddingService instances
-/// to share the same backend (important for tests running in parallel).
+///
+/// Uses `Mutex<Option<LlamaBackend>>` instead of `OnceLock` so the backend can be
+/// explicitly cleared during shutdown. This prevents SIGABRT crashes from
+/// `__cxa_finalize_ranges` trying to destroy Metal/GPU resources during static
+/// destruction when the C runtime state is already partially torn down.
+///
+/// The llama.cpp backend can only be initialized once per process.
+/// The Mutex ensures thread-safe initialization and allows multiple EmbeddingService
+/// instances to share the same backend (important for tests running in parallel).
 #[cfg(feature = "embedding-service")]
-static LLAMA_BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
+static LLAMA_BACKEND: Mutex<Option<LlamaBackend>> = Mutex::new(None);
 
 /// Initialize or get the global llama backend.
-/// Returns a reference to the singleton backend instance.
+/// Returns a guard holding a reference to the singleton backend instance.
 ///
 /// This handles the case where multiple threads try to initialize the backend
 /// concurrently. The llama.cpp backend is a global singleton that can only be
 /// initialized once per process.
+///
+/// The returned `BackendGuard` must be held for the duration of backend usage
+/// (e.g., model loading, context creation).
 #[cfg(feature = "embedding-service")]
-fn get_or_init_backend() -> Result<&'static LlamaBackend> {
+fn get_or_init_backend() -> Result<BackendGuard> {
     use llama_cpp_2::LlamaCppError;
 
-    // Try to get existing backend first
-    if let Some(backend) = LLAMA_BACKEND.get() {
-        return Ok(backend);
+    let mut guard = LLAMA_BACKEND.lock().unwrap_or_else(|p| p.into_inner());
+
+    // Already initialized - return the guard
+    if guard.is_some() {
+        return Ok(BackendGuard(guard));
     }
 
-    // Try to initialize - only one thread will succeed
+    // Try to initialize - only one thread will succeed (Mutex ensures exclusivity)
     match LlamaBackend::init() {
         Ok(backend) => {
-            // Try to store it - might fail if another thread beat us
-            match LLAMA_BACKEND.set(backend) {
-                Ok(()) => {}
-                Err(_already_set) => {
-                    // Another thread beat us - that's fine, we'll use theirs
-                    // The backend we created will be dropped, but that's safe
-                    // because llama_backend_free is idempotent
-                }
-            }
-            // Return whatever is stored (either ours or the other thread's)
-            Ok(LLAMA_BACKEND.get().expect("Backend must be initialized"))
+            *guard = Some(backend);
+            Ok(BackendGuard(guard))
         }
         Err(LlamaCppError::BackendAlreadyInitialized) => {
-            // The C library backend is initialized, but our OnceLock might not have
-            // the reference yet. This can happen when:
-            // 1. Another thread is about to store the backend (race condition)
-            // 2. A previous test run left stale C global state
-            //
-            // For case 1, wait with exponential backoff for the OnceLock to be set.
-            // For case 2, we need to create a new wrapper that references the existing
-            // C backend (llama.cpp backend init is idempotent - it reuses existing state).
-            for i in 0..20 {
-                if let Some(backend) = LLAMA_BACKEND.get() {
-                    return Ok(backend);
-                }
-                // Exponential backoff: 1ms, 2ms, 4ms... up to ~1s total
-                std::thread::sleep(std::time::Duration::from_millis(1 << i.min(8)));
-            }
-
-            // Last resort: try to create a new LlamaBackend anyway.
-            // llama.cpp's backend_init is idempotent and will return OK if already initialized.
-            // This handles the case where the C backend is initialized but our Rust wrapper isn't.
+            // The C library backend is initialized but our Option is None.
+            // This can happen if the backend was cleared during a previous shutdown
+            // but the C global state persists (e.g., in tests).
+            // Try again - llama.cpp backend init is idempotent.
             match LlamaBackend::init() {
                 Ok(backend) => {
-                    let _ = LLAMA_BACKEND.set(backend);
-                    Ok(LLAMA_BACKEND.get().expect("Backend must be set"))
+                    *guard = Some(backend);
+                    Ok(BackendGuard(guard))
                 }
-                Err(_) => {
-                    // If still failing, check one more time if another thread set it
-                    if let Some(backend) = LLAMA_BACKEND.get() {
-                        return Ok(backend);
-                    }
-                    Err(EmbeddingError::ModelLoadError(
-                        "Backend initialization failed after multiple attempts".to_string(),
-                    ))
-                }
+                Err(_) => Err(EmbeddingError::ModelLoadError(
+                    "Backend initialization failed after multiple attempts".to_string(),
+                )),
             }
         }
         Err(e) => Err(EmbeddingError::ModelLoadError(format!(
@@ -113,6 +94,46 @@ fn get_or_init_backend() -> Result<&'static LlamaBackend> {
             e
         ))),
     }
+}
+
+/// RAII guard that holds a lock on the global LLAMA_BACKEND.
+///
+/// Dereferences to `&LlamaBackend` for convenient use with llama.cpp APIs.
+/// The lock is released when the guard is dropped.
+#[cfg(feature = "embedding-service")]
+struct BackendGuard(std::sync::MutexGuard<'static, Option<LlamaBackend>>);
+
+#[cfg(feature = "embedding-service")]
+impl std::ops::Deref for BackendGuard {
+    type Target = LlamaBackend;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_ref()
+            .expect("BackendGuard created with None backend")
+    }
+}
+
+/// Explicitly release the global llama backend to prevent SIGABRT on process exit.
+///
+/// This drops the `LlamaBackend` while we still have full control of the process,
+/// rather than letting `__cxa_finalize_ranges` destroy it during static destruction
+/// when Metal/GPU state may already be partially torn down.
+///
+/// Must be called AFTER all `LlamaState` instances (models, contexts) are dropped.
+/// Safe to call multiple times (idempotent).
+#[cfg(feature = "embedding-service")]
+pub fn release_llama_backend() {
+    let mut guard = LLAMA_BACKEND.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.take().is_some() {
+        tracing::info!("Global LLAMA_BACKEND released, Metal resources freed");
+    }
+}
+
+/// Explicitly release the global llama backend (no-op when embedding-service feature is disabled).
+#[cfg(not(feature = "embedding-service"))]
+pub fn release_llama_backend() {
+    // No-op: no backend to release when embedding-service feature is disabled
 }
 
 /// Wrapper to hold model and context together with proper lifetimes.
@@ -190,9 +211,9 @@ impl LlamaState {
                 .with_n_threads_batch(self.n_threads)
                 .with_embeddings(true);
 
-            // Get the global backend reference
+            // Get the global backend (holds Mutex lock for duration of context creation)
             let backend = get_or_init_backend()?;
-            let ctx = self.model.new_context(backend, ctx_params).map_err(|e| {
+            let ctx = self.model.new_context(&backend, ctx_params).map_err(|e| {
                 EmbeddingError::InferenceError(format!("Context creation failed: {}", e))
             })?;
 
@@ -289,13 +310,14 @@ impl EmbeddingService {
             tracing::info!("Model path resolved to: {:?}", model_path);
 
             // Initialize llama.cpp backend (uses global singleton)
+            // BackendGuard holds the Mutex lock for the duration of model loading
             let backend = get_or_init_backend()?;
 
             // Load model with GPU offloading
             let model_params =
                 LlamaModelParams::default().with_n_gpu_layers(self.config.n_gpu_layers);
 
-            let model = LlamaModel::load_from_file(backend, &model_path, &model_params)
+            let model = LlamaModel::load_from_file(&backend, &model_path, &model_params)
                 .map_err(|e| EmbeddingError::ModelLoadError(format!("Model load failed: {}", e)))?;
 
             // Get actual embedding dimension from model

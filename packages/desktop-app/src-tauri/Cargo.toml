@@ -39,6 +39,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"
 axum = { version = "0.7", features = ["default"] }
 tokio-stream = "0.1"
+tokio-util = "0.7"
 async-stream = "0.3"
 tower-http = { version = "0.6", features = ["cors"] }
 surrealdb = { workspace = true }

@@ -168,9 +168,12 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     eprintln!("✅ [init_services] All services registered with Tauri");
     tracing::info!("✅ [init_services] All services registered with Tauri");
 
+    // Retrieve the shutdown token from Tauri state for background task coordination
+    let shutdown_token: tauri::State<crate::ShutdownToken> = app.state();
+
     // Initialize MCP server now that NodeService is available
     // MCP will use the same NodeService as Tauri commands
-    if let Err(e) = crate::initialize_mcp_server(app.clone()) {
+    if let Err(e) = crate::initialize_mcp_server(app.clone(), shutdown_token.child_token()) {
         tracing::error!("❌ Failed to initialize MCP server: {}", e);
         // Don't fail database init if MCP fails - MCP is optional
     }
@@ -178,9 +181,12 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
     // Initialize domain event forwarding with client filtering (#665)
     // Events that originated from this Tauri client are filtered out to prevent feedback loops
     let client_id = "tauri-main".to_string();
-    if let Err(e) =
-        crate::initialize_domain_event_forwarder(app.clone(), node_service_arc.clone(), client_id)
-    {
+    if let Err(e) = crate::initialize_domain_event_forwarder(
+        app.clone(),
+        node_service_arc.clone(),
+        client_id,
+        shutdown_token.child_token(),
+    ) {
         tracing::error!("❌ Failed to initialize domain event forwarder: {}", e);
         // Don't fail database init if event forwarding fails - it's not critical
     }
