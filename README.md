@@ -81,24 +81,9 @@ NodeSpace includes a built-in MCP server that starts automatically when you open
 
 > **Note:** The MCP server binds to `localhost` only and is accessible to other processes on your machine. Authentication is planned for a future release.
 
-### Claude Code
+### Claude Code / Cursor / Codex / Other MCP Clients
 
-Add to your Claude Code MCP settings (`~/.claude.json` or via Claude Code settings):
-
-```json
-{
-  "mcpServers": {
-    "nodespace": {
-      "type": "stdio",
-      "command": "/path/to/nodespace-core/scripts/mcp-bridge.sh"
-    }
-  }
-}
-```
-
-### Cursor / Codex / Other MCP Clients
-
-For tools that support HTTP transport directly:
+Add to your MCP settings (e.g., `~/.claude.json` for Claude Code):
 
 ```json
 {
