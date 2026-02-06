@@ -2235,7 +2235,7 @@ where
         };
 
         match node_service
-            .delete_node_with_occ(&current_node.id, current_node.version)
+            .delete_node(&current_node.id, current_node.version)
             .await
         {
             Ok(_) => {

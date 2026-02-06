@@ -386,11 +386,11 @@ pub async fn update_node(
         update.node_type
     );
 
-    // Use update_node_with_occ for OCC-protected updates
+    // Use update_node for OCC-protected updates (safe by default)
     // Returns the updated Node so frontend can refresh its local version
     let node = service
         .with_client(TAURI_CLIENT_ID)
-        .update_node_with_occ(&id, version, update)
+        .update_node(&id, version, update)
         .await
         .map_err(CommandError::from)?;
 
@@ -440,7 +440,7 @@ pub async fn delete_node(
 ) -> Result<nodespace_core::models::DeleteResult, CommandError> {
     service
         .with_client(TAURI_CLIENT_ID)
-        .delete_node_with_occ(&id, version)
+        .delete_node(&id, version)
         .await
         .map_err(Into::into)
 }
@@ -487,7 +487,7 @@ pub async fn move_node(
 ) -> Result<Value, CommandError> {
     let node = service
         .with_client(TAURI_CLIENT_ID)
-        .move_node_with_occ(
+        .move_node(
             &node_id,
             version,
             new_parent_id.as_deref(),
@@ -533,7 +533,7 @@ pub async fn reorder_node(
 ) -> Result<(), CommandError> {
     service
         .with_client(TAURI_CLIENT_ID)
-        .reorder_node_with_occ(&node_id, version, insert_after_node_id.as_deref())
+        .reorder_node(&node_id, version, insert_after_node_id.as_deref())
         .await
         .map_err(Into::into)
 }

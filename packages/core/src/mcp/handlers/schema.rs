@@ -332,7 +332,7 @@ where
     };
 
     node_service
-        .update_node(&params.schema_id, update)
+        .update_node_unchecked(&params.schema_id, update)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to update schema: {}", e)))?;
 
@@ -407,7 +407,7 @@ where
     };
 
     node_service
-        .update_node(&params.schema_id, update)
+        .update_node_unchecked(&params.schema_id, update)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to update schema: {}", e)))?;
 
@@ -521,7 +521,7 @@ where
     };
 
     node_service
-        .update_node(&params.schema_id, update)
+        .update_node_unchecked(&params.schema_id, update)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to update schema: {}", e)))?;
 

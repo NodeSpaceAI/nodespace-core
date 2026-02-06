@@ -530,7 +530,7 @@ pub async fn rename_collection(
 
     let node = service
         .with_client(TAURI_CLIENT_ID)
-        .update_node_with_occ(&collection_id, version, update)
+        .update_node(&collection_id, version, update)
         .await
         .map_err(|e| CommandError {
             message: format!("Failed to rename collection: {}", e),
@@ -563,7 +563,7 @@ pub async fn delete_collection(
     // Delete the collection node (member_of edges will be cleaned up by cascade)
     service
         .with_client(TAURI_CLIENT_ID)
-        .delete_node_with_occ(&collection_id, version)
+        .delete_node(&collection_id, version)
         .await
         .map_err(|e| CommandError {
             message: format!("Failed to delete collection: {}", e),

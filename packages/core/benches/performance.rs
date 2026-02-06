@@ -168,7 +168,7 @@ fn bench_occ_overhead(c: &mut Criterion) {
                 // Warmup
                 let node = node_service.get_node(&node_id).await.unwrap().unwrap();
                 let _ = node_service
-                    .update_node_with_occ(
+                    .update_node(
                         &node_id,
                         node.version,
                         NodeUpdate {
@@ -187,7 +187,7 @@ fn bench_occ_overhead(c: &mut Criterion) {
                 for i in 0..iters {
                     let node = node_service.get_node(&node_id).await.unwrap().unwrap();
                     node_service
-                        .update_node_with_occ(
+                        .update_node(
                             &node_id,
                             node.version,
                             NodeUpdate {
@@ -304,7 +304,7 @@ fn bench_batch_get(c: &mut Criterion) {
 /// Benchmark batch UPDATE operations vs sequential calls
 ///
 /// Compares performance of update_nodes_batch (single call for 50 nodes)
-/// vs 50 individual update_node_with_occ calls.
+/// vs 50 individual update_node calls.
 fn bench_batch_update(c: &mut Criterion) {
     use nodespace_core::mcp::handlers::nodes::handle_update_nodes_batch;
 
@@ -356,7 +356,7 @@ fn bench_batch_update(c: &mut Criterion) {
                     for node_id in &node_ids {
                         let node = node_service.get_node(node_id).await.unwrap().unwrap();
                         node_service
-                            .update_node_with_occ(
+                            .update_node(
                                 node_id,
                                 node.version,
                                 NodeUpdate {

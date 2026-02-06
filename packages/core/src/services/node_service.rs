@@ -2102,7 +2102,11 @@ where
         })
     }
 
-    /// Update a node
+    /// Update a node without version checking (no OCC).
+    ///
+    /// **Prefer `update_node()`** which enforces optimistic concurrency control.
+    /// This unchecked variant is for internal operations (migrations, schema
+    /// updates) where version conflicts are not a concern.
     ///
     /// Performs a partial update using the NodeUpdate struct. Only provided fields
     /// will be updated. Handles the double-Option pattern for nullable fields.
@@ -2133,11 +2137,15 @@ where
     /// # let service = NodeService::new(&mut db).await?;
     /// let update = NodeUpdate::new()
     ///     .with_content("Updated content".to_string());
-    /// service.update_node("node-id", update).await?;
+    /// service.update_node_unchecked("node-id", update).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn update_node(&self, id: &str, update: NodeUpdate) -> Result<(), NodeServiceError> {
+    pub async fn update_node_unchecked(
+        &self,
+        id: &str,
+        update: NodeUpdate,
+    ) -> Result<(), NodeServiceError> {
         if update.is_empty() {
             return Err(NodeServiceError::invalid_update(
                 "Update contains no changes",
@@ -2523,12 +2531,12 @@ where
     /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(&mut db).await?;
     /// let update = NodeUpdate::new().with_content("Updated content".to_string());
-    /// let updated = service.update_node_with_occ("node-id", 5, update).await?;
+    /// let updated = service.update_node("node-id", 5, update).await?;
     /// println!("New version: {}", updated.version);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn update_node_with_occ(
+    pub async fn update_node(
         &self,
         node_id: &str,
         expected_version: i64,
@@ -2670,7 +2678,11 @@ where
         Ok(())
     }
 
-    /// Delete a node
+    /// Delete a node without version checking (no OCC).
+    ///
+    /// **Prefer `delete_node()`** which enforces optimistic concurrency control.
+    /// This unchecked variant is for internal operations (diagnostics cleanup)
+    /// where version conflicts are not a concern.
     ///
     /// Deletes a node and all its children (cascade delete).
     ///
@@ -2693,11 +2705,11 @@ where
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(&mut db).await?;
-    /// service.delete_node("node-id-123").await?;
+    /// service.delete_node_unchecked("node-id-123").await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn delete_node(
+    pub async fn delete_node_unchecked(
         &self,
         id: &str,
     ) -> Result<crate::models::DeleteResult, NodeServiceError> {
@@ -2813,12 +2825,12 @@ where
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(&mut db).await?;
-    /// let result = service.delete_node_with_occ("node-id", 5).await?;
+    /// let result = service.delete_node("node-id", 5).await?;
     /// println!("Node existed: {}", result.existed);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn delete_node_with_occ(
+    pub async fn delete_node(
         &self,
         node_id: &str,
         expected_version: i64,
@@ -2843,7 +2855,7 @@ where
         let children = self.get_children(node_id).await?;
         for child in children {
             // Recursively call delete for each child using Box::pin to avoid infinite future size
-            Box::pin(self.delete_node_with_occ(&child.id, child.version)).await?;
+            Box::pin(self.delete_node(&child.id, child.version)).await?;
         }
 
         // 3. Delete with version check (optimistic concurrency control)
@@ -3429,7 +3441,11 @@ where
         self.get_children(root_node_id).await
     }
 
-    /// Move a node to a new parent
+    /// Move a node to a new parent without version checking (no OCC).
+    ///
+    /// **Prefer `move_node()`** which enforces optimistic concurrency control.
+    /// This unchecked variant is for internal operations (imports, type
+    /// conversions) where version conflicts are not a concern.
     ///
     /// Updates the parent_id and root_id of a node, maintaining hierarchy consistency.
     ///
@@ -3457,14 +3473,14 @@ where
     /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(&mut db).await?;
     /// // Move node under new parent
-    /// service.move_node("node-id", Some("new-parent-id"), None).await?;
+    /// service.move_node_unchecked("node-id", Some("new-parent-id"), None).await?;
     ///
     /// // Make node a root
-    /// service.move_node("node-id", None, None).await?;
+    /// service.move_node_unchecked("node-id", None, None).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn move_node(
+    pub async fn move_node_unchecked(
         &self,
         node_id: &str,
         new_parent: Option<&str>,
@@ -3564,11 +3580,11 @@ where
     /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(&mut db).await?;
     /// // Move node under new parent with version check
-    /// service.move_node_with_occ("node-id", 5, Some("new-parent-id"), None).await?;
+    /// service.move_node("node-id", 5, Some("new-parent-id"), None).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn move_node_with_occ(
+    pub async fn move_node(
         &self,
         node_id: &str,
         expected_version: i64,
@@ -3675,11 +3691,11 @@ where
     /// # let mut db = Arc::new(SurrealStore::new(PathBuf::from("./test.db")).await?);
     /// # let service = NodeService::new(&mut db).await?;
     /// // Reorder with version check
-    /// service.reorder_node_with_occ("node-id", 5, Some("sibling-id")).await?;
+    /// service.reorder_node("node-id", 5, Some("sibling-id")).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn reorder_node_with_occ(
+    pub async fn reorder_node(
         &self,
         node_id: &str,
         expected_version: i64,
@@ -3714,7 +3730,7 @@ where
         // Bump the node's version to support OCC
         // Even though we're only modifying edge ordering, we bump the node version
         // so that concurrent reorder operations will fail with version conflict
-        // Note: We discard the returned Node since reorder_node_with_occ returns ()
+        // Note: We discard the returned Node since reorder_node returns ()
         let _ = self
             .update_node_with_version_bump(node_id, expected_version)
             .await?;
@@ -6199,7 +6215,7 @@ mod tests {
         let id = service.create_node(node).await.unwrap();
 
         let update = NodeUpdate::new().with_content("Updated".to_string());
-        service.update_node(&id, update).await.unwrap();
+        service.update_node_unchecked(&id, update).await.unwrap();
 
         let retrieved = service.get_node(&id).await.unwrap().unwrap();
         assert_eq!(retrieved.content, "Updated");
@@ -6212,7 +6228,7 @@ mod tests {
         let node = Node::new("text".to_string(), "To be deleted".to_string(), json!({}));
 
         let id = service.create_node(node).await.unwrap();
-        service.delete_node(&id).await.unwrap();
+        service.delete_node_unchecked(&id).await.unwrap();
 
         let retrieved = service.get_node(&id).await.unwrap();
         assert!(retrieved.is_none());
@@ -6505,14 +6521,14 @@ mod tests {
         let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
         let child1_id = service.create_node(child1).await.unwrap();
         service
-            .move_node(&child1_id, Some(&parent_id), None)
+            .move_node_unchecked(&child1_id, Some(&parent_id), None)
             .await
             .unwrap();
 
         let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
         let child2_id = service.create_node(child2).await.unwrap();
         service
-            .move_node(&child2_id, Some(&parent_id), None)
+            .move_node_unchecked(&child2_id, Some(&parent_id), None)
             .await
             .unwrap();
 
@@ -7159,7 +7175,7 @@ mod tests {
 
             // Make child a child of root (establish hierarchy)
             service
-                .move_node(&child_id, Some(&root_id), None)
+                .move_node_unchecked(&child_id, Some(&root_id), None)
                 .await
                 .unwrap();
 
@@ -7215,11 +7231,11 @@ mod tests {
 
             // Establish hierarchy: both children belong to root
             service
-                .move_node(&child1_id, Some(&root_id), None)
+                .move_node_unchecked(&child1_id, Some(&root_id), None)
                 .await
                 .unwrap();
             service
-                .move_node(&child2_id, Some(&root_id), None)
+                .move_node_unchecked(&child2_id, Some(&root_id), None)
                 .await
                 .unwrap();
 
@@ -7273,7 +7289,7 @@ mod tests {
 
             // Make task a child of root
             service
-                .move_node(&task_id, Some(&root_id), None)
+                .move_node_unchecked(&task_id, Some(&root_id), None)
                 .await
                 .unwrap();
 
@@ -7431,15 +7447,15 @@ mod tests {
 
             // Establish hierarchy: children belong to their containers
             service
-                .move_node(&child1_id, Some(&container1_id), None)
+                .move_node_unchecked(&child1_id, Some(&container1_id), None)
                 .await
                 .unwrap();
             service
-                .move_node(&child2_id, Some(&container2_id), None)
+                .move_node_unchecked(&child2_id, Some(&container2_id), None)
                 .await
                 .unwrap();
             service
-                .move_node(&task_id, Some(&container3_id), None)
+                .move_node_unchecked(&task_id, Some(&container3_id), None)
                 .await
                 .unwrap();
 
@@ -7638,7 +7654,10 @@ mod tests {
             // Update node1 to mention node2
             let update =
                 NodeUpdate::new().with_content(format!("See [@Node 2](nodespace://{})", node2_id));
-            service.update_node(&node1_id, update).await.unwrap();
+            service
+                .update_node_unchecked(&node1_id, update)
+                .await
+                .unwrap();
 
             // Verify mention was created
             let node1_with_mentions = service.get_node(&node1_id).await.unwrap().unwrap();
@@ -7648,7 +7667,10 @@ mod tests {
             // Update node1 to mention node3 instead (should remove node2 mention)
             let update2 =
                 NodeUpdate::new().with_content(format!("See [@Node 3](nodespace://{})", node3_id));
-            service.update_node(&node1_id, update2).await.unwrap();
+            service
+                .update_node_unchecked(&node1_id, update2)
+                .await
+                .unwrap();
 
             // Verify mentions were updated
             let node1_updated = service.get_node(&node1_id).await.unwrap().unwrap();
@@ -7668,7 +7690,10 @@ mod tests {
             // Try to update it to mention itself
             let update = NodeUpdate::new()
                 .with_content(format!("Self reference [@me](nodespace://{})", node_id));
-            service.update_node(&node_id, update).await.unwrap();
+            service
+                .update_node_unchecked(&node_id, update)
+                .await
+                .unwrap();
 
             // Verify self-reference was NOT created
             let node_with_mentions = service.get_node(&node_id).await.unwrap().unwrap();
@@ -7693,14 +7718,17 @@ mod tests {
 
             // Establish parent-child relationship (make child an actual child of root)
             service
-                .move_node(&child_id, Some(&root_id), None)
+                .move_node_unchecked(&child_id, Some(&root_id), None)
                 .await
                 .unwrap();
 
             // Try to update child to mention its own parent (root)
             let update = NodeUpdate::new()
                 .with_content(format!("Mention root [@root](nodespace://{})", root_id));
-            service.update_node(&child_id, update).await.unwrap();
+            service
+                .update_node_unchecked(&child_id, update)
+                .await
+                .unwrap();
 
             // Verify root-level self-reference was NOT created
             // (child should not be able to mention its own parent)
@@ -7732,7 +7760,10 @@ mod tests {
                 "See [@N2](nodespace://{}) and [@N3](nodespace://{})",
                 node2_id, node3_id
             ));
-            service.update_node(&node1_id, update1).await.unwrap();
+            service
+                .update_node_unchecked(&node1_id, update1)
+                .await
+                .unwrap();
 
             let node1_v1 = service.get_node(&node1_id).await.unwrap().unwrap();
             assert_eq!(node1_v1.mentions.len(), 2);
@@ -7742,7 +7773,10 @@ mod tests {
                 "See [@N3](nodespace://{}) and [@N4](nodespace://{})",
                 node3_id, node4_id
             ));
-            service.update_node(&node1_id, update2).await.unwrap();
+            service
+                .update_node_unchecked(&node1_id, update2)
+                .await
+                .unwrap();
 
             let node1_v2 = service.get_node(&node1_id).await.unwrap().unwrap();
             assert_eq!(node1_v2.mentions.len(), 2);
@@ -7774,7 +7808,10 @@ mod tests {
             // Update node to mention the date node
             let update =
                 NodeUpdate::new().with_content("See [@Date](nodespace://2025-10-24)".to_string());
-            service.update_node(&node_id, update).await.unwrap();
+            service
+                .update_node_unchecked(&node_id, update)
+                .await
+                .unwrap();
 
             // Verify mention to date node was created
             let node_with_mentions = service.get_node(&node_id).await.unwrap().unwrap();
@@ -8164,7 +8201,7 @@ mod tests {
 
             // Try to move the date node - should fail (date nodes are containers)
             let result = service
-                .move_node("2025-01-03", Some("2025-01-04"), None)
+                .move_node_unchecked("2025-01-03", Some("2025-01-04"), None)
                 .await;
 
             assert!(result.is_err());
@@ -8209,7 +8246,9 @@ mod tests {
 
             // Try to move A under C - this would create: C -> A -> B -> C (circular!)
             // A is not a root (it's under Root), so the root check passes, then circular check fires
-            let result = service.move_node(&node_a_id, Some(&node_c_id), None).await;
+            let result = service
+                .move_node_unchecked(&node_a_id, Some(&node_c_id), None)
+                .await;
 
             assert!(result.is_err());
             let err = result.unwrap_err();
@@ -8240,7 +8279,9 @@ mod tests {
                 .unwrap();
 
             // Move child from parent1 to parent2 - should succeed
-            let result = service.move_node(&child_id, Some(&parent2_id), None).await;
+            let result = service
+                .move_node_unchecked(&child_id, Some(&parent2_id), None)
+                .await;
             assert!(result.is_ok());
 
             // Verify child is now under parent2
@@ -8684,7 +8725,7 @@ mod tests {
             ]
         }));
 
-        service.update_node(&id, update).await.unwrap();
+        service.update_node_unchecked(&id, update).await.unwrap();
 
         // Verify relationships were added
         let retrieved = service.get_node(&id).await.unwrap().unwrap();
@@ -9560,7 +9601,7 @@ mod tests {
                 ..Default::default()
             };
             service
-                .update_node(&text_node.id, type_update)
+                .update_node_unchecked(&text_node.id, type_update)
                 .await
                 .unwrap();
 
@@ -9624,7 +9665,10 @@ mod tests {
                 node_type: Some("text".to_string()),
                 ..Default::default()
             };
-            service.update_node(&node_id, type_update).await.unwrap();
+            service
+                .update_node_unchecked(&node_id, type_update)
+                .await
+                .unwrap();
 
             // Step 3: Verify old task properties are preserved as dormant data
             let node_as_text = service.get_node(&node_id).await.unwrap().unwrap();
@@ -9639,7 +9683,7 @@ mod tests {
                 ..Default::default()
             };
             service
-                .update_node(&node_id, type_update_back)
+                .update_node_unchecked(&node_id, type_update_back)
                 .await
                 .unwrap();
 
@@ -9681,7 +9725,10 @@ mod tests {
                 })),
                 ..Default::default()
             };
-            service.update_node(&node_id, update1).await.unwrap();
+            service
+                .update_node_unchecked(&node_id, update1)
+                .await
+                .unwrap();
 
             // Step 3: Verify both status values coexist without conflict
             let node_after = service.get_node(&node_id).await.unwrap().unwrap();
@@ -9696,7 +9743,10 @@ mod tests {
                 node_type: Some("task".to_string()),
                 ..Default::default()
             };
-            service.update_node(&node_id, update2).await.unwrap();
+            service
+                .update_node_unchecked(&node_id, update2)
+                .await
+                .unwrap();
 
             // Step 5: Verify task's original status is intact, custom status still exists
             let node_final = service.get_node(&node_id).await.unwrap().unwrap();
@@ -9733,7 +9783,10 @@ mod tests {
                 })),
                 ..Default::default()
             };
-            service.update_node(&node_id, to_text).await.unwrap();
+            service
+                .update_node_unchecked(&node_id, to_text)
+                .await
+                .unwrap();
 
             // Update the text properties
             let text_update = crate::models::NodeUpdate {
@@ -9744,7 +9797,10 @@ mod tests {
                 })),
                 ..Default::default()
             };
-            service.update_node(&node_id, text_update).await.unwrap();
+            service
+                .update_node_unchecked(&node_id, text_update)
+                .await
+                .unwrap();
 
             // Verify dormant task properties are unchanged
             let node_after_text_update = service.get_node(&node_id).await.unwrap().unwrap();
@@ -10325,7 +10381,10 @@ mod tests {
                 content: Some("Updated Name".to_string()),
                 ..Default::default()
             };
-            service.update_node(&collection_id, update).await.unwrap();
+            service
+                .update_node_unchecked(&collection_id, update)
+                .await
+                .unwrap();
 
             // Verify title was updated
             let updated = service.get_node(&collection_id).await.unwrap().unwrap();

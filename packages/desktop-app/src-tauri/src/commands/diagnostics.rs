@@ -253,7 +253,7 @@ pub async fn test_node_persistence(
     // Step 3: Clean up test node
     let cleanup_success = if verified {
         // Try to delete the test node
-        service.delete_node(&test_id).await.is_ok()
+        service.delete_node_unchecked(&test_id).await.is_ok()
     } else {
         false
     };

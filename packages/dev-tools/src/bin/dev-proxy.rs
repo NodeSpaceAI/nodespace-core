@@ -883,7 +883,7 @@ async fn update_node(
     // Use optimistic concurrency control - returns updated node directly
     let updated_node = state
         .node_service
-        .update_node_with_occ(&id, request.version, request.update)
+        .update_node(&id, request.version, request.update)
         .await
         .map_err(map_node_service_error)?;
 
@@ -1018,7 +1018,7 @@ async fn set_parent(
 ) -> ApiResult<serde_json::Value> {
     let node = state
         .node_service
-        .move_node_with_occ(
+        .move_node(
             &node_id,
             request.version,
             request.parent_id.as_deref(),

@@ -96,7 +96,9 @@ async fn create_child_node(
 ) -> Result<Node> {
     let node = Node::new(node_type.to_string(), content.to_string(), json!({}));
     service.create_node(node.clone()).await?;
-    service.move_node(&node.id, Some(parent_id), None).await?;
+    service
+        .move_node_unchecked(&node.id, Some(parent_id), None)
+        .await?;
     let created = service
         .get_node(&node.id)
         .await?

@@ -297,7 +297,7 @@ where
             };
 
             node_service
-                .update_node_with_occ(&node_id, current_node.version, update)
+                .update_node(&node_id, current_node.version, update)
                 .await
                 .map_err(service_error_to_mcp)?;
         }
@@ -365,7 +365,7 @@ where
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Update node via NodeService (enforces Rule 5: content updates only, no hierarchy changes)
-    // NodeService.update_node_with_occ validates against schema automatically
+    // NodeService.update_node validates against schema automatically
     //
     // MCP update_node intentionally restricts certain fields for data integrity:
     // - parent_id: Use move_node operation for parent changes
@@ -401,7 +401,7 @@ where
     };
 
     let updated_node = match node_service
-        .update_node_with_occ(&params.node_id, version, update)
+        .update_node(&params.node_id, version, update)
         .await
     {
         Ok(node) => node,
@@ -505,7 +505,7 @@ where
 
     // Delete node via NodeService
     let result = node_service
-        .delete_node_with_occ(&params.node_id, version)
+        .delete_node(&params.node_id, version)
         .await
         .map_err(service_error_to_mcp)?;
 
@@ -936,7 +936,7 @@ where
 
         // Reorder to beginning (insert_after = None means first position)
         node_service
-            .reorder_node_with_occ(&node_id, created_node.version, None)
+            .reorder_node(&node_id, created_node.version, None)
             .await
             .map_err(|e| {
                 MCPError::internal_error(format!("Failed to reorder node to beginning: {}", e))
@@ -1027,7 +1027,7 @@ where
 
         // Perform the move
         node_service
-            .reorder_node_with_occ(&params.node_id, current_version, insert_after.as_deref())
+            .reorder_node(&params.node_id, current_version, insert_after.as_deref())
             .await
             .map_err(service_error_to_mcp)?;
 
@@ -1357,7 +1357,7 @@ where
         };
 
         // Build NodeUpdate from batch update item
-        // NodeService.update_node_with_occ validates against schema automatically
+        // NodeService.update_node validates against schema automatically
         // Embeddings are auto-generated via root-aggregate model (Issue #729)
         let node_update = NodeUpdate {
             content: update.content,
@@ -1369,7 +1369,7 @@ where
 
         // Apply update via NodeService (enforces all business rules)
         match node_service
-            .update_node_with_occ(&update.id, version, node_update)
+            .update_node(&update.id, version, node_update)
             .await
         {
             Ok(_) => {

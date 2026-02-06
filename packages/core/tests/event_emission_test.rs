@@ -106,7 +106,7 @@ mod event_emission_tests {
         // Update the node
         service
             .with_client(TEST_CLIENT_ID)
-            .update_node(
+            .update_node_unchecked(
                 &node_id,
                 nodespace_core::models::NodeUpdate {
                     content: Some("Updated content".to_string()),
@@ -150,7 +150,7 @@ mod event_emission_tests {
         // Delete the node
         let result = service
             .with_client(TEST_CLIENT_ID)
-            .delete_node(&node_id)
+            .delete_node_unchecked(&node_id)
             .await?;
         assert!(result.existed);
 
@@ -187,7 +187,7 @@ mod event_emission_tests {
         // Create initial parent-child relationship
         service
             .with_client(TEST_CLIENT_ID)
-            .move_node(&child.id, Some(&parent1.id), None)
+            .move_node_unchecked(&child.id, Some(&parent1.id), None)
             .await?;
 
         // Subscribe to events (AFTER setup)
@@ -196,7 +196,7 @@ mod event_emission_tests {
         // Move child to new parent
         service
             .with_client(TEST_CLIENT_ID)
-            .move_node(&child.id, Some(&parent2.id), None)
+            .move_node_unchecked(&child.id, Some(&parent2.id), None)
             .await?;
 
         // Receive the emitted event (Issue #811: unified relationship events)
@@ -330,7 +330,7 @@ mod event_emission_tests {
         // Update the node
         service
             .with_client(TEST_CLIENT_ID)
-            .update_node(
+            .update_node_unchecked(
                 &node_id,
                 nodespace_core::models::NodeUpdate {
                     content: Some("Updated".to_string()),
