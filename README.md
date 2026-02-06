@@ -4,7 +4,7 @@
 
 AI coding assistants forget everything between sessions. NodeSpace gives them persistent, searchable access to your project knowledge — so you stop re-explaining your codebase every time you start a conversation.
 
-**[nodespace.ai](https://nodespace.ai)** · **[Download](https://github.com/NodeSpaceAI/nodespace-core/releases)**
+**[nodespace.ai](https://nodespace.ai)** · **[Download](https://github.com/NodeSpaceAI/nodespace-core/releases)** · **[Discord](https://discord.gg/UHFZKzH9)**
 
 [![NodeSpace Screenshot](docs/images/screenshot-alpha-preview.png)](docs/images/screenshot-alpha-preview.png)
 
@@ -211,6 +211,7 @@ We welcome contributions. If you're thinking about a larger change, open an issu
 
 ## Community
 
+- 💬 [Join our Discord](https://discord.gg/UHFZKzH9) — ask questions, share feedback, follow development
 - 🌟 [Star this repo](https://github.com/NodeSpaceAI/nodespace-core) if NodeSpace is useful to you
 - 🐛 [Report a bug](https://github.com/NodeSpaceAI/nodespace-core/issues/new)
 
