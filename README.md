@@ -176,24 +176,6 @@ See the [open issues](https://github.com/NodeSpaceAI/nodespace-core/issues) for 
 
 ---
 
-## Contributing
-
-NodeSpace is built with Rust, Svelte 5, SurrealDB, and Tauri.
-
-```bash
-bun run dev          # Browser development mode
-bun run tauri:dev    # Desktop app development
-bun run test         # Run tests
-bun run build        # Production build
-```
-
-- **Architecture docs**: [`docs/architecture/`](docs/architecture/)
-- **AI agent dev guide**: [`CLAUDE.md`](CLAUDE.md) — conventions and workflow for developing with AI assistants
-
-We welcome contributions. If you're thinking about a larger change, open an issue first so we can discuss the approach.
-
----
-
 ## Community
 
 - 💬 [Join our Discord](https://discord.gg/UHFZKzH9) — ask questions, share feedback, follow development
