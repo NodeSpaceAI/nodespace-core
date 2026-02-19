@@ -106,7 +106,7 @@ describe('Core Plugins Integration', () => {
 
   describe('Core Plugins Collection', () => {
     it('should export all core plugins in corePlugins array', () => {
-      expect(corePlugins).toHaveLength(9); // text, header, task, date, code-block, quote-block, ordered-list, query, collection
+      expect(corePlugins).toHaveLength(10); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, query, collection
       expect(corePlugins).toContain(textNodePlugin);
       expect(corePlugins).toContain(headerNodePlugin);
       expect(corePlugins).toContain(taskNodePlugin);
@@ -127,7 +127,7 @@ describe('Core Plugins Integration', () => {
     it('should register all core plugins successfully', () => {
       registerCorePlugins(registry);
 
-      expect(registry.getAllPlugins()).toHaveLength(9); // text, header, task, date, code-block, quote-block, ordered-list, query, collection
+      expect(registry.getAllPlugins()).toHaveLength(10); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, query, collection
 
       // Verify each core plugin is registered
       for (const plugin of corePlugins) {
@@ -142,10 +142,10 @@ describe('Core Plugins Integration', () => {
       // Verify registration statistics through the registry API
       // Note: Logger output is intentionally silenced during tests
       const stats = registry.getStats();
-      expect(stats.pluginsCount).toBe(9); // text, header, task, date, code-block, quote-block, ordered-list, query, collection
-      expect(stats.slashCommandsCount).toBe(9); // text: 1, header: 3, task: 1, code-block: 1, quote-block: 1, ordered-list: 1, query: 1, collection: 0
+      expect(stats.pluginsCount).toBe(10); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, query, collection
+      expect(stats.slashCommandsCount).toBe(10); // text: 1, header: 3, task: 1, checkbox: 1, code-block: 1, quote-block: 1, ordered-list: 1, query: 1, collection: 0
       expect(stats.viewersCount).toBe(3); // date, task, and collection have custom viewers (CollectionNodeViewer added in Issue #757)
-      expect(stats.referencesCount).toBe(9); // all plugins have references
+      expect(stats.referencesCount).toBe(10); // all plugins have references
     });
 
     it('should provide correct slash command count', () => {
@@ -153,8 +153,8 @@ describe('Core Plugins Integration', () => {
 
       const stats = registry.getStats();
 
-      // text: 1, header: 3, task: 1, code-block: 1, quote-block: 1, ordered-list: 1, query: 1, date: 0, collection: 0 = 9 total
-      expect(stats.slashCommandsCount).toBe(9);
+      // text: 1, header: 3, task: 1, checkbox: 1, code-block: 1, quote-block: 1, ordered-list: 1, query: 1, date: 0, collection: 0 = 10 total
+      expect(stats.slashCommandsCount).toBe(10);
     });
 
     it('should provide all slash commands with proper inheritance', () => {
@@ -162,7 +162,7 @@ describe('Core Plugins Integration', () => {
 
       const commands = registry.getAllSlashCommands();
 
-      expect(commands).toHaveLength(9); // text, header1-3, task, code, quote, ordered-list, query
+      expect(commands).toHaveLength(10); // text, header1-3, task, checkbox, code, quote, ordered-list, query
 
       // Verify text node commands from BasicNodeTypeRegistry work
       const textCommands = commands.filter((cmd) =>
@@ -335,7 +335,7 @@ describe('Core Plugins Integration', () => {
       registerExternalPlugin(registry, externalPlugin);
 
       expect(registry.getAllPlugins()).toHaveLength(initialCount + 1);
-      expect(registry.getAllSlashCommands()).toHaveLength(10); // 9 core + 1 external
+      expect(registry.getAllSlashCommands()).toHaveLength(11); // 10 core + 1 external
     });
   });
 
@@ -368,7 +368,7 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should handle registry clearing', () => {
-      expect(registry.getAllPlugins()).toHaveLength(9); // text, header, task, date, code-block, quote-block, ordered-list, query, collection
+      expect(registry.getAllPlugins()).toHaveLength(10); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, query, collection
 
       registry.clear();
 

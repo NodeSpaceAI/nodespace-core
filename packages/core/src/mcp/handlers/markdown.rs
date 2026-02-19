@@ -470,26 +470,9 @@ pub fn prepare_nodes_from_markdown(
             if let Some(level) = detect_heading(content_line) {
                 ("header", content_line.to_string(), Some(level), false, None)
             } else if is_task_line(content_line) {
-                let (task_content, task_status) = if content_line.starts_with("- [x] ") {
-                    (
-                        content_line.strip_prefix("- [x] ").unwrap_or(content_line),
-                        "done",
-                    )
-                } else if content_line.starts_with("- [ ] ") {
-                    (
-                        content_line.strip_prefix("- [ ] ").unwrap_or(content_line),
-                        "open",
-                    )
-                } else {
-                    (content_line, "open")
-                };
-                (
-                    "task",
-                    task_content.to_string(),
-                    None,
-                    false,
-                    Some(json!({"status": task_status})),
-                )
+                // Checkbox node - pure content node, state encoded in content string
+                // Content preserved as full markdown line ("- [ ] text" or "- [x] text")
+                ("checkbox", content_line.to_string(), None, false, None)
             } else if content_line.starts_with("```") {
                 // Code block
                 let mut code_lines = vec![content_line];
@@ -1320,7 +1303,7 @@ fn detect_heading(line: &str) -> Option<usize> {
 ///
 /// Tasks are lines starting with "- [ ] " (unchecked) or "- [x] " (checked).
 fn is_task_line(line: &str) -> bool {
-    line.starts_with("- [ ] ") || line.starts_with("- [x] ")
+    line.starts_with("- [ ] ") || line.starts_with("- [x] ") || line.starts_with("- [X] ")
 }
 
 /// Check if a line is a bullet list item (not a task)
@@ -1467,28 +1450,9 @@ where
             if let Some(level) = detect_heading(content_line) {
                 ("header", content_line.to_string(), Some(level), false, None)
             } else if is_task_line(content_line) {
-                // Task node - extract content and status from "- [ ] " or "- [x] " prefix
-                // Status values follow TaskStatus enum: "open", "done" (not "completed")
-                let (task_content, task_status) = if content_line.starts_with("- [x] ") {
-                    (
-                        content_line.strip_prefix("- [x] ").unwrap_or(content_line),
-                        "done", // TaskStatus::Done
-                    )
-                } else if content_line.starts_with("- [ ] ") {
-                    (
-                        content_line.strip_prefix("- [ ] ").unwrap_or(content_line),
-                        "open", // TaskStatus::Open
-                    )
-                } else {
-                    (content_line, "open")
-                };
-                (
-                    "task",
-                    task_content.to_string(),
-                    None,
-                    false,
-                    Some(json!({"status": task_status})),
-                )
+                // Checkbox node - pure content node, state encoded in content string
+                // Content preserved as full markdown line ("- [ ] text" or "- [x] text")
+                ("checkbox", content_line.to_string(), None, false, None)
             } else if content_line.starts_with("```") {
                 // Code block - collect until closing ```
                 // IMPORTANT: Preserve original whitespace inside code blocks (don't trim_start)

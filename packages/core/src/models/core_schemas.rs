@@ -254,6 +254,19 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             fields: vec![],        // Uses content for name
             relationships: vec![], // member_of is a native edge, not schema-defined
         },
+        // Checkbox schema - pure content node with state encoded in content string
+        SchemaNode {
+            id: "checkbox".to_string(),
+            content: "Checkbox".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            schema_version: 1,
+            description: "Checkbox item — markdown annotation, not a managed task".to_string(),
+            fields: vec![],
+            relationships: vec![],
+        },
         // Query schema - saved query definitions
         SchemaNode {
             id: "query".to_string(),
@@ -405,9 +418,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_core_schemas_returns_all_nine() {
+    fn test_get_core_schemas_returns_all_ten() {
         let schemas = get_core_schemas();
-        assert_eq!(schemas.len(), 9);
+        assert_eq!(schemas.len(), 10);
     }
 
     #[test]
@@ -441,6 +454,7 @@ mod tests {
             "quote-block",
             "ordered-list",
             "collection",
+            "checkbox",
         ] {
             let schema = schemas.iter().find(|s| s.id == *id).unwrap();
             assert!(

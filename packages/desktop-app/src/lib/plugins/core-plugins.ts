@@ -114,21 +114,8 @@ export const taskNodePlugin: PluginDefinition = {
   name: 'Task Node',
   description: 'Create a task with checkbox and state management',
   version: '1.0.0',
-  // Plugin-owned pattern behavior (Issue #667)
-  pattern: {
-    detect: /^[-*+]?\s*\[\s*[xX\s]\s*\]\s/,
-    canRevert: false,  // cleanContent: true - checkbox syntax removed, cannot revert
-    onEnter: 'inherit',
-    prefixToInherit: '',  // No prefix inheritance for tasks
-    splittingStrategy: 'simple-split',
-    cursorPlacement: 'start',
-    extractMetadata: (match: RegExpMatchArray) => {
-      const isCompleted = /[xX]/.test(match[0]);
-      return {
-        taskState: isCompleted ? 'completed' : 'pending'
-      };
-    }
-  },
+  // No editor pattern — tasks are created via /task slash command only.
+  // Typed "- [ ]" syntax creates a checkbox node (checkboxNodePlugin pattern).
   config: {
     slashCommands: [
       {
@@ -219,6 +206,48 @@ export const taskNodePlugin: PluginDefinition = {
   // Type-specific schema form for spoke fields (Issue #709)
   schemaForm: {
     lazyLoad: () => import('../components/property-forms/task-schema-form.svelte')
+  }
+};
+
+// Checkbox node - pure content node, state encoded in content string
+// No task management semantics; toggling updates the content in place
+export const checkboxNodePlugin: PluginDefinition = {
+  id: 'checkbox',
+  name: 'Checkbox Node',
+  description: 'A simple checkbox item — markdown annotation, not a managed task',
+  version: '1.0.0',
+  // Pattern: "- [ ] " or "- [x] " typed in the editor creates a checkbox node
+  pattern: {
+    detect: /^- \[[ xX]\] /,
+    canRevert: false, // cleanContent: false — content preserved as-is (full markdown line)
+    onEnter: 'inherit',
+    prefixToInherit: '- [ ] ',
+    splittingStrategy: 'simple-split',
+    cursorPlacement: 'start',
+    extractMetadata: () => ({})
+  },
+  config: {
+    slashCommands: [
+      {
+        id: 'checkbox',
+        name: 'Checkbox',
+        description: 'Create a simple checkbox item',
+        shortcut: '[ ]',
+        contentTemplate: '- [ ] ',
+        nodeType: 'checkbox',
+        desiredCursorPosition: 6 // Position cursor after "- [ ] "
+      }
+    ],
+    canHaveChildren: true,
+    canBeChild: true
+  },
+  node: {
+    lazyLoad: () => import('../components/viewers/checkbox-node.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
   }
 };
 
@@ -490,6 +519,7 @@ export const corePlugins = [
   textNodePlugin,
   headerNodePlugin,
   taskNodePlugin,
+  checkboxNodePlugin,
   dateNodePlugin,
   codeBlockNodePlugin,
   quoteBlockNodePlugin,

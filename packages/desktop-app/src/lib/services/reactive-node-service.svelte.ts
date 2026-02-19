@@ -720,6 +720,8 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     let cleaned = content;
     // Strip header prefixes (# , ## , etc.)
     cleaned = cleaned.replace(/^#{1,6}\s+/, '');
+    // Strip checkbox bullet prefix (- [ ] or - [x] or - [X] )
+    cleaned = cleaned.replace(/^- \[[ xX]\] /, '');
     // Strip task checkbox ([ ] , [x] , etc.)
     cleaned = cleaned.replace(/^\[\s*[x\s]*\]\s*/, '');
     // Strip quote-block prefixes (> ) from all lines

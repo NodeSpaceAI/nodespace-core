@@ -331,15 +331,14 @@ code block
                     // Should have ## prefix
                     assert!(node.content.starts_with("##"));
                 }
-                "task" => {
-                    // Task content should be clean (no "- [ ]" prefix)
-                    // The checkbox state is stored in the `completed` property
+                "checkbox" => {
+                    // Checkbox content preserves full markdown line ("- [ ] text")
                     assert!(
-                        !node.content.starts_with("- [ ]") && !node.content.starts_with("- [x]"),
-                        "Task content should not have checkbox prefix, got: {}",
+                        node.content.starts_with("- [ ] ") || node.content.starts_with("- [x] "),
+                        "Checkbox content should have markdown prefix, got: {}",
                         node.content
                     );
-                    assert_eq!(node.content, "Task item");
+                    assert_eq!(node.content, "- [ ] Task item");
                 }
                 "code-block" => {
                     // Should have ``` fence
@@ -401,11 +400,11 @@ code block
         // Container from title + 3 tasks
         assert_eq!(result["nodes_created"], 4);
 
-        // Verify task content - content is clean, completed state is in properties
+        // Verify checkbox content - state encoded in content string, no properties
         let node_ids = result["node_ids"].as_array().unwrap();
 
-        let mut completed_count = 0;
-        let mut not_completed_count = 0;
+        let mut checked_count = 0;
+        let mut unchecked_count = 0;
 
         // Skip the first node (root from title)
         for node_id in node_ids.iter().skip(1) {
@@ -415,39 +414,24 @@ code block
                 .unwrap()
                 .unwrap();
 
-            if node.node_type == "task" {
-                // Content should be clean (no checkbox prefix)
+            if node.node_type == "checkbox" {
+                // Content should preserve full markdown line ("- [ ] text" or "- [x] text")
                 assert!(
-                    !node.content.starts_with("- [ ]") && !node.content.starts_with("- [x]"),
-                    "Task content should not have checkbox prefix, got: {}",
+                    node.content.starts_with("- [ ] ") || node.content.starts_with("- [x] "),
+                    "Checkbox content should have markdown prefix, got: {}",
                     node.content
                 );
 
-                // Check the status property - Issue #854: properties are now namespaced
-                // Status is stored at properties.task.status
-                let status = node
-                    .properties
-                    .get("task")
-                    .and_then(|t| t.get("status"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("open");
-
-                if status == "done" {
-                    completed_count += 1;
+                if node.content.starts_with("- [x] ") {
+                    checked_count += 1;
                 } else {
-                    not_completed_count += 1;
+                    unchecked_count += 1;
                 }
             }
         }
 
-        assert_eq!(
-            completed_count, 1,
-            "Should have 1 completed task (status: done)"
-        );
-        assert_eq!(
-            not_completed_count, 2,
-            "Should have 2 uncompleted tasks (status: open)"
-        );
+        assert_eq!(checked_count, 1, "Should have 1 checked checkbox");
+        assert_eq!(unchecked_count, 2, "Should have 2 unchecked checkboxes");
     }
 
     #[tokio::test]
@@ -1569,10 +1553,10 @@ Regular text after code."#;
             .unwrap();
 
         assert_eq!(result["root_id"], root_id);
-        assert!(result["nodes_created"].as_u64().unwrap() >= 5); // 2 headers + 3 tasks
+        assert!(result["nodes_created"].as_u64().unwrap() >= 5); // 2 headers + 3 checkboxes
 
         // Verify hierarchy was created
-        // Structure: root -> headers -> tasks (nested)
+        // Structure: root -> headers -> checkboxes (nested)
         let direct_children = node_service.get_children(root_id).await.unwrap();
         assert_eq!(
             direct_children.len(),
@@ -1587,20 +1571,20 @@ Regular text after code."#;
             .collect();
         assert_eq!(headers.len(), 2, "Should have 2 header nodes");
 
-        // Tasks are nested under headers - collect all grandchildren
-        let mut all_tasks = Vec::new();
+        // Checkboxes are nested under headers - collect all grandchildren
+        let mut all_checkboxes = Vec::new();
         for header in &headers {
             let header_children = node_service.get_children(&header.id).await.unwrap();
             for child in header_children {
-                if child.node_type == "task" {
-                    all_tasks.push(child);
+                if child.node_type == "checkbox" {
+                    all_checkboxes.push(child);
                 }
             }
         }
         assert_eq!(
-            all_tasks.len(),
+            all_checkboxes.len(),
             3,
-            "Should have 3 task nodes (nested under headers)"
+            "Should have 3 checkbox nodes (nested under headers)"
         );
     }
 

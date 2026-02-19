@@ -281,30 +281,34 @@ describe('HeaderNode Pattern Detection', () => {
       expect(headerPattern?.priority).toBe(10);
     });
 
-    it('should not conflict with task pattern', () => {
-      const taskResult = registry.detectPatternInContent('[ ] Task item');
+    it('should not conflict with checkbox pattern', () => {
+      // "[ ] Task item" does not start with "- " so doesn't match checkbox pattern
+      const checkboxResult = registry.detectPatternInContent('- [ ] Checkbox item');
       const headerResult = registry.detectPatternInContent('# Header');
 
       // Both patterns should work independently
-      expect(taskResult?.config.targetNodeType).toBe('task');
+      expect(checkboxResult?.config.targetNodeType).toBe('checkbox');
       expect(headerResult?.config.targetNodeType).toBe('header');
     });
 
-    it('should prioritize header pattern over task pattern when both match', () => {
-      // This is an edge case - content that could match multiple patterns
+    it('should have checkbox pattern available (task pattern removed)', () => {
+      // This verifies checkbox now handles "- [ ]" syntax; task has no editor pattern
       const patterns = registry.getAllPatternDetectionConfigs();
 
-      // Verify both patterns exist
+      // Verify header and checkbox patterns exist
       const headerPattern = patterns.find((p) => p.targetNodeType === 'header');
-      const taskPattern = patterns.find((p) => p.targetNodeType === 'task');
+      const checkboxPattern = patterns.find((p) => p.targetNodeType === 'checkbox');
 
       expect(headerPattern).toBeDefined();
-      expect(taskPattern).toBeDefined();
+      expect(checkboxPattern).toBeDefined();
 
-      // Both have priority 10 - order depends on registration
-      // This test just verifies they're both available
+      // task no longer has an editor pattern
+      const taskPattern = patterns.find((p) => p.targetNodeType === 'task');
+      expect(taskPattern).toBeUndefined();
+
+      // Both have priority 10
       expect(headerPattern?.priority).toBe(10);
-      expect(taskPattern?.priority).toBe(10);
+      expect(checkboxPattern?.priority).toBe(10);
     });
   });
 

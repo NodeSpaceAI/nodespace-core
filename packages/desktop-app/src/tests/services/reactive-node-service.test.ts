@@ -1374,6 +1374,24 @@ describe('ReactiveNodeService - Combine Nodes', () => {
     const node1 = service.findNode('node-1');
     expect(node1?.content).toBe('First nodeTask content');
   });
+
+  it('strips checkbox bullet prefix when combining', () => {
+    service.updateNodeContent('node-2', '- [ ] Checkbox content');
+
+    service.combineNodes('node-2', 'node-1');
+
+    const node1 = service.findNode('node-1');
+    expect(node1?.content).toBe('First nodeCheckbox content');
+  });
+
+  it('strips checked checkbox bullet prefix when combining', () => {
+    service.updateNodeContent('node-2', '- [x] Checked content');
+
+    service.combineNodes('node-2', 'node-1');
+
+    const node1 = service.findNode('node-1');
+    expect(node1?.content).toBe('First nodeChecked content');
+  });
 });
 
 describe('ReactiveNodeService - Indent/Outdent Node', () => {

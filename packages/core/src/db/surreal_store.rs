@@ -3709,7 +3709,7 @@ where
         parent_id: Option<&str>,
         content: &str,
     ) -> String {
-        if node_type == "date" || node_type == "schema" {
+        if node_type == "date" || node_type == "schema" || node_type == "checkbox" {
             "NONE".to_string()
         } else if parent_id.is_none() || node_type == "task" || node_type == "collection" {
             let stripped = crate::utils::strip_markdown(content);
