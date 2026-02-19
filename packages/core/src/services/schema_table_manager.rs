@@ -101,8 +101,10 @@ impl SchemaTableManager {
             // Validate source type
             Self::validate_type_name(source_type)?;
 
-            // Validate target type
-            Self::validate_type_name(&relationship.target_type)?;
+            // Validate target type (skip when None — untyped relationship)
+            if let Some(target_type) = &relationship.target_type {
+                Self::validate_type_name(target_type)?;
+            }
 
             // Generate edge table DDL
             let edge_table = relationship.compute_edge_table_name(source_type);
@@ -447,7 +449,7 @@ mod tests {
 
         let relationship = SchemaRelationship {
             name: "billed_to".to_string(),
-            target_type: "customer".to_string(),
+            target_type: Some("customer".to_string()),
             direction: RelationshipDirection::Out,
             cardinality: RelationshipCardinality::One,
             required: None,
@@ -484,7 +486,7 @@ mod tests {
 
         let relationship = SchemaRelationship {
             name: "assigned_to".to_string(),
-            target_type: "person".to_string(),
+            target_type: Some("person".to_string()),
             direction: RelationshipDirection::Out,
             cardinality: RelationshipCardinality::Many,
             required: None,
@@ -548,7 +550,7 @@ mod tests {
         let relationships = vec![
             SchemaRelationship {
                 name: "billed_to".to_string(),
-                target_type: "customer".to_string(),
+                target_type: Some("customer".to_string()),
                 direction: RelationshipDirection::Out,
                 cardinality: RelationshipCardinality::One,
                 required: None,
@@ -560,7 +562,7 @@ mod tests {
             },
             SchemaRelationship {
                 name: "shipped_to".to_string(),
-                target_type: "address".to_string(),
+                target_type: Some("address".to_string()),
                 direction: RelationshipDirection::Out,
                 cardinality: RelationshipCardinality::One,
                 required: None,
@@ -591,7 +593,7 @@ mod tests {
 
         let relationships = vec![SchemaRelationship {
             name: "has_child".to_string(), // Reserved!
-            target_type: "node".to_string(),
+            target_type: Some("node".to_string()),
             direction: RelationshipDirection::Out,
             cardinality: RelationshipCardinality::Many,
             required: None,
@@ -613,7 +615,7 @@ mod tests {
 
         let relationships = vec![SchemaRelationship {
             name: "collaborates_with".to_string(),
-            target_type: "person".to_string(),
+            target_type: Some("person".to_string()),
             direction: RelationshipDirection::Out,
             cardinality: RelationshipCardinality::Many,
             required: None,
@@ -776,7 +778,9 @@ mod tests {
             for relationship in relationships {
                 SchemaTableManager::validate_relationship_name(&relationship.name)?;
                 SchemaTableManager::validate_type_name(source_type)?;
-                SchemaTableManager::validate_type_name(&relationship.target_type)?;
+                if let Some(target_type) = &relationship.target_type {
+                    SchemaTableManager::validate_type_name(target_type)?;
+                }
 
                 let edge_table = relationship.compute_edge_table_name(source_type);
                 let edge_ddl =

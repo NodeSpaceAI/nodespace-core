@@ -264,7 +264,10 @@ pub struct SchemaRelationship {
     pub name: String,
 
     /// Target node type (e.g., "customer", "person")
-    pub target_type: String,
+    ///
+    /// When `None`, the relationship accepts any target node type (untyped/generic).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub target_type: Option<String>,
 
     /// Direction: "out" (this->target) or "in" (target->this)
     ///
@@ -296,7 +299,8 @@ pub struct SchemaRelationship {
 
     /// Auto-computed edge table name (can be overridden)
     ///
-    /// If not specified, computed as: `{source_type}_{name}_{target_type}`
+    /// If not specified, computed as: `{source_type}_{name}_{target_type}` when `target_type` is set,
+    /// or `{source_type}_{name}` when `target_type` is `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge_table: Option<String>,
 
@@ -317,7 +321,10 @@ impl SchemaRelationship {
     pub fn compute_edge_table_name(&self, source_type: &str) -> String {
         self.edge_table
             .clone()
-            .unwrap_or_else(|| format!("{}_{}_{}", source_type, self.name, self.target_type))
+            .unwrap_or_else(|| match &self.target_type {
+                Some(target) => format!("{}_{}_{}", source_type, self.name, target),
+                None => format!("{}_{}", source_type, self.name),
+            })
     }
 }
 
@@ -694,7 +701,7 @@ mod tests {
     fn test_schema_relationship_serialization() {
         let relationship = SchemaRelationship {
             name: "billed_to".to_string(),
-            target_type: "customer".to_string(),
+            target_type: Some("customer".to_string()),
             direction: RelationshipDirection::Out,
             cardinality: RelationshipCardinality::One,
             required: Some(true),
@@ -765,7 +772,7 @@ mod tests {
         let relationship: SchemaRelationship = serde_json::from_value(json).unwrap();
 
         assert_eq!(relationship.name, "assigned_to");
-        assert_eq!(relationship.target_type, "person");
+        assert_eq!(relationship.target_type, Some("person".to_string()));
         assert_eq!(relationship.direction, RelationshipDirection::Out);
         assert_eq!(relationship.cardinality, RelationshipCardinality::Many);
         assert_eq!(relationship.reverse_name, Some("tasks".to_string()));
@@ -795,7 +802,7 @@ mod tests {
         let relationship: SchemaRelationship = serde_json::from_value(json).unwrap();
 
         assert_eq!(relationship.name, "parent_of");
-        assert_eq!(relationship.target_type, "document");
+        assert_eq!(relationship.target_type, Some("document".to_string()));
         assert_eq!(relationship.direction, RelationshipDirection::Out);
         assert_eq!(relationship.cardinality, RelationshipCardinality::Many);
         assert!(relationship.required.is_none());
@@ -810,7 +817,7 @@ mod tests {
     fn test_schema_relationship_with_custom_edge_table() {
         let relationship = SchemaRelationship {
             name: "collaborates_with".to_string(),
-            target_type: "person".to_string(),
+            target_type: Some("person".to_string()),
             direction: RelationshipDirection::Out,
             cardinality: RelationshipCardinality::Many,
             required: None,
@@ -829,7 +836,7 @@ mod tests {
     fn test_compute_edge_table_name_auto() {
         let relationship = SchemaRelationship {
             name: "billed_to".to_string(),
-            target_type: "customer".to_string(),
+            target_type: Some("customer".to_string()),
             direction: RelationshipDirection::Out,
             cardinality: RelationshipCardinality::One,
             required: None,
@@ -848,7 +855,7 @@ mod tests {
     fn test_compute_edge_table_name_explicit() {
         let relationship = SchemaRelationship {
             name: "assigned_to".to_string(),
-            target_type: "person".to_string(),
+            target_type: Some("person".to_string()),
             direction: RelationshipDirection::Out,
             cardinality: RelationshipCardinality::Many,
             required: None,
@@ -875,5 +882,80 @@ mod tests {
 
         let relationship: SchemaRelationship = serde_json::from_value(json).unwrap();
         assert_eq!(relationship.direction, RelationshipDirection::In);
+    }
+
+    #[test]
+    fn test_schema_relationship_untyped_deserialization() {
+        // target_type absent → None (untyped/generic relationship)
+        let json = json!({
+            "name": "related",
+            "direction": "out",
+            "cardinality": "many"
+        });
+
+        let relationship: SchemaRelationship = serde_json::from_value(json).unwrap();
+        assert_eq!(relationship.name, "related");
+        assert!(relationship.target_type.is_none());
+    }
+
+    #[test]
+    fn test_schema_relationship_untyped_serialization() {
+        let relationship = SchemaRelationship {
+            name: "related".to_string(),
+            target_type: None,
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::Many,
+            required: None,
+            reverse_name: None,
+            reverse_cardinality: None,
+            edge_table: None,
+            edge_fields: None,
+            description: None,
+        };
+
+        let json = serde_json::to_value(&relationship).unwrap();
+        assert_eq!(json["name"], "related");
+        // targetType absent when None
+        assert!(json.get("targetType").is_none());
+    }
+
+    #[test]
+    fn test_compute_edge_table_name_none_target() {
+        // When target_type is None, table name is {source}_{name}
+        let relationship = SchemaRelationship {
+            name: "related".to_string(),
+            target_type: None,
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::Many,
+            required: None,
+            reverse_name: None,
+            reverse_cardinality: None,
+            edge_table: None,
+            edge_fields: None,
+            description: None,
+        };
+
+        let edge_table = relationship.compute_edge_table_name("note");
+        assert_eq!(edge_table, "note_related");
+    }
+
+    #[test]
+    fn test_compute_edge_table_name_some_target() {
+        // When target_type is Some, table name is {source}_{name}_{target}
+        let relationship = SchemaRelationship {
+            name: "billed_to".to_string(),
+            target_type: Some("customer".to_string()),
+            direction: RelationshipDirection::Out,
+            cardinality: RelationshipCardinality::One,
+            required: None,
+            reverse_name: None,
+            reverse_cardinality: None,
+            edge_table: None,
+            edge_fields: None,
+            description: None,
+        };
+
+        let edge_table = relationship.compute_edge_table_name("invoice");
+        assert_eq!(edge_table, "invoice_billed_to_customer");
     }
 }

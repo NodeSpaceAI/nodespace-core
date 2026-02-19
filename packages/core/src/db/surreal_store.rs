@@ -4016,23 +4016,11 @@ where
     /// * `Ok(None)` - Schema not found
     /// * `Err(_)` - Database or deserialization error
     pub async fn get_schema_node(&self, id: &str) -> Result<Option<crate::models::SchemaNode>> {
-        // Query node table for schema nodes - properties are in node.properties
+        // Query node table for schema nodes - properties are in node.properties.
+        // We fetch raw JSON values and convert manually to avoid SurrealDB's NONE
+        // deserialization issues with nested Option<String> fields (e.g. target_type).
         let query = format!(
-            r#"
-            SELECT
-                record::id(id) AS id,
-                properties.isCore AS isCore,
-                properties.schemaVersion AS schemaVersion,
-                properties.description AS description,
-                properties.fields AS fields,
-                properties.relationships AS relationships,
-                content,
-                version,
-                created_at AS createdAt,
-                modified_at AS modifiedAt
-            FROM node:`{}`
-            WHERE node_type = 'schema';
-            "#,
+            "SELECT *, record::id(id) AS node_id OMIT id FROM node:`{}` WHERE node_type = 'schema' LIMIT 1;",
             id
         );
 
@@ -4042,9 +4030,23 @@ where
             .await
             .context(format!("Failed to query schema node '{}'", id))?;
 
-        let schemas: Vec<crate::models::SchemaNode> = response
+        let raw: Vec<Value> = response
             .take(0)
-            .context("Failed to deserialize SchemaNode")?;
+            .context("Failed to take schema node result")?;
+
+        let schemas: Vec<crate::models::SchemaNode> = raw
+            .into_iter()
+            .filter_map(|hub| {
+                let node_id = hub["node_id"].as_str().unwrap_or("").to_string();
+                let node_type = hub["node_type"].as_str().unwrap_or("schema").to_string();
+                let properties = hub
+                    .get("properties")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({}));
+                let node = self.build_node_from_hub(node_id, node_type, &hub, properties);
+                crate::models::SchemaNode::from_node(node).ok()
+            })
+            .collect();
 
         Ok(schemas.into_iter().next())
     }
@@ -4058,23 +4060,10 @@ where
     ///
     /// Vector of all schema nodes, ordered by ID.
     pub async fn get_all_schemas(&self) -> Result<Vec<crate::models::SchemaNode>> {
-        // Query node table for all schema nodes - properties are in node.properties
-        let query = r#"
-            SELECT
-                record::id(id) AS id,
-                properties.isCore AS isCore,
-                properties.schemaVersion AS schemaVersion,
-                properties.description AS description,
-                properties.fields AS fields,
-                properties.relationships AS relationships,
-                content,
-                version,
-                created_at AS createdAt,
-                modified_at AS modifiedAt
-            FROM node
-            WHERE node_type = 'schema'
-            ORDER BY id;
-        "#;
+        // Query node table for all schema nodes - properties are in node.properties.
+        // We fetch raw JSON values and convert manually to avoid SurrealDB's NONE
+        // deserialization issues with nested Option<String> fields (e.g. target_type).
+        let query = "SELECT *, record::id(id) AS node_id OMIT id FROM node WHERE node_type = 'schema' ORDER BY node_id;";
 
         let mut response = self
             .db
@@ -4082,9 +4071,28 @@ where
             .await
             .context("Failed to query all schema nodes")?;
 
-        let schemas: Vec<crate::models::SchemaNode> = response
+        let raw: Vec<Value> = response
             .take(0)
-            .context("Failed to deserialize SchemaNodes")?;
+            .context("Failed to take schema node results")?;
+
+        let mut schemas = Vec::with_capacity(raw.len());
+        for hub in raw {
+            let node_id = hub["node_id"].as_str().unwrap_or("").to_string();
+            let node_type = hub["node_type"].as_str().unwrap_or("schema").to_string();
+            let properties = hub
+                .get("properties")
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
+
+            let node = self.build_node_from_hub(node_id, node_type, &hub, properties);
+
+            match crate::models::SchemaNode::from_node(node) {
+                Ok(schema) => schemas.push(schema),
+                Err(e) => {
+                    tracing::warn!("Skipping invalid schema node: {}", e);
+                }
+            }
+        }
 
         Ok(schemas)
     }

@@ -114,6 +114,9 @@ impl InboundRelationshipCache {
     /// Returns an empty vec if no relationships point to this type.
     /// The cache is automatically refreshed if stale.
     ///
+    /// Includes untyped relationships (stored under `"*"` sentinel) in the result,
+    /// since untyped relationships accept any target node type.
+    ///
     /// # Arguments
     ///
     /// * `target_type` - The node type to find inbound relationships for (e.g., "customer")
@@ -131,15 +134,25 @@ impl InboundRelationshipCache {
             self.refresh_cache().await?;
         }
 
-        // Return from cache (fast!)
+        // Return from cache, merging typed and wildcard (untyped) entries
         let cache = self.cache.read().await;
-        Ok(cache.get(target_type).cloned().unwrap_or_default())
+        let mut result = cache.get(target_type).cloned().unwrap_or_default();
+        // Untyped relationships (target_type: None) are stored under "*" and apply to all types
+        if let Some(wildcards) = cache.get("*") {
+            result.extend(wildcards.iter().cloned());
+        }
+        Ok(result)
     }
 
     /// Get all inbound relationships for all types
     ///
     /// Returns the complete cache index. Useful for NLP to understand
     /// the entire relationship graph.
+    ///
+    /// **Note**: The returned map may contain the sentinel key `"*"` which represents
+    /// untyped relationships (those defined with `target_type: None`). Callers that
+    /// iterate over the map to build a type graph should be aware of this key and
+    /// filter or handle it explicitly.
     pub async fn get_all_inbound_relationships(
         &self,
     ) -> anyhow::Result<HashMap<String, Vec<InboundRelationship>>> {
@@ -206,10 +219,13 @@ impl InboundRelationshipCache {
                     description: relationship.description.clone(),
                 };
 
-                index
-                    .entry(relationship.target_type.clone())
-                    .or_default()
-                    .push(inbound);
+                // Use "*" as sentinel key for untyped relationships (target_type: None)
+                // These apply to any target type and are merged in during lookups
+                let key = relationship
+                    .target_type
+                    .clone()
+                    .unwrap_or_else(|| "*".to_string());
+                index.entry(key).or_default().push(inbound);
             }
         }
 

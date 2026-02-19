@@ -5382,17 +5382,19 @@ where
                     ))
                 })?;
 
-            // Validate target node type
-            let target = self
-                .get_node(target_id)
-                .await?
-                .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+            // Validate target node type (skip when target_type is None — accepts any type)
+            if let Some(expected_type) = &relationship.target_type {
+                let target = self
+                    .get_node(target_id)
+                    .await?
+                    .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
 
-            if target.node_type != relationship.target_type {
-                return Err(NodeServiceError::invalid_update(format!(
-                    "Target node type '{}' doesn't match expected type '{}' for relationship '{}'",
-                    target.node_type, relationship.target_type, relationship_name
-                )));
+                if target.node_type != *expected_type {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "Target node type '{}' doesn't match expected type '{}' for relationship '{}'",
+                        target.node_type, expected_type, relationship_name
+                    )));
+                }
             }
 
             // Check cardinality constraint
@@ -5881,7 +5883,8 @@ where
     /// # let service = NodeService::new(&mut db).await?;
     /// if let Some(schema) = service.get_schema_with_relationships("invoice").await? {
     ///     for rel in &schema.relationships {
-    ///         println!("{} -> {} ({:?})", rel.name, rel.target_type, rel.cardinality);
+    ///         let target = rel.target_type.as_deref().unwrap_or("*");
+    ///         println!("{} -> {} ({:?})", rel.name, target, rel.cardinality);
     ///     }
     /// }
     /// # Ok(())
@@ -5937,7 +5940,13 @@ where
         let mut inbound = Vec::new();
         for schema in schemas {
             for relationship in schema.relationships {
-                if relationship.target_type == target_type {
+                // Include typed relationships matching this target, and untyped (None) relationships
+                let matches = relationship
+                    .target_type
+                    .as_deref()
+                    .map(|t| t == target_type)
+                    .unwrap_or(true); // None = untyped, applies to all types
+                if matches {
                     inbound.push((schema.id.clone(), relationship));
                 }
             }
@@ -5968,14 +5977,15 @@ where
     /// # let service = NodeService::new(&mut db).await?;
     /// let graph = service.get_relationship_graph().await?;
     /// for (source, rel_name, target) in graph {
-    ///     println!("{} --{}-> {}", source, rel_name, target);
+    ///     let target_str = target.as_deref().unwrap_or("*");
+    ///     println!("{} --{}-> {}", source, rel_name, target_str);
     /// }
     /// # Ok(())
     /// # }
     /// ```
     pub async fn get_relationship_graph(
         &self,
-    ) -> Result<Vec<(String, String, String)>, NodeServiceError> {
+    ) -> Result<Vec<(String, String, Option<String>)>, NodeServiceError> {
         let schemas = self.get_all_schemas().await?;
 
         let mut edges = Vec::new();
@@ -5991,6 +6001,103 @@ where
 
         Ok(edges)
     }
+
+    /// Check whether a node satisfies all required relationships in its schema
+    ///
+    /// Returns a `CompletenessResult` indicating whether the node is complete and,
+    /// if not, which required relationships are missing.
+    ///
+    /// This is a read-only introspection tool — it does NOT block node creation
+    /// or updates. Use it in workflows to validate node state or surface missing
+    /// connections to users.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id` - The ID of the node to check
+    ///
+    /// # Returns
+    ///
+    /// `CompletenessResult` with `is_complete` and `missing_relationships`.
+    /// If the node type has no schema, returns `is_complete: true`.
+    pub async fn check_node_completeness(
+        &self,
+        node_id: &str,
+    ) -> Result<CompletenessResult, NodeServiceError> {
+        // Look up the node
+        let node = self
+            .get_node(node_id)
+            .await?
+            .ok_or_else(|| NodeServiceError::node_not_found(node_id))?;
+
+        // Look up the schema for the node's type
+        let schema_node = self.get_schema_node(&node.node_type).await?;
+
+        let Some(schema) = schema_node else {
+            // No schema → nothing required → complete by definition
+            return Ok(CompletenessResult {
+                node_id: node_id.to_string(),
+                is_complete: true,
+                missing_relationships: vec![],
+            });
+        };
+
+        let mut missing = Vec::new();
+
+        for relationship in &schema.relationships {
+            // Only check relationships explicitly marked as required
+            if relationship.required != Some(true) {
+                continue;
+            }
+
+            // Check whether at least one edge of this relationship type exists
+            let source_thing =
+                surrealdb::sql::Thing::from(("node".to_string(), node_id.to_string()));
+            let query = "SELECT VALUE id FROM relationship WHERE in = $source AND relationship_type = $rel_type LIMIT 1";
+
+            let mut result = self
+                .store
+                .db()
+                .query(query)
+                .bind(("source", source_thing))
+                .bind(("rel_type", relationship.name.clone()))
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!(
+                        "Failed to check required relationship '{}': {}",
+                        relationship.name, e
+                    ))
+                })?;
+
+            let existing: Vec<surrealdb::sql::Value> = result.take(0).map_err(|e| {
+                NodeServiceError::query_failed(format!(
+                    "Failed to parse relationship check for '{}': {}",
+                    relationship.name, e
+                ))
+            })?;
+
+            if existing.is_empty() {
+                missing.push(relationship.name.clone());
+            }
+        }
+
+        Ok(CompletenessResult {
+            node_id: node_id.to_string(),
+            is_complete: missing.is_empty(),
+            missing_relationships: missing,
+        })
+    }
+}
+
+/// Result of checking node completeness against its schema's required relationships
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletenessResult {
+    /// The node ID that was checked
+    pub node_id: String,
+    /// Whether all required relationships are satisfied
+    pub is_complete: bool,
+    /// Names of required relationships that are missing
+    pub missing_relationships: Vec<String>,
 }
 
 /// Recursively build a tree structure from flat node data

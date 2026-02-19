@@ -348,3 +348,71 @@ fn test_inbound_relationship_json_round_trip() {
 
     assert_eq!(rel, parsed);
 }
+
+// =========================================================================
+// Untyped Relationship (target_type: None) Tests
+// =========================================================================
+
+/// Test that untyped relationships (target_type: None) are stored under "*" in the cache
+/// and returned for any target type lookup.
+///
+/// Note: This test verifies the cache logic using a schema node created via the NodeService
+/// (which uses `upsert_schema` internally). The integration with SurrealDB's native
+/// deserialization is validated by the fact that `get_all_schemas` must successfully
+/// deserialize all stored schemas.
+#[tokio::test]
+async fn test_untyped_relationship_in_cache_returns_for_any_target() -> Result<()> {
+    use nodespace_core::models::Node;
+    use serde_json::json;
+
+    let (store, _node_service, _temp_dir) = create_test_env().await?;
+
+    // Create a schema node with an untyped relationship (no targetType field → target_type: None)
+    // The schema is stored as a JSON blob in node.properties.
+    // We use store.create_node to insert directly.
+    let schema_node = Node::new_with_id(
+        "note_schema_test".to_string(),
+        "schema".to_string(),
+        "Note Schema".to_string(),
+        json!({
+            "name": "note_schema_test",
+            "relationships": [
+                {
+                    "name": "related",
+                    "direction": "out",
+                    "cardinality": "many"
+                    // no targetType key → target_type: None when deserialized
+                }
+            ]
+        }),
+    );
+    store.create_node(schema_node, None).await?;
+
+    // Create a cache and populate it from the DB
+    let cache = InboundRelationshipCache::new(store);
+    cache.force_refresh().await?;
+
+    // Untyped relationship should appear under "*" sentinel in the raw cache
+    let all = cache.get_all_inbound_relationships().await?;
+    assert!(
+        all.contains_key("*"),
+        "Untyped relationships should be stored under '*'"
+    );
+
+    // get_inbound_relationships for any type should include the wildcard entry
+    let for_task = cache.get_inbound_relationships("task").await?;
+    assert!(
+        for_task.iter().any(|r| r.relationship_name == "related"),
+        "Untyped 'related' relationship should appear for 'task'"
+    );
+
+    let for_customer = cache.get_inbound_relationships("customer").await?;
+    assert!(
+        for_customer
+            .iter()
+            .any(|r| r.relationship_name == "related"),
+        "Untyped 'related' relationship should appear for 'customer'"
+    );
+
+    Ok(())
+}

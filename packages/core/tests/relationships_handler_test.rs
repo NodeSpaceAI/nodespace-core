@@ -7,10 +7,12 @@
 //! - Error handling patterns
 
 use nodespace_core::mcp::handlers::relationships::{
-    CreateRelationshipOutput, CreateRelationshipParams, DeleteRelationshipParams,
-    GetInboundRelationshipsParams, GetRelatedNodesOutput, GetRelatedNodesParams,
-    InboundRelationshipInfo, InboundRelationshipsOutput, RelationshipEdge, RelationshipGraphOutput,
+    CheckNodeCompletenessParams, CreateRelationshipOutput, CreateRelationshipParams,
+    DeleteRelationshipParams, GetInboundRelationshipsParams, GetRelatedNodesOutput,
+    GetRelatedNodesParams, InboundRelationshipInfo, InboundRelationshipsOutput, RelationshipEdge,
+    RelationshipGraphOutput,
 };
+use nodespace_core::services::node_service::CompletenessResult;
 use serde_json::json;
 
 // =========================================================================
@@ -240,7 +242,7 @@ fn test_relationship_edge_camel_case() {
     let edge = RelationshipEdge {
         source_type: "invoice".to_string(),
         relationship_name: "billed_to".to_string(),
-        target_type: "customer".to_string(),
+        target_type: Some("customer".to_string()),
     };
 
     let json = serde_json::to_value(&edge).unwrap();
@@ -257,7 +259,7 @@ fn test_relationship_graph_output_camel_case() {
         edges: vec![RelationshipEdge {
             source_type: "invoice".to_string(),
             relationship_name: "billed_to".to_string(),
-            target_type: "customer".to_string(),
+            target_type: Some("customer".to_string()),
         }],
         total_edges: 1,
     };
@@ -409,4 +411,77 @@ fn test_inbound_relationship_info_without_reverse_name() {
 
     let json = serde_json::to_value(&info).unwrap();
     assert!(json["reverseName"].is_null());
+}
+
+// =========================================================================
+// CheckNodeCompletenessParams Tests
+// =========================================================================
+
+#[test]
+fn test_check_node_completeness_params_deserialization() {
+    let json = json!({ "node_id": "invoice-001" });
+
+    let params: CheckNodeCompletenessParams = serde_json::from_value(json).unwrap();
+    assert_eq!(params.node_id, "invoice-001");
+}
+
+// =========================================================================
+// CompletenessResult Serialization Tests
+// =========================================================================
+
+#[test]
+fn test_completeness_result_complete_camel_case() {
+    let result = CompletenessResult {
+        node_id: "invoice-001".to_string(),
+        is_complete: true,
+        missing_relationships: vec![],
+    };
+
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(json["nodeId"], "invoice-001");
+    assert_eq!(json["isComplete"], true);
+    assert!(json["missingRelationships"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn test_completeness_result_incomplete() {
+    let result = CompletenessResult {
+        node_id: "invoice-001".to_string(),
+        is_complete: false,
+        missing_relationships: vec!["billed_to".to_string()],
+    };
+
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(json["isComplete"], false);
+    let missing = json["missingRelationships"].as_array().unwrap();
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0], "billed_to");
+}
+
+#[test]
+fn test_completeness_result_multiple_missing() {
+    let result = CompletenessResult {
+        node_id: "node-xyz".to_string(),
+        is_complete: false,
+        missing_relationships: vec!["billed_to".to_string(), "assigned_to".to_string()],
+    };
+
+    let json = serde_json::to_value(&result).unwrap();
+    let missing = json["missingRelationships"].as_array().unwrap();
+    assert_eq!(missing.len(), 2);
+}
+
+#[test]
+fn test_completeness_result_json_round_trip() {
+    let result = CompletenessResult {
+        node_id: "task-001".to_string(),
+        is_complete: false,
+        missing_relationships: vec!["assigned_to".to_string()],
+    };
+
+    let json = serde_json::to_string(&result).unwrap();
+    let parsed: CompletenessResult = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.node_id, result.node_id);
+    assert_eq!(parsed.is_complete, result.is_complete);
+    assert_eq!(parsed.missing_relationships, result.missing_relationships);
 }

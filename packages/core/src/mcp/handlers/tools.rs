@@ -140,6 +140,7 @@ fn get_tool_category(tool_name: &str) -> ToolCategory {
         | "get_related_nodes"
         | "get_relationship_graph"
         | "get_inbound_relationships"
+        | "check_node_completeness"
         | "add_schema_relationship"
         | "remove_schema_relationship" => ToolCategory::Relationships,
 
@@ -413,6 +414,9 @@ where
             relationships::handle_get_inbound_relationships(node_service, arguments).await
         }
         "get_all_schemas" => relationships::handle_get_all_schemas(node_service, arguments).await,
+        "check_node_completeness" => {
+            relationships::handle_check_node_completeness(node_service, arguments).await
+        }
 
         // Schema Definition Management (Issue #703)
         "add_schema_relationship" => {
@@ -1127,6 +1131,20 @@ fn get_tool_schemas() -> Value {
                 "type": "object",
                 "properties": {},
                 "required": []
+            }
+        },
+        {
+            "name": "check_node_completeness",
+            "description": "Check whether a node satisfies all required relationships defined in its schema. Returns isComplete and a list of missing required relationship names. This is a read-only introspection tool for workflows and UI — it does NOT block node creation or updates.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "ID of the node to check for completeness"
+                    }
+                },
+                "required": ["node_id"]
             }
         },
         // Schema Definition Management (Issue #703)

@@ -39,7 +39,7 @@ async fn test_generate_relationship_ddl_statements() -> Result<()> {
 
     let relationships = vec![SchemaRelationship {
         name: "works_at".to_string(),
-        target_type: "company".to_string(),
+        target_type: Some("company".to_string()),
         direction: RelationshipDirection::Out,
         cardinality: RelationshipCardinality::One,
         required: None,
@@ -69,7 +69,7 @@ async fn test_generate_relationship_ddl_with_edge_fields() -> Result<()> {
 
     let relationships = vec![SchemaRelationship {
         name: "assigned_to".to_string(),
-        target_type: "user".to_string(),
+        target_type: Some("user".to_string()),
         direction: RelationshipDirection::Out,
         cardinality: RelationshipCardinality::Many,
         required: None,
@@ -127,7 +127,7 @@ async fn test_generate_relationship_ddl_multiple_relationships() -> Result<()> {
     let relationships = vec![
         SchemaRelationship {
             name: "billed_to".to_string(),
-            target_type: "customer".to_string(),
+            target_type: Some("customer".to_string()),
             direction: RelationshipDirection::Out,
             cardinality: RelationshipCardinality::One,
             required: None,
@@ -139,7 +139,7 @@ async fn test_generate_relationship_ddl_multiple_relationships() -> Result<()> {
         },
         SchemaRelationship {
             name: "shipped_to".to_string(),
-            target_type: "address".to_string(),
+            target_type: Some("address".to_string()),
             direction: RelationshipDirection::Out,
             cardinality: RelationshipCardinality::One,
             required: None,
@@ -174,7 +174,7 @@ async fn test_generate_relationship_ddl_custom_edge_table() -> Result<()> {
 
     let relationships = vec![SchemaRelationship {
         name: "collaborates_with".to_string(),
-        target_type: "person".to_string(),
+        target_type: Some("person".to_string()),
         direction: RelationshipDirection::Out,
         cardinality: RelationshipCardinality::Many,
         required: None,
@@ -212,7 +212,7 @@ async fn test_generate_relationship_ddl_rejects_reserved_names() -> Result<()> {
 
     let relationships = vec![SchemaRelationship {
         name: "has_child".to_string(), // Reserved!
-        target_type: "node".to_string(),
+        target_type: Some("node".to_string()),
         direction: RelationshipDirection::Out,
         cardinality: RelationshipCardinality::Many,
         required: None,
@@ -236,7 +236,7 @@ async fn test_generate_relationship_ddl_edge_table_references_node() -> Result<(
 
     let relationships = vec![SchemaRelationship {
         name: "owns".to_string(),
-        target_type: "asset".to_string(),
+        target_type: Some("asset".to_string()),
         direction: RelationshipDirection::Out,
         cardinality: RelationshipCardinality::Many,
         required: None,
@@ -269,7 +269,7 @@ async fn test_generate_relationship_ddl_includes_core_indexes() -> Result<()> {
 
     let relationships = vec![SchemaRelationship {
         name: "follows".to_string(),
-        target_type: "user".to_string(),
+        target_type: Some("user".to_string()),
         direction: RelationshipDirection::Out,
         cardinality: RelationshipCardinality::Many,
         required: None,

@@ -294,10 +294,17 @@ impl SchemaNode {
     }
 
     /// Get all relationships targeting a specific node type
+    ///
+    /// Includes untyped relationships (target_type: None) since they accept any target.
     pub fn get_relationships_to(&self, target_type: &str) -> Vec<&SchemaRelationship> {
         self.relationships
             .iter()
-            .filter(|r| r.target_type == target_type)
+            .filter(|r| {
+                r.target_type
+                    .as_deref()
+                    .map(|t| t == target_type)
+                    .unwrap_or(true) // None = untyped, matches all types
+            })
             .collect()
     }
 }

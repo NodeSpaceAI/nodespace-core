@@ -29,7 +29,7 @@
 //! This follows MCP and JavaScript conventions for wire format.
 
 use crate::mcp::types::MCPError;
-use crate::services::NodeService;
+use crate::services::{node_service::CompletenessResult, NodeService};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -86,6 +86,13 @@ pub struct GetInboundRelationshipsParams {
     pub target_type: String,
 }
 
+/// Parameters for check_node_completeness
+#[derive(Debug, Deserialize)]
+pub struct CheckNodeCompletenessParams {
+    /// ID of the node to check
+    pub node_id: String,
+}
+
 /// Output for relationship creation
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,7 +128,9 @@ pub struct RelationshipGraphOutput {
 pub struct RelationshipEdge {
     pub source_type: String,
     pub relationship_name: String,
-    pub target_type: String,
+    /// None when the relationship is untyped (accepts any target node type)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_type: Option<String>,
 }
 
 /// Output for inbound relationships
@@ -437,6 +446,45 @@ where
     Ok(serde_json::to_value(schemas).unwrap())
 }
 
+/// Check whether a node satisfies all required relationships in its schema
+///
+/// # MCP Tool: check_node_completeness
+///
+/// Tier 2 / Discoverable tool. Returns whether the node is missing any required
+/// relationships as defined by its schema. Completeness is a read-only check —
+/// it does NOT block node creation or updates.
+///
+/// ## Parameters
+/// - `node_id` - ID of the node to check
+///
+/// ## Returns
+/// ```json
+/// {
+///   "nodeId": "invoice-001",
+///   "isComplete": false,
+///   "missingRelationships": ["billed_to"]
+/// }
+/// ```
+pub async fn handle_check_node_completeness<C>(
+    node_service: &Arc<NodeService<C>>,
+    params: Value,
+) -> Result<Value, MCPError>
+where
+    C: surrealdb::Connection,
+{
+    let params: CheckNodeCompletenessParams = serde_json::from_value(params)
+        .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
+
+    let result: CompletenessResult = node_service
+        .check_node_completeness(&params.node_id)
+        .await
+        .map_err(|e| {
+            MCPError::internal_error(format!("Failed to check node completeness: {}", e))
+        })?;
+
+    Ok(serde_json::to_value(result).unwrap())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,12 +521,27 @@ mod tests {
         let edge = RelationshipEdge {
             source_type: "invoice".to_string(),
             relationship_name: "billed_to".to_string(),
-            target_type: "customer".to_string(),
+            target_type: Some("customer".to_string()),
         };
 
         let json = serde_json::to_value(&edge).unwrap();
         assert_eq!(json["sourceType"], "invoice");
         assert_eq!(json["relationshipName"], "billed_to");
         assert_eq!(json["targetType"], "customer");
+    }
+
+    #[test]
+    fn test_relationship_edge_untyped_serialization() {
+        let edge = RelationshipEdge {
+            source_type: "note".to_string(),
+            relationship_name: "related".to_string(),
+            target_type: None,
+        };
+
+        let json = serde_json::to_value(&edge).unwrap();
+        assert_eq!(json["sourceType"], "note");
+        assert_eq!(json["relationshipName"], "related");
+        // targetType is omitted when None
+        assert!(json.get("targetType").is_none());
     }
 }
