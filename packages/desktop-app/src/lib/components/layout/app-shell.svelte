@@ -13,13 +13,14 @@
   import { layoutState, toggleSidebar, loadPersistedLayoutState } from '$lib/stores/layout';
   import { registerCorePlugins } from '$lib/plugins/core-plugins';
   import { pluginRegistry } from '$lib/plugins/index';
-  import { toggleTheme } from '$lib/design/theme';
+  import { toggleTheme, setTheme } from '$lib/design/theme';
   import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { browserSyncService } from '$lib/services/browser-sync-service';
   import { MCP_EVENTS } from '$lib/constants';
   import type { Node } from '$lib/types';
   import { collectionsData } from '$lib/stores/collections';
-  import { loadPersistedState } from '$lib/stores/navigation';
+  import { loadPersistedState, addTab, tabState, setActiveTab } from '$lib/stores/navigation';
+  import { get } from 'svelte/store';
   import { TabPersistenceService } from '$lib/services/tab-persistence-service';
   import { createLogger } from '$lib/utils/logger';
   import { openUrl, isExternalUrl, isNodespaceUrl } from '$lib/utils/external-links';
@@ -156,6 +157,8 @@
     let unlistenMenu: Promise<() => void> | null = null;
     let unlistenStatusBar: Promise<() => void> | null = null;
     let unlistenImport: Promise<() => void> | null = null;
+    let unlistenDatabase: Promise<() => void> | null = null;
+    let unlistenSettings: Promise<() => void> | null = null;
     let cleanupMCP: (() => Promise<void>) | null = null;
     let staleNodesInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -163,6 +166,18 @@
       typeof window !== 'undefined' &&
       (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__
     ) {
+      // Sync theme from backend preferences (overrides localStorage if different)
+      invoke<{ activeDatabasePath: string; savedDatabasePath: string | null; display: { renderMarkdown: boolean; theme: string } }>('get_settings')
+        .then((settings) => {
+          const savedTheme = settings.display.theme;
+          if (['system', 'light', 'dark'].includes(savedTheme)) {
+            setTheme(savedTheme as 'system' | 'light' | 'dark');
+          }
+        })
+        .catch((err) => {
+          log.debug('Could not sync theme from backend preferences:', err);
+        });
+
       unlistenMenu = listen('menu-toggle-sidebar', () => {
         toggleSidebar();
       });
@@ -256,6 +271,45 @@
             unsubProgress();
             unsubProgress = null;
           }
+        }
+      });
+
+      // Listen for database selection from menu
+      unlistenDatabase = listen('menu-select-database', async () => {
+        try {
+          const result = await invoke<{ newPath: string; requiresRestart: boolean }>(
+            'select_new_database'
+          );
+          if (result.requiresRestart) {
+            const confirmed = window.confirm(
+              `Database location changed to:\n${result.newPath}\n\nNodeSpace needs to restart to use the new database. Restart now?`
+            );
+            if (confirmed) {
+              await invoke('restart_app');
+            }
+          }
+        } catch (err) {
+          if (err !== 'No folder selected') {
+            log.error('Database selection failed:', err);
+          }
+        }
+      });
+
+      // Listen for settings menu — open or focus settings tab
+      unlistenSettings = listen('menu-open-settings', () => {
+        const state = get(tabState);
+        const existingSettingsTab = state.tabs.find((t) => t.type === 'settings');
+        if (existingSettingsTab) {
+          setActiveTab(existingSettingsTab.id, existingSettingsTab.paneId);
+        } else {
+          const activePaneId = state.activePaneId;
+          addTab({
+            id: 'settings',
+            title: 'Settings',
+            type: 'settings',
+            closeable: true,
+            paneId: activePaneId
+          });
         }
       });
 
@@ -387,6 +441,12 @@
       }
       if (unlistenImport) {
         (await unlistenImport)();
+      }
+      if (unlistenDatabase) {
+        (await unlistenDatabase)();
+      }
+      if (unlistenSettings) {
+        (await unlistenSettings)();
       }
       if (cleanupMCP) {
         await cleanupMCP();

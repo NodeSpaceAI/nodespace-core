@@ -11,12 +11,51 @@ use tokio::fs;
 const PREF_FILE: &str = "preferences.json";
 
 /// App-wide preferences structure
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+/// All fields use #[serde(default)] so existing preferences.json files
+/// without the new fields will deserialize without error.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct AppPreferences {
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database_path: Option<PathBuf>,
+
+    #[serde(default)]
+    pub display: DisplayPreferences,
+
+    #[serde(default)]
+    pub import_sources: ImportSourcePreferences,
 }
+
+/// Display-related user preferences
+/// Changes take effect immediately (no restart required)
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DisplayPreferences {
+    /// Whether to render markdown in node content (default: false = raw text)
+    #[serde(default)]
+    pub render_markdown: bool,
+
+    /// Color theme: "system", "light", or "dark" (default: "system")
+    #[serde(default = "default_theme")]
+    pub theme: String,
+}
+
+impl Default for DisplayPreferences {
+    fn default() -> Self {
+        Self {
+            render_markdown: false,
+            theme: default_theme(),
+        }
+    }
+}
+
+fn default_theme() -> String {
+    "system".to_string()
+}
+
+/// Import source configuration (future: Notion, Confluence, etc.)
+/// Currently empty — serde default ensures zero-breakage deserialization
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ImportSourcePreferences {}
 
 /// Load preferences from config file
 ///
@@ -161,6 +200,7 @@ pub async fn migrate_legacy_database_if_needed(app: &AppHandle) -> Result<(), St
     // Save new preference
     let prefs = AppPreferences {
         database_path: Some(new_path.clone()),
+        ..Default::default()
     };
     save_preferences(app, &prefs).await?;
 

@@ -5,6 +5,7 @@
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import type { Pane } from '$lib/stores/navigation.js';
   import { createLogger } from '$lib/utils/logger';
+  import SettingsPane from '$lib/components/settings/settings-pane.svelte';
 
   const log = createLogger('PaneContent');
 
@@ -69,7 +70,9 @@
 
 </script>
 
-{#if activeTab?.content}
+{#if activeTab?.type === 'settings'}
+  <SettingsPane />
+{:else if activeTab?.content}
   {@const content = activeTab.content}
   {@const nodeType = content.nodeType ?? 'text'}
 

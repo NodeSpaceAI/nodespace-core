@@ -13,8 +13,7 @@ use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 use tokio::fs;
 
-/// GGUF model filename for llama.cpp embedding (nomic-embed-text-v1.5, 768 dimensions)
-const MODEL_FILENAME: &str = "nomic-embed-text-v1.5.Q8_0.gguf";
+use crate::constants::EMBEDDING_MODEL_FILENAME;
 
 /// Resolve the path to the bundled NLP model (GGUF format for llama.cpp)
 ///
@@ -31,7 +30,7 @@ const MODEL_FILENAME: &str = "nomic-embed-text-v1.5.Q8_0.gguf";
 fn resolve_bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
     // Try bundled resources first (production builds)
     if let Ok(resource_path) = app.path().resolve(
-        format!("resources/models/{}", MODEL_FILENAME),
+        format!("resources/models/{}", EMBEDDING_MODEL_FILENAME),
         BaseDirectory::Resource,
     ) {
         if resource_path.exists() {
@@ -45,7 +44,7 @@ fn resolve_bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
         let user_model_path = home_dir
             .join(".nodespace")
             .join("models")
-            .join(MODEL_FILENAME);
+            .join(EMBEDDING_MODEL_FILENAME);
         if user_model_path.exists() {
             tracing::info!("Found user model at: {:?}", user_model_path);
             return Ok(user_model_path);
@@ -54,30 +53,28 @@ fn resolve_bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
 
     Err(format!(
         "Model file not found. Please download {} to ~/.nodespace/models/",
-        MODEL_FILENAME
+        EMBEDDING_MODEL_FILENAME
     ))
 }
 
-/// Initialize database services with user-selected or default path
+/// Initialize database services using AppConfig from Tauri state.
 ///
-/// Checks if services are already initialized to prevent resource leaks
-/// and state corruption from multiple initializations.
-///
-/// # Arguments
-/// * `app` - Tauri application handle
-/// * `db_path` - Path to database file
-///
-/// # Returns
-/// * `Ok(())` on successful initialization
-/// * `Err(String)` if already initialized or initialization fails
+/// Reads database path, model path, and client ID from AppConfig which
+/// must be registered as Tauri state before calling this function.
 ///
 /// # State Management
 /// Uses Tauri's state management via `app.manage()`. Once initialized,
 /// services persist for the application lifetime. To change database location,
 /// the application must be restarted.
-async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> {
+async fn init_services(app: &AppHandle) -> Result<(), String> {
     eprintln!("🔧 [init_services] Starting service initialization...");
     tracing::info!("🔧 [init_services] Starting service initialization...");
+
+    // Read config from Tauri state (registered during app startup)
+    let config: tauri::State<crate::config::AppConfig> = app.state();
+    let db_path = config.database_path.clone();
+    let model_path = config.model_path.clone();
+    let client_id = config.tauri_client_id.clone();
 
     // Check if state already exists to prevent reinitialization
     if app.try_state::<SurrealStore>().is_some() {
@@ -106,22 +103,16 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
     tracing::info!("✅ [init_services] NodeService initialized");
 
-    // NOTE: NodeOperations layer removed (Issue #676) - NodeService contains all business logic
-    // NOTE: SchemaService removed (Issue #690) - schema operations use NodeService directly
-
     // Initialize NLP engine for embeddings
-    // First, try to find the bundled model in Tauri resources
     tracing::info!("🔧 [init_services] Initializing NLP engine...");
-
-    let model_path = resolve_bundled_model_path(app)?;
     tracing::info!("🔧 [init_services] Using model path: {:?}", model_path);
 
-    let config = EmbeddingConfig {
+    let embedding_config = EmbeddingConfig {
         model_path: Some(model_path),
         ..Default::default()
     };
 
-    let mut nlp_engine = EmbeddingService::new(config)
+    let mut nlp_engine = EmbeddingService::new(embedding_config)
         .map_err(|e| format!("Failed to initialize NLP engine: {}", e))?;
 
     // Initialize the NLP engine (loads model)
@@ -180,7 +171,6 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
 
     // Initialize domain event forwarding with client filtering (#665)
     // Events that originated from this Tauri client are filtered out to prevent feedback loops
-    let client_id = "tauri-main".to_string();
     if let Err(e) = crate::initialize_domain_event_forwarder(
         app.clone(),
         node_service_arc.clone(),
@@ -195,57 +185,6 @@ async fn init_services(app: &AppHandle, db_path: PathBuf) -> Result<(), String> 
 
     tracing::info!("✅ [init_services] Service initialization complete");
     Ok(())
-}
-
-/// Select database location using native folder picker
-///
-/// Presents a native folder picker dialog to the user. Once selected,
-/// saves the preference and initializes database services.
-///
-/// # Note on Blocking Dialog
-/// Uses `blocking_pick_folder()` because user interaction dialogs
-/// must synchronously wait for user input before proceeding. This is
-/// intentional and required for proper UI/UX.
-///
-/// # Arguments
-/// * `app` - Tauri application handle
-///
-/// # Returns
-/// * `Ok(String)` - Path to the selected database file
-/// * `Err(String)` - Error if no folder selected or initialization fails
-///
-/// # Errors
-/// Returns error if:
-/// - User cancels the folder picker
-/// - Selected path cannot be accessed
-/// - Database services are already initialized
-/// - Database initialization fails
-#[tauri::command]
-pub async fn select_db_location(app: AppHandle) -> Result<String, String> {
-    use tauri_plugin_dialog::{DialogExt, FilePath};
-
-    let folder = app
-        .dialog()
-        .file()
-        .blocking_pick_folder()
-        .ok_or_else(|| "No folder selected".to_string())?;
-
-    let folder_path = match folder {
-        FilePath::Path(path) => path,
-        FilePath::Url(url) => PathBuf::from(url.path()),
-    };
-
-    let db_path = folder_path.join("nodespace");
-
-    // Save preference
-    let mut prefs = crate::preferences::load_preferences(&app).await?;
-    prefs.database_path = Some(db_path.clone());
-    crate::preferences::save_preferences(&app, &prefs).await?;
-
-    // Initialize services
-    init_services(&app, db_path.clone()).await?;
-
-    Ok(db_path.to_string_lossy().to_string())
 }
 
 /// Initialize database with saved preference or default path
@@ -284,11 +223,10 @@ pub async fn initialize_database(app: AppHandle) -> Result<String, String> {
     // Load preferences
     let prefs = crate::preferences::load_preferences(&app).await?;
 
-    // Determine database path
-    let db_path = if let Some(saved_path) = prefs.database_path {
-        saved_path
-    } else {
-        crate::preferences::get_default_database_path()?
+    // Determine database path (needed for directory creation)
+    let db_path = match &prefs.database_path {
+        Some(p) => p.clone(),
+        None => crate::preferences::get_default_database_path()?,
     };
 
     // Ensure database directory exists
@@ -298,8 +236,21 @@ pub async fn initialize_database(app: AppHandle) -> Result<String, String> {
             .map_err(|e| format!("Failed to create database directory: {}", e))?;
     }
 
-    // Initialize services
-    init_services(&app, db_path.clone()).await?;
+    // Resolve model path
+    let model_path = resolve_bundled_model_path(&app)?;
+
+    // Determine MCP port
+    let mcp_port = std::env::var("MCP_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(3100);
+
+    // Build and register AppConfig as Tauri state
+    let config = crate::config::AppConfig::from_preferences(&prefs, model_path, mcp_port)?;
+    app.manage(config);
+
+    // Initialize services (reads config from Tauri state)
+    init_services(&app).await?;
 
     Ok(db_path.to_string_lossy().to_string())
 }

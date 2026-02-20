@@ -10,7 +10,7 @@ const log = createLogger('Navigation');
 export interface Tab {
   id: string;
   title: string;
-  type: 'node' | 'placeholder';
+  type: 'node' | 'placeholder' | 'settings';
   content?: {
     nodeId: string;
     nodeType?: string;

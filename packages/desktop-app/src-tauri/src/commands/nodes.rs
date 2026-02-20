@@ -13,8 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::State;
 
-/// Client ID for Tauri frontend (used for event filtering - Issue #665)
-const TAURI_CLIENT_ID: &str = "tauri-main";
+use crate::constants::TAURI_CLIENT_ID;
 
 /// Input for creating a node - timestamps generated server-side
 #[derive(Debug, Deserialize)]

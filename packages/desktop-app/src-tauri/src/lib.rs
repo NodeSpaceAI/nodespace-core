@@ -7,6 +7,9 @@ pub mod preferences;
 // Shared constants
 pub mod constants;
 
+// Runtime application configuration
+pub mod config;
+
 // MCP Tauri integration (wraps core MCP with event emissions)
 pub mod mcp_integration;
 
@@ -221,6 +224,26 @@ pub fn run() {
                 .accelerator("CmdOrCtrl+Shift+I")
                 .build(app)?;
 
+            let new_database = MenuItemBuilder::new("New Database...")
+                .id("new_database")
+                .build(app)?;
+
+            let open_database = MenuItemBuilder::new("Open Database...")
+                .id("open_database")
+                .build(app)?;
+
+            let open_settings = MenuItemBuilder::new("Settings...")
+                .id("open_settings")
+                .accelerator("CmdOrCtrl+,")
+                .build(app)?;
+
+            let db_separator = PredefinedMenuItem::separator(app)?;
+            let settings_separator = PredefinedMenuItem::separator(app)?;
+
+            let import_submenu = SubmenuBuilder::new(app, "Import")
+                .items(&[&import_folder])
+                .build()?;
+
             // Standard Edit menu items for clipboard operations
             // These are required on macOS for Cmd+C/V/X to work in WebView
             let cut = PredefinedMenuItem::cut(app, Some("Cut"))?;
@@ -237,7 +260,14 @@ pub fn run() {
                 .build()?;
 
             let file_menu = SubmenuBuilder::new(app, "File")
-                .items(&[&import_folder])
+                .items(&[
+                    &new_database,
+                    &open_database,
+                    &db_separator,
+                    &import_submenu,
+                    &settings_separator,
+                    &open_settings,
+                ])
                 .build()?;
 
             // Edit menu with standard shortcuts (required for macOS WebView clipboard)
@@ -272,6 +302,9 @@ pub fn run() {
             let toggle_status_bar_id = MenuId::new("toggle_status_bar");
             let quit_id = MenuId::new("quit");
             let import_folder_id = MenuId::new("import_folder");
+            let new_database_id = MenuId::new("new_database");
+            let open_database_id = MenuId::new("open_database");
+            let open_settings_id = MenuId::new("open_settings");
 
             if *event.id() == toggle_sidebar_id {
                 // Emit an event to the frontend
@@ -291,6 +324,14 @@ pub fn run() {
                     let _ = window.emit("menu-import-folder", ());
                     println!("Import folder requested from menu");
                 }
+            } else if *event.id() == new_database_id || *event.id() == open_database_id {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("menu-select-database", ());
+                }
+            } else if *event.id() == open_settings_id {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("menu-open-settings", ());
+                }
             } else if *event.id() == quit_id {
                 // Request exit through Tauri's event loop instead of std::process::exit(0)
                 // This triggers RunEvent::ExitRequested, allowing proper cleanup
@@ -303,7 +344,6 @@ pub fn run() {
             greet,
             toggle_sidebar,
             commands::db::initialize_database,
-            commands::db::select_db_location,
             commands::embeddings::generate_root_embedding,
             commands::embeddings::search_roots,
             commands::embeddings::update_root_embedding,
@@ -355,6 +395,12 @@ pub fn run() {
             commands::import::import_markdown_file,
             commands::import::import_markdown_files,
             commands::import::import_markdown_directory,
+            // Settings commands
+            commands::settings::get_settings,
+            commands::settings::update_display_settings,
+            commands::settings::select_new_database,
+            commands::settings::restart_app,
+            commands::settings::reset_database_to_default,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

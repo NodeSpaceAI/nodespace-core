@@ -13,8 +13,7 @@ use tauri::State;
 
 use super::nodes::CommandError;
 
-/// Client ID for Tauri frontend (used for node operations - Issue #665)
-const TAURI_CLIENT_ID: &str = "tauri-main";
+use crate::constants::TAURI_CLIENT_ID;
 
 /// Convert a Node to its strongly-typed JSON representation
 fn node_to_typed_value(node: Node) -> Result<Value, CommandError> {

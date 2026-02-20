@@ -13,8 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tauri::State;
 
-/// Client ID for Tauri frontend (used for event filtering - Issue #665)
-const TAURI_CLIENT_ID: &str = "tauri-main";
+use crate::constants::TAURI_CLIENT_ID;
 
 /// Application state containing embedding service and processor
 pub struct EmbeddingState {
