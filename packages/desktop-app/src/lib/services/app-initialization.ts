@@ -9,6 +9,7 @@
  */
 
 import { createLogger } from '$lib/utils/logger';
+import { statusBar } from '$lib/stores/status-bar';
 import { sharedNodeStore } from './shared-node-store.svelte';
 
 const log = createLogger('AppInit');
@@ -132,8 +133,9 @@ export async function initializeApp(): Promise<void> {
         throw new Error('Tauri invoke function not available');
       }
       log.info('Calling initialize_database...');
-      const dbPath = await invoke('initialize_database');
+      const dbPath = await invoke('initialize_database') as string;
       log.info('Database initialized at:', dbPath);
+      statusBar.success(`database: ${dbPath}`);
     } catch (error: unknown) {
       // Check if already initialized (this is expected on subsequent calls)
       const errorMsg = error instanceof Error ? error.message : String(error);

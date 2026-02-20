@@ -109,7 +109,7 @@ pub async fn select_new_database(app: tauri::AppHandle) -> Result<PendingDatabas
         FilePath::Url(url) => std::path::PathBuf::from(url.path()),
     };
 
-    let db_path = folder_path.join("nodespace");
+    let db_path = folder_path;
 
     let mut prefs = crate::preferences::load_preferences(&app).await?;
     prefs.database_path = Some(db_path.clone());
