@@ -14,6 +14,7 @@
 import type { Component, ComponentType } from 'svelte';
 import CircleIcon from './components/circle-icon.svelte';
 import TaskIcon from './components/task-icon.svelte';
+import CheckboxIcon from './components/checkbox-icon.svelte';
 import AIIcon from './components/ai-icon.svelte';
 import CodeBlockIcon from './components/code-block-icon.svelte';
 import QuoteBlockIcon from './components/quote-block-icon.svelte';
@@ -175,6 +176,16 @@ class IconRegistry {
       hasRingEffect: false // Ordered lists are leaf nodes (no children)
     });
 
+    // Checkbox nodes - two-state (unchecked=pending, checked=completed)
+    // Uses a rounded square icon to distinguish from circular task icons
+    this.register('checkbox', {
+      component: CheckboxIcon,
+      semanticClass: 'task-icon',
+      colorVar: 'hsl(var(--node-task, 200 40% 45%))',
+      hasState: true,
+      hasRingEffect: true
+    });
+
     // Date nodes - for calendar dates and journal entries
     this.register('date', {
       component: CircleIcon,
@@ -252,8 +263,8 @@ export function resolveNodeState(
     return explicitState;
   }
 
-  // For task nodes, read state from metadata
-  if (nodeType === 'task' && additionalProps) {
+  // For task and checkbox nodes, read state from metadata
+  if ((nodeType === 'task' || nodeType === 'checkbox') && additionalProps) {
     const taskState = additionalProps.taskState as string;
     if (taskState && ['pending', 'inProgress', 'completed'].includes(taskState)) {
       return taskState as NodeState;

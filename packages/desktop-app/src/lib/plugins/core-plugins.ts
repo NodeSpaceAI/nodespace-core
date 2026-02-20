@@ -219,7 +219,8 @@ export const checkboxNodePlugin: PluginDefinition = {
   // Pattern: "- [ ] " or "- [x] " typed in the editor creates a checkbox node
   pattern: {
     detect: /^- \[[ xX]\] /,
-    canRevert: false, // cleanContent: false — content preserved as-is (full markdown line)
+    canRevert: true, // prefix preserved in content; breaking "- [ ] " reverts node to text
+    revert: /^-[ \[]?$|^- \[[ xX]?\]?$/, // partially-deleted prefix (e.g. "- [" or "- [ ]") → revert to text
     onEnter: 'inherit',
     prefixToInherit: '- [ ] ',
     splittingStrategy: 'simple-split',

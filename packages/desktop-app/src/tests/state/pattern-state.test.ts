@@ -83,7 +83,7 @@ const mockTaskPlugin: PluginDefinition = {
   },
   pattern: {
     detect: /^[-*+]?\s*\[\s*[xX\s]\s*\]\s/,
-    canRevert: false, // Task nodes cannot revert (checkbox syntax removed from content)
+    canRevert: false, // Task nodes strip their prefix from content (cleanContent pattern), so reversion is not applicable
     onEnter: 'inherit',
     splittingStrategy: 'simple-split',
     cursorPlacement: 'start'
