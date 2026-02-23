@@ -468,7 +468,7 @@ pub fn run() {
 ///
 /// This prevents __cxa_finalize_ranges from encountering Metal resources during
 /// static destruction, which would cause SIGABRT in production builds.
-fn release_gpu_resources(app_handle: &tauri::AppHandle) {
+pub(crate) fn release_gpu_resources(app_handle: &tauri::AppHandle) {
     use tauri::Manager;
 
     if let Some(embedding_state) =
