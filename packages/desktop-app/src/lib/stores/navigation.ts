@@ -177,6 +177,22 @@ export function resetTabState() {
   });
 }
 
+/** Clear all tabs and panes (used during database hot-swap) */
+export function clearAllTabs() {
+  tabState.set({
+    tabs: [],
+    panes: [
+      {
+        id: DEFAULT_PANE_ID,
+        width: 100,
+        tabIds: []
+      }
+    ],
+    activePaneId: DEFAULT_PANE_ID,
+    activeTabIds: {}
+  });
+}
+
 // Pane Management Functions
 
 /**
