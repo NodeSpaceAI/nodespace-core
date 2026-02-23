@@ -238,14 +238,35 @@ impl AppServices {
     }
 
     /// Release GPU resources. Called during graceful shutdown.
+    ///
+    /// Mirrors the drain-then-release protocol from `switch_database()`:
+    /// 1. Take ownership of embedding state (removes from ActiveServices)
+    /// 2. Drop processor first — closes shutdown channel, background task exits
+    /// 3. Brief pause for processor task to exit
+    /// 4. Release GPU context (now safe — no background tasks hold references)
     pub async fn release_gpu_resources(&self) {
-        let guard = self.inner.read().await;
-        if let Some(active) = guard.as_ref() {
-            if let Some(ref es) = active.embedding_state {
-                tracing::info!("Releasing GPU context to prevent Metal crash...");
-                es.service.nlp_engine().release_gpu_context();
-                tracing::info!("GPU context released successfully");
-            }
+        // Step 1: Take ownership of embedding state (drops from ActiveServices)
+        let old_embedding_state = {
+            let mut guard = self.inner.write().await;
+            guard
+                .as_mut()
+                .and_then(|active| active.embedding_state.take())
+        };
+
+        if let Some(old_es) = old_embedding_state {
+            // Step 2: Drop processor first — closes shutdown channel, background task exits
+            let old_service = old_es.service;
+            drop(old_es.processor);
+
+            // Step 3: Brief pause for processor task to exit.
+            // 100ms (vs 50ms in switch_database) because shutdown has no prior
+            // session-token cancellation grace period — this is the only wait.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            // Step 4: Now safe to release GPU context
+            tracing::info!("Releasing GPU context to prevent Metal crash...");
+            old_service.nlp_engine().release_gpu_context();
+            tracing::info!("GPU context released successfully");
         }
     }
 }
