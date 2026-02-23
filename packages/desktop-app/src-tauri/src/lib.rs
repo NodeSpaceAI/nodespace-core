@@ -418,31 +418,52 @@ pub fn run() {
 }
 
 /// Perform graceful shutdown: cancel background tasks, wait for them to exit, then release GPU.
+///
+/// Guarded by an `AtomicBool` because Tauri may fire both `CloseRequested` and
+/// `ExitRequested` events, and we must only run the shutdown sequence once.
 pub(crate) fn graceful_shutdown(app_handle: &tauri::AppHandle) {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tauri::Manager;
+
+    static SHUTDOWN_ONCE: AtomicBool = AtomicBool::new(false);
+    if SHUTDOWN_ONCE.swap(true, Ordering::SeqCst) {
+        tracing::debug!("Graceful shutdown already in progress, skipping duplicate call");
+        return;
+    }
 
     if let Some(shutdown_token) = app_handle.try_state::<ShutdownToken>() {
         shutdown_token.cancel();
     }
-    // No sleep needed here — release_gpu_resources() handles its own
-    // drain timing after dropping the embedding processor.
+    // Grace period for background tasks (MCP server, domain event forwarder)
+    // to exit their tokio::select! loops and drop their Arc references.
+    // Must complete BEFORE release_gpu_resources() takes ownership of embedding state,
+    // so those tasks don't race with GPU resource teardown.
+    std::thread::sleep(std::time::Duration::from_millis(200));
     release_gpu_resources(app_handle);
 }
 
 /// Release GPU resources (Metal context and backend) to prevent SIGABRT crash on exit.
 ///
 /// Now accesses embedding state through AppServices container.
+/// Runs on a dedicated thread because `graceful_shutdown()` may be called from
+/// within the Tokio runtime (Tauri run-event handler), where `block_on` would panic.
 pub(crate) fn release_gpu_resources(app_handle: &tauri::AppHandle) {
     use tauri::Manager;
 
     if let Some(services) = app_handle.try_state::<app_services::AppServices>() {
-        // Use blocking approach since this is called from sync shutdown code
-        let services_clone = services.inner();
-        // We need to block on the async release - this is safe during shutdown
-        // since the tokio runtime is still alive at this point
-        tauri::async_runtime::block_on(async {
-            services_clone.release_gpu_resources().await;
+        let services_clone = services.inner().clone();
+        // Spawn a dedicated thread to avoid "cannot block_on inside a runtime" panic.
+        // The Tauri run-event handler runs on a Tokio runtime thread, so we need
+        // a fresh thread with its own block_on to drive the async GPU release.
+        let handle = std::thread::spawn(move || {
+            tauri::async_runtime::block_on(async {
+                services_clone.release_gpu_resources().await;
+            });
         });
+        // Wait for GPU release to complete before releasing the backend
+        if let Err(e) = handle.join() {
+            tracing::error!("GPU resource release thread panicked: {:?}", e);
+        }
     }
 
     // Step 2: Release the global llama backend itself
