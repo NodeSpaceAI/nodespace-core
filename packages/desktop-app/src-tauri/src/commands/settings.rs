@@ -121,9 +121,17 @@ pub async fn select_new_database(app: tauri::AppHandle) -> Result<PendingDatabas
     })
 }
 
-/// Restart the application.
+/// Restart the application with graceful GPU/background task shutdown.
+///
+/// Without explicit cleanup, `app.restart()` calls `std::process::exit()` which
+/// triggers C++ destructors via `__cxa_finalize_ranges`. The Metal residency sets
+/// for the embedding model are still active, causing a SIGABRT assertion failure
+/// in `ggml_metal_rsets_free`.
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
+    tracing::info!("Restart requested, performing graceful shutdown...");
+    crate::graceful_shutdown(&app);
+    tracing::info!("Graceful shutdown complete, restarting app...");
     app.restart();
 }
 
