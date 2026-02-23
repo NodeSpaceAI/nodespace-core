@@ -424,8 +424,8 @@ pub(crate) fn graceful_shutdown(app_handle: &tauri::AppHandle) {
     if let Some(shutdown_token) = app_handle.try_state::<ShutdownToken>() {
         shutdown_token.cancel();
     }
-    // Brief pause to let background tasks exit their loops
-    std::thread::sleep(std::time::Duration::from_millis(50));
+    // No sleep needed here — release_gpu_resources() handles its own
+    // drain timing after dropping the embedding processor.
     release_gpu_resources(app_handle);
 }
 
