@@ -191,7 +191,11 @@
       const updateStaleNodesCount = async () => {
         try {
           const count = await invoke<number>('get_stale_root_count');
-          statusBar.setStaleNodesCount(count);
+          if (count > 0) {
+            statusBar.show(`${count} nodes queued for vector indexing`);
+          } else {
+            statusBar.clearMessage();
+          }
         } catch (error) {
           log.error('Failed to get stale nodes count:', error);
         }
