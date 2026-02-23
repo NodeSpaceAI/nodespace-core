@@ -10,9 +10,9 @@ import { writable, derived } from 'svelte/store';
 export interface StatusBarState {
   /** Whether status bar is enabled (user preference via View menu) */
   enabled: boolean;
-  /** Status message to display (right side) */
+  /** Status message to display */
   message: string;
-  /** Progress percentage 0-100 (right side, optional) */
+  /** Progress percentage 0-100 (optional) */
   progress?: number;
   /** Message type for styling */
   type: 'info' | 'success' | 'error';
@@ -74,11 +74,6 @@ export const statusBar = {
 
   /** Clear the status message (but keep bar visible if enabled) */
   clearMessage() {
-    update((state) => ({ ...state, message: '', progress: undefined, type: 'info' }));
-  },
-
-  /** Legacy hide method - now just clears the message */
-  hide() {
     update((state) => ({ ...state, message: '', progress: undefined, type: 'info' }));
   }
 };
