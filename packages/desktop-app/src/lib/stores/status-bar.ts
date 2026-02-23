@@ -10,21 +10,18 @@ import { writable, derived } from 'svelte/store';
 export interface StatusBarState {
   /** Whether status bar is enabled (user preference via View menu) */
   enabled: boolean;
-  /** Status message to display (right side) */
+  /** Status message to display */
   message: string;
-  /** Progress percentage 0-100 (right side, optional) */
+  /** Progress percentage 0-100 (optional) */
   progress?: number;
   /** Message type for styling */
   type: 'info' | 'success' | 'error';
-  /** Number of nodes queued for vector indexing (left side) */
-  staleNodesCount: number;
 }
 
 const initialState: StatusBarState = {
   enabled: true, // Default to showing
   message: '',
   type: 'info',
-  staleNodesCount: 0
 };
 
 const { subscribe, set: _set, update } = writable<StatusBarState>(initialState);
@@ -77,16 +74,6 @@ export const statusBar = {
 
   /** Clear the status message (but keep bar visible if enabled) */
   clearMessage() {
-    update((state) => ({ ...state, message: '', progress: undefined, type: 'info' }));
-  },
-
-  /** Update stale nodes count for embedding queue display */
-  setStaleNodesCount(count: number) {
-    update((state) => ({ ...state, staleNodesCount: count }));
-  },
-
-  /** Legacy hide method - now just clears the message */
-  hide() {
     update((state) => ({ ...state, message: '', progress: undefined, type: 'info' }));
   }
 };
