@@ -418,8 +418,18 @@ pub fn run() {
 }
 
 /// Perform graceful shutdown: cancel background tasks, wait for them to exit, then release GPU.
+///
+/// Guarded by an `AtomicBool` because Tauri may fire both `CloseRequested` and
+/// `ExitRequested` events, and we must only run the shutdown sequence once.
 pub(crate) fn graceful_shutdown(app_handle: &tauri::AppHandle) {
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tauri::Manager;
+
+    static SHUTDOWN_ONCE: AtomicBool = AtomicBool::new(false);
+    if SHUTDOWN_ONCE.swap(true, Ordering::SeqCst) {
+        tracing::debug!("Graceful shutdown already in progress, skipping duplicate call");
+        return;
+    }
 
     if let Some(shutdown_token) = app_handle.try_state::<ShutdownToken>() {
         shutdown_token.cancel();
