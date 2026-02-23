@@ -19,13 +19,14 @@
   import { MCP_EVENTS } from '$lib/constants';
   import type { Node } from '$lib/types';
   import { collectionsData, collectionsState } from '$lib/stores/collections';
-  import { loadPersistedState, addTab, tabState, setActiveTab, resetTabState } from '$lib/stores/navigation';
+  import { loadPersistedState, addTab, tabState, setActiveTab, clearAllTabs, DAILY_JOURNAL_TAB_ID, DEFAULT_PANE_ID } from '$lib/stores/navigation';
   import { loadSettings } from '$lib/stores/settings';
   import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
   import { get } from 'svelte/store';
   import { TabPersistenceService } from '$lib/services/tab-persistence-service';
   import { createLogger } from '$lib/utils/logger';
   import { openUrl, isExternalUrl, isNodespaceUrl } from '$lib/utils/external-links';
+  import { formatDateISO } from '$lib/utils/date-formatting';
 
   // Logger instance for AppShell component
   const log = createLogger('AppShell');
@@ -191,14 +192,17 @@
       });
 
       // Poll for stale nodes count (embedding queue) every 5 seconds
+      let lastStaleCount = 0;
       const updateStaleNodesCount = async () => {
         try {
           const count = await invoke<number>('get_stale_root_count');
           if (count > 0) {
             statusBar.show(`${count} nodes queued for vector indexing`);
-          } else {
+          } else if (lastStaleCount > 0) {
+            // Only clear if we were previously showing a stale count
             statusBar.clearMessage();
           }
+          lastStaleCount = count;
         } catch (error) {
           log.error('Failed to get stale nodes count:', error);
         }
@@ -299,7 +303,7 @@
 
       // Listen for database-changed event after hot-swap (Issue #894, #900)
       // Reset all frontend state so UI reflects the new database
-      unlistenDatabaseChanged = listen('database-changed', async (event) => {
+      unlistenDatabaseChanged = listen<string>('database-changed', async (event) => {
         log.info('Database changed, resetting frontend state...', event.payload);
 
         try {
@@ -319,14 +323,22 @@
           collectionsState.reset();
           await collectionsData.loadCollections();
 
-          // 5. Reset tabs to default (Daily Journal)
-          resetTabState();
+          // 5. Close all stale tabs and open fresh Today tab
+          clearAllTabs();
+          addTab({
+            id: DAILY_JOURNAL_TAB_ID,
+            title: '',
+            type: 'node',
+            content: { nodeId: formatDateISO(new Date()), nodeType: 'date' },
+            closeable: true,
+            paneId: DEFAULT_PANE_ID
+          });
 
           // 6. Reload settings (updates activeDatabasePath display)
           await loadSettings();
 
-          // 7. Clear status bar messages
-          statusBar.clearMessage();
+          // 7. Show new database path in status bar
+          statusBar.success(`Database: ${event.payload}`);
 
           log.info('Frontend state reset complete for new database');
         } catch (error) {
