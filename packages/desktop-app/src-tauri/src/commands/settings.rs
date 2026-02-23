@@ -129,24 +129,9 @@ pub async fn select_new_database(app: tauri::AppHandle) -> Result<PendingDatabas
 /// in `ggml_metal_rsets_free`.
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
-    use tauri::Manager;
-
-    // Step 1: Cancel background tasks (MCP server, domain event forwarder, etc.)
-    if let Some(shutdown_token) = app.try_state::<crate::ShutdownToken>() {
-        tracing::info!("Restart requested: signaling background tasks to shut down...");
-        shutdown_token.cancel();
-    }
-
-    // Step 2: Brief pause to let background tasks exit their loops
-    // before releasing GPU resources they may still reference
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
-    // Step 3: Release Metal/GPU resources to prevent SIGABRT on exit
-    tracing::info!("Releasing GPU resources before restart...");
-    crate::release_gpu_resources(&app);
-
-    // Step 4: Now safe to restart (exit + relaunch)
-    tracing::info!("GPU resources released, restarting app...");
+    tracing::info!("Restart requested, performing graceful shutdown...");
+    crate::graceful_shutdown(&app);
+    tracing::info!("Graceful shutdown complete, restarting app...");
     app.restart();
 }
 

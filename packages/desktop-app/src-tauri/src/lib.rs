@@ -424,27 +424,20 @@ pub fn run() {
                 event: tauri::WindowEvent::CloseRequested { .. },
                 ..
             } => {
-                // Window close requested - signal background tasks and release GPU resources
-                // This is the most reliable place to do cleanup on macOS
+                // Window close requested - most reliable cleanup point on macOS
                 tracing::info!(
-                    "Window '{}' close requested, signaling shutdown and releasing GPU context...",
+                    "Window '{}' close requested, performing graceful shutdown...",
                     label
                 );
-                shutdown_token_for_events.cancel();
-                // Brief pause to let background tasks exit their loops before
-                // releasing GPU resources they may still reference
-                std::thread::sleep(std::time::Duration::from_millis(50));
-                release_gpu_resources(app_handle);
+                graceful_shutdown(app_handle);
             }
             RunEvent::ExitRequested { code, .. } => {
-                // App exit requested - this may not fire on macOS (Tauri issue #9198)
+                // App exit requested - may not fire on macOS (Tauri issue #9198)
                 tracing::info!(
-                    "App exit requested (code: {:?}), performing cleanup...",
+                    "App exit requested (code: {:?}), performing graceful shutdown...",
                     code
                 );
-                shutdown_token_for_events.cancel();
-                release_gpu_resources(app_handle);
-                tracing::info!("Cleanup complete, exiting...");
+                graceful_shutdown(app_handle);
             }
             RunEvent::Exit => {
                 // Final exit - ensure shutdown signal is sent (idempotent)
@@ -454,6 +447,22 @@ pub fn run() {
             _ => {}
         }
     });
+}
+
+/// Perform graceful shutdown: cancel background tasks, wait for them to exit, then release GPU.
+///
+/// This is the canonical shutdown sequence used before any process exit (quit, restart, etc.).
+/// The 50ms pause lets background tasks (MCP server, domain event forwarder) exit their loops
+/// before we release GPU resources they may still reference.
+pub(crate) fn graceful_shutdown(app_handle: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    if let Some(shutdown_token) = app_handle.try_state::<ShutdownToken>() {
+        shutdown_token.cancel();
+    }
+    // Brief pause to let background tasks exit their loops
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    release_gpu_resources(app_handle);
 }
 
 /// Release GPU resources (Metal context and backend) to prevent SIGABRT crash on exit.
