@@ -302,32 +302,37 @@
       unlistenDatabaseChanged = listen('database-changed', async (event) => {
         log.info('Database changed, resetting frontend state...', event.payload);
 
-        const sharedNodeStore = SharedNodeStore.getInstance();
+        try {
+          const sharedNodeStore = SharedNodeStore.getInstance();
 
-        // 1. Flush pending writes to OLD database
-        await sharedNodeStore.flushAllPending();
+          // 1. Flush pending writes to OLD database
+          await sharedNodeStore.flushAllPending();
 
-        // 2. Clear node cache
-        sharedNodeStore.clearAll();
+          // 2. Clear node cache
+          sharedNodeStore.clearAll();
 
-        // 3. Clear structure tree
-        structureTree.clear();
+          // 3. Clear structure tree
+          structureTree.clear();
 
-        // 4. Reset and reload collections
-        collectionsData.reset();
-        collectionsState.reset();
-        await collectionsData.loadCollections();
+          // 4. Reset and reload collections
+          collectionsData.reset();
+          collectionsState.reset();
+          await collectionsData.loadCollections();
 
-        // 5. Reset tabs to default (Daily Journal)
-        resetTabState();
+          // 5. Reset tabs to default (Daily Journal)
+          resetTabState();
 
-        // 6. Reload settings (updates activeDatabasePath display)
-        await loadSettings();
+          // 6. Reload settings (updates activeDatabasePath display)
+          await loadSettings();
 
-        // 7. Clear status bar messages
-        statusBar.clearMessage();
+          // 7. Clear status bar messages
+          statusBar.clearMessage();
 
-        log.info('Frontend state reset complete for new database');
+          log.info('Frontend state reset complete for new database');
+        } catch (error) {
+          log.error('Failed to reset frontend state after database change:', error);
+          statusBar.error('Database switched but UI reset failed — restart recommended');
+        }
       });
 
       // Listen for settings menu — open or focus settings tab
