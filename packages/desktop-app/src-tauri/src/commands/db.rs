@@ -2,8 +2,9 @@
 //!
 //! As of Issue #676, NodeOperations layer is removed - NodeService contains all business logic.
 //! As of Issue #690, SchemaService is removed - schema operations use NodeService directly.
+//! As of Issue #894, services are registered via AppServices container for hot-swappable DB.
 
-use crate::commands::embeddings::EmbeddingState;
+use crate::app_services::{AppServices, EmbeddingState};
 use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService};
 use nodespace_core::{NodeService, SurrealStore};
 use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
@@ -20,13 +21,6 @@ use crate::constants::EMBEDDING_MODEL_FILENAME;
 /// Checks multiple locations in order:
 /// 1. Bundled resources (for production builds)
 /// 2. User's ~/.nodespace/models/ directory (fallback for dev)
-///
-/// # Arguments
-/// * `app` - Tauri application handle for resource resolution
-///
-/// # Returns
-/// * `Ok(PathBuf)` - Path to the GGUF model file
-/// * `Err(String)` - Error if model not found anywhere
 fn resolve_bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
     // Try bundled resources first (production builds)
     if let Ok(resource_path) = app.path().resolve(
@@ -57,30 +51,25 @@ fn resolve_bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
     ))
 }
 
-/// Initialize database services using AppConfig from Tauri state.
+/// Initialize database services and populate AppServices container.
 ///
-/// Reads database path, model path, and client ID from AppConfig which
-/// must be registered as Tauri state before calling this function.
-///
-/// # State Management
-/// Uses Tauri's state management via `app.manage()`. Once initialized,
-/// services persist for the application lifetime. To change database location,
-/// the application must be restarted.
-async fn init_services(app: &AppHandle) -> Result<(), String> {
+/// Reads database path, model path, and client ID from AppConfig.
+/// Populates AppServices with store, node_service, and embedding state.
+/// Starts background tasks (MCP server, domain event forwarder).
+async fn init_services(app: &AppHandle, config: &crate::config::AppConfig) -> Result<(), String> {
     eprintln!("🔧 [init_services] Starting service initialization...");
     tracing::info!("🔧 [init_services] Starting service initialization...");
 
-    // Read config from Tauri state (registered during app startup)
-    let config: tauri::State<crate::config::AppConfig> = app.state();
     let db_path = config.database_path.clone();
     let model_path = config.model_path.clone();
     let client_id = config.tauri_client_id.clone();
 
-    // Check if state already exists to prevent reinitialization
-    if app.try_state::<SurrealStore>().is_some() {
+    // Check if already initialized via AppServices
+    let services: tauri::State<AppServices> = app.state();
+    if services.is_initialized().await {
         eprintln!("⚠️  [init_services] Database already initialized");
         return Err(
-            "Database already initialized. Restart the app to change location.".to_string(),
+            "Database already initialized. Use switch_database for hot-swapping.".to_string(),
         );
     }
 
@@ -96,7 +85,6 @@ async fn init_services(app: &AppHandle) -> Result<(), String> {
     tracing::info!("✅ [init_services] SurrealDB store initialized");
 
     // Initialize node service with SurrealStore
-    // NodeService::new() takes &mut Arc to enable cache updates during seeding (Issue #704)
     tracing::info!("🔧 [init_services] Initializing NodeService...");
     let mut node_service = NodeService::new(&mut store)
         .await
@@ -132,53 +120,58 @@ async fn init_services(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Failed to initialize embedding processor: {}", e))?;
 
     // Wire up NodeService to wake processor on embedding changes (Issue #729)
-    // This enables event-driven embedding processing without polling
     node_service.set_embedding_waker(processor.waker());
     tracing::info!("✅ [init_services] EmbeddingProcessor waker connected to NodeService");
 
     // Wake processor on startup to process any existing stale embeddings
-    // This handles cases where stale markers exist from previous sessions
     processor.wake();
     tracing::info!("🔔 [init_services] EmbeddingProcessor woken to process stale embeddings");
 
     let node_service_arc = Arc::new(node_service);
     let processor_arc = Arc::new(processor);
 
-    // Manage all services
-    eprintln!("🔧 [init_services] Registering services with Tauri app.manage()...");
-    tracing::info!("🔧 [init_services] Registering services with Tauri app.manage()...");
-    app.manage(store.clone());
-    app.manage(node_service_arc.as_ref().clone());
-    // NOTE: NodeOperations removed (Issue #676) - commands use NodeService directly
-    // NOTE: SchemaService removed (Issue #690) - schema commands use NodeService directly
-    app.manage(EmbeddingState {
-        service: embedding_service_arc,
-        processor: processor_arc.clone(),
-    });
-    app.manage(processor_arc);
-    eprintln!("✅ [init_services] All services registered with Tauri");
-    tracing::info!("✅ [init_services] All services registered with Tauri");
-
-    // Retrieve the shutdown token from Tauri state for background task coordination
+    // Retrieve the shutdown token for background task coordination
     let shutdown_token: tauri::State<crate::ShutdownToken> = app.state();
+    let session_token = shutdown_token.child_token();
+
+    // Populate AppServices container (Issue #894)
+    eprintln!("🔧 [init_services] Populating AppServices container...");
+    tracing::info!("🔧 [init_services] Populating AppServices container...");
+    services
+        .initialize(
+            store.clone(),
+            node_service_arc.clone(),
+            Some(EmbeddingState {
+                service: embedding_service_arc.clone(),
+                processor: processor_arc.clone(),
+            }),
+            config.clone(),
+            session_token.clone(),
+        )
+        .await;
+    eprintln!("✅ [init_services] AppServices container populated");
+    tracing::info!("✅ [init_services] AppServices container populated");
 
     // Initialize MCP server now that NodeService is available
-    // MCP will use the same NodeService as Tauri commands
-    if let Err(e) = crate::initialize_mcp_server(app.clone(), shutdown_token.child_token()) {
+    // Pass services directly instead of reading from Tauri state
+    if let Err(e) = crate::initialize_mcp_server(
+        app.clone(),
+        node_service_arc.clone(),
+        embedding_service_arc.clone(),
+        session_token.clone(),
+    ) {
         tracing::error!("❌ Failed to initialize MCP server: {}", e);
         // Don't fail database init if MCP fails - MCP is optional
     }
 
     // Initialize domain event forwarding with client filtering (#665)
-    // Events that originated from this Tauri client are filtered out to prevent feedback loops
     if let Err(e) = crate::initialize_domain_event_forwarder(
         app.clone(),
         node_service_arc.clone(),
         client_id,
-        shutdown_token.child_token(),
+        session_token.clone(),
     ) {
         tracing::error!("❌ Failed to initialize domain event forwarder: {}", e);
-        // Don't fail database init if event forwarding fails - it's not critical
     }
 
     let _ = store; // Store still available for direct access if needed
@@ -192,29 +185,6 @@ async fn init_services(app: &AppHandle) -> Result<(), String> {
 /// Checks for previously saved database location preference. If found,
 /// uses that path. Otherwise, uses unified ~/.nodespace/database/ location
 /// across all platforms.
-///
-/// This command should be called during application startup before any
-/// database operations are attempted.
-///
-/// # Arguments
-/// * `app` - Tauri application handle
-///
-/// # Returns
-/// * `Ok(String)` - Path to the initialized database file
-/// * `Err(String)` - Error if initialization fails
-///
-/// # Default Location (New Unified Path)
-/// - All platforms: ~/.nodespace/database/nodespace.db
-///
-/// # Migration
-/// Automatically migrates existing databases from old platform-specific
-/// locations on first run.
-///
-/// # Errors
-/// Returns error if:
-/// - Database services are already initialized
-/// - Cannot determine home directory
-/// - Database initialization fails
 #[tauri::command]
 pub async fn initialize_database(app: AppHandle) -> Result<String, String> {
     // Attempt migration from old location
@@ -245,12 +215,15 @@ pub async fn initialize_database(app: AppHandle) -> Result<String, String> {
         .and_then(|p| p.parse::<u16>().ok())
         .unwrap_or(3100);
 
-    // Build and register AppConfig as Tauri state
+    // Build AppConfig
     let config = crate::config::AppConfig::from_preferences(&prefs, model_path, mcp_port)?;
-    app.manage(config);
 
-    // Initialize services (reads config from Tauri state)
-    init_services(&app).await?;
+    // Show database path on startup
+    let db_path_str = db_path.to_string_lossy().to_string();
+    eprintln!("📂 Database path: {}", db_path_str);
 
-    Ok(db_path.to_string_lossy().to_string())
+    // Initialize services (populates AppServices container)
+    init_services(&app, &config).await?;
+
+    Ok(db_path_str)
 }

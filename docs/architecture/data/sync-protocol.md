@@ -446,6 +446,64 @@ class OperationalTransformer {
 
 ## Vector Embedding Synchronization
 
+### Embedding Sync Boundaries — Local Commit Before Sync
+
+**Core principle: Sync operates on committed state, not in-progress state.**
+
+A node is not considered "committed" until all its derived data (including embeddings)
+has been computed. This mirrors database transaction semantics — partial writes are
+never exposed to other readers. The sync outbox only contains fully resolved nodes.
+
+**Rules:**
+
+1. **A node does not enter the sync outbox until its embedding is complete.** When
+   content changes, the node is marked stale locally and held back from sync until
+   re-embedding finishes. The sync layer never sees intermediate state.
+
+2. **Stale markers are local-only.** They drive the local embedding pipeline and are
+   never transmitted to other clients. No client should ever receive a node in a
+   stale/pending state.
+
+3. **Each synced node is an atomic unit:** content + embedding vector + content hash
+   (`sha256(content)`) + model ID. Receiving clients can trust that the embedding
+   matches the content.
+
+```
+Sync outbox eligibility:
+  ✅ Root node with completed embedding (content_hash covers root + all children)
+     → entire subtree (root + all descendants) syncs as one atomic unit
+  ❌ Root node with stale/pending embedding → entire subtree held back
+  ❌ Stale markers (never synced)
+```
+
+**Subtree as atomic sync unit**: Embeddings are computed only at the root node
+level, incorporating the content of all descendant nodes. Therefore the sync
+unit is the **entire subtree** — root node + all children. If a child node's
+content changes, the root's embedding becomes stale, and the whole subtree is
+held from the sync outbox until re-embedding completes. When it does, the root
+and all its descendants sync together as one atomic operation.
+
+**Edge cases:**
+
+- **Database switch before re-embedding completes**: The pending nodes remain in the
+  local database but never enter the sync outbox. If the database is never opened
+  again, those nodes simply don't sync — which is correct, since no client is
+  actively using that database.
+
+- **Embedding model failure**: If embeddings cannot be computed (GPU error, model
+  won't load), affected nodes are held from sync. This is surfaced as a user-visible
+  error. The sync layer does not attempt to work around broken local state.
+
+- **Node update with pending re-embedding**: When an existing node's content changes,
+  the sync outbox retains the last committed version (previous content + its matching
+  embedding) until the new embedding completes. Once re-embedding finishes, the update
+  becomes the new committed state and replaces the previous version in the outbox.
+  This is analogous to offline edits — the user keeps working locally, but the sync
+  layer only transmits fully resolved state.
+
+- **Receiving a synced node**: Because only committed nodes are synced, the receiver
+  accepts the node + embedding as-is. No receiver-side audit or re-embedding needed.
+
 ### Efficient Vector Sync
 ```rust
 pub struct VectorSyncOptimizer {

@@ -6,13 +6,14 @@
 //! - Path-based collection operations
 
 use nodespace_core::services::CollectionService;
-use nodespace_core::{models, Node, NodeService};
+use nodespace_core::{models, Node};
 use serde::Serialize;
 use serde_json::Value;
 use tauri::State;
 
 use super::nodes::CommandError;
 
+use crate::app_services::AppServices;
 use crate::constants::TAURI_CLIENT_ID;
 
 /// Convert a Node to its strongly-typed JSON representation
@@ -55,7 +56,7 @@ pub struct CollectionInfo {
 /// avoiding N+1 query pattern for better performance.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 ///
 /// # Returns
 /// * `Ok(Vec<CollectionInfo>)` - All collection nodes with member counts
@@ -68,8 +69,9 @@ pub struct CollectionInfo {
 /// ```
 #[tauri::command]
 pub async fn get_all_collections(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
 ) -> Result<Vec<CollectionInfo>, CommandError> {
+    let service = services.node_service().await?;
     let store = service.store();
     let collection_service = CollectionService::new(store, &service);
 
@@ -105,7 +107,7 @@ pub async fn get_all_collections(
 /// Single query that traverses the relationship and returns full Node data.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `collection_id` - ID of the collection to get members for
 ///
 /// # Returns
@@ -120,9 +122,10 @@ pub async fn get_all_collections(
 /// ```
 #[tauri::command]
 pub async fn get_collection_members(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     collection_id: String,
 ) -> Result<Vec<Value>, CommandError> {
+    let service = services.node_service().await?;
     let store = service.store();
 
     // Single query: traverse relationship and get full node data
@@ -144,7 +147,7 @@ pub async fn get_collection_members(
 /// descendant collections.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `collection_id` - ID of the collection
 ///
 /// # Returns
@@ -152,9 +155,10 @@ pub async fn get_collection_members(
 /// * `Err(CommandError)` - Error if query fails
 #[tauri::command]
 pub async fn get_collection_members_recursive(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     collection_id: String,
 ) -> Result<Vec<Value>, CommandError> {
+    let service = services.node_service().await?;
     let store = service.store();
     let collection_service = CollectionService::new(store, &service);
 
@@ -191,7 +195,7 @@ pub async fn get_collection_members_recursive(
 /// Returns collection node IDs that the specified node is a member of.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `node_id` - ID of the node to query
 ///
 /// # Returns
@@ -206,9 +210,10 @@ pub async fn get_collection_members_recursive(
 /// ```
 #[tauri::command]
 pub async fn get_node_collections(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     node_id: String,
 ) -> Result<Vec<String>, CommandError> {
+    let service = services.node_service().await?;
     let store = service.store();
     let collection_service = CollectionService::new(store, &service);
 
@@ -227,7 +232,7 @@ pub async fn get_node_collections(
 /// Creates a member_of edge from the node to the collection.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `node_id` - ID of the node to add
 /// * `collection_id` - ID of the collection to add to
 ///
@@ -244,10 +249,11 @@ pub async fn get_node_collections(
 /// ```
 #[tauri::command]
 pub async fn add_node_to_collection(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     node_id: String,
     collection_id: String,
 ) -> Result<(), CommandError> {
+    let service = services.node_service().await?;
     let store = service.store();
     let collection_service = CollectionService::new(store, &service);
 
@@ -266,7 +272,7 @@ pub async fn add_node_to_collection(
 /// Resolves the path, creates any missing collections, and adds the node.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `node_id` - ID of the node to add
 /// * `collection_path` - Path like "hr:policy:vacation"
 ///
@@ -283,10 +289,11 @@ pub async fn add_node_to_collection(
 /// ```
 #[tauri::command]
 pub async fn add_node_to_collection_path(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     node_id: String,
     collection_path: String,
 ) -> Result<String, CommandError> {
+    let service = services.node_service().await?;
     let store = service.store();
     let collection_service = CollectionService::new(store, &service);
 
@@ -307,7 +314,7 @@ pub async fn add_node_to_collection_path(
 /// Deletes the member_of edge from the node to the collection.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `node_id` - ID of the node to remove
 /// * `collection_id` - ID of the collection to remove from
 ///
@@ -324,10 +331,11 @@ pub async fn add_node_to_collection_path(
 /// ```
 #[tauri::command]
 pub async fn remove_node_from_collection(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     node_id: String,
     collection_id: String,
 ) -> Result<(), CommandError> {
+    let service = services.node_service().await?;
     let store = service.store();
     let collection_service = CollectionService::new(store, &service);
 
@@ -346,7 +354,7 @@ pub async fn remove_node_from_collection(
 /// Searches for an existing collection matching the given path.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `collection_path` - Path like "hr:policy:vacation"
 ///
 /// # Returns
@@ -355,9 +363,10 @@ pub async fn remove_node_from_collection(
 /// * `Err(CommandError)` - Error if query fails
 #[tauri::command]
 pub async fn find_collection_by_path(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     collection_path: String,
 ) -> Result<Option<Value>, CommandError> {
+    let service = services.node_service().await?;
     let store = service.store();
     let collection_service = CollectionService::new(store, &service);
 
@@ -379,7 +388,7 @@ pub async fn find_collection_by_path(
 /// Get collection by name (case-insensitive)
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `name` - Collection name to find
 ///
 /// # Returns
@@ -388,9 +397,10 @@ pub async fn find_collection_by_path(
 /// * `Err(CommandError)` - Error if query fails
 #[tauri::command]
 pub async fn get_collection_by_name(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     name: String,
 ) -> Result<Option<Value>, CommandError> {
+    let service = services.node_service().await?;
     let store = service.store();
     let collection_service = CollectionService::new(store, &service);
 
@@ -414,7 +424,7 @@ pub async fn get_collection_by_name(
 /// Creates a collection node with the given name.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `name` - Name for the new collection
 /// * `description` - Optional description
 ///
@@ -423,12 +433,14 @@ pub async fn get_collection_by_name(
 /// * `Err(CommandError)` - Error if collection already exists or creation fails
 #[tauri::command]
 pub async fn create_collection(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     name: String,
     description: Option<String>,
 ) -> Result<String, CommandError> {
     use nodespace_core::services::CreateNodeParams;
     use serde_json::json;
+
+    let service = services.node_service().await?;
 
     // Check if collection with this name already exists
     let store = service.store();
@@ -482,7 +494,7 @@ pub async fn create_collection(
 /// Updates the collection's content (name) field.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `collection_id` - ID of the collection to rename
 /// * `version` - Expected version for OCC
 /// * `new_name` - New name for the collection
@@ -492,12 +504,14 @@ pub async fn create_collection(
 /// * `Err(CommandError)` - Error if rename fails
 #[tauri::command]
 pub async fn rename_collection(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     collection_id: String,
     version: i64,
     new_name: String,
 ) -> Result<Value, CommandError> {
     use nodespace_core::NodeUpdate;
+
+    let service = services.node_service().await?;
 
     // Check if name is already taken by another collection
     let store = service.store();
@@ -546,7 +560,7 @@ pub async fn rename_collection(
 /// membership edges are removed.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 /// * `collection_id` - ID of the collection to delete
 /// * `version` - Expected version for OCC
 ///
@@ -555,10 +569,12 @@ pub async fn rename_collection(
 /// * `Err(CommandError)` - Error if delete fails
 #[tauri::command]
 pub async fn delete_collection(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     collection_id: String,
     version: i64,
 ) -> Result<(), CommandError> {
+    let service = services.node_service().await?;
+
     // Delete the collection node (member_of edges will be cleaned up by cascade)
     service
         .with_client(TAURI_CLIENT_ID)

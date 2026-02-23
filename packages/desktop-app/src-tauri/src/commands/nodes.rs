@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::State;
 
+use crate::app_services::AppServices;
 use crate::constants::TAURI_CLIENT_ID;
 
 /// Input for creating a node - timestamps generated server-side
@@ -154,9 +155,10 @@ fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<Value>, CommandError> {
 /// ```
 #[tauri::command]
 pub async fn create_node(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     node: CreateNodeInput,
 ) -> Result<String, CommandError> {
+    let service = services.node_service().await?;
     validate_node_type(&node.node_type, &service).await?;
 
     // Use NodeService to create node with business rule enforcement
@@ -228,9 +230,10 @@ pub struct SaveNodeWithParentInput {
 /// ```
 #[tauri::command]
 pub async fn create_root_node(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     input: CreateRootNodeInput,
 ) -> Result<String, CommandError> {
+    let service = services.node_service().await?;
     validate_node_type(&input.node_type, &service).await?;
 
     // Create root node with NodeService (parent_id = None means root)
@@ -280,10 +283,11 @@ pub async fn create_root_node(
 /// ```
 #[tauri::command]
 pub async fn create_node_mention(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     mentioning_node_id: String,
     mentioned_node_id: String,
 ) -> Result<(), CommandError> {
+    let service = services.node_service().await?;
     service
         .with_client(TAURI_CLIENT_ID)
         .create_mention(&mentioning_node_id, &mentioned_node_id)
@@ -316,9 +320,10 @@ pub async fn create_node_mention(
 /// ```
 #[tauri::command]
 pub async fn get_node(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     id: String,
 ) -> Result<Option<Value>, CommandError> {
+    let service = services.node_service().await?;
     let node = service
         .with_client(TAURI_CLIENT_ID)
         .get_node(&id)
@@ -364,11 +369,12 @@ pub async fn get_node(
 /// ```
 #[tauri::command]
 pub async fn update_node(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     id: String,
     version: i64,
     update: NodeUpdate,
 ) -> Result<Value, CommandError> {
+    let service = services.node_service().await?;
     // DEBUG: Log incoming update to trace @mention persistence issue
     let content_preview = update.content.as_ref().map(|c| {
         if c.len() > 50 {
@@ -433,10 +439,11 @@ pub async fn update_node(
 /// ```
 #[tauri::command]
 pub async fn delete_node(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     id: String,
     version: i64,
 ) -> Result<nodespace_core::models::DeleteResult, CommandError> {
+    let service = services.node_service().await?;
     service
         .with_client(TAURI_CLIENT_ID)
         .delete_node(&id, version)
@@ -478,12 +485,13 @@ pub async fn delete_node(
 /// ```
 #[tauri::command]
 pub async fn move_node(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     node_id: String,
     version: i64,
     new_parent_id: Option<String>,
     insert_after_node_id: Option<String>,
 ) -> Result<Value, CommandError> {
+    let service = services.node_service().await?;
     let node = service
         .with_client(TAURI_CLIENT_ID)
         .move_node(
@@ -525,11 +533,12 @@ pub async fn move_node(
 /// ```
 #[tauri::command]
 pub async fn reorder_node(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     node_id: String,
     version: i64,
     insert_after_node_id: Option<String>,
 ) -> Result<(), CommandError> {
+    let service = services.node_service().await?;
     service
         .with_client(TAURI_CLIENT_ID)
         .reorder_node(&node_id, version, insert_after_node_id.as_deref())
@@ -569,9 +578,10 @@ pub async fn reorder_node(
 /// ```
 #[tauri::command]
 pub async fn get_children(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     parent_id: String,
 ) -> Result<Vec<Value>, CommandError> {
+    let service = services.node_service().await?;
     let nodes = service
         .with_client(TAURI_CLIENT_ID)
         .get_children(&parent_id)
@@ -618,9 +628,10 @@ pub async fn get_children(
 /// ```
 #[tauri::command]
 pub async fn get_children_tree(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     parent_id: String,
 ) -> Result<serde_json::Value, CommandError> {
+    let service = services.node_service().await?;
     service
         .get_children_tree(&parent_id)
         .await
@@ -652,9 +663,10 @@ pub async fn get_children_tree(
 /// ```
 #[tauri::command]
 pub async fn get_nodes_by_root_id(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     root_id: String,
 ) -> Result<Vec<Value>, CommandError> {
+    let service = services.node_service().await?;
     // Phase 5 (Issue #511): Redirect to get_children (graph-native)
     let nodes = service
         .with_client(TAURI_CLIENT_ID)
@@ -708,9 +720,10 @@ pub async fn get_nodes_by_root_id(
 /// ```
 #[tauri::command]
 pub async fn query_nodes_simple(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     query: NodeQuery,
 ) -> Result<Vec<Value>, CommandError> {
+    let service = services.node_service().await?;
     let nodes = service
         .with_client(TAURI_CLIENT_ID)
         .query_nodes_simple(query)
@@ -754,10 +767,11 @@ pub async fn query_nodes_simple(
 /// ```
 #[tauri::command]
 pub async fn mention_autocomplete(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<Value>, CommandError> {
+    let service = services.node_service().await?;
     let nodes = service
         .mention_autocomplete(&query, limit)
         .await
@@ -814,9 +828,10 @@ pub async fn mention_autocomplete(
 /// to enforce business rules within the transaction semantics (tracked in follow-up issue).
 #[tauri::command]
 pub async fn save_node_with_parent(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     input: SaveNodeWithParentInput,
 ) -> Result<(), CommandError> {
+    let service = services.node_service().await?;
     validate_node_type(&input.node_type, &service).await?;
 
     // Use single-transaction upsert method (bypasses NodeOperations for transactional reasons)
@@ -854,9 +869,10 @@ pub async fn save_node_with_parent(
 /// ```
 #[tauri::command]
 pub async fn get_outgoing_mentions(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     node_id: String,
 ) -> Result<Vec<String>, CommandError> {
+    let service = services.node_service().await?;
     service
         .with_client(TAURI_CLIENT_ID)
         .get_mentions(&node_id)
@@ -885,9 +901,10 @@ pub async fn get_outgoing_mentions(
 /// ```
 #[tauri::command]
 pub async fn get_incoming_mentions(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     node_id: String,
 ) -> Result<Vec<String>, CommandError> {
+    let service = services.node_service().await?;
     service
         .with_client(TAURI_CLIENT_ID)
         .get_mentioned_by(&node_id)
@@ -927,9 +944,10 @@ pub async fn get_incoming_mentions(
 /// ```
 #[tauri::command]
 pub async fn get_mentioning_roots(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     node_id: String,
 ) -> Result<Vec<NodeReference>, CommandError> {
+    let service = services.node_service().await?;
     service
         .get_mentioning_containers(&node_id)
         .await
@@ -972,11 +990,12 @@ pub async fn get_mentioning_roots(
 /// ```
 #[tauri::command]
 pub async fn update_task_node(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     id: String,
     version: i64,
     update: models::TaskNodeUpdate,
 ) -> Result<Value, CommandError> {
+    let service = services.node_service().await?;
     let task = service
         .update_task_node(&id, version, update)
         .await
@@ -1012,10 +1031,11 @@ pub async fn update_task_node(
 /// ```
 #[tauri::command]
 pub async fn delete_node_mention(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     mentioning_node_id: String,
     mentioned_node_id: String,
 ) -> Result<(), CommandError> {
+    let service = services.node_service().await?;
     service
         .with_client(TAURI_CLIENT_ID)
         .remove_mention(&mentioning_node_id, &mentioned_node_id)

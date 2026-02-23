@@ -8,8 +8,9 @@
 //! - `get_all_schemas` - List all schema nodes (returns SchemaNode[] with typed fields)
 //! - `get_schema_definition` - Get a specific schema by ID (returns SchemaNode with typed fields)
 
+use crate::app_services::AppServices;
 use nodespace_core::services::NodeServiceError;
-use nodespace_core::{NodeQuery, NodeService, SchemaNode};
+use nodespace_core::{NodeQuery, SchemaNode};
 use serde::Serialize;
 use tauri::State;
 
@@ -43,8 +44,14 @@ impl From<NodeServiceError> for CommandError {
 /// * `Err(CommandError)` - Error if retrieval fails
 #[tauri::command]
 pub async fn get_all_schemas(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
 ) -> Result<Vec<SchemaNode>, CommandError> {
+    let service = services.node_service().await.map_err(|e| CommandError {
+        message: e.message,
+        code: e.code,
+        details: e.details,
+    })?;
+
     // Query all schema nodes and wrap in SchemaNode for typed serialization
     let query = NodeQuery {
         node_type: Some("schema".to_string()),
@@ -77,9 +84,15 @@ pub async fn get_all_schemas(
 /// * `Err(CommandError)` - Error if schema not found
 #[tauri::command]
 pub async fn get_schema_definition(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     schema_id: String,
 ) -> Result<SchemaNode, CommandError> {
+    let service = services.node_service().await.map_err(|e| CommandError {
+        message: e.message,
+        code: e.code,
+        details: e.details,
+    })?;
+
     let schema_node = service
         .get_schema_node(&schema_id)
         .await

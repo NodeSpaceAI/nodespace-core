@@ -27,6 +27,7 @@
 //!
 //! This returns immediately to the UI while heavy database work happens in background.
 
+use crate::app_services::AppServices;
 use nodespace_core::mcp::handlers::markdown::{
     prepare_nodes_from_markdown, transform_links_in_nodes_with_mentions, PreparedNode,
 };
@@ -362,10 +363,11 @@ fn to_title_case(s: &str) -> String {
 /// parses markdown, and creates nodes using bulk_create_hierarchy.
 #[tauri::command]
 pub async fn import_markdown_file(
-    node_service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     file_path: String,
     options: Option<ImportOptions>,
 ) -> Result<FileImportResult, String> {
+    let node_service = services.node_service().await.map_err(|e| e.message)?;
     let path = PathBuf::from(&file_path);
     let options = options.unwrap_or_default();
 
@@ -443,7 +445,6 @@ pub async fn import_markdown_file(
         Ok((root_id, nodes_created)) => {
             // For single file import, do collection assignment immediately
             if let Some(ref coll) = collection {
-                use nodespace_core::services::CollectionService;
                 let collection_service =
                     CollectionService::new(node_service.store(), &node_service);
                 if let Err(e) = collection_service
@@ -504,10 +505,11 @@ pub async fn import_markdown_file(
 #[tauri::command]
 pub async fn import_markdown_files(
     app: AppHandle,
-    node_service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     file_paths: Vec<String>,
     options: Option<ImportOptions>,
 ) -> Result<BatchImportResult, String> {
+    let node_service = services.node_service().await.map_err(|e| e.message)?;
     let start = std::time::Instant::now();
     let total_files = file_paths.len();
     let options = options.unwrap_or_default();
@@ -786,7 +788,7 @@ pub async fn import_markdown_files(
     // 2. Computing lengths/counts here avoids borrowing issues in the async context
     // 3. Cloning Arc/handles is cheap and allows the original references to be dropped
     let store = Arc::clone(node_service.store());
-    let node_service_clone = node_service.inner().clone();
+    let node_service_clone = (*node_service).clone();
     let app_clone = app.clone();
     let total_files_clone = total_files;
     let successful_files_clone = prepared_files.len();
@@ -1009,7 +1011,7 @@ pub async fn import_markdown_files(
 #[tauri::command]
 pub async fn import_markdown_directory(
     app: AppHandle,
-    node_service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     directory_path: String,
     options: Option<ImportOptions>,
 ) -> Result<BatchImportResult, String> {
@@ -1047,7 +1049,7 @@ pub async fn import_markdown_directory(
     }
 
     // Import all files
-    import_markdown_files(app, node_service, md_files, Some(import_options)).await
+    import_markdown_files(app, services, md_files, Some(import_options)).await
 }
 
 /// Recursively collect markdown files from a directory with exclusion patterns
