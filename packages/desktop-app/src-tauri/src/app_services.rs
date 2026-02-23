@@ -258,7 +258,9 @@ impl AppServices {
             let old_service = old_es.service;
             drop(old_es.processor);
 
-            // Step 3: Brief pause for processor task to exit
+            // Step 3: Brief pause for processor task to exit.
+            // 100ms (vs 50ms in switch_database) because shutdown has no prior
+            // session-token cancellation grace period — this is the only wait.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
             // Step 4: Now safe to release GPU context
