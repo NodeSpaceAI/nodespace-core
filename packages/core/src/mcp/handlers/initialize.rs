@@ -47,7 +47,7 @@ use std::sync::Arc;
 /// - Embedding model warmup fails
 pub async fn handle_initialize<C>(
     node_service: &Arc<NodeService<C>>,
-    embedding_service: &Arc<NodeEmbeddingService<C>>,
+    embedding_service: &Option<Arc<NodeEmbeddingService<C>>>,
     params: Value,
 ) -> Result<Value, MCPError>
 where
@@ -75,12 +75,20 @@ where
         )));
     }
 
-    // Warm up the embedding model to ensure fast first semantic search
+    // Warm up the embedding model to ensure fast first semantic search (if available).
     // This triggers model loading and Metal kernel compilation during handshake
-    // rather than on the first search query.
-    embedding_service.nlp_engine().warmup().map_err(|e| {
-        MCPError::internal_error(format!("Failed to warm up embedding model: {}", e))
-    })?;
+    // rather than on the first search query. When embeddings are unavailable,
+    // MCP still serves node CRUD — only semantic search is disabled.
+    if let Some(emb_svc) = embedding_service {
+        if let Err(e) = emb_svc.nlp_engine().warmup() {
+            tracing::warn!(
+                "Embedding model warmup failed (semantic search disabled): {}",
+                e
+            );
+        }
+    } else {
+        tracing::info!("MCP server starting without embeddings — semantic search disabled");
+    }
 
     // Fetch all available schemas to build dynamic instructions
     // Note: If schemas haven't been initialized yet (fresh database), fall back to

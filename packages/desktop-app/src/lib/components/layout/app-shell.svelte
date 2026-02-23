@@ -158,6 +158,7 @@
     let unlistenStatusBar: Promise<() => void> | null = null;
     let unlistenImport: Promise<() => void> | null = null;
     let unlistenDatabase: Promise<() => void> | null = null;
+    let unlistenDatabaseChanged: Promise<() => void> | null = null;
     let unlistenSettings: Promise<() => void> | null = null;
     let cleanupMCP: (() => Promise<void>) | null = null;
     let staleNodesInterval: ReturnType<typeof setInterval> | null = null;
@@ -278,25 +279,26 @@
         }
       });
 
-      // Listen for database selection from menu
+      // Listen for database selection from menu (hot-swap, no restart needed)
       unlistenDatabase = listen('menu-select-database', async () => {
         try {
-          const result = await invoke<{ newPath: string; requiresRestart: boolean }>(
+          const result = await invoke<{ newPath: string; success: boolean }>(
             'select_new_database'
           );
-          if (result.requiresRestart) {
-            const confirmed = window.confirm(
-              `Database location changed to:\n${result.newPath}\n\nNodeSpace needs to restart to use the new database. Restart now?`
-            );
-            if (confirmed) {
-              await invoke('restart_app');
-            }
+          if (result.success) {
+            log.info('Database switched to:', result.newPath);
           }
         } catch (err) {
           if (err !== 'No folder selected') {
             log.error('Database selection failed:', err);
           }
         }
+      });
+
+      // Listen for database-changed event after hot-swap (Issue #894)
+      // Frontend views will refresh automatically via domain event forwarder restart
+      unlistenDatabaseChanged = listen('database-changed', (event) => {
+        log.info('Database changed to:', event.payload);
       });
 
       // Listen for settings menu — open or focus settings tab
@@ -448,6 +450,9 @@
       }
       if (unlistenDatabase) {
         (await unlistenDatabase)();
+      }
+      if (unlistenDatabaseChanged) {
+        (await unlistenDatabaseChanged)();
       }
       if (unlistenSettings) {
         (await unlistenSettings)();

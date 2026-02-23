@@ -59,7 +59,7 @@ struct NodeDeletedEvent {
 /// * `McpResponseCallback` for starting the server with events
 pub fn create_mcp_service_with_events(
     node_service: Arc<NodeService>,
-    embedding_service: Arc<NodeEmbeddingService>,
+    embedding_service: Option<Arc<NodeEmbeddingService>>,
     app: AppHandle,
 ) -> (McpServerService, McpResponseCallback) {
     let port = default_mcp_port();

@@ -34,7 +34,7 @@ async fn create_test_env() -> anyhow::Result<(Arc<NodeService>, TempDir)> {
 
 /// Test helper: Create a test environment with NodeService and NodeEmbeddingService
 async fn create_test_env_with_embedding(
-) -> anyhow::Result<(Arc<NodeService>, Arc<NodeEmbeddingService>, TempDir)> {
+) -> anyhow::Result<(Arc<NodeService>, Option<Arc<NodeEmbeddingService>>, TempDir)> {
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("test.db");
     let mut store = Arc::new(SurrealStore::new(db_path).await?);
@@ -47,7 +47,7 @@ async fn create_test_env_with_embedding(
 
     let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
 
-    Ok((node_service, embedding_service, temp_dir))
+    Ok((node_service, Some(embedding_service), temp_dir))
 }
 
 // ============================================================================

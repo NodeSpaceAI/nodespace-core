@@ -45,7 +45,9 @@ where
     C: surrealdb::Connection,
 {
     pub node_service: Arc<NodeService<C>>,
-    pub embedding_service: Arc<NodeEmbeddingService<C>>,
+    /// Optional: MCP still serves node CRUD without embeddings; semantic search
+    /// returns a graceful error when this is `None`.
+    pub embedding_service: Option<Arc<NodeEmbeddingService<C>>>,
 }
 
 /// Server state tracking initialization status
@@ -731,7 +733,7 @@ mod tests {
 
         McpServices {
             node_service,
-            embedding_service,
+            embedding_service: Some(embedding_service),
         }
     }
 
