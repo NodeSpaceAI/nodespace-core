@@ -136,7 +136,8 @@ mod async_integration_tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
-    async fn setup_test_services() -> (Arc<NodeService>, Arc<NodeEmbeddingService>, TempDir) {
+    async fn setup_test_services() -> (Arc<NodeService>, Option<Arc<NodeEmbeddingService>>, TempDir)
+    {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
 
@@ -150,7 +151,7 @@ mod async_integration_tests {
 
         let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
 
-        (node_service, embedding_service, temp_dir)
+        (node_service, Some(embedding_service), temp_dir)
     }
 
     #[tokio::test]

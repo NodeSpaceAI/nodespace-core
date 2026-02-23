@@ -3,12 +3,12 @@
 //! These commands provide insight into the database state for debugging
 //! issues where nodes don't persist on some machines.
 
+use crate::app_services::AppServices;
 use nodespace_core::services::CreateNodeParams;
-use nodespace_core::{NodeQuery, NodeService, SurrealStore};
+use nodespace_core::NodeQuery;
 use serde::Serialize;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tauri::State;
 
 /// Diagnostic info about the database state
@@ -63,7 +63,7 @@ fn get_directory_size(path: &PathBuf) -> Option<u64> {
 /// persistence issues on different machines.
 ///
 /// # Arguments
-/// * `store` - SurrealStore instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 ///
 /// # Returns
 /// * `DatabaseDiagnostics` - Struct with all diagnostic info
@@ -76,8 +76,9 @@ fn get_directory_size(path: &PathBuf) -> Option<u64> {
 /// ```
 #[tauri::command]
 pub async fn get_database_diagnostics(
-    store: State<'_, Arc<SurrealStore>>,
+    services: State<'_, AppServices>,
 ) -> Result<DatabaseDiagnostics, String> {
+    let store = services.store().await.map_err(|e| e.message)?;
     let mut errors: Vec<String> = Vec::new();
 
     // Get database path from environment or default
@@ -188,7 +189,7 @@ pub struct TestPersistenceResult {
 /// diagnostic info about the operation. Useful for testing if persistence works.
 ///
 /// # Arguments
-/// * `service` - NodeService instance from Tauri state
+/// * `services` - AppServices instance from Tauri state
 ///
 /// # Returns
 /// * Result with creation and verification details
@@ -201,8 +202,9 @@ pub struct TestPersistenceResult {
 /// ```
 #[tauri::command]
 pub async fn test_node_persistence(
-    service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
 ) -> Result<TestPersistenceResult, String> {
+    let service = services.node_service().await.map_err(|e| e.message)?;
     let test_id = format!("diagnostic-test-{}", uuid::Uuid::new_v4());
     let test_content = format!("Diagnostic test node created at {}", chrono::Utc::now());
 

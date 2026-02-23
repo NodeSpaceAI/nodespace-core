@@ -105,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Create MCP server service
     let port = default_mcp_port();
-    let mcp_service = McpServerService::new(node_service, embedding_service, port);
+    let mcp_service = McpServerService::new(node_service, Some(embedding_service), port);
 
     println!("\n🚀 Starting MCP server...");
     println!("   Port: {}", port);

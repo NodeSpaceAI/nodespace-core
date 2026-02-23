@@ -68,7 +68,9 @@ where
     C: surrealdb::Connection,
 {
     node_service: Arc<NodeService<C>>,
-    embedding_service: Arc<NodeEmbeddingService<C>>,
+    /// Optional: MCP still serves node CRUD without embeddings; semantic search
+    /// returns a graceful error when this is `None`.
+    embedding_service: Option<Arc<NodeEmbeddingService<C>>>,
     port: u16,
 }
 
@@ -81,7 +83,9 @@ where
     /// # Arguments
     ///
     /// * `node_service` - Shared NodeService instance for node operations
-    /// * `embedding_service` - Shared embedding service for semantic search
+    /// * `embedding_service` - Optional embedding service for semantic search.
+    ///   When `None`, MCP still serves node CRUD; semantic search returns a
+    ///   graceful error.
     /// * `port` - HTTP port to listen on (typically 3100)
     ///
     /// # Example
@@ -92,11 +96,11 @@ where
     ///     .and_then(|p| p.parse().ok())
     ///     .unwrap_or(3100);
     ///
-    /// let service = McpServerService::new(node_service, embedding_service, port);
+    /// let service = McpServerService::new(node_service, Some(embedding_service), port);
     /// ```
     pub fn new(
         node_service: Arc<NodeService<C>>,
-        embedding_service: Arc<NodeEmbeddingService<C>>,
+        embedding_service: Option<Arc<NodeEmbeddingService<C>>>,
         port: u16,
     ) -> Self {
         Self {

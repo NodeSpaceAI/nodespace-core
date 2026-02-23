@@ -5,21 +5,13 @@
 //! - Searching topics by semantic similarity
 //! - Updating embeddings on content changes
 
+use crate::app_services::AppServices;
 use crate::commands::nodes::CommandError;
 use nodespace_core::models::Node;
-use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService};
-use nodespace_core::NodeService;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tauri::State;
 
 use crate::constants::TAURI_CLIENT_ID;
-
-/// Application state containing embedding service and processor
-pub struct EmbeddingState {
-    pub service: Arc<NodeEmbeddingService>,
-    pub processor: Arc<EmbeddingProcessor>,
-}
 
 /// Helper to create CommandError instances
 fn command_error(message: impl Into<String>, code: impl Into<String>) -> CommandError {
@@ -67,10 +59,12 @@ fn command_error_with_details(
 /// ```
 #[tauri::command]
 pub async fn generate_root_embedding(
-    state: State<'_, EmbeddingState>,
-    node_service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     root_id: String,
 ) -> Result<(), CommandError> {
+    let (embedding_service, _) = services.embedding_state().await?;
+    let node_service = services.node_service().await?;
+
     // Get the node from the database
     let node = node_service
         .get_node(&root_id)
@@ -85,8 +79,7 @@ pub async fn generate_root_embedding(
         .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
     // Queue node's root for embedding via root-aggregate model (Issue #729)
-    state
-        .service
+    embedding_service
         .queue_for_embedding(&node.id)
         .await
         .map_err(|e| {
@@ -163,10 +156,12 @@ pub struct SearchRootsParams {
 /// ```
 #[tauri::command]
 pub async fn search_roots(
-    state: State<'_, EmbeddingState>,
-    node_service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     params: SearchRootsParams,
 ) -> Result<Vec<Node>, CommandError> {
+    let (embedding_service, _) = services.embedding_state().await?;
+    let node_service = services.node_service().await?;
+
     // Validate query parameter
     if params.query.trim().is_empty() {
         return Err(command_error(
@@ -186,8 +181,7 @@ pub async fn search_roots(
     }
 
     // Generate embedding for search query
-    let query_embedding = state
-        .service
+    let query_embedding = embedding_service
         .nlp_engine()
         .generate_embedding(&params.query)
         .map_err(|e| {
@@ -249,10 +243,12 @@ pub async fn search_roots(
 /// ```
 #[tauri::command]
 pub async fn update_root_embedding(
-    state: State<'_, EmbeddingState>,
-    node_service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     root_id: String,
 ) -> Result<(), CommandError> {
+    let (embedding_service, _) = services.embedding_state().await?;
+    let node_service = services.node_service().await?;
+
     // Get the node from the database
     let node = node_service
         .get_node(&root_id)
@@ -267,8 +263,7 @@ pub async fn update_root_embedding(
         .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
     // Queue node's root for embedding via root-aggregate model (Issue #729)
-    state
-        .service
+    embedding_service
         .queue_for_embedding(&node.id)
         .await
         .map_err(|e| {
@@ -302,10 +297,12 @@ pub async fn update_root_embedding(
 /// ```
 #[tauri::command]
 pub async fn on_root_closed(
-    state: State<'_, EmbeddingState>,
-    node_service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     root_id: String,
 ) -> Result<(), CommandError> {
+    let (embedding_service, _) = services.embedding_state().await?;
+    let node_service = services.node_service().await?;
+
     // Get the node from the database
     let node = node_service
         .get_node(&root_id)
@@ -320,8 +317,7 @@ pub async fn on_root_closed(
         .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
     // Queue node's root for embedding via root-aggregate model (Issue #729)
-    state
-        .service
+    embedding_service
         .queue_for_embedding(&node.id)
         .await
         .map_err(|e| {
@@ -362,10 +358,12 @@ pub async fn on_root_closed(
 /// ```
 #[tauri::command]
 pub async fn on_root_idle(
-    state: State<'_, EmbeddingState>,
-    node_service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     root_id: String,
 ) -> Result<bool, CommandError> {
+    let (embedding_service, _) = services.embedding_state().await?;
+    let node_service = services.node_service().await?;
+
     // Get the node from the database
     let node = node_service
         .get_node(&root_id)
@@ -380,8 +378,7 @@ pub async fn on_root_idle(
         .ok_or_else(|| command_error(format!("Node not found: {}", root_id), "NOT_FOUND"))?;
 
     // Queue node's root for embedding via root-aggregate model (Issue #729)
-    state
-        .service
+    embedding_service
         .queue_for_embedding(&node.id)
         .await
         .map_err(|e| {
@@ -418,9 +415,11 @@ pub async fn on_root_idle(
 /// console.log('Sync triggered (processing in background)');
 /// ```
 #[tauri::command]
-pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<(), CommandError> {
+pub async fn sync_embeddings(services: State<'_, AppServices>) -> Result<(), CommandError> {
+    let (_, processor) = services.embedding_state().await?;
+
     // Trigger batch embedding (fire-and-forget, wakes the processor)
-    state.processor.trigger_batch_embed().map_err(|e| {
+    processor.trigger_batch_embed().map_err(|e| {
         command_error_with_details(
             format!("Failed to trigger sync: {}", e),
             "EMBEDDING_ERROR",
@@ -446,9 +445,9 @@ pub async fn sync_embeddings(state: State<'_, EmbeddingState>) -> Result<(), Com
 /// // Display badge: "${count} topics need indexing"
 /// ```
 #[tauri::command]
-pub async fn get_stale_root_count(
-    node_service: State<'_, NodeService>,
-) -> Result<usize, CommandError> {
+pub async fn get_stale_root_count(services: State<'_, AppServices>) -> Result<usize, CommandError> {
+    let node_service = services.node_service().await?;
+
     // Use new embedding table model (Issue #729)
     // Pass debounce_secs=0 to get ALL stale embeddings (for reporting purposes)
     // This shows the user the true count of pending work, including items still in debounce window
@@ -491,10 +490,12 @@ pub async fn get_stale_root_count(
 /// ```
 #[tauri::command]
 pub async fn batch_generate_embeddings(
-    state: State<'_, EmbeddingState>,
-    node_service: State<'_, NodeService>,
+    services: State<'_, AppServices>,
     root_ids: Vec<String>,
 ) -> Result<BatchEmbeddingResult, CommandError> {
+    let (embedding_service, _) = services.embedding_state().await?;
+    let node_service = services.node_service().await?;
+
     let mut success_count = 0;
     let mut failed_embeddings = Vec::new();
 
@@ -507,7 +508,7 @@ pub async fn batch_generate_embeddings(
         {
             Ok(Some(node)) => {
                 // Queue node's root for embedding via root-aggregate model (Issue #729)
-                match state.service.queue_for_embedding(&node.id).await {
+                match embedding_service.queue_for_embedding(&node.id).await {
                     Ok(_) => {
                         success_count += 1;
                         tracing::debug!("Queued embedding for node: {}", root_id);

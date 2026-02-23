@@ -19,16 +19,9 @@
     <div class="setting-actions">
         <button class="btn btn-secondary" onclick={async () => {
             try {
-                const result = await invoke<{ newPath: string; requiresRestart: boolean }>('select_new_database');
-                if (result.requiresRestart) {
-                    const confirmed = window.confirm(
-                        `Database location changed to:\n${result.newPath}\n\nNodeSpace needs to restart to use the new database. Restart now?`
-                    );
-                    if (confirmed) {
-                        await invoke('restart_app');
-                    } else {
-                        await loadSettings();
-                    }
+                const result = await invoke<{ newPath: string; success: boolean }>('select_new_database');
+                if (result.success) {
+                    await loadSettings();
                 }
             } catch (err) {
                 if (err !== 'No folder selected') {
@@ -41,15 +34,8 @@
 
         <button class="btn btn-outline" onclick={async () => {
             try {
-                const defaultPath = await invoke<string>('reset_database_to_default');
-                const confirmed = window.confirm(
-                    `Database will be reset to default location:\n${defaultPath}\n\nNodeSpace needs to restart. Restart now?`
-                );
-                if (confirmed) {
-                    await invoke('restart_app');
-                } else {
-                    await loadSettings();
-                }
+                await invoke<string>('reset_database_to_default');
+                await loadSettings();
             } catch (err) {
                 log.error('Failed to reset database:', err);
             }
