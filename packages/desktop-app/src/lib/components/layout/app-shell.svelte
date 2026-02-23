@@ -18,8 +18,10 @@
   import { browserSyncService } from '$lib/services/browser-sync-service';
   import { MCP_EVENTS } from '$lib/constants';
   import type { Node } from '$lib/types';
-  import { collectionsData } from '$lib/stores/collections';
-  import { loadPersistedState, addTab, tabState, setActiveTab } from '$lib/stores/navigation';
+  import { collectionsData, collectionsState } from '$lib/stores/collections';
+  import { loadPersistedState, addTab, tabState, setActiveTab, resetTabState } from '$lib/stores/navigation';
+  import { loadSettings } from '$lib/stores/settings';
+  import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
   import { get } from 'svelte/store';
   import { TabPersistenceService } from '$lib/services/tab-persistence-service';
   import { createLogger } from '$lib/utils/logger';
@@ -295,10 +297,42 @@
         }
       });
 
-      // Listen for database-changed event after hot-swap (Issue #894)
-      // Frontend views will refresh automatically via domain event forwarder restart
-      unlistenDatabaseChanged = listen('database-changed', (event) => {
-        log.info('Database changed to:', event.payload);
+      // Listen for database-changed event after hot-swap (Issue #894, #900)
+      // Reset all frontend state so UI reflects the new database
+      unlistenDatabaseChanged = listen('database-changed', async (event) => {
+        log.info('Database changed, resetting frontend state...', event.payload);
+
+        try {
+          const sharedNodeStore = SharedNodeStore.getInstance();
+
+          // 1. Flush pending writes to OLD database
+          await sharedNodeStore.flushAllPending();
+
+          // 2. Clear node cache
+          sharedNodeStore.clearAll();
+
+          // 3. Clear structure tree
+          structureTree.clear();
+
+          // 4. Reset and reload collections
+          collectionsData.reset();
+          collectionsState.reset();
+          await collectionsData.loadCollections();
+
+          // 5. Reset tabs to default (Daily Journal)
+          resetTabState();
+
+          // 6. Reload settings (updates activeDatabasePath display)
+          await loadSettings();
+
+          // 7. Clear status bar messages
+          statusBar.clearMessage();
+
+          log.info('Frontend state reset complete for new database');
+        } catch (error) {
+          log.error('Failed to reset frontend state after database change:', error);
+          statusBar.error('Database switched but UI reset failed — restart recommended');
+        }
       });
 
       // Listen for settings menu — open or focus settings tab

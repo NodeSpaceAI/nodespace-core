@@ -186,6 +186,13 @@ class ReactiveStructureTree {
   }
 
   /**
+   * Clear all tree data (used during database hot-swap)
+   */
+  clear() {
+    this.children = new Map();
+  }
+
+  /**
    * Manually register an in-memory parent-child relationship (for placeholder promotion)
    *
    * Use this when creating parent-child relationships for nodes that haven't
