@@ -8,13 +8,111 @@ use crate::app_services::{AppServices, EmbeddingState};
 use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService};
 use nodespace_core::{NodeService, SurrealStore};
 use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
 use tokio::fs;
 
 use crate::constants::EMBEDDING_MODEL_FILENAME;
+
+/// Result of creating core services (store, node service, optional embeddings).
+///
+/// Extracted as a shared helper so both `init_services()` and
+/// `switch_database_services()` use identical tiered-init logic.
+pub(crate) struct ServiceBundle {
+    pub store: Arc<SurrealStore>,
+    pub node_service: Arc<NodeService>,
+    pub embedding_state: Option<EmbeddingState>,
+}
+
+/// Create core services for a given database + model path.
+///
+/// Tiered initialization:
+/// - Store and NodeService failures are fatal (returned as `Err`).
+/// - NLP/embedding failures are non-fatal: `embedding_state` is set to `None`
+///   and a warning is logged, allowing the app to run without semantic search.
+pub(crate) async fn create_service_bundle(
+    db_path: PathBuf,
+    model_path: PathBuf,
+) -> Result<ServiceBundle, String> {
+    // Initialize SurrealDB store
+    tracing::info!("Initializing SurrealDB store at {:?}...", db_path);
+    let mut store = Arc::new(SurrealStore::new(db_path).await.map_err(|e| {
+        let msg = format!("Failed to initialize database: {}", e);
+        eprintln!("❌ {}", msg);
+        msg
+    })?);
+    tracing::info!("SurrealDB store initialized");
+
+    // Initialize node service
+    tracing::info!("Initializing NodeService...");
+    let mut node_service = NodeService::new(&mut store)
+        .await
+        .map_err(|e| format!("Failed to initialize node service: {}", e))?;
+    tracing::info!("NodeService initialized");
+
+    // Tiered NLP init: failure here is non-fatal
+    tracing::info!("Initializing NLP engine (model: {:?})...", model_path);
+    let embedding_state = match create_embedding_state(&store, &mut node_service, &model_path) {
+        Ok(state) => {
+            tracing::info!("Embedding services initialized");
+            Some(state)
+        }
+        Err(e) => {
+            tracing::warn!(
+                "NLP/embedding init failed (semantic search disabled): {}",
+                e
+            );
+            None
+        }
+    };
+
+    let node_service_arc = Arc::new(node_service);
+
+    Ok(ServiceBundle {
+        store,
+        node_service: node_service_arc,
+        embedding_state,
+    })
+}
+
+/// Attempt to create embedding state (NLP engine + embedding service + processor).
+///
+/// Separated so the caller can treat the entire block as fallible without
+/// cluttering the happy path with nested matches.
+fn create_embedding_state(
+    store: &Arc<SurrealStore>,
+    node_service: &mut NodeService,
+    model_path: &Path,
+) -> Result<EmbeddingState, String> {
+    let embedding_config = EmbeddingConfig {
+        model_path: Some(model_path.to_path_buf()),
+        ..Default::default()
+    };
+
+    let mut nlp_engine = EmbeddingService::new(embedding_config)
+        .map_err(|e| format!("Failed to create NLP engine: {}", e))?;
+
+    nlp_engine
+        .initialize()
+        .map_err(|e| format!("Failed to load NLP model: {}", e))?;
+
+    let nlp_engine_arc = Arc::new(nlp_engine);
+    let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine_arc, store.clone()));
+
+    let processor = EmbeddingProcessor::new(embedding_service.clone())
+        .map_err(|e| format!("Failed to init embedding processor: {}", e))?;
+
+    node_service.set_embedding_waker(processor.waker());
+    processor.wake();
+    tracing::info!("EmbeddingProcessor waker connected and woken for stale embeddings");
+
+    Ok(EmbeddingState {
+        service: embedding_service,
+        processor: Arc::new(processor),
+    })
+}
 
 /// Resolve the path to the bundled NLP model (GGUF format for llama.cpp)
 ///
@@ -56,12 +154,12 @@ fn resolve_bundled_model_path(app: &AppHandle) -> Result<PathBuf, String> {
 /// Reads database path, model path, and client ID from AppConfig.
 /// Populates AppServices with store, node_service, and embedding state.
 /// Starts background tasks (MCP server, domain event forwarder).
+///
+/// Uses tiered init: NLP failure is non-fatal (embedding_state = None).
 async fn init_services(app: &AppHandle, config: &crate::config::AppConfig) -> Result<(), String> {
     eprintln!("🔧 [init_services] Starting service initialization...");
-    tracing::info!("🔧 [init_services] Starting service initialization...");
+    tracing::info!("Starting service initialization...");
 
-    let db_path = config.database_path.clone();
-    let model_path = config.model_path.clone();
     let client_id = config.tauri_client_id.clone();
 
     // Check if already initialized via AppServices
@@ -73,110 +171,52 @@ async fn init_services(app: &AppHandle, config: &crate::config::AppConfig) -> Re
         );
     }
 
-    // Initialize SurrealDB store
-    eprintln!("🔧 [init_services] Initializing SurrealDB store...");
-    tracing::info!("🔧 [init_services] Initializing SurrealDB store...");
-    let mut store = Arc::new(SurrealStore::new(db_path).await.map_err(|e| {
-        let msg = format!("Failed to initialize database: {}", e);
-        eprintln!("❌ [init_services] {}", msg);
-        msg
-    })?);
-    eprintln!("✅ [init_services] SurrealDB store initialized");
-    tracing::info!("✅ [init_services] SurrealDB store initialized");
-
-    // Initialize node service with SurrealStore
-    tracing::info!("🔧 [init_services] Initializing NodeService...");
-    let mut node_service = NodeService::new(&mut store)
-        .await
-        .map_err(|e| format!("Failed to initialize node service: {}", e))?;
-    tracing::info!("✅ [init_services] NodeService initialized");
-
-    // Initialize NLP engine for embeddings
-    tracing::info!("🔧 [init_services] Initializing NLP engine...");
-    tracing::info!("🔧 [init_services] Using model path: {:?}", model_path);
-
-    let embedding_config = EmbeddingConfig {
-        model_path: Some(model_path),
-        ..Default::default()
-    };
-
-    let mut nlp_engine = EmbeddingService::new(embedding_config)
-        .map_err(|e| format!("Failed to initialize NLP engine: {}", e))?;
-
-    // Initialize the NLP engine (loads model)
-    nlp_engine
-        .initialize()
-        .map_err(|e| format!("Failed to load NLP model: {}", e))?;
-
-    let nlp_engine_arc = Arc::new(nlp_engine);
-    tracing::info!("✅ [init_services] NLP engine initialized");
-
-    // Initialize embedding service with SurrealStore
-    let embedding_service = NodeEmbeddingService::new(nlp_engine_arc.clone(), store.clone());
-    let embedding_service_arc = Arc::new(embedding_service);
-
-    // Initialize background embedding processor (event-driven, Issue #729)
-    let processor = EmbeddingProcessor::new(embedding_service_arc.clone())
-        .map_err(|e| format!("Failed to initialize embedding processor: {}", e))?;
-
-    // Wire up NodeService to wake processor on embedding changes (Issue #729)
-    node_service.set_embedding_waker(processor.waker());
-    tracing::info!("✅ [init_services] EmbeddingProcessor waker connected to NodeService");
-
-    // Wake processor on startup to process any existing stale embeddings
-    processor.wake();
-    tracing::info!("🔔 [init_services] EmbeddingProcessor woken to process stale embeddings");
-
-    let node_service_arc = Arc::new(node_service);
-    let processor_arc = Arc::new(processor);
+    // Create core services via shared helper (tiered NLP init)
+    let bundle =
+        create_service_bundle(config.database_path.clone(), config.model_path.clone()).await?;
 
     // Retrieve the shutdown token for background task coordination
     let shutdown_token: tauri::State<crate::ShutdownToken> = app.state();
     let session_token = shutdown_token.child_token();
 
+    // Extract embedding service Arc for MCP (before moving bundle.embedding_state)
+    let embedding_service_arc = bundle.embedding_state.as_ref().map(|es| es.service.clone());
+
     // Populate AppServices container (Issue #894)
-    eprintln!("🔧 [init_services] Populating AppServices container...");
-    tracing::info!("🔧 [init_services] Populating AppServices container...");
+    tracing::info!("Populating AppServices container...");
     services
         .initialize(
-            store.clone(),
-            node_service_arc.clone(),
-            Some(EmbeddingState {
-                service: embedding_service_arc.clone(),
-                processor: processor_arc.clone(),
-            }),
+            bundle.store.clone(),
+            bundle.node_service.clone(),
+            bundle.embedding_state,
             config.clone(),
             session_token.clone(),
         )
         .await;
-    eprintln!("✅ [init_services] AppServices container populated");
-    tracing::info!("✅ [init_services] AppServices container populated");
+    tracing::info!("AppServices container populated");
 
-    // Initialize MCP server now that NodeService is available
-    // Pass services directly instead of reading from Tauri state
+    // Initialize MCP server — starts even without embeddings (node CRUD still works)
     if let Err(e) = crate::initialize_mcp_server(
         app.clone(),
-        node_service_arc.clone(),
-        embedding_service_arc.clone(),
+        bundle.node_service.clone(),
+        embedding_service_arc,
         session_token.clone(),
     ) {
-        tracing::error!("❌ Failed to initialize MCP server: {}", e);
+        tracing::error!("Failed to initialize MCP server: {}", e);
         // Don't fail database init if MCP fails - MCP is optional
     }
 
     // Initialize domain event forwarding with client filtering (#665)
     if let Err(e) = crate::initialize_domain_event_forwarder(
         app.clone(),
-        node_service_arc.clone(),
+        bundle.node_service.clone(),
         client_id,
         session_token.clone(),
     ) {
-        tracing::error!("❌ Failed to initialize domain event forwarder: {}", e);
+        tracing::error!("Failed to initialize domain event forwarder: {}", e);
     }
 
-    let _ = store; // Store still available for direct access if needed
-
-    tracing::info!("✅ [init_services] Service initialization complete");
+    tracing::info!("Service initialization complete");
     Ok(())
 }
 

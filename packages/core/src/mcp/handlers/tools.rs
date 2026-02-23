@@ -335,7 +335,7 @@ pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
 /// Returns JSON result with content array and isError flag per MCP spec
 pub async fn handle_tools_call<C>(
     node_service: &Arc<NodeService<C>>,
-    embedding_service: &Arc<NodeEmbeddingService<C>>,
+    embedding_service: &Option<Arc<NodeEmbeddingService<C>>>,
     params: Value,
 ) -> Result<Value, MCPError>
 where
@@ -384,10 +384,15 @@ where
         "get_nodes_batch" => nodes::handle_get_nodes_batch(node_service, arguments).await,
         "update_nodes_batch" => nodes::handle_update_nodes_batch(node_service, arguments).await,
 
-        // Search
-        "search_semantic" => {
-            search::handle_search_semantic(node_service, embedding_service, arguments).await
-        }
+        // Search — returns graceful error when embeddings are unavailable
+        "search_semantic" => match embedding_service {
+            Some(emb_svc) => {
+                search::handle_search_semantic(node_service, emb_svc, arguments).await
+            }
+            None => Err(MCPError::internal_error(
+                "Semantic search unavailable: embedding model failed to load. Node CRUD tools are still available.".to_string(),
+            )),
+        },
 
         // Discovery
         "search_tools" => handle_search_tools(arguments),

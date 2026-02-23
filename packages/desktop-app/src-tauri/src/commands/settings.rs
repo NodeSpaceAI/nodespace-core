@@ -174,21 +174,17 @@ pub async fn reset_database_to_default(
 
 /// Hot-swap database services: create new store, node service, and embeddings,
 /// then atomically replace the running services and restart background tasks.
+///
+/// Uses the shared `create_service_bundle()` helper for consistent tiered init.
 async fn switch_database_services(
     app: &AppHandle,
     services: &AppServices,
     new_db_path: std::path::PathBuf,
 ) -> Result<(), String> {
-    use crate::app_services::EmbeddingState;
-    use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService};
-    use nodespace_core::{NodeService, SurrealStore};
-    use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
-    use std::sync::Arc;
-
     // Get current config for model path etc.
     let old_config = services.config().await.map_err(|e| e.message)?;
 
-    tracing::info!("🔧 Switching database to: {:?}", new_db_path);
+    tracing::info!("Switching database to: {:?}", new_db_path);
 
     // Ensure directory exists
     if let Some(parent) = new_db_path.parent() {
@@ -197,52 +193,10 @@ async fn switch_database_services(
             .map_err(|e| format!("Failed to create database directory: {}", e))?;
     }
 
-    // Create new store
-    let mut store = Arc::new(
-        SurrealStore::new(new_db_path.clone())
-            .await
-            .map_err(|e| format!("Failed to initialize new database: {}", e))?,
-    );
-
-    // Create new NodeService
-    let mut node_service = NodeService::new(&mut store)
-        .await
-        .map_err(|e| format!("Failed to initialize node service: {}", e))?;
-
-    // Create new embedding engine
-    let embedding_config = EmbeddingConfig {
-        model_path: Some(old_config.model_path.clone()),
-        ..Default::default()
-    };
-
-    let embedding_state = match EmbeddingService::new(embedding_config) {
-        Ok(mut nlp_engine) => match nlp_engine.initialize() {
-            Ok(()) => {
-                let nlp_arc = Arc::new(nlp_engine);
-                let emb_service = NodeEmbeddingService::new(nlp_arc.clone(), store.clone());
-                let emb_service_arc = Arc::new(emb_service);
-                let processor = EmbeddingProcessor::new(emb_service_arc.clone())
-                    .map_err(|e| format!("Failed to init embedding processor: {}", e))?;
-                node_service.set_embedding_waker(processor.waker());
-                processor.wake();
-                let processor_arc = Arc::new(processor);
-                Some(EmbeddingState {
-                    service: emb_service_arc,
-                    processor: processor_arc,
-                })
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load NLP model during switch: {}", e);
-                None
-            }
-        },
-        Err(e) => {
-            tracing::warn!("Failed to create NLP engine during switch: {}", e);
-            None
-        }
-    };
-
-    let node_service_arc = Arc::new(node_service);
+    // Create core services via shared helper (tiered NLP init)
+    let bundle =
+        super::db::create_service_bundle(new_db_path.clone(), old_config.model_path.clone())
+            .await?;
 
     // Build new config
     let new_config = crate::config::AppConfig {
@@ -256,33 +210,33 @@ async fn switch_database_services(
     let shutdown_token: tauri::State<crate::ShutdownToken> = app.state();
     let new_session_token = shutdown_token.child_token();
 
+    // Extract embedding service Arc for MCP (before moving bundle.embedding_state)
+    let embedding_service_arc = bundle.embedding_state.as_ref().map(|es| es.service.clone());
+
     // Hot-swap services
-    let embedding_service_arc = embedding_state.as_ref().map(|es| es.service.clone());
     services
         .switch_database(
-            store.clone(),
-            node_service_arc.clone(),
-            embedding_state,
+            bundle.store.clone(),
+            bundle.node_service.clone(),
+            bundle.embedding_state,
             new_config.clone(),
             new_session_token.clone(),
         )
         .await;
 
-    // Restart background services with new session token
-    if let Some(emb_svc) = embedding_service_arc {
-        if let Err(e) = crate::initialize_mcp_server(
-            app.clone(),
-            node_service_arc.clone(),
-            emb_svc,
-            new_session_token.clone(),
-        ) {
-            tracing::error!("Failed to restart MCP server after switch: {}", e);
-        }
+    // Restart MCP server — starts even without embeddings (node CRUD still works)
+    if let Err(e) = crate::initialize_mcp_server(
+        app.clone(),
+        bundle.node_service.clone(),
+        embedding_service_arc,
+        new_session_token.clone(),
+    ) {
+        tracing::error!("Failed to restart MCP server after switch: {}", e);
     }
 
     if let Err(e) = crate::initialize_domain_event_forwarder(
         app.clone(),
-        node_service_arc.clone(),
+        bundle.node_service.clone(),
         new_config.tauri_client_id.clone(),
         new_session_token,
     ) {
@@ -292,6 +246,6 @@ async fn switch_database_services(
         );
     }
 
-    tracing::info!("✅ Database switch complete");
+    tracing::info!("Database switch complete");
     Ok(())
 }

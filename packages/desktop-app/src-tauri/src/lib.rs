@@ -97,7 +97,7 @@ pub fn initialize_domain_event_forwarder(
 pub fn initialize_mcp_server(
     app: tauri::AppHandle,
     node_service: std::sync::Arc<nodespace_core::NodeService>,
-    embedding_service: std::sync::Arc<nodespace_core::services::NodeEmbeddingService>,
+    embedding_service: Option<std::sync::Arc<nodespace_core::services::NodeEmbeddingService>>,
     cancel_token: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
     use futures::FutureExt;

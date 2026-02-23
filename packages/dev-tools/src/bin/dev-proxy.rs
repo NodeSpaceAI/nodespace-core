@@ -460,7 +460,8 @@ async fn main() -> anyhow::Result<()> {
     // MCP runs on port 3100 by default (configurable via MCP_PORT env var)
     // No callback needed - MCP mutations emit DomainEvents via the shared NodeService
     let mcp_port = default_mcp_port();
-    let mcp_service = McpServerService::new(node_service.clone(), embedding_service, mcp_port);
+    let mcp_service =
+        McpServerService::new(node_service.clone(), Some(embedding_service), mcp_port);
 
     tokio::spawn(async move {
         println!("🔌 Starting MCP server on port {}...", mcp_port);
