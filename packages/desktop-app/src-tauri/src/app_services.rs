@@ -39,6 +39,7 @@ struct ActiveServices {
 /// Registered as Tauri managed state. Commands access services via accessor methods
 /// that return `Result<Arc<T>, CommandError>` — returning a clear error if services
 /// aren't initialized yet.
+#[derive(Clone)]
 pub struct AppServices {
     inner: Arc<RwLock<Option<ActiveServices>>>,
     /// Per-session cancellation token for background tasks (MCP, domain event forwarder).
@@ -245,7 +246,18 @@ impl AppServices {
     /// 3. Brief pause for processor task to exit
     /// 4. Release GPU context (now safe — no background tasks hold references)
     pub async fn release_gpu_resources(&self) {
-        // Step 1: Take ownership of embedding state (drops from ActiveServices)
+        // Cancel session token to signal all session-scoped background tasks
+        // (MCP server, domain event forwarder, embedding processor).
+        // Note: graceful_shutdown() already cancelled the parent ShutdownToken
+        // and waited 200ms for tasks to exit, but we cancel explicitly for safety.
+        {
+            let mut token_guard = self.session_token.write().await;
+            if let Some(token) = token_guard.take() {
+                token.cancel();
+            }
+        }
+
+        // Take ownership of embedding state (drops from ActiveServices)
         let old_embedding_state = {
             let mut guard = self.inner.write().await;
             guard
