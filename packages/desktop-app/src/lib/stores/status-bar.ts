@@ -26,6 +26,8 @@ const initialState: StatusBarState = {
 
 const { subscribe, set: _set, update } = writable<StatusBarState>(initialState);
 
+let successTimer: ReturnType<typeof setTimeout> | null = null;
+
 /** Derived store: whether status bar should be visible */
 export const statusBarVisible = derived(
   { subscribe },
@@ -52,8 +54,10 @@ export const statusBar = {
 
   /** Show a success message (auto-hides message after 5s, but bar stays) */
   success(message: string) {
+    if (successTimer) clearTimeout(successTimer);
     update((state) => ({ ...state, message, type: 'success', progress: undefined }));
-    setTimeout(() => {
+    successTimer = setTimeout(() => {
+      successTimer = null;
       update((state) => ({ ...state, message: '', type: 'info' }));
     }, 5000);
   },
