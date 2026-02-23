@@ -50,12 +50,12 @@ export const statusBar = {
     update((state) => ({ ...state, message, progress, type: 'info' }));
   },
 
-  /** Show a success message (auto-hides message after 3s, but bar stays) */
+  /** Show a success message (auto-hides message after 5s, but bar stays) */
   success(message: string) {
     update((state) => ({ ...state, message, type: 'success', progress: undefined }));
     setTimeout(() => {
       update((state) => ({ ...state, message: '', type: 'info' }));
-    }, 3000);
+    }, 5000);
   },
 
   /** Show an error message (stays visible) */

@@ -192,14 +192,17 @@
       });
 
       // Poll for stale nodes count (embedding queue) every 5 seconds
+      let lastStaleCount = 0;
       const updateStaleNodesCount = async () => {
         try {
           const count = await invoke<number>('get_stale_root_count');
           if (count > 0) {
             statusBar.show(`${count} nodes queued for vector indexing`);
-          } else {
+          } else if (lastStaleCount > 0) {
+            // Only clear if we were previously showing a stale count
             statusBar.clearMessage();
           }
+          lastStaleCount = count;
         } catch (error) {
           log.error('Failed to get stale nodes count:', error);
         }

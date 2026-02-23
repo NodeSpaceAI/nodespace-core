@@ -46,6 +46,7 @@
      */
     tabId = 'default',
     onTitleChange,
+    onNodeNotFound,
     /**
      * Disable automatic title updates from node content.
      *
@@ -65,6 +66,7 @@
     tabId?: string;
     onTitleChange?: (_title: string) => void;
     onNodeIdChange?: (_nodeId: string) => void; // In type for interface, not used by BaseNodeViewer
+    onNodeNotFound?: () => void;
     disableTitleUpdates?: boolean;
   } = $props();
 
@@ -317,15 +319,22 @@
         // sharedNodeStore.nodes is now $state, so currentViewedNode $derived updates automatically
         // Header content derived from currentViewedNode - no manual assignment needed
 
+        // Check if node exists after loading
+        const node = sharedNodeStore.getNode(nodeId);
+        if (!node) {
+          log.warn(`Node ${nodeId} not found — closing stale tab`);
+          onNodeNotFound?.();
+          return;
+        }
+
         // Issue #709: Preload type-specific schema form for viewed node if available
         // This triggers lazy loading of TaskSchemaForm, DateSchemaForm, etc.
-        const node = sharedNodeStore.getNode(nodeId);
-        if (node?.nodeType) {
+        if (node.nodeType) {
           loadSchemaFormComponent(node.nodeType);
         }
 
         // Update tab title after node is loaded
-        if (!shouldDisableTitleUpdates && node) {
+        if (!shouldDisableTitleUpdates) {
           updateTabTitle(node.content);
         }
       } catch (error) {
