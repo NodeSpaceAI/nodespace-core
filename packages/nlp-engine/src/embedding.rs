@@ -48,6 +48,60 @@ use llama_cpp_2::model::{AddBos, LlamaModel};
 #[cfg(feature = "embedding-service")]
 static LLAMA_BACKEND: Mutex<Option<LlamaBackend>> = Mutex::new(None);
 
+/// Global registry of active LlamaState instances for atexit cleanup.
+///
+/// When `NSApplication terminate:` → `exit()` → `__cxa_finalize_ranges` runs,
+/// C++ static destructors destroy the Metal device, which asserts that all
+/// residency sets are freed. Our `atexit` handler runs first and drops all
+/// registered LlamaState instances, releasing their residency sets.
+///
+/// Each EmbeddingService stores its state in an `Arc<Mutex<Option<LlamaState>>>`
+/// and registers that Arc here. The atexit handler iterates and clears them all.
+/// Graceful shutdown also clears the per-instance state — the atexit handler's
+/// `.take()` returns `None` in that case (harmless).
+#[cfg(feature = "embedding-service")]
+static LLAMA_STATES: Mutex<Vec<Arc<Mutex<Option<LlamaState>>>>> = Mutex::new(Vec::new());
+
+/// Register an `atexit` handler that releases GPU resources before C++ static
+/// destructors run. Called once when the first model is loaded.
+#[cfg(feature = "embedding-service")]
+fn register_atexit_handler() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static REGISTERED: AtomicBool = AtomicBool::new(false);
+    if REGISTERED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    extern "C" fn cleanup() {
+        // Drop all model+context instances first (releases Metal residency sets)
+        {
+            let states = LLAMA_STATES.lock().unwrap_or_else(|p| p.into_inner());
+            for state_arc in states.iter() {
+                let mut guard = state_arc.lock().unwrap_or_else(|p| p.into_inner());
+                if guard.take().is_some() {
+                    eprintln!("[atexit] LlamaState dropped, Metal residency sets released");
+                }
+            }
+        }
+        // Then drop the backend
+        {
+            let mut guard = LLAMA_BACKEND.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.take().is_some() {
+                eprintln!("[atexit] LlamaBackend dropped");
+            }
+        }
+    }
+    unsafe {
+        libc::atexit(cleanup);
+    }
+}
+
+/// Register a LlamaState Arc in the global registry for atexit cleanup.
+#[cfg(feature = "embedding-service")]
+fn register_state_for_cleanup(state: &Arc<Mutex<Option<LlamaState>>>) {
+    let mut states = LLAMA_STATES.lock().unwrap_or_else(|p| p.into_inner());
+    states.push(Arc::clone(state));
+}
+
 /// Initialize or get the global llama backend.
 /// Returns a guard holding a reference to the singleton backend instance.
 ///
@@ -248,10 +302,11 @@ unsafe impl Sync for LlamaState {}
 /// Main embedding service using llama.cpp
 pub struct EmbeddingService {
     config: EmbeddingConfig,
-    /// Model and context state, wrapped in Mutex<Option<>> to allow taking ownership
-    /// for cleanup without requiring &mut self (needed for Arc<EmbeddingService>).
+    /// Model and context state, wrapped in Arc<Mutex<Option<>>> to allow:
+    /// 1. Taking ownership for cleanup without requiring &mut self (Arc)
+    /// 2. Registration in the global LLAMA_STATES for atexit cleanup
     #[cfg(feature = "embedding-service")]
-    state: Mutex<Option<LlamaState>>,
+    state: Arc<Mutex<Option<LlamaState>>>,
     cache: Arc<Mutex<LruCache<String, Vec<f32>>>>,
     initialized: bool,
     #[cfg(feature = "embedding-service")]
@@ -269,7 +324,7 @@ impl EmbeddingService {
         Ok(Self {
             config,
             #[cfg(feature = "embedding-service")]
-            state: Mutex::new(None),
+            state: Arc::new(Mutex::new(None)),
             cache: Arc::new(Mutex::new(LruCache::new(cache_capacity))),
             initialized: false,
             #[cfg(feature = "embedding-service")]
@@ -327,10 +382,13 @@ impl EmbeddingService {
                 self.embedding_dimension
             );
 
-            // Create LlamaState to hold model and context together
-            // (backend is a global singleton, accessed via get_or_init_backend())
+            // Create LlamaState and store in per-instance state.
+            // Also register with global atexit handler so Metal resources are released
+            // even if NSApplication terminate: bypasses our graceful shutdown path.
             let state = LlamaState::new(model, self.config.context_size, self.config.n_threads);
             *self.state.lock().unwrap_or_else(|p| p.into_inner()) = Some(state);
+            register_state_for_cleanup(&self.state);
+            register_atexit_handler();
 
             tracing::info!(
                 "Embedding service initialized with persistent context (Issue #776 optimization)"
