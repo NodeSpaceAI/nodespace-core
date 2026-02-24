@@ -79,6 +79,15 @@ class ReactiveStructureTree {
    * which needs to update the tree structure when external changes are detected.
    */
   addChild(rel: HierarchyRelationship) {
+    this.addChildInternal(rel);
+    this.notifyChange();
+  }
+
+  /**
+   * Core mutation logic for adding a child. Does NOT trigger reactivity —
+   * caller is responsible for calling notifyChange() after mutations complete.
+   */
+  private addChildInternal(rel: HierarchyRelationship) {
     const parentId = rel.parentId;
     const childId = rel.childId;
     const order = rel.order;
@@ -100,7 +109,6 @@ class ReactiveStructureTree {
         // Re-sort array
         children.sort((a, b) => a.order - b.order);
         this.children.set(parentId, children);
-        this.notifyChange();
       }
       return;
     }
@@ -129,7 +137,6 @@ class ReactiveStructureTree {
 
     children.splice(insertIndex, 0, newChild);
     this.children.set(parentId, children);
-    this.notifyChange();
   }
 
   /**
@@ -224,13 +231,13 @@ class ReactiveStructureTree {
   }
 
   /**
-   * Batch add multiple relationships.
-   * Each addChild() call triggers notifyChange(), which is acceptable for typical batch sizes.
+   * Batch add multiple relationships with a single reactivity notification.
    */
   batchAddRelationships(relationships: Array<{parentId: string, childId: string, order: number}>) {
     for (const rel of relationships) {
-      this.addChild(rel);
+      this.addChildInternal(rel);
     }
+    this.notifyChange();
   }
 
   /**
