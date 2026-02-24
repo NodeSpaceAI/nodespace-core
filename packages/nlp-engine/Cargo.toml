@@ -26,6 +26,9 @@ thiserror = { workspace = true }
 # Logging
 tracing = "0.1"
 
+# atexit handler for GPU cleanup before C++ static destructors
+libc = "0.2"
+
 # Path utilities
 dirs = "5.0"
 
