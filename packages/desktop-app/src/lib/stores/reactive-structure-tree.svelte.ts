@@ -22,9 +22,17 @@ interface ChildInfo {
 }
 
 class ReactiveStructureTree {
-  // Reactive map using Svelte 5 $state.raw() - Map mutations trigger reactivity automatically
-  // Using $state.raw() instead of $state() allows direct Map mutations to be tracked
+  // Reactive map using Svelte 5 $state.raw() - only reassignment triggers reactivity,
+  // so we must reassign after every mutation (see notifyChange())
   children = $state.raw(new Map<string, ChildInfo[]>());
+
+  /**
+   * Reassign the children map to trigger Svelte reactivity.
+   * $state.raw() only tracks reassignment, not in-place Map mutations.
+   */
+  private notifyChange() {
+    this.children = new Map(this.children);
+  }
 
   /**
    * Get ordered child IDs for a parent (reactive)
@@ -91,8 +99,8 @@ class ReactiveStructureTree {
         children[existingIndex].order = order;
         // Re-sort array
         children.sort((a, b) => a.order - b.order);
-        // Notify Svelte of the change
         this.children.set(parentId, children);
+        this.notifyChange();
       }
       return;
     }
@@ -120,8 +128,8 @@ class ReactiveStructureTree {
     };
 
     children.splice(insertIndex, 0, newChild);
-    // Notify Svelte of the change ($state.raw() tracks this automatically)
     this.children.set(parentId, children);
+    this.notifyChange();
   }
 
   /**
@@ -142,6 +150,7 @@ class ReactiveStructureTree {
     } else {
       this.children.set(parentId, filtered);
     }
+    this.notifyChange();
   }
 
   /**
@@ -216,7 +225,7 @@ class ReactiveStructureTree {
 
   /**
    * Batch add multiple relationships.
-   * With $state.raw(), reactivity is automatic so no special batching needed.
+   * Each addChild() call triggers notifyChange(), which is acceptable for typical batch sizes.
    */
   batchAddRelationships(relationships: Array<{parentId: string, childId: string, order: number}>) {
     for (const rel of relationships) {
