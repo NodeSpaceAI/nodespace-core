@@ -99,6 +99,8 @@ fn register_atexit_handler() {
 #[cfg(feature = "embedding-service")]
 fn register_state_for_cleanup(state: &Arc<Mutex<Option<LlamaState>>>) {
     let mut states = LLAMA_STATES.lock().unwrap_or_else(|p| p.into_inner());
+    // Prune stale entries (already-taken states from previous initialize() calls)
+    states.retain(|s| s.lock().unwrap_or_else(|p| p.into_inner()).is_some());
     states.push(Arc::clone(state));
 }
 
@@ -387,8 +389,8 @@ impl EmbeddingService {
             // even if NSApplication terminate: bypasses our graceful shutdown path.
             let state = LlamaState::new(model, self.config.context_size, self.config.n_threads);
             *self.state.lock().unwrap_or_else(|p| p.into_inner()) = Some(state);
-            register_state_for_cleanup(&self.state);
             register_atexit_handler();
+            register_state_for_cleanup(&self.state);
 
             tracing::info!(
                 "Embedding service initialized with persistent context (Issue #776 optimization)"
