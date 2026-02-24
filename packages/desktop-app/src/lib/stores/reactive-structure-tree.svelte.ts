@@ -22,9 +22,17 @@ interface ChildInfo {
 }
 
 class ReactiveStructureTree {
-  // Reactive map using Svelte 5 $state.raw() - Map mutations trigger reactivity automatically
-  // Using $state.raw() instead of $state() allows direct Map mutations to be tracked
+  // Reactive map using Svelte 5 $state.raw() - only reassignment triggers reactivity,
+  // so we must reassign after every mutation (see notifyChange())
   children = $state.raw(new Map<string, ChildInfo[]>());
+
+  /**
+   * Reassign the children map to trigger Svelte reactivity.
+   * $state.raw() only tracks reassignment, not in-place Map mutations.
+   */
+  private notifyChange() {
+    this.children = new Map(this.children);
+  }
 
   /**
    * Get ordered child IDs for a parent (reactive)
@@ -71,6 +79,15 @@ class ReactiveStructureTree {
    * which needs to update the tree structure when external changes are detected.
    */
   addChild(rel: HierarchyRelationship) {
+    this.addChildInternal(rel);
+    this.notifyChange();
+  }
+
+  /**
+   * Core mutation logic for adding a child. Does NOT trigger reactivity —
+   * caller is responsible for calling notifyChange() after mutations complete.
+   */
+  private addChildInternal(rel: HierarchyRelationship) {
     const parentId = rel.parentId;
     const childId = rel.childId;
     const order = rel.order;
@@ -91,7 +108,6 @@ class ReactiveStructureTree {
         children[existingIndex].order = order;
         // Re-sort array
         children.sort((a, b) => a.order - b.order);
-        // Notify Svelte of the change
         this.children.set(parentId, children);
       }
       return;
@@ -120,7 +136,6 @@ class ReactiveStructureTree {
     };
 
     children.splice(insertIndex, 0, newChild);
-    // Notify Svelte of the change ($state.raw() tracks this automatically)
     this.children.set(parentId, children);
   }
 
@@ -142,6 +157,7 @@ class ReactiveStructureTree {
     } else {
       this.children.set(parentId, filtered);
     }
+    this.notifyChange();
   }
 
   /**
@@ -215,13 +231,13 @@ class ReactiveStructureTree {
   }
 
   /**
-   * Batch add multiple relationships.
-   * With $state.raw(), reactivity is automatic so no special batching needed.
+   * Batch add multiple relationships with a single reactivity notification.
    */
   batchAddRelationships(relationships: Array<{parentId: string, childId: string, order: number}>) {
     for (const rel of relationships) {
-      this.addChild(rel);
+      this.addChildInternal(rel);
     }
+    this.notifyChange();
   }
 
   /**
