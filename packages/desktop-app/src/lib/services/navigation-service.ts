@@ -1,5 +1,5 @@
 /**
- * NavigationService - Handles node:// link navigation and tab creation
+ * NavigationService - Handles nodespace:// link navigation and tab creation
  *
  * CRITICAL: Uses lazy initialization pattern (getter function) to avoid
  * module-level singleton exports that cause app freeze during initialization.
@@ -23,6 +23,7 @@ import {
   setActivePane
 } from '$lib/stores/navigation';
 import { sharedNodeStore } from './shared-node-store.svelte';
+import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { get } from 'svelte/store';
 import type { Node } from '$lib/types';
 import { formatDateTitle } from '$lib/utils/date-formatting';
@@ -125,7 +126,97 @@ export class NavigationService {
   }
 
   /**
+   * Walk up the structureTree to find the root ancestor of a node.
+   * Returns the original nodeId if it's already a root node.
+   */
+  private findRootAncestor(nodeId: string): string {
+    if (!structureTree) return nodeId;
+
+    let currentId = nodeId;
+    const visited = new Set<string>();
+
+    while (true) {
+      if (visited.has(currentId)) break; // cycle protection
+      visited.add(currentId);
+
+      const parentId = structureTree.getParent(currentId);
+      if (!parentId || parentId === '__root__') break;
+      currentId = parentId;
+    }
+
+    return currentId;
+  }
+
+  /**
+   * Scroll to a node element in the DOM after it renders.
+   * Uses requestAnimationFrame + polling retries for async-loaded child nodes.
+   */
+  private scrollToNode(nodeId: string): void {
+    const escapedId = CSS.escape(nodeId);
+    const attemptScroll = () => {
+      const el = document.querySelector(`[data-node-id="${escapedId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return true;
+      }
+      return false;
+    };
+
+    // First attempt after current frame renders
+    requestAnimationFrame(() => {
+      if (attemptScroll()) return;
+
+      // Retry with increasing delays for lazy-loaded content (100ms, 250ms, 500ms)
+      const delays = [100, 250, 500];
+      let attempt = 0;
+      const retry = () => {
+        if (attemptScroll() || attempt >= delays.length) return;
+        setTimeout(retry, delays[attempt++]);
+      };
+      retry();
+    });
+  }
+
+  /**
+   * Resolve a navigation target, and if it's a non-root node, also resolve
+   * the root ancestor's info for tab navigation. Returns both the original
+   * target and the navigation-level (root) info.
+   */
+  private async resolveWithRootAncestor(nodeId: string): Promise<{
+    target: NavigationTarget;
+    navNodeId: string;
+    navNodeType: string;
+    navTitle: string;
+    isNonRoot: boolean;
+  } | null> {
+    const target = await this.resolveNodeTarget(nodeId);
+    if (!target) return null;
+
+    const rootId = this.findRootAncestor(target.nodeId);
+    const isNonRoot = rootId !== target.nodeId;
+
+    let navNodeId = target.nodeId;
+    let navNodeType = target.nodeType;
+    let navTitle = target.title;
+
+    if (isNonRoot) {
+      const rootTarget = await this.resolveNodeTarget(rootId);
+      if (rootTarget) {
+        navNodeId = rootTarget.nodeId;
+        navNodeType = rootTarget.nodeType;
+        navTitle = rootTarget.title;
+      }
+    }
+
+    return { target, navNodeId, navNodeType, navTitle, isNonRoot };
+  }
+
+  /**
    * Navigate to a node by UUID
+   *
+   * For non-root nodes: resolves to the root ancestor, navigates to it,
+   * then scrolls to the target child node's position in the viewer.
+   *
    * @param nodeId - The UUID of the node to navigate to
    * @param openInNewTab - If true, always create a new tab. If false, switch to existing tab if present.
    * @param sourcePaneId - The pane ID where the click originated (optional, defaults to active pane)
@@ -136,12 +227,10 @@ export class NavigationService {
     sourcePaneId?: string,
     makeTabActive: boolean = true
   ): Promise<void> {
-    const target = await this.resolveNodeTarget(nodeId);
+    const resolved = await this.resolveWithRootAncestor(nodeId);
+    if (!resolved) return;
 
-    if (!target) {
-      // Error already logged in resolveNodeTarget
-      return;
-    }
+    const { target, navNodeId, navNodeType, navTitle, isNonRoot } = resolved;
 
     const currentState = get(tabState);
 
@@ -150,28 +239,47 @@ export class NavigationService {
       const targetPaneId = sourcePaneId ?? currentState.activePaneId;
       const newTab = {
         id: uuidv4(),
-        title: target.title,
+        title: navTitle,
         type: 'node' as const,
         content: {
-          nodeId: target.nodeId,
-          nodeType: target.nodeType
+          nodeId: navNodeId,
+          nodeType: navNodeType
         },
         closeable: true,
         paneId: targetPaneId
       };
 
       addTab(newTab, makeTabActive);
+
+      // Scroll to child after new tab renders
+      if (isNonRoot) {
+        this.scrollToNode(target.nodeId);
+      }
       return;
     }
 
     // Regular click: Navigate within current tab
-    // Update the active tab's content to show the clicked node
     const activeTabId = currentState.activeTabIds[currentState.activePaneId];
+    const activeTab = currentState.tabs.find((t) => t.id === activeTabId);
+    const currentViewNodeId = activeTab?.content?.nodeId;
 
+    // Check if we're already viewing the root node
+    if (isNonRoot && currentViewNodeId === navNodeId) {
+      // Already viewing the root — just scroll to the target child (no reload)
+      this.scrollToNode(target.nodeId);
+      return;
+    }
+
+    // Navigate to the root node (or direct node if already root)
     updateTabContent(activeTabId, {
-      nodeId: target.nodeId,
-      nodeType: target.nodeType
+      nodeId: navNodeId,
+      nodeType: navNodeType
     });
+
+    // Scroll to child after navigation renders
+    if (isNonRoot) {
+      this.scrollToNode(target.nodeId);
+    }
   }
 
   /**
@@ -189,12 +297,10 @@ export class NavigationService {
    * @param sourcePaneId - The pane ID where the click originated (optional, defaults to active pane)
    */
   async navigateToNodeInOtherPane(nodeId: string, sourcePaneId?: string): Promise<void> {
-    const target = await this.resolveNodeTarget(nodeId);
+    const resolved = await this.resolveWithRootAncestor(nodeId);
+    if (!resolved) return;
 
-    if (!target) {
-      // Error already logged in resolveNodeTarget
-      return;
-    }
+    const { target, navNodeId, navNodeType, navTitle, isNonRoot } = resolved;
 
     const currentState = get(tabState);
     // Use provided source pane, or fall back to active pane
@@ -214,11 +320,11 @@ export class NavigationService {
       // Create tab in the new pane
       const newTab = {
         id: uuidv4(),
-        title: target.title,
+        title: navTitle,
         type: 'node' as const,
         content: {
-          nodeId: target.nodeId,
-          nodeType: target.nodeType
+          nodeId: navNodeId,
+          nodeType: navNodeType
         },
         closeable: true,
         paneId: newPane.id
@@ -240,11 +346,11 @@ export class NavigationService {
       // Create tab in the other pane
       const newTab = {
         id: uuidv4(),
-        title: target.title,
+        title: navTitle,
         type: 'node' as const,
         content: {
-          nodeId: target.nodeId,
-          nodeType: target.nodeType
+          nodeId: navNodeId,
+          nodeType: navNodeType
         },
         closeable: true,
         paneId: otherPane.id
@@ -252,6 +358,11 @@ export class NavigationService {
 
       addTab(newTab);
       setActivePane(otherPane.id);
+    }
+
+    // Scroll to child after the other pane renders
+    if (isNonRoot) {
+      this.scrollToNode(target.nodeId);
     }
   }
 }

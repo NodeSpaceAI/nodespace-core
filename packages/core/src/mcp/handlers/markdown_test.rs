@@ -2093,7 +2093,7 @@ mod link_transformation_tests {
     }
 
     #[test]
-    fn test_anchor_links_preserved() {
+    fn test_anchor_links_unresolved_become_plain_text() {
         let mut nodes = vec![PreparedNode::new(
             "node1".to_string(),
             "text",
@@ -2106,7 +2106,39 @@ mod link_transformation_tests {
         let file_map = HashMap::new();
         transform_links_in_nodes(&mut nodes, &file_map, None);
 
-        assert_eq!(nodes[0].content, "Jump to [Section 1](#section-1) below");
+        // Unresolved anchor (no heading node with slug "section-1") → plain text
+        assert_eq!(nodes[0].content, "Jump to Section 1 below");
+    }
+
+    #[test]
+    fn test_anchor_links_resolved_to_nodespace() {
+        let mut nodes = vec![
+            PreparedNode::new(
+                "heading-uuid-1".to_string(),
+                "header",
+                "# Section 1".to_string(),
+                None,
+                1.0,
+                json!({}),
+            ),
+            PreparedNode::new(
+                "node1".to_string(),
+                "text",
+                "Jump to [Section 1](#section-1) below".to_string(),
+                None,
+                2.0,
+                json!({}),
+            ),
+        ];
+
+        let file_map = HashMap::new();
+        transform_links_in_nodes(&mut nodes, &file_map, None);
+
+        // Heading "# Section 1" slugifies to "section-1" → resolved to nodespace://heading-uuid-1
+        assert_eq!(
+            nodes[1].content,
+            "Jump to [Section 1](nodespace://heading-uuid-1) below"
+        );
     }
 
     #[test]
@@ -2365,7 +2397,7 @@ mod mention_collection_tests {
     }
 
     #[test]
-    fn test_anchor_links_no_mention() {
+    fn test_unresolved_anchor_links_no_mention() {
         let mut nodes = vec![PreparedNode::new(
             "node1".to_string(),
             "text",
@@ -2379,8 +2411,46 @@ mod mention_collection_tests {
         let result =
             transform_links_in_nodes_with_mentions(&mut nodes, &file_map, None, "source-uuid");
 
-        // Anchor links should not produce mentions
+        // Unresolved anchor links should not produce mentions
         assert_eq!(result.mentions.len(), 0);
+        // And should become plain text
+        assert_eq!(nodes[0].content, "Jump to Section 1 below");
+    }
+
+    #[test]
+    fn test_resolved_anchor_links_produce_mention() {
+        let mut nodes = vec![
+            PreparedNode::new(
+                "heading-uuid".to_string(),
+                "header",
+                "# Section 1".to_string(),
+                None,
+                1.0,
+                json!({}),
+            ),
+            PreparedNode::new(
+                "node1".to_string(),
+                "text",
+                "Jump to [Section 1](#section-1) below".to_string(),
+                None,
+                2.0,
+                json!({}),
+            ),
+        ];
+
+        let file_map = HashMap::new();
+        let result =
+            transform_links_in_nodes_with_mentions(&mut nodes, &file_map, None, "source-uuid");
+
+        // Resolved anchor should produce a mention
+        assert_eq!(result.mentions.len(), 1);
+        assert_eq!(result.mentions[0].0, "source-uuid");
+        assert_eq!(result.mentions[0].1, "heading-uuid");
+        // And should be transformed to nodespace:// link
+        assert_eq!(
+            nodes[1].content,
+            "Jump to [Section 1](nodespace://heading-uuid) below"
+        );
     }
 
     #[test]
@@ -2509,5 +2579,56 @@ mod mention_collection_tests {
 
         // No links = no mentions
         assert!(result.mentions.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod slugify_heading_tests {
+    use crate::mcp::handlers::markdown::slugify_heading;
+
+    #[test]
+    fn test_basic_heading() {
+        assert_eq!(slugify_heading("# Hello World"), "hello-world");
+    }
+
+    #[test]
+    fn test_heading_without_hash() {
+        // Content may already have # stripped
+        assert_eq!(slugify_heading("Hello World"), "hello-world");
+    }
+
+    #[test]
+    fn test_heading_with_special_characters() {
+        assert_eq!(slugify_heading("# Hello, World!"), "hello-world");
+        assert_eq!(slugify_heading("## What's New?"), "whats-new");
+        assert_eq!(slugify_heading("# C++ Guide"), "c-guide");
+    }
+
+    #[test]
+    fn test_heading_with_numbers() {
+        assert_eq!(slugify_heading("# Step 1: Setup"), "step-1-setup");
+    }
+
+    #[test]
+    fn test_heading_with_hyphens() {
+        assert_eq!(slugify_heading("# pre-existing"), "pre-existing");
+        assert_eq!(slugify_heading("# A--B"), "a--b");
+    }
+
+    #[test]
+    fn test_heading_multiple_hash_levels() {
+        assert_eq!(slugify_heading("### Deep Heading"), "deep-heading");
+    }
+
+    #[test]
+    fn test_empty_heading_after_strip() {
+        assert_eq!(slugify_heading("# "), "");
+        assert_eq!(slugify_heading("###"), "");
+    }
+
+    #[test]
+    fn test_heading_with_emoji() {
+        // Emoji are non-alphanumeric, so they get stripped
+        assert_eq!(slugify_heading("# 🚀 Launch"), "-launch");
     }
 }
