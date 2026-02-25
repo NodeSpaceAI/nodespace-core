@@ -1,5 +1,5 @@
 /**
- * NavigationService - Handles node:// link navigation and tab creation
+ * NavigationService - Handles nodespace:// link navigation and tab creation
  *
  * CRITICAL: Uses lazy initialization pattern (getter function) to avoid
  * module-level singleton exports that cause app freeze during initialization.
@@ -149,11 +149,12 @@ export class NavigationService {
 
   /**
    * Scroll to a node element in the DOM after it renders.
-   * Uses requestAnimationFrame to wait for render, with a retry for async-loaded content.
+   * Uses requestAnimationFrame + polling retries for async-loaded child nodes.
    */
   private scrollToNode(nodeId: string): void {
+    const escapedId = CSS.escape(nodeId);
     const attemptScroll = () => {
-      const el = document.querySelector(`[data-node-id="${nodeId}"]`);
+      const el = document.querySelector(`[data-node-id="${escapedId}"]`);
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         return true;
@@ -163,11 +164,51 @@ export class NavigationService {
 
     // First attempt after current frame renders
     requestAnimationFrame(() => {
-      if (!attemptScroll()) {
-        // Retry after a short delay for async-loaded child nodes
-        setTimeout(() => attemptScroll(), 150);
-      }
+      if (attemptScroll()) return;
+
+      // Retry with increasing delays for lazy-loaded content (100ms, 250ms, 500ms)
+      const delays = [100, 250, 500];
+      let attempt = 0;
+      const retry = () => {
+        if (attemptScroll() || attempt >= delays.length) return;
+        setTimeout(retry, delays[attempt++]);
+      };
+      retry();
     });
+  }
+
+  /**
+   * Resolve a navigation target, and if it's a non-root node, also resolve
+   * the root ancestor's info for tab navigation. Returns both the original
+   * target and the navigation-level (root) info.
+   */
+  private async resolveWithRootAncestor(nodeId: string): Promise<{
+    target: NavigationTarget;
+    navNodeId: string;
+    navNodeType: string;
+    navTitle: string;
+    isNonRoot: boolean;
+  } | null> {
+    const target = await this.resolveNodeTarget(nodeId);
+    if (!target) return null;
+
+    const rootId = this.findRootAncestor(target.nodeId);
+    const isNonRoot = rootId !== target.nodeId;
+
+    let navNodeId = target.nodeId;
+    let navNodeType = target.nodeType;
+    let navTitle = target.title;
+
+    if (isNonRoot) {
+      const rootTarget = await this.resolveNodeTarget(rootId);
+      if (rootTarget) {
+        navNodeId = rootTarget.nodeId;
+        navNodeType = rootTarget.nodeType;
+        navTitle = rootTarget.title;
+      }
+    }
+
+    return { target, navNodeId, navNodeType, navTitle, isNonRoot };
   }
 
   /**
@@ -186,30 +227,10 @@ export class NavigationService {
     sourcePaneId?: string,
     makeTabActive: boolean = true
   ): Promise<void> {
-    const target = await this.resolveNodeTarget(nodeId);
+    const resolved = await this.resolveWithRootAncestor(nodeId);
+    if (!resolved) return;
 
-    if (!target) {
-      // Error already logged in resolveNodeTarget
-      return;
-    }
-
-    // Resolve root ancestor for non-root nodes
-    const rootId = this.findRootAncestor(target.nodeId);
-    const isNonRoot = rootId !== target.nodeId;
-
-    // If targeting a non-root node, resolve the root's info for navigation
-    let navNodeId = target.nodeId;
-    let navNodeType = target.nodeType;
-    let navTitle = target.title;
-
-    if (isNonRoot) {
-      const rootTarget = await this.resolveNodeTarget(rootId);
-      if (rootTarget) {
-        navNodeId = rootTarget.nodeId;
-        navNodeType = rootTarget.nodeType;
-        navTitle = rootTarget.title;
-      }
-    }
+    const { target, navNodeId, navNodeType, navTitle, isNonRoot } = resolved;
 
     const currentState = get(tabState);
 
@@ -276,29 +297,10 @@ export class NavigationService {
    * @param sourcePaneId - The pane ID where the click originated (optional, defaults to active pane)
    */
   async navigateToNodeInOtherPane(nodeId: string, sourcePaneId?: string): Promise<void> {
-    const target = await this.resolveNodeTarget(nodeId);
+    const resolved = await this.resolveWithRootAncestor(nodeId);
+    if (!resolved) return;
 
-    if (!target) {
-      // Error already logged in resolveNodeTarget
-      return;
-    }
-
-    // Resolve root ancestor for non-root nodes
-    const rootId = this.findRootAncestor(target.nodeId);
-    const isNonRoot = rootId !== target.nodeId;
-
-    let navNodeId = target.nodeId;
-    let navNodeType = target.nodeType;
-    let navTitle = target.title;
-
-    if (isNonRoot) {
-      const rootTarget = await this.resolveNodeTarget(rootId);
-      if (rootTarget) {
-        navNodeId = rootTarget.nodeId;
-        navNodeType = rootTarget.nodeType;
-        navTitle = rootTarget.title;
-      }
-    }
+    const { target, navNodeId, navNodeType, navTitle, isNonRoot } = resolved;
 
     const currentState = get(tabState);
     // Use provided source pane, or fall back to active pane

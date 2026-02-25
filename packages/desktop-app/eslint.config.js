@@ -71,7 +71,8 @@ export default [
         RequestInit: 'readonly',
         Response: 'readonly',
         fetch: 'readonly',
-        crypto: 'readonly'
+        crypto: 'readonly',
+        CSS: 'readonly'
       }
     },
     plugins: {

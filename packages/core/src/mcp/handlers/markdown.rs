@@ -350,8 +350,9 @@ fn transform_single_link_with_target(
 ///
 /// Converts heading content (e.g., "# My Heading") to a slug ("my-heading")
 /// matching GitHub's anchor link format.
-fn slugify_heading(content: &str) -> String {
-    // Strip leading # symbols and spaces (heading markers)
+pub(crate) fn slugify_heading(content: &str) -> String {
+    // Defensively strip leading # symbols — PreparedNode content for headers includes
+    // the markdown prefix (e.g., "# Title"), but this is a no-op if already stripped.
     let text = content.trim_start_matches('#').trim();
     text.to_lowercase()
         .replace(|c: char| !c.is_alphanumeric() && c != ' ' && c != '-', "")
@@ -361,13 +362,18 @@ fn slugify_heading(content: &str) -> String {
 /// Build a map from heading slugs to node UUIDs from prepared nodes.
 ///
 /// Only includes nodes with node_type "header". Uses GitHub-style slugification.
+///
+/// NOTE: Duplicate headings (e.g., two "## Setup" sections) are resolved by first-wins.
+/// GitHub disambiguates duplicates with suffixes (#setup, #setup-1, #setup-2) but we
+/// do not yet generate those suffixed variants. Anchors targeting the `-1` form will be
+/// unresolved and become plain text.
 fn build_slug_to_uuid_map(nodes: &[PreparedNode]) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for node in nodes {
         if node.node_type == "header" {
             let slug = slugify_heading(&node.content);
             if !slug.is_empty() {
-                // First heading with this slug wins (matches GitHub behavior)
+                // First heading with this slug wins
                 map.entry(slug).or_insert_with(|| node.id.clone());
             }
         }

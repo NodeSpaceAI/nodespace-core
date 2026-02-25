@@ -2581,3 +2581,54 @@ mod mention_collection_tests {
         assert!(result.mentions.is_empty());
     }
 }
+
+#[cfg(test)]
+mod slugify_heading_tests {
+    use crate::mcp::handlers::markdown::slugify_heading;
+
+    #[test]
+    fn test_basic_heading() {
+        assert_eq!(slugify_heading("# Hello World"), "hello-world");
+    }
+
+    #[test]
+    fn test_heading_without_hash() {
+        // Content may already have # stripped
+        assert_eq!(slugify_heading("Hello World"), "hello-world");
+    }
+
+    #[test]
+    fn test_heading_with_special_characters() {
+        assert_eq!(slugify_heading("# Hello, World!"), "hello-world");
+        assert_eq!(slugify_heading("## What's New?"), "whats-new");
+        assert_eq!(slugify_heading("# C++ Guide"), "c-guide");
+    }
+
+    #[test]
+    fn test_heading_with_numbers() {
+        assert_eq!(slugify_heading("# Step 1: Setup"), "step-1-setup");
+    }
+
+    #[test]
+    fn test_heading_with_hyphens() {
+        assert_eq!(slugify_heading("# pre-existing"), "pre-existing");
+        assert_eq!(slugify_heading("# A--B"), "a--b");
+    }
+
+    #[test]
+    fn test_heading_multiple_hash_levels() {
+        assert_eq!(slugify_heading("### Deep Heading"), "deep-heading");
+    }
+
+    #[test]
+    fn test_empty_heading_after_strip() {
+        assert_eq!(slugify_heading("# "), "");
+        assert_eq!(slugify_heading("###"), "");
+    }
+
+    #[test]
+    fn test_heading_with_emoji() {
+        // Emoji are non-alphanumeric, so they get stripped
+        assert_eq!(slugify_heading("# 🚀 Launch"), "-launch");
+    }
+}
