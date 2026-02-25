@@ -233,11 +233,15 @@ pub fn transform_links_in_nodes_with_mentions(
 ) -> LinkTransformResult {
     let mut result = LinkTransformResult::default();
 
+    // Build slug-to-UUID map from heading nodes for anchor link resolution
+    let slug_to_uuid = build_slug_to_uuid_map(nodes);
+
     for node in nodes.iter_mut() {
         let (new_content, target_ids) = transform_links_in_content_with_mentions(
             &node.content,
             file_to_root_id,
             current_file_path,
+            &slug_to_uuid,
             &LINK_REGEX,
         );
         node.content = new_content;
@@ -260,6 +264,7 @@ fn transform_links_in_content_with_mentions(
     content: &str,
     file_to_root_id: &HashMap<PathBuf, String>,
     current_file_path: Option<&Path>,
+    slug_to_uuid: &HashMap<String, String>,
     link_regex: &Regex,
 ) -> (String, Vec<String>) {
     let mut target_ids = Vec::new();
@@ -274,6 +279,7 @@ fn transform_links_in_content_with_mentions(
                 link_url,
                 file_to_root_id,
                 current_file_path,
+                slug_to_uuid,
             );
 
             if let Some(id) = target_id {
@@ -298,6 +304,7 @@ fn transform_single_link_with_target(
     link_url: &str,
     file_to_root_id: &HashMap<PathBuf, String>,
     current_file_path: Option<&Path>,
+    slug_to_uuid: &HashMap<String, String>,
 ) -> (String, Option<String>) {
     // Check if it's already a nodespace link - extract target ID for mention creation
     if link_url.starts_with("nodespace://") {
@@ -310,9 +317,17 @@ fn transform_single_link_with_target(
         return (format!("[{}]({})", link_text, link_url), None);
     }
 
-    // Check if it's an anchor link (starts with #)
-    if link_url.starts_with('#') {
-        return (format!("[{}]({})", link_text, link_url), None);
+    // Check if it's an anchor link (starts with #) — resolve to heading node if possible
+    if let Some(slug) = link_url.strip_prefix('#') {
+        if let Some(target_uuid) = slug_to_uuid.get(slug) {
+            // Resolved to a heading node — transform to nodespace:// link
+            return (
+                format!("[{}](nodespace://{})", link_text, target_uuid),
+                Some(target_uuid.clone()),
+            );
+        }
+        // Unresolved anchor — remove link, keep text as plain text
+        return (link_text.to_string(), None);
     }
 
     // It's a relative or absolute file path - try to resolve it
@@ -329,6 +344,35 @@ fn transform_single_link_with_target(
         // Dead link - file not in import batch, remove link but keep text
         (link_text.to_string(), None)
     }
+}
+
+/// GitHub-style heading slugification for anchor link resolution.
+///
+/// Converts heading content (e.g., "# My Heading") to a slug ("my-heading")
+/// matching GitHub's anchor link format.
+fn slugify_heading(content: &str) -> String {
+    // Strip leading # symbols and spaces (heading markers)
+    let text = content.trim_start_matches('#').trim();
+    text.to_lowercase()
+        .replace(|c: char| !c.is_alphanumeric() && c != ' ' && c != '-', "")
+        .replace(' ', "-")
+}
+
+/// Build a map from heading slugs to node UUIDs from prepared nodes.
+///
+/// Only includes nodes with node_type "header". Uses GitHub-style slugification.
+fn build_slug_to_uuid_map(nodes: &[PreparedNode]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for node in nodes {
+        if node.node_type == "header" {
+            let slug = slugify_heading(&node.content);
+            if !slug.is_empty() {
+                // First heading with this slug wins (matches GitHub behavior)
+                map.entry(slug).or_insert_with(|| node.id.clone());
+            }
+        }
+    }
+    map
 }
 
 /// Check if a URL is external (http, https, mailto, etc.)
