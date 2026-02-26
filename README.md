@@ -8,6 +8,8 @@ AI coding assistants forget everything between sessions. NodeSpace gives them pe
 
 > ⚠️ **Alpha Preview** — NodeSpace is in early development. Features may change and data formats are not yet stable.
 
+![NodeSpace Screenshot](assets/screenshot-alpha-preview.png)
+
 ---
 
 ## Documentation

@@ -17,7 +17,7 @@
  * - Error event emission with retry capability
  * - Snapshot/restore for both structure and data
  *
- * See: docs/architecture/development/hierarchy-reactivity-architecture-review.md#5-fire-and-forget-with-rollback
+ * See: ../nodespace-docs/archived/architecture/development/hierarchy-reactivity-architecture-review.md#5-fire-and-forget-with-rollback
  */
 
 import { emit } from '@tauri-apps/api/event';

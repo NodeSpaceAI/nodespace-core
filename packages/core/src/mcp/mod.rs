@@ -31,7 +31,7 @@
 //! }
 //! ```
 //!
-//! See `/docs/architecture/business-logic/mcp-integration.md` for full details.
+//! See `../nodespace-docs/archived/architecture/business-logic/mcp-integration.md` for full details.
 
 pub mod handlers;
 pub mod server;
