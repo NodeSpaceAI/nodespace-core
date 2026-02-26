@@ -7,7 +7,7 @@
  *   bun run scripts/import-docs.ts --dry-run # Preview mappings without importing
  *
  * This script:
- * 1. Phase 1: Finds all .md files in docs/ and imports them
+ * 1. Phase 1: Finds all .md files in ../nodespace-docs/ and imports them
  *    - Derives collection path from folder structure (folder names as-is)
  *    - Derives title from the first H1 heading in the file, or falls back to filename
  *    - Calls create_nodes_from_markdown MCP tool for each file
@@ -18,15 +18,15 @@
  *
  * Collection Routing:
  *   Folder names are used as-is for collection paths.
- *   docs/architecture/core/foo.md -> "architecture:core"
- *   docs/troubleshooting/foo.md -> "troubleshooting"
- *   docs/foo.md -> (no collection, root level)
+ *   nodespace-docs/architecture/foo.md -> "architecture"
+ *   nodespace-docs/development/foo.md -> "development"
+ *   nodespace-docs/foo.md -> (no collection, root level)
  */
 
 import { readdir, readFile } from "fs/promises";
 import { join, relative, dirname, basename, resolve, normalize } from "path";
 
-const DOCS_ROOT = join(import.meta.dir, "..", "docs");
+const DOCS_ROOT = join(import.meta.dir, "..", "..", "nodespace-docs");
 const MCP_ENDPOINT = "http://localhost:3100/mcp"; // NodeSpace MCP HTTP endpoint
 
 interface MCPRequest {
@@ -122,9 +122,9 @@ function extractTitlePreview(content: string, filename: string): string {
  * Uses folder names as-is, joined with ":"
  *
  * Examples:
- *   docs/architecture/core/foo.md -> "architecture:core"
- *   docs/troubleshooting/foo.md -> "troubleshooting"
- *   docs/foo.md -> null (no collection for root level files)
+ *   nodespace-docs/architecture/foo.md -> "architecture"
+ *   nodespace-docs/development/foo.md -> "development"
+ *   nodespace-docs/foo.md -> null (no collection for root level files)
  */
 function deriveCollection(filePath: string): string | null {
 	const relativePath = relative(DOCS_ROOT, filePath);
