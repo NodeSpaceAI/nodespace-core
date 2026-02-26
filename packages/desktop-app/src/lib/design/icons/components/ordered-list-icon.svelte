@@ -4,7 +4,7 @@
   CSS-based approach with numbered list overlay icon
   Displays Material Design numbered list icon on circular background
 
-  Design System Reference: docs/design-system/patterns/foundations/icon-systems.html → OrderedListNode Icon System
+  Design System Reference: ../nodespace-docs/archived/design-system/patterns/foundations/icon-systems.html → OrderedListNode Icon System
 -->
 
 <script lang="ts">

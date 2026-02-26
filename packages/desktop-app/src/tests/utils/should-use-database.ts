@@ -9,10 +9,10 @@
  * - `bun run test:db` - Full database integration mode
  *
  * **For comprehensive documentation**, see:
- * - [Testing Guide](../../../docs/architecture/development/testing-guide.md)
+ * - [Testing Guide](../../../../nodespace-docs/development/testing-guide.md)
  * - Usage patterns, migration guide, and design rationale
  *
- * @see docs/architecture/development/testing-guide.md
+ * @see ../nodespace-docs/development/testing-guide.md
  */
 
 import { createTestDatabase, initializeTestDatabase, cleanupTestDatabase } from './test-database';

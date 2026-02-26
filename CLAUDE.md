@@ -118,8 +118,8 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 > 🚨 **ADDITIONAL CRITICAL REQUIREMENTS** 🚨
 > 
 > **BEFORE STARTING ANY TASK, YOU MUST ALSO READ:**
-> - [`/docs/architecture/development/overview.md`](docs/architecture/development/overview.md) - Complete development process overview
-> - [`/docs/architecture/development/process/startup-sequence.md`](docs/architecture/development/process/startup-sequence.md) - Mandatory pre-implementation steps
+> - [`overview.md`](../nodespace-docs/development/overview.md) - Complete development process overview
+> - [`startup-sequence.md`](../nodespace-docs/development/startup-sequence.md) - Mandatory pre-implementation steps
 > 
 > **KEY PRINCIPLES YOU MUST FOLLOW:**
 > - ✅ **Self-Contained Implementation**: Each issue must work independently with full functionality
@@ -130,11 +130,10 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 
 ### 1. Understanding the Project
 - **Read the README.md** for high-level project overview and architecture
-- **Review `/docs/architecture/`** for detailed technical specifications:
-  - `core/system-overview.md` - Complete architecture and design decisions
-  - `core/technology-stack.md` - Current tech stack and versions
+- **Review `../nodespace-docs/`** for detailed technical specifications:
+  - `architecture/system-overview.md` - Complete architecture and design decisions
+  - `architecture/technology-stack.md` - Current tech stack and versions
   - `components/` - Detailed component specifications
-  - `deployment/development-setup.md` - Setup requirements
 
 ### 2. Finding Tasks to Work On
 
@@ -167,7 +166,7 @@ bun run gh:view <issue-number>
 ```
 
 **When creating or modifying issues:**
-- **MUST follow**: [Issue Workflow Guide](docs/architecture/development/process/issue-workflow.md)
+- **MUST follow**: [Issue Workflow Guide](../nodespace-docs/development/issue-workflow.md)
 - Contains templates, formatting rules, and quality gates
 
 **Issue Priority Guidelines:**
@@ -200,7 +199,7 @@ NodeSpace uses a **hybrid architecture** combining hardcoded behaviors with sche
 #### Core Architecture Documents (READ THESE FIRST)
 
 **1. Node Behavior System**
-- **Location**: [`/docs/architecture/business-logic/node-behavior-system.md`](docs/architecture/business-logic/node-behavior-system.md)
+- **Location**: [`node-behavior-system.md`](../nodespace-docs/components/node-behavior-system.md)
 - **When to read**: Before modifying/creating ANY node type (task, text, date, etc.)
 - **Key concepts**:
   - Hybrid approach: Core (hardcoded) vs Extension (schema-driven)
@@ -209,7 +208,7 @@ NodeSpace uses a **hybrid architecture** combining hardcoded behaviors with sche
   - Validation hierarchy
 
 **2. Schema Management**
-- **Location**: [`/docs/architecture/development/schema-management-implementation-guide.md`](docs/architecture/development/schema-management-implementation-guide.md)
+- **Location**: [`schema-management.md`](../nodespace-docs/components/schema-management.md)
 - **When to read**: Before adding properties to nodes or creating custom types
 - **Key concepts**:
   - **Namespace enforcement** (CRITICAL for preventing conflicts)
@@ -270,8 +269,8 @@ Is it a built-in core type everyone needs?
 - Any direct usage of `BaseNode` in application code
 
 **📖 Complete Documentation:**
-- [`/docs/architecture/components/component-architecture-guide.md`](docs/architecture/components/component-architecture-guide.md) - Complete patterns and templates
-- [`/docs/architecture/frontend-architecture.md`](docs/architecture/frontend-architecture.md) - Frontend overview
+- [`component-architecture.md`](../nodespace-docs/components/component-architecture.md) - Complete patterns and templates
+- [`frontend-architecture.md`](../nodespace-docs/architecture/frontend-architecture.md) - Frontend overview
 
 **When Building New Components:**
 1. **Read the architecture guide first** - Contains templates and patterns
@@ -310,7 +309,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 ### 5. Implementation Workflow
 
-**CRITICAL**: Follow the complete development process in the [development documentation](docs/architecture/development/overview.md)
+**CRITICAL**: Follow the complete development process in the [development documentation](../nodespace-docs/development/overview.md)
 
 **Step-by-Step Process (Summary - See Full Process Documentation):**
 
@@ -399,7 +398,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    - **Performance Tests**: Run fast mode daily, full mode before merging performance-critical changes
    - **Database Mode**: Full integration validation before merging critical changes
    - Some tests conditionally skip in in-memory mode (require full database persistence)
-   - See [Testing Guide](docs/architecture/development/testing-guide.md) for details
+   - See [Testing Guide](../nodespace-docs/development/testing-guide.md) for details
 
 5. **Run Tests & Quality Checks Before PR**
    ```bash
@@ -426,7 +425,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    - Automatically updates project status to "Ready for Review"
 
 6. **Conduct Code Review**
-   - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in the [PR review documentation](docs/architecture/development/process/pr-review.md)
+   - **FOLLOW UNIVERSAL PROCESS**: Use the code review guidelines in the [PR review documentation](../nodespace-docs/development/pr-review.md)
    - Use `/pragmatic-code-review` command for comprehensive PR reviews
    - Use `senior-architect-reviewer` agent for complex architectural decisions
    - All quality gates and review requirements apply universally to AI agents and human reviewers
@@ -464,7 +463,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 **Before Starting Any Task:**
 1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-11 above, including test baseline)
-2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - Start with the [overview](docs/architecture/development/overview.md) and [startup sequence](docs/architecture/development/process/startup-sequence.md)
+2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - Start with the [overview](../nodespace-docs/development/overview.md) and [startup sequence](../nodespace-docs/development/startup-sequence.md)
 3. **Select appropriate subagent** based on task complexity and type
 4. Check issue acceptance criteria and requirements
 5. Plan self-contained implementation with mock dependencies
@@ -472,7 +471,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 ### 6. Development Standards
 
 > **📖 Complete Standards Documentation:**
-> - [`/docs/architecture/development/standards/code-quality.md`](docs/architecture/development/standards/code-quality.md) - Full code quality standards including logging
+> - [`code-quality.md`](../nodespace-docs/development/standards/code-quality.md) - Full code quality standards including logging
 
 **Code Quality:**
 - Follow Rust formatting standards (rustfmt)
@@ -648,7 +647,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - [ ] Updated GitHub project status using CLI: Todo → In Progress
 - [ ] Selected appropriate subagent based on task complexity
 - [ ] Read issue requirements and acceptance criteria
-- [ ] Read development process documentation (start with [overview](docs/architecture/development/overview.md))
+- [ ] Read development process documentation (start with [overview](../nodespace-docs/development/overview.md))
 - [ ] Planned self-contained implementation with mock dependencies
 
 **Startup Sequence - CONTINUING FROM WIP (Simplified):**
@@ -688,14 +687,14 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 ### 8. Getting Help
 
 **Resources Available:**
-- `/docs/architecture/` - Complete technical specifications
+- `../nodespace-docs/` - Complete technical specifications (separate repo)
 - `README.md` - Quick start and overview
 - GitHub issues - Detailed implementation requirements
 - Existing NodeSpace repositories for reference patterns
 
 **When Stuck:**
 - Check related issues for context and dependencies
-- Review architecture docs for design decisions
+- Review architecture docs in `../nodespace-docs/` for design decisions
 - Look at existing NodeSpace codebases for established patterns
 - Verify technology versions match current documentation
 
@@ -754,43 +753,32 @@ When NodeSpace is running with the demo database (`bun run demo:tauri`), documen
 
 **Importing/Refreshing Documentation:**
 ```bash
-# Preview what will be imported
+# Preview what will be imported (reads from ../nodespace-docs/)
 bun run scripts/import-docs.ts --dry-run
 
 # Perform actual import (requires NodeSpace running)
 bun run scripts/import-docs.ts
 ```
 
-## Updated Repository Structure (Post-2024 Restructure)
+## Repository Structure
+
+> **Documentation lives in a separate repo**: [`../nodespace-docs/`](../nodespace-docs/) contains all architecture, development process, component specs, and design system docs.
 
 ```
 nodespace-core/
-├── docs/                          # UNIFIED documentation
-│   ├── architecture/             # System architecture
-│   │   ├── development/          # Development process & lessons learned
-│   │   │   └── lessons/          # Analysis files preserved as permanent reference
-│   │   ├── components/           # Component specifications
-│   │   ├── decisions/            # Architecture decision records
-│   │   └── data/                 # Data architecture and storage docs
-│   ├── troubleshooting/          # Issue resolution guides
-│   ├── performance/              # Performance analysis
-│   └── design-system/            # UI component documentation
 ├── packages/
-│   └── desktop-app/              # Main Svelte + Tauri application
-│       ├── src/                  # Frontend source
-│       ├── src-tauri/            # Tauri backend
-│       └── [configs]             # App-specific configurations
+│   ├── desktop-app/              # Main Svelte + Tauri application
+│   │   ├── src/                  # Frontend source
+│   │   ├── src-tauri/            # Tauri backend
+│   │   └── [configs]             # App-specific configurations
+│   ├── design-system/            # Design system package
+│   └── nlp-engine/               # NLP engine package
 ├── scripts/                      # Build and GitHub utilities
+├── CLAUDE.md                     # Agent guide (this file)
+├── README.md                     # Project overview
 ├── package.json                  # Bun workspace root
 └── Cargo.toml                    # Rust workspace (if needed)
 ```
-
-### Key Improvements from Restructure:
-- **Single Documentation Source**: All docs consolidated under `docs/`
-- **Clear Package Structure**: Desktop app isolated in `packages/desktop-app/`
-- **Preserved History**: All file moves maintain git history
-- **Updated References**: All internal links and configurations updated
-- **Lessons Preserved**: Analysis files moved to permanent `docs/architecture/development/lessons/`
 
 ## Current Project Status
 

@@ -1,6 +1,6 @@
 /// Integration tests for the embedding service
 /// These tests require the nomic-embed-vision GGUF model to be downloaded
-/// See docs/architecture/components/nlp-model-setup.md for download instructions
+/// See ../nodespace-docs/archived/architecture/components/nlp-model-setup.md for download instructions
 #[cfg(all(test, feature = "embedding-service"))]
 mod integration_tests {
     use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService, EMBEDDING_DIMENSION};
@@ -15,7 +15,7 @@ mod integration_tests {
         if !model_exists() {
             eprintln!(
                 "Skipping test: model not found. \
-                See docs/architecture/components/nlp-model-setup.md for setup instructions."
+                See ../nodespace-docs/archived/architecture/components/nlp-model-setup.md for setup instructions."
             );
             return;
         }

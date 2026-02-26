@@ -4,7 +4,7 @@
   CSS-based approach matching design-system-icons.css exactly
   Uses background SVG for quotation mark overlay
 
-  Design System Reference: docs/design-system/components.html → Quote Block Nodes
+  Design System Reference: ../nodespace-docs/archived/design-system/components.html → Quote Block Nodes
 -->
 
 <script lang="ts">

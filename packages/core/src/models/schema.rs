@@ -65,7 +65,7 @@
 //! - **Edge fields**: Custom properties on the relationship itself
 //! - **Cardinality**: "one" or "many" constraints (enforced at application level)
 //!
-//! See [`docs/architecture/data/schema-relational-fields.md`] for complete details.
+//! See [`../nodespace-docs/archived/architecture/data/schema-relational-fields.md`] for complete details.
 
 use serde::{Deserialize, Serialize};
 

@@ -161,7 +161,7 @@ export interface Node {
    * - Clients cannot bypass version checks (enforced by backend)
    * - Version spoofing is impossible (must match current exactly)
    *
-   * @see /docs/architecture/data/optimistic-concurrency-control.md - Complete OCC guide
+   * @see ../nodespace-docs/archived/architecture/data/optimistic-concurrency-control.md - Complete OCC guide
    * @see ConflictResolver - Frontend auto-merge strategies
    */
   version: number;

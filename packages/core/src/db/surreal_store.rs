@@ -1747,7 +1747,7 @@ where
 
     pub async fn query_nodes(&self, query: NodeQuery) -> Result<Vec<Node>> {
         // Handle mentioned_by query using graph traversal
-        // See: docs/architecture/data/surrealdb-schema-design.md - Graph Traversal Patterns
+        // See: ../nodespace-docs/archived/architecture/data/surrealdb-only-architecture.md - Graph Traversal Patterns
         if let Some(ref mentioned_node_id) = query.mentioned_by {
             // Use graph traversal to get IDs, then fetch full nodes
             // Issue #788: Universal Relationship Architecture - filter by relationship_type

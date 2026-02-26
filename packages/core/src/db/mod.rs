@@ -17,7 +17,7 @@
 //! - High performance query capabilities
 //! - Embedded deployment (no external dependencies)
 //!
-//! For architecture details, see `/docs/architecture/data/surrealdb-schema-design.md`
+//! For architecture details, see `../nodespace-docs/archived/architecture/data/surrealdb-only-architecture.md`
 
 mod error;
 pub mod events;
