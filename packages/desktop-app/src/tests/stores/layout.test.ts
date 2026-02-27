@@ -9,6 +9,8 @@ import {
   navigationItems,
   toggleSidebar,
   setActivePane,
+  setCollectionsExpanded,
+  toggleCollectionsExpanded,
   type NavigationItem
 } from '$lib/stores/layout';
 import { LayoutPersistenceService } from '$lib/services/layout-persistence-service';
@@ -713,6 +715,29 @@ describe('Layout Store - Persistence Integration', () => {
       expect(result2).toBe(false);
       expect(result3).toBe(false);
       expect(LayoutPersistenceService.load).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('setCollectionsExpanded', () => {
+    it('should set collectionsExpanded to true', () => {
+      setCollectionsExpanded(true);
+      expect(get(layoutState).collectionsExpanded).toBe(true);
+    });
+
+    it('should set collectionsExpanded to false', () => {
+      setCollectionsExpanded(false);
+      expect(get(layoutState).collectionsExpanded).toBe(false);
+    });
+  });
+
+  describe('toggleCollectionsExpanded', () => {
+    it('should toggle collectionsExpanded state', () => {
+      setCollectionsExpanded(false);
+      toggleCollectionsExpanded();
+      expect(get(layoutState).collectionsExpanded).toBe(true);
+
+      toggleCollectionsExpanded();
+      expect(get(layoutState).collectionsExpanded).toBe(false);
     });
   });
 });

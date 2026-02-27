@@ -461,6 +461,22 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 **General:**
 - All GitHub operations now use **bun commands** (no Claude Code approval prompts)
 
+**Plan Mode — CRITICAL CONTEXT PRESERVATION:**
+
+When using plan mode (EnterPlanMode / ExitPlanMode), the context window is cleared between planning and implementation. This means the implementation agent will ONLY see the plan — not the CLAUDE.md, startup sequence, or any prior conversation context.
+
+**Therefore, every plan MUST be self-contained and include:**
+
+1. **Startup sequence as Step 0** — The plan must begin with:
+   > Step 0: Complete startup sequence — git status, pull latest, run test baseline (`bun run test & bun run rust:test & wait`), document baseline in issue (`bun run gh:comment <N> "..."`), create branch (`git checkout -b feature/issue-<N>-description`), assign issue (`bun run gh:assign <N> "@me"`), update status (`bun run gh:status <N> "In Progress"`)
+
+2. **Finalization steps at the end** — The plan must end with:
+   > Final steps: Run `bun run test:all` to verify no new failures vs baseline. Run `bun run quality:fix` and commit any changes. Create PR with `bun run gh:pr <N>`.
+
+3. **Key development standards inline** — Include any relevant standards the implementation agent needs (e.g., "use `createLogger` not `console.log`", "mock Tauri invoke with `vi.mock('@tauri-apps/api/core')`", "use `bun run test` not `bun test`").
+
+**Why this matters:** Without these steps in the plan itself, the implementation agent has no way to know about them after the context window clears. The plan is the ONLY source of truth during implementation.
+
 **Before Starting Any Task:**
 1. **COMPLETE THE MANDATORY STARTUP SEQUENCE** (steps 1-11 above, including test baseline)
 2. **READ THE DEVELOPMENT PROCESS DOCUMENTATION** - Start with the [overview](../nodespace-docs/development/overview.md) and [startup sequence](../nodespace-docs/development/startup-sequence.md)
