@@ -24,6 +24,7 @@ import {
 } from '$lib/stores/navigation';
 import { sharedNodeStore } from './shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
+import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { get } from 'svelte/store';
 import type { Node } from '$lib/types';
 import { formatDateTitle } from '$lib/utils/date-formatting';
@@ -126,11 +127,25 @@ export class NavigationService {
   }
 
   /**
-   * Walk up the structureTree to find the root ancestor of a node.
-   * Returns the original nodeId if it's already a root node.
+   * Walk up the structureTree to find the navigation ancestor of a node.
+   *
+   * Entity nodes that have their own dedicated viewer (task, date, query, etc.)
+   * are returned as-is — they should open in their own viewer, not be resolved
+   * to a parent's viewer.
+   *
+   * Primitive child nodes (text, header, code-block) without dedicated viewers
+   * walk up to the nearest viewer-owning ancestor or the tree root.
+   *
+   * Returns the original nodeId if it's a root node or has its own viewer.
    */
   private findRootAncestor(nodeId: string): string {
     if (!structureTree) return nodeId;
+
+    // If the target node itself has a dedicated viewer, it should open in that viewer
+    const targetNode = sharedNodeStore.getNode(nodeId);
+    if (targetNode && pluginRegistry.hasViewer(targetNode.nodeType)) {
+      return nodeId;
+    }
 
     let currentId = nodeId;
     const visited = new Set<string>();
@@ -142,6 +157,12 @@ export class NavigationService {
       const parentId = structureTree.getParent(currentId);
       if (!parentId || parentId === '__root__') break;
       currentId = parentId;
+
+      // Stop at the first ancestor that has its own viewer
+      const parentNode = sharedNodeStore.getNode(currentId);
+      if (parentNode && pluginRegistry.hasViewer(parentNode.nodeType)) {
+        break;
+      }
     }
 
     return currentId;
