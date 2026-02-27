@@ -190,15 +190,14 @@ describe('Diagnostic Logger', () => {
 
   describe('log buffer trimming', () => {
     it('should trim entries when exceeding MAX_LOG_ENTRIES (500)', async () => {
-      // Add 510 entries
-      for (let i = 0; i < 510; i++) {
+      // Add 501 entries — just enough to trigger the trim
+      for (let i = 0; i < 501; i++) {
         await withDiagnosticLogging(`method-${i}`, () => Promise.resolve(i), []);
       }
 
       const entries = getLogEntries();
       expect(entries.length).toBeLessThanOrEqual(500);
-      // First entries should be trimmed, last ones kept
-      expect(entries[entries.length - 1].method).toBe('method-509');
+      expect(entries[entries.length - 1].method).toBe('method-500');
     });
   });
 

@@ -89,8 +89,7 @@ describe('Settings Store', () => {
 
       await updateDisplaySetting('renderMarkdown', false);
 
-      // Store should remain unchanged on error (no optimistic update applied)
-      // Actually the optimistic update happens after await, so on error it won't run
+      // Optimistic update is after the await, so it's skipped when invoke rejects
       expect(get(appSettings)?.display.renderMarkdown).toBe(true);
     });
 
