@@ -138,7 +138,7 @@ export class NavigationService {
    *
    * Returns the original nodeId if it's a root node or has its own viewer.
    */
-  private findRootAncestor(nodeId: string): string {
+  private findNavigationAncestor(nodeId: string): string {
     if (!structureTree) return nodeId;
 
     // If the target node itself has a dedicated viewer, it should open in that viewer
@@ -200,10 +200,10 @@ export class NavigationService {
 
   /**
    * Resolve a navigation target, and if it's a non-root node, also resolve
-   * the root ancestor's info for tab navigation. Returns both the original
-   * target and the navigation-level (root) info.
+   * the navigation ancestor's info for tab navigation. Returns both the original
+   * target and the navigation-level ancestor info.
    */
-  private async resolveWithRootAncestor(nodeId: string): Promise<{
+  private async resolveWithNavigationAncestor(nodeId: string): Promise<{
     target: NavigationTarget;
     navNodeId: string;
     navNodeType: string;
@@ -213,19 +213,19 @@ export class NavigationService {
     const target = await this.resolveNodeTarget(nodeId);
     if (!target) return null;
 
-    const rootId = this.findRootAncestor(target.nodeId);
-    const isNonRoot = rootId !== target.nodeId;
+    const ancestorId = this.findNavigationAncestor(target.nodeId);
+    const isNonRoot = ancestorId !== target.nodeId;
 
     let navNodeId = target.nodeId;
     let navNodeType = target.nodeType;
     let navTitle = target.title;
 
     if (isNonRoot) {
-      const rootTarget = await this.resolveNodeTarget(rootId);
-      if (rootTarget) {
-        navNodeId = rootTarget.nodeId;
-        navNodeType = rootTarget.nodeType;
-        navTitle = rootTarget.title;
+      const ancestorTarget = await this.resolveNodeTarget(ancestorId);
+      if (ancestorTarget) {
+        navNodeId = ancestorTarget.nodeId;
+        navNodeType = ancestorTarget.nodeType;
+        navTitle = ancestorTarget.title;
       }
     }
 
@@ -235,7 +235,7 @@ export class NavigationService {
   /**
    * Navigate to a node by UUID
    *
-   * For non-root nodes: resolves to the root ancestor, navigates to it,
+   * For non-root nodes: resolves to the navigation ancestor, navigates to it,
    * then scrolls to the target child node's position in the viewer.
    *
    * @param nodeId - The UUID of the node to navigate to
@@ -248,7 +248,7 @@ export class NavigationService {
     sourcePaneId?: string,
     makeTabActive: boolean = true
   ): Promise<void> {
-    const resolved = await this.resolveWithRootAncestor(nodeId);
+    const resolved = await this.resolveWithNavigationAncestor(nodeId);
     if (!resolved) return;
 
     const { target, navNodeId, navNodeType, navTitle, isNonRoot } = resolved;
@@ -284,14 +284,14 @@ export class NavigationService {
     const activeTab = currentState.tabs.find((t) => t.id === activeTabId);
     const currentViewNodeId = activeTab?.content?.nodeId;
 
-    // Check if we're already viewing the root node
+    // Check if we're already viewing the ancestor node
     if (isNonRoot && currentViewNodeId === navNodeId) {
-      // Already viewing the root — just scroll to the target child (no reload)
+      // Already viewing the ancestor — just scroll to the target child (no reload)
       this.scrollToNode(target.nodeId);
       return;
     }
 
-    // Navigate to the root node (or direct node if already root)
+    // Navigate to the ancestor node (or direct node if already root)
     updateTabContent(activeTabId, {
       nodeId: navNodeId,
       nodeType: navNodeType
@@ -318,7 +318,7 @@ export class NavigationService {
    * @param sourcePaneId - The pane ID where the click originated (optional, defaults to active pane)
    */
   async navigateToNodeInOtherPane(nodeId: string, sourcePaneId?: string): Promise<void> {
-    const resolved = await this.resolveWithRootAncestor(nodeId);
+    const resolved = await this.resolveWithNavigationAncestor(nodeId);
     if (!resolved) return;
 
     const { target, navNodeId, navNodeType, navTitle, isNonRoot } = resolved;
