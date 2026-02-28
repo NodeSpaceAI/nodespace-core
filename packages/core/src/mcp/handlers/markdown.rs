@@ -1466,9 +1466,10 @@ fn is_horizontal_rule(line: &str) -> bool {
     trimmed.chars().all(|c| c == first)
 }
 
-/// Detect start of a GFM table (line contains `|`)
+/// Detect start of a GFM table (line starts with `|` or contains 2+ pipes)
 fn is_table_start(line: &str) -> bool {
-    line.contains('|')
+    let trimmed = line.trim();
+    trimmed.starts_with('|') || trimmed.matches('|').count() >= 2
 }
 
 /// Detect table delimiter row (contains `|` and `-`, all chars in `|`, `-`, `:`, ` `)

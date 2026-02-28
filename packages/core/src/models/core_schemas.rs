@@ -12,6 +12,11 @@
 //! - **code-block** - Code blocks with syntax highlighting
 //! - **quote-block** - Blockquotes for citations
 //! - **ordered-list** - Numbered list items
+//! - **checkbox** - Checkbox items
+//! - **query** - Query/search nodes
+//! - **collection** - Collection containers
+//! - **horizontal-line** - Horizontal rule / thematic break
+//! - **table** - GFM markdown table
 //!
 //! ## Usage
 //!
@@ -23,8 +28,8 @@ use chrono::Utc;
 
 /// Get all core schema definitions as SchemaNode instances
 ///
-/// Returns the 7 core schemas (task, text, date, header, code-block, quote-block, ordered-list)
-/// ready to be converted to Node via `schema.into_node()` for database seeding.
+/// Returns all core schemas ready to be converted to Node via `schema.into_node()`
+/// for database seeding.
 pub fn get_core_schemas() -> Vec<SchemaNode> {
     let now = Utc::now();
 
@@ -444,7 +449,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_core_schemas_returns_all_ten() {
+    fn test_get_core_schemas_returns_all() {
         let schemas = get_core_schemas();
         assert_eq!(schemas.len(), 12);
     }

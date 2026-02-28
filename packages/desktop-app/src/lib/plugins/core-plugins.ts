@@ -411,7 +411,7 @@ export const horizontalLineNodePlugin: PluginDefinition = {
   description: 'Horizontal rule / thematic break',
   version: '1.0.0',
   pattern: {
-    detect: /^-{3,}$/,
+    detect: /^[-*_]{3,}$/,
     canRevert: true,
     onEnter: 'none',
     splittingStrategy: 'simple-split',

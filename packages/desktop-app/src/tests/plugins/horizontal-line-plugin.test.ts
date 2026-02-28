@@ -28,6 +28,22 @@ describe('HorizontalLine Plugin', () => {
       expect(detection?.config.targetNodeType).toBe('horizontal-line');
     });
 
+    it('should detect *** (asterisks) pattern', () => {
+      const content = '***';
+      const detection = pluginRegistry.detectPatternInContent(content);
+
+      expect(detection).not.toBeNull();
+      expect(detection?.config.targetNodeType).toBe('horizontal-line');
+    });
+
+    it('should detect ___ (underscores) pattern', () => {
+      const content = '___';
+      const detection = pluginRegistry.detectPatternInContent(content);
+
+      expect(detection).not.toBeNull();
+      expect(detection?.config.targetNodeType).toBe('horizontal-line');
+    });
+
     it('should NOT detect -- (less than 3 dashes)', () => {
       const content = '--';
       const detection = pluginRegistry.detectPatternInContent(content);
