@@ -519,7 +519,7 @@ pub fn prepare_nodes_from_markdown(
         let (node_type, content, heading_level, is_multiline, properties) =
             if let Some(level) = detect_heading(content_line) {
                 ("header", content_line.to_string(), Some(level), false, None)
-            } else if is_task_line(content_line) {
+            } else if is_checkbox_line(content_line) {
                 // Checkbox node - pure content node, state encoded in content string
                 // Content preserved as full markdown line ("- [ ] text" or "- [x] text")
                 ("checkbox", content_line.to_string(), None, false, None)
@@ -805,125 +805,32 @@ enum ContainerStrategy {
     TitleAsContainer(String),
 }
 
-/// Tracks a node in the hierarchy during parsing
-#[derive(Debug, Clone)]
-struct HierarchyNode {
-    node_id: String,
-    level: usize,
-}
-
 /// Context for building the node hierarchy
+///
+/// After refactoring parse_markdown to delegate parsing to prepare_nodes_from_markdown,
+/// this context primarily tracks created nodes for post-import validation and response.
 struct ParserContext {
-    /// Stack tracking heading hierarchy (h1 → h2 → h3)
-    heading_stack: Vec<HierarchyNode>,
-    /// Stack tracking list indentation
-    list_stack: Vec<HierarchyNode>,
-    /// Last sibling at current level for ordering
-    last_sibling: Option<String>,
-    /// All created node IDs (for backward compatibility)
-    node_ids: Vec<String>,
     /// All created nodes with metadata (id + type)
     nodes: Vec<NodeMetadata>,
     /// Root node ID (determined by strategy)
     root_id: Option<String>,
-    /// Whether the first node has been created (for tracking purposes)
-    first_node_created: bool,
 }
 
 impl ParserContext {
-    fn new_with_strategy(strategy: ContainerStrategy) -> Self {
-        // For DateContainer strategy, set root_id immediately
-        let root_id = match &strategy {
-            ContainerStrategy::DateContainer(date) => Some(date.clone()),
-            ContainerStrategy::TitleAsContainer(_) => None, // Will be set after parsing title
-        };
-
-        Self {
-            heading_stack: Vec::new(),
-            list_stack: Vec::new(),
-            last_sibling: None,
-            node_ids: Vec::new(),
-            nodes: Vec::new(),
-            root_id,
-            first_node_created: false,
-        }
-    }
-
     /// Create a parser context for an existing container
     ///
-    /// This is a convenience constructor that properly initializes the parser
-    /// state for adding children to an existing container node. It sets up the
-    /// heading stack and parser flags to treat the existing container as the
-    /// root of the hierarchy.
-    ///
-    /// # Arguments
-    ///
-    /// * `container_id` - ID of the existing container node
-    /// * `container_content` - Content of the existing container (typically the title)
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let context = ParserContext::new_for_existing_container(
-    ///     "container-123".to_string(),
-    ///     "# Project Plan".to_string()
-    /// );
-    /// // Context is ready to parse markdown and create children under container-123
-    /// ```
-    fn new_for_existing_container(container_id: String, container_content: String) -> Self {
-        let mut context =
-            Self::new_with_strategy(ContainerStrategy::TitleAsContainer(container_content));
-
-        // Set root_id to the existing container
-        context.root_id = Some(container_id.clone());
-
-        // Set up initial heading stack with container as root (level 0)
-        // This makes all parsed nodes children of the container
-        context.push_heading(container_id, 0);
-
-        // Mark that we already have a container (skip title parsing)
-        context.first_node_created = true;
-
-        context
-    }
-
-    /// Get current parent ID based on hierarchy context
-    fn current_parent_id(&self) -> Option<String> {
-        // List context takes precedence over heading context
-        if let Some(list_parent) = self.list_stack.last() {
-            return Some(list_parent.node_id.clone());
-        }
-
-        if let Some(heading_parent) = self.heading_stack.last() {
-            return Some(heading_parent.node_id.clone());
-        }
-
-        None
-    }
-
-    /// Pop headings at same or higher level to prepare for a new heading
-    /// This must be called BEFORE creating the heading node to get the correct parent
-    fn pop_headings_for_level(&mut self, level: usize) {
-        // Pop headings at same or higher level
-        while let Some(top) = self.heading_stack.last() {
-            if top.level >= level {
-                self.heading_stack.pop();
-            } else {
-                break;
-            }
+    /// Initializes the context with the container's ID as the root.
+    /// parse_markdown delegates to prepare_nodes_from_markdown which handles
+    /// hierarchy internally using root_id.
+    fn new_for_existing_container(container_id: String) -> Self {
+        Self {
+            nodes: Vec::new(),
+            root_id: Some(container_id),
         }
     }
 
-    /// Add a heading to the hierarchy stack after it's been created
-    fn push_heading(&mut self, node_id: String, level: usize) {
-        self.heading_stack.push(HierarchyNode { node_id, level });
-        self.last_sibling = None; // Reset sibling tracking at new heading level
-    }
-
-    /// Track a node for sibling ordering
+    /// Track a created node for post-import validation and response
     fn track_node(&mut self, node_id: String, node_type: String) {
-        self.last_sibling = Some(node_id.clone());
-        self.node_ids.push(node_id.clone());
         self.nodes.push(NodeMetadata {
             id: node_id,
             node_type,
@@ -1383,24 +1290,26 @@ fn detect_heading(line: &str) -> Option<usize> {
     }
 }
 
-/// Check if a line is a task (checked or unchecked)
+/// Check if a line is a GFM checkbox (checked or unchecked)
 ///
-/// Tasks are lines starting with "- [ ] " (unchecked) or "- [x] " (checked).
-fn is_task_line(line: &str) -> bool {
+/// Checkboxes are lines starting with "- [ ] " (unchecked) or "- [x] " (checked).
+/// Note: These create "checkbox" nodes, NOT "task" nodes. Task nodes are a separate
+/// managed type created only via the /task slash command.
+fn is_checkbox_line(line: &str) -> bool {
     line.starts_with("- [ ] ") || line.starts_with("- [x] ") || line.starts_with("- [X] ")
 }
 
-/// Check if a line is a bullet list item (not a task)
+/// Check if a line is a bullet list item (not a checkbox)
 ///
-/// Bullets start with "- " but are not tasks ("- [ ]").
+/// Bullets start with "- " but are not checkboxes ("- [ ]").
 /// Note: Lines like "- [Link](url)" ARE valid bullets - the link is the content.
 fn is_bullet_line(line: &str) -> bool {
     if !line.starts_with("- ") {
         return false;
     }
 
-    // Exclude tasks
-    if is_task_line(line) {
+    // Exclude checkboxes
+    if is_checkbox_line(line) {
         return false;
     }
 
@@ -1483,8 +1392,8 @@ fn is_table_delimiter(line: &str) -> bool {
 
 /// Parse markdown content and create nodes
 ///
-/// This function processes markdown line-by-line, preserving inline formatting
-/// and using indentation + heading levels to determine hierarchy.
+/// Delegates parsing to `prepare_nodes_from_markdown` (single source of truth for
+/// detection logic), then creates nodes sequentially in the database.
 ///
 /// # Arguments
 ///
@@ -1495,13 +1404,6 @@ fn is_table_delimiter(line: &str) -> bool {
 /// # Returns
 ///
 /// Returns `Ok(())` on success, or an `MCPError` if node creation fails.
-///
-/// # Hierarchy Rules
-///
-/// 1. **Heading hierarchy by level**: H1 → H2 → H3, same-level headers are siblings
-/// 2. **Content below headings are children**: Non-heading content becomes child of nearest heading above
-/// 3. **Indentation hints (optional)**: Tab/space count before `-` indicates depth
-/// 4. **Inline syntax preserved**: `**bold**`, `*italic*`, etc. kept intact
 async fn parse_markdown<C>(
     markdown: &str,
     node_service: &Arc<NodeService<C>>,
@@ -1510,309 +1412,54 @@ async fn parse_markdown<C>(
 where
     C: surrealdb::Connection,
 {
-    // Track indentation-based hierarchy (node_id, indent_level)
-    let mut indent_stack: Vec<(String, usize)> = Vec::new();
+    // Phase 1: Parse markdown into PreparedNodes using shared detection logic
+    let prepared_nodes = prepare_nodes_from_markdown(markdown, context.root_id.clone())?;
 
-    // Track the last text paragraph for bullet/ordered-list hierarchy
-    let mut last_text_node: Option<(String, usize)> = None; // (node_id, indent_level)
-
-    // Track the last content node (header or text) for code-block/quote-block hierarchy
-    // Code blocks and quote blocks should be children of the immediately preceding content
-    let mut last_content_node: Option<String> = None; // node_id
-
-    // Track last sibling created per parent to maintain document order
-    // Key: parent_id (or empty string for root-level nodes)
-    // Value: last sibling node_id created under that parent
+    // Phase 2: Create nodes sequentially in the database
+    // Map prepared node IDs → actual DB-created IDs (prepare_nodes_from_markdown generates
+    // temporary UUIDs that don't exist in the DB; create_node returns the real IDs)
+    let mut id_map: HashMap<String, String> = HashMap::new();
+    // Track last sibling per parent for insert_after ordering
     let mut last_sibling_per_parent: HashMap<String, String> = HashMap::new();
 
-    // Process markdown line by line, collecting text paragraphs
-    let lines: Vec<&str> = markdown.lines().collect();
-    let mut i = 0;
-
-    while i < lines.len() {
-        // Count consecutive empty lines (for paragraph separation)
-        while i < lines.len() && lines[i].trim().is_empty() {
-            i += 1;
-        }
-
-        if i >= lines.len() {
-            break;
-        }
-
-        let line = lines[i];
-
-        // Detect indentation level using helper function
-        let indent_level = calculate_indent(line);
-
-        // Strip leading whitespace
-        let trimmed = line.trim_start();
-
-        // Check if this is a bullet list item (not a task or link) using helper functions
-        let is_bullet = is_bullet_line(trimmed);
-        let content_line = if is_bullet {
-            trimmed
-                .strip_prefix("- ")
-                .expect("is_bullet_line guarantees '- ' prefix exists")
-        } else {
-            trimmed
-        };
-
-        // Detect node type and extract content with inline markdown preserved
-        // Tuple: (node_type, content, heading_level, is_multiline, properties)
-        let (node_type, content, heading_level, is_multiline, properties) =
-            if let Some(level) = detect_heading(content_line) {
-                ("header", content_line.to_string(), Some(level), false, None)
-            } else if is_task_line(content_line) {
-                // Checkbox node - pure content node, state encoded in content string
-                // Content preserved as full markdown line ("- [ ] text" or "- [x] text")
-                ("checkbox", content_line.to_string(), None, false, None)
-            } else if content_line.starts_with("```") {
-                // Code block - collect until closing ```
-                // IMPORTANT: Preserve original whitespace inside code blocks (don't trim_start)
-                let mut code_lines = vec![content_line];
-                i += 1;
-                while i < lines.len() {
-                    let code_line = lines[i];
-                    // Keep the original line content to preserve indentation
-                    code_lines.push(code_line);
-                    if code_line.trim_start().starts_with("```") {
-                        break;
-                    }
-                    i += 1;
-                }
-                let code_content = code_lines.join("\n");
-                ("code-block", code_content, None, true, None)
-            } else if content_line.starts_with("> ") || content_line == ">" {
-                // Quote block - collect consecutive quote lines including empty continuation lines
-                // Empty quote continuation lines are just ">" without trailing space
-                let mut quote_lines = vec![content_line];
-                while i + 1 < lines.len() {
-                    let next_trimmed = lines[i + 1].trim_start();
-                    if next_trimmed.starts_with("> ") || next_trimmed == ">" {
-                        i += 1;
-                        quote_lines.push(next_trimmed);
-                    } else {
-                        break;
-                    }
-                }
-                let quote_content = quote_lines.join("\n");
-                ("quote-block", quote_content, None, true, None)
-            } else if let Some(num_end) = detect_ordered_list(content_line) {
-                // Collect consecutive numbered items into single ordered-list node
-                // Each line should start with "1. " as per requirement
-                let first_item_content = &content_line[num_end + 2..]; // Skip "N. "
-                let mut list_items = vec![format!("1. {}", first_item_content)];
-                let mut j = i + 1;
-                // Skip empty lines within the list
-                while j < lines.len() {
-                    if lines[j].trim().is_empty() {
-                        j += 1;
-                        continue;
-                    }
-                    let next_line = lines[j].trim_start();
-                    if let Some(next_num_end) = detect_ordered_list(next_line) {
-                        i = j;
-                        let item_content = &next_line[next_num_end + 2..]; // Skip "N. "
-                        list_items.push(format!("1. {}", item_content));
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-                let list_content = list_items.join("\n");
-                ("ordered-list", list_content, None, true, None)
-            } else if is_horizontal_rule(content_line) {
-                (
-                    "horizontal-line",
-                    content_line.to_string(),
-                    None,
-                    false,
-                    None,
-                )
-            } else if is_table_start(content_line)
-                && i + 1 < lines.len()
-                && is_table_delimiter(lines[i + 1].trim_start())
-            {
-                // Table - collect all table rows (header + delimiter + body)
-                let mut table_lines = vec![content_line.to_string()];
-                // Consume delimiter row
-                i += 1;
-                table_lines.push(lines[i].trim_start().to_string());
-                // Consume body rows while they contain |
-                while i + 1 < lines.len() {
-                    let next = lines[i + 1].trim_start();
-                    if next.contains('|') && !next.is_empty() {
-                        i += 1;
-                        table_lines.push(next.to_string());
-                    } else {
-                        break;
-                    }
-                }
-                ("table", table_lines.join("\n"), None, true, None)
+    for node in &prepared_nodes {
+        // Resolve parent_id: map prepared ID → actual DB ID
+        // Unmapped IDs are expected only for the root_id (which is already a real DB ID)
+        let actual_parent_id = node.parent_id.as_ref().map(|pid| {
+            if let Some(mapped) = id_map.get(pid) {
+                mapped.clone()
             } else {
-                // Text paragraph - collect consecutive lines with NO empty lines between them
-                let mut text_lines = vec![content_line];
-
-                // Look ahead for more text lines (only merge if NO empty lines)
-                let mut j = i + 1;
-                while j < lines.len() {
-                    // Check for empty lines
-                    let mut empty_count = 0;
-                    while j < lines.len() && lines[j].trim().is_empty() {
-                        empty_count += 1;
-                        j += 1;
-                    }
-
-                    if empty_count >= 1 || j >= lines.len() {
-                        // Any empty line or end - stop paragraph
-                        break;
-                    }
-
-                    if j < lines.len() {
-                        let next_line = lines[j].trim_start();
-
-                        // Check if next line is special syntax (stop paragraph)
-                        let is_special = detect_heading(next_line).is_some()
-                            || next_line.starts_with("- ")
-                            || next_line.starts_with("```")
-                            || next_line.starts_with("> ")
-                            || detect_ordered_list(next_line).is_some()
-                            || is_horizontal_rule(next_line)
-                            || is_table_start(next_line);
-
-                        if is_special {
-                            break;
-                        }
-
-                        // Add to paragraph (no empty lines between)
-                        text_lines.push(next_line);
-                        i = j;
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-
-                let text_content = text_lines.join("\n");
-                ("text", text_content, None, text_lines.len() > 1, None)
-            };
-
-        // Pop indent stack for items at same or lower indentation
-        while let Some((_, stack_indent)) = indent_stack.last() {
-            if *stack_indent >= indent_level {
-                indent_stack.pop();
-            } else {
-                break;
+                debug_assert!(
+                    context.root_id.as_ref() == Some(pid),
+                    "Unmapped parent_id '{}' is not the root_id — possible orphaned node",
+                    pid
+                );
+                pid.clone()
             }
-        }
+        });
 
-        // Determine parent based on bullet/ordered-list rules, heading hierarchy, and indentation
-        let parent_id = if node_type == "code-block"
-            || node_type == "quote-block"
-            || node_type == "table"
-            || node_type == "horizontal-line"
-        {
-            // Code blocks, quote blocks, tables, and horizontal lines - children of immediately preceding content node
-            // This creates semantic grouping: "Description text" → code example
-            last_content_node
-                .clone()
-                .or_else(|| context.current_parent_id())
-        } else if is_bullet && !is_multiline {
-            // Bullets - should be children of preceding text paragraph OR indented under previous bullet
-            // Check indent_stack first for indented bullets (child of previous bullet)
-            // Then check last_text_node for bullets at base level (child of text paragraph)
-            if indent_level > 0 {
-                // Indented bullet - check if there's a parent at lower indent
-                indent_stack
-                    .last()
-                    .map(|(id, _)| id.clone())
-                    .or_else(|| {
-                        // No indent parent, try text paragraph
-                        last_text_node.as_ref().map(|(text_id, _)| text_id.clone())
-                    })
-                    .or_else(|| context.current_parent_id())
-            } else {
-                // Non-indented bullet - child of text paragraph
-                if let Some((text_id, _)) = &last_text_node {
-                    Some(text_id.clone())
-                } else {
-                    context.current_parent_id()
-                }
-            }
-        } else if node_type == "ordered-list" {
-            // Ordered lists - should be children of preceding header or text node
-            // Check if there's a recent text node first
-            if let Some((text_id, _)) = &last_text_node {
-                Some(text_id.clone())
-            } else {
-                // No text node - use heading parent
-                context.current_parent_id()
-            }
-        } else if let Some(h_level) = heading_level {
-            // For headers: pop same-or-higher level headers, then get parent
-            context.pop_headings_for_level(h_level);
-            indent_stack
-                .last()
-                .map(|(id, _)| id.clone())
-                .or_else(|| context.current_parent_id())
-        } else {
-            // For non-headers: prefer indentation parent, fallback to heading parent
-            indent_stack
-                .last()
-                .map(|(id, _)| id.clone())
-                .or_else(|| context.current_parent_id())
-        };
-
-        // Look up the last sibling created under this parent to maintain document order
-        let parent_key = parent_id.clone().unwrap_or_default();
+        let parent_key = actual_parent_id.clone().unwrap_or_default();
         let insert_after = last_sibling_per_parent.get(&parent_key).cloned();
 
-        // Create the node (insert after last sibling to preserve document order)
-        let node_id = create_node(
+        let actual_node_id = create_node(
             node_service,
-            node_type,
-            &content,
-            parent_id.clone(),
+            &node.node_type,
+            &node.content,
+            actual_parent_id,
             context.root_id.clone(),
-            insert_after, // Insert after last sibling to maintain document order
-            properties,   // Custom properties (e.g., task status)
+            insert_after,
+            Some(node.properties.clone()),
         )
         .await?;
 
+        // Map prepared ID → actual ID for child resolution
+        id_map.insert(node.id.clone(), actual_node_id.clone());
+
         // Track this node as the last sibling for its parent
-        last_sibling_per_parent.insert(parent_key, node_id.clone());
+        last_sibling_per_parent.insert(parent_key, actual_node_id.clone());
 
-        // Update heading stack if this was a header
-        if let Some(h_level) = heading_level {
-            context.push_heading(node_id.clone(), h_level);
-        }
-
-        // Track last text node for bullet/ordered-list hierarchy
-        // Only NON-BULLET text nodes should update last_text_node
-        if node_type == "text" && !is_multiline && !is_bullet {
-            last_text_node = Some((node_id.clone(), indent_level));
-        } else if node_type != "text" {
-            // Non-text node breaks the text context for bullets/lists
-            last_text_node = None;
-        }
-
-        // Track last content node (header or text) for code-block/quote-block hierarchy
-        // Code-blocks and quote-blocks become children of the immediately preceding content
-        if node_type == "header" || (node_type == "text" && !is_bullet) {
-            last_content_node = Some(node_id.clone());
-        }
-
-        // Push to indent stack if this line had indentation OR is a bullet (for nested bullets)
-        // Headers use heading_stack for hierarchy, not indent_stack
-        // Bullets need to be in stack so indented bullets can find them as parents
-        if heading_level.is_none() && (indent_level > 0 || is_bullet) {
-            indent_stack.push((node_id.clone(), indent_level));
-        }
-
-        // Track node in context
-        context.track_node(node_id, node_type.to_string());
-
-        i += 1;
+        // Track node in context for post-import validation
+        context.track_node(actual_node_id, node.node_type.clone());
     }
 
     Ok(())
@@ -2296,7 +1943,7 @@ where
     }
 
     // Validate root node exists
-    let root_node = node_service
+    node_service
         .get_node(&root_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get root node: {}", e)))?
@@ -2363,10 +2010,7 @@ where
     }
 
     // Create parser context for the existing root node
-    // This properly initializes the parser state to treat the root as hierarchy root
-    // Note: new_for_existing_container is kept for internal compatibility but works for roots
-    let mut context =
-        ParserContext::new_for_existing_container(root_id.clone(), root_node.content.clone());
+    let mut context = ParserContext::new_for_existing_container(root_id.clone());
 
     // Parse the new markdown content and create nodes
     parse_markdown(&params.markdown, node_service, &mut context).await?;
