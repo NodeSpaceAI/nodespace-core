@@ -14,6 +14,7 @@ import { get } from 'svelte/store';
 import { getNavigationService, NavigationService } from '$lib/services/navigation-service';
 import { tabState, resetTabState, DEFAULT_PANE_ID } from '$lib/stores/navigation';
 import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import type { Node } from '$lib/types';
 
 describe('NavigationService - Singleton Pattern', () => {
@@ -655,5 +656,131 @@ describe('NavigationService - navigateToNodeInOtherPane', () => {
 
       expect(newTab?.type).toBe('node');
     });
+  });
+});
+
+describe('NavigationService - Entity node navigation (Issue #915)', () => {
+  let navService: ReturnType<typeof getNavigationService>;
+
+  function makeNode(id: string, nodeType: string, content: string = ''): Node {
+    return {
+      id,
+      nodeType,
+      content,
+      version: 1,
+      properties: {},
+      createdAt: Date.now().toString(),
+      modifiedAt: Date.now().toString()
+    };
+  }
+
+  beforeEach(() => {
+    resetTabState();
+    structureTree.clear();
+    navService = getNavigationService();
+  });
+
+  it('task node nested under date node opens as task (not parent date)', async () => {
+    // Setup: date node -> task node (task has its own viewer)
+    const dateNode = makeNode('2025-06-15', 'date', '2025-06-15');
+    const taskNode = makeNode('task-under-date', 'task', 'Buy groceries');
+
+    sharedNodeStore.setNode(dateNode, { type: 'database', reason: 'test' }, true);
+    sharedNodeStore.setNode(taskNode, { type: 'database', reason: 'test' }, true);
+
+    // Set up parent-child relationship: date -> task
+    structureTree.addChild({ parentId: '2025-06-15', childId: 'task-under-date', order: 1 });
+
+    // Navigate to the task node in a new tab
+    await navService.navigateToNode('task-under-date', true);
+
+    const state = get(tabState);
+    const newTab = state.tabs.find((t) => t.content?.nodeId === 'task-under-date');
+
+    // Should open the task node itself, NOT the parent date node
+    expect(newTab).toBeDefined();
+    expect(newTab?.content?.nodeType).toBe('task');
+    expect(newTab?.content?.nodeId).toBe('task-under-date');
+  });
+
+  it('task node nested under date opens correctly in other pane', async () => {
+    const dateNode = makeNode('2025-06-15', 'date', '2025-06-15');
+    const taskNode = makeNode('task-other-pane', 'task', 'Write report');
+
+    sharedNodeStore.setNode(dateNode, { type: 'database', reason: 'test' }, true);
+    sharedNodeStore.setNode(taskNode, { type: 'database', reason: 'test' }, true);
+
+    structureTree.addChild({ parentId: '2025-06-15', childId: 'task-other-pane', order: 1 });
+
+    await navService.navigateToNodeInOtherPane('task-other-pane');
+
+    const state = get(tabState);
+    const newPane = state.panes[1];
+    const tabsInNewPane = state.tabs.filter((t) => t.paneId === newPane.id);
+
+    expect(tabsInNewPane.length).toBe(1);
+    expect(tabsInNewPane[0]?.content?.nodeId).toBe('task-other-pane');
+    expect(tabsInNewPane[0]?.content?.nodeType).toBe('task');
+  });
+
+  it('primitive text node under date still resolves to date ancestor', async () => {
+    const dateNode = makeNode('2025-06-15', 'date', '2025-06-15');
+    const textNode = makeNode('text-child', 'text', 'Some note text');
+
+    sharedNodeStore.setNode(dateNode, { type: 'database', reason: 'test' }, true);
+    sharedNodeStore.setNode(textNode, { type: 'database', reason: 'test' }, true);
+
+    structureTree.addChild({ parentId: '2025-06-15', childId: 'text-child', order: 1 });
+
+    await navService.navigateToNode('text-child', true);
+
+    const state = get(tabState);
+    const newTab = state.tabs.find((t) => t.content?.nodeId === '2025-06-15');
+
+    // Primitive text node should resolve to parent date node
+    expect(newTab).toBeDefined();
+    expect(newTab?.content?.nodeType).toBe('date');
+  });
+
+  it('date node nested under another node still opens as date', async () => {
+    // date nodes have their own viewer, so they should not walk up
+    const parentText = makeNode('parent-text', 'text', 'Parent');
+    const dateNode = makeNode('2025-07-01', 'date', '2025-07-01');
+
+    sharedNodeStore.setNode(parentText, { type: 'database', reason: 'test' }, true);
+    sharedNodeStore.setNode(dateNode, { type: 'database', reason: 'test' }, true);
+
+    structureTree.addChild({ parentId: 'parent-text', childId: '2025-07-01', order: 1 });
+
+    await navService.navigateToNode('2025-07-01', true);
+
+    const state = get(tabState);
+    const newTab = state.tabs.find((t) => t.content?.nodeId === '2025-07-01');
+
+    expect(newTab).toBeDefined();
+    expect(newTab?.content?.nodeType).toBe('date');
+  });
+
+  it('deeply nested primitive walks up to nearest viewer-owning ancestor', async () => {
+    // Structure: date -> text -> header (both text and header are primitives)
+    const dateNode = makeNode('2025-06-15', 'date', '2025-06-15');
+    const textNode = makeNode('mid-text', 'text', 'Middle text');
+    const headerNode = makeNode('deep-header', 'header', '# Title');
+
+    sharedNodeStore.setNode(dateNode, { type: 'database', reason: 'test' }, true);
+    sharedNodeStore.setNode(textNode, { type: 'database', reason: 'test' }, true);
+    sharedNodeStore.setNode(headerNode, { type: 'database', reason: 'test' }, true);
+
+    structureTree.addChild({ parentId: '2025-06-15', childId: 'mid-text', order: 1 });
+    structureTree.addChild({ parentId: 'mid-text', childId: 'deep-header', order: 1 });
+
+    await navService.navigateToNode('deep-header', true);
+
+    const state = get(tabState);
+    const newTab = state.tabs.find((t) => t.content?.nodeId === '2025-06-15');
+
+    // Should walk all the way up to the date node (nearest viewer-owning ancestor)
+    expect(newTab).toBeDefined();
+    expect(newTab?.content?.nodeType).toBe('date');
   });
 });
