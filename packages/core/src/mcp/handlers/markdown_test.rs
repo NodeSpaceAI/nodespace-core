@@ -2807,3 +2807,139 @@ mod slugify_heading_tests {
         assert_eq!(slugify_heading("# 🚀 Launch"), "-launch");
     }
 }
+
+#[cfg(test)]
+mod table_and_hr_tests {
+    use crate::db::SurrealStore;
+    use crate::mcp::handlers::markdown::handle_create_nodes_from_markdown;
+    use crate::services::NodeService;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn setup_test_service() -> (Arc<NodeService>, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+
+        let mut store = Arc::new(SurrealStore::new(db_path).await.unwrap());
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        (node_service, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_horizontal_rule_detection() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        let markdown = r#"Some text
+---
+More text"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "sync_import": true,
+            "title": "HR Test"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        // 1. Container "HR Test"
+        // 2. "Some text" (text)
+        // 3. "---" (horizontal-line)
+        // 4. "More text" (text)
+        assert_eq!(result["nodes_created"], 4);
+    }
+
+    #[tokio::test]
+    async fn test_horizontal_rule_variants() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        let markdown = r#"***
+___
+---"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "sync_import": true,
+            "title": "HR Variants"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        // 1. Container + 3 horizontal-line nodes
+        assert_eq!(result["nodes_created"], 4);
+    }
+
+    #[tokio::test]
+    async fn test_table_detection() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        let markdown = r#"| Column 1 | Column 2 |
+| --- | --- |
+| Data 1 | Data 2 |
+| Data 3 | Data 4 |"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "sync_import": true,
+            "title": "Table Test"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        // 1. Container + 1 table node (all lines collected into single node)
+        assert_eq!(result["nodes_created"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_table_with_alignment() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        let markdown = r#"| Left | Center | Right |
+| :--- | :---: | ---: |
+| A | B | C |"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "sync_import": true,
+            "title": "Alignment Test"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        assert_eq!(result["nodes_created"], 2);
+    }
+
+    #[tokio::test]
+    async fn test_hr_not_confused_with_table_delimiter() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        // Standalone --- should be HR, not table delimiter
+        let markdown = r#"---"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "sync_import": true,
+            "title": "HR vs Table"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        // 1. Container + 1 horizontal-line
+        assert_eq!(result["nodes_created"], 2);
+    }
+}

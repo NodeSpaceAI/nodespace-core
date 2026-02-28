@@ -404,6 +404,84 @@ export const orderedListNodePlugin: PluginDefinition = {
   }
 };
 
+export const horizontalLineNodePlugin: PluginDefinition = {
+  id: 'horizontal-line',
+  name: 'Horizontal Line',
+  description: 'Horizontal rule / thematic break',
+  version: '1.0.0',
+  pattern: {
+    detect: /^[-*_]{3,}$/,
+    canRevert: true,
+    onEnter: 'none',
+    splittingStrategy: 'simple-split',
+    cursorPlacement: 'start',
+    extractMetadata: () => ({})
+  },
+  config: {
+    slashCommands: [
+      {
+        id: 'hr',
+        name: 'Horizontal Line',
+        description: 'Insert a horizontal rule',
+        shortcut: '---',
+        contentTemplate: '---',
+        nodeType: 'horizontal-line'
+      }
+    ],
+    canHaveChildren: false,
+    canBeChild: true
+  },
+  node: {
+    lazyLoad: () => import('../design/components/horizontal-line-node.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  },
+  acceptsContentMerge: false
+};
+
+export const tableNodePlugin: PluginDefinition = {
+  id: 'table',
+  name: 'Table',
+  description: 'GFM markdown table with alignment support',
+  version: '1.0.0',
+  pattern: {
+    detect: /^\|\s/,
+    canRevert: true,
+    revert: /^\|$/,
+    onEnter: 'none',
+    splittingStrategy: 'simple-split',
+    cursorPlacement: 'start',
+    extractMetadata: () => ({})
+  },
+  config: {
+    slashCommands: [
+      {
+        id: 'table',
+        name: 'Table',
+        description: 'Create a markdown table',
+        shortcut: '|',
+        contentTemplate: '| Column 1 | Column 2 |\n| --- | --- |\n| | |',
+        nodeType: 'table',
+        desiredCursorPosition: 2
+      }
+    ],
+    canHaveChildren: false,
+    canBeChild: true
+  },
+  node: {
+    lazyLoad: () => import('../design/components/table-node.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  },
+  acceptsContentMerge: false
+};
+
 // Additional node types for reference system (no viewers currently)
 export const userNodePlugin: PluginDefinition = {
   id: 'user',
@@ -524,6 +602,8 @@ export const corePlugins = [
   codeBlockNodePlugin,
   quoteBlockNodePlugin,
   orderedListNodePlugin,
+  horizontalLineNodePlugin,
+  tableNodePlugin,
   queryNodePlugin,
   collectionNodePlugin
   // Note: userNodePlugin and documentNodePlugin are defined but not registered

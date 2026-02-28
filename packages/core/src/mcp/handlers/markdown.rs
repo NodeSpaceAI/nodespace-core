@@ -570,6 +570,34 @@ pub fn prepare_nodes_from_markdown(
                     }
                 }
                 ("ordered-list", list_items.join("\n"), None, true, None)
+            } else if is_horizontal_rule(content_line) {
+                (
+                    "horizontal-line",
+                    content_line.to_string(),
+                    None,
+                    false,
+                    None,
+                )
+            } else if is_table_start(content_line)
+                && i + 1 < lines.len()
+                && is_table_delimiter(lines[i + 1].trim_start())
+            {
+                // Table - collect all table rows (header + delimiter + body)
+                let mut table_lines = vec![content_line.to_string()];
+                // Consume delimiter row
+                i += 1;
+                table_lines.push(lines[i].trim_start().to_string());
+                // Consume body rows while they contain |
+                while i + 1 < lines.len() {
+                    let next = lines[i + 1].trim_start();
+                    if next.contains('|') && !next.is_empty() {
+                        i += 1;
+                        table_lines.push(next.to_string());
+                    } else {
+                        break;
+                    }
+                }
+                ("table", table_lines.join("\n"), None, true, None)
             } else {
                 // Text paragraph
                 let mut text_lines = vec![content_line];
@@ -588,7 +616,9 @@ pub fn prepare_nodes_from_markdown(
                         || next_line.starts_with("- ")
                         || next_line.starts_with("```")
                         || next_line.starts_with("> ")
-                        || detect_ordered_list(next_line).is_some();
+                        || detect_ordered_list(next_line).is_some()
+                        || is_horizontal_rule(next_line)
+                        || is_table_start(next_line);
                     if is_special {
                         break;
                     }
@@ -615,7 +645,11 @@ pub fn prepare_nodes_from_markdown(
         }
 
         // Determine parent based on hierarchy rules
-        let parent_id = if node_type == "code-block" || node_type == "quote-block" {
+        let parent_id = if node_type == "code-block"
+            || node_type == "quote-block"
+            || node_type == "table"
+            || node_type == "horizontal-line"
+        {
             last_content_node
                 .clone()
                 .or_else(|| context.current_parent_id())
@@ -1325,6 +1359,35 @@ fn detect_ordered_list(line: &str) -> Option<usize> {
         }
     }
     None
+}
+
+/// Detect horizontal rule / thematic break
+/// Matches 3+ identical characters from `---`, `***`, `___`
+fn is_horizontal_rule(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.len() < 3 {
+        return false;
+    }
+    let first = trimmed.chars().next().unwrap();
+    if first != '-' && first != '*' && first != '_' {
+        return false;
+    }
+    trimmed.chars().all(|c| c == first)
+}
+
+/// Detect start of a GFM table (line starts with `|` or contains 2+ pipes)
+fn is_table_start(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('|') || trimmed.matches('|').count() >= 2
+}
+
+/// Detect table delimiter row (contains `|` and `-`, all chars in `|`, `-`, `:`, ` `)
+fn is_table_delimiter(line: &str) -> bool {
+    if !line.contains('|') || !line.contains('-') {
+        return false;
+    }
+    line.chars()
+        .all(|c| c == '|' || c == '-' || c == ':' || c == ' ')
 }
 
 /// Parse markdown content and create nodes

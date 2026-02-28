@@ -12,6 +12,11 @@
 //! - **code-block** - Code blocks with syntax highlighting
 //! - **quote-block** - Blockquotes for citations
 //! - **ordered-list** - Numbered list items
+//! - **checkbox** - Checkbox items
+//! - **query** - Query/search nodes
+//! - **collection** - Collection containers
+//! - **horizontal-line** - Horizontal rule / thematic break
+//! - **table** - GFM markdown table
 //!
 //! ## Usage
 //!
@@ -23,8 +28,8 @@ use chrono::Utc;
 
 /// Get all core schema definitions as SchemaNode instances
 ///
-/// Returns the 7 core schemas (task, text, date, header, code-block, quote-block, ordered-list)
-/// ready to be converted to Node via `schema.into_node()` for database seeding.
+/// Returns all core schemas ready to be converted to Node via `schema.into_node()`
+/// for database seeding.
 pub fn get_core_schemas() -> Vec<SchemaNode> {
     let now = Utc::now();
 
@@ -241,6 +246,32 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             fields: vec![],
             relationships: vec![],
         },
+        // Horizontal line schema - thematic break (no extra fields)
+        SchemaNode {
+            id: "horizontal-line".to_string(),
+            content: "Horizontal Line".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            schema_version: 1,
+            description: "Horizontal rule / thematic break".to_string(),
+            fields: vec![],
+            relationships: vec![],
+        },
+        // Table schema - GFM markdown table (no extra fields)
+        SchemaNode {
+            id: "table".to_string(),
+            content: "Table".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            schema_version: 1,
+            description: "GFM markdown table with alignment support".to_string(),
+            fields: vec![],
+            relationships: vec![],
+        },
         // Collection schema - hierarchical labels for organizing nodes
         SchemaNode {
             id: "collection".to_string(),
@@ -418,9 +449,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_core_schemas_returns_all_ten() {
+    fn test_get_core_schemas_returns_all() {
         let schemas = get_core_schemas();
-        assert_eq!(schemas.len(), 10);
+        assert_eq!(schemas.len(), 12);
     }
 
     #[test]
