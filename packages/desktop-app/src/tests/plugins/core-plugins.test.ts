@@ -74,7 +74,7 @@ describe('Core Plugins Integration', () => {
       expect(taskNodePlugin.reference).toBeDefined();
 
       const taskCommand = taskNodePlugin.config.slashCommands[0];
-      expect(taskCommand.shortcut).toBe('[ ]');
+      expect(taskCommand.shortcut).toBeUndefined();
       expect(taskCommand.contentTemplate).toBe('');
     });
 
@@ -266,7 +266,10 @@ describe('Core Plugins Integration', () => {
       expect(headerCommands.find((cmd) => cmd.shortcut === '###')).toBeDefined();
 
       const taskCommand = registry.findSlashCommand('task');
-      expect(taskCommand?.shortcut).toBe('[ ]');
+      expect(taskCommand?.shortcut).toBeUndefined();
+
+      const checkboxCommand = registry.findSlashCommand('checkbox');
+      expect(checkboxCommand?.shortcut).toBe('- [ ] ');
     });
   });
 

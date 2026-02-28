@@ -2037,6 +2037,181 @@ Some content"#;
         assert_eq!(lines[1], ">");
         assert_eq!(lines[2], "> Line 2");
     }
+
+    // Issue #914: Verify parse_markdown id_map handles 3+ level deep hierarchy
+    // prepare_nodes_from_markdown generates temporary UUIDs; parse_markdown must map
+    // grandparent → parent → child IDs correctly through the id_map
+    #[tokio::test]
+    async fn test_update_root_deep_hierarchy_id_map() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        // Create root
+        let create_params = json!({
+            "markdown_content": "Placeholder",
+            "title": "# Deep Test",
+            "sync_import": true
+        });
+        let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
+            .await
+            .unwrap();
+        let root_id = create_result["root_id"].as_str().unwrap();
+
+        // Update with 3-level hierarchy: H2 → H3 → checkbox
+        let update_params = json!({
+            "root_id": root_id,
+            "markdown": "## Level 1\n### Level 2\n- [ ] Deep checkbox\n\nTop-level text"
+        });
+
+        let result = handle_update_root_from_markdown(&node_service, update_params)
+            .await
+            .unwrap();
+
+        // Should create 4 nodes: H2, H3, checkbox, text
+        assert_eq!(result["nodes_created"].as_u64().unwrap(), 4);
+
+        // Verify hierarchy: root → H2 → H3 → checkbox, root → text
+        let root_children = node_service.get_children(root_id).await.unwrap();
+        let h2_nodes: Vec<_> = root_children
+            .iter()
+            .filter(|n| n.node_type == "header" && n.content.contains("Level 1"))
+            .collect();
+        assert_eq!(h2_nodes.len(), 1, "Should have 1 H2 under root");
+
+        let h2_children = node_service.get_children(&h2_nodes[0].id).await.unwrap();
+        let h3_nodes: Vec<_> = h2_children
+            .iter()
+            .filter(|n| n.node_type == "header" && n.content.contains("Level 2"))
+            .collect();
+        assert_eq!(h3_nodes.len(), 1, "Should have 1 H3 under H2");
+
+        let h3_children = node_service.get_children(&h3_nodes[0].id).await.unwrap();
+        let checkboxes: Vec<_> = h3_children
+            .iter()
+            .filter(|n| n.node_type == "checkbox")
+            .collect();
+        assert_eq!(
+            checkboxes.len(),
+            1,
+            "Should have 1 checkbox under H3 (3-level deep id_map resolution)"
+        );
+        assert!(checkboxes[0].content.contains("Deep checkbox"));
+
+        // Text after checkbox stays under last heading (H3), since
+        // checkbox doesn't change heading context
+        let h3_text_nodes: Vec<_> = h3_children
+            .iter()
+            .filter(|n| n.node_type == "text")
+            .collect();
+        assert_eq!(
+            h3_text_nodes.len(),
+            1,
+            "Text after checkbox should be under H3 (last heading). H3 children: {:?}",
+            h3_children
+                .iter()
+                .map(|n| (&n.node_type, &n.content))
+                .collect::<Vec<_>>()
+        );
+        assert!(h3_text_nodes[0].content.contains("Top-level text"));
+    }
+
+    // Issue #914: Verify create_nodes_from_markdown and update_root_from_markdown
+    // produce identical node structures for the same markdown input.
+    // Both paths now share prepare_nodes_from_markdown for detection logic.
+    #[tokio::test]
+    async fn test_create_and_update_parity() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        let markdown = "## Overview\nIntroduction text\n- [ ] First task\n- [x] Done task\n\n## Details\n- Bullet A\n- Bullet B\n\n```rust\nfn main() {}\n```\n\n> A quote\n> continues here";
+
+        // Path 1: create_nodes_from_markdown (uses prepare_nodes_from_markdown + bulk_create)
+        // When no explicit `title` is provided, the first H1 line is auto-extracted as the root node
+        let create_params = json!({
+            "markdown_content": format!("# Parity Test\n{}", markdown),
+            "sync_import": true
+        });
+        let create_result = handle_create_nodes_from_markdown(&node_service, create_params)
+            .await
+            .unwrap();
+        let create_root_id = create_result["root_id"].as_str().unwrap();
+
+        // Path 2: update_root_from_markdown (uses prepare_nodes_from_markdown + sequential create_node)
+        let update_root_params = json!({
+            "markdown_content": "Placeholder",
+            "title": "# Parity Test",
+            "sync_import": true
+        });
+        let update_root_result =
+            handle_create_nodes_from_markdown(&node_service, update_root_params)
+                .await
+                .unwrap();
+        let update_root_id = update_root_result["root_id"].as_str().unwrap();
+
+        let update_params = json!({
+            "root_id": update_root_id,
+            "markdown": markdown
+        });
+        let _update_result = handle_update_root_from_markdown(&node_service, update_params)
+            .await
+            .unwrap();
+
+        // Collect full tree from both roots and compare structure
+        let create_tree = collect_tree(&node_service, create_root_id).await;
+        let update_tree = collect_tree(&node_service, update_root_id).await;
+
+        assert_eq!(
+            create_tree.len(),
+            update_tree.len(),
+            "Both paths should produce same number of nodes.\nCreate: {:?}\nUpdate: {:?}",
+            create_tree,
+            update_tree
+        );
+
+        // Compare node types and content in order
+        for (i, (create_node, update_node)) in
+            create_tree.iter().zip(update_tree.iter()).enumerate()
+        {
+            assert_eq!(
+                create_node.0, update_node.0,
+                "Node {} type mismatch: create={}, update={}",
+                i, create_node.0, update_node.0
+            );
+            assert_eq!(
+                create_node.1, update_node.1,
+                "Node {} content mismatch for type '{}': create='{}', update='{}'",
+                i, create_node.0, create_node.1, update_node.1
+            );
+            assert_eq!(
+                create_node.2, update_node.2,
+                "Node {} depth mismatch for '{}': create={}, update={}",
+                i, create_node.1, create_node.2, update_node.2
+            );
+        }
+    }
+
+    /// Collect all descendant nodes as (node_type, content, depth) tuples via DFS.
+    /// Uses an explicit stack for depth-first traversal to preserve parent-child locality.
+    async fn collect_tree(
+        node_service: &Arc<NodeService>,
+        root_id: &str,
+    ) -> Vec<(String, String, usize)> {
+        let mut result = Vec::new();
+        // Stack: (node_id, depth). Process in DFS order.
+        let mut stack: Vec<(String, usize)> = vec![(root_id.to_string(), 0)];
+
+        while let Some((node_id, depth)) = stack.pop() {
+            let children = node_service.get_children(&node_id).await.unwrap();
+            // Push children in reverse so first child is popped first (DFS)
+            for child in children.iter().rev() {
+                stack.push((child.id.clone(), depth + 1));
+            }
+            // Record children in document order
+            for child in &children {
+                result.push((child.node_type.clone(), child.content.clone(), depth));
+            }
+        }
+
+        result
+    }
 }
 
 /// Tests for link transformation (Issue #854)

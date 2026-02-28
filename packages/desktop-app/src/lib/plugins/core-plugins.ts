@@ -122,7 +122,6 @@ export const taskNodePlugin: PluginDefinition = {
         id: 'task',
         name: 'Task',
         description: 'Create a task with checkbox',
-        shortcut: '[ ]',
         contentTemplate: '', // Empty content - task icon shows the state instead
         nodeType: 'task' // Set node type to 'task' when selected
       }
@@ -233,7 +232,7 @@ export const checkboxNodePlugin: PluginDefinition = {
         id: 'checkbox',
         name: 'Checkbox',
         description: 'Create a simple checkbox item',
-        shortcut: '[ ]',
+        shortcut: '- [ ] ',
         contentTemplate: '- [ ] ',
         nodeType: 'checkbox',
         desiredCursorPosition: 6 // Position cursor after "- [ ] "
