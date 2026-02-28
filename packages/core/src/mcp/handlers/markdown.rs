@@ -788,7 +788,7 @@ impl ParserContext {
     /// Initializes the context with the container's ID as the root.
     /// parse_markdown delegates to prepare_nodes_from_markdown which handles
     /// hierarchy internally using root_id.
-    fn new_for_existing_container(container_id: String, _container_content: String) -> Self {
+    fn new_for_existing_container(container_id: String) -> Self {
         Self {
             nodes: Vec::new(),
             root_id: Some(container_id),
@@ -1361,10 +1361,19 @@ where
 
     for node in &prepared_nodes {
         // Resolve parent_id: map prepared ID → actual DB ID
-        let actual_parent_id = node
-            .parent_id
-            .as_ref()
-            .map(|pid| id_map.get(pid).cloned().unwrap_or_else(|| pid.clone()));
+        // Unmapped IDs are expected only for the root_id (which is already a real DB ID)
+        let actual_parent_id = node.parent_id.as_ref().map(|pid| {
+            if let Some(mapped) = id_map.get(pid) {
+                mapped.clone()
+            } else {
+                debug_assert!(
+                    context.root_id.as_ref() == Some(pid),
+                    "Unmapped parent_id '{}' is not the root_id — possible orphaned node",
+                    pid
+                );
+                pid.clone()
+            }
+        });
 
         let parent_key = actual_parent_id.clone().unwrap_or_default();
         let insert_after = last_sibling_per_parent.get(&parent_key).cloned();
@@ -1871,7 +1880,7 @@ where
     }
 
     // Validate root node exists
-    let root_node = node_service
+    node_service
         .get_node(&root_id)
         .await
         .map_err(|e| MCPError::internal_error(format!("Failed to get root node: {}", e)))?
@@ -1938,10 +1947,7 @@ where
     }
 
     // Create parser context for the existing root node
-    // This properly initializes the parser state to treat the root as hierarchy root
-    // Note: new_for_existing_container is kept for internal compatibility but works for roots
-    let mut context =
-        ParserContext::new_for_existing_container(root_id.clone(), root_node.content.clone());
+    let mut context = ParserContext::new_for_existing_container(root_id.clone());
 
     // Parse the new markdown content and create nodes
     parse_markdown(&params.markdown, node_service, &mut context).await?;

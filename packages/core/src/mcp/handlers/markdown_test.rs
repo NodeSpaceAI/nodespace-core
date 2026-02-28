@@ -2124,6 +2124,7 @@ Some content"#;
         let markdown = "## Overview\nIntroduction text\n- [ ] First task\n- [x] Done task\n\n## Details\n- Bullet A\n- Bullet B\n\n```rust\nfn main() {}\n```\n\n> A quote\n> continues here";
 
         // Path 1: create_nodes_from_markdown (uses prepare_nodes_from_markdown + bulk_create)
+        // When no explicit `title` is provided, the first H1 line is auto-extracted as the root node
         let create_params = json!({
             "markdown_content": format!("# Parity Test\n{}", markdown),
             "sync_import": true
