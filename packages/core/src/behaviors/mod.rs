@@ -781,6 +781,86 @@ impl NodeBehavior for OrderedListNodeBehavior {
     }
 }
 
+/// Built-in behavior for horizontal line (thematic break) nodes
+///
+/// Horizontal lines are decorative elements that don't carry semantic content.
+/// They cannot have children and don't contribute to embeddings.
+pub struct HorizontalLineNodeBehavior;
+
+impl NodeBehavior for HorizontalLineNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "horizontal-line"
+    }
+
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        false
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false
+    }
+
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None // Decorative element, no semantic content
+    }
+
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+}
+
+/// Built-in behavior for table nodes
+///
+/// Tables store GFM markdown table content. They cannot have children
+/// but do contribute to embeddings (searchable text content).
+pub struct TableNodeBehavior;
+
+impl NodeBehavior for TableNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "table"
+    }
+
+    fn validate(&self, _node: &Node) -> Result<(), NodeValidationError> {
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        false
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false
+    }
+
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        if node.content.trim().is_empty() {
+            None
+        } else {
+            Some(node.content.clone())
+        }
+    }
+
+    fn get_parent_contribution(&self, node: &Node) -> Option<String> {
+        if node.content.trim().is_empty() {
+            None
+        } else {
+            Some(node.content.clone())
+        }
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+}
+
 /// Built-in behavior for date nodes
 ///
 /// Date nodes use deterministic IDs in YYYY-MM-DD format and serve as
@@ -1372,6 +1452,8 @@ impl NodeBehaviorRegistry {
         registry.register(Arc::new(SchemaNodeBehavior));
         registry.register(Arc::new(QueryNodeBehavior));
         registry.register(Arc::new(CollectionNodeBehavior));
+        registry.register(Arc::new(HorizontalLineNodeBehavior));
+        registry.register(Arc::new(TableNodeBehavior));
 
         registry
     }
@@ -1738,6 +1820,75 @@ mod tests {
     }
 
     #[test]
+    fn test_horizontal_line_behavior_validation() {
+        let behavior = HorizontalLineNodeBehavior;
+
+        let valid_node = Node::new("horizontal-line".to_string(), "---".to_string(), json!({}));
+        assert!(behavior.validate(&valid_node).is_ok());
+
+        // Empty content is also valid
+        let empty_node = Node::new("horizontal-line".to_string(), "".to_string(), json!({}));
+        assert!(behavior.validate(&empty_node).is_ok());
+    }
+
+    #[test]
+    fn test_horizontal_line_behavior_capabilities() {
+        let behavior = HorizontalLineNodeBehavior;
+        assert_eq!(behavior.type_name(), "horizontal-line");
+        assert!(!behavior.can_have_children());
+        assert!(!behavior.supports_markdown());
+        assert_eq!(behavior.default_metadata(), json!({}));
+    }
+
+    #[test]
+    fn test_horizontal_line_behavior_embeddings() {
+        let behavior = HorizontalLineNodeBehavior;
+        let node = Node::new("horizontal-line".to_string(), "---".to_string(), json!({}));
+        assert!(behavior.get_embeddable_content(&node).is_none());
+        assert!(behavior.get_parent_contribution(&node).is_none());
+    }
+
+    #[test]
+    fn test_table_behavior_validation() {
+        let behavior = TableNodeBehavior;
+
+        let valid_node = Node::new(
+            "table".to_string(),
+            "| A | B |\n| --- | --- |\n| 1 | 2 |".to_string(),
+            json!({}),
+        );
+        assert!(behavior.validate(&valid_node).is_ok());
+
+        // Empty content is also valid
+        let empty_node = Node::new("table".to_string(), "".to_string(), json!({}));
+        assert!(behavior.validate(&empty_node).is_ok());
+    }
+
+    #[test]
+    fn test_table_behavior_capabilities() {
+        let behavior = TableNodeBehavior;
+        assert_eq!(behavior.type_name(), "table");
+        assert!(!behavior.can_have_children());
+        assert!(!behavior.supports_markdown());
+        assert_eq!(behavior.default_metadata(), json!({}));
+    }
+
+    #[test]
+    fn test_table_behavior_embeddings() {
+        let behavior = TableNodeBehavior;
+
+        // Table with content contributes to embeddings
+        let node = Node::new("table".to_string(), "| A | B |".to_string(), json!({}));
+        assert!(behavior.get_embeddable_content(&node).is_some());
+        assert!(behavior.get_parent_contribution(&node).is_some());
+
+        // Empty table doesn't contribute
+        let empty = Node::new("table".to_string(), "".to_string(), json!({}));
+        assert!(behavior.get_embeddable_content(&empty).is_none());
+        assert!(behavior.get_parent_contribution(&empty).is_none());
+    }
+
+    #[test]
     fn test_task_node_behavior_validation() {
         let behavior = TaskNodeBehavior;
 
@@ -1995,7 +2146,9 @@ mod tests {
         assert!(types.contains(&"schema".to_string()));
         assert!(types.contains(&"query".to_string()));
         assert!(types.contains(&"collection".to_string()));
-        assert_eq!(types.len(), 10);
+        assert!(types.contains(&"horizontal-line".to_string()));
+        assert!(types.contains(&"table".to_string()));
+        assert_eq!(types.len(), 12);
     }
 
     #[test]

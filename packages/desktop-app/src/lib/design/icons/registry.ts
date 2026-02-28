@@ -20,6 +20,8 @@ import CodeBlockIcon from './components/code-block-icon.svelte';
 import QuoteBlockIcon from './components/quote-block-icon.svelte';
 import OrderedListIcon from './components/ordered-list-icon.svelte';
 import QueryIcon from './components/query-icon.svelte';
+import HorizontalLineIcon from './components/horizontal-line-icon.svelte';
+import TableIcon from './components/table-icon.svelte';
 
 // Dynamic node types - can be extended by plugins
 export type NodeType = string;
@@ -174,6 +176,24 @@ class IconRegistry {
       colorVar: 'hsl(var(--node-text, 200 40% 45%))',
       hasState: false,
       hasRingEffect: false // Ordered lists are leaf nodes (no children)
+    });
+
+    // Horizontal line nodes - thematic breaks (leaf nodes)
+    this.register('horizontal-line', {
+      component: HorizontalLineIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'hsl(var(--node-text, 200 40% 45%))',
+      hasState: false,
+      hasRingEffect: false
+    });
+
+    // Table nodes - GFM markdown tables (leaf nodes)
+    this.register('table', {
+      component: TableIcon,
+      semanticClass: 'node-icon',
+      colorVar: 'hsl(var(--node-text, 200 40% 45%))',
+      hasState: false,
+      hasRingEffect: false
     });
 
     // Checkbox nodes - two-state (unchecked=pending, checked=completed)
