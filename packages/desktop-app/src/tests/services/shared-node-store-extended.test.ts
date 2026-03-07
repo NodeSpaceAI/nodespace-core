@@ -198,6 +198,24 @@ describe('SharedNodeStore - Extended Coverage', () => {
       expect(updated?.assignee).toBe('user-123');
     });
 
+    it('should update task startedAt', () => {
+      store.setNode(taskNode, viewerSource, true);
+
+      store.updateTaskNode('task-1', { startedAt: '2025-03-01' }, viewerSource);
+
+      const updated = store.getNode('task-1') as Node & { startedAt?: string };
+      expect(updated?.startedAt).toBe('2025-03-01');
+    });
+
+    it('should update task completedAt', () => {
+      store.setNode(taskNode, viewerSource, true);
+
+      store.updateTaskNode('task-1', { completedAt: '2025-03-07' }, viewerSource);
+
+      const updated = store.getNode('task-1') as Node & { completedAt?: string };
+      expect(updated?.completedAt).toBe('2025-03-07');
+    });
+
     it('should update task content', () => {
       store.setNode(taskNode, viewerSource, true);
 

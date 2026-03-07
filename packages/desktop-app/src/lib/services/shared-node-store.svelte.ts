@@ -1494,6 +1494,12 @@ export class SharedNodeStore {
     if (update.assignee !== undefined) {
       (localChanges as Record<string, unknown>)['assignee'] = update.assignee;
     }
+    if (update.startedAt !== undefined) {
+      (localChanges as Record<string, unknown>)['startedAt'] = update.startedAt;
+    }
+    if (update.completedAt !== undefined) {
+      (localChanges as Record<string, unknown>)['completedAt'] = update.completedAt;
+    }
     if (update.content !== undefined) {
       localChanges.content = update.content;
     }
@@ -1527,7 +1533,9 @@ export class SharedNodeStore {
               status: updatedTaskNode.status,
               priority: updatedTaskNode.priority,
               dueDate: updatedTaskNode.dueDate,
-              assignee: updatedTaskNode.assignee
+              assignee: updatedTaskNode.assignee,
+              startedAt: updatedTaskNode.startedAt,
+              completedAt: updatedTaskNode.completedAt
             });
             if (updatedTaskNode.content !== undefined) {
               localNode.content = updatedTaskNode.content;

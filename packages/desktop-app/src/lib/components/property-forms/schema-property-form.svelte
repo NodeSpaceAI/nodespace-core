@@ -98,6 +98,16 @@
         const schemaNode = await backendAdapter.getSchema(nodeType);
         if (isSchemaNode(schemaNode)) {
           schema = schemaNode;
+          // Pre-initialize comboboxOpen keys for all date fields to avoid
+          // mutating $state inside template expressions (Svelte 5 forbids this)
+          for (const field of schemaNode.fields) {
+            if (field.type === 'date') {
+              const key = `date_${field.name}`;
+              if (comboboxOpen[key] === undefined) {
+                comboboxOpen[key] = false;
+              }
+            }
+          }
         } else {
           schemaError = `Invalid schema node for type: ${nodeType}`;
           schema = null;
@@ -413,9 +423,6 @@
                   | DateValue[]
                   | undefined}
                 {@const popoverOpenKey = `date_${field.name}`}
-                {#if comboboxOpen[popoverOpenKey] === undefined}
-                  {((comboboxOpen[popoverOpenKey] = false), '')}
-                {/if}
                 <Popover.Root bind:open={comboboxOpen[popoverOpenKey]}>
                   <Popover.Trigger
                     id={fieldId}
