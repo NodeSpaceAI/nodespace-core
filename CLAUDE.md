@@ -183,7 +183,7 @@ bun run gh:view <issue-number>
 
 **Current Architecture:**
 - **Backend**: Rust with async/await, trait-based architecture
-- **Frontend**: Svelte 4.x with reactive state management
+- **Frontend**: Svelte 5.x with reactive state management ($state, $derived, $effect runes)
 - **Desktop**: Tauri 2.0 for native integration
 - **Database**: SurrealDB embedded with RocksDB backend
 - **AI**: mistral.rs with local models (planned)
