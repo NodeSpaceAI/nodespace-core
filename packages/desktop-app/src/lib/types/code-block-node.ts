@@ -161,6 +161,7 @@ export const CodeBlockNodeHelpers = {
       'yaml',
       'xml',
       'markdown',
+      'mermaid',
       'plaintext'
     ]);
     return commonLanguages.has(language.toLowerCase());
@@ -206,6 +207,7 @@ export const CodeBlockNodeHelpers = {
       yaml: 'YAML',
       xml: 'XML',
       markdown: 'Markdown',
+      mermaid: 'Mermaid',
       plaintext: 'Plain Text'
     };
 

@@ -197,6 +197,10 @@ describe('CodeBlockNodeHelpers', () => {
       });
     });
 
+    it('identifies mermaid as a common language', () => {
+      expect(CodeBlockNodeHelpers.isCommonLanguage('mermaid')).toBe(true);
+    });
+
     it('rejects uncommon languages', () => {
       expect(CodeBlockNodeHelpers.isCommonLanguage('brainfuck')).toBe(false);
       expect(CodeBlockNodeHelpers.isCommonLanguage('whitespace')).toBe(false);
@@ -216,6 +220,10 @@ describe('CodeBlockNodeHelpers', () => {
       expect(CodeBlockNodeHelpers.getLanguageDisplayName('typescript')).toBe('TypeScript');
       expect(CodeBlockNodeHelpers.getLanguageDisplayName('python')).toBe('Python');
       expect(CodeBlockNodeHelpers.getLanguageDisplayName('rust')).toBe('Rust');
+    });
+
+    it('returns Mermaid for mermaid language', () => {
+      expect(CodeBlockNodeHelpers.getLanguageDisplayName('mermaid')).toBe('Mermaid');
     });
 
     it('handles special cases', () => {

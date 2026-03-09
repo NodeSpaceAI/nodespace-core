@@ -23,6 +23,10 @@
   import BaseNode from './base-node.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
 
+  import ViewModeRenderer from './view-mode-renderer.svelte';
+  import { highlightCode, type HighlightLine } from '$lib/services/syntax-highlight';
+  import { renderMermaid } from '$lib/services/mermaid-render';
+
   // Supported languages for code blocks
   // Alphabetically sorted with 'plaintext' as default first option
   const LANGUAGES = [
@@ -37,6 +41,7 @@
     'json',
     'kotlin',
     'markdown',
+    'mermaid',
     'php',
     'python',
     'ruby',
@@ -89,6 +94,54 @@
   // Track if user is actively typing (hide buttons during typing)
   let isTyping = $state(false);
   let typingTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // Syntax highlighting and Mermaid state
+  let highlightedLines = $state<HighlightLine[] | null>(null);
+  let mermaidSvg = $state<string | null>(null);
+  let mermaidError = $state<string | null>(null);
+
+  // Detect dark mode from OS color scheme preference
+  let isDark = $state(
+    typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
+  );
+
+  // Listen for dark mode changes to re-highlight
+  $effect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = (e: MediaQueryListEvent) => {
+      isDark = e.matches;
+    };
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  });
+
+  // Re-highlight whenever language, content, or dark mode changes (skip during editing)
+  $effect(() => {
+    if (isEditing) return;
+    const code = displayContent.trim();
+    const lang = language;
+    const dark = isDark;
+
+    if (lang === 'mermaid') {
+      highlightedLines = null;
+      renderMermaid(code, nodeId).then((svg) => {
+        mermaidSvg = svg;
+        mermaidError =
+          svg === null ? 'Diagram rendering failed. Check your Mermaid syntax.' : null;
+      });
+    } else if (lang !== 'plaintext') {
+      mermaidSvg = null;
+      mermaidError = null;
+      highlightCode(code, lang, dark).then((lines) => {
+        highlightedLines = lines;
+      });
+    } else {
+      highlightedLines = null;
+      mermaidSvg = null;
+      mermaidError = null;
+    }
+  });
 
   function handleTypingStart() {
     isTyping = true;
@@ -276,6 +329,36 @@
   }
 </script>
 
+<!-- Custom view content snippet for syntax highlighting and Mermaid diagrams -->
+{#snippet codeViewContent()}
+  {#if language === 'mermaid'}
+    {#if mermaidSvg}
+      <div class="mermaid-output">{@html mermaidSvg}</div>
+    {:else if mermaidError}
+      <div class="mermaid-error">{mermaidError}</div>
+    {:else}
+      <div class="code-loading">Rendering diagram...</div>
+    {/if}
+  {:else if highlightedLines}
+    <div class="highlighted-code">
+      {#each highlightedLines as line, _i}
+        <div class="code-line">
+          {#each line as token}
+            <span
+              style="color: {token.color}{token.fontStyle ? `; font-style: ${token.fontStyle}` : ''}"
+              >{token.content}</span
+            >
+          {/each}
+          {#if line.length === 0}<br />{/if}
+        </div>
+      {/each}
+    </div>
+  {:else}
+    <!-- Fallback: plain text (Shiki not loaded yet or unsupported language) -->
+    <ViewModeRenderer content={displayContent} disableMarkdown={true} />
+  {/if}
+{/snippet}
+
 <!-- Wrap BaseNode with code-block-specific styling -->
 <div class="code-block-node-wrapper" class:typing={isTyping} bind:this={wrapperElement}>
   <BaseNode
@@ -287,6 +370,7 @@
     {children}
     {editableConfig}
     metadata={codeMetadata}
+    customViewContent={codeViewContent}
     on:createNewNode={handleCreateNewNode}
     on:contentChanged={handleContentChange}
     on:keydown={handleTypingStart}
@@ -483,5 +567,45 @@
     background: hsl(var(--success, 142 76% 36%));
     color: hsl(var(--success-foreground, 0 0% 100%));
     border-color: hsl(var(--success, 142 76% 36%));
+  }
+
+  /* Syntax highlighted code */
+  :global(.code-block-node-wrapper .highlighted-code) {
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  :global(.code-block-node-wrapper .code-line) {
+    min-height: 1.5em;
+  }
+
+  /* Mermaid diagram output */
+  :global(.code-block-node-wrapper .mermaid-output) {
+    display: flex;
+    justify-content: flex-start;
+    padding: 0.5rem 0;
+    overflow-x: auto;
+  }
+
+  :global(.code-block-node-wrapper .mermaid-output svg) {
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* Mermaid error state */
+  :global(.code-block-node-wrapper .mermaid-error) {
+    color: hsl(var(--destructive, 0 84% 60%));
+    font-size: 0.8125rem;
+    padding: 0.5rem;
+    border: 1px solid hsl(var(--destructive, 0 84% 60%) / 30%);
+    border-radius: var(--radius);
+    background: hsl(var(--destructive, 0 84% 60%) / 5%);
+  }
+
+  /* Loading state */
+  :global(.code-block-node-wrapper .code-loading) {
+    color: hsl(var(--muted-foreground));
+    font-style: italic;
+    font-size: 0.8125rem;
   }
 </style>
