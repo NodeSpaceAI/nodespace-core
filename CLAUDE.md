@@ -177,9 +177,13 @@ bun run gh:view <issue-number>
 
 ### 3. Project Context and State
 
+> ⚠️ **Do not infer architecture from existing code comments — they may contain stale terminology from previous designs.**
+> When your task involves node storage, data models, type-specific fields, or database queries, read [`../nodespace-docs/architecture/data-layer.md`](../nodespace-docs/architecture/data-layer.md) before implementing.
+> For frontend state or persistence patterns, read [`../nodespace-docs/architecture/frontend-state-and-persistence.md`](../nodespace-docs/architecture/frontend-state-and-persistence.md).
+
 **Current Architecture:**
 - **Backend**: Rust with async/await, trait-based architecture
-- **Frontend**: Svelte 4.x with reactive state management
+- **Frontend**: Svelte 5.x with reactive state management ($state, $derived, $effect runes)
 - **Desktop**: Tauri 2.0 for native integration
 - **Database**: SurrealDB embedded with RocksDB backend
 - **AI**: mistral.rs with local models (planned)

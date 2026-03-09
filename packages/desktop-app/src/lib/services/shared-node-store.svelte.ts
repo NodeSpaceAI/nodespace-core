@@ -34,6 +34,7 @@ import { contentProcessor } from './content-processor';
 import { stripMarkdown } from './markdown-utils';
 import type { Node } from '$lib/types';
 import type { NodeReference } from '$lib/types/node';
+import type { TaskNode } from '$lib/types/task-node';
 import type {
   NodeUpdate,
   UpdateSource,
@@ -1479,27 +1480,34 @@ export class SharedNodeStore {
     }
 
     // Apply update optimistically to local state
-    // Map TaskNodeUpdate fields to Node properties for local state
-    const localChanges: Partial<import('$lib/types').Node> = {};
+    // Map TaskNodeUpdate fields to TaskNode properties for local state
+    const localChanges: Partial<TaskNode> = {};
     if (update.status !== undefined) {
-      // Status is stored as a flat field on TaskNode
-      (localChanges as Record<string, unknown>)['status'] = update.status;
+      localChanges.status = update.status;
     }
     if (update.priority !== undefined) {
-      (localChanges as Record<string, unknown>)['priority'] = update.priority;
+      // TaskNodeUpdate allows null to clear priority; TaskNode uses undefined
+      localChanges.priority = update.priority ?? undefined;
     }
     if (update.dueDate !== undefined) {
-      (localChanges as Record<string, unknown>)['dueDate'] = update.dueDate;
+      localChanges.dueDate = update.dueDate;
     }
     if (update.assignee !== undefined) {
-      (localChanges as Record<string, unknown>)['assignee'] = update.assignee;
+      localChanges.assignee = update.assignee;
+    }
+    if (update.startedAt !== undefined) {
+      localChanges.startedAt = update.startedAt;
+    }
+    if (update.completedAt !== undefined) {
+      localChanges.completedAt = update.completedAt;
     }
     if (update.content !== undefined) {
       localChanges.content = update.content;
     }
 
     // Update local node optimistically
-    const updatedNode = { ...existingNode, ...localChanges };
+    // Cast is safe: existingNode.nodeType === 'task' is verified above
+    const updatedNode = { ...existingNode, ...localChanges } as unknown as Node;
     this.nodes.set(nodeId, updatedNode);
     this.notifySubscribers(nodeId, updatedNode, source);
 
@@ -1527,7 +1535,9 @@ export class SharedNodeStore {
               status: updatedTaskNode.status,
               priority: updatedTaskNode.priority,
               dueDate: updatedTaskNode.dueDate,
-              assignee: updatedTaskNode.assignee
+              assignee: updatedTaskNode.assignee,
+              startedAt: updatedTaskNode.startedAt,
+              completedAt: updatedTaskNode.completedAt
             });
             if (updatedTaskNode.content !== undefined) {
               localNode.content = updatedTaskNode.content;

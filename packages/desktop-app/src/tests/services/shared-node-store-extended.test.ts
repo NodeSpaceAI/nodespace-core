@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { SharedNodeStore } from '../../lib/services/shared-node-store.svelte';
 import type { Node } from '../../lib/types';
+import type { TaskNode } from '../../lib/types/task-node';
 import type { UpdateSource } from '../../lib/types/update-protocol';
 import * as tauriCommands from '../../lib/services/tauri-commands';
 
@@ -167,7 +168,7 @@ describe('SharedNodeStore - Extended Coverage', () => {
 
       store.updateTaskNode('task-1', { status: 'in-progress' }, viewerSource);
 
-      const updated = store.getNode('task-1') as Node & { status?: string };
+      const updated = store.getNode('task-1') as unknown as TaskNode;
       expect(updated?.status).toBe('in-progress');
     });
 
@@ -176,7 +177,7 @@ describe('SharedNodeStore - Extended Coverage', () => {
 
       store.updateTaskNode('task-1', { priority: 'low' }, viewerSource);
 
-      const updated = store.getNode('task-1') as Node & { priority?: string };
+      const updated = store.getNode('task-1') as unknown as TaskNode;
       expect(updated?.priority).toBe('low');
     });
 
@@ -185,7 +186,7 @@ describe('SharedNodeStore - Extended Coverage', () => {
 
       store.updateTaskNode('task-1', { dueDate: '2025-12-31' }, viewerSource);
 
-      const updated = store.getNode('task-1') as Node & { dueDate?: string };
+      const updated = store.getNode('task-1') as unknown as TaskNode;
       expect(updated?.dueDate).toBe('2025-12-31');
     });
 
@@ -194,8 +195,26 @@ describe('SharedNodeStore - Extended Coverage', () => {
 
       store.updateTaskNode('task-1', { assignee: 'user-123' }, viewerSource);
 
-      const updated = store.getNode('task-1') as Node & { assignee?: string };
+      const updated = store.getNode('task-1') as unknown as TaskNode;
       expect(updated?.assignee).toBe('user-123');
+    });
+
+    it('should update task startedAt', () => {
+      store.setNode(taskNode, viewerSource, true);
+
+      store.updateTaskNode('task-1', { startedAt: '2025-03-01' }, viewerSource);
+
+      const updated = store.getNode('task-1') as unknown as TaskNode;
+      expect(updated?.startedAt).toBe('2025-03-01');
+    });
+
+    it('should update task completedAt', () => {
+      store.setNode(taskNode, viewerSource, true);
+
+      store.updateTaskNode('task-1', { completedAt: '2025-03-07' }, viewerSource);
+
+      const updated = store.getNode('task-1') as unknown as TaskNode;
+      expect(updated?.completedAt).toBe('2025-03-07');
     });
 
     it('should update task content', () => {
