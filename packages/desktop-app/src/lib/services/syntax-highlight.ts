@@ -6,7 +6,8 @@ const log = createLogger('SyntaxHighlight');
 export type HighlightToken = {
   content: string;
   color: string; // CSS color value from theme
-  fontStyle?: string; // 'italic' | 'bold' | 'underline' | undefined
+  fontStyle?: string; // 'italic' | 'underline' (CSS font-style values only)
+  fontWeight?: string; // 'bold' (CSS font-weight; separate from fontStyle)
 };
 
 export type HighlightLine = HighlightToken[];
@@ -46,19 +47,21 @@ export async function highlightCode(
     const theme = isDark ? 'github-dark' : 'github-light';
     const tokens = highlighter.codeToTokens(code, { lang: language as never, theme });
     // Map Shiki token structure to our HighlightToken type
+    // Shiki FontStyle bitmask: 0=None, 1=Italic, 2=Bold, 4=Underline
     return tokens.tokens.map((line) =>
       line.map((token) => {
         const result: HighlightToken = {
           content: token.content,
           color: token.color ?? 'inherit'
         };
-        // Map Shiki fontStyle bitmask to CSS string
         if (token.fontStyle !== undefined && token.fontStyle !== 0) {
-          const styles: string[] = [];
-          if (token.fontStyle & 1) styles.push('italic');
-          if (token.fontStyle & 2) styles.push('bold');
-          if (token.fontStyle & 4) styles.push('underline');
-          if (styles.length > 0) result.fontStyle = styles.join(' ');
+          // italic and underline map to CSS font-style
+          const fontStyleParts: string[] = [];
+          if (token.fontStyle & 1) fontStyleParts.push('italic');
+          if (token.fontStyle & 4) fontStyleParts.push('underline');
+          if (fontStyleParts.length > 0) result.fontStyle = fontStyleParts.join(' ');
+          // bold maps to CSS font-weight (separate property)
+          if (token.fontStyle & 2) result.fontWeight = 'bold';
         }
         return result;
       })

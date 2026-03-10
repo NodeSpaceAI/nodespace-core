@@ -26,17 +26,38 @@ describe('sanitizeSvg', () => {
     expect(result).toContain('<rect/>');
   });
 
-  it('removes event handler attributes', () => {
+  it('removes event handler attributes with double-quoted values', () => {
     const svg = '<svg><rect onclick="alert(1)" onmouseover="evil()"/></svg>';
     const result = sanitizeSvg(svg);
     expect(result).not.toContain('onclick');
     expect(result).not.toContain('onmouseover');
   });
 
+  it('removes event handler attributes with single-quoted values', () => {
+    const svg = "<svg><rect onclick='alert(1)'/></svg>";
+    const result = sanitizeSvg(svg);
+    expect(result).not.toContain('onclick');
+  });
+
+  it('removes event handler attributes with unquoted values', () => {
+    // Unquoted handlers were not caught by the previous regex
+    const svg = '<svg><rect onclick=alert(1)/></svg>';
+    const result = sanitizeSvg(svg);
+    expect(result).not.toContain('onclick');
+  });
+
   it('removes javascript: URIs', () => {
     const svg = '<svg><a href="javascript:alert(1)">click</a></svg>';
     const result = sanitizeSvg(svg);
     expect(result).not.toContain('javascript:');
+  });
+
+  it('removes javascript: URIs with whitespace after colon', () => {
+    // "javascript: alert(1)" (with space) was not caught by the previous regex
+    const svg = '<svg><a href="javascript: alert(1)">click</a></svg>';
+    const result = sanitizeSvg(svg);
+    expect(result).not.toContain('javascript:');
+    expect(result).not.toContain('javascript');
   });
 
   it('preserves legitimate SVG content', () => {

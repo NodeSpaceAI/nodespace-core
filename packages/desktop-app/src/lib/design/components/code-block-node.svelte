@@ -100,6 +100,9 @@
   let mermaidSvg = $state<string | null>(null);
   let mermaidError = $state<string | null>(null);
 
+  // Monotonic counter to discard stale async results when language/content changes rapidly
+  let renderSeq = 0;
+
   // Detect dark mode from OS color scheme preference
   let isDark = $state(
     typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -116,16 +119,19 @@
     return () => mq.removeEventListener('change', handler);
   });
 
-  // Re-highlight whenever language, content, or dark mode changes (skip during editing)
+  // Re-highlight whenever language, content, or dark mode changes (skip during editing).
+  // Uses a sequence counter to discard stale results from in-flight async renders.
   $effect(() => {
     if (isEditing) return;
     const code = displayContent.trim();
     const lang = language;
     const dark = isDark;
+    const seq = ++renderSeq;
 
     if (lang === 'mermaid') {
       highlightedLines = null;
       renderMermaid(code, nodeId).then((svg) => {
+        if (seq !== renderSeq) return; // stale — language/content changed before render resolved
         mermaidSvg = svg;
         mermaidError =
           svg === null ? 'Diagram rendering failed. Check your Mermaid syntax.' : null;
@@ -134,6 +140,7 @@
       mermaidSvg = null;
       mermaidError = null;
       highlightCode(code, lang, dark).then((lines) => {
+        if (seq !== renderSeq) return; // stale — discard
         highlightedLines = lines;
       });
     } else {
@@ -341,11 +348,11 @@
     {/if}
   {:else if highlightedLines}
     <div class="highlighted-code">
-      {#each highlightedLines as line, _i}
+      {#each highlightedLines as line}
         <div class="code-line">
           {#each line as token}
             <span
-              style="color: {token.color}{token.fontStyle ? `; font-style: ${token.fontStyle}` : ''}"
+              style="color: {token.color}{token.fontStyle ? `; font-style: ${token.fontStyle}` : ''}{token.fontWeight ? `; font-weight: ${token.fontWeight}` : ''}"
               >{token.content}</span
             >
           {/each}
