@@ -26,6 +26,7 @@
   import ViewModeRenderer from './view-mode-renderer.svelte';
   import { highlightCode, type HighlightLine } from '$lib/services/syntax-highlight';
   import { renderMermaid } from '$lib/services/mermaid-render';
+  import { currentTheme } from '$lib/design/theme';
 
   // Supported languages for code blocks
   // Alphabetically sorted with 'plaintext' as default first option
@@ -103,21 +104,9 @@
   // Monotonic counter to discard stale async results when language/content changes rapidly
   let renderSeq = 0;
 
-  // Detect dark mode from OS color scheme preference
-  let isDark = $state(
-    typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches
-  );
-
-  // Listen for dark mode changes to re-highlight
-  $effect(() => {
-    if (typeof window === 'undefined') return;
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const handler = (e: MediaQueryListEvent) => {
-      isDark = e.matches;
-    };
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  });
+  // Track dark mode from the app's theme store (not OS media query)
+  // so syntax highlighting matches the actual UI theme, not the OS preference
+  let isDark = $derived($currentTheme === 'dark');
 
   // Re-highlight whenever language, content, or dark mode changes (skip during editing).
   // Uses a sequence counter to discard stale results from in-flight async renders.
