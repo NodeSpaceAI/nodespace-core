@@ -60,6 +60,14 @@ export default defineConfig(async () => ({
         // This improves initial load time through better caching
         manualChunks(id) {
           if (id.includes('node_modules')) {
+            // Syntax highlighting - large grammar files, loaded on demand
+            if (id.includes('shiki')) {
+              return 'vendor-shiki';
+            }
+            // Mermaid diagram renderer - large dependency
+            if (id.includes('mermaid') || id.includes('d3') || id.includes('dagre')) {
+              return 'vendor-mermaid';
+            }
             // Tauri APIs - separate chunk for desktop-specific code
             if (id.includes('@tauri-apps')) {
               return 'vendor-tauri';

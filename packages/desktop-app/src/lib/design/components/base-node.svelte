@@ -67,7 +67,8 @@
     displayContent,
     children = [],
     editableConfig = {},
-    metadata = {}
+    metadata = {},
+    customViewContent
   }: {
     nodeId: string;
     nodeType?: string;
@@ -77,6 +78,7 @@
     children?: string[];
     editableConfig?: TextareaControllerConfig;
     metadata?: Record<string, unknown>;
+    customViewContent?: import('svelte').Snippet; // Optional override for view mode rendering
   } = $props();
 
   // Get paneId from Svelte context (set by PaneContent)
@@ -906,12 +908,16 @@
         }
       }}
       role="button"
-    ><ViewModeRenderer
-        {content}
-        {displayContent}
-        disableMarkdown={metadata?.disableMarkdown === true}
-        enableBlockElements={metadata?.enableBlockElements === true}
-      /></div>
+    >{#if customViewContent}
+        {@render customViewContent()}
+      {:else}
+        <ViewModeRenderer
+          {content}
+          {displayContent}
+          disableMarkdown={metadata?.disableMarkdown === true}
+          enableBlockElements={metadata?.enableBlockElements === true}
+        />
+      {/if}</div>
   {/if}
 </div>
 
