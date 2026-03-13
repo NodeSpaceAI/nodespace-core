@@ -1534,8 +1534,8 @@ mod collection_service_tests {
         let find_count = |name: &str| -> Option<usize> {
             collections_with_counts
                 .iter()
-                .find(|(node, _)| node.content == name)
-                .map(|(_, count)| *count)
+                .find(|(node, _, _)| node.content == name)
+                .map(|(_, count, _)| *count)
         };
 
         assert_eq!(
@@ -1552,6 +1552,132 @@ mod collection_service_tests {
             find_count("empty-collection"),
             Some(0),
             "empty-collection should have 0 members"
+        );
+
+        Ok(())
+    }
+
+    /// Test that get_all_collections_with_counts returns correct parent_collection_ids
+    /// for nested collections (collection hierarchy).
+    ///
+    /// Validates the fix for the sidenav not showing nested collections —
+    /// previously parent_collection_ids was always empty because it read from
+    /// the dead Node.member_of field instead of querying the relationship table.
+    #[tokio::test]
+    async fn test_get_all_collections_with_counts_returns_parent_ids() -> Result<()> {
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
+
+        // Create a nested hierarchy: child is member_of parent
+        let parent = collection_service.resolve_path("parent").await?;
+        let parent_id = parent.leaf_id().to_string();
+
+        let child = collection_service.resolve_path("child").await?;
+        let child_id = child.leaf_id().to_string();
+
+        let _standalone = collection_service.resolve_path("standalone").await?;
+
+        // Make child a member_of parent (collection nesting)
+        collection_service
+            .add_to_collection(&child_id, &parent_id)
+            .await?;
+
+        let collections = collection_service.get_all_collections_with_counts().await?;
+
+        assert_eq!(collections.len(), 3, "should have 3 collections total");
+
+        let find = |name: &str| -> Option<Vec<String>> {
+            collections
+                .iter()
+                .find(|(node, _, _)| node.content == name)
+                .map(|(_, _, parents)| parents.clone())
+        };
+
+        // child should report parent_id as its parent
+        let child_parents = find("child").expect("child collection not found");
+        assert_eq!(
+            child_parents,
+            vec![parent_id.clone()],
+            "child should have parent as parent_collection_id"
+        );
+
+        // parent and standalone should have no parents
+        let parent_parents = find("parent").expect("parent collection not found");
+        assert!(
+            parent_parents.is_empty(),
+            "parent should have no parent_collection_ids"
+        );
+
+        let standalone_parents = find("standalone").expect("standalone collection not found");
+        assert!(
+            standalone_parents.is_empty(),
+            "standalone should have no parent_collection_ids"
+        );
+
+        Ok(())
+    }
+
+    /// Test that get_all_collections_with_counts returns correct parent_collection_ids
+    /// for multi-level nested collections (grandparent → parent → child).
+    ///
+    /// This mirrors the real-world import scenario where folder paths like
+    /// "Development/Standards/Guides" create a three-level collection hierarchy.
+    #[tokio::test]
+    async fn test_get_all_collections_with_counts_multi_level_nesting() -> Result<()> {
+        let (store, node_service, _temp_dir) = create_test_services().await?;
+        let collection_service = CollectionService::new(&store, &node_service);
+
+        // Simulate import of path "Development/Standards/Guides"
+        // bulk_resolve_collections creates each level and nests them
+        let grandparent = collection_service.resolve_path("Development").await?;
+        let grandparent_id = grandparent.leaf_id().to_string();
+
+        let parent = collection_service.resolve_path("Standards").await?;
+        let parent_id = parent.leaf_id().to_string();
+
+        let child = collection_service.resolve_path("Guides").await?;
+        let child_id = child.leaf_id().to_string();
+
+        // Nest: Standards → Development, Guides → Standards
+        collection_service
+            .add_to_collection(&parent_id, &grandparent_id)
+            .await?;
+        collection_service
+            .add_to_collection(&child_id, &parent_id)
+            .await?;
+
+        let collections = collection_service.get_all_collections_with_counts().await?;
+
+        assert_eq!(collections.len(), 3, "should have 3 collections total");
+
+        let find_parents = |name: &str| -> Option<Vec<String>> {
+            collections
+                .iter()
+                .find(|(node, _, _)| node.content == name)
+                .map(|(_, _, parents)| parents.clone())
+        };
+
+        // Guides → Standards
+        let guides_parents = find_parents("Guides").expect("Guides not found");
+        assert_eq!(
+            guides_parents,
+            vec![parent_id.clone()],
+            "Guides should be nested under Standards"
+        );
+
+        // Standards → Development
+        let standards_parents = find_parents("Standards").expect("Standards not found");
+        assert_eq!(
+            standards_parents,
+            vec![grandparent_id.clone()],
+            "Standards should be nested under Development"
+        );
+
+        // Development is a root collection — no parents
+        let development_parents = find_parents("Development").expect("Development not found");
+        assert!(
+            development_parents.is_empty(),
+            "Development should have no parent_collection_ids"
         );
 
         Ok(())

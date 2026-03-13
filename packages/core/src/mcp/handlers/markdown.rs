@@ -1051,10 +1051,10 @@ pub async fn handle_create_nodes_from_markdown(
                     });
                 }
             } else {
-                // Default: Fire-and-forget async with STREAMING inserts for better concurrency
-                // Uses optimized store.create_node_streaming() - single SQL query per node
+                // Default: Fire-and-forget async with single-transaction bulk insert
+                // Uses bulk_create_hierarchy_root_notify() - all nodes in one DB round trip
                 // No validation queries needed (nodes pre-validated, order pre-calculated)
-                let store = node_service.store.clone();
+                let ns = node_service.clone();
                 let root_id_for_log = root_id.clone();
 
                 // Resolve collection path synchronously (for error reporting), but defer membership creation
@@ -1102,64 +1102,46 @@ pub async fn handle_create_nodes_from_markdown(
                     handle.spawn(async move {
                         let insert_start = std::time::Instant::now();
                         let total_nodes = nodes_for_bulk.len();
-                        let mut created_count = 0;
-                        let mut error_count = 0;
 
-                        // Stream inserts: one optimized SQL query per node with yielding
-                        for (i, (id, node_type, content, parent_id, order, properties)) in
-                            nodes_for_bulk.into_iter().enumerate()
-                        {
-                            // Use streaming method - single SQL query, no validation overhead
-                            match store
-                                .create_node_streaming(
-                                    id, node_type, content, parent_id, order, properties,
-                                )
-                                .await
-                            {
-                                Ok(_) => created_count += 1,
-                                Err(e) => {
-                                    error_count += 1;
-                                    if error_count <= 3 {
+                        // Single-transaction bulk insert: all nodes + relationships in one DB round trip
+                        match ns.bulk_create_hierarchy_root_notify(nodes_for_bulk).await {
+                            Ok(ids) => {
+                                let created_count = ids.len();
+
+                                // Add root to collection after nodes are created
+                                if let Some(ref coll_id) = collection_id_for_spawn {
+                                    if let Err(e) = ns
+                                        .store
+                                        .add_to_collection(&root_id_for_collection, coll_id)
+                                        .await
+                                    {
                                         tracing::warn!(
-                                            root_id = %root_id_for_log,
+                                            root_id = %root_id_for_collection,
+                                            collection_id = %coll_id,
                                             error = %e,
-                                            "Streaming import node creation failed"
+                                            "Failed to add root to collection in background"
                                         );
                                     }
                                 }
-                            }
 
-                            // Yield every 10 nodes to allow other tasks to run
-                            if i % 10 == 0 {
-                                tokio::task::yield_now().await;
+                                tracing::info!(
+                                    root_id = %root_id_for_log,
+                                    nodes_created = created_count,
+                                    total = total_nodes,
+                                    collection = ?collection_id_for_spawn,
+                                    duration_ms = insert_start.elapsed().as_millis(),
+                                    "Background bulk import completed"
+                                );
                             }
-                        }
-
-                        // Add root to collection after nodes are created (in background)
-                        // Uses store directly to skip NodeService validation overhead
-                        if let Some(ref coll_id) = collection_id_for_spawn {
-                            if let Err(e) = store
-                                .add_to_collection(&root_id_for_collection, coll_id)
-                                .await
-                            {
-                                tracing::warn!(
-                                    root_id = %root_id_for_collection,
-                                    collection_id = %coll_id,
+                            Err(e) => {
+                                tracing::error!(
+                                    root_id = %root_id_for_log,
                                     error = %e,
-                                    "Failed to add root to collection in background"
+                                    duration_ms = insert_start.elapsed().as_millis(),
+                                    "Background bulk import failed"
                                 );
                             }
                         }
-
-                        tracing::info!(
-                            root_id = %root_id_for_log,
-                            nodes_created = created_count,
-                            errors = error_count,
-                            total = total_nodes,
-                            collection = ?collection_id_for_spawn,
-                            duration_ms = insert_start.elapsed().as_millis(),
-                            "Background streaming import completed"
-                        );
                     });
                 } else {
                     // Fallback: No tokio runtime available, do synchronous bulk import

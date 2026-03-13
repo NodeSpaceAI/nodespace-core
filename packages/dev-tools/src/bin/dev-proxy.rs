@@ -1316,19 +1316,16 @@ async fn get_all_collections(State(state): State<AppState>) -> ApiResult<Vec<Col
         Ok(collections_with_counts) => {
             let result: Vec<CollectionInfo> = collections_with_counts
                 .into_iter()
-                .map(|(node, member_count)| {
-                    let parent_collection_ids = node.member_of.clone();
-                    CollectionInfo {
-                        id: node.id,
-                        content: node.content,
-                        node_type: node.node_type,
-                        created_at: node.created_at,
-                        modified_at: node.modified_at,
-                        version: node.version,
-                        properties: node.properties,
-                        member_count,
-                        parent_collection_ids,
-                    }
+                .map(|(node, member_count, parent_collection_ids)| CollectionInfo {
+                    id: node.id,
+                    content: node.content,
+                    node_type: node.node_type,
+                    created_at: node.created_at,
+                    modified_at: node.modified_at,
+                    version: node.version,
+                    properties: node.properties,
+                    member_count,
+                    parent_collection_ids,
                 })
                 .collect();
             Ok(Json(result))
@@ -1366,7 +1363,8 @@ async fn get_all_collections(State(state): State<AppState>) -> ApiResult<Vec<Col
                     version: collection.version,
                     properties: collection.properties,
                     member_count,
-                    parent_collection_ids: collection.member_of.clone(),
+                    // Fallback path: parent IDs not available without optimized query
+                    parent_collection_ids: vec![],
                 });
             }
 
