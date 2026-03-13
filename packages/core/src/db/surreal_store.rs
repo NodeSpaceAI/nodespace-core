@@ -2066,47 +2066,44 @@ impl SurrealStore {
             r2.take(0).context("Failed to extract subtree nodes")?;
         let all_nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
-        // Step 3: fetch relationships using graph traversal from parent nodes
-        // Uses ->relationship[WHERE relationship_type = 'has_child'] which hits idx_rel_in index
-        // Avoids slow WHERE in IN $ids full scan on relationship table
-        // Parent nodes are all except the leaf nodes (nodes that appear as children)
-        // Parent set = root + all descendants (leaf nodes return no edges, that's fine)
+        // If no nodes found (nonexistent root), return early with empty results
+        if all_nodes.is_empty() {
+            return Ok((all_nodes, vec![]));
+        }
+
         let parent_things: Vec<surrealdb::types::RecordId> = std::iter::once(root_id.to_string())
             .chain(descendant_ids.iter().cloned())
             .map(|id| node_record_id(&id))
             .collect();
 
-        // Fetch all has_child relationships where the parent is in our subtree.
-        // Ordering is done in Rust (not SQL) because properties.order is specific to
-        // has_child/member_of relationships — not all relationship types have order.
+        // Fetch children per-node using graph traversal — hits idx_rel_in (graph index) per node,
+        // avoiding the full relationship table scan that WHERE in IN $parents causes in SurrealDB 3.x.
+        // Returns one row per parent with an array of {child_id, order, rel_id} objects.
         let mut r3 = self
             .db
-            .query("SELECT meta::id(id) AS id, meta::id(in) AS in_id, meta::id(out) AS out_id, relationship_type, properties FROM relationship WHERE relationship_type = 'has_child' AND in IN $parents;")
+            .query("SELECT meta::id(id) AS parent_id, ->relationship[WHERE relationship_type = 'has_child'].{ child_id: meta::id(out), order: properties.order, rel_id: meta::id(id) } AS children FROM $parents;")
             .bind(("parents", parent_things))
             .await
             .context("Failed to fetch subtree relationships")?;
 
         #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
-        struct EdgeRow {
-            id: String,
-            in_id: String,
-            out_id: String,
-            relationship_type: String,
+        struct ChildEntry {
+            child_id: String,
             #[serde(default)]
-            properties: Value,
+            order: Option<Value>,
+            rel_id: String,
         }
 
-        let mut rel_rows: Vec<EdgeRow> = r3
+        #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+        struct ParentRow {
+            parent_id: String,
+            #[serde(default)]
+            children: Vec<ChildEntry>,
+        }
+
+        let parent_rows: Vec<ParentRow> = r3
             .take(0)
             .context("Failed to extract subtree relationships")?;
-
-        // Sort by properties.order — only has_child relationships carry this field.
-        // Relationships without an order value sort to the end.
-        rel_rows.sort_by(|a, b| {
-            let ord_a = a.properties.get("order").and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
-            let ord_b = b.properties.get("order").and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
-            ord_a.partial_cmp(&ord_b).unwrap_or(std::cmp::Ordering::Equal)
-        });
 
         tracing::debug!(
             "get_subtree_with_relationships: query took {:?} for root_id={} ({} nodes)",
@@ -2115,16 +2112,28 @@ impl SurrealStore {
             all_nodes.len()
         );
 
-        let relationships: Vec<RelationshipRecord> = rel_rows
+        let mut relationships: Vec<RelationshipRecord> = parent_rows
             .into_iter()
-            .map(|e| RelationshipRecord {
-                id: e.id,
-                in_node: e.in_id,
-                out_node: e.out_id,
-                relationship_type: e.relationship_type,
-                properties: e.properties,
+            .flat_map(|row| {
+                row.children.into_iter().map(move |child| {
+                    let order = child.order.as_ref().and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    RelationshipRecord {
+                        id: child.rel_id,
+                        in_node: row.parent_id.clone(),
+                        out_node: child.child_id,
+                        relationship_type: "has_child".to_string(),
+                        properties: serde_json::json!({ "order": order }),
+                    }
+                })
             })
             .collect();
+
+        // Sort by order in Rust — properties.order is specific to has_child/member_of
+        relationships.sort_by(|a, b| {
+            let ord_a = a.properties.get("order").and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
+            let ord_b = b.properties.get("order").and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
+            ord_a.partial_cmp(&ord_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         Ok((all_nodes, relationships))
     }
