@@ -66,7 +66,6 @@ fn node_record_id(id: &str) -> RecordId {
     RecordId::new("node", id)
 }
 
-
 /// Broadcast channel capacity for domain events.
 ///
 /// 128 provides sufficient headroom for burst operations (bulk node creation)
@@ -2063,7 +2062,8 @@ impl SurrealStore {
             .bind(("ids", all_thing_ids.clone()))
             .await
             .context("Failed to fetch subtree nodes")?;
-        let surreal_nodes: Vec<SurrealNode> = r2.take(0).context("Failed to extract subtree nodes")?;
+        let surreal_nodes: Vec<SurrealNode> =
+            r2.take(0).context("Failed to extract subtree nodes")?;
         let all_nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
         // Step 3: fetch relationships using graph traversal from parent nodes
@@ -2076,18 +2076,19 @@ impl SurrealStore {
             .map(|id| node_record_id(&id))
             .collect();
 
-        // Filter relationship_type first to use idx_relationship_type index,
-        // then filter by in IN $parents — avoids full table scan on the IN clause alone
+        // Fetch all has_child relationships where the parent is in our subtree.
+        // Ordering is done in Rust (not SQL) because properties.order is specific to
+        // has_child/member_of relationships — not all relationship types have order.
         let mut r3 = self
             .db
-            .query("SELECT meta::id(id) AS rel_key, meta::id(in) AS in_id, meta::id(out) AS out_id, relationship_type, properties, properties.order AS prop_order FROM relationship WHERE relationship_type = 'has_child' AND in IN $parents ORDER BY prop_order ASC;")
+            .query("SELECT meta::id(id) AS id, meta::id(in) AS in_id, meta::id(out) AS out_id, relationship_type, properties FROM relationship WHERE relationship_type = 'has_child' AND in IN $parents;")
             .bind(("parents", parent_things))
             .await
             .context("Failed to fetch subtree relationships")?;
 
         #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
         struct EdgeRow {
-            rel_key: String,
+            id: String,
             in_id: String,
             out_id: String,
             relationship_type: String,
@@ -2095,7 +2096,17 @@ impl SurrealStore {
             properties: Value,
         }
 
-        let rel_rows: Vec<EdgeRow> = r3.take(0).context("Failed to extract subtree relationships")?;
+        let mut rel_rows: Vec<EdgeRow> = r3
+            .take(0)
+            .context("Failed to extract subtree relationships")?;
+
+        // Sort by properties.order — only has_child relationships carry this field.
+        // Relationships without an order value sort to the end.
+        rel_rows.sort_by(|a, b| {
+            let ord_a = a.properties.get("order").and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
+            let ord_b = b.properties.get("order").and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
+            ord_a.partial_cmp(&ord_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         tracing::debug!(
             "get_subtree_with_relationships: query took {:?} for root_id={} ({} nodes)",
@@ -2107,7 +2118,7 @@ impl SurrealStore {
         let relationships: Vec<RelationshipRecord> = rel_rows
             .into_iter()
             .map(|e| RelationshipRecord {
-                id: e.rel_key,
+                id: e.id,
                 in_node: e.in_id,
                 out_node: e.out_id,
                 relationship_type: e.relationship_type,
@@ -4892,10 +4903,7 @@ impl SurrealStore {
         let mut parent_map: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         for edge in edges {
-            parent_map
-                .entry(edge.child)
-                .or_default()
-                .push(edge.parent);
+            parent_map.entry(edge.child).or_default().push(edge.parent);
         }
 
         let results = collections
