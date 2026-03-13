@@ -628,17 +628,17 @@ impl<'a> CollectionService<'a> {
             .map_err(|e| db_error(e, "Failed to get all collection names"))
     }
 
-    /// Get all collections with their member counts in a single query
+    /// Get all collections with their member counts and parent collection IDs in a single query
     ///
-    /// Uses batch query to avoid N+1 pattern when fetching collections for UI.
-    /// Each collection is returned with its member count pre-computed.
+    /// Uses batch queries to avoid N+1 pattern when fetching collections for UI.
+    /// Each collection is returned with its member count and parent IDs pre-computed.
     ///
     /// # Returns
     ///
-    /// Vec of (Node, member_count) tuples for all collection nodes
+    /// Vec of (Node, member_count, parent_collection_ids) tuples for all collection nodes
     pub async fn get_all_collections_with_counts(
         &self,
-    ) -> Result<Vec<(Node, usize)>, NodeServiceError> {
+    ) -> Result<Vec<(Node, usize, Vec<String>)>, NodeServiceError> {
         self.store
             .get_all_collections_with_member_counts()
             .await

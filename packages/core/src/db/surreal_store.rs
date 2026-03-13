@@ -66,7 +66,6 @@ fn node_record_id(id: &str) -> RecordId {
     RecordId::new("node", id)
 }
 
-
 /// Broadcast channel capacity for domain events.
 ///
 /// 128 provides sufficient headroom for burst operations (bulk node creation)
@@ -1705,9 +1704,10 @@ impl SurrealStore {
             nodes
         } else {
             // Root nodes: nodes that have NO incoming has_child relationships (Issue #788: universal relationship table)
+            // Uses NOT IN with idx_rel_out index instead of per-node graph traversal (avoids O(N×M) full scan)
             let mut response = self
                 .db
-                .query("SELECT * FROM node WHERE count(<-relationship[WHERE relationship_type = 'has_child']) = 0;")
+                .query("SELECT * FROM node WHERE id NOT IN (SELECT VALUE out FROM relationship WHERE relationship_type = 'has_child');")
                 .await
                 .context("Failed to get root nodes")?;
 
@@ -2040,68 +2040,88 @@ impl SurrealStore {
 
         let root_thing = node_record_id(root_id);
 
-        // Universal Graph Architecture (Issue #783, #788): Single query batch
-        // Uses recursive collect to get all descendants, then fetches nodes and relationships
-        let query = "
-            LET $descendants = $root_thing.{..+collect}->relationship[WHERE relationship_type = 'has_child']->node;
-            LET $all_node_ids = array::concat([$root_thing], $descendants);
-            SELECT * FROM node WHERE id IN $all_node_ids;
-            SELECT id, meta::id(in) AS in_id, meta::id(out) AS out_id, relationship_type, properties, properties.order FROM relationship WHERE in IN $all_node_ids AND relationship_type = 'has_child' ORDER BY properties.order ASC;
-        ";
-
-        let mut response = self
+        // Step 1: recursive collect to get all descendant IDs (fast, uses graph index)
+        let mut r1 = self
             .db
-            .query(query)
-            .bind(("root_thing", root_thing))
+            .query("SELECT VALUE meta::id(id) FROM (SELECT * FROM $root_thing.{..+collect}->relationship[WHERE relationship_type = 'has_child']->node);")
+            .bind(("root_thing", root_thing.clone()))
             .await
-            .context("Failed to query subtree")?;
+            .context("Failed to query descendants")?;
+        let descendant_ids: Vec<String> = r1.take(0).context("Failed to extract descendants")?;
 
-        tracing::debug!(
-            "get_subtree_with_relationships: query took {:?} for root_id={}",
-            start.elapsed(),
-            root_id
-        );
+        // All node IDs including root — used for both node fetch (step 2) and edge traversal (step 3)
+        let all_thing_ids: Vec<surrealdb::types::RecordId> = std::iter::once(root_id.to_string())
+            .chain(descendant_ids.iter().cloned())
+            .map(|id| node_record_id(&id))
+            .collect();
 
-        // Query has 4 statements:
-        // 0: LET $descendants
-        // 1: LET $all_nodes
-        // 2: SELECT nodes
-        // 3: SELECT relationships
-        let surreal_nodes: Vec<SurrealNode> = response
-            .take(2)
-            .context("Failed to extract subtree nodes")?;
-
+        // Step 2: fetch all nodes by ID (fast, direct record lookup)
+        let mut r2 = self
+            .db
+            .query("SELECT * FROM $ids;")
+            .bind(("ids", all_thing_ids.clone()))
+            .await
+            .context("Failed to fetch subtree nodes")?;
+        let surreal_nodes: Vec<SurrealNode> =
+            r2.take(0).context("Failed to extract subtree nodes")?;
         let all_nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
-        // Parse edges (index 3) - Issue #788: universal relationship table with properties
-        // SurrealDB 3.x: use meta::id() to extract raw ID from in/out fields
-        #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
-        struct EdgeRow {
-            id: RecordId,
-            in_id: String,
-            out_id: String,
-            relationship_type: String,
-            #[serde(default)]
-            properties: Value,
+        // If no nodes found (nonexistent root), return early with empty results
+        if all_nodes.is_empty() {
+            return Ok((all_nodes, vec![]));
         }
 
-        let rel_rows: Vec<EdgeRow> = response
-            .take(3)
+        // Fetch children per-node using graph traversal — hits idx_rel_in (graph index) per node,
+        // avoiding the full relationship table scan that WHERE in IN $parents causes in SurrealDB 3.x.
+        // Returns one row per parent with an array of {child_id, order, rel_id} objects.
+        let mut r3 = self
+            .db
+            .query("SELECT meta::id(id) AS parent_id, ->relationship[WHERE relationship_type = 'has_child'].{ child_id: meta::id(out), order: properties.order, rel_id: meta::id(id) } AS children FROM $parents;")
+            .bind(("parents", all_thing_ids))
+            .await
+            .context("Failed to fetch subtree relationships")?;
+
+        #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+        struct ChildEntry {
+            child_id: String,
+            #[serde(default)]
+            order: Option<Value>,
+            rel_id: String,
+        }
+
+        #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+        struct ParentRow {
+            parent_id: String,
+            #[serde(default)]
+            children: Vec<ChildEntry>,
+        }
+
+        let parent_rows: Vec<ParentRow> = r3
+            .take(0)
             .context("Failed to extract subtree relationships")?;
 
-        let relationships: Vec<RelationshipRecord> = rel_rows
+        tracing::debug!(
+            "get_subtree_with_relationships: query took {:?} for root_id={} ({} nodes)",
+            start.elapsed(),
+            root_id,
+            all_nodes.len()
+        );
+
+        // Consumer (get_subtree_data) sorts children per-parent by order when building the
+        // adjacency list, so no global sort is needed here.
+        let relationships: Vec<RelationshipRecord> = parent_rows
             .into_iter()
-            .map(|e| {
-                let id_str = extract_record_key(&e.id);
-                let in_str = e.in_id;
-                let out_str = e.out_id;
-                RelationshipRecord {
-                    id: id_str,
-                    in_node: in_str,
-                    out_node: out_str,
-                    relationship_type: e.relationship_type,
-                    properties: e.properties,
-                }
+            .flat_map(|row| {
+                row.children.into_iter().map(move |child| {
+                    let order = child.order.as_ref().and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    RelationshipRecord {
+                        id: child.rel_id,
+                        in_node: row.parent_id.clone(),
+                        out_node: child.child_id,
+                        relationship_type: "has_child".to_string(),
+                        properties: serde_json::json!({ "order": order }),
+                    }
+                })
             })
             .collect();
 
@@ -4812,15 +4832,18 @@ impl SurrealStore {
         Ok(names)
     }
 
-    /// Get all collections with their member counts in a single query
+    /// Get all collections with their member counts and parent collection IDs in a single query
     ///
-    /// Uses SurrealDB's graph traversal to count incoming member_of relationships
-    /// for each collection, avoiding N+1 query pattern.
+    /// Uses SurrealDB's relationship table to:
+    /// - Count incoming member_of edges for each collection (member_count)
+    /// - Find collection-to-collection member_of edges (parent_collection_ids)
     ///
     /// # Returns
     ///
-    /// Vec of (Node, member_count) tuples for all collection nodes
-    pub async fn get_all_collections_with_member_counts(&self) -> Result<Vec<(Node, usize)>> {
+    /// Vec of (Node, member_count, parent_collection_ids) tuples for all collection nodes
+    pub async fn get_all_collections_with_member_counts(
+        &self,
+    ) -> Result<Vec<(Node, usize, Vec<String>)>> {
         // Fetch all collection nodes
         let collections = self.get_all_collections().await?;
 
@@ -4828,21 +4851,45 @@ impl SurrealStore {
             return Ok(vec![]);
         }
 
-        // For each collection, count its members via the relationship table
-        // Fetch all member_of relationships and count in Rust to avoid GROUP BY deserialization issues
+        // Fetch all member_of relationship targets (for member counts)
         let count_query = r#"
             SELECT VALUE meta::id(out) FROM relationship WHERE relationship_type = 'member_of';
         "#;
 
-        let mut response = self
+        // Fetch collection-to-collection member_of edges: (child_id, parent_id)
+        let hierarchy_query = r#"
+            SELECT meta::id(in) AS child, meta::id(out) AS parent
+            FROM relationship
+            WHERE relationship_type = 'member_of'
+            AND in IN (SELECT VALUE id FROM node WHERE node_type = 'collection')
+            AND out IN (SELECT VALUE id FROM node WHERE node_type = 'collection');
+        "#;
+
+        let mut count_response = self
             .db
             .query(count_query)
             .await
-            .context("Failed to get collections with member counts")?;
+            .context("Failed to get collection member counts")?;
 
-        let collection_ids: Vec<String> = response
+        let collection_ids: Vec<String> = count_response
             .take(0)
-            .context("Failed to extract collection results")?;
+            .context("Failed to extract collection member count results")?;
+
+        let mut hierarchy_response = self
+            .db
+            .query(hierarchy_query)
+            .await
+            .context("Failed to get collection hierarchy")?;
+
+        #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
+        struct HierarchyEdge {
+            child: String,
+            parent: String,
+        }
+
+        let edges: Vec<HierarchyEdge> = hierarchy_response
+            .take(0)
+            .context("Failed to extract collection hierarchy edges")?;
 
         // Build a map of collection_id -> member_count by counting occurrences
         let mut count_map: std::collections::HashMap<String, usize> =
@@ -4851,11 +4898,19 @@ impl SurrealStore {
             *count_map.entry(id).or_insert(0) += 1;
         }
 
+        // Build a map of collection_id -> Vec<parent_collection_id>
+        let mut parent_map: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for edge in edges {
+            parent_map.entry(edge.child).or_default().push(edge.parent);
+        }
+
         let results = collections
             .into_iter()
             .map(|node| {
                 let count = count_map.get(&node.id).copied().unwrap_or(0);
-                (node, count)
+                let parents = parent_map.get(&node.id).cloned().unwrap_or_default();
+                (node, count, parents)
             })
             .collect();
 

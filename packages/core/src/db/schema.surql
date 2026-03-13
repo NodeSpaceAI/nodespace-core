@@ -165,7 +165,9 @@ DEFINE FIELD IF NOT EXISTS modified_at ON TABLE embedding TYPE datetime DEFAULT 
 
 -- Indexes for efficient lookups
 DEFINE INDEX IF NOT EXISTS idx_embedding_node ON TABLE embedding COLUMNS node;
-DEFINE INDEX IF NOT EXISTS idx_embedding_stale ON TABLE embedding COLUMNS stale;
+-- Composite index covers both conditions in stale embedding queue queries:
+-- WHERE stale = true AND modified_at < time::now() - debounce
+DEFINE INDEX IF NOT EXISTS idx_embedding_stale_modified ON TABLE embedding COLUMNS stale, modified_at;
 -- Unique constraint: one embedding per (node, model, chunk_index) combination
 DEFINE INDEX IF NOT EXISTS idx_embedding_unique ON TABLE embedding COLUMNS node, model_name, chunk_index UNIQUE;
 -- HNSW vector index for fast semantic similarity search (Issue #776, upgraded for SurrealDB 3.x)

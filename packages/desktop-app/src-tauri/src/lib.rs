@@ -179,6 +179,15 @@ impl ShutdownToken {
 pub fn run() {
     use tauri::{menu::*, Emitter, Manager, RunEvent};
 
+    // Initialize tracing — respects RUST_LOG env var, defaults to info for nodespace_core
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("nodespace_core=info")),
+        )
+        .try_init()
+        .ok();
+
     // Create shutdown token for coordinating graceful background task termination
     let shutdown_token = ShutdownToken::new();
     let shutdown_token_for_setup = shutdown_token.clone();
