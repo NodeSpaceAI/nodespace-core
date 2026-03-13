@@ -18,6 +18,12 @@ interface DependencyCheck {
 
 const dependencies: DependencyCheck[] = [
   {
+    name: 'SurrealDB',
+    command: 'surreal version',
+    installUrl: 'https://surrealdb.com/install',
+    required: true
+  },
+  {
     name: 'Bun',
     command: 'bun --version',
     installUrl: 'https://bun.sh/install',
