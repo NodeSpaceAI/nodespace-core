@@ -185,7 +185,8 @@ pub fn run() {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("nodespace_core=info")),
         )
-        .init();
+        .try_init()
+        .ok();
 
     // Create shutdown token for coordinating graceful background task termination
     let shutdown_token = ShutdownToken::new();

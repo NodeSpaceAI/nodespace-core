@@ -2049,7 +2049,7 @@ impl SurrealStore {
             .context("Failed to query descendants")?;
         let descendant_ids: Vec<String> = r1.take(0).context("Failed to extract descendants")?;
 
-        // All node IDs including root
+        // All node IDs including root — used for both node fetch (step 2) and edge traversal (step 3)
         let all_thing_ids: Vec<surrealdb::types::RecordId> = std::iter::once(root_id.to_string())
             .chain(descendant_ids.iter().cloned())
             .map(|id| node_record_id(&id))
@@ -2071,18 +2071,13 @@ impl SurrealStore {
             return Ok((all_nodes, vec![]));
         }
 
-        let parent_things: Vec<surrealdb::types::RecordId> = std::iter::once(root_id.to_string())
-            .chain(descendant_ids.iter().cloned())
-            .map(|id| node_record_id(&id))
-            .collect();
-
         // Fetch children per-node using graph traversal — hits idx_rel_in (graph index) per node,
         // avoiding the full relationship table scan that WHERE in IN $parents causes in SurrealDB 3.x.
         // Returns one row per parent with an array of {child_id, order, rel_id} objects.
         let mut r3 = self
             .db
             .query("SELECT meta::id(id) AS parent_id, ->relationship[WHERE relationship_type = 'has_child'].{ child_id: meta::id(out), order: properties.order, rel_id: meta::id(id) } AS children FROM $parents;")
-            .bind(("parents", parent_things))
+            .bind(("parents", all_thing_ids))
             .await
             .context("Failed to fetch subtree relationships")?;
 
@@ -2112,7 +2107,9 @@ impl SurrealStore {
             all_nodes.len()
         );
 
-        let mut relationships: Vec<RelationshipRecord> = parent_rows
+        // Consumer (get_subtree_data) sorts children per-parent by order when building the
+        // adjacency list, so no global sort is needed here.
+        let relationships: Vec<RelationshipRecord> = parent_rows
             .into_iter()
             .flat_map(|row| {
                 row.children.into_iter().map(move |child| {
@@ -2127,13 +2124,6 @@ impl SurrealStore {
                 })
             })
             .collect();
-
-        // Sort by order in Rust — properties.order is specific to has_child/member_of
-        relationships.sort_by(|a, b| {
-            let ord_a = a.properties.get("order").and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
-            let ord_b = b.properties.get("order").and_then(|v| v.as_f64()).unwrap_or(f64::MAX);
-            ord_a.partial_cmp(&ord_b).unwrap_or(std::cmp::Ordering::Equal)
-        });
 
         Ok((all_nodes, relationships))
     }
