@@ -46,6 +46,7 @@
 //! ```
 
 use crate::db::events::DomainEvent;
+use crate::db::extract_record_key;
 use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
 use anyhow::{Context, Result};
@@ -56,7 +57,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use surrealdb::engine::local::{Db, RocksDb};
-use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
+use surrealdb::types::{RecordId, SurrealValue};
 use surrealdb::Surreal;
 use tokio::sync::broadcast;
 
@@ -65,15 +66,6 @@ fn node_record_id(id: &str) -> RecordId {
     RecordId::new("node", id)
 }
 
-/// Extracts the string key from a RecordId
-fn extract_id_string(record_id: &RecordId) -> String {
-    match &record_id.key {
-        RecordIdKey::String(s) => s.clone(),
-        RecordIdKey::Number(n) => n.to_string(),
-        RecordIdKey::Uuid(u) => u.to_string(),
-        other => format!("{other:?}"),
-    }
-}
 
 /// Broadcast channel capacity for domain events.
 ///
@@ -211,7 +203,7 @@ fn default_lifecycle_status() -> String {
 impl From<SurrealNode> for Node {
     fn from(sn: SurrealNode) -> Self {
         // Extract UUID from RecordId key (e.g., node:⟨uuid⟩ -> uuid)
-        let id = extract_id_string(&sn.id);
+        let id = extract_record_key(&sn.id);
 
         // Universal Graph Architecture (Issue #783): Properties are always on node.properties
         let properties = if !sn.properties.is_null() {
@@ -474,7 +466,7 @@ impl SurrealStore {
 
         for row in rows {
             // Extract type name from RecordId key (e.g., node:task -> task)
-            let type_name = extract_id_string(&row.id);
+            let type_name = extract_record_key(&row.id);
 
             // All schema IDs are valid node types
             valid_types.insert(type_name);
@@ -1612,7 +1604,7 @@ impl SurrealStore {
             // Extract UUIDs and fetch full node records
             let mut nodes = Vec::new();
             for rid in source_things {
-                let id_str = extract_id_string(&rid);
+                let id_str = extract_record_key(&rid);
                 if let Some(node) = self.get_node(&id_str).await? {
                     nodes.push(node);
                 }
@@ -1804,7 +1796,7 @@ impl SurrealStore {
 
         // Extract ID string from RecordId
         let parent_rid = parent_ids.into_iter().next().unwrap();
-        let parent_id = extract_id_string(&parent_rid);
+        let parent_id = extract_record_key(&parent_rid);
 
         Ok(Some(parent_id))
     }
@@ -2100,7 +2092,7 @@ impl SurrealStore {
         let relationships: Vec<RelationshipRecord> = rel_rows
             .into_iter()
             .map(|e| {
-                let id_str = extract_id_string(&e.id);
+                let id_str = extract_record_key(&e.id);
                 let in_str = e.in_id;
                 let out_str = e.out_id;
                 RelationshipRecord {
@@ -2698,7 +2690,7 @@ impl SurrealStore {
                 .context("Failed to extract relationship ID")?;
 
             if let Some(result) = results.first() {
-                return Ok(Some(extract_id_string(&result.id)));
+                return Ok(Some(extract_record_key(&result.id)));
             }
         }
 
@@ -2751,7 +2743,7 @@ impl SurrealStore {
             return Ok(Some(format!(
                 "{}:{}",
                 rel_id.table,
-                extract_id_string(rel_id)
+                extract_record_key(rel_id)
             )));
         }
 
@@ -2785,7 +2777,7 @@ impl SurrealStore {
         let mentioned_ids: Vec<String> = results
             .into_iter()
             .flat_map(|r| r.mentioned_ids)
-            .map(|rid| extract_id_string(&rid))
+            .map(|rid| extract_record_key(&rid))
             .collect();
 
         Ok(mentioned_ids)
@@ -2818,7 +2810,7 @@ impl SurrealStore {
         let mentioned_by_ids: Vec<String> = results
             .into_iter()
             .flat_map(|r| r.mentioned_by_ids)
-            .map(|rid| extract_id_string(&rid))
+            .map(|rid| extract_record_key(&rid))
             .collect();
 
         Ok(mentioned_by_ids)
@@ -2890,7 +2882,7 @@ impl SurrealStore {
         let mut container_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for source in &sources {
-            let source_id = extract_id_string(&source.source_id);
+            let source_id = extract_record_key(&source.source_id);
 
             if source.source_type == "task" {
                 // Tasks are their own containers
@@ -2902,7 +2894,7 @@ impl SurrealStore {
                 // Last ancestor in the chain is the root
                 // The recursive collect returns ancestors in order from closest to farthest
                 if let Some(root_rid) = source.ancestors.last() {
-                    let root_id = extract_id_string(root_rid);
+                    let root_id = extract_record_key(root_rid);
                     container_ids.insert(root_id);
                 }
             }
@@ -2938,7 +2930,7 @@ impl SurrealStore {
         let result: Vec<crate::models::NodeReference> = containers
             .into_iter()
             .map(|c| {
-                let id_str = extract_id_string(&c.id);
+                let id_str = extract_record_key(&c.id);
                 crate::models::NodeReference {
                     id: id_str,
                     title: c.title,
@@ -4016,7 +4008,7 @@ impl SurrealStore {
 
         Ok(results
             .into_iter()
-            .map(|r| extract_id_string(&r.node))
+            .map(|r| extract_record_key(&r.node))
             .collect())
     }
 
@@ -4432,7 +4424,7 @@ impl SurrealStore {
         for idx in 0..MAX_RESULT_INDEX {
             if let Ok(results) = response.take::<Vec<RelateResult>>(idx) {
                 if let Some(result) = results.first() {
-                    return Ok(Some(extract_id_string(&result.id)));
+                    return Ok(Some(extract_record_key(&result.id)));
                 }
             }
         }
@@ -4491,7 +4483,7 @@ impl SurrealStore {
             return Ok(Some(format!(
                 "{}:{}",
                 rel_id.table,
-                extract_id_string(rel_id)
+                extract_record_key(rel_id)
             )));
         }
 
@@ -4534,7 +4526,7 @@ impl SurrealStore {
         let collection_ids: Vec<String> = results
             .into_iter()
             .flat_map(|r| r.collection_ids)
-            .map(|rid| extract_id_string(&rid))
+            .map(|rid| extract_record_key(&rid))
             .collect();
 
         Ok(collection_ids)
@@ -4782,7 +4774,7 @@ impl SurrealStore {
         let mut member_ids: Vec<String> = results
             .into_iter()
             .flat_map(|r| r.member_ids)
-            .map(|rid| extract_id_string(&rid))
+            .map(|rid| extract_record_key(&rid))
             .collect();
 
         // Deduplicate (a node could be in multiple child collections)
@@ -5072,7 +5064,7 @@ impl SurrealStore {
     /// Creates an embedding record with a placeholder vector marked as stale to queue it for processing.
     /// Used when a new root node is created that should be embedded.
     ///
-    /// Note: Uses a unit vector [1,0,0,...,0] instead of zeros because the MTREE index
+    /// Note: Uses a unit vector [1,0,0,...,0] instead of zeros because the HNSW index
     /// with COSINE distance cannot handle zero vectors (division by zero during normalization).
     /// The stale=true flag ensures this placeholder will be replaced with a real embedding.
     pub async fn create_stale_embedding_marker(&self, node_id: &str) -> Result<()> {

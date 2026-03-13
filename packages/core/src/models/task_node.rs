@@ -280,7 +280,7 @@ impl<'de> Deserialize<'de> for TaskPriority {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Ok(Self::from_str(&s).unwrap()) // from_str never fails now
+        Ok(Self::from_str(&s).unwrap()) // from_str never fails: unknown strings map to User(_)
     }
 }
 
@@ -295,7 +295,7 @@ impl SurrealValue for TaskPriority {
 
     fn from_value(value: surrealdb::types::Value) -> Result<Self, surrealdb::types::Error> {
         match value {
-            surrealdb::types::Value::String(s) => Ok(Self::from_str(&s).unwrap()),
+            surrealdb::types::Value::String(s) => Ok(Self::from_str(&s).unwrap()), // infallible: unknown strings map to User(_)
             surrealdb::types::Value::None | surrealdb::types::Value::Null => Ok(Self::default()),
             other => Err(surrealdb::types::Error::internal(format!(
                 "Cannot convert {other:?} to TaskPriority"

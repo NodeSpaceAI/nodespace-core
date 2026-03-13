@@ -26,7 +26,7 @@
 
 use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::events::DomainEvent;
-use crate::db::{StoreChange, StoreOperation, SurrealStore};
+use crate::db::{extract_record_key, StoreChange, StoreOperation, SurrealStore};
 use crate::models::embedding::is_embeddable_type;
 use crate::models::schema::SchemaRelationship;
 use crate::models::{Node, NodeFilter, NodeUpdate};
@@ -36,22 +36,12 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
-use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
+use surrealdb::types::{RecordId, SurrealValue};
 use tokio::sync::broadcast;
 
-/// Extracts the string key from a RecordId
+/// Formats a RecordId as `table:key` for use in event emission IDs.
 fn extract_record_id_string(record_id: &RecordId) -> String {
-    let key = extract_record_key(record_id);
-    format!("{}:{}", record_id.table, key)
-}
-
-fn extract_record_key(record_id: &RecordId) -> String {
-    match &record_id.key {
-        RecordIdKey::String(s) => s.clone(),
-        RecordIdKey::Number(n) => n.to_string(),
-        RecordIdKey::Uuid(u) => u.to_string(),
-        other => format!("{other:?}"),
-    }
+    format!("{}:{}", record_id.table, extract_record_key(record_id))
 }
 
 /// Default limit for query_nodes_simple when no limit is specified.
