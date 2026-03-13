@@ -40,10 +40,9 @@ async fn create_test_env_with_embedding(
     let mut store = Arc::new(SurrealStore::new(db_path).await?);
     let node_service = Arc::new(NodeService::new(&mut store).await?);
 
-    // Create NLP engine (will operate in stub mode since model not available in tests)
-    let mut nlp_engine = EmbeddingService::new(EmbeddingConfig::default())?;
-    nlp_engine.initialize()?;
-    let nlp_engine = Arc::new(nlp_engine);
+    // Create NLP engine in stub mode (DO NOT call initialize() - that loads the full
+    // 115MB GGML model into GPU memory, causing memory explosion when many tests run in parallel)
+    let nlp_engine = Arc::new(EmbeddingService::new(EmbeddingConfig::default())?);
 
     let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
 

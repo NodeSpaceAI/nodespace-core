@@ -45,12 +45,13 @@ use crate::models::Node;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use surrealdb::types::{RecordIdKey, SurrealValue};
 
 /// Structured query definition matching QueryNode fields
 ///
 /// This struct matches the TypeScript QueryNode interface from
 /// `packages/desktop-app/src/lib/types/query.ts`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryDefinition {
     /// Target node type: 'task', 'text', 'date', or '*' for all types
@@ -64,7 +65,7 @@ pub struct QueryDefinition {
 }
 
 /// Filter type category
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "lowercase")]
 pub enum FilterType {
     Property,
@@ -74,7 +75,7 @@ pub enum FilterType {
 }
 
 /// Comparison operator for filters
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "lowercase")]
 pub enum FilterOperator {
     Equals,
@@ -92,7 +93,7 @@ pub enum FilterOperator {
 }
 
 /// Relationship type for graph traversal
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "lowercase")]
 pub enum RelationshipType {
     Parent,
@@ -103,7 +104,7 @@ pub enum RelationshipType {
 }
 
 /// Sort direction
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "lowercase")]
 pub enum SortDirection {
     #[serde(rename = "asc")]
@@ -113,7 +114,7 @@ pub enum SortDirection {
 }
 
 /// Individual filter condition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryFilter {
     /// Filter category
@@ -134,7 +135,7 @@ pub struct QueryFilter {
 }
 
 /// Sorting configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "camelCase")]
 pub struct SortConfig {
     /// Property or field to sort by
@@ -274,27 +275,24 @@ impl QueryService {
             .await
             .context("Failed to execute ID query")?;
 
-        // Extract records with Thing IDs
-        use surrealdb::sql::Thing;
-
-        #[derive(Debug, Serialize, Deserialize)]
+        // Extract records with RecordId IDs
+        #[derive(Debug, Serialize, Deserialize, surrealdb::types::SurrealValue)]
         struct IdRecord {
-            id: Thing,
+            id: surrealdb::types::RecordId,
         }
 
         let records: Vec<IdRecord> = response
             .take(0)
             .context("Failed to extract IDs from query")?;
 
-        // Convert Thing to String (extract UUID part)
+        // Convert RecordId to String (extract key part)
         let ids: Vec<String> = records
             .into_iter()
-            .filter_map(|record| {
-                if let surrealdb::sql::Id::String(id) = record.id.id {
-                    Some(id)
-                } else {
-                    None
-                }
+            .map(|record| match &record.id.key {
+                RecordIdKey::String(s) => s.clone(),
+                RecordIdKey::Number(n) => n.to_string(),
+                RecordIdKey::Uuid(u) => u.to_string(),
+                other => format!("{other:?}"),
             })
             .collect();
 

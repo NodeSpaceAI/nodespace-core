@@ -54,28 +54,22 @@ pub const MAX_PARENT_CHAIN_DEPTH: usize = 100;
 /// Manages semantic embeddings using the root-aggregate model where only
 /// root nodes of embeddable types get embedded, with their entire subtree
 /// content aggregated into the embedding.
-pub struct NodeEmbeddingService<C = surrealdb::engine::local::Db>
-where
-    C: surrealdb::Connection,
-{
+pub struct NodeEmbeddingService {
     /// NLP engine for generating embeddings
     nlp_engine: Arc<EmbeddingService>,
     /// SurrealDB store for persisting embeddings
-    store: Arc<SurrealStore<C>>,
+    store: Arc<SurrealStore>,
     /// Configuration for embedding behavior
     config: EmbeddingConfig,
 }
 
-impl<C> NodeEmbeddingService<C>
-where
-    C: surrealdb::Connection,
-{
+impl NodeEmbeddingService {
     /// Create a new NodeEmbeddingService with SurrealDB integration
     ///
     /// # Arguments
     /// * `nlp_engine` - The NLP engine for generating embeddings
     /// * `store` - The SurrealDB store for persisting embeddings
-    pub fn new(nlp_engine: Arc<EmbeddingService>, store: Arc<SurrealStore<C>>) -> Self {
+    pub fn new(nlp_engine: Arc<EmbeddingService>, store: Arc<SurrealStore>) -> Self {
         tracing::info!("NodeEmbeddingService initialized with root-aggregate model");
         Self {
             nlp_engine,
@@ -87,7 +81,7 @@ where
     /// Create with custom configuration
     pub fn with_config(
         nlp_engine: Arc<EmbeddingService>,
-        store: Arc<SurrealStore<C>>,
+        store: Arc<SurrealStore>,
         config: EmbeddingConfig,
     ) -> Self {
         tracing::info!(
@@ -107,7 +101,7 @@ where
     }
 
     /// Get reference to the SurrealDB store
-    pub fn store(&self) -> &Arc<SurrealStore<C>> {
+    pub fn store(&self) -> &Arc<SurrealStore> {
         &self.store
     }
 
@@ -732,12 +726,9 @@ mod tests {
 
     #[test]
     fn test_content_hash() {
-        let hash1 =
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::compute_content_hash("hello");
-        let hash2 =
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::compute_content_hash("hello");
-        let hash3 =
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::compute_content_hash("world");
+        let hash1 = NodeEmbeddingService::compute_content_hash("hello");
+        let hash2 = NodeEmbeddingService::compute_content_hash("hello");
+        let hash3 = NodeEmbeddingService::compute_content_hash("world");
 
         assert_eq!(hash1, hash2);
         assert_ne!(hash1, hash3);
@@ -748,18 +739,9 @@ mod tests {
     fn test_find_char_boundary_ascii() {
         let s = "hello world";
         // ASCII characters are all single-byte, so any index is valid
-        assert_eq!(
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 0),
-            0
-        );
-        assert_eq!(
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 5),
-            5
-        );
-        assert_eq!(
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 100),
-            s.len()
-        );
+        assert_eq!(NodeEmbeddingService::find_char_boundary(s, 0), 0);
+        assert_eq!(NodeEmbeddingService::find_char_boundary(s, 5), 5);
+        assert_eq!(NodeEmbeddingService::find_char_boundary(s, 100), s.len());
     }
 
     #[test]
@@ -769,28 +751,16 @@ mod tests {
         // Byte positions: t(0) e(1) s(2) t(3) ' '(4) ✅(5,6,7) ' '(8) d(9) o(10) n(11) e(12)
 
         // Index 5 is start of emoji - valid
-        assert_eq!(
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 5),
-            5
-        );
+        assert_eq!(NodeEmbeddingService::find_char_boundary(s, 5), 5);
 
         // Index 6 is inside emoji - should walk back to 5
-        assert_eq!(
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 6),
-            5
-        );
+        assert_eq!(NodeEmbeddingService::find_char_boundary(s, 6), 5);
 
         // Index 7 is inside emoji - should walk back to 5
-        assert_eq!(
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 7),
-            5
-        );
+        assert_eq!(NodeEmbeddingService::find_char_boundary(s, 7), 5);
 
         // Index 8 is after emoji (space) - valid
-        assert_eq!(
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 8),
-            8
-        );
+        assert_eq!(NodeEmbeddingService::find_char_boundary(s, 8), 8);
     }
 
     #[test]
@@ -801,22 +771,13 @@ mod tests {
         // Byte positions: 🎉(0-3) ' '(4) d(5) o(6) n(7) e(8) ' '(9) ✅(10-12)
 
         // Index inside first emoji
-        assert_eq!(
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 2),
-            0
-        );
+        assert_eq!(NodeEmbeddingService::find_char_boundary(s, 2), 0);
 
         // Index 4 (space after emoji)
-        assert_eq!(
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 4),
-            4
-        );
+        assert_eq!(NodeEmbeddingService::find_char_boundary(s, 4), 4);
 
         // Index inside second emoji
-        assert_eq!(
-            NodeEmbeddingService::<surrealdb::engine::local::Db>::find_char_boundary(s, 11),
-            10
-        );
+        assert_eq!(NodeEmbeddingService::find_char_boundary(s, 11), 10);
     }
 
     /// Helper struct for testing chunk_content without full service initialization

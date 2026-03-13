@@ -29,6 +29,4 @@ pub use error::DatabaseError;
 pub use events::{DomainEvent, RelationshipEvent};
 pub use fractional_ordering::FractionalOrderCalculator;
 pub use index_manager::IndexManager;
-pub use surreal_store::{
-    EmbeddedStore, HttpStore, RelationshipRecord, StoreChange, StoreOperation, SurrealStore,
-};
+pub use surreal_store::{RelationshipRecord, StoreChange, StoreOperation, SurrealStore};

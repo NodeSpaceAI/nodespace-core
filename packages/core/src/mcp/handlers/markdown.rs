@@ -839,13 +839,10 @@ impl ParserContext {
 }
 
 /// Handle create_nodes_from_markdown MCP request
-pub async fn handle_create_nodes_from_markdown<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_create_nodes_from_markdown(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let start = std::time::Instant::now();
     tracing::debug!("create_nodes_from_markdown: START");
 
@@ -1404,14 +1401,11 @@ fn is_table_delimiter(line: &str) -> bool {
 /// # Returns
 ///
 /// Returns `Ok(())` on success, or an `MCPError` if node creation fails.
-async fn parse_markdown<C>(
+async fn parse_markdown(
     markdown: &str,
-    node_service: &Arc<NodeService<C>>,
+    node_service: &Arc<NodeService>,
     context: &mut ParserContext,
-) -> Result<(), MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<(), MCPError> {
     // Phase 1: Parse markdown into PreparedNodes using shared detection logic
     let prepared_nodes = prepare_nodes_from_markdown(markdown, context.root_id.clone())?;
 
@@ -1466,18 +1460,15 @@ where
 }
 
 /// Create a node via NodeService
-async fn create_node<C>(
-    node_service: &Arc<NodeService<C>>,
+async fn create_node(
+    node_service: &Arc<NodeService>,
     node_type: &str,
     content: &str,
     parent_id: Option<String>,
     _root_node_id: Option<String>, // Deprecated - kept for backward compat but ignored (root auto-derived from parent)
     insert_after_node_id: Option<String>, // Insert after this sibling (None = insert at beginning)
     custom_properties: Option<Value>, // Custom properties from markdown parsing (e.g., task status)
-) -> Result<String, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<String, MCPError> {
     // Create node via NodeService (enforces all business rules)
     // Note: container/root is now auto-derived from parent chain by backend
     // Note: sibling ordering uses insert_after_node_id to maintain document order
@@ -1578,13 +1569,10 @@ fn default_include_node_ids() -> bool {
 /// <!-- task-ghi789 v2 -->
 /// - [ ] Review architecture
 /// ```
-pub async fn handle_get_markdown_from_node_id<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_get_markdown_from_node_id(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     // Parse parameters
     let params: GetMarkdownParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
@@ -1920,13 +1908,10 @@ pub struct UpdateRootFromMarkdownParams {
 /// // Old children deleted, new structure created
 /// // Returns deletion_failures if any deletes failed
 /// ```
-pub async fn handle_update_root_from_markdown<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_update_root_from_markdown(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     // Parse parameters
     let params: UpdateRootFromMarkdownParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;

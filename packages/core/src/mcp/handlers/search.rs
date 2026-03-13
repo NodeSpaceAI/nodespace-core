@@ -148,14 +148,11 @@ pub struct SearchSemanticParams {
 /// let result = handle_search_semantic(&node_service, &embedding_service, params).await?;
 /// // Returns top 10 most relevant root nodes
 /// ```
-pub async fn handle_search_semantic<C>(
-    node_service: &Arc<NodeService<C>>,
-    embedding_service: &Arc<NodeEmbeddingService<C>>,
+pub async fn handle_search_semantic(
+    node_service: &Arc<NodeService>,
+    embedding_service: &Arc<NodeEmbeddingService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     // Parse parameters
     let params: SearchSemanticParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
