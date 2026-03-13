@@ -86,10 +86,7 @@ pub async fn get_all_collections(
         })?;
 
     let mut result = Vec::with_capacity(collections_with_counts.len());
-    for (collection, member_count) in collections_with_counts {
-        // Extract parent collection IDs from member_of field
-        // Collections can be nested (a collection is member_of another collection)
-        let parent_collection_ids = collection.member_of.clone();
+    for (collection, member_count, parent_collection_ids) in collections_with_counts {
         let node_value = node_to_typed_value(collection)?;
         result.push(CollectionInfo {
             node: node_value,
