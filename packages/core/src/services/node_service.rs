@@ -10367,9 +10367,8 @@ mod tests {
             let parent_thing = surrealdb::types::RecordId::new("node", parent_id);
 
             #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
-            #[allow(dead_code)] // out is used for deserialization but not accessed
             struct RelWithOrder {
-                out: surrealdb::types::RecordId,
+                out: Option<surrealdb::types::RecordId>,
                 order: Option<f64>,
             }
 
