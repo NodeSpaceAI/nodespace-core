@@ -26,7 +26,7 @@
 
 use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::events::DomainEvent;
-use crate::db::{StoreChange, StoreOperation, SurrealStore};
+use crate::db::{extract_record_key, StoreChange, StoreOperation, SurrealStore};
 use crate::models::embedding::is_embeddable_type;
 use crate::models::schema::SchemaRelationship;
 use crate::models::{Node, NodeFilter, NodeUpdate};
@@ -36,7 +36,13 @@ use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
+use surrealdb::types::{RecordId, SurrealValue};
 use tokio::sync::broadcast;
+
+/// Formats a RecordId as `table:key` for use in event emission IDs.
+fn extract_record_id_string(record_id: &RecordId) -> String {
+    format!("{}:{}", record_id.table, extract_record_key(record_id))
+}
 
 /// Default limit for query_nodes_simple when no limit is specified.
 /// Prevents accidental full table scans and improves performance.
@@ -350,12 +356,9 @@ pub fn extract_mentions(content: &str) -> Vec<String> {
 ///     Ok(())
 /// }
 /// ```
-pub struct NodeService<C = surrealdb::engine::local::Db>
-where
-    C: surrealdb::Connection,
-{
+pub struct NodeService {
     /// SurrealDB store for all persistence operations
-    pub(crate) store: Arc<SurrealStore<C>>,
+    pub(crate) store: Arc<SurrealStore>,
 
     /// Behavior registry for validation
     behaviors: Arc<NodeBehaviorRegistry>,
@@ -384,12 +387,7 @@ where
     embedding_waker: Option<crate::services::EmbeddingWaker>,
 }
 
-// Manual Clone implementation because C doesn't need to be Clone
-// (all fields are Arc or inherently cloneable)
-impl<C> Clone for NodeService<C>
-where
-    C: surrealdb::Connection,
-{
+impl Clone for NodeService {
     fn clone(&self) -> Self {
         Self {
             store: self.store.clone(),
@@ -402,10 +400,7 @@ where
     }
 }
 
-impl<C> NodeService<C>
-where
-    C: surrealdb::Connection,
-{
+impl NodeService {
     /// Create a new NodeService
     ///
     /// Initializes the service with SurrealStore and creates a default
@@ -434,7 +429,7 @@ where
     /// Takes `&mut Arc<SurrealStore>` to enable cache updates during schema seeding:
     /// - On first launch: Seeds schemas and updates caches incrementally via `Arc::get_mut()`
     /// - On subsequent launches: Caches already populated by `SurrealStore::new()`
-    pub async fn new(store: &mut Arc<SurrealStore<C>>) -> Result<Self, NodeServiceError> {
+    pub async fn new(store: &mut Arc<SurrealStore>) -> Result<Self, NodeServiceError> {
         // Create empty migration registry (no migrations registered yet - pre-deployment)
         // Infrastructure exists for future schema evolution post-deployment
         let migration_registry = MigrationRegistry::new();
@@ -531,7 +526,7 @@ where
     /// - This avoids re-querying the database since we have schema data in memory
     /// - On subsequent launches, caches are already populated by `SurrealStore::new()`
     async fn seed_core_schemas_if_needed(
-        store: &mut Arc<SurrealStore<C>>,
+        store: &mut Arc<SurrealStore>,
     ) -> Result<(), NodeServiceError> {
         use crate::models::core_schemas::get_core_schemas;
 
@@ -620,7 +615,7 @@ where
     /// Get access to the underlying SurrealStore
     ///
     /// Useful for advanced operations that need direct database access
-    pub fn store(&self) -> &Arc<SurrealStore<C>> {
+    pub fn store(&self) -> &Arc<SurrealStore> {
         &self.store
     }
 
@@ -3308,7 +3303,7 @@ where
     /// This is used when we want to fire-and-forget the embedding queue operation
     /// without blocking the calling thread (e.g., during node updates).
     async fn queue_root_for_embedding_async(
-        store: &Arc<SurrealStore<C>>,
+        store: &Arc<SurrealStore>,
         node_id: &str,
         embedding_waker: Option<&crate::services::EmbeddingWaker>,
     ) {
@@ -5399,8 +5394,7 @@ where
 
             // Check cardinality constraint
             if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
-                let source_thing =
-                    surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
+                let source_thing = surrealdb::types::RecordId::new("node", source_id);
                 let query = "SELECT * FROM relationship WHERE in = $source AND relationship_type = $rel_type";
 
                 let mut result = self
@@ -5458,12 +5452,10 @@ where
                 // Emit event if relationship was created (not idempotent hit)
                 if let Some(id) = rel_id {
                     // Query the order that was assigned
-                    let source_thing =
-                        surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
-                    let target_thing =
-                        surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
+                    let source_thing = surrealdb::types::RecordId::new("node", source_id);
+                    let target_thing = surrealdb::types::RecordId::new("node", target_id);
 
-                    #[derive(Debug, serde::Deserialize)]
+                    #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
                     struct OrderResult {
                         order: Option<f64>,
                     }
@@ -5499,8 +5491,8 @@ where
         }
 
         // Create SurrealDB Thing (record ID) for source and target nodes
-        let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
-        let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
+        let source_thing = surrealdb::types::RecordId::new("node", source_id);
+        let target_thing = surrealdb::types::RecordId::new("node", target_id);
 
         // Check for existing relationship (idempotency)
         let check_query =
@@ -5520,7 +5512,8 @@ where
                 ))
             })?;
 
-        let existing_ids: Vec<surrealdb::sql::Thing> = check_response.take(0).unwrap_or_default();
+        let existing_ids: Vec<surrealdb::types::RecordId> =
+            check_response.take(0).unwrap_or_default();
         if !existing_ids.is_empty() {
             // Relationship already exists, idempotent success
             return Ok(());
@@ -5581,16 +5574,16 @@ where
             })?;
 
         // Extract relationship ID and emit event
-        #[derive(Debug, serde::Deserialize)]
+        #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
         struct RelateResult {
-            id: surrealdb::sql::Thing,
+            id: surrealdb::types::RecordId,
         }
         let results: Vec<RelateResult> = result.take(0).unwrap_or_default();
 
         if let Some(rel_result) = results.first() {
             let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent {
-                    id: rel_result.id.to_string(),
+                    id: extract_record_id_string(&rel_result.id),
                     from_id: source_id.to_string(),
                     to_id: target_id.to_string(),
                     relationship_type: relationship_name.to_string(),
@@ -5650,8 +5643,8 @@ where
         // The relationship_type field distinguishes between different relationship types
 
         // Create SurrealDB Thing (record ID) for source and target nodes
-        let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
-        let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
+        let source_thing = surrealdb::types::RecordId::new("node", source_id);
+        let target_thing = surrealdb::types::RecordId::new("node", target_id);
 
         // Get relationship ID before deleting (for event emission)
         let check_query =
@@ -5669,7 +5662,8 @@ where
                 NodeServiceError::query_failed(format!("Failed to get relationship ID: {}", e))
             })?;
 
-        let existing_ids: Vec<surrealdb::sql::Thing> = check_result.take(0).unwrap_or_default();
+        let existing_ids: Vec<surrealdb::types::RecordId> =
+            check_result.take(0).unwrap_or_default();
 
         // Delete the edge
         let delete_query =
@@ -5689,7 +5683,7 @@ where
         // Emit RelationshipDeleted event
         if let Some(rel_id) = existing_ids.first() {
             let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
-                id: rel_id.to_string(),
+                id: extract_record_id_string(rel_id),
                 from_id: source_id.to_string(),
                 to_id: target_id.to_string(),
                 relationship_type: relationship_name.to_string(),
@@ -5754,7 +5748,7 @@ where
         }
 
         // Issue #825: ALL relationships use the universal `relationship` table
-        let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.to_string()));
+        let node_thing = surrealdb::types::RecordId::new("node", node_id);
 
         // Query the unified relationship table
         let query = match direction {
@@ -5789,9 +5783,9 @@ where
                 NodeServiceError::query_failed(format!("Failed to get related nodes: {}", e))
             })?;
 
-        #[derive(serde::Deserialize)]
+        #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
         struct EdgeOut {
-            out: surrealdb::sql::Thing,
+            out: surrealdb::types::RecordId,
         }
 
         let edges: Vec<EdgeOut> = result.take(0).map_err(|e| {
@@ -5805,7 +5799,7 @@ where
         // Fetch full node records
         let mut nodes = Vec::new();
         for edge in edges {
-            let related_id = edge.out.id.to_raw();
+            let related_id = extract_record_key(&edge.out);
             if let Some(node) = self.get_node(&related_id).await? {
                 nodes.push(node);
             }
@@ -6050,8 +6044,7 @@ where
             }
 
             // Check whether at least one edge of this relationship type exists
-            let source_thing =
-                surrealdb::sql::Thing::from(("node".to_string(), node_id.to_string()));
+            let source_thing = surrealdb::types::RecordId::new("node", node_id);
             let query = "SELECT VALUE id FROM relationship WHERE in = $source AND relationship_type = $rel_type LIMIT 1";
 
             let mut result = self
@@ -6068,7 +6061,7 @@ where
                     ))
                 })?;
 
-            let existing: Vec<surrealdb::sql::Value> = result.take(0).map_err(|e| {
+            let existing: Vec<serde_json::Value> = result.take(0).map_err(|e| {
                 NodeServiceError::query_failed(format!(
                     "Failed to parse relationship check for '{}': {}",
                     relationship.name, e
@@ -6089,7 +6082,7 @@ where
 }
 
 /// Result of checking node completeness against its schema's required relationships
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletenessResult {
     /// The node ID that was checked
@@ -8050,15 +8043,12 @@ mod tests {
 
         /// Helper function to wait for children tree to have expected order with retries.
         /// This handles SurrealDB's eventual consistency for sibling ordering.
-        async fn wait_for_children_tree_order<C>(
-            service: &NodeService<C>,
+        async fn wait_for_children_tree_order(
+            service: &NodeService,
             parent_id: &str,
             expected_contents: &[&str],
             max_retries: usize,
-        ) -> Result<serde_json::Value, String>
-        where
-            C: surrealdb::Connection,
-        {
+        ) -> Result<serde_json::Value, String> {
             for attempt in 0..max_retries {
                 let tree = service
                     .get_children_tree(parent_id)
@@ -8655,7 +8645,7 @@ mod tests {
             }
 
             // Count schema nodes after first init using COUNT()
-            #[derive(Debug, serde::Deserialize)]
+            #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
             struct CountResult {
                 count: i64,
             }
@@ -10219,14 +10209,10 @@ mod tests {
                 .unwrap();
 
             // Query relationships directly to verify order was assigned
-            let collection_thing =
-                surrealdb::sql::Thing::from(("node".to_string(), collection_id.clone()));
+            let collection_thing = surrealdb::types::RecordId::new("node", collection_id.clone());
 
-            #[derive(Debug, serde::Deserialize)]
-            #[allow(dead_code)] // member is used for deserialization but not accessed
+            #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
             struct RelWithOrder {
-                #[serde(rename = "in")]
-                member: surrealdb::sql::Thing,
                 order: Option<f64>,
             }
 
@@ -10234,7 +10220,7 @@ mod tests {
                 .store
                 .db()
                 .query(
-                    "SELECT in, properties.order AS order FROM relationship WHERE out = $collection AND relationship_type = 'member_of' ORDER BY properties.order ASC;",
+                    "SELECT properties.order AS order FROM relationship WHERE out = $collection AND relationship_type = 'member_of' ORDER BY properties.order ASC;",
                 )
                 .bind(("collection", collection_thing))
                 .await
@@ -10378,12 +10364,12 @@ mod tests {
                 .unwrap();
 
             // Query relationships directly to verify order was assigned
-            let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
+            let parent_thing = surrealdb::types::RecordId::new("node", parent_id);
 
-            #[derive(Debug, serde::Deserialize)]
+            #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
             #[allow(dead_code)] // out is used for deserialization but not accessed
             struct RelWithOrder {
-                out: surrealdb::sql::Thing,
+                out: surrealdb::types::RecordId,
                 order: Option<f64>,
             }
 

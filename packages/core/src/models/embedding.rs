@@ -13,6 +13,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use surrealdb::types::SurrealValue;
 
 /// Default embedding dimension for nomic-embed-text-v1.5 model (768 dimensions)
 /// Note: The authoritative constant is `EMBEDDING_DIMENSION` in nlp-engine crate.
@@ -38,7 +39,7 @@ pub const CHARS_PER_TOKEN_ESTIMATE: usize = 3;
 ///
 /// Represents the vector embedding for a root node's aggregated content.
 /// Multiple records may exist for the same node if content exceeds chunk size.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "camelCase")]
 pub struct Embedding {
     /// Unique identifier for this embedding record

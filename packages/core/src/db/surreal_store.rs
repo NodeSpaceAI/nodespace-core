@@ -46,6 +46,7 @@
 //! ```
 
 use crate::db::events::DomainEvent;
+use crate::db::extract_record_key;
 use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
 use anyhow::{Context, Result};
@@ -56,12 +57,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use surrealdb::engine::local::{Db, RocksDb};
-use surrealdb::engine::remote::http::{Client, Http};
-use surrealdb::opt::auth::Root;
-use surrealdb::sql::{Id, Thing};
+use surrealdb::types::{RecordId, SurrealValue};
 use surrealdb::Surreal;
 use tokio::sync::broadcast;
-use tracing::warn;
+
+/// Creates a RecordId for the node table
+fn node_record_id(id: &str) -> RecordId {
+    RecordId::new("node", id)
+}
+
 
 /// Broadcast channel capacity for domain events.
 ///
@@ -74,7 +78,7 @@ const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 128;
 ///
 /// Used for bulk loading relationships (e.g., tree structure on startup).
 /// Universal Relationship Architecture (Issue #788): All relationships in single `relationship` table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, surrealdb::types::SurrealValue)]
 pub struct RelationshipRecord {
     /// Relationship ID in SurrealDB format (e.g., "relationship:123")
     pub id: String,
@@ -166,15 +170,15 @@ pub type StoreNotifier = Arc<dyn Fn(StoreChange) + Send + Sync>;
 ///   - All properties stored in `node.properties` field
 ///   - All node data in single `node` table
 ///   - Single-query node fetching
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, surrealdb::types::SurrealValue)]
 struct SurrealNode {
     // Record ID is stored in the 'id' field returned by SurrealDB (e.g., node:⟨uuid⟩)
-    id: Thing, // SurrealDB record ID (table:id format)
+    id: RecordId, // SurrealDB record ID (table:id format)
     node_type: String,
     content: String,
     version: i64,
-    created_at: String,
-    modified_at: String,
+    created_at: DateTime<Utc>,
+    modified_at: DateTime<Utc>,
     #[serde(default)]
     mentions: Vec<String>,
     // Note: mentioned_by is no longer used - replaced by mentioned_in (Vec<NodeReference>)
@@ -198,14 +202,8 @@ fn default_lifecycle_status() -> String {
 
 impl From<SurrealNode> for Node {
     fn from(sn: SurrealNode) -> Self {
-        // Extract UUID from Thing record ID (e.g., node:⟨uuid⟩ -> uuid)
-        let id = match &sn.id.id {
-            Id::String(s) => {
-                // Format is "node:uuid", extract the UUID part
-                s.split(':').nth(1).unwrap_or(s).to_string()
-            }
-            _ => sn.id.id.to_string(),
-        };
+        // Extract UUID from RecordId key (e.g., node:⟨uuid⟩ -> uuid)
+        let id = extract_record_key(&sn.id);
 
         // Universal Graph Architecture (Issue #783): Properties are always on node.properties
         let properties = if !sn.properties.is_null() {
@@ -219,12 +217,8 @@ impl From<SurrealNode> for Node {
             node_type: sn.node_type,
             content: sn.content,
             version: sn.version,
-            created_at: DateTime::parse_from_rfc3339(&sn.created_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
-            modified_at: DateTime::parse_from_rfc3339(&sn.modified_at)
-                .map(|dt| dt.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now()),
+            created_at: sn.created_at,
+            modified_at: sn.modified_at,
             properties,
             mentions: sn.mentions,
             mentioned_in: Vec::new(), // Populated at fetch time by get_children_tree
@@ -237,18 +231,11 @@ impl From<SurrealNode> for Node {
 
 /// SurrealStore implements NodeStore trait for SurrealDB backend
 ///
-/// Supports two connection modes:
-/// - **Embedded RocksDB**: Desktop production mode (Surreal<Db>)
-/// - **HTTP Client**: Dev-proxy mode (Surreal<Client>)
-///
-/// Uses hybrid dual-table architecture for optimal query performance.
+/// Uses embedded RocksDB backend for desktop production.
 /// Emits domain events via broadcast channel when data changes.
-pub struct SurrealStore<C = Db>
-where
-    C: surrealdb::Connection,
-{
+pub struct SurrealStore {
     /// SurrealDB connection
-    db: Arc<Surreal<C>>,
+    db: Arc<Surreal<Db>>,
     /// Broadcast channel for domain events (128 subscriber capacity)
     event_tx: broadcast::Sender<DomainEvent>,
     /// Cache of all valid node types (derived from schema definitions)
@@ -271,13 +258,7 @@ where
     notifier: Option<StoreNotifier>,
 }
 
-/// Type alias for embedded RocksDB store
-pub type EmbeddedStore = SurrealStore<Db>;
-
-/// Type alias for HTTP client store
-pub type HttpStore = SurrealStore<Client>;
-
-impl SurrealStore<Db> {
+impl SurrealStore {
     /// Create a new SurrealStore with embedded RocksDB backend
     ///
     /// # Arguments
@@ -341,94 +322,7 @@ impl SurrealStore<Db> {
     }
 }
 
-impl SurrealStore<Client> {
-    /// Create HTTP client store for dev-proxy mode
-    ///
-    /// This connects to a remote SurrealDB server via HTTP API.
-    /// Used by dev-proxy to enable Surrealist inspection while preserving business logic.
-    ///
-    /// # Arguments
-    ///
-    /// * `endpoint` - SurrealDB server address (e.g., "127.0.0.1:8000")
-    /// * `namespace` - Database namespace (e.g., "nodespace")
-    /// * `database` - Database name (e.g., "nodespace")
-    /// * `username` - Auth username (e.g., "root")
-    /// * `password` - Auth password (e.g., "root")
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use nodespace_core::db::SurrealStore;
-    ///
-    /// #[tokio::main]
-    /// async fn main() -> anyhow::Result<()> {
-    ///     let store = SurrealStore::new_http(
-    ///         "127.0.0.1:8000",
-    ///         "nodespace",
-    ///         "nodespace",
-    ///         "root",
-    ///         "root"
-    ///     ).await?;
-    ///
-    ///     // Use store normally - same API as embedded mode
-    ///     let node = store.get_node("some-id").await?;
-    ///
-    ///     Ok(())
-    /// }
-    /// ```
-    pub async fn new_http(
-        endpoint: &str,
-        namespace: &str,
-        database: &str,
-        username: &str,
-        password: &str,
-    ) -> Result<Self> {
-        tracing::info!("Connecting to SurrealDB HTTP server at {}", endpoint);
-
-        // Create HTTP client connection to remote SurrealDB server
-        let db = Surreal::new::<Http>(endpoint)
-            .await
-            .context("Failed to connect to SurrealDB HTTP server")?;
-
-        // Authenticate with root credentials
-        db.signin(Root { username, password })
-            .await
-            .context("Failed to authenticate with SurrealDB")?;
-
-        // Set namespace and database
-        db.use_ns(namespace)
-            .use_db(database)
-            .await
-            .context("Failed to set namespace/database")?;
-
-        let db = Arc::new(db);
-
-        // Initialize schema tables (idempotent - uses IF NOT EXISTS)
-        // Even in HTTP mode, we need to ensure schema exists for fresh databases
-        // Note: Schema nodes are seeded by NodeService, not here (Issue #704)
-        Self::initialize_schema(&db).await?;
-
-        // Build valid node types cache from schema definitions (Issue #691)
-        let valid_node_types = Self::build_schema_caches(&db).await?;
-
-        tracing::info!("Connected to SurrealDB HTTP server");
-
-        // Initialize broadcast channel for domain events
-        let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
-
-        Ok(Self {
-            db,
-            event_tx,
-            valid_node_types,
-            notifier: None,
-        })
-    }
-}
-
-impl<C> SurrealStore<C>
-where
-    C: surrealdb::Connection,
-{
+impl SurrealStore {
     /// Set the store change notifier callback (Issue #718)
     ///
     /// Registers a callback that will be invoked synchronously after every store
@@ -458,7 +352,7 @@ where
     ///
     /// This is used by services (like SchemaService) that need direct database access
     /// for operations like DEFINE TABLE or DEFINE FIELD.
-    pub fn db(&self) -> &Arc<Surreal<C>> {
+    pub fn db(&self) -> &Arc<Surreal<Db>> {
         &self.db
     }
 
@@ -544,7 +438,7 @@ where
     /// - Cache fully populated in one query: {"schema", "task", "text", "date", ...}
     /// - No further cache updates needed
     async fn build_schema_caches(
-        db: &Arc<Surreal<C>>,
+        db: &Arc<Surreal<Db>>,
     ) -> Result<std::collections::HashSet<String>> {
         let mut valid_types = std::collections::HashSet::new();
 
@@ -563,19 +457,16 @@ where
             .context("Failed to query schema nodes for caches")?;
 
         // Parse results - each row has id (the type name)
-        #[derive(serde::Deserialize)]
+        #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
         struct SchemaRow {
-            id: surrealdb::sql::Thing,
+            id: RecordId,
         }
 
         let rows: Vec<SchemaRow> = response.take(0).unwrap_or_default();
 
         for row in rows {
-            // Extract type name from Thing id (e.g., node:task -> task)
-            let type_name = match &row.id.id {
-                surrealdb::sql::Id::String(s) => s.clone(),
-                other => other.to_string(),
-            };
+            // Extract type name from RecordId key (e.g., node:task -> task)
+            let type_name = extract_record_key(&row.id);
 
             // All schema IDs are valid node types
             valid_types.insert(type_name);
@@ -592,7 +483,7 @@ where
     /// # Architecture
     /// - Universal `node` table with embedded properties for ALL nodes (including schemas)
     /// - Graph relationships: `has_child` and `mentions` relations for relationships
-    async fn initialize_schema(db: &Arc<Surreal<C>>) -> Result<()> {
+    async fn initialize_schema(db: &Arc<Surreal<Db>>) -> Result<()> {
         // Load schema from schema.surql file
         // Universal Graph Architecture with SCHEMAFULL tables
         let schema_sql = include_str!("schema.surql");
@@ -632,10 +523,7 @@ where
     }
 }
 
-impl<C> SurrealStore<C>
-where
-    C: surrealdb::Connection,
-{
+impl SurrealStore {
     pub async fn create_node(&self, node: Node, source: Option<String>) -> Result<Node> {
         // Universal Graph Architecture (Issue #783): All properties stored in node.properties
         // Embeddings are managed separately in dedicated embedding table
@@ -670,13 +558,21 @@ where
             node.id
         );
 
+        // SurrealDB 3.x strictly enforces field types: `properties` SCHEMAFULL field
+        // must be an object, not NULL. Normalize null/missing to empty object.
+        let properties = if node.properties.is_null() {
+            serde_json::json!({})
+        } else {
+            node.properties.clone()
+        };
+
         let mut response = self
             .db
             .query(&create_query)
             .bind(("node_type", node.node_type.clone()))
             .bind(("content", node.content.clone()))
             .bind(("version", node.version))
-            .bind(("properties", node.properties.clone()))
+            .bind(("properties", properties))
             .bind(("title", node.title.clone()))
             .await
             .context("Failed to create node in universal table")?;
@@ -780,12 +676,12 @@ where
 
         // Calculate fractional order for the new node
         // Get the last child's order value
-        #[derive(Deserialize)]
+        #[derive(Deserialize, surrealdb::types::SurrealValue)]
         struct EdgeOrder {
             order: f64,
         }
 
-        let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
+        let parent_thing = node_record_id(&parent_id);
         // Universal Relationship Architecture (Issue #788): Query from relationship table with relationship_type filter
         let mut order_response = self
             .db
@@ -833,8 +729,15 @@ where
             COMMIT TRANSACTION;
         "#;
 
-        // Construct Thing objects for Record IDs
-        let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.clone()));
+        // Construct RecordId objects for Record IDs
+        let node_thing = node_record_id(&node_id);
+
+        // SurrealDB 3.x strictly enforces field types: `properties` must be an object, not NULL.
+        let properties = if properties.is_null() {
+            serde_json::json!({})
+        } else {
+            properties
+        };
 
         // Execute transaction
         let response = self
@@ -874,98 +777,24 @@ where
         Ok(node)
     }
 
-    /// Builds a Node from hub data and properties.
-    ///
-    /// This helper extracts the common node construction logic used by both
-    /// `get_node()` and `get_nodes_by_ids()`, ensuring consistent behavior
-    /// for timestamp parsing, mentions extraction, and fallback handling.
-    ///
-    /// # Arguments
-    /// * `node_id` - The node's ID string
-    /// * `node_type` - The node's type (text, task, date, etc.)
-    /// * `hub` - The node table row as a JSON Value
-    /// * `properties` - The node's properties
-    fn build_node_from_hub(
-        &self,
-        node_id: String,
-        node_type: String,
-        hub: &Value,
-        properties: Value,
-    ) -> Node {
-        let created_at = hub["created_at"]
-            .as_str()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|| {
-                warn!(node_id = %node_id, "Missing or invalid created_at timestamp, using current time");
-                Utc::now()
-            });
-
-        let modified_at = hub["modified_at"]
-            .as_str()
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(|| {
-                warn!(node_id = %node_id, "Missing or invalid modified_at timestamp, using current time");
-                Utc::now()
-            });
-
-        let mentions = hub["mentions"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        // Note: mentioned_in is populated at fetch time by get_children_tree, not from DB
-        Node {
-            id: node_id,
-            node_type,
-            content: hub["content"].as_str().unwrap_or("").to_string(),
-            version: hub["version"].as_i64().unwrap_or(1),
-            created_at,
-            modified_at,
-            properties,
-            mentions,
-            mentioned_in: Vec::new(), // Populated by get_children_tree with {id, title, nodeType}
-            member_of: Vec::new(),
-            title: hub["title"].as_str().map(String::from),
-            lifecycle_status: hub["lifecycle_status"]
-                .as_str()
-                .unwrap_or("active")
-                .to_string(),
-        }
-    }
-
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {
         // Universal Graph Architecture (Issue #783): Single query for node + properties
         // Properties are embedded directly in node.properties field
         // Note: member_of is populated separately when needed (e.g., by populate_memberships)
 
-        let node_query = format!("SELECT * OMIT id FROM node:`{id}` LIMIT 1;", id = id);
+        let node_query = format!("SELECT * FROM node:`{id}` LIMIT 1;", id = id);
         let mut response = self
             .db
             .query(&node_query)
             .await
             .context("Failed to query node")?;
 
-        let results: Vec<Value> = response.take(0).unwrap_or_default();
-        let Some(hub) = results.into_iter().next() else {
+        let results: Vec<SurrealNode> = response.take(0).unwrap_or_default();
+        let Some(sn) = results.into_iter().next() else {
             return Ok(None);
         };
 
-        // Parse node fields (properties embedded directly)
-        let node_type = hub["node_type"].as_str().unwrap_or("text").to_string();
-        let properties = hub
-            .get("properties")
-            .cloned()
-            .unwrap_or(serde_json::json!({}));
-
-        let node = self.build_node_from_hub(id.to_string(), node_type, &hub, properties);
-
-        Ok(Some(node))
+        Ok(Some(sn.into()))
     }
 
     /// Check if a node exists without fetching its full data.
@@ -1000,36 +829,21 @@ where
         let id_clause = id_list.join(", ");
 
         // Query all nodes in one batch (properties embedded)
-        // Note: We use record::id(id) AS node_id to extract the string ID for result mapping
-        let node_query = format!(
-            "SELECT *, record::id(id) AS node_id OMIT id FROM node WHERE id IN [{}];",
-            id_clause
-        );
+        let node_query = format!("SELECT * FROM node WHERE id IN [{}];", id_clause);
         let mut response = self
             .db
             .query(&node_query)
             .await
             .context("Failed to batch query nodes")?;
 
-        let results: Vec<Value> = response.take(0).unwrap_or_default();
+        let results: Vec<SurrealNode> = response.take(0).unwrap_or_default();
 
         let mut result_map: HashMap<String, Node> = HashMap::new();
 
-        // Convert each node row to Node struct
-        for hub in results {
-            // Extract ID from the node_id alias (set via record::id(id) AS node_id)
-            let node_id = hub["node_id"].as_str().unwrap_or("").to_string();
-            if node_id.is_empty() {
-                continue; // Skip if no ID found
-            }
-            let node_type = hub["node_type"].as_str().unwrap_or("text").to_string();
-            let properties = hub
-                .get("properties")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
-
-            let node = self.build_node_from_hub(node_id.clone(), node_type, &hub, properties);
-            result_map.insert(node_id, node);
+        // Convert each SurrealNode to Node struct
+        for sn in results {
+            let node: Node = sn.into();
+            result_map.insert(node.id.clone(), node);
         }
 
         // Note: member_of is populated separately when needed (e.g., by populate_memberships)
@@ -1087,7 +901,7 @@ where
         }
 
         let query = format!(
-            "UPDATE type::thing('node', $id) SET {};",
+            "UPDATE type::record('node', $id) SET {};",
             set_clauses.join(", ")
         );
 
@@ -1175,51 +989,51 @@ where
             ));
         }
 
-        // Build atomic transaction: DDL FIRST, then CREATE node
-        // Universal Graph Architecture (Issue #783): Schema data stored in node.properties
-        let mut transaction_parts = vec!["BEGIN TRANSACTION;".to_string()];
-
-        // Add all DDL statements FIRST (for the type this schema defines, e.g., task indexes)
+        // Execute DDL statements first (outside transaction for SurrealDB 3.x compatibility)
         for ddl in &ddl_statements {
-            transaction_parts.push(ddl.clone());
+            let mut ddl_response = self
+                .db
+                .query(ddl)
+                .await
+                .context(format!("Failed to execute DDL: {}", ddl))?;
+            let _: Result<Vec<serde_json::Value>, _> = ddl_response.take(0);
         }
 
         // Create schema node with all schema data in properties
         // Schema nodes don't have titles (not referenceable via @mentions)
-        // Omit the title field - it will default to NONE/null per schema definition
-        transaction_parts.push(format!(
+        let create_query = format!(
             r#"CREATE node:`{}` CONTENT {{
                 node_type: $node_type,
                 content: $content,
                 version: 1,
                 created_at: time::now(),
                 modified_at: time::now(),
-                mentions: [],
-                mentioned_in: [],
                 properties: $properties
             }};"#,
             node.id
-        ));
+        );
 
-        transaction_parts.push("COMMIT TRANSACTION;".to_string());
-        let transaction_query = transaction_parts.join("\n");
-
-        // Execute atomic transaction
+        let schema_properties = if node.properties.is_null() {
+            serde_json::json!({})
+        } else {
+            node.properties.clone()
+        };
         let response = self
             .db
-            .query(&transaction_query)
-            .bind(("id", node.id.clone()))
+            .query(&create_query)
             .bind(("node_type", node.node_type.clone()))
             .bind(("content", node.content.clone()))
-            .bind(("properties", node.properties.clone()))
+            .bind(("properties", schema_properties))
             .await
-            .context("Failed to execute atomic schema creation transaction")?;
+            .context("Failed to create schema node")?;
 
-        // Check for transaction errors
-        response.check().context(format!(
-            "Schema creation transaction failed for node '{}'. Query: {}",
-            node.id, transaction_query
+        // Consume result to ensure persistence
+        let mut response = response.check().context(format!(
+            "Schema creation failed for node '{}'. Query: {}",
+            node.id, create_query
         ))?;
+        // Take result to drive completion (required for SurrealDB persistence)
+        let _: Vec<SurrealNode> = response.take(0).unwrap_or_default();
 
         // Fetch and return the created node
         let created_node = self
@@ -1273,7 +1087,7 @@ where
 
         // Add node update statement - properties stored directly in node.properties
         transaction_parts.push(
-            r#"UPDATE type::thing('node', $id) SET
+            r#"UPDATE type::record('node', $id) SET
                 content = $content,
                 node_type = $node_type,
                 modified_at = time::now(),
@@ -1410,8 +1224,15 @@ where
             COMMIT TRANSACTION;
         "#;
 
-        // Construct Thing for node ID
-        let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.clone()));
+        // Construct RecordId for node ID
+        let node_thing = node_record_id(&node_id);
+
+        // SurrealDB 3.x strictly enforces field types: `properties` must be an object, not NULL.
+        let new_properties = if new_properties.is_null() {
+            serde_json::json!({})
+        } else {
+            new_properties
+        };
 
         // Execute transaction
         let response = self
@@ -1506,7 +1327,7 @@ where
         // Atomic update with version check using record ID
         // Universal Graph Architecture (Issue #783): Properties stored in node.properties
         let query = "
-            UPDATE type::thing('node', $id) SET
+            UPDATE type::record('node', $id) SET
                 content = $content,
                 node_type = $node_type,
                 modified_at = time::now(),
@@ -1544,7 +1365,7 @@ where
         // Update properties directly if provided
         if let Some(props) = updated_properties {
             self.db
-                .query("UPDATE type::thing('node', $id) SET properties = $properties;")
+                .query("UPDATE type::record('node', $id) SET properties = $properties;")
                 .bind(("id", id.to_string()))
                 .bind(("properties", props))
                 .await
@@ -1554,7 +1375,7 @@ where
         // Issue #828, #770: Update lifecycle_status if provided
         if let Some(status) = update.lifecycle_status {
             self.db
-                .query("UPDATE type::thing('node', $id) SET lifecycle_status = $lifecycle_status;")
+                .query("UPDATE type::record('node', $id) SET lifecycle_status = $lifecycle_status;")
                 .bind(("id", id.to_string()))
                 .bind(("lifecycle_status", status))
                 .await
@@ -1584,7 +1405,7 @@ where
     /// many documents as archived efficiently.
     pub async fn update_lifecycle_status(&self, id: &str, status: &str) -> Result<()> {
         self.db
-            .query("UPDATE type::thing('node', $id) SET lifecycle_status = $status;")
+            .query("UPDATE type::record('node', $id) SET lifecycle_status = $status;")
             .bind(("id", id.to_string()))
             .bind(("status", status.to_string()))
             .await
@@ -1604,8 +1425,8 @@ where
         // Delete node and its relationships atomically (Issue #788: use universal relationship table)
         let transaction_query = "
             BEGIN TRANSACTION;
-            DELETE type::thing('node', $id);
-            DELETE relationship WHERE in = type::thing('node', $id) OR out = type::thing('node', $id);
+            DELETE type::record('node', $id);
+            DELETE relationship WHERE in = type::record('node', $id) OR out = type::record('node', $id);
             COMMIT TRANSACTION;
         ";
 
@@ -1675,36 +1496,37 @@ where
         let node_type = node.node_type.clone();
         let node_id_str = node.id.clone();
 
-        let transaction_query = r#"
-            BEGIN TRANSACTION;
-
-            -- Delete type-specific record (if exists - legacy support)
-            DELETE $type_id;
-
-            -- Delete node from universal table
-            DELETE $node_id;
-
-            -- Delete all relationships (incoming and outgoing) from universal relationship table
-            DELETE relationship WHERE in = $node_id OR out = $node_id;
-
-            COMMIT TRANSACTION;
-        "#
-        .to_string();
-
-        // Construct Thing objects for Record IDs
-        let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id_str.clone()));
-        let type_thing = surrealdb::sql::Thing::from((node_type.clone(), node_id_str.clone()));
-
-        // Execute transaction (we don't care about the return value, just the side effects)
+        // Delete type-specific legacy record (if exists)
         self.db
-            .query(&transaction_query)
-            .bind(("node_id", node_thing))
-            .bind(("type_id", type_thing))
+            .query("DELETE $type_id;")
+            .bind((
+                "type_id",
+                RecordId::new(node_type.as_str(), node_id_str.as_str()),
+            ))
             .await
-            .map(|_| ())
             .context(format!(
-                "Failed to delete node '{}' (type: {}) with cascade",
-                node_id_str, node_type
+                "Failed to delete type-specific record for node '{}'",
+                node_id_str
+            ))?;
+
+        // Delete the node from the universal node table
+        self.db
+            .query("DELETE $node_id;")
+            .bind(("node_id", node_record_id(&node_id_str)))
+            .await
+            .context(format!(
+                "Failed to delete node '{}' from universal table",
+                node_id_str
+            ))?;
+
+        // Delete all relationships (incoming and outgoing) from universal relationship table
+        self.db
+            .query("DELETE relationship WHERE in = $node_id OR out = $node_id;")
+            .bind(("node_id", node_record_id(&node_id_str)))
+            .await
+            .context(format!(
+                "Failed to delete relationships for node '{}'",
+                node_id_str
             ))?;
 
         // Notify registered callback of the store change (Issue #718)
@@ -1753,9 +1575,9 @@ where
             // Issue #788: Universal Relationship Architecture - filter by relationship_type
             // We can't use SELECT <-relationship[...]<-node.* directly because it returns nested structure
             let sql = if query.limit.is_some() {
-                "SELECT VALUE <-relationship[WHERE relationship_type = 'mentions']<-node.id FROM type::thing('node', $node_id) LIMIT $limit;"
+                "SELECT VALUE <-relationship[WHERE relationship_type = 'mentions']<-node.id FROM type::record('node', $node_id) LIMIT $limit;"
             } else {
-                "SELECT VALUE <-relationship[WHERE relationship_type = 'mentions']<-node.id FROM type::thing('node', $node_id);"
+                "SELECT VALUE <-relationship[WHERE relationship_type = 'mentions']<-node.id FROM type::record('node', $node_id);"
             };
 
             let mut query_builder = self
@@ -1772,21 +1594,19 @@ where
                 .context("Failed to query mentioned_by nodes")?;
 
             // SELECT VALUE with graph traversal returns nested array - flatten it
-            // Result format: [[thing1, thing2], [thing3]] from multiple source nodes
-            let source_things_nested: Vec<Vec<Thing>> = response
+            // Result format: [[recordid1, recordid2], [recordid3]] from multiple source nodes
+            let source_things_nested: Vec<Vec<RecordId>> = response
                 .take(0)
                 .context("Failed to extract source node IDs from mentions")?;
 
-            let source_things: Vec<Thing> = source_things_nested.into_iter().flatten().collect();
+            let source_things: Vec<RecordId> = source_things_nested.into_iter().flatten().collect();
 
             // Extract UUIDs and fetch full node records
             let mut nodes = Vec::new();
-            for thing in source_things {
-                if let Id::String(id_str) = &thing.id {
-                    // id_str is just the UUID
-                    if let Some(node) = self.get_node(id_str).await? {
-                        nodes.push(node);
-                    }
+            for rid in source_things {
+                let id_str = extract_record_key(&rid);
+                if let Some(node) = self.get_node(&id_str).await? {
+                    nodes.push(node);
                 }
             }
 
@@ -1855,9 +1675,8 @@ where
         // Universal Graph Architecture (Issue #783, #788): Properties embedded in node.properties
         // Use universal relationship table for hierarchy traversal with fractional ordering
         let surreal_nodes = if let Some(parent_id) = parent_id {
-            // Create Thing record ID for parent node
-            use surrealdb::sql::Thing;
-            let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
+            // Create RecordId for parent node
+            let parent_thing = node_record_id(parent_id);
 
             // Single query: get ordered children with full node data in one round-trip
             // Uses LET to store ordered IDs, then fetches nodes preserving order
@@ -1919,8 +1738,7 @@ where
     ///
     /// `Some(parent_node)` if the node has a parent, `None` if it's a root node
     pub async fn get_parent(&self, child_id: &str) -> Result<Option<Node>> {
-        use surrealdb::sql::Thing;
-        let child_thing = Thing::from(("node".to_string(), child_id.to_string()));
+        let child_thing = node_record_id(child_id);
 
         // Query for parent via incoming has_child relationship (Issue #788: universal relationship table)
         let mut response = self
@@ -1958,8 +1776,7 @@ where
     ///
     /// `Some(parent_id)` if the node has a parent, `None` if it's a root node
     pub async fn get_parent_id(&self, child_id: &str) -> Result<Option<String>> {
-        use surrealdb::sql::Thing;
-        let child_thing = Thing::from(("node".to_string(), child_id.to_string()));
+        let child_thing = node_record_id(child_id);
 
         // Query just the relationship to get parent ID (no node fetch)
         let mut response = self
@@ -1969,7 +1786,7 @@ where
             .await
             .context("Failed to get parent ID")?;
 
-        let parent_ids: Vec<Thing> = response
+        let parent_ids: Vec<RecordId> = response
             .take(0)
             .context("Failed to extract parent ID from response")?;
 
@@ -1977,12 +1794,9 @@ where
             return Ok(None);
         }
 
-        // Extract ID string from Thing
-        let parent_thing = parent_ids.into_iter().next().unwrap();
-        let parent_id = match &parent_thing.id {
-            surrealdb::sql::Id::String(s) => s.clone(),
-            _ => parent_thing.id.to_string(),
-        };
+        // Extract ID string from RecordId
+        let parent_rid = parent_ids.into_iter().next().unwrap();
+        let parent_id = extract_record_key(&parent_rid);
 
         Ok(Some(parent_id))
     }
@@ -1997,8 +1811,7 @@ where
     ///
     /// `Some(node_type)` if the node exists, `None` if not found
     pub async fn get_node_type(&self, node_id: &str) -> Result<Option<String>> {
-        use surrealdb::sql::Thing;
-        let node_thing = Thing::from(("node".to_string(), node_id.to_string()));
+        let node_thing = node_record_id(node_id);
 
         let mut response = self
             .db
@@ -2223,19 +2036,17 @@ where
         &self,
         root_id: &str,
     ) -> Result<(Vec<Node>, Vec<RelationshipRecord>)> {
-        use surrealdb::sql::Thing;
         let start = std::time::Instant::now();
 
-        let root_thing = Thing::from(("node".to_string(), root_id.to_string()));
+        let root_thing = node_record_id(root_id);
 
         // Universal Graph Architecture (Issue #783, #788): Single query batch
         // Uses recursive collect to get all descendants, then fetches nodes and relationships
-        // Optimized: SELECT * FROM $ids is faster than SELECT * FROM node WHERE id IN $ids
         let query = "
             LET $descendants = $root_thing.{..+collect}->relationship[WHERE relationship_type = 'has_child']->node;
             LET $all_node_ids = array::concat([$root_thing], $descendants);
-            SELECT * FROM $all_node_ids;
-            SELECT id, in, out, relationship_type, properties, properties.order FROM relationship WHERE in IN $all_node_ids AND relationship_type = 'has_child' ORDER BY properties.order ASC;
+            SELECT * FROM node WHERE id IN $all_node_ids;
+            SELECT id, meta::id(in) AS in_id, meta::id(out) AS out_id, relationship_type, properties, properties.order FROM relationship WHERE in IN $all_node_ids AND relationship_type = 'has_child' ORDER BY properties.order ASC;
         ";
 
         let mut response = self
@@ -2263,13 +2074,12 @@ where
         let all_nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
         // Parse edges (index 3) - Issue #788: universal relationship table with properties
-        #[derive(serde::Deserialize)]
+        // SurrealDB 3.x: use meta::id() to extract raw ID from in/out fields
+        #[derive(serde::Deserialize, surrealdb::types::SurrealValue)]
         struct EdgeRow {
-            id: Thing,
-            #[serde(rename = "in")]
-            in_node: Thing,
-            #[serde(rename = "out")]
-            out_node: Thing,
+            id: RecordId,
+            in_id: String,
+            out_id: String,
             relationship_type: String,
             #[serde(default)]
             properties: Value,
@@ -2282,21 +2092,9 @@ where
         let relationships: Vec<RelationshipRecord> = rel_rows
             .into_iter()
             .map(|e| {
-                let id_str = match &e.id.id {
-                    Id::String(s) => s.clone(),
-                    Id::Number(n) => n.to_string(),
-                    _ => e.id.to_string(),
-                };
-                let in_str = match &e.in_node.id {
-                    Id::String(s) => s.clone(),
-                    Id::Number(n) => n.to_string(),
-                    _ => e.in_node.to_string(),
-                };
-                let out_str = match &e.out_node.id {
-                    Id::String(s) => s.clone(),
-                    Id::Number(n) => n.to_string(),
-                    _ => e.out_node.to_string(),
-                };
+                let id_str = extract_record_key(&e.id);
+                let in_str = e.in_id;
+                let out_str = e.out_id;
                 RelationshipRecord {
                     id: id_str,
                     in_node: in_str,
@@ -2463,11 +2261,9 @@ where
     /// validate_no_cycle("C", "A").await?; // ✗ Error: would create cycle A→B→C→A
     /// ```
     async fn validate_no_cycle(&self, parent_id: &str, child_id: &str) -> Result<()> {
-        use surrealdb::sql::Thing;
-
         // Check if parent is a descendant of child
         // If so, creating this relationship would create a cycle
-        let child_thing = Thing::from(("node".to_string(), child_id.to_string()));
+        let child_thing = node_record_id(child_id);
 
         // Query: Get all descendants of child node recursively (Issue #788: universal relationship table)
         // Then check if parent is in that list
@@ -2476,7 +2272,7 @@ where
         // This will detect cycles at any level: A→B (direct), A→B→C (3-node), A→B→C→D (4-node), etc.
         let query = "
             LET $descendants = $child_thing.{..+collect}->relationship[WHERE relationship_type = 'has_child']->node;
-            SELECT * FROM type::thing('node', $parent_id)
+            SELECT * FROM type::record('node', $parent_id)
             WHERE id IN $descendants
             LIMIT 1;
         ";
@@ -2523,14 +2319,12 @@ where
     ///
     /// Ok(()) on success
     async fn rebalance_children_for_parent(&self, parent_id: &str) -> Result<()> {
-        use surrealdb::sql::Thing;
-
         // Step 1: Get all children in current order (Issue #788: universal relationship table)
-        let parent_thing = Thing::from(("node".to_string(), parent_id.to_string()));
+        let parent_thing = node_record_id(parent_id);
 
-        #[derive(Deserialize)]
+        #[derive(Deserialize, surrealdb::types::SurrealValue)]
         struct RelOut {
-            out: Thing,
+            out: RecordId,
         }
 
         let mut rels_response = self
@@ -2648,15 +2442,15 @@ where
         }
 
         // Calculate fractional order for the new position (Issue #788: universal relationship table)
-        #[derive(Deserialize)]
+        #[derive(Deserialize, surrealdb::types::SurrealValue)]
         struct RelWithOrder {
-            out: surrealdb::sql::Thing,
+            out: RecordId,
             order: f64,
         }
 
         let new_order = if let Some(ref parent_id) = new_parent_id {
-            let parent_thing = surrealdb::sql::Thing::from(("node".to_string(), parent_id.clone()));
-            let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.clone()));
+            let parent_thing = node_record_id(parent_id);
+            let node_thing = node_record_id(&node_id);
 
             // Get all child edges for this parent, ordered by properties.order field
             // IMPORTANT: Exclude the node being moved to avoid corrupting order calculation
@@ -2678,8 +2472,7 @@ where
 
             if let Some(after_id) = insert_after_sibling_id {
                 // Find the sibling we're inserting after
-                let after_thing =
-                    surrealdb::sql::Thing::from(("node".to_string(), after_id.clone()));
+                let after_thing = node_record_id(&after_id);
 
                 // If sibling not found, fall back to append at end (best-effort hint)
                 // This prevents data loss from race conditions during rapid operations
@@ -2807,11 +2600,9 @@ where
             .to_string()
         };
 
-        // Construct Thing objects for Record IDs
-        let node_thing = surrealdb::sql::Thing::from(("node".to_string(), node_id.clone()));
-        let parent_thing = new_parent_id
-            .as_ref()
-            .map(|pid| surrealdb::sql::Thing::from(("node".to_string(), pid.clone())));
+        // Construct RecordId objects for Record IDs
+        let node_thing = node_record_id(&node_id);
+        let parent_thing = new_parent_id.as_ref().map(|pid| node_record_id(pid));
 
         // Execute transaction
         let mut query_builder = self
@@ -2852,8 +2643,8 @@ where
     /// * `Ok(None)` - If mention already existed (idempotent)
     /// * `Err` - Database error
     pub async fn create_mention(&self, source_id: &str, target_id: &str) -> Result<Option<String>> {
-        let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
-        let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
+        let source_thing = node_record_id(source_id);
+        let target_thing = node_record_id(target_id);
 
         // Check if mention already exists (for idempotency)
         let check_query = "SELECT VALUE id FROM relationship WHERE in = $source AND out = $target AND relationship_type = 'mentions';";
@@ -2865,7 +2656,7 @@ where
             .await
             .context("Failed to check for existing mention")?;
 
-        let existing_mention_ids: Vec<Thing> = check_response
+        let existing_mention_ids: Vec<RecordId> = check_response
             .take(0)
             .context("Failed to extract mention check results")?;
 
@@ -2890,16 +2681,16 @@ where
                 .context("Failed to create mention")?;
 
             // Extract relationship ID for caller (Issue #813)
-            #[derive(Debug, Deserialize)]
+            #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
             struct RelateResult {
-                id: Thing,
+                id: RecordId,
             }
             let results: Vec<RelateResult> = response
                 .take(0)
                 .context("Failed to extract relationship ID")?;
 
             if let Some(result) = results.first() {
-                return Ok(Some(result.id.to_string()));
+                return Ok(Some(extract_record_key(&result.id)));
             }
         }
 
@@ -2922,8 +2713,8 @@ where
     /// * `Ok(None)` - If mention didn't exist
     /// * `Err` - Database error
     pub async fn delete_mention(&self, source_id: &str, target_id: &str) -> Result<Option<String>> {
-        let source_thing = surrealdb::sql::Thing::from(("node".to_string(), source_id.to_string()));
-        let target_thing = surrealdb::sql::Thing::from(("node".to_string(), target_id.to_string()));
+        let source_thing = node_record_id(source_id);
+        let target_thing = node_record_id(target_id);
 
         // First get the relationship ID before deleting (Issue #813)
         let check_query = "SELECT VALUE id FROM relationship WHERE in = $source AND out = $target AND relationship_type = 'mentions';";
@@ -2935,7 +2726,7 @@ where
             .await
             .context("Failed to get mention ID")?;
 
-        let existing_ids: Vec<Thing> = check_response
+        let existing_ids: Vec<RecordId> = check_response
             .take(0)
             .context("Failed to extract mention IDs")?;
 
@@ -2947,9 +2738,13 @@ where
             .await
             .context("Failed to delete mention")?;
 
-        // Return relationship ID for caller to emit event (Issue #813)
+        // Return relationship ID as "table:key" for caller to emit event (Issue #813)
         if let Some(rel_id) = existing_ids.first() {
-            return Ok(Some(rel_id.to_string()));
+            return Ok(Some(format!(
+                "{}:{}",
+                rel_id.table,
+                extract_record_key(rel_id)
+            )));
         }
 
         Ok(None)
@@ -2959,7 +2754,7 @@ where
         // Issue #788: Universal Relationship Architecture - use relationship table with relationship_type filter
         // Returns array<record> which we need to extract IDs from
         let query =
-            "SELECT ->relationship[WHERE relationship_type = 'mentions']->node.id AS mentioned_ids FROM type::thing('node', $node_id);";
+            "SELECT ->relationship[WHERE relationship_type = 'mentions']->node.id AS mentioned_ids FROM type::record('node', $node_id);";
 
         let mut response = self
             .db
@@ -2968,9 +2763,9 @@ where
             .await
             .context("Failed to get outgoing mentions")?;
 
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct MentionResult {
-            mentioned_ids: Vec<Thing>,
+            mentioned_ids: Vec<RecordId>,
         }
 
         // Graph traversal returns object with mentioned_ids array
@@ -2978,18 +2773,11 @@ where
             .take(0)
             .context("Failed to extract outgoing mentions from response")?;
 
-        // Extract UUIDs from Thing Record IDs (format: node:uuid -> uuid)
+        // Extract UUIDs from RecordId keys (format: node:uuid -> uuid)
         let mentioned_ids: Vec<String> = results
             .into_iter()
             .flat_map(|r| r.mentioned_ids)
-            .filter_map(|thing| {
-                if let Id::String(id_str) = &thing.id {
-                    // id_str is just the UUID part
-                    Some(id_str.clone())
-                } else {
-                    None
-                }
-            })
+            .map(|rid| extract_record_key(&rid))
             .collect();
 
         Ok(mentioned_ids)
@@ -2999,7 +2787,7 @@ where
         // Issue #788: Universal Relationship Architecture - use relationship table with relationship_type filter
         // Returns array<record> which we need to extract IDs from
         let query =
-            "SELECT <-relationship[WHERE relationship_type = 'mentions']<-node.id AS mentioned_by_ids FROM type::thing('node', $node_id);";
+            "SELECT <-relationship[WHERE relationship_type = 'mentions']<-node.id AS mentioned_by_ids FROM type::record('node', $node_id);";
 
         let mut response = self
             .db
@@ -3008,9 +2796,9 @@ where
             .await
             .context("Failed to get incoming mentions")?;
 
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct MentionResult {
-            mentioned_by_ids: Vec<Thing>,
+            mentioned_by_ids: Vec<RecordId>,
         }
 
         // Graph traversal returns object with mentioned_by_ids array
@@ -3018,18 +2806,11 @@ where
             .take(0)
             .context("Failed to extract incoming mentions from response")?;
 
-        // Extract UUIDs from Thing Record IDs (format: node:uuid -> uuid)
+        // Extract UUIDs from RecordId keys (format: node:uuid -> uuid)
         let mentioned_by_ids: Vec<String> = results
             .into_iter()
             .flat_map(|r| r.mentioned_by_ids)
-            .filter_map(|thing| {
-                if let Id::String(id_str) = &thing.id {
-                    // id_str is just the UUID part
-                    Some(id_str.clone())
-                } else {
-                    None
-                }
-            })
+            .map(|rid| extract_record_key(&rid))
             .collect();
 
         Ok(mentioned_by_ids)
@@ -3059,9 +2840,8 @@ where
         &self,
         node_id: &str,
     ) -> Result<Vec<crate::models::NodeReference>> {
-        use surrealdb::sql::Thing;
         let start = std::time::Instant::now();
-        let target_thing = Thing::from(("node".to_string(), node_id.to_string()));
+        let target_thing = node_record_id(node_id);
 
         // Query: Get mentioning sources with type, plus ancestor chain for each
         // Uses SurrealDB's recursive traversal to get all ancestors in one query
@@ -3082,12 +2862,12 @@ where
             .await
             .context("Failed to get incoming mentions with ancestors")?;
 
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct MentionWithAncestors {
-            source_id: Thing,
+            source_id: RecordId,
             source_type: String,
             #[serde(default)]
-            ancestors: Vec<Thing>,
+            ancestors: Vec<RecordId>,
         }
 
         let sources: Vec<MentionWithAncestors> = response
@@ -3102,10 +2882,7 @@ where
         let mut container_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for source in &sources {
-            let source_id = match &source.source_id.id {
-                Id::String(s) => s.clone(),
-                _ => continue,
-            };
+            let source_id = extract_record_key(&source.source_id);
 
             if source.source_type == "task" {
                 // Tasks are their own containers
@@ -3116,11 +2893,8 @@ where
             } else {
                 // Last ancestor in the chain is the root
                 // The recursive collect returns ancestors in order from closest to farthest
-                if let Some(root_thing) = source.ancestors.last() {
-                    let root_id = match &root_thing.id {
-                        Id::String(s) => s.clone(),
-                        _ => continue,
-                    };
+                if let Some(root_rid) = source.ancestors.last() {
+                    let root_id = extract_record_key(root_rid);
                     container_ids.insert(root_id);
                 }
             }
@@ -3131,12 +2905,10 @@ where
         }
 
         // Batch fetch container nodes with just id, title, node_type
-        let container_things: Vec<Thing> = container_ids
-            .iter()
-            .map(|id| Thing::from(("node".to_string(), id.clone())))
-            .collect();
+        let container_things: Vec<RecordId> =
+            container_ids.iter().map(|id| node_record_id(id)).collect();
 
-        let batch_query = "SELECT id, title, node_type FROM $containers;";
+        let batch_query = "SELECT id, title, node_type FROM node WHERE id IN $containers;";
         let mut response = self
             .db
             .query(batch_query)
@@ -3144,9 +2916,9 @@ where
             .await
             .context("Failed to batch fetch container nodes")?;
 
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct ContainerRow {
-            id: Thing,
+            id: RecordId,
             title: Option<String>,
             node_type: String,
         }
@@ -3158,11 +2930,7 @@ where
         let result: Vec<crate::models::NodeReference> = containers
             .into_iter()
             .map(|c| {
-                let id_str = match c.id.id {
-                    Id::String(s) => s,
-                    Id::Number(n) => n.to_string(),
-                    _ => c.id.to_string(),
-                };
+                let id_str = extract_record_key(&c.id);
                 crate::models::NodeReference {
                     id: id_str,
                     title: c.title,
@@ -3301,7 +3069,7 @@ where
 
             // Generate UPDATE statement using record ID
             let update_stmt = format!(
-                "UPDATE type::thing('node', $id_{idx}) SET
+                "UPDATE type::record('node', $id_{idx}) SET
                     content = $content_{idx},
                     node_type = $node_type_{idx},
                     modified_at = time::now(),
@@ -3785,34 +3553,50 @@ where
         // Universal Graph Architecture (Issue #783): Properties embedded in node.properties
         // Issue #838: Properties are namespaced under properties[node_type]
         // Note: Column aliases use camelCase to match TaskNode's #[serde(rename_all = "camelCase")]
-        let query = format!(
-            r#"
-            SELECT
-                record::id(id) AS id,
-                node_type AS nodeType,
-                properties.task.status AS status,
-                properties.task.priority AS priority,
-                properties.task.due_date AS dueDate,
-                properties.task.assignee AS assignee,
-                content AS content,
-                version AS version,
-                created_at AS createdAt,
-                modified_at AS modifiedAt
-            FROM node:`{}`;
-            "#,
-            id
-        );
-
-        let mut response = self
-            .db
-            .query(&query)
-            .await
-            .context(format!("Failed to query task node '{}'", id))?;
-
-        let tasks: Vec<crate::models::TaskNode> =
-            response.take(0).context("Failed to deserialize TaskNode")?;
-
-        Ok(tasks.into_iter().next())
+        // Fetch the raw node and convert to TaskNode
+        let node = self.get_node(id).await?;
+        Ok(node.and_then(|n| {
+            if n.node_type != "task" {
+                return None;
+            }
+            // Build TaskNode from Node by extracting task-specific properties
+            let props = &n.properties;
+            let task_props = props.get("task").cloned().unwrap_or(serde_json::json!({}));
+            Some(crate::models::TaskNode {
+                id: n.id,
+                node_type: n.node_type,
+                content: n.content,
+                version: n.version,
+                created_at: n.created_at,
+                modified_at: n.modified_at,
+                properties: n.properties,
+                status: task_props
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_default(),
+                priority: task_props
+                    .get("priority")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok()),
+                due_date: task_props
+                    .get("due_date")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok()),
+                assignee: task_props
+                    .get("assignee")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                started_at: task_props
+                    .get("started_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok()),
+                completed_at: task_props
+                    .get("completed_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse().ok()),
+            })
+        }))
     }
 
     /// Update a task node with type-safe property updates
@@ -3891,10 +3675,8 @@ where
 
         if let Some(ref due_date_opt) = update.due_date {
             match due_date_opt {
-                Some(dt) => property_set_clauses.push(format!(
-                    "properties.task.due_date = <datetime>'{}'",
-                    dt.to_rfc3339()
-                )),
+                Some(dt) => property_set_clauses
+                    .push(format!("properties.task.due_date = '{}'", dt.to_rfc3339())),
                 None => property_set_clauses.push("properties.task.due_date = NONE".to_string()),
             }
         }
@@ -3913,7 +3695,7 @@ where
         if let Some(ref started_at_opt) = update.started_at {
             match started_at_opt {
                 Some(dt) => property_set_clauses.push(format!(
-                    "properties.task.started_at = <datetime>'{}'",
+                    "properties.task.started_at = '{}'",
                     dt.to_rfc3339()
                 )),
                 None => property_set_clauses.push("properties.task.started_at = NONE".to_string()),
@@ -3923,7 +3705,7 @@ where
         if let Some(ref completed_at_opt) = update.completed_at {
             match completed_at_opt {
                 Some(dt) => property_set_clauses.push(format!(
-                    "properties.task.completed_at = <datetime>'{}'",
+                    "properties.task.completed_at = '{}'",
                     dt.to_rfc3339()
                 )),
                 None => {
@@ -4020,7 +3802,7 @@ where
         // We fetch raw JSON values and convert manually to avoid SurrealDB's NONE
         // deserialization issues with nested Option<String> fields (e.g. target_type).
         let query = format!(
-            "SELECT *, record::id(id) AS node_id OMIT id FROM node:`{}` WHERE node_type = 'schema' LIMIT 1;",
+            "SELECT * FROM node:`{}` WHERE node_type = 'schema' LIMIT 1;",
             id
         );
 
@@ -4030,22 +3812,13 @@ where
             .await
             .context(format!("Failed to query schema node '{}'", id))?;
 
-        let raw: Vec<Value> = response
+        let raw: Vec<SurrealNode> = response
             .take(0)
             .context("Failed to take schema node result")?;
 
         let schemas: Vec<crate::models::SchemaNode> = raw
             .into_iter()
-            .filter_map(|hub| {
-                let node_id = hub["node_id"].as_str().unwrap_or("").to_string();
-                let node_type = hub["node_type"].as_str().unwrap_or("schema").to_string();
-                let properties = hub
-                    .get("properties")
-                    .cloned()
-                    .unwrap_or(serde_json::json!({}));
-                let node = self.build_node_from_hub(node_id, node_type, &hub, properties);
-                crate::models::SchemaNode::from_node(node).ok()
-            })
+            .filter_map(|sn| crate::models::SchemaNode::from_node(sn.into()).ok())
             .collect();
 
         Ok(schemas.into_iter().next())
@@ -4060,10 +3833,7 @@ where
     ///
     /// Vector of all schema nodes, ordered by ID.
     pub async fn get_all_schemas(&self) -> Result<Vec<crate::models::SchemaNode>> {
-        // Query node table for all schema nodes - properties are in node.properties.
-        // We fetch raw JSON values and convert manually to avoid SurrealDB's NONE
-        // deserialization issues with nested Option<String> fields (e.g. target_type).
-        let query = "SELECT *, record::id(id) AS node_id OMIT id FROM node WHERE node_type = 'schema' ORDER BY node_id;";
+        let query = "SELECT * FROM node WHERE node_type = 'schema' ORDER BY id;";
 
         let mut response = self
             .db
@@ -4071,22 +3841,13 @@ where
             .await
             .context("Failed to query all schema nodes")?;
 
-        let raw: Vec<Value> = response
+        let raw: Vec<SurrealNode> = response
             .take(0)
             .context("Failed to take schema node results")?;
 
         let mut schemas = Vec::with_capacity(raw.len());
-        for hub in raw {
-            let node_id = hub["node_id"].as_str().unwrap_or("").to_string();
-            let node_type = hub["node_type"].as_str().unwrap_or("schema").to_string();
-            let properties = hub
-                .get("properties")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
-
-            let node = self.build_node_from_hub(node_id, node_type, &hub, properties);
-
-            match crate::models::SchemaNode::from_node(node) {
+        for sn in raw {
+            match crate::models::SchemaNode::from_node(sn.into()) {
                 Ok(schema) => schemas.push(schema),
                 Err(e) => {
                     tracing::warn!("Skipping invalid schema node: {}", e);
@@ -4127,7 +3888,7 @@ where
 
         // Delete existing embeddings for this node
         self.db
-            .query("DELETE embedding WHERE node = type::thing('node', $node_id);")
+            .query("DELETE embedding WHERE node = type::record('node', $node_id);")
             .bind(("node_id", node_id.to_string()))
             .await
             .context("Failed to delete existing embeddings")?;
@@ -4136,7 +3897,7 @@ where
         for emb in embeddings {
             let query = r#"
                 CREATE embedding CONTENT {
-                    node: type::thing('node', $node_id),
+                    node: type::record('node', $node_id),
                     vector: $vector,
                     dimension: $dimension,
                     model_name: $model_name,
@@ -4184,7 +3945,7 @@ where
     pub async fn mark_root_embedding_stale(&self, node_id: &str) -> Result<()> {
         self.db
             .query(
-                "UPDATE embedding SET stale = true, modified_at = time::now() WHERE node = type::thing('node', $node_id);",
+                "UPDATE embedding SET stale = true, modified_at = time::now() WHERE node = type::record('node', $node_id);",
             )
             .bind(("node_id", node_id.to_string()))
             .await
@@ -4207,13 +3968,19 @@ where
         limit: Option<i64>,
         debounce_secs: u64,
     ) -> Result<Vec<String>> {
-        // Use GROUP BY node for uniqueness since DISTINCT doesn't work with record::id() in SurrealDB
-        // Must include `node` in SELECT to satisfy GROUP BY requirements
-        // Filter by modified_at to implement per-root debounce
+        // SurrealDB 3.x requires GROUP BY fields to appear in SELECT.
+        // We include `node` as string via `meta::tb(node) + ':' + meta::id(node)` to avoid
+        // RecordId deserialization issues, and alias it so the struct only needs node_id.
+        // Filter by modified_at to implement per-root debounce.
+        // SurrealDB 3.x: GROUP BY aggregates non-grouped fields into arrays.
+        // Use array::first() to get a single value from the aggregated meta::id(node) array.
+        // SurrealDB 3.x: GROUP BY groups on the exact field value. Since we GROUP BY node,
+        // the `node` field in the result IS the single RecordId (not aggregated).
+        // We extract the string ID from it using our extract_id_string helper.
         let sql = if limit.is_some() {
-            "SELECT node, record::id(node) AS node_id FROM embedding WHERE stale = true AND modified_at < time::now() - type::duration($debounce) GROUP BY node LIMIT $limit;"
+            "SELECT node FROM embedding WHERE stale = true AND modified_at < time::now() - type::duration($debounce) GROUP BY node LIMIT $limit;"
         } else {
-            "SELECT node, record::id(node) AS node_id FROM embedding WHERE stale = true AND modified_at < time::now() - type::duration($debounce) GROUP BY node;"
+            "SELECT node FROM embedding WHERE stale = true AND modified_at < time::now() - type::duration($debounce) GROUP BY node;"
         };
 
         // Format debounce as SurrealDB duration string (e.g., "30s")
@@ -4226,9 +3993,9 @@ where
             query_builder = query_builder.bind(("limit", lim));
         }
 
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct NodeIdResult {
-            node_id: String,
+            node: surrealdb::types::RecordId,
         }
 
         let mut response = query_builder
@@ -4239,7 +4006,10 @@ where
             .take(0)
             .context("Failed to extract stale root IDs")?;
 
-        Ok(results.into_iter().map(|r| r.node_id).collect())
+        Ok(results
+            .into_iter()
+            .map(|r| extract_record_key(&r.node))
+            .collect())
     }
 
     /// Check if there are stale embeddings that haven't passed the debounce window yet
@@ -4247,7 +4017,7 @@ where
     /// Returns true if there are embeddings marked stale within the last `debounce_secs`.
     /// This is used to determine if a delayed wake should be scheduled.
     pub async fn has_pending_stale_embeddings(&self, debounce_secs: u64) -> Result<bool> {
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct CountResult {
             count: i64,
         }
@@ -4272,14 +4042,14 @@ where
 
     /// Check if a node has any embeddings
     pub async fn has_embeddings(&self, node_id: &str) -> Result<bool> {
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct CountResult {
             count: i64,
         }
 
         let mut response = self
             .db
-            .query("SELECT count() AS count FROM embedding WHERE node = type::thing('node', $node_id) GROUP ALL;")
+            .query("SELECT count() AS count FROM embedding WHERE node = type::record('node', $node_id) GROUP ALL;")
             .bind(("node_id", node_id.to_string()))
             .await
             .context("Failed to check for embeddings")?;
@@ -4294,7 +4064,7 @@ where
     /// Called when a node is deleted.
     pub async fn delete_embeddings(&self, node_id: &str) -> Result<()> {
         self.db
-            .query("DELETE embedding WHERE node = type::thing('node', $node_id);")
+            .query("DELETE embedding WHERE node = type::record('node', $node_id);")
             .bind(("node_id", node_id.to_string()))
             .await
             .context("Failed to delete embeddings")?;
@@ -4313,7 +4083,7 @@ where
                     error_count = error_count + 1,
                     last_error = $error,
                     modified_at = time::now()
-                WHERE node = type::thing('node', $node_id);
+                WHERE node = type::record('node', $node_id);
                 "#,
             )
             .bind(("node_id", node_id.to_string()))
@@ -4370,7 +4140,7 @@ where
         // We then convert SurrealNode -> Node which extracts the UUID from the Thing.
         //
         // Issue #787: composite_score is now calculated in SQL and used for filtering/sorting
-        #[derive(Debug, serde::Deserialize)]
+        #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
         struct RawSearchResult {
             node: SurrealNode,
             max_similarity: f64,
@@ -4378,7 +4148,7 @@ where
             composite_score: f64,
         }
 
-        // Query using KNN operator for MTREE-indexed vector search (Issue #776)
+        // Query using KNN operator for HNSW-indexed vector search (Issue #776, SurrealDB 3.x)
         // Enhanced for multi-chunk scoring (Issue #778) with SQL-side composite score (Issue #787):
         // - Calculate similarity for each chunk via KNN
         // - Group by node, taking max similarity and count
@@ -4386,9 +4156,10 @@ where
         // - Filter by composite score in outer WHERE (SurrealDB doesn't support HAVING)
         // - Sort by composite score (not max_similarity)
         //
-        // The <|K|> operator leverages the MTREE index for fast approximate nearest neighbor search.
+        // The <|K,EF|> operator leverages the HNSW index for fast approximate nearest neighbor search.
+        // K = number of candidates, EF = search expansion factor (higher = more accurate, slower).
         // We fetch more candidates (limit * 5) to account for multiple chunks per node.
-        // Note: SurrealDB's KNN operator <|K|> requires a literal integer, not a bind parameter.
+        // Note: SurrealDB's KNN operator requires literal integers, not bind parameters.
         //
         // PERFORMANCE: Using FETCH node to retrieve full node data in the same query,
         // eliminating the need for separate get_node() calls (saves ~300ms for 5 results).
@@ -4401,6 +4172,7 @@ where
         // 3. Middle-outer: Calculate composite_score from aggregates (defined once here)
         // 4. Outermost: Filter by composite_score > threshold (no duplication)
         let knn_limit = limit * 5;
+        let ef = 150; // Search expansion factor for HNSW (matches EFC 200 index parameter)
         let query = format!(
             r#"
             SELECT * FROM (
@@ -4420,7 +4192,7 @@ where
                                 node,
                                 vector::similarity::cosine(vector, $query_vector) AS similarity
                             FROM embedding
-                            WHERE stale = false AND vector <|{knn_limit}|> $query_vector
+                            WHERE stale = false AND vector <|{knn_limit},{ef}|> $query_vector
                         )
                         GROUP BY node
                     )
@@ -4493,12 +4265,12 @@ where
         relationship_type: &str,
         use_out_as_anchor: bool,
     ) -> Result<f64> {
-        #[derive(Deserialize)]
+        #[derive(Deserialize, surrealdb::types::SurrealValue)]
         struct EdgeOrder {
             order: f64,
         }
 
-        let node_thing = Thing::from(("node".to_string(), node_id.to_string()));
+        let node_thing = node_record_id(node_id);
 
         // Build query based on anchor direction
         // member_of: collection is the OUT target (node -> relationship -> collection)
@@ -4594,8 +4366,8 @@ where
         member_id: &str,
         collection_id: &str,
     ) -> Result<Option<String>> {
-        let member_thing = Thing::from(("node".to_string(), member_id.to_string()));
-        let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
+        let member_thing = node_record_id(member_id);
+        let collection_thing = node_record_id(collection_id);
 
         // Note: Validation that collection_id is actually a collection node
         // is done in CollectionService.add_to_collection (service layer).
@@ -4640,9 +4412,9 @@ where
         // SurrealDB returns results for each statement.
         // Statements: 0=LET $existing, 1=LET $max_order_result, 2=LET $new_order, 3=IF block
         // The RELATE result is inside the IF block, so it's returned from statement index 3
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct RelateResult {
-            id: Thing,
+            id: RecordId,
         }
 
         // Try indices 0-4 to find the result. We check beyond index 3 as a safety buffer
@@ -4652,7 +4424,7 @@ where
         for idx in 0..MAX_RESULT_INDEX {
             if let Ok(results) = response.take::<Vec<RelateResult>>(idx) {
                 if let Some(result) = results.first() {
-                    return Ok(Some(result.id.to_string()));
+                    return Ok(Some(extract_record_key(&result.id)));
                 }
             }
         }
@@ -4681,8 +4453,8 @@ where
         member_id: &str,
         collection_id: &str,
     ) -> Result<Option<String>> {
-        let member_thing = Thing::from(("node".to_string(), member_id.to_string()));
-        let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
+        let member_thing = node_record_id(member_id);
+        let collection_thing = node_record_id(collection_id);
 
         // First get the relationship ID before deleting (Issue #813)
         let check_query = "SELECT VALUE id FROM relationship WHERE in = $member AND out = $collection AND relationship_type = 'member_of';";
@@ -4694,7 +4466,7 @@ where
             .await
             .context("Failed to get membership ID")?;
 
-        let existing_ids: Vec<Thing> = check_response
+        let existing_ids: Vec<RecordId> = check_response
             .take(0)
             .context("Failed to extract membership IDs")?;
 
@@ -4706,9 +4478,13 @@ where
             .await
             .context("Failed to delete membership")?;
 
-        // Return relationship ID for caller to emit event (Issue #813)
+        // Return relationship ID as "table:key" for caller to emit event (Issue #813)
         if let Some(rel_id) = existing_ids.first() {
-            return Ok(Some(rel_id.to_string()));
+            return Ok(Some(format!(
+                "{}:{}",
+                rel_id.table,
+                extract_record_key(rel_id)
+            )));
         }
 
         Ok(None)
@@ -4729,7 +4505,7 @@ where
     /// Collection IDs the node belongs to
     pub async fn get_node_memberships(&self, node_id: &str) -> Result<Vec<String>> {
         let query =
-            "SELECT ->relationship[WHERE relationship_type = 'member_of']->node.id AS collection_ids FROM type::thing('node', $node_id);";
+            "SELECT ->relationship[WHERE relationship_type = 'member_of']->node.id AS collection_ids FROM type::record('node', $node_id);";
 
         let mut response = self
             .db
@@ -4738,9 +4514,9 @@ where
             .await
             .context("Failed to get node memberships")?;
 
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct MembershipResult {
-            collection_ids: Vec<Thing>,
+            collection_ids: Vec<RecordId>,
         }
 
         let results: Vec<MembershipResult> = response
@@ -4750,13 +4526,7 @@ where
         let collection_ids: Vec<String> = results
             .into_iter()
             .flat_map(|r| r.collection_ids)
-            .filter_map(|thing| {
-                if let Id::String(id_str) = &thing.id {
-                    Some(id_str.clone())
-                } else {
-                    None
-                }
-            })
+            .map(|rid| extract_record_key(&rid))
             .collect();
 
         Ok(collection_ids)
@@ -4780,9 +4550,8 @@ where
         // Single query using SurrealDB graph traversal for optimal performance
         // Uses subquery to fetch full node data in one round-trip
         // Issue #839: Uses idx_rel_member_order index and preserves order
-        use surrealdb::sql::Thing;
         let start = std::time::Instant::now();
-        let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
+        let collection_thing = node_record_id(collection_id);
 
         // Single query: get member IDs ordered by properties.order, then fetch full node data
         // Must SELECT both `in` and `properties.order` so ORDER BY works in SurrealDB
@@ -4844,7 +4613,7 @@ where
         // Issue #844: Use indexed title field for case-insensitive matching
         // Return only the ID so we can use get_node for consistent handling
         let query = r#"
-            SELECT VALUE record::id(id) FROM node
+            SELECT VALUE meta::id(id) FROM node
             WHERE node_type = 'collection'
             AND string::lowercase(title) = $name
             LIMIT 1;
@@ -4905,7 +4674,7 @@ where
         // Issue #844: Use indexed title field for batch lookup
         // Return only IDs and title, then use get_node for consistent node construction
         let query = r#"
-            SELECT VALUE { id: record::id(id), title: title }
+            SELECT VALUE { id: meta::id(id), title: title }
             FROM node
             WHERE node_type = 'collection'
             AND $names CONTAINS string::lowercase(title);
@@ -4972,7 +4741,7 @@ where
         &self,
         collection_id: &str,
     ) -> Result<Vec<String>> {
-        let collection_thing = Thing::from(("node".to_string(), collection_id.to_string()));
+        let collection_thing = node_record_id(collection_id);
 
         // Get all collections in the subtree (collection + descendants)
         // Then get all members of those collections
@@ -4993,9 +4762,9 @@ where
             .await
             .context("Failed to get recursive collection members")?;
 
-        #[derive(Debug, Deserialize)]
+        #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct MemberResult {
-            member_ids: Vec<Thing>,
+            member_ids: Vec<RecordId>,
         }
 
         let results: Vec<MemberResult> = response
@@ -5005,13 +4774,7 @@ where
         let mut member_ids: Vec<String> = results
             .into_iter()
             .flat_map(|r| r.member_ids)
-            .filter_map(|thing| {
-                if let Id::String(id_str) = &thing.id {
-                    Some(id_str.clone())
-                } else {
-                    None
-                }
-            })
+            .map(|rid| extract_record_key(&rid))
             .collect();
 
         // Deduplicate (a node could be in multiple child collections)
@@ -5058,36 +4821,51 @@ where
     ///
     /// Vec of (Node, member_count) tuples for all collection nodes
     pub async fn get_all_collections_with_member_counts(&self) -> Result<Vec<(Node, usize)>> {
-        // Issue #817: Use typed struct for deserialization instead of serde_json::Value
-        // The SurrealDB Rust client cannot deserialize computed count() fields to serde_json::Value
-        // because SurrealDB's internal number representation uses an enum type.
-        #[derive(Debug, Deserialize)]
-        struct CollectionWithCount {
-            id: Thing,
-            node_type: String,
-            content: String,
-            version: i64,
-            created_at: String,
-            modified_at: String,
-            #[serde(default)]
-            properties: Value,
-            #[serde(default)]
-            title: Option<String>,
-            #[serde(default = "default_lifecycle_status")]
-            lifecycle_status: String,
-            member_count: i64,
-            #[serde(default)]
-            parent_collection_ids_raw: Vec<Thing>,
+        // Fetch all collection nodes
+        let collections = self.get_all_collections().await?;
+
+        if collections.is_empty() {
+            return Ok(vec![]);
         }
 
-        // Single query that fetches collections and counts their members via graph traversal
-        // Also fetches parent collection IDs for hierarchy display
+        // For each collection, count its members via the relationship table
+        // Fetch all member_of relationships and count in Rust to avoid GROUP BY deserialization issues
+        let count_query = r#"
+            SELECT VALUE meta::id(out) FROM relationship WHERE relationship_type = 'member_of';
+        "#;
+
+        let mut response = self
+            .db
+            .query(count_query)
+            .await
+            .context("Failed to get collections with member counts")?;
+
+        let collection_ids: Vec<String> = response
+            .take(0)
+            .context("Failed to extract collection results")?;
+
+        // Build a map of collection_id -> member_count by counting occurrences
+        let mut count_map: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for id in collection_ids {
+            *count_map.entry(id).or_insert(0) += 1;
+        }
+
+        let results = collections
+            .into_iter()
+            .map(|node| {
+                let count = count_map.get(&node.id).copied().unwrap_or(0);
+                (node, count)
+            })
+            .collect();
+
+        Ok(results)
+    }
+
+    /// Get all collection nodes sorted by name
+    async fn get_all_collections(&self) -> Result<Vec<Node>> {
         let query = r#"
-            SELECT
-                *,
-                count(<-relationship[WHERE relationship_type = 'member_of']<-node) AS member_count,
-                ->relationship[WHERE relationship_type = 'member_of']->node[WHERE node_type = 'collection'].id AS parent_collection_ids_raw
-            FROM node
+            SELECT * FROM node
             WHERE node_type = 'collection'
             ORDER BY content ASC;
         "#;
@@ -5096,63 +4874,13 @@ where
             .db
             .query(query)
             .await
-            .context("Failed to get collections with member counts")?;
+            .context("Failed to get all collection nodes")?;
 
-        // Parse results using typed struct
-        let rows: Vec<CollectionWithCount> = response
+        let rows: Vec<SurrealNode> = response
             .take(0)
-            .context("Failed to extract collection results")?;
+            .context("Failed to extract collection nodes")?;
 
-        let results = rows
-            .into_iter()
-            .map(|row| {
-                // Extract UUID from Thing record ID (e.g., node:⟨uuid⟩ -> uuid)
-                // Node IDs are always stored as String variants. Other Id variants
-                // (Number, Array, Object) are not expected but handled via to_string() fallback.
-                let id = match &row.id.id {
-                    Id::String(s) => s.clone(),
-                    _ => row.id.id.to_string(),
-                };
-
-                let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now());
-
-                let modified_at = chrono::DateTime::parse_from_rfc3339(&row.modified_at)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .unwrap_or_else(|_| chrono::Utc::now());
-
-                // Extract parent collection IDs from Thing records
-                let parent_collection_ids: Vec<String> = row
-                    .parent_collection_ids_raw
-                    .iter()
-                    .map(|thing| match &thing.id {
-                        Id::String(s) => s.clone(),
-                        _ => thing.id.to_string(),
-                    })
-                    .collect();
-
-                let node = Node {
-                    id,
-                    node_type: row.node_type,
-                    content: row.content,
-                    version: row.version,
-                    properties: row.properties,
-                    created_at,
-                    modified_at,
-                    mentions: vec![],
-                    mentioned_in: vec![],
-                    member_of: parent_collection_ids,
-                    title: row.title,
-                    lifecycle_status: row.lifecycle_status,
-                };
-
-                let member_count = row.member_count.max(0) as usize;
-                (node, member_count)
-            })
-            .collect();
-
-        Ok(results)
+        Ok(rows.into_iter().map(Node::from).collect())
     }
 
     /// Bulk add nodes to collections in a single transaction
@@ -5336,7 +5064,7 @@ where
     /// Creates an embedding record with a placeholder vector marked as stale to queue it for processing.
     /// Used when a new root node is created that should be embedded.
     ///
-    /// Note: Uses a unit vector [1,0,0,...,0] instead of zeros because the MTREE index
+    /// Note: Uses a unit vector [1,0,0,...,0] instead of zeros because the HNSW index
     /// with COSINE distance cannot handle zero vectors (division by zero during normalization).
     /// The stale=true flag ensures this placeholder will be replaced with a real embedding.
     pub async fn create_stale_embedding_marker(&self, node_id: &str) -> Result<()> {
@@ -5344,7 +5072,7 @@ where
         // Zero vectors cause NaN in cosine distance calculations
         let query = r#"
             CREATE embedding CONTENT {
-                node: type::thing('node', $node_id),
+                node: type::record('node', $node_id),
                 vector: array::concat([1.0], array::repeat(0.0, 767)),
                 dimension: 768,
                 model_name: 'nomic-embed-text-v1.5',
@@ -5394,7 +5122,7 @@ where
         for node_id in node_ids {
             query.push_str(&format!(
                 r#"CREATE embedding CONTENT {{
-                    node: type::thing('node', '{node_id}'),
+                    node: type::record('node', '{node_id}'),
                     vector: array::concat([1.0], array::repeat(0.0, 767)),
                     dimension: 768,
                     model_name: 'nomic-embed-text-v1.5',
@@ -6540,21 +6268,18 @@ mod tests {
         assert!(rel3_id.is_some(), "Third membership should be created");
 
         // Verify order values by querying the relationships directly
-        let collection_thing =
-            surrealdb::sql::Thing::from(("node".to_string(), collection.id.clone()));
+        let collection_thing = node_record_id(&collection.id);
 
-        #[derive(Debug, serde::Deserialize)]
-        #[allow(dead_code)] // member is used for deserialization but not accessed
+        #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
         struct RelWithOrder {
-            #[serde(rename = "in")]
-            member: surrealdb::sql::Thing,
+            member_id: String,
             order: Option<f64>,
         }
 
         let mut response = store
             .db
             .query(
-                "SELECT in, properties.order AS order FROM relationship WHERE out = $collection AND relationship_type = 'member_of' ORDER BY properties.order ASC;",
+                "SELECT meta::id(in) AS member_id, properties.order AS order FROM relationship WHERE out = $collection AND relationship_type = 'member_of' ORDER BY properties.order ASC;",
             )
             .bind(("collection", collection_thing))
             .await?;
@@ -6906,16 +6631,14 @@ mod tests {
         store: &SurrealStore,
         child_id: &str,
     ) -> Result<Option<(String, String, i64)>> {
-        use surrealdb::sql::Thing;
-
-        #[derive(Debug, serde::Deserialize)]
+        #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
         struct RelMetadata {
-            created_at: String,
-            modified_at: String,
+            created_at: DateTime<Utc>,
+            modified_at: DateTime<Utc>,
             version: i64,
         }
 
-        let child_thing = Thing::from(("node".to_string(), child_id.to_string()));
+        let child_thing = node_record_id(child_id);
 
         let mut response = store
             .db
@@ -6928,10 +6651,13 @@ mod tests {
             .take(0)
             .context("Failed to extract relationship metadata")?;
 
-        Ok(metadata
-            .into_iter()
-            .next()
-            .map(|m| (m.created_at, m.modified_at, m.version)))
+        Ok(metadata.into_iter().next().map(|m| {
+            (
+                m.created_at.to_rfc3339(),
+                m.modified_at.to_rfc3339(),
+                m.version,
+            )
+        }))
     }
 
     #[tokio::test]

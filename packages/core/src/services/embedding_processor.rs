@@ -72,21 +72,12 @@ impl EmbeddingWaker {
 ///
 /// Processes stale embeddings in the background using the root-aggregate model.
 /// Event-driven: sleeps until triggered, then processes until queue is empty.
-///
-/// Generic over connection type `C` to support both local and HTTP SurrealDB connections.
-pub struct EmbeddingProcessor<C = surrealdb::engine::local::Db>
-where
-    C: surrealdb::Connection + 'static,
-{
+pub struct EmbeddingProcessor {
     waker: EmbeddingWaker,
     _shutdown_tx: mpsc::Sender<()>,
-    _phantom: std::marker::PhantomData<C>,
 }
 
-impl<C> EmbeddingProcessor<C>
-where
-    C: surrealdb::Connection + 'static,
-{
+impl EmbeddingProcessor {
     /// Create and start embedding processor with background task
     ///
     /// Spawns an event-driven background task that:
@@ -112,7 +103,7 @@ where
     ///
     /// # Returns
     /// A new EmbeddingProcessor instance with active background task
-    pub fn new(embedding_service: Arc<NodeEmbeddingService<C>>) -> Result<Self, NodeServiceError> {
+    pub fn new(embedding_service: Arc<NodeEmbeddingService>) -> Result<Self, NodeServiceError> {
         tracing::info!("EmbeddingProcessor initializing (purely event-driven model)");
 
         let (trigger_tx, mut trigger_rx) = mpsc::channel::<()>(10);
@@ -167,7 +158,6 @@ where
         Ok(Self {
             waker,
             _shutdown_tx: shutdown_tx,
-            _phantom: std::marker::PhantomData,
         })
     }
 
@@ -187,7 +177,7 @@ where
     ///
     /// Returns true if there are pending stale embeddings that haven't passed
     /// their debounce window yet (requiring a delayed wake to be scheduled).
-    async fn process_until_empty(service: &Arc<NodeEmbeddingService<C>>) -> bool {
+    async fn process_until_empty(service: &Arc<NodeEmbeddingService>) -> bool {
         const BATCH_SIZE: usize = 10;
         let mut total_processed = 0;
 

@@ -501,15 +501,12 @@ mod integration_tests {
 
     /// Helper function to wait for children to be in expected order with retries.
     /// This handles SurrealDB's eventual consistency for sibling ordering.
-    async fn wait_for_children_order<C>(
-        node_service: &Arc<NodeService<C>>,
+    async fn wait_for_children_order(
+        node_service: &Arc<NodeService>,
         parent_id: &str,
         expected_contents: &[&str],
         max_retries: usize,
-    ) -> Result<Vec<serde_json::Value>, String>
-    where
-        C: surrealdb::Connection,
-    {
+    ) -> Result<Vec<serde_json::Value>, String> {
         for attempt in 0..max_retries {
             let children_params = json!({
                 "parent_id": parent_id,

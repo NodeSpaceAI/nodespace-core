@@ -11,10 +11,11 @@
 //!
 //! ## Key Concepts
 //!
-//! ### member_of Edge Direction
-//! - Edge direction: member node → collection node
-//! - Query "what collections does X belong to": SELECT ->member_of->node FROM node:X
-//! - Query "what nodes are in collection Y": SELECT <-member_of<-node FROM node:Y
+//! ### member_of Relationship Direction
+//! - Relationship direction: member node → relationship → collection node
+//! - All relationships stored in universal `relationship` table with `relationship_type = 'member_of'`
+//! - Query "what collections does X belong to": SELECT out FROM relationship WHERE in = node:X AND relationship_type = 'member_of'
+//! - Query "what nodes are in collection Y": SELECT in FROM relationship WHERE out = node:Y AND relationship_type = 'member_of'
 //!
 //! ### Path Resolution
 //! Collections are organized using colon-separated paths:
@@ -23,7 +24,7 @@
 //! - "hr:policy:vacation" → "vacation" under "hr:policy"
 //!
 //! ## Test Coverage
-//! - member_of edge creation and querying
+//! - member_of relationship creation and querying via universal `relationship` table
 //! - Path parsing and validation
 //! - Adding/removing collection memberships
 //! - Querying nodes by collection
@@ -33,18 +34,7 @@
 mod collection_membership_tests {
     use anyhow::Result;
     use nodespace_core::db::SurrealStore;
-    use serde::Deserialize;
-    use surrealdb::sql::Thing;
     use tempfile::TempDir;
-
-    /// Test helper struct for edge results
-    #[derive(Debug, Deserialize)]
-    struct MemberOfEdge {
-        #[serde(rename = "in")]
-        in_node: Thing,
-        #[serde(rename = "out")]
-        out_node: Thing,
-    }
 
     /// Helper to create test database
     async fn create_test_db() -> Result<(SurrealStore, TempDir)> {
@@ -66,7 +56,6 @@ mod collection_membership_tests {
                 CREATE node:collection1 CONTENT {
                     node_type: 'collection',
                     content: 'HR Collection',
-                    data: NONE,
                     version: 1,
                     properties: { description: 'Human resources documents' },
                     created_at: time::now(),
@@ -85,7 +74,6 @@ mod collection_membership_tests {
                 CREATE node:doc1 CONTENT {
                     node_type: 'text',
                     content: 'Employee Handbook',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -96,30 +84,45 @@ mod collection_membership_tests {
             .await?
             .check()?;
 
-        // Create member_of edge (direction: member → collection)
+        // Create member_of relationship via universal relationship table
+        // Direction: member → relationship → collection
         store
             .db()
             .query(
                 r#"
-                RELATE node:doc1->member_of->node:collection1 CONTENT {
-                    created_at: time::now()
+                RELATE node:doc1->relationship->node:collection1 CONTENT {
+                    relationship_type: 'member_of',
+                    properties: {},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
                 "#,
             )
             .await?
             .check()?;
 
-        // Verify edge was created by querying outward direction
+        // Verify relationship was created: get in and out as string IDs
         let result = store
             .db()
-            .query("SELECT * FROM member_of WHERE in = node:doc1")
+            .query("SELECT VALUE meta::id(in) FROM relationship WHERE relationship_type = 'member_of' AND in = node:doc1")
             .await?;
 
         let mut result = result.check()?;
-        let edges: Vec<MemberOfEdge> = result.take(0)?;
-        assert_eq!(edges.len(), 1, "Should find one member_of edge");
-        assert_eq!(edges[0].in_node.id.to_string(), "doc1");
-        assert_eq!(edges[0].out_node.id.to_string(), "collection1");
+        let in_ids: Vec<String> = result.take(0)?;
+        assert_eq!(in_ids.len(), 1, "Should find one member_of relationship");
+        assert_eq!(in_ids[0], "doc1");
+
+        // Also verify the out (collection) side
+        let result2 = store
+            .db()
+            .query("SELECT VALUE meta::id(out) FROM relationship WHERE relationship_type = 'member_of' AND in = node:doc1")
+            .await?;
+
+        let mut result2 = result2.check()?;
+        let out_ids: Vec<String> = result2.take(0)?;
+        assert_eq!(out_ids.len(), 1, "Should find one out node");
+        assert_eq!(out_ids[0], "collection1");
 
         Ok(())
     }
@@ -136,7 +139,6 @@ mod collection_membership_tests {
                 CREATE node:coll_hr CONTENT {
                     node_type: 'collection',
                     content: 'HR',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -146,7 +148,6 @@ mod collection_membership_tests {
                 CREATE node:coll_policy CONTENT {
                     node_type: 'collection',
                     content: 'Policy',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -156,7 +157,6 @@ mod collection_membership_tests {
                 CREATE node:doc1 CONTENT {
                     node_type: 'text',
                     content: 'Vacation Policy',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -167,26 +167,34 @@ mod collection_membership_tests {
             .await?
             .check()?;
 
-        // Add doc1 to both collections
+        // Add doc1 to both collections via universal relationship table
         store
             .db()
             .query(
                 r#"
-                RELATE node:doc1->member_of->node:coll_hr CONTENT {
-                    created_at: time::now()
+                RELATE node:doc1->relationship->node:coll_hr CONTENT {
+                    relationship_type: 'member_of',
+                    properties: {},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
-                RELATE node:doc1->member_of->node:coll_policy CONTENT {
-                    created_at: time::now()
+                RELATE node:doc1->relationship->node:coll_policy CONTENT {
+                    relationship_type: 'member_of',
+                    properties: {},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
                 "#,
             )
             .await?
             .check()?;
 
-        // Query what collections doc1 belongs to (count edges instead of selecting Thing)
+        // Query what collections doc1 belongs to (count relationships)
         let result = store
             .db()
-            .query("SELECT count() FROM member_of WHERE in = node:doc1 GROUP ALL")
+            .query("SELECT count() FROM relationship WHERE relationship_type = 'member_of' AND in = node:doc1 GROUP ALL")
             .await?;
 
         let mut result = result.check()?;
@@ -209,7 +217,6 @@ mod collection_membership_tests {
                 CREATE node:coll_team CONTENT {
                     node_type: 'collection',
                     content: 'Team Docs',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -219,7 +226,6 @@ mod collection_membership_tests {
                 CREATE node:doc_a CONTENT {
                     node_type: 'text',
                     content: 'Document A',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -229,7 +235,6 @@ mod collection_membership_tests {
                 CREATE node:doc_b CONTENT {
                     node_type: 'text',
                     content: 'Document B',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -239,7 +244,6 @@ mod collection_membership_tests {
                 CREATE node:doc_c CONTENT {
                     node_type: 'text',
                     content: 'Document C (not in collection)',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -255,21 +259,29 @@ mod collection_membership_tests {
             .db()
             .query(
                 r#"
-                RELATE node:doc_a->member_of->node:coll_team CONTENT {
-                    created_at: time::now()
+                RELATE node:doc_a->relationship->node:coll_team CONTENT {
+                    relationship_type: 'member_of',
+                    properties: {},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
-                RELATE node:doc_b->member_of->node:coll_team CONTENT {
-                    created_at: time::now()
+                RELATE node:doc_b->relationship->node:coll_team CONTENT {
+                    relationship_type: 'member_of',
+                    properties: {},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
                 "#,
             )
             .await?
             .check()?;
 
-        // Query members of collection (count edges instead of selecting Thing)
+        // Query members of collection (count relationships)
         let result = store
             .db()
-            .query("SELECT count() FROM member_of WHERE out = node:coll_team GROUP ALL")
+            .query("SELECT count() FROM relationship WHERE relationship_type = 'member_of' AND out = node:coll_team GROUP ALL")
             .await?;
 
         let mut result = result.check()?;
@@ -292,7 +304,6 @@ mod collection_membership_tests {
                 CREATE node:coll_remove CONTENT {
                     node_type: 'collection',
                     content: 'Collection for removal test',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -302,7 +313,6 @@ mod collection_membership_tests {
                 CREATE node:doc_remove CONTENT {
                     node_type: 'text',
                     content: 'Document to remove',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -313,23 +323,27 @@ mod collection_membership_tests {
             .await?
             .check()?;
 
-        // Add membership
+        // Add membership via universal relationship table
         store
             .db()
             .query(
                 r#"
-                RELATE node:doc_remove->member_of->node:coll_remove CONTENT {
-                    created_at: time::now()
+                RELATE node:doc_remove->relationship->node:coll_remove CONTENT {
+                    relationship_type: 'member_of',
+                    properties: {},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
                 };
                 "#,
             )
             .await?
             .check()?;
 
-        // Verify membership exists (count edges)
+        // Verify membership exists (count relationships)
         let result = store
             .db()
-            .query("SELECT count() FROM member_of WHERE in = node:doc_remove GROUP ALL")
+            .query("SELECT count() FROM relationship WHERE relationship_type = 'member_of' AND in = node:doc_remove GROUP ALL")
             .await?;
 
         let mut result = result.check()?;
@@ -337,17 +351,17 @@ mod collection_membership_tests {
         let count = count_result.and_then(|v| v["count"].as_u64()).unwrap_or(0);
         assert_eq!(count, 1, "Membership should exist");
 
-        // Remove membership
+        // Remove membership from universal relationship table
         store
             .db()
-            .query("DELETE member_of WHERE in = node:doc_remove AND out = node:coll_remove")
+            .query("DELETE relationship WHERE relationship_type = 'member_of' AND in = node:doc_remove AND out = node:coll_remove")
             .await?
             .check()?;
 
         // Verify membership is removed (count should be 0)
         let result = store
             .db()
-            .query("SELECT count() FROM member_of WHERE in = node:doc_remove GROUP ALL")
+            .query("SELECT count() FROM relationship WHERE relationship_type = 'member_of' AND in = node:doc_remove GROUP ALL")
             .await?;
 
         let mut result = result.check()?;
@@ -361,7 +375,7 @@ mod collection_membership_tests {
 
     #[tokio::test]
     async fn test_nested_collections_via_member_of() -> Result<()> {
-        // Issue #808: Collection hierarchy uses member_of edges, not has_child
+        // Issue #808: Collection hierarchy uses member_of relationships in universal relationship table
         let (store, _temp_dir) = create_test_db().await?;
 
         // Create nested collection hierarchy: hr -> policy -> vacation
@@ -372,7 +386,6 @@ mod collection_membership_tests {
                 CREATE node:coll_hr CONTENT {
                     node_type: 'collection',
                     content: 'HR',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -382,7 +395,6 @@ mod collection_membership_tests {
                 CREATE node:coll_policy CONTENT {
                     node_type: 'collection',
                     content: 'Policy',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -392,7 +404,6 @@ mod collection_membership_tests {
                 CREATE node:coll_vacation CONTENT {
                     node_type: 'collection',
                     content: 'Vacation',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -403,7 +414,7 @@ mod collection_membership_tests {
             .await?
             .check()?;
 
-        // Issue #808: Create hierarchy using member_of edges (child -> member_of -> parent)
+        // Issue #808: Create hierarchy using member_of relationships (child -> relationship -> parent)
         // policy is member_of hr, vacation is member_of policy
         store
             .db()
@@ -466,7 +477,6 @@ mod collection_membership_tests {
                 CREATE node:coll_mixed CONTENT {
                     node_type: 'collection',
                     content: 'Mixed Content Collection',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -487,7 +497,6 @@ mod collection_membership_tests {
                 CREATE node:text_node CONTENT {{
                     node_type: 'text',
                     content: 'Text document',
-                    data: NONE,
                     version: 1,
                     properties: {{}},
                     created_at: time::now(),
@@ -508,26 +517,34 @@ mod collection_membership_tests {
             .await?
             .check()?;
 
-        // Add both to collection
+        // Add both to collection via universal relationship table
         store
             .db()
             .query(format!(
                 r#"
-                RELATE node:text_node->member_of->node:coll_mixed CONTENT {{
-                    created_at: time::now()
+                RELATE node:text_node->relationship->node:coll_mixed CONTENT {{
+                    relationship_type: 'member_of',
+                    properties: {{}},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
                 }};
-                RELATE node:`{uuid}`->member_of->node:coll_mixed CONTENT {{
-                    created_at: time::now()
+                RELATE node:`{uuid}`->relationship->node:coll_mixed CONTENT {{
+                    relationship_type: 'member_of',
+                    properties: {{}},
+                    version: 1,
+                    created_at: time::now(),
+                    modified_at: time::now()
                 }};
                 "#
             ))
             .await?
             .check()?;
 
-        // Query collection members with their types
+        // Query collection members with their types via relationship table
         let result = store
             .db()
-            .query("SELECT in.node_type AS node_type FROM member_of WHERE out = node:coll_mixed")
+            .query("SELECT in.node_type AS node_type FROM relationship WHERE relationship_type = 'member_of' AND out = node:coll_mixed")
             .await?;
 
         let mut result = result.check()?;
@@ -561,7 +578,6 @@ mod collection_membership_tests {
                 CREATE node:coll_idem CONTENT {
                     node_type: 'collection',
                     content: 'Idempotency Test',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -571,7 +587,6 @@ mod collection_membership_tests {
                 CREATE node:doc_idem CONTENT {
                     node_type: 'text',
                     content: 'Test Document',
-                    data: NONE,
                     version: 1,
                     properties: {},
                     created_at: time::now(),
@@ -582,16 +597,20 @@ mod collection_membership_tests {
             .await?
             .check()?;
 
-        // Add membership twice - should not create duplicate edges
-        // Using IF NOT EXISTS pattern
+        // Add membership twice - should not create duplicate relationships
+        // Using IF NOT EXISTS pattern with universal relationship table
         store
             .db()
             .query(
                 r#"
-                LET $existing = SELECT * FROM member_of WHERE in = node:doc_idem AND out = node:coll_idem;
+                LET $existing = SELECT * FROM relationship WHERE relationship_type = 'member_of' AND in = node:doc_idem AND out = node:coll_idem;
                 IF array::len($existing) == 0 THEN {
-                    RELATE node:doc_idem->member_of->node:coll_idem CONTENT {
-                        created_at: time::now()
+                    RELATE node:doc_idem->relationship->node:coll_idem CONTENT {
+                        relationship_type: 'member_of',
+                        properties: {},
+                        version: 1,
+                        created_at: time::now(),
+                        modified_at: time::now()
                     }
                 } END;
                 "#,
@@ -604,10 +623,14 @@ mod collection_membership_tests {
             .db()
             .query(
                 r#"
-                LET $existing = SELECT * FROM member_of WHERE in = node:doc_idem AND out = node:coll_idem;
+                LET $existing = SELECT * FROM relationship WHERE relationship_type = 'member_of' AND in = node:doc_idem AND out = node:coll_idem;
                 IF array::len($existing) == 0 THEN {
-                    RELATE node:doc_idem->member_of->node:coll_idem CONTENT {
-                        created_at: time::now()
+                    RELATE node:doc_idem->relationship->node:coll_idem CONTENT {
+                        relationship_type: 'member_of',
+                        properties: {},
+                        version: 1,
+                        created_at: time::now(),
+                        modified_at: time::now()
                     }
                 } END;
                 "#,
@@ -615,16 +638,16 @@ mod collection_membership_tests {
             .await?
             .check()?;
 
-        // Verify only one edge exists (count)
+        // Verify only one relationship exists (count)
         let result = store
             .db()
-            .query("SELECT count() FROM member_of WHERE in = node:doc_idem AND out = node:coll_idem GROUP ALL")
+            .query("SELECT count() FROM relationship WHERE relationship_type = 'member_of' AND in = node:doc_idem AND out = node:coll_idem GROUP ALL")
             .await?;
 
         let mut result = result.check()?;
         let count_result: Option<serde_json::Value> = result.take(0)?;
         let count = count_result.and_then(|v| v["count"].as_u64()).unwrap_or(0);
-        assert_eq!(count, 1, "Should have exactly one membership edge");
+        assert_eq!(count, 1, "Should have exactly one membership relationship");
 
         Ok(())
     }
@@ -659,7 +682,6 @@ mod collection_service_tests {
                 CREATE node:`{id}` CONTENT {{
                     node_type: 'text',
                     content: '{content}',
-                    data: NONE,
                     version: 1,
                     properties: {{}},
                     created_at: time::now(),
@@ -1095,7 +1117,7 @@ mod collection_service_tests {
     #[tokio::test]
     async fn test_collection_hierarchy_via_member_of() -> Result<()> {
         // Issue #808: Collection path resolution creates hierarchy between collections
-        // using member_of edges, not has_child edges.
+        // using member_of relationships in universal relationship table, not has_child edges.
         let (store, node_service, _temp_dir) = create_test_services().await?;
         let collection_service = CollectionService::new(&store, &node_service);
 
@@ -1126,7 +1148,7 @@ mod collection_service_tests {
             "Collections should NOT use has_child - 'parent' should have no has_child children"
         );
 
-        // Issue #808: Verify hierarchy exists via member_of edges
+        // Issue #808: Verify hierarchy exists via member_of relationships
         // child should be a member_of parent
         let child_memberships = collection_service.get_node_collections(&child.id).await?;
         assert_eq!(

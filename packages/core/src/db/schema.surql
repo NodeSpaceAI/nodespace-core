@@ -25,10 +25,14 @@ DEFINE TABLE IF NOT EXISTS node SCHEMAFULL;
 -- Do NOT redefine it - let SurrealDB handle it natively as a Thing type
 DEFINE FIELD IF NOT EXISTS content ON TABLE node TYPE string DEFAULT "";
 DEFINE FIELD IF NOT EXISTS node_type ON TABLE node TYPE string ASSERT $value != NONE;
-DEFINE FIELD IF NOT EXISTS properties ON TABLE node FLEXIBLE TYPE object DEFAULT {};  -- Type-specific properties (e.g., status, priority for tasks)
+DEFINE FIELD IF NOT EXISTS properties ON TABLE node TYPE object FLEXIBLE DEFAULT {};  -- Type-specific properties (e.g., status, priority for tasks)
 DEFINE FIELD IF NOT EXISTS version ON TABLE node TYPE int DEFAULT 1 ASSERT $value >= 1;
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE node TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS modified_at ON TABLE node TYPE datetime DEFAULT time::now();
+
+-- Mention tracking fields (outgoing and incoming references)
+DEFINE FIELD IF NOT EXISTS mentions ON TABLE node TYPE array<string> DEFAULT [];
+DEFINE FIELD IF NOT EXISTS mentioned_in ON TABLE node TYPE array<object> DEFAULT [];
 
 -- Title field for efficient @mention autocomplete search (Issue #821)
 -- Optional field populated for root nodes and task nodes only
@@ -47,10 +51,11 @@ DEFINE INDEX IF NOT EXISTS idx_node_type ON TABLE node COLUMNS node_type;
 DEFINE INDEX IF NOT EXISTS idx_node_modified ON TABLE node COLUMNS modified_at;
 DEFINE INDEX IF NOT EXISTS idx_node_lifecycle ON TABLE node COLUMNS lifecycle_status;
 
--- Standard index for @mention autocomplete (Issue #821)
--- Full-text search with ANALYZER requires SurrealDB 2.x+ with proper configuration
--- For now, use a standard index which still enables efficient exact-match and prefix queries
-DEFINE INDEX IF NOT EXISTS idx_node_title ON TABLE node COLUMNS title;
+-- Full-text analyzer for @mention autocomplete (resolves SurrealDB 2.x limitation)
+DEFINE ANALYZER IF NOT EXISTS analyzer_title TOKENIZERS class FILTERS lowercase, ascii;
+
+-- Full-text index for @mention autocomplete search (Issue #821, upgraded in SurrealDB 3.x)
+DEFINE INDEX IF NOT EXISTS idx_node_title ON TABLE node COLUMNS title FULLTEXT ANALYZER analyzer_title BM25;
 
 -- Note: Partial indexes (WHERE clause) are not supported in SurrealDB 2.x
 -- Properties are queried via node_type filter + properties.field access
@@ -77,7 +82,7 @@ DEFINE TABLE IF NOT EXISTS relationship SCHEMAFULL TYPE RELATION IN node OUT nod
 DEFINE FIELD IF NOT EXISTS relationship_type ON TABLE relationship TYPE string ASSERT $value != NONE;
 
 -- Type-specific data stored in properties
-DEFINE FIELD IF NOT EXISTS properties ON TABLE relationship FLEXIBLE TYPE object DEFAULT {};
+DEFINE FIELD IF NOT EXISTS properties ON TABLE relationship TYPE object FLEXIBLE DEFAULT {};
 
 -- System metadata
 DEFINE FIELD IF NOT EXISTS version ON TABLE relationship TYPE int DEFAULT 1;
@@ -163,9 +168,10 @@ DEFINE INDEX IF NOT EXISTS idx_embedding_node ON TABLE embedding COLUMNS node;
 DEFINE INDEX IF NOT EXISTS idx_embedding_stale ON TABLE embedding COLUMNS stale;
 -- Unique constraint: one embedding per (node, model, chunk_index) combination
 DEFINE INDEX IF NOT EXISTS idx_embedding_unique ON TABLE embedding COLUMNS node, model_name, chunk_index UNIQUE;
--- MTREE vector index for fast semantic similarity search (Issue #776)
+-- HNSW vector index for fast semantic similarity search (Issue #776, upgraded for SurrealDB 3.x)
 -- Uses cosine distance for nomic-embed-text-v1.5 embeddings
-DEFINE INDEX IF NOT EXISTS idx_embedding_vector ON TABLE embedding COLUMNS vector MTREE DIMENSION 768 DIST COSINE TYPE F32;
+-- MTREE was removed in SurrealDB 3.x; HNSW is the replacement
+DEFINE INDEX IF NOT EXISTS idx_embedding_vector ON TABLE embedding COLUMNS vector HNSW DIMENSION 768 DISTANCE COSINE TYPE F32 EFC 200 M 16;
 
 -- ============================================================================
 -- Schema Version Tracking

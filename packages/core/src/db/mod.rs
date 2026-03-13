@@ -29,6 +29,20 @@ pub use error::DatabaseError;
 pub use events::{DomainEvent, RelationshipEvent};
 pub use fractional_ordering::FractionalOrderCalculator;
 pub use index_manager::IndexManager;
-pub use surreal_store::{
-    EmbeddedStore, HttpStore, RelationshipRecord, StoreChange, StoreOperation, SurrealStore,
-};
+pub use surreal_store::{RelationshipRecord, StoreChange, StoreOperation, SurrealStore};
+
+/// Extract the key string from a `RecordId` (table-qualified record identifier).
+///
+/// Returns only the key portion (e.g., `"abc-123"` from `node:abc-123`).
+/// Use this when you need a bare node ID suitable for passing to `get_node()`.
+/// For event emission IDs that require the full `table:key` format, build that
+/// string explicitly: `format!("{}:{}", id.table, extract_record_key(id))`.
+pub fn extract_record_key(record_id: &surrealdb::types::RecordId) -> String {
+    use surrealdb::types::RecordIdKey;
+    match &record_id.key {
+        RecordIdKey::String(s) => s.clone(),
+        RecordIdKey::Number(n) => n.to_string(),
+        RecordIdKey::Uuid(u) => u.to_string(),
+        other => format!("{other:?}"),
+    }
+}

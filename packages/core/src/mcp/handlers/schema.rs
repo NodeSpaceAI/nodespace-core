@@ -116,13 +116,10 @@ struct InferredField {
 /// # Errors
 /// - `INVALID_PARAMS`: If name is empty or both description and fields are missing
 /// - `INTERNAL_ERROR`: If schema creation fails
-pub async fn handle_create_schema<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_create_schema(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: CreateSchemaParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -282,13 +279,10 @@ pub struct SchemaUpdateOutput {
 /// # Parameters
 /// - `schema_id`: ID of the schema to modify
 /// - `relationship`: The relationship definition to add
-pub async fn handle_add_schema_relationship<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_add_schema_relationship(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: AddSchemaRelationshipParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -354,13 +348,10 @@ where
 /// # Parameters
 /// - `schema_id`: ID of the schema to modify
 /// - `relationship_name`: Name of the relationship to remove
-pub async fn handle_remove_schema_relationship<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_remove_schema_relationship(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: RemoveSchemaRelationshipParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -434,13 +425,10 @@ where
 /// - `add_relationships`: Relationships to add
 /// - `remove_relationships`: Relationship names to remove (soft-delete)
 /// - `description`: New description (optional)
-pub async fn handle_update_schema<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_update_schema(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: UpdateSchemaParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 

@@ -63,21 +63,15 @@ pub type McpResponseCallback = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 /// This service is `Clone` and uses `Arc` internally, making it safe to share
 /// across async tasks and register with Tauri's state management.
 #[derive(Clone)]
-pub struct McpServerService<C = surrealdb::engine::local::Db>
-where
-    C: surrealdb::Connection,
-{
-    node_service: Arc<NodeService<C>>,
+pub struct McpServerService {
+    node_service: Arc<NodeService>,
     /// Optional: MCP still serves node CRUD without embeddings; semantic search
     /// returns a graceful error when this is `None`.
-    embedding_service: Option<Arc<NodeEmbeddingService<C>>>,
+    embedding_service: Option<Arc<NodeEmbeddingService>>,
     port: u16,
 }
 
-impl<C> McpServerService<C>
-where
-    C: surrealdb::Connection,
-{
+impl McpServerService {
     /// Create a new MCP server service
     ///
     /// # Arguments
@@ -99,8 +93,8 @@ where
     /// let service = McpServerService::new(node_service, Some(embedding_service), port);
     /// ```
     pub fn new(
-        node_service: Arc<NodeService<C>>,
-        embedding_service: Option<Arc<NodeEmbeddingService<C>>>,
+        node_service: Arc<NodeService>,
+        embedding_service: Option<Arc<NodeEmbeddingService>>,
         port: u16,
     ) -> Self {
         Self {

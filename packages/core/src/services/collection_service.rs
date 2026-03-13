@@ -311,25 +311,19 @@ impl ResolvedPath {
 /// Per service-layer-architecture.md, event emission happens in NodeService.
 /// CollectionService delegates `member_of` operations to NodeService, which
 /// emits RelationshipCreated/RelationshipDeleted events.
-pub struct CollectionService<'a, C = surrealdb::engine::local::Db>
-where
-    C: surrealdb::Connection,
-{
-    store: &'a Arc<SurrealStore<C>>,
-    node_service: &'a super::NodeService<C>,
+pub struct CollectionService<'a> {
+    store: &'a Arc<SurrealStore>,
+    node_service: &'a super::NodeService,
 }
 
-impl<'a, C> CollectionService<'a, C>
-where
-    C: surrealdb::Connection,
-{
+impl<'a> CollectionService<'a> {
     /// Create a new CollectionService
     ///
     /// # Arguments
     ///
     /// * `store` - The database store
     /// * `node_service` - NodeService for relationship operations and event emission
-    pub fn new(store: &'a Arc<SurrealStore<C>>, node_service: &'a super::NodeService<C>) -> Self {
+    pub fn new(store: &'a Arc<SurrealStore>, node_service: &'a super::NodeService) -> Self {
         Self {
             store,
             node_service,

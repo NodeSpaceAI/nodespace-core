@@ -40,14 +40,11 @@ pub enum McpTransport {
 /// As of Issue #676, uses NodeService directly instead of NodeOperations.
 /// As of Issue #690, SchemaService removed - schema nodes use generic CRUD.
 /// As of Issue #715, made generic over database connection type.
-pub struct McpServices<C = surrealdb::engine::local::Db>
-where
-    C: surrealdb::Connection,
-{
-    pub node_service: Arc<NodeService<C>>,
+pub struct McpServices {
+    pub node_service: Arc<NodeService>,
     /// Optional: MCP still serves node CRUD without embeddings; semantic search
     /// returns a graceful error when this is `None`.
-    pub embedding_service: Option<Arc<NodeEmbeddingService<C>>>,
+    pub embedding_service: Option<Arc<NodeEmbeddingService>>,
 }
 
 /// Server state tracking initialization status
@@ -86,13 +83,7 @@ pub type ResponseCallback = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 ///
 /// Returns Ok(()) when the server shuts down, or Err on fatal errors
 #[instrument(skip(services))]
-pub async fn run_mcp_server<C>(
-    services: McpServices<C>,
-    transport: McpTransport,
-) -> anyhow::Result<()>
-where
-    C: surrealdb::Connection,
-{
+pub async fn run_mcp_server(services: McpServices, transport: McpTransport) -> anyhow::Result<()> {
     run_mcp_server_with_callback(services, transport, None).await
 }
 
@@ -111,14 +102,11 @@ where
 ///
 /// Returns Ok(()) when the server shuts down, or Err on fatal errors
 #[instrument(skip(services, callback))]
-pub async fn run_mcp_server_with_callback<C>(
-    services: McpServices<C>,
+pub async fn run_mcp_server_with_callback(
+    services: McpServices,
     transport: McpTransport,
     callback: Option<ResponseCallback>,
-) -> anyhow::Result<()>
-where
-    C: surrealdb::Connection,
-{
+) -> anyhow::Result<()> {
     match transport {
         McpTransport::Stdio => run_stdio_server(services, callback).await,
         McpTransport::Http { port } => run_http_server(services, port, callback).await,
@@ -130,13 +118,10 @@ where
 /// Reads JSON-RPC requests from stdin, processes them via handlers,
 /// and writes responses to stdout. Runs indefinitely until EOF on stdin.
 #[instrument(skip(services, callback))]
-async fn run_stdio_server<C>(
-    services: McpServices<C>,
+async fn run_stdio_server(
+    services: McpServices,
     callback: Option<ResponseCallback>,
-) -> anyhow::Result<()>
-where
-    C: surrealdb::Connection,
-{
+) -> anyhow::Result<()> {
     info!("🔌 MCP stdio server started");
 
     let stdin = tokio::io::stdin();
@@ -235,11 +220,7 @@ where
 ///
 /// Used by Axum handlers to extract the shared services, callback, and server state.
 /// Generic over the database connection type.
-type HttpState<C> = (
-    Arc<McpServices<C>>,
-    Option<ResponseCallback>,
-    Arc<ServerState>,
-);
+type HttpState = (Arc<McpServices>, Option<ResponseCallback>, Arc<ServerState>);
 
 /// Run the MCP server over HTTP with Streamable HTTP transport (2025-03-26 spec)
 ///
@@ -250,14 +231,11 @@ type HttpState<C> = (
 ///
 /// Also provides a /health endpoint for monitoring.
 #[instrument(skip(services, callback))]
-async fn run_http_server<C>(
-    services: McpServices<C>,
+async fn run_http_server(
+    services: McpServices,
     port: u16,
     callback: Option<ResponseCallback>,
-) -> anyhow::Result<()>
-where
-    C: surrealdb::Connection + 'static,
-{
+) -> anyhow::Result<()> {
     info!(
         "🔌 MCP Streamable HTTP server (2025-03-26) starting on http://localhost:{}",
         port
@@ -270,13 +248,13 @@ where
         initialized: Arc::new(AtomicBool::new(false)),
     });
 
-    let state: HttpState<C> = (shared_services, shared_callback, shared_state);
+    let state: HttpState = (shared_services, shared_callback, shared_state);
 
     // Create router with unified /mcp endpoint and health check
     let app = Router::new()
-        .route("/mcp", post(handle_streamable_http_request::<C>))
-        .route("/mcp", get(handle_sse_connection::<C>)) // Backward compat (deprecated)
-        .route("/mcp/message", post(handle_http_mcp_request::<C>)) // Backward compat (deprecated)
+        .route("/mcp", post(handle_streamable_http_request))
+        .route("/mcp", get(handle_sse_connection)) // Backward compat (deprecated)
+        .route("/mcp/message", post(handle_http_mcp_request)) // Backward compat (deprecated)
         .route("/health", get(handle_health_check))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -314,14 +292,11 @@ where
 /// - Requests with Accept: text/event-stream → 200 OK with SSE stream
 ///
 /// Supports protocol version negotiation (2024-11-05, 2025-03-26, 2025-06-18).
-async fn handle_streamable_http_request<C>(
-    State((services, callback, state)): State<HttpState<C>>,
+async fn handle_streamable_http_request(
+    State((services, callback, state)): State<HttpState>,
     headers: HeaderMap,
     body_bytes: Bytes,
-) -> Result<Response, StatusCode>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Response, StatusCode> {
     let body = String::from_utf8(body_bytes.to_vec()).map_err(|_| StatusCode::BAD_REQUEST)?;
     info!("📥 Streamable HTTP request received");
 
@@ -439,12 +414,9 @@ where
 /// though the current implementation focuses on client-initiated requests.
 ///
 /// NOTE: This endpoint is DEPRECATED. Use POST /mcp with Streamable HTTP instead.
-async fn handle_sse_connection<C>(
-    State((_, _, _)): State<HttpState<C>>,
-) -> impl axum::response::IntoResponse
-where
-    C: surrealdb::Connection,
-{
+async fn handle_sse_connection(
+    State((_, _, _)): State<HttpState>,
+) -> impl axum::response::IntoResponse {
     use axum::response::sse::{Event, KeepAlive, Sse};
     use std::convert::Infallible;
     use tokio_stream::wrappers::BroadcastStream;
@@ -503,13 +475,10 @@ async fn handle_health_check() -> Json<Value> {
 /// Note: For HTTP transport, the `initialized` notification is automatically
 /// handled after a successful `initialize` request, since HTTP is stateless
 /// and doesn't support notifications without responses.
-async fn handle_http_mcp_request<C>(
-    State((services, callback, state)): State<HttpState<C>>,
+async fn handle_http_mcp_request(
+    State((services, callback, state)): State<HttpState>,
     Json(request): Json<MCPRequest>,
-) -> Result<Json<MCPResponse>, StatusCode>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Json<MCPResponse>, StatusCode> {
     info!(
         "📥 HTTP MCP request: {} (id: {})",
         request.method, request.id
@@ -548,14 +517,11 @@ where
 
 /// Handle a JSON-RPC request and return a response
 #[instrument(skip(services, state), fields(method = %request.method, id = %request.id))]
-async fn handle_request<C>(
-    services: &McpServices<C>,
+async fn handle_request(
+    services: &McpServices,
     state: &ServerState,
     request: MCPRequest,
-) -> MCPResponse
-where
-    C: surrealdb::Connection,
-{
+) -> MCPResponse {
     // Check initialization state before processing operations
     // Allow only 'initialize' and 'ping' methods before initialization is complete
     if request.method != "initialize"
@@ -723,11 +689,10 @@ mod tests {
         let mut store = Arc::new(SurrealStore::new(db_path).await.unwrap());
         let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
 
-        // Create NLP engine and initialize it (will operate in stub mode since model not available in tests)
-        let mut nlp_engine =
-            nodespace_nlp_engine::EmbeddingService::new(Default::default()).unwrap();
-        nlp_engine.initialize().unwrap();
-        let nlp_engine = Arc::new(nlp_engine);
+        // Create NLP engine in stub mode (DO NOT call initialize() - that loads the full
+        // 115MB GGML model into GPU memory, causing memory explosion when many tests run in parallel)
+        let nlp_engine =
+            Arc::new(nodespace_nlp_engine::EmbeddingService::new(Default::default()).unwrap());
 
         let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
 

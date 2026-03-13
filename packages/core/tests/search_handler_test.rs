@@ -308,6 +308,83 @@ fn test_search_defaults_applied_correctly() {
 }
 
 // =========================================================================
+// HNSW Vector Search Integration Tests
+// =========================================================================
+
+/// Test that the HNSW vector search query executes without error against a real database.
+/// This catches SurrealQL syntax regressions (e.g., wrong KNN operator for HNSW vs MTREE).
+#[tokio::test]
+async fn test_search_embeddings_hnsw_query_executes() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("test.db");
+    let store = Arc::new(SurrealStore::new(db_path).await?);
+
+    // Create a node so we have something to embed
+    use nodespace_core::models::Node;
+    let node = store
+        .create_node(
+            Node::new(
+                "text".to_string(),
+                "The quick brown fox jumps over the lazy dog".to_string(),
+                serde_json::json!({}),
+            ),
+            None,
+        )
+        .await?;
+
+    // Insert a synthetic 768-dim embedding directly (bypasses NLP engine)
+    use nodespace_core::models::NewEmbedding;
+    let vector: Vec<f32> = (0..768).map(|i| (i as f32) / 768.0).collect();
+    store
+        .upsert_embeddings(
+            &node.id,
+            vec![NewEmbedding {
+                node_id: node.id.clone(),
+                vector: vector.clone(),
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 42,
+                total_chunks: 1,
+                content_hash: "abc123".to_string(),
+                token_count: 10,
+            }],
+        )
+        .await?;
+
+    // Query with the same vector — must succeed (no error) and return the node
+    let results = store
+        .search_embeddings(&vector, 5, Some(0.0))
+        .await
+        .expect("HNSW vector search query must not fail");
+
+    assert_eq!(results.len(), 1, "Should find the embedded node");
+    assert_eq!(results[0].node_id, node.id);
+
+    Ok(())
+}
+
+/// Test that search_embeddings returns empty results (not an error) when no embeddings exist.
+#[tokio::test]
+async fn test_search_embeddings_empty_db_returns_empty() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("test.db");
+    let store = Arc::new(SurrealStore::new(db_path).await?);
+
+    let vector: Vec<f32> = vec![0.0f32; 768];
+    let results = store
+        .search_embeddings(&vector, 5, Some(0.0))
+        .await
+        .expect("Search on empty database must not fail");
+
+    assert!(
+        results.is_empty(),
+        "Empty database should return no results"
+    );
+    Ok(())
+}
+
+// =========================================================================
 // Malformed Input Tests
 // =========================================================================
 

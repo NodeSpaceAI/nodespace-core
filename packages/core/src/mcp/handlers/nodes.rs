@@ -243,13 +243,10 @@ pub struct TreeNode {
 }
 
 /// Handle create_node MCP request
-pub async fn handle_create_node<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_create_node(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let mcp_params: MCPCreateNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -329,13 +326,10 @@ where
 ///
 /// This provides compile-time type safety for complex types while maintaining
 /// flexibility for simple content-only types.
-pub async fn handle_get_node<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_get_node(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: GetNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -354,13 +348,10 @@ where
 ///
 /// Schema validation is handled by NodeService::validate_node_against_schema(),
 /// which validates enum values and required fields. No SchemaService needed.
-pub async fn handle_update_node<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_update_node(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: UpdateNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -479,13 +470,10 @@ where
 }
 
 /// Handle delete_node MCP request
-pub async fn handle_delete_node<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_delete_node(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: DeleteNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -517,13 +505,10 @@ where
 }
 
 /// Handle query_nodes MCP request
-pub async fn handle_query_nodes<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_query_nodes(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: QueryNodesParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -642,13 +627,10 @@ fn is_valid_date_format(s: &str) -> bool {
 }
 
 /// Ensure parent node exists, auto-creating date nodes if needed
-async fn ensure_parent_exists<C>(
-    node_service: &Arc<NodeService<C>>,
+async fn ensure_parent_exists(
+    node_service: &Arc<NodeService>,
     parent_id: &str,
-) -> Result<(), MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<(), MCPError> {
     // Check if parent already exists
     if node_service
         .get_node(parent_id)
@@ -689,14 +671,11 @@ where
 ///
 /// In graph-native architecture, children are already ordered by the `order` field
 /// on has_child edges (fractional ordering), so we just map them to ChildInfo.
-async fn get_children_ordered<C>(
-    node_service: &Arc<NodeService<C>>,
+async fn get_children_ordered(
+    node_service: &Arc<NodeService>,
     parent_id: &str,
     include_content: bool,
-) -> Result<Vec<ChildInfo>, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Vec<ChildInfo>, MCPError> {
     // In graph-native architecture, get_children() returns children already sorted
     // by the `order` field on has_child edges (fractional ordering)
     let children = node_service
@@ -724,17 +703,14 @@ where
 }
 
 /// Build tree node recursively
-fn build_tree_node<'a, C>(
-    node_service: &'a Arc<NodeService<C>>,
+fn build_tree_node<'a>(
+    node_service: &'a Arc<NodeService>,
     node: crate::models::Node,
     depth: usize,
     max_depth: usize,
     include_content: bool,
     include_metadata: bool,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TreeNode, MCPError>> + Send + 'a>>
-where
-    C: surrealdb::Connection + 'a,
-{
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<TreeNode, MCPError>> + Send + 'a>> {
     Box::pin(async move {
         // Get children if we haven't reached max depth
         let children = if depth < max_depth {
@@ -815,13 +791,10 @@ where
 // =========================================================================
 
 /// Handle get_children MCP request
-pub async fn handle_get_children<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_get_children(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: GetChildrenParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -839,13 +812,10 @@ where
 }
 
 /// Handle insert_child_at_index MCP request
-pub async fn handle_insert_child_at_index<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_insert_child_at_index(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: InsertChildAtIndexParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -956,13 +926,10 @@ where
 }
 
 /// Handle move_child_to_index MCP request
-pub async fn handle_move_child_to_index<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_move_child_to_index(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: MoveChildToIndexParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -1083,13 +1050,10 @@ where
 }
 
 /// Handle get_child_at_index MCP request
-pub async fn handle_get_child_at_index<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_get_child_at_index(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: GetChildAtIndexParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -1116,13 +1080,10 @@ where
 }
 
 /// Handle get_node_tree MCP request
-pub async fn handle_get_node_tree<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_get_node_tree(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: GetNodeTreeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
@@ -1186,13 +1147,10 @@ pub struct BatchGetResult {
 /// let result = handle_get_nodes_batch(&operations, params).await?;
 /// // Returns all found nodes + list of IDs that don't exist
 /// ```
-pub async fn handle_get_nodes_batch<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_get_nodes_batch(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     // Parse parameters
     let params: GetNodesBatchParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
@@ -1296,13 +1254,10 @@ pub struct BatchUpdateFailure {
 /// });
 /// let result = handle_update_nodes_batch(&node_service, params).await?;
 /// ```
-pub async fn handle_update_nodes_batch<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_update_nodes_batch(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     // Parse parameters
     let params: UpdateNodesBatchParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
@@ -1396,13 +1351,10 @@ where
 /// Handle get_node_collections MCP request
 ///
 /// Returns the collections that a node belongs to.
-pub async fn handle_get_node_collections<C>(
-    node_service: &Arc<NodeService<C>>,
+pub async fn handle_get_node_collections(
+    node_service: &Arc<NodeService>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     let params: GetNodeCollectionsParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 

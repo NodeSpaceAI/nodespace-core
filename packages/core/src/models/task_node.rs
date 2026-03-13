@@ -50,6 +50,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::str::FromStr;
+use surrealdb::types::SurrealValue;
 
 /// Custom deserializer for flexible date parsing
 /// Accepts both "YYYY-MM-DD" (date only) and "YYYY-MM-DDTHH:MM:SSZ" (full ISO8601)
@@ -184,6 +185,26 @@ impl<'de> Deserialize<'de> for TaskStatus {
     }
 }
 
+impl SurrealValue for TaskStatus {
+    fn kind_of() -> surrealdb::types::Kind {
+        surrealdb::types::Kind::String
+    }
+
+    fn into_value(self) -> surrealdb::types::Value {
+        surrealdb::types::Value::String(self.as_str().to_string())
+    }
+
+    fn from_value(value: surrealdb::types::Value) -> Result<Self, surrealdb::types::Error> {
+        match value {
+            surrealdb::types::Value::String(s) => Ok(Self::from_str(&s).unwrap()),
+            surrealdb::types::Value::None | surrealdb::types::Value::Null => Ok(Self::default()),
+            other => Err(surrealdb::types::Error::internal(format!(
+                "Cannot convert {other:?} to TaskStatus"
+            ))),
+        }
+    }
+}
+
 /// Task priority enumeration
 ///
 /// Represents the priority levels of a task node.
@@ -259,7 +280,27 @@ impl<'de> Deserialize<'de> for TaskPriority {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Ok(Self::from_str(&s).unwrap()) // from_str never fails now
+        Ok(Self::from_str(&s).unwrap()) // from_str never fails: unknown strings map to User(_)
+    }
+}
+
+impl SurrealValue for TaskPriority {
+    fn kind_of() -> surrealdb::types::Kind {
+        surrealdb::types::Kind::String
+    }
+
+    fn into_value(self) -> surrealdb::types::Value {
+        surrealdb::types::Value::String(self.as_str().to_string())
+    }
+
+    fn from_value(value: surrealdb::types::Value) -> Result<Self, surrealdb::types::Error> {
+        match value {
+            surrealdb::types::Value::String(s) => Ok(Self::from_str(&s).unwrap()), // infallible: unknown strings map to User(_)
+            surrealdb::types::Value::None | surrealdb::types::Value::Null => Ok(Self::default()),
+            other => Err(surrealdb::types::Error::internal(format!(
+                "Cannot convert {other:?} to TaskPriority"
+            ))),
+        }
     }
 }
 
@@ -309,7 +350,7 @@ impl<'de> Deserialize<'de> for TaskPriority {
 /// assert_eq!(task.status, TaskStatus::Done);
 /// assert_eq!(task.content, "Fix bug");
 /// ```
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskNode {
     // ========================================================================
@@ -707,7 +748,7 @@ impl TaskNodeBuilder {
 ///     .with_status(TaskStatus::Done)
 ///     .with_due_date(None);  // Clears the due date
 /// ```
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, surrealdb::types::SurrealValue)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskNodeUpdate {
     /// Update task status (task property)

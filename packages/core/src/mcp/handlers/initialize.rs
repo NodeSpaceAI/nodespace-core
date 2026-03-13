@@ -45,14 +45,11 @@ use std::sync::Arc;
 /// - Client requests unsupported protocol version
 /// - Database query for schemas fails
 /// - Embedding model warmup fails
-pub async fn handle_initialize<C>(
-    node_service: &Arc<NodeService<C>>,
-    embedding_service: &Option<Arc<NodeEmbeddingService<C>>>,
+pub async fn handle_initialize(
+    node_service: &Arc<NodeService>,
+    embedding_service: &Option<Arc<NodeEmbeddingService>>,
     params: Value,
-) -> Result<Value, MCPError>
-where
-    C: surrealdb::Connection,
-{
+) -> Result<Value, MCPError> {
     // Parse client's initialize request
     let client_version = params["protocolVersion"]
         .as_str()

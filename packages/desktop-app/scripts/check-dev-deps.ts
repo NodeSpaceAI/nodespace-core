@@ -33,7 +33,19 @@ const dependencies: DependencyCheck[] = [
 
 async function checkDependency(dep: DependencyCheck): Promise<boolean> {
   try {
-    await $`sh -c ${dep.command}`.quiet();
+    const result = await $`sh -c ${dep.command}`.quiet();
+    const output = result.stdout.toString().trim();
+
+    // For SurrealDB, enforce minimum 3.x (crate requires 3.x on-disk format)
+    if (dep.name === 'SurrealDB') {
+      const match = output.match(/(\d+)\./);
+      if (match && parseInt(match[1]) < 3) {
+        console.error(`❌ ${dep.name} version too old: found ${output}, need 3.x+`);
+        console.error(`   Upgrade: curl -sSf https://install.surrealdb.com | sh`);
+        return false;
+      }
+    }
+
     console.log(`✅ ${dep.name} is installed`);
     return true;
   } catch {
