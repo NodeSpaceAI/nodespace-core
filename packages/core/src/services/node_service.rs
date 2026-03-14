@@ -4085,7 +4085,8 @@ impl NodeService {
         let query = crate::models::NodeQuery {
             id: None,
             node_type: filter.node_type,
-            content_contains: None,
+            content_contains: filter.content_contains,
+            title_contains: filter.title_contains,
             mentioned_by: None,
             limit: filter.limit,
         };

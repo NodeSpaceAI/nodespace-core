@@ -1623,6 +1623,29 @@ impl SurrealStore {
             return Ok(nodes);
         }
 
+        // Handle title_contains query
+        if let Some(ref search_query) = query.title_contains {
+            let sql = if query.limit.is_some() {
+                "SELECT * FROM node WHERE string::lowercase(title) CONTAINS string::lowercase($search_query) LIMIT $limit;"
+            } else {
+                "SELECT * FROM node WHERE string::lowercase(title) CONTAINS string::lowercase($search_query);"
+            };
+            let mut query_builder = self
+                .db
+                .query(sql)
+                .bind(("search_query", search_query.to_string()));
+            if let Some(limit) = query.limit {
+                query_builder = query_builder.bind(("limit", limit as i64));
+            }
+            let mut response = query_builder
+                .await
+                .context("Failed to search nodes by title")?;
+            let surreal_nodes: Vec<SurrealNode> = response
+                .take(0)
+                .context("Failed to extract title search results")?;
+            return Ok(surreal_nodes.into_iter().map(Into::into).collect());
+        }
+
         // Build WHERE clause conditions
         let mut conditions = Vec::new();
 
