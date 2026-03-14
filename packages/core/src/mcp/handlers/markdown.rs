@@ -125,6 +125,11 @@ impl PrepareContext {
         self.heading_stack.last().map(|(id, _)| id.clone())
     }
 
+    /// Get the root-level parent ID (first element at index 0 = document root)
+    fn root_parent_id(&self) -> Option<String> {
+        self.heading_stack.first().map(|(id, _)| id.clone())
+    }
+
     /// Pop headings at same or higher level for new heading insertion
     fn pop_headings_for_level(&mut self, level: usize) {
         while let Some((_, stack_level)) = self.heading_stack.last() {
@@ -645,11 +650,10 @@ pub fn prepare_nodes_from_markdown(
         }
 
         // Determine parent based on hierarchy rules
-        let parent_id = if node_type == "code-block"
-            || node_type == "quote-block"
-            || node_type == "table"
-            || node_type == "horizontal-line"
-        {
+        let parent_id = if node_type == "horizontal-line" {
+            // Horizontal rules are document-level dividers — always place at root level
+            context.root_parent_id()
+        } else if node_type == "code-block" || node_type == "quote-block" || node_type == "table" {
             last_content_node
                 .clone()
                 .or_else(|| context.current_parent_id())

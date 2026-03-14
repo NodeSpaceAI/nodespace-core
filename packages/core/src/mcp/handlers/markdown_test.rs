@@ -2942,4 +2942,78 @@ ___
         // 1. Container + 1 horizontal-line
         assert_eq!(result["nodes_created"], 2);
     }
+
+    #[tokio::test]
+    async fn test_horizontal_rule_placed_at_root_level_inside_heading() {
+        let (node_service, _temp_dir) = setup_test_service().await;
+
+        // Regression test for issue #948: HR inside a heading section should be
+        // placed as a direct child of root, not nested under the heading.
+        let markdown = r#"# Section One
+
+Some text here.
+
+---
+
+# Section Two"#;
+
+        let params = json!({
+            "markdown_content": markdown,
+            "sync_import": true,
+            "title": "HR Placement Test"
+        });
+
+        let result = handle_create_nodes_from_markdown(&node_service, params)
+            .await
+            .unwrap();
+
+        assert_eq!(result["success"], true);
+        // Container + Section One (header) + Some text here. (text) + --- (hr) + Section Two (header)
+        assert_eq!(result["nodes_created"], 5);
+
+        let root_id = result["root_id"].as_str().unwrap();
+
+        // Root should have 3 direct children: Section One, ---, Section Two
+        let root_children = node_service.get_children(root_id).await.unwrap();
+        assert_eq!(
+            root_children.len(),
+            3,
+            "Root should have 3 direct children: Section One, HR, Section Two"
+        );
+
+        // Assert ordering: Section One → HR → Section Two
+        assert_eq!(
+            root_children[0].node_type, "header",
+            "First root child should be Section One header"
+        );
+        assert_eq!(
+            root_children[1].node_type, "horizontal-line",
+            "Second root child should be the horizontal-line"
+        );
+        assert_eq!(
+            root_children[2].node_type, "header",
+            "Third root child should be Section Two header"
+        );
+        assert!(
+            root_children[0].content.contains("Section One"),
+            "First header should be Section One"
+        );
+        assert!(
+            root_children[2].content.contains("Section Two"),
+            "Third header should be Section Two"
+        );
+
+        // Section One should have exactly 1 child: "Some text here."
+        let section_one = root_children
+            .iter()
+            .find(|n| n.node_type == "header" && n.content.contains("Section One"))
+            .expect("Section One header not found");
+        let section_one_children = node_service.get_children(&section_one.id).await.unwrap();
+        assert_eq!(
+            section_one_children.len(),
+            1,
+            "Section One should have exactly 1 child (the text node), not the HR"
+        );
+        assert_eq!(section_one_children[0].node_type, "text");
+    }
 }
