@@ -4348,10 +4348,23 @@ impl SurrealStore {
         // whose titles contain query keywords are included in the candidate set.
         //
         // Single-term queries fall back to a simple `content @@ $t0` with no OR overhead.
+        // Cap at 4 tokens and strip common stop words — each additional OR term costs ~20ms
+        // on the fulltext index, so long natural-language queries would otherwise be slow.
+        const BM25_MAX_TOKENS: usize = 4;
+        const BM25_STOP_WORDS: &[&str] = &[
+            "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+            "have", "has", "had", "do", "does", "did", "will", "would", "could",
+            "should", "may", "might", "shall", "can", "need", "dare", "ought",
+            "i", "me", "my", "we", "our", "you", "your", "he", "she", "it",
+            "they", "them", "their", "what", "which", "who", "whom", "this",
+            "that", "these", "those", "to", "of", "in", "on", "at", "by",
+            "for", "with", "about", "as", "how", "when", "where", "why",
+        ];
         let tokens: Vec<String> = query
             .split_whitespace()
             .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
-            .filter(|t| !t.is_empty())
+            .filter(|t| !t.is_empty() && !BM25_STOP_WORDS.contains(&t.as_str()))
+            .take(BM25_MAX_TOKENS)
             .collect();
 
         if tokens.is_empty() {
