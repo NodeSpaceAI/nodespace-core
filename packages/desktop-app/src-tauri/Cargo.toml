@@ -1,6 +1,6 @@
 [package]
 name = "nodespace-app"
-version = "0.1.0"
+version = "0.1.4"
 description = "NodeSpace AI-Native Knowledge Management Desktop Application"
 authors = ["NodeSpace Team"]
 edition = "2021"

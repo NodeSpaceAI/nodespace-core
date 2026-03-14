@@ -1,6 +1,6 @@
 {
   "name": "nodespace-core",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "NodeSpace AI-native knowledge management system with plugin architecture",
   "type": "module",
   "private": true,

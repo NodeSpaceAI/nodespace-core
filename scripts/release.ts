@@ -87,14 +87,41 @@ function generateReleaseNotes(version: string): string {
 | Platform | File | Description |
 |----------|------|-------------|
 | macOS (Apple Silicon) | \`NodeSpace_${v}_aarch64.dmg\` | For M1/M2/M3 Macs |
+| macOS (Intel) | \`NodeSpace_${v}_x64.dmg\` | For Intel Macs |
 | Windows | \`NodeSpace_${v}_x64-setup.exe\` | Windows installer |
 | Windows | \`NodeSpace_${v}_x64.msi\` | Windows MSI package |
 
-> **Note:** macOS Intel and Linux builds are temporarily disabled. See [#750](https://github.com/malibio/nodespace-core/issues/750) for status.
+### What's New in v0.1.4-alpha
 
-### What's New
+#### New Node Types
+- **Table nodes** — create structured tables inside your graph
+- **Horizontal line nodes** — visual separators for organizing content
+- **Checkbox nodes** — document-local checklist items distinct from tasks
 
-<!-- Add release highlights here -->
+#### Rich Content Rendering
+- **Syntax highlighting** for code blocks with theme-aware colors
+- **Mermaid diagram rendering** — inline SVG diagrams in notes
+
+#### App Configuration & Database Management
+- New configuration UI for managing databases
+- Hot-swappable database connections — switch databases without restarting
+
+#### Smart Navigation
+- Non-root node links now scroll to the target node
+- Fixed task node viewer opening from nested links
+
+#### Performance & Stability
+- ~1000x faster node updates in embedded SurrealDB
+- **SurrealDB 3.x upgrade**
+- Fixed Metal GPU crashes on app quit (macOS)
+- Fixed CREATE operation race condition on rapid typing
+
+#### Intel Mac Support
+- Release builds now include macOS x86_64 (Intel) DMG
+
+#### Backlinks
+- Immediate backlinks reactivity when creating @mentions
+- Backlinks panel component with full test coverage
 
 ### Installation
 
