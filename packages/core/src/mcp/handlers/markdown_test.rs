@@ -2981,14 +2981,26 @@ Some text here.
             "Root should have 3 direct children: Section One, HR, Section Two"
         );
 
-        let types: Vec<&str> = root_children.iter().map(|n| n.node_type.as_str()).collect();
-        assert!(
-            types.contains(&"header"),
-            "Root children should include header nodes"
+        // Assert ordering: Section One → HR → Section Two
+        assert_eq!(
+            root_children[0].node_type, "header",
+            "First root child should be Section One header"
+        );
+        assert_eq!(
+            root_children[1].node_type, "horizontal-line",
+            "Second root child should be the horizontal-line"
+        );
+        assert_eq!(
+            root_children[2].node_type, "header",
+            "Third root child should be Section Two header"
         );
         assert!(
-            types.contains(&"horizontal-line"),
-            "Root children should include the horizontal-line"
+            root_children[0].content.contains("Section One"),
+            "First header should be Section One"
+        );
+        assert!(
+            root_children[2].content.contains("Section Two"),
+            "Third header should be Section Two"
         );
 
         // Section One should have exactly 1 child: "Some text here."

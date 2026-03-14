@@ -125,7 +125,7 @@ impl PrepareContext {
         self.heading_stack.last().map(|(id, _)| id.clone())
     }
 
-    /// Get the root-level parent ID (bottom of heading stack = document root)
+    /// Get the root-level parent ID (first element at index 0 = document root)
     fn root_parent_id(&self) -> Option<String> {
         self.heading_stack.first().map(|(id, _)| id.clone())
     }
