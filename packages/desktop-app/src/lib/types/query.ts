@@ -3,8 +3,8 @@
  *
  * QueryNode follows the Universal Graph Architecture (similar to TaskNode/SchemaNode):
  * - Node content (`node.content`): Plain text description (e.g., "All open high-priority tasks")
- * - Node properties (`query` table): Structured query definition fields
- * - Auto-generated properties table by SchemaTableManager from schema definition
+ * - Node properties (`node.properties`): Structured query definition fields stored as JSON
+ * - No separate query table — Universal Graph Architecture uses only `node`, `relationship`, `embedding`
  *
  * Primary use case: AI chat creating queries as child nodes (not manual search UI).
  *
@@ -41,7 +41,7 @@ export interface QueryNode {
 	createdAt: string;
 	modifiedAt: string;
 
-	// Type-specific fields (direct from query table)
+	// Type-specific fields (deserialized from node.properties)
 	/** Target node type: 'task', 'text', 'date', or '*' for all types */
 	targetType: string;
 	/** Filter conditions to apply */

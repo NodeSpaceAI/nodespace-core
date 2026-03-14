@@ -662,7 +662,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - [ ] **Pulled latest changes** (`git fetch origin && git pull origin main`)
 - [ ] **Installed dependencies** (`bun install` - sync node_modules after pull)
 - [ ] **Recorded test baseline** (`bun run test` - frontend tests only)
-- [ ] **Documented baseline in issue** using `bun run gh:comment <N> "Frontend: X passed, Rust: Y passed"` (NOT piped via echo)
+- [ ] **Documented baseline in issue** using `bun run gh:comment <N> "Frontend: X passed"` (NOT piped via echo)
 - [ ] Determined branching strategy from parent issue (single branch vs. individual branches)
 - [ ] Created/switched to appropriate branch based on strategy
 - [ ] Assigned issue to self (`bun run gh:assign <number> "@me"`)

@@ -212,7 +212,7 @@ export default [
         RequestInit: 'readonly',
         Response: 'readonly',
         BeforeUnloadEvent: 'readonly',
-      btoa: 'readonly'
+        btoa: 'readonly',
       }
     },
     plugins: {
