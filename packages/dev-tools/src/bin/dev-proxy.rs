@@ -4,19 +4,23 @@
 //! preserving all Rust business logic while enabling SurrealDB inspection.
 //!
 //! Architecture:
-//!   Frontend → HTTP (port 3001) → NodeService → SurrealStore (embedded RocksDB)
+//!   Frontend → HTTP (port 3001) → NodeService → SurrealStore (HTTP) → SurrealDB (port 8000)
 //!                                                       ↓
 //!   AI Agent → HTTP (port 3100) → MCP Server ──────────┘
+//!                    ↑
+//!   CLI Tools ────────────────────────────────────────── SurrealDB (port 8000)
 //!
 //! The MCP server runs within dev-proxy, sharing the same NodeService instance.
 //! This ensures MCP operations trigger SSE events for real-time UI updates.
+//! Multiple clients (dev-proxy and CLI tools) can connect simultaneously because
+//! the proxy connects via HTTP — not by holding an exclusive RocksDB file lock.
 //!
-//! # Database Location
+//! # SurrealDB Server
 //!
-//! Uses embedded SurrealDB with RocksDB backend at:
-//! `~/.nodespace/database/nodespace-dev/` (default)
+//! Requires a running `surreal start` server on port 8000.
+//! Started automatically by `bun run dev:browser` / `bun run demo:browser`.
 //!
-//! Override with the `NODESPACE_DEV_DB_PATH` environment variable.
+//! Override with the `NODESPACE_DEV_DB_HOST` environment variable (default: `127.0.0.1:8000`).
 
 use axum::{
     extract::{Path, State},
@@ -353,33 +357,24 @@ async fn main() -> anyhow::Result<()> {
 
     println!("🔧 Initializing dev-proxy...");
 
-    // Determine database path from environment or default
-    let db_path = if let Ok(path) = std::env::var("NODESPACE_DEV_DB_PATH") {
-        std::path::PathBuf::from(path)
-    } else {
-        dirs::home_dir()
-            .expect("Could not determine home directory")
-            .join(".nodespace")
-            .join("database")
-            .join("nodespace-dev")
-    };
+    // Determine SurrealDB server host from environment or default
+    let db_host = std::env::var("NODESPACE_DEV_DB_HOST")
+        .unwrap_or_else(|_| "127.0.0.1:8000".to_string());
 
-    println!("📂 Using embedded database at: {}", db_path.display());
+    println!("📡 Connecting to SurrealDB server at: {}", db_host);
 
-    // Ensure database directory exists
-    if let Some(parent) = db_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-
-    // Initialize embedded SurrealStore (RocksDB backend, no external server needed)
-    println!("🗄️  Initializing embedded SurrealDB store...");
-    let mut store = match SurrealStore::new(db_path).await {
+    // Connect to the running SurrealDB HTTP server (started by `surreal start` or `bun run dev:browser:db`)
+    // HTTP mode allows CLI tools to connect to the same database simultaneously — no exclusive file lock.
+    println!("🗄️  Connecting to SurrealDB via HTTP...");
+    let mut store = match SurrealStore::new_http(&db_host, "root", "root").await {
         Ok(s) => {
-            println!("✅ SurrealDB store initialized");
+            println!("✅ SurrealDB HTTP connection established");
             Arc::new(s)
         }
         Err(e) => {
-            eprintln!("❌ Failed to initialize database: {}", e);
+            eprintln!("❌ Failed to connect to SurrealDB: {}", e);
+            eprintln!("   Make sure SurrealDB is running: surreal start --bind 127.0.0.1:8000 ...");
+            eprintln!("   Or start the full stack: bun run dev:browser");
             return Err(e);
         }
     };
@@ -541,7 +536,7 @@ async fn main() -> anyhow::Result<()> {
     println!("   HTTP API:     http://127.0.0.1:3001");
     println!("   SSE endpoint: http://127.0.0.1:3001/api/events");
     println!("   MCP server:   http://127.0.0.1:{}", mcp_port);
-    println!("   Database:     embedded RocksDB (NODESPACE_DEV_DB_PATH to override)");
+    println!("   Database:     SurrealDB HTTP at {} (NODESPACE_DEV_DB_HOST to override)", db_host);
     println!("\n   AI agents can connect via MCP for real-time sync\n");
 
     axum::serve(listener, app).await?;
