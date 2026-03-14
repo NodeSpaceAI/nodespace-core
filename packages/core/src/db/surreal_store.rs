@@ -4404,83 +4404,39 @@ impl SurrealStore {
             return Ok(std::collections::HashSet::new());
         }
 
-        // For each matching node, resolve to root ID.
-        // We batch this: nodes that are themselves roots (not out of any has_child) are done.
-        // For non-roots, we walk up the parent chain.
+        // Resolve each matching node to its root in a single graph traversal query.
         //
-        // Use a single query to find which of these nodes are roots vs children,
-        // and for children, get their immediate parent. We repeat until all are resolved.
-        #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
-        struct ParentResult {
-            node_id: String,
-            parent_id: String,
-        }
+        // Uses SurrealDB's {..+collect} to walk up has_child relationships to any depth,
+        // then filters to nodes with no incoming has_child (i.e. the roots).
+        // Input nodes that are already roots are included via array::union.
+        //
+        // This replaces the old iterative Rust loop (up to 50 round-trips) with 1 query.
+        let node_things: Vec<surrealdb::types::RecordId> =
+            matching_ids.iter().map(|id| node_record_id(id)).collect();
 
-        let sql_parents = r#"
-            SELECT
-                meta::id(out) AS node_id,
-                meta::id(in) AS parent_id
-            FROM relationship
-            WHERE out IN $node_ids
-              AND relationship_type = 'has_child';
+        let sql_roots = r#"
+            SELECT VALUE meta::id(id)
+            FROM (
+                SELECT * FROM array::union(
+                    $node_ids,
+                    (SELECT * FROM $node_ids.{..+collect}<-relationship[WHERE relationship_type = 'has_child']<-node)
+                )
+            )
+            WHERE array::len(<-relationship[WHERE relationship_type = 'has_child']) = 0;
         "#;
 
-        let mut root_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut pending: Vec<String> = matching_ids;
+        let mut root_response = self
+            .db
+            .query(sql_roots)
+            .bind(("node_ids", node_things))
+            .await
+            .context("Failed to resolve BM25 matches to root nodes")?;
 
-        // Limit iterations to prevent infinite loop on malformed data
-        for _depth in 0..MAX_BM25_ROOT_WALK_DEPTH {
-            if pending.is_empty() {
-                break;
-            }
+        let root_id_vec: Vec<String> = root_response
+            .take(0)
+            .context("Failed to extract root node IDs")?;
 
-            // Batch query: for each pending node, find its parent (if any)
-            // Returns (node_id, parent_id) for all pending nodes that have a parent
-            // Build SurrealDB record IDs for the query
-            let node_things: Vec<surrealdb::types::RecordId> =
-                pending.iter().map(|id| node_record_id(id)).collect();
-
-            let mut parent_response = self
-                .db
-                .query(sql_parents)
-                .bind(("node_ids", node_things))
-                .await
-                .context("Failed to query parent relationships for BM25 root resolution")?;
-
-            let parent_results: Vec<ParentResult> = parent_response
-                .take(0)
-                .context("Failed to extract parent results")?;
-
-            // Build set of nodes that have parents
-            let has_parent: std::collections::HashMap<String, String> = parent_results
-                .into_iter()
-                .map(|r| (r.node_id, r.parent_id))
-                .collect();
-
-            // Nodes with no parent entry are roots
-            let mut next_pending = Vec::new();
-            for node_id in &pending {
-                if let Some(parent_id) = has_parent.get(node_id) {
-                    // This node has a parent - continue walking up
-                    next_pending.push(parent_id.clone());
-                } else {
-                    // This node is a root (no has_child relationship where it's the child)
-                    root_ids.insert(node_id.clone());
-                }
-            }
-
-            // Deduplicate via HashSet to avoid redundant lookups regardless of order
-            let next_pending_set: std::collections::HashSet<String> =
-                next_pending.into_iter().collect();
-            pending = next_pending_set.into_iter().collect();
-        }
-
-        // Any remaining pending nodes have exceeded max depth - treat as roots (best effort)
-        for node_id in pending {
-            root_ids.insert(node_id);
-        }
-
-        Ok(root_ids)
+        Ok(root_id_vec.into_iter().collect())
     }
 
     // ========================================================================
