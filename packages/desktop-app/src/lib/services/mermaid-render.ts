@@ -3,24 +3,83 @@ import type { Mermaid } from 'mermaid';
 
 const log = createLogger('MermaidRender');
 
-// Singleton promise — prevents double-initialization if called concurrently
-let mermaidPromise: Promise<Mermaid> | null = null;
+// Singleton module import — loaded once, re-initialized per render when theme changes
+let mermaidModule: Promise<Mermaid> | null = null;
 
-async function getMermaid(): Promise<Mermaid> {
-  if (!mermaidPromise) {
-    mermaidPromise = import('mermaid').then(({ default: mermaid }) => {
-      mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict', // Sandboxed — no JS execution in diagrams
-        // Note: Mermaid's theme is set globally at initialize() time and cannot be
-        // changed per-render. Dark mode for Mermaid diagrams is not supported in this
-        // iteration; only Shiki highlighting respects the OS color scheme.
-        theme: 'default'
-      });
-      return mermaid;
-    });
+async function getMermaidModule(): Promise<Mermaid> {
+  if (!mermaidModule) {
+    mermaidModule = import('mermaid').then(({ default: mermaid }) => mermaid);
   }
-  return mermaidPromise;
+  return mermaidModule;
+}
+
+/**
+ * Read a CSS custom property from the document root as a resolved hsl() string.
+ * The variables are stored as raw HSL components (e.g. "200 40% 55%"), so we
+ * wrap them in hsl() for Mermaid's themeVariables.
+ */
+function cssVar(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback;
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return raw ? `hsl(${raw})` : fallback;
+}
+
+function buildThemeVariables(isDark: boolean) {
+  const background = cssVar('--background', isDark ? '#1e1e1e' : '#fafafa');
+  const foreground = cssVar('--foreground', isDark ? '#e5e5e5' : '#262626');
+  const border = cssVar('--border', isDark ? '#3d3d3d' : '#e0e0e0');
+  const muted = cssVar('--muted', isDark ? '#1e2a2e' : '#f0f4f5');
+  const mutedFg = cssVar('--muted-foreground', isDark ? '#bfbfbf' : '#404040');
+  const primary = cssVar('--primary', isDark ? '#6ab0c8' : '#4a8fa8');
+  const card = cssVar('--card', isDark ? '#1e2a2e' : '#ffffff');
+
+  return {
+    // Node boxes
+    background,
+    primaryColor: card,
+    primaryTextColor: foreground,
+    primaryBorderColor: border,
+
+    // Edges / lines
+    lineColor: mutedFg,
+    edgeLabelBackground: background,
+
+    // Secondary boxes (subgraphs, alt frames, etc.)
+    secondaryColor: muted,
+    secondaryTextColor: foreground,
+    secondaryBorderColor: border,
+
+    // Tertiary / accent boxes
+    tertiaryColor: muted,
+    tertiaryTextColor: foreground,
+    tertiaryBorderColor: primary,
+
+    // Sequence diagram specifics
+    actorBkg: card,
+    actorBorder: border,
+    actorTextColor: foreground,
+    actorLineColor: mutedFg,
+    signalColor: foreground,
+    signalTextColor: foreground,
+    labelBoxBkgColor: muted,
+    labelBoxBorderColor: border,
+    labelTextColor: foreground,
+    loopTextColor: foreground,
+    noteBkgColor: muted,
+    noteBorderColor: border,
+    noteTextColor: foreground,
+    activationBkgColor: muted,
+    activationBorderColor: primary,
+
+    // General text
+    titleColor: foreground,
+    textColor: foreground,
+    nodeBorder: border,
+    clusterBkg: muted,
+    clusterBorder: border,
+    defaultLinkColor: mutedFg,
+    fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+  };
 }
 
 export function sanitizeSvg(svg: string): string {
@@ -34,13 +93,23 @@ export function sanitizeSvg(svg: string): string {
 }
 
 // Returns sanitized SVG string, or null on failure
-export async function renderMermaid(definition: string, id: string): Promise<string | null> {
+export async function renderMermaid(
+  definition: string,
+  id: string,
+  isDark = false
+): Promise<string | null> {
   try {
-    const mermaid = await getMermaid();
+    const mermaid = await getMermaidModule();
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'base',
+      themeVariables: buildThemeVariables(isDark)
+    });
     const { svg } = await mermaid.render(`mermaid-${id}`, definition);
     return sanitizeSvg(svg);
   } catch (err) {
     log.error('Mermaid render failed', err);
-    return null; // Caller shows error state
+    return null;
   }
 }
