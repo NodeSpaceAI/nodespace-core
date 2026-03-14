@@ -4,5 +4,19 @@
       "Bash(gh:*)",
       "Bash(bun:*)"
     ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run .claude/hooks/check-feature-branch.ts",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
   }
 }

@@ -10,7 +10,7 @@
 -->
 
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, tick } from 'svelte';
   import BaseNode from './base-node.svelte';
   import ViewModeRenderer from './view-mode-renderer.svelte';
   import { focusManager } from '$lib/services/focus-manager.svelte';
@@ -86,8 +86,28 @@
   // Parse the table reactively
   let parsedTable = $derived(parseTable(content));
 
-  // Display content: empty in view mode (we render the table overlay)
-  let displayContent = $derived(isEditing ? content : '');
+  // Pass real content so adjustHeight() has multiline text to measure on edit entry.
+  // customViewContent overrides view rendering entirely — raw markdown is never shown.
+  let displayContent = $derived(content);
+
+  // Measured height of rendered table — updated reactively via bind:clientHeight
+  let tableViewHeight = $state(0);
+
+  // Ref to wrapper div for scoping DOM queries in the $effect
+  let wrapperElement = $state<HTMLDivElement | undefined>(undefined);
+
+  // When entering edit mode, apply the last-known table height to the textarea
+  // so there is no layout shift. After this, adjustHeight() takes over on each keystroke.
+  $effect(() => {
+    if (isEditing && tableViewHeight > 0) {
+      tick().then(() => {
+        const textarea = wrapperElement?.querySelector<HTMLTextAreaElement>('textarea');
+        if (textarea) {
+          textarea.style.height = `${tableViewHeight}px`;
+        }
+      });
+    }
+  });
 
   function handleContentChange(event: CustomEvent<{ content: string }>) {
     content = event.detail.content;
@@ -107,7 +127,34 @@
   }
 </script>
 
-<div class="table-node-wrapper" class:viewing={!isEditing}>
+{#snippet tableViewContent()}
+  {#if parsedTable}
+    <table bind:clientHeight={tableViewHeight}>
+        <thead>
+          <tr>
+            {#each parsedTable.headers as header, i}
+              <th style="text-align: {parsedTable.alignments[i] || 'left'}">
+                <ViewModeRenderer content={header} />
+              </th>
+            {/each}
+          </tr>
+        </thead>
+        <tbody>
+          {#each parsedTable.rows as row}
+            <tr>
+              {#each row as cell, i}
+                <td style="text-align: {parsedTable.alignments[i] || 'left'}">
+                  <ViewModeRenderer content={cell} />
+                </td>
+              {/each}
+            </tr>
+          {/each}
+        </tbody>
+    </table>
+  {/if}
+{/snippet}
+
+<div class="table-node-wrapper" bind:this={wrapperElement}>
   <BaseNode
     {nodeId}
     {nodeType}
@@ -117,6 +164,7 @@
     {children}
     {editableConfig}
     metadata={tableMetadata}
+    customViewContent={tableViewContent}
     on:createNewNode={handleCreateNewNode}
     on:contentChanged={handleContentChange}
     on:indentNode={forwardEvent('indentNode')}
@@ -131,53 +179,16 @@
     on:nodeTypeChanged={handleNodeTypeChanged}
     on:iconClick={forwardEvent('iconClick')}
   />
-
-  <!-- Rendered table overlay (view mode only) -->
-  {#if !isEditing && parsedTable}
-    <div class="table-overlay">
-      <table>
-        <thead>
-          <tr>
-            {#each parsedTable.headers as header, i}
-              <th style="text-align: {parsedTable.alignments[i] || 'left'}"><ViewModeRenderer content={header} /></th>
-            {/each}
-          </tr>
-        </thead>
-        <tbody>
-          {#each parsedTable.rows as row}
-            <tr>
-              {#each row as cell, i}
-                <td style="text-align: {parsedTable.alignments[i] || 'left'}"><ViewModeRenderer content={cell} /></td>
-              {/each}
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
 </div>
 
 <style>
   .table-node-wrapper {
-    position: relative;
+    width: 100%;
   }
 
-  /* In view mode, hide the raw text content */
-  .table-node-wrapper.viewing :global(.node__content) {
-    color: transparent;
-    position: relative;
-    min-height: 1.5rem;
-    user-select: none;
-  }
-
-  /* Table overlay - positioned over the content area */
-  .table-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    pointer-events: none;
-    padding: 0.25rem 0;
+  /* Padding inside view content area to preserve visual spacing */
+  .table-node-wrapper :global(.node__content--view) {
+    padding-block: 0.25rem;
   }
 
   table {
