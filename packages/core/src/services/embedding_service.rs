@@ -49,6 +49,17 @@ pub const DEFAULT_BATCH_SIZE: usize = 50;
 /// Maximum depth for parent chain traversal (safety limit to prevent infinite loops)
 pub const MAX_PARENT_CHAIN_DEPTH: usize = 100;
 
+/// Title keyword boost added to composite score when any query term matches the node title (Issue #936)
+///
+/// Applied as an additive bonus: `composite_score + TITLE_BOOST` when a match is found.
+/// Start at 0.1; tune against benchmark if needed.
+///
+/// Note: This constant lives here rather than in `surreal_store.rs` because the boost is
+/// applied in Rust post-FETCH (after `search_embeddings` returns nodes with titles attached).
+/// SurrealDB SQL cannot reference Rust constants, and the title field is only available once
+/// the node is fetched — so the boost must be Rust-side, not SQL-side.
+pub const TITLE_BOOST: f64 = 0.1;
+
 /// Root-aggregate embedding service
 ///
 /// Manages semantic embeddings using the root-aggregate model where only
@@ -196,6 +207,14 @@ impl NodeEmbeddingService {
 
         // Collect content parts
         let mut parts = Vec::new();
+
+        // Prepend title so it is included in the embedding (Issue #936)
+        // This allows title-matching queries to score the document correctly.
+        if let Some(ref title) = root.title {
+            if !title.trim().is_empty() {
+                parts.push(title.clone());
+            }
+        }
 
         // Add root content first
         if !root.content.trim().is_empty() {
@@ -641,7 +660,7 @@ impl NodeEmbeddingService {
 
         // Search embedding table
         let search_start = std::time::Instant::now();
-        let results = self
+        let mut results = self
             .store
             .search_embeddings(&query_vector, limit as i64, Some(threshold as f64))
             .await
@@ -649,6 +668,41 @@ impl NodeEmbeddingService {
                 NodeServiceError::query_failed(format!("Semantic search failed: {}", e))
             })?;
         let search_time = search_start.elapsed();
+
+        // Apply title keyword boost (Issue #936)
+        // If any query term appears in the node title, add TITLE_BOOST to the score.
+        // Punctuation is stripped from tokens so queries like "persistence?" still match.
+        //
+        // Note: This boost runs after the DB threshold filter. Documents scoring just below
+        // threshold with a matching title are not rescued — fixing this would require fetching
+        // more candidates pre-filter (tracked as a future improvement if needed).
+        let query_terms: Vec<String> = query
+            .split_whitespace()
+            .map(|t| {
+                t.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .filter(|t| !t.is_empty())
+            .collect();
+        for result in &mut results {
+            if let Some(ref node) = result.node {
+                if let Some(ref title) = node.title {
+                    let title_lower = title.to_lowercase();
+                    if query_terms
+                        .iter()
+                        .any(|term| title_lower.contains(term.as_str()))
+                    {
+                        result.score += TITLE_BOOST;
+                    }
+                }
+            }
+        }
+        // Re-sort after applying boost (boost may change relative ordering)
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         let total_time = total_start.elapsed();
 
