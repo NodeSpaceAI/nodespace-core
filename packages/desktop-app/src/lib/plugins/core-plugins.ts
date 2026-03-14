@@ -143,7 +143,7 @@ export const taskNodePlugin: PluginDefinition = {
     priority: 1
   },
   // Type-specific metadata extraction (Issue #698, #794, #838)
-  // Issue #838: Backend returns TaskNode with status at TOP LEVEL (flat spoke fields)
+  // Issue #838: Backend returns TaskNode with status at TOP LEVEL (flat type-specific fields)
   // Also supports generic Node where status is in properties (for SSE events)
   extractMetadata: (node: { nodeType: string; status?: string; priority?: string | number; properties?: Record<string, unknown> }) => {
     const properties = node.properties || {};
@@ -163,7 +163,7 @@ export const taskNodePlugin: PluginDefinition = {
     }
 
     // Spread properties first, then override with resolved top-level values
-    // This ensures top-level spoke fields take precedence over properties
+    // This ensures top-level type-specific fields take precedence over properties
     return { ...properties, taskState, status, priority };
   },
   // Type-specific state mapping (Issue #698)
@@ -180,7 +180,7 @@ export const taskNodePlugin: PluginDefinition = {
     }
   },
 
-  // Type-specific updater for spoke table fields (Issue #709)
+  // Type-specific updater for task node properties (Issue #709)
   // Routes to updateTaskNode() instead of generic updateNode()
   updater: {
     update: async (id: string, version: number, changes: Record<string, unknown>) => {
@@ -195,14 +195,14 @@ export const taskNodePlugin: PluginDefinition = {
       if ('completedAt' in changes) update.completedAt = changes.completedAt as TaskNodeUpdate['completedAt'];
       if ('content' in changes && changes.content !== undefined) update.content = changes.content as string;
 
-      // Returns TaskNode which has hub fields but not properties (flat structure)
+      // Returns TaskNode which has node fields but not properties (flat structure)
       // Cast to Node for interface compatibility - sharedNodeStore will handle appropriately
       const result = await backendAdapter.updateTaskNode(id, version, update);
       return result as unknown as import('../types').Node;
     }
   },
 
-  // Type-specific schema form for spoke fields (Issue #709)
+  // Type-specific schema form for task node properties (Issue #709)
   schemaForm: {
     lazyLoad: () => import('../components/property-forms/task-schema-form.svelte')
   }

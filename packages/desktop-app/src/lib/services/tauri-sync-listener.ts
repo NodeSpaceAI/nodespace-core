@@ -41,7 +41,7 @@ const log = createLogger('TauriSync');
  * expected by the frontend stores and components.
  *
  * @param nodeData - Raw node data from domain event
- * @returns Normalized node with flat spoke fields for typed nodes
+ * @returns Normalized node with flat type-specific fields for typed nodes
  */
 function normalizeNodeData(nodeData: Node): Node {
   if (nodeData.nodeType === 'task') {

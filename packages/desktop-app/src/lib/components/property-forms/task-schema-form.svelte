@@ -2,7 +2,7 @@
   TaskSchemaForm - Type-Safe Task Property Form (Issue #709)
 
   Hybrid approach:
-  - Hardcoded UI for core task spoke fields (status, priority, dueDate, assignee)
+  - Hardcoded UI for core task properties (status, priority, dueDate, assignee)
   - Dynamic rendering for user-defined schema extensions
 
   Props:
@@ -48,7 +48,7 @@
       return;
     }
 
-    // Initial load - convert Node to TaskNode (extracts spoke fields from properties)
+    // Initial load - convert Node to TaskNode (extracts type-specific fields from properties)
     const rawNode = sharedNodeStore.getNode(nodeId);
     node = rawNode?.nodeType === 'task' ? nodeToTaskNode(rawNode) : null;
 
@@ -271,7 +271,7 @@
   // ============================================================================
   // Type-Safe Core Field Update Functions
   // ============================================================================
-  // Use sharedNodeStore.updateTaskNode for type-safe spoke field updates
+  // Use sharedNodeStore.updateTaskNode for type-safe task property updates
 
   function updateStatus(status: TaskStatus) {
     if (!node) return;

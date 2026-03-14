@@ -954,10 +954,10 @@ pub async fn get_mentioning_roots(
         .map_err(Into::into)
 }
 
-/// Update a task node with type-safe spoke field updates
+/// Update a task node with type-safe property updates
 ///
 /// Provides end-to-end type safety for task updates by routing through
-/// the type-specific update path that directly modifies the spoke table.
+/// the type-specific update path that directly modifies task node properties.
 ///
 /// # Arguments
 /// * `service` - Node service instance from Tauri state

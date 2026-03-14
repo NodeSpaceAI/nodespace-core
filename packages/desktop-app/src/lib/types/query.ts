@@ -1,19 +1,19 @@
 /**
  * Query Node Type Definitions
  *
- * QueryNode follows the hub-and-spoke architecture (similar to TaskNode/SchemaNode):
- * - Hub (`node.content`): Plain text description (e.g., "All open high-priority tasks")
- * - Spoke (`query` table): Structured query definition fields
- * - Auto-generated spoke table by SchemaTableManager from schema definition
+ * QueryNode follows the Universal Graph Architecture (similar to TaskNode/SchemaNode):
+ * - Node content (`node.content`): Plain text description (e.g., "All open high-priority tasks")
+ * - Node properties (`query` table): Structured query definition fields
+ * - Auto-generated properties table by SchemaTableManager from schema definition
  *
  * Primary use case: AI chat creating queries as child nodes (not manual search UI).
  *
- * @example Hub content
+ * @example Node content
  * ```
  * "All open tasks with high priority due this week"
  * ```
  *
- * @example Spoke fields
+ * @example Node properties
  * ```typescript
  * {
  *   targetType: "task",
@@ -29,11 +29,11 @@
 /**
  * Strongly-typed QueryNode structure
  *
- * Deserialized directly from spoke table with hub data via record link.
+ * Deserialized directly from node properties with base node data via record link.
  * Follows the same pattern as TaskNode and SchemaNode.
  */
 export interface QueryNode {
-	// Hub fields (from query.node.* via record link)
+	// Node fields (from query.node.* via record link)
 	id: string;
 	/** Plain text description of the query */
 	content: string;
@@ -41,7 +41,7 @@ export interface QueryNode {
 	createdAt: string;
 	modifiedAt: string;
 
-	// Spoke fields (direct from query table)
+	// Type-specific fields (direct from query table)
 	/** Target node type: 'task', 'text', 'date', or '*' for all types */
 	targetType: string;
 	/** Filter conditions to apply */

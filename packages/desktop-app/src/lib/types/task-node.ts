@@ -3,7 +3,7 @@
  *
  * Flat structure matching Rust backend serialization (Issue #673, #700).
  *
- * The Rust backend serializes TaskNode as a flat JSON structure with spoke fields
+ * The Rust backend serializes TaskNode as a flat JSON structure with type-specific fields
  * at the top level, not nested under properties.task. This interface matches that output.
  *
  * @example
@@ -78,7 +78,7 @@ export type TaskPriority = CoreTaskPriority | string;
  * @see nodeToTaskNode - Convert a generic Node to TaskNode
  */
 export interface TaskNode {
-  // Hub fields (from node table)
+  // Node fields (from node table)
   id: string;
   nodeType: 'task';
   content: string;
@@ -86,7 +86,7 @@ export interface TaskNode {
   createdAt: string;
   modifiedAt: string;
 
-  // Spoke fields (flat, at top level)
+  // Type-specific fields (flat, at top level)
   status: TaskStatus;
   priority?: TaskPriority;
   dueDate?: string | null;
@@ -207,8 +207,8 @@ export function setTaskAssignee(node: TaskNode, assignee: string | undefined): T
 /**
  * Partial update structure for task nodes
  *
- * Supports updating task-specific spoke fields (status, priority, dueDate, assignee)
- * and hub fields (content). All fields are optional - only include fields to update.
+ * Supports updating task-specific properties (status, priority, dueDate, assignee)
+ * and node fields (content). All fields are optional - only include fields to update.
  *
  * This interface matches the Rust `TaskNodeUpdate` struct for type-safe CRUD operations.
  *
@@ -228,30 +228,30 @@ export function setTaskAssignee(node: TaskNode, assignee: string | undefined): T
  * ```
  */
 export interface TaskNodeUpdate {
-  /** Update task status (spoke field) */
+  /** Update task status (type-specific field) */
   status?: TaskStatus;
 
-  /** Update task priority (spoke field) - null to clear */
+  /** Update task priority (type-specific field) - null to clear */
   priority?: TaskPriority | null;
 
-  /** Update due date (spoke field) - null to clear */
+  /** Update due date (type-specific field) - null to clear */
   dueDate?: string | null;
 
-  /** Update assignee (spoke field) - null to clear */
+  /** Update assignee (type-specific field) - null to clear */
   assignee?: string | null;
 
-  /** Update started_at date (spoke field) - null to clear */
+  /** Update started_at date (type-specific field) - null to clear */
   startedAt?: string | null;
 
-  /** Update completed_at date (spoke field) - null to clear */
+  /** Update completed_at date (type-specific field) - null to clear */
   completedAt?: string | null;
 
-  /** Update content (hub field) */
+  /** Update content (node field) */
   content?: string;
 }
 
 /**
- * Convert a generic Node to a TaskNode by extracting spoke fields from properties
+ * Convert a generic Node to a TaskNode by extracting type-specific fields from properties
  *
  * SSE events send generic Node objects where task-specific fields are stored in
  * `properties.status`, `properties.priority`, etc. This function normalizes them
@@ -263,7 +263,7 @@ export interface TaskNodeUpdate {
  * - Already flat: `node.status` (already a TaskNode)
  *
  * @param node - Generic Node with task data in properties
- * @returns TaskNode with flat spoke fields
+ * @returns TaskNode with flat type-specific fields
  */
 export function nodeToTaskNode(node: Node): TaskNode {
   // If already has flat status, it's already a TaskNode

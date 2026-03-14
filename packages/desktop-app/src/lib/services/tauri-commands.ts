@@ -66,10 +66,10 @@ export async function updateNode(
 }
 
 /**
- * Update a task node with type-safe spoke field updates
+ * Update a task node with type-safe property updates
  *
  * Use this for task-specific updates (status, priority, dueDate, assignee).
- * Routes through the type-specific update path that directly modifies the spoke table.
+ * Routes through the type-specific update path that directly modifies task node properties.
  *
  * @param id - Task node ID
  * @param version - Expected version for OCC
