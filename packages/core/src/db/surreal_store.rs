@@ -4326,6 +4326,21 @@ impl SurrealStore {
         //
         // Use a single query to find which of these nodes are roots vs children,
         // and for children, get their immediate parent. We repeat until all are resolved.
+        #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
+        struct ParentResult {
+            node_id: String,
+            parent_id: String,
+        }
+
+        let sql_parents = r#"
+            SELECT
+                meta::id(out) AS node_id,
+                meta::id(in) AS parent_id
+            FROM relationship
+            WHERE out IN $node_ids
+              AND relationship_type = 'has_child';
+        "#;
+
         let mut root_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut pending: Vec<String> = matching_ids;
 
@@ -4336,16 +4351,7 @@ impl SurrealStore {
             }
 
             // Batch query: for each pending node, find its parent (if any)
-            // Returns (node_id, parent_id_or_null) for all pending nodes
-            let sql_parents = r#"
-                SELECT
-                    meta::id(out) AS node_id,
-                    meta::id(in) AS parent_id
-                FROM relationship
-                WHERE out IN $node_ids
-                  AND relationship_type = 'has_child';
-            "#;
-
+            // Returns (node_id, parent_id) for all pending nodes that have a parent
             // Build SurrealDB record IDs for the query
             let node_things: Vec<surrealdb::types::RecordId> =
                 pending.iter().map(|id| node_record_id(id)).collect();
@@ -4356,12 +4362,6 @@ impl SurrealStore {
                 .bind(("node_ids", node_things))
                 .await
                 .context("Failed to query parent relationships for BM25 root resolution")?;
-
-            #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
-            struct ParentResult {
-                node_id: String,
-                parent_id: String,
-            }
 
             let parent_results: Vec<ParentResult> = parent_response
                 .take(0)
@@ -4385,9 +4385,10 @@ impl SurrealStore {
                 }
             }
 
-            pending = next_pending;
-            // Deduplicate pending to avoid redundant lookups
-            pending.dedup();
+            // Deduplicate via HashSet to avoid redundant lookups regardless of order
+            let next_pending_set: std::collections::HashSet<String> =
+                next_pending.into_iter().collect();
+            pending = next_pending_set.into_iter().collect();
         }
 
         // Any remaining pending nodes have exceeded max depth - treat as roots (best effort)

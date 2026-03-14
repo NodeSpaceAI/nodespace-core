@@ -743,13 +743,17 @@ impl NodeEmbeddingService {
         results.extend(tier1);
         results.extend(tier2);
 
+        let mut tier3_count = 0usize;
         if knn_count < limit {
             let remaining = limit - knn_count;
-            let bm25_only_roots: Vec<String> = bm25_roots
+            // Sort by node_id for deterministic ordering within Tier 3
+            // (no embedding score available to rank by, so stable key prevents non-reproducible results)
+            let mut bm25_only_roots: Vec<String> = bm25_roots
                 .into_iter()
                 .filter(|id| !knn_node_ids.contains(id))
-                .take(remaining)
                 .collect();
+            bm25_only_roots.sort();
+            bm25_only_roots.truncate(remaining);
 
             if !bm25_only_roots.is_empty() {
                 // Fetch node data for BM25-only results (no embedding score available)
@@ -763,14 +767,14 @@ impl NodeEmbeddingService {
                             matching_chunks: 0,
                             node: Some(node),
                         });
+                        tier3_count += 1;
                     }
                 }
             }
         }
 
         let total_time = total_start.elapsed();
-        let bm25_only_count = results.iter().filter(|r| r.score == 0.0).count();
-        let intersection_count = results.len() - bm25_only_count - tier2_count;
+        let intersection_count = results.len() - tier3_count - tier2_count;
 
         tracing::debug!(
             "HYBRID SEARCH PROFILE: total={:?} | embedding={:?} search={:?} | results={} (tier1={} tier2={} tier3={}) query='{}'",
@@ -780,7 +784,7 @@ impl NodeEmbeddingService {
             results.len(),
             intersection_count,
             tier2_count,
-            bm25_only_count,
+            tier3_count,
             &query[..query.len().min(50)]
         );
 
