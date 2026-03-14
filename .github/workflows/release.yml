@@ -23,10 +23,10 @@ jobs:
           - platform: 'windows-latest'
             args: ''
             rust_targets: ''
-          # NOTE: Ubuntu and macOS Intel disabled for now
-          # - platform: 'macos-latest'
-          #   args: '--target x86_64-apple-darwin'
-          #   rust_targets: 'x86_64-apple-darwin'
+          # NOTE: Ubuntu disabled for now
+          - platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin'
+            rust_targets: 'x86_64-apple-darwin'
           # - platform: 'ubuntu-22.04'
           #   args: ''
           #   rust_targets: ''
