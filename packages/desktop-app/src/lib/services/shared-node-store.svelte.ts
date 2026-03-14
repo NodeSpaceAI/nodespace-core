@@ -28,6 +28,7 @@ import { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-envi
 import * as tauriCommands from './tauri-commands';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
 import { isVersionConflict } from '$lib/types/errors';
+import { isValidDateId } from '$lib/types/date-node';
 import { createLogger } from '$lib/utils/logger';
 import { getPendingMoveOperation } from './pending-operations';
 import { contentProcessor } from './content-processor';
@@ -1601,6 +1602,7 @@ export class SharedNodeStore {
    */
   async loadChildrenForParent(parentId: string): Promise<Node[]> {
     try {
+      // databaseSource is reused for both the parent prefetch and the children below.
       const databaseSource = { type: 'database' as const, reason: 'loaded-from-db' };
 
       // Ensure the parent node itself is in the store before loading children.
@@ -1678,6 +1680,27 @@ export class SharedNodeStore {
       const tree = await tauriCommands.getChildrenTree(parentId);
 
       if (!tree) {
+        // Date nodes are virtual — they are created lazily in the backend when their first
+        // child is saved. A brand-new date node that has never been persisted will return an
+        // empty tree here. Synthesize a minimal in-memory node so BaseNodeViewer's
+        // post-load existence check does not mistake it for a deleted/stale node and close
+        // the tab (issue #941).
+        if (isValidDateId(parentId)) {
+          const now = new Date().toISOString();
+          const virtualDateNode: Node = {
+            id: parentId,
+            nodeType: 'date',
+            content: '',
+            version: 0,
+            createdAt: now,
+            modifiedAt: now,
+            properties: {}
+          };
+          // Use database source so determinePersistenceBehavior marks this as persisted and
+          // does not trigger an unwanted write for this virtual placeholder.
+          const virtualSource = { type: 'database' as const, reason: 'virtual-date-node' };
+          this.setNode(virtualDateNode, virtualSource);
+        }
         return [];
       }
 

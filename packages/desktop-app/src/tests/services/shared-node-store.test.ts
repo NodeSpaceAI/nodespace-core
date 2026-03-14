@@ -479,24 +479,85 @@ describe('SharedNodeStore', () => {
     // loadChildrenForParent()
     // --------------------------------------------------------------------
     describe('loadChildrenForParent', () => {
-      it('should load children from database and add to store', async () => {
-        // This test requires mocking tauriNodeService
-        // For now, we'll test the integration when tauri service is available
-        expect(store.loadChildrenForParent).toBeDefined();
+      it('should not call getNode when parent is already in store', async () => {
+        // Pre-populate the store so the parent-prefetch guard short-circuits
+        const parentNode: Node = {
+          ...mockNode,
+          id: 'parent-already-loaded',
+          nodeType: 'text',
+          content: 'Parent already in store'
+        };
+        store.setNode(parentNode, viewerSource);
+
+        const tauriCmds = await import('../../lib/services/tauri-commands');
+        const getNodeSpy = vi.spyOn(tauriCmds, 'getNode');
+        const getChildrenSpy = vi
+          .spyOn(tauriCmds, 'getChildren')
+          .mockResolvedValue([]);
+
+        await store.loadChildrenForParent('parent-already-loaded');
+
+        expect(getNodeSpy).not.toHaveBeenCalled();
+
+        getNodeSpy.mockRestore();
+        getChildrenSpy.mockRestore();
       });
 
-      it('should mark loaded nodes as persisted', async () => {
-        // This test requires mocking tauriNodeService
-        expect(store.loadChildrenForParent).toBeDefined();
+      it('should fetch parent via getNode and add it to store when not present', async () => {
+        const parentNode: Node = {
+          ...mockNode,
+          id: 'parent-not-in-store',
+          nodeType: 'text',
+          content: 'Fetched parent'
+        };
+
+        const tauriCmds = await import('../../lib/services/tauri-commands');
+        const getNodeSpy = vi
+          .spyOn(tauriCmds, 'getNode')
+          .mockResolvedValue(parentNode);
+        const getChildrenSpy = vi
+          .spyOn(tauriCmds, 'getChildren')
+          .mockResolvedValue([]);
+
+        await store.loadChildrenForParent('parent-not-in-store');
+
+        // Parent should now be in the store
+        expect(store.hasNode('parent-not-in-store')).toBe(true);
+        expect(store.getNode('parent-not-in-store')?.content).toBe('Fetched parent');
+        expect(getNodeSpy).toHaveBeenCalledWith('parent-not-in-store');
+
+        getNodeSpy.mockRestore();
+        getChildrenSpy.mockRestore();
       });
 
-      it('should handle database errors gracefully', async () => {
-        // Test error handling when database fails
-        try {
-          await store.loadChildrenForParent('non-existent-parent');
-        } catch (error) {
-          expect(error).toBeDefined();
-        }
+      it('should not throw and should still load children when getNode returns null', async () => {
+        const childNode: Node = {
+          ...mockNode,
+          id: 'child-of-unknown-parent',
+          nodeType: 'text',
+          content: 'Child content'
+        };
+
+        const tauriCmds = await import('../../lib/services/tauri-commands');
+        const getNodeSpy = vi
+          .spyOn(tauriCmds, 'getNode')
+          .mockResolvedValue(null);
+        const getChildrenSpy = vi
+          .spyOn(tauriCmds, 'getChildren')
+          .mockResolvedValue([childNode]);
+
+        // Should not throw even though getNode returned null
+        const result = await store.loadChildrenForParent('parent-missing-from-db');
+
+        // Parent is not in store (getNode returned null)
+        expect(store.hasNode('parent-missing-from-db')).toBe(false);
+        // Children are still loaded
+        expect(result).toHaveLength(1);
+        expect(result[0].id).toBe('child-of-unknown-parent');
+        expect(store.hasNode('child-of-unknown-parent')).toBe(true);
+
+        getNodeSpy.mockRestore();
+        getChildrenSpy.mockRestore();
       });
     });
 
