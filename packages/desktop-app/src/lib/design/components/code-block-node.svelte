@@ -128,11 +128,16 @@
 
     if (lang === 'mermaid') {
       highlightedLines = null;
+      mermaidError = null; // Reset stale error so it doesn't flash while new render is pending
       renderMermaid(code, nodeId, dark).then((svg) => {
-        if (seq !== renderSeq) return; // stale — language/content changed before render resolved
-        mermaidSvg = svg;
-        mermaidError =
-          svg === null ? 'Diagram rendering failed. Check your Mermaid syntax.' : null;
+        if (seq !== renderSeq) return; // stale — a newer render is already in-flight; preserve existing diagram
+        if (svg !== null) {
+          mermaidSvg = svg;
+        } else {
+          // Definitive failure: render returned null, so there is no diagram to preserve
+          mermaidSvg = null;
+          mermaidError = 'Diagram rendering failed. Check your Mermaid syntax.';
+        }
       });
     } else if (lang !== 'plaintext') {
       mermaidSvg = null;
