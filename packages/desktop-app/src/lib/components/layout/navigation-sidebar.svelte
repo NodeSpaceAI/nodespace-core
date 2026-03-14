@@ -17,8 +17,14 @@
   import { formatDateISO } from '$lib/utils/date-formatting.js';
   import { v4 as uuidv4 } from 'uuid';
   import CollectionSubPanel from './collection-sub-panel.svelte';
+  import SchemaTypesSubPanel from './schema-types-sub-panel.svelte';
+  import { backendAdapter } from '$lib/services/backend-adapter.js';
+  import type { SchemaNode } from '$lib/types/schema-node';
+  import { createLogger } from '$lib/utils/logger';
 
   import { onMount } from 'svelte';
+
+  const log = createLogger('NavigationSidebar');
 
   // Subscribe to stores using Svelte 5 runes
   let isCollapsed = $derived($layoutState.sidebarCollapsed);
@@ -37,6 +43,10 @@
   let collectionForPanel = $derived($selectedCollection);
   let collectionMembers = $derived($selectedCollectionMembers);
 
+  // Schema Types panel state
+  let schemaTypesOpen = $state(false);
+  let schemas: SchemaNode[] = $state([]);
+
   // Load collections from backend on mount
   onMount(() => {
     collectionsData.loadCollections();
@@ -45,11 +55,18 @@
   // Element references for click-outside detection
   let navElement: HTMLElement | null = $state(null);
   let subPanelElement: HTMLElement | null = $state(null);
+  let schemaSubPanelElement: HTMLElement | null = $state(null);
 
   // Close sub-panel when sidebar collapses
   $effect(() => {
     if (isCollapsed && subPanelOpen) {
       collectionsState.clearSelection();
+    }
+  });
+
+  $effect(() => {
+    if (isCollapsed && schemaTypesOpen) {
+      schemaTypesOpen = false;
     }
   });
 
@@ -69,6 +86,28 @@
     }
 
     // Use capture phase to catch clicks before they bubble
+    document.addEventListener('click', handleClickOutside, true);
+
+    return () => {
+      document.removeEventListener('click', handleClickOutside, true);
+    };
+  });
+
+  // Click-outside handler for schema types sub-panel dismissal
+  $effect(() => {
+    if (!schemaTypesOpen) return;
+
+    function handleClickOutside(event: MouseEvent) {
+      const target = event.target as Node;
+      const clickedOutsideNav = navElement && !navElement.contains(target);
+      const clickedOutsideSchemaPanel =
+        schemaSubPanelElement && !schemaSubPanelElement.contains(target);
+
+      if (clickedOutsideNav && clickedOutsideSchemaPanel) {
+        schemaTypesOpen = false;
+      }
+    }
+
     document.addEventListener('click', handleClickOutside, true);
 
     return () => {
@@ -183,11 +222,57 @@
     }
   }
 
-  // Handle navigation item clicks
-  function handleNavItemClick(itemId: string) {
-    // Close sub-panel when clicking non-collection nav items
+  async function handleSchemaTypesClick() {
+    if (schemaTypesOpen) {
+      schemaTypesOpen = false;
+      return;
+    }
+
+    // Close collections panel if open
     if (subPanelOpen) {
       collectionsState.clearSelection();
+    }
+
+    try {
+      schemas = await backendAdapter.getAllSchemas();
+      schemaTypesOpen = true;
+    } catch (err) {
+      log.error('Failed to load schemas', err);
+    }
+  }
+
+  function handleSchemaClick(schemaId: string) {
+    schemaTypesOpen = false;
+
+    const currentState = $tabState;
+    const existingTab = currentState.tabs.find((tab) => tab.content?.nodeId === schemaId);
+
+    if (existingTab) {
+      setActiveTab(existingTab.id, existingTab.paneId);
+    } else {
+      const targetPaneId = getTargetPaneId();
+      addTab(
+        {
+          id: uuidv4(),
+          title: 'Loading...',
+          type: 'node',
+          content: { nodeId: schemaId, nodeType: 'schema' },
+          closeable: true,
+          paneId: targetPaneId
+        },
+        true
+      );
+    }
+  }
+
+  // Handle navigation item clicks
+  function handleNavItemClick(itemId: string) {
+    // Close sub-panels when clicking non-collection nav items
+    if (subPanelOpen) {
+      collectionsState.clearSelection();
+    }
+    if (schemaTypesOpen) {
+      schemaTypesOpen = false;
     }
 
     // Special handling for Daily Journal
@@ -389,6 +474,56 @@
       </button>
     {/if}
 
+    <!-- Schema Types section (after Collections) -->
+    {#if !isCollapsed}
+      <button
+        class="nav-item"
+        onclick={handleSchemaTypesClick}
+        aria-label="Schema Types"
+      >
+        <svg
+          class="nav-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <!-- 4-shape icon: triangle (top-left), square (top-right), square (bottom-left), diamond (bottom-right) -->
+          <path d="M3 3 L9 3 L6 8 Z" />
+          <rect x="11" y="3" width="6" height="6" />
+          <rect x="3" y="13" width="6" height="6" />
+          <path d="M14 13 L17 16 L14 19 L11 16 Z" />
+        </svg>
+        <span class="nav-label">Schema Types</span>
+      </button>
+    {:else}
+      <!-- Collapsed state: just show icon -->
+      <button
+        class="nav-item"
+        title="Schema Types"
+        onclick={() => {
+          toggleSidebar();
+        }}
+      >
+        <svg
+          class="nav-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="M3 3 L9 3 L6 8 Z" />
+          <rect x="11" y="3" width="6" height="6" />
+          <rect x="3" y="13" width="6" height="6" />
+          <path d="M14 13 L17 16 L14 19 L11 16 Z" />
+        </svg>
+      </button>
+    {/if}
+
     <!-- Remaining nav items (Search, Favorites) -->
     {#each navItems.slice(1) as item}
       <button
@@ -422,6 +557,16 @@
       members={collectionMembers}
       onClose={handleCloseSubPanel}
       onNodeClick={handleNodeClick}
+    />
+  </div>
+
+  <!-- Schema Types sub-panel -->
+  <div bind:this={schemaSubPanelElement}>
+    <SchemaTypesSubPanel
+      open={schemaTypesOpen}
+      {schemas}
+      onClose={() => (schemaTypesOpen = false)}
+      onSchemaClick={handleSchemaClick}
     />
   </div>
 </nav>
