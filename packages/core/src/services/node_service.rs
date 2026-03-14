@@ -1590,7 +1590,6 @@ impl NodeService {
             properties: params.properties,
             mentions: vec![],
             mentioned_in: vec![],
-            member_of: vec![],
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
             title,
@@ -1698,7 +1697,7 @@ impl NodeService {
 
     /// Create a mention relationship between two existing nodes
     ///
-    /// Adds an entry to the node_mentions table to track that one node mentions another.
+    /// Adds an entry to the relationship table (relationship_type = 'mentions') to track that one node mentions another.
     /// This enables backlink/references functionality.
     ///
     /// # Arguments
@@ -1793,7 +1792,7 @@ impl NodeService {
 
     /// Delete a mention relationship between two nodes
     ///
-    /// Removes an entry from the node_mentions table.
+    /// Removes an entry from the relationship table (relationship_type = 'mentions').
     ///
     /// # Arguments
     ///
@@ -1899,7 +1898,6 @@ impl NodeService {
                     properties: serde_json::json!({}),
                     mentions: vec![],
                     mentioned_in: vec![],
-                    member_of: vec![],
                     title: None, // Date nodes don't have indexed titles
                     lifecycle_status: "active".to_string(),
                 };
@@ -4416,7 +4414,6 @@ impl NodeService {
                 properties: properties.clone(),
                 mentions: vec![],
                 mentioned_in: vec![],
-                member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 title: None, // Bulk nodes don't need titles (validated only)
@@ -4528,7 +4525,6 @@ impl NodeService {
                 properties: properties.clone(),
                 mentions: vec![],
                 mentioned_in: vec![],
-                member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 title: None,
@@ -4632,7 +4628,6 @@ impl NodeService {
                 properties: properties.clone(),
                 mentions: vec![],
                 mentioned_in: vec![],
-                member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 title: None,
@@ -4954,7 +4949,6 @@ impl NodeService {
                 properties: serde_json::json!({}),
                 mentions: vec![],
                 mentioned_in: vec![],
-                member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 title: None, // Title managed by NodeService for root/task nodes
@@ -4998,9 +4992,9 @@ impl NodeService {
 
     // Helper methods
 
-    /// Populate outgoing mentions from node_mentions table
+    /// Populate outgoing mentions from the relationship table (relationship_type = 'mentions')
     ///
-    /// Queries the node_mentions table to populate outgoing mentions for a node.
+    /// Queries the relationship table to populate outgoing mentions for a node.
     /// Note: mentioned_in (backlinks) is populated separately by get_children_tree
     /// with full NodeReference data {id, title, nodeType} for efficient UI display.
     ///
@@ -5026,7 +5020,7 @@ impl NodeService {
 
     /// Add a mention from one node to another
     ///
-    /// Creates a mention relationship in the node_mentions table.
+    /// Creates a mention relationship in the relationship table (relationship_type = 'mentions').
     ///
     /// # Arguments
     ///
@@ -5110,7 +5104,7 @@ impl NodeService {
 
     /// Remove a mention from one node to another
     ///
-    /// Deletes a mention relationship from the node_mentions table.
+    /// Deletes a mention relationship from the relationship table (relationship_type = 'mentions').
     ///
     /// # Arguments
     ///
@@ -6868,7 +6862,7 @@ mod tests {
         // Create mention using the new create_mention() method
         service.create_mention(&id1, &id2).await.unwrap();
 
-        // Verify the mention persists by checking the node_mentions table
+        // Verify the mention persists by checking the relationship table (relationship_type = 'mentions')
         // We can verify this by getting the mentions for node1
         let mentions = service.get_mentions(&id1).await.unwrap();
         assert_eq!(mentions.len(), 1, "Node 1 should have exactly one mention");

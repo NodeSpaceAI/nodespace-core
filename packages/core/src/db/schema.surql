@@ -30,8 +30,11 @@ DEFINE FIELD IF NOT EXISTS version ON TABLE node TYPE int DEFAULT 1 ASSERT $valu
 DEFINE FIELD IF NOT EXISTS created_at ON TABLE node TYPE datetime DEFAULT time::now();
 DEFINE FIELD IF NOT EXISTS modified_at ON TABLE node TYPE datetime DEFAULT time::now();
 
--- Mention tracking fields (outgoing and incoming references)
-DEFINE FIELD IF NOT EXISTS mentions ON TABLE node TYPE array<string> DEFAULT [];
+-- Backlinks tracking fields
+-- Note: outgoing mentions are stored in the relationship table (relationship_type = 'mentions')
+-- and populated at fetch time by NodeService.populate_mentions() via get_outgoing_mentions().
+-- mentioned_in is a persisted schema field (populated at fetch time by get_children_tree with
+-- full NodeReference data; the DEFAULT [] ensures it deserializes cleanly when not explicitly set).
 DEFINE FIELD IF NOT EXISTS mentioned_in ON TABLE node TYPE array<object> DEFAULT [];
 
 -- Title field for efficient @mention autocomplete search (Issue #821)

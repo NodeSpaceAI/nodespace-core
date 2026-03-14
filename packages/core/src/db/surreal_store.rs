@@ -178,10 +178,10 @@ struct SurrealNode {
     version: i64,
     created_at: DateTime<Utc>,
     modified_at: DateTime<Utc>,
-    #[serde(default)]
-    mentions: Vec<String>,
-    // Note: mentioned_by is no longer used - replaced by mentioned_in (Vec<NodeReference>)
-    // which is populated at fetch time with {id, title, nodeType}, not stored in DB
+    // Note: mentions are stored in the relationship table (relationship_type = 'mentions'),
+    // not as a denormalized field on the node. Node.mentions is populated at fetch time
+    // by NodeService.populate_mentions() via get_outgoing_mentions().
+    // Note: mentioned_in is populated at fetch time with {id, title, nodeType}, not stored in DB
     /// Properties field stores all type-specific properties directly on the node
     #[serde(default)]
     properties: Value,
@@ -219,9 +219,8 @@ impl From<SurrealNode> for Node {
             created_at: sn.created_at,
             modified_at: sn.modified_at,
             properties,
-            mentions: sn.mentions,
+            mentions: Vec::new(), // Populated at fetch time by NodeService.populate_mentions()
             mentioned_in: Vec::new(), // Populated at fetch time by get_children_tree
-            member_of: Vec::new(),
             title: sn.title,
             lifecycle_status: sn.lifecycle_status,
         }
@@ -481,7 +480,7 @@ impl SurrealStore {
     ///
     /// # Architecture
     /// - Universal `node` table with embedded properties for ALL nodes (including schemas)
-    /// - Graph relationships: `has_child` and `mentions` relations for relationships
+    /// - Universal `relationship` table for all relationships (has_child, mentions, member_of, etc.)
     async fn initialize_schema(db: &Arc<Surreal<Db>>) -> Result<()> {
         // Load schema from schema.surql file
         // Universal Graph Architecture with SCHEMAFULL tables
@@ -548,8 +547,6 @@ impl SurrealStore {
                 version: $version,
                 created_at: time::now(),
                 modified_at: time::now(),
-                mentions: [],
-                mentioned_in: [],
                 properties: $properties,
                 title: $title
             }};
@@ -779,7 +776,6 @@ impl SurrealStore {
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {
         // Universal Graph Architecture (Issue #783): Single query for node + properties
         // Properties are embedded directly in node.properties field
-        // Note: member_of is populated separately when needed (e.g., by populate_memberships)
 
         let node_query = format!("SELECT * FROM node:`{id}` LIMIT 1;", id = id);
         let mut response = self
@@ -844,8 +840,6 @@ impl SurrealStore {
             let node: Node = sn.into();
             result_map.insert(node.id.clone(), node);
         }
-
-        // Note: member_of is populated separately when needed (e.g., by populate_memberships)
 
         Ok(result_map)
     }
@@ -1664,7 +1658,6 @@ impl SurrealStore {
             .context("Failed to extract nodes from query response")?;
 
         // Universal Graph Architecture (Issue #783): Properties embedded in node.properties
-        // Note: member_of is populated separately when needed (e.g., by populate_memberships)
         let nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
         Ok(nodes)
@@ -1719,7 +1712,6 @@ impl SurrealStore {
         };
 
         // Convert to nodes (properties already embedded)
-        // Note: member_of is populated separately when needed (e.g., by populate_memberships)
         let nodes: Vec<Node> = surreal_nodes.into_iter().map(Into::into).collect();
 
         Ok(nodes)
@@ -1856,15 +1848,9 @@ impl SurrealStore {
     ///
     /// # Implementation Note
     ///
-    /// Uses SurrealDB's `@` recursive projection operator:
-    /// ```sql
-    /// SELECT id, title,
-    ///   ->has_child->node.{
-    ///     id, title,
-    ///     children: ->has_child->node.@  -- '@' repeats this projection recursively
-    ///   } AS children
-    /// FROM node:root_uuid;
-    /// ```
+    /// Uses Rust recursion to traverse the `has_child` relationships in the universal
+    /// `relationship` table (relationship_type = 'has_child'). SurrealDB's `@` recursive
+    /// projection operator is not supported with RocksDB storage.
     pub async fn get_node_tree(&self, root_id: &str) -> Result<Option<serde_json::Value>> {
         // NOTE: SurrealDB's `@` recursive repeat operator is NOT supported with RocksDB storage
         // (returns UnsupportedRepeatRecurse error). We use Rust recursion instead.
@@ -3253,7 +3239,6 @@ impl SurrealStore {
                 properties: properties.clone(),
                 mentions: vec![],
                 mentioned_in: vec![],
-                member_of: vec![],
                 title: None, // Child nodes don't have titles
                 lifecycle_status: "active".to_string(),
             };
@@ -3367,7 +3352,6 @@ impl SurrealStore {
                     properties: properties.clone(),
                     mentions: vec![],
                     mentioned_in: vec![],
-                    member_of: vec![],
                     title: None,
                     lifecycle_status: "active".to_string(),
                 };
@@ -3465,7 +3449,6 @@ impl SurrealStore {
             properties,
             mentions: vec![],
             mentioned_in: vec![],
-            member_of: vec![],
             title: None, // Streaming nodes don't have titles (typically child nodes)
             lifecycle_status: "active".to_string(),
         };

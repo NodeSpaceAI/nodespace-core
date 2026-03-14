@@ -207,7 +207,8 @@ pub struct Node {
 
     /// Outgoing mentions - IDs of nodes that THIS node references
     /// Example: If this node's content includes "@node-123", then mentions = ["node-123"]
-    /// Stored in node_mentions table as (this.id, mentioned_node_id)
+    /// Computed at fetch time from the relationship table (relationship_type = 'mentions')
+    /// by NodeService.populate_mentions() — not stored on the node itself.
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mentions: Vec<String>,
@@ -219,13 +220,6 @@ pub struct Node {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub mentioned_in: Vec<NodeReference>,
-
-    /// Collection memberships - IDs of collections this node belongs to
-    /// Computed from member_of edges (member_of.in = this.id)
-    /// Read-only field, populated on query
-    #[serde(default)]
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub member_of: Vec<String>,
 
     /// Indexed title for efficient @mention autocomplete search (Issue #821)
     /// Populated only for root nodes and task nodes with markdown-stripped content.
@@ -286,7 +280,6 @@ impl Node {
             properties,
             mentions: Vec::new(),
             mentioned_in: Vec::new(),
-            member_of: Vec::new(),
             title: None, // Title is set by NodeService based on root/task status
             lifecycle_status: "active".to_string(),
         }
@@ -331,7 +324,6 @@ impl Node {
             properties,
             mentions: Vec::new(),
             mentioned_in: Vec::new(),
-            member_of: Vec::new(),
             title: None, // Title is set by NodeService based on root/task status
             lifecycle_status: "active".to_string(),
         }

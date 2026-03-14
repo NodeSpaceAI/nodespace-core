@@ -300,7 +300,7 @@ pub async fn handle_create_node(
         }
     }
 
-    // Fetch the created node for response (includes version, timestamps, member_of, etc.)
+    // Fetch the created node for response (includes version, timestamps, mentions, etc.)
     let created_node = node_service
         .get_node(&node_id)
         .await
@@ -441,7 +441,7 @@ pub async fn handle_update_node(
         collection_removed = Some(collection_id.clone());
     }
 
-    // Re-fetch node to get updated member_of if collections changed
+    // Re-fetch node to get latest state after collection membership change
     let final_node = if params.add_to_collection.is_some()
         || params.remove_from_collection.is_some()
     {
