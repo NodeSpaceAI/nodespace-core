@@ -1,7 +1,12 @@
 //! SurrealStore - Direct SurrealDB Backend Implementation
 //!
-//! This module provides the primary and only database backend for NodeSpace,
-//! using SurrealDB embedded database with RocksDB storage engine.
+//! This module provides the primary database backend for NodeSpace.
+//! Two connection modes are supported via the `Surreal<Any>` dynamic engine:
+//!
+//! - **Embedded RocksDB** (`SurrealStore::new`): Desktop production (Tauri app).
+//!   Holds an exclusive file lock — only one process at a time.
+//! - **HTTP client** (`SurrealStore::new_http`): Browser development mode (dev-proxy).
+//!   Connects to a running `surreal start` server; multiple clients can share the DB.
 //!
 //! # Architecture
 //!
@@ -12,7 +17,7 @@
 //!
 //! # Design Principles
 //!
-//! 1. **Embedded RocksDB**: Desktop-only backend using `kv-rocksdb` engine
+//! 1. **Dynamic engine (`Surreal<Any>`)**: Same struct works with RocksDB embedded and HTTP remote
 //! 2. **SCHEMAFULL + FLEXIBLE**: Core fields strictly typed, user extensions allowed
 //! 3. **Record IDs**: Native SurrealDB format `node:uuid` (type embedded in ID)
 //! 4. **Universal Storage**: All properties embedded in `node.properties` field
@@ -56,7 +61,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use surrealdb::engine::local::{Db, RocksDb};
+use surrealdb::engine::any::Any;
+use surrealdb::opt::auth::Root;
 use surrealdb::types::{RecordId, SurrealValue};
 use surrealdb::Surreal;
 use tokio::sync::broadcast;
@@ -235,11 +241,11 @@ impl From<SurrealNode> for Node {
 
 /// SurrealStore implements NodeStore trait for SurrealDB backend
 ///
-/// Uses embedded RocksDB backend for desktop production.
+/// Supports both embedded RocksDB (desktop production) and HTTP (dev-proxy) backends.
 /// Emits domain events via broadcast channel when data changes.
 pub struct SurrealStore {
-    /// SurrealDB connection
-    db: Arc<Surreal<Db>>,
+    /// SurrealDB connection (Any engine: supports embedded RocksDB and HTTP)
+    db: Arc<Surreal<Any>>,
     /// Broadcast channel for domain events (128 subscriber capacity)
     event_tx: broadcast::Sender<DomainEvent>,
     /// Cache of all valid node types (derived from schema definitions)
@@ -292,8 +298,12 @@ impl SurrealStore {
     /// # }
     /// ```
     pub async fn new(db_path: PathBuf) -> Result<Self> {
-        // Initialize embedded RocksDb
-        let db = Surreal::new::<RocksDb>(db_path)
+        // Initialize embedded RocksDB via the Any engine (supports both embedded and HTTP).
+        // Path must be expressed as a rocksdb:// URL for engine::any::connect.
+        // Note: PathBuf::display() uses OS-native separators. This is macOS/Linux only;
+        // backslashes on Windows would produce an invalid URL. Desktop targets are Unix.
+        let url = format!("rocksdb://{}", db_path.display());
+        let db: Surreal<Any> = surrealdb::engine::any::connect(url)
             .await
             .context("Failed to initialize SurrealDB with RocksDB backend")?;
 
@@ -315,6 +325,52 @@ impl SurrealStore {
         let valid_node_types = Self::build_schema_caches(&db).await?;
 
         // Initialize broadcast channel for domain events
+        let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
+
+        Ok(Self {
+            db,
+            event_tx,
+            valid_node_types,
+            notifier: None,
+        })
+    }
+
+    /// Create a new SurrealStore connecting to a running SurrealDB HTTP server
+    ///
+    /// Used by dev-proxy to connect to a `surreal start` server so that multiple
+    /// clients (dev-proxy, CLI tools) can share the same database simultaneously.
+    /// The embedded `new()` constructor holds an exclusive RocksDB file lock and
+    /// cannot be shared.
+    ///
+    /// # Arguments
+    ///
+    /// * `endpoint` - HTTP endpoint, e.g. `"127.0.0.1:8000"`
+    /// * `user` - SurrealDB root username
+    /// * `pass` - SurrealDB root password
+    pub async fn new_http(endpoint: &str, user: &str, pass: &str) -> Result<Self> {
+        let url = format!("http://{}", endpoint);
+        let db: Surreal<Any> = surrealdb::engine::any::connect(url)
+            .await
+            .context("Failed to connect to SurrealDB HTTP server")?;
+
+        db.signin(Root { username: user.to_string(), password: pass.to_string() })
+            .await
+            .context("Failed to sign in to SurrealDB")?;
+
+        db.use_ns("nodespace")
+            .use_db("nodespace")
+            .await
+            .context("Failed to set namespace/database")?;
+
+        let db = Arc::new(db);
+
+        // Schema initialization is a no-op for HTTP mode when the server already
+        // has the schema from its own startup. Run it idempotently anyway so
+        // `IF NOT EXISTS` guards make it safe.
+        Self::initialize_schema(&db).await?;
+
+        let valid_node_types = Self::build_schema_caches(&db).await?;
+
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
 
         Ok(Self {
@@ -356,7 +412,7 @@ impl SurrealStore {
     ///
     /// This is used by services (like SchemaService) that need direct database access
     /// for operations like DEFINE TABLE or DEFINE FIELD.
-    pub fn db(&self) -> &Arc<Surreal<Db>> {
+    pub fn db(&self) -> &Arc<Surreal<Any>> {
         &self.db
     }
 
@@ -442,7 +498,7 @@ impl SurrealStore {
     /// - Cache fully populated in one query: {"schema", "task", "text", "date", ...}
     /// - No further cache updates needed
     async fn build_schema_caches(
-        db: &Arc<Surreal<Db>>,
+        db: &Arc<Surreal<Any>>,
     ) -> Result<std::collections::HashSet<String>> {
         let mut valid_types = std::collections::HashSet::new();
 
@@ -487,7 +543,7 @@ impl SurrealStore {
     /// # Architecture
     /// - Universal `node` table with embedded properties for ALL nodes (including schemas)
     /// - Universal `relationship` table for all relationships (has_child, mentions, member_of, etc.)
-    async fn initialize_schema(db: &Arc<Surreal<Db>>) -> Result<()> {
+    async fn initialize_schema(db: &Arc<Surreal<Any>>) -> Result<()> {
         // Load schema from schema.surql file
         // Universal Graph Architecture with SCHEMAFULL tables
         let schema_sql = include_str!("schema.surql");

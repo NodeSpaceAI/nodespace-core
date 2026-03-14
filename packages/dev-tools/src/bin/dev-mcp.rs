@@ -1,15 +1,18 @@
 //! Development MCP Server for Browser Mode
 //!
-//! This is a standalone MCP (Model Context Protocol) server that enables AI agent
-//! integration during browser mode development. It runs alongside dev-proxy to
-//! provide the same MCP functionality available in the Tauri desktop app.
+//! **NOTE**: `dev-proxy` now includes an integrated MCP server (port 3100) and is the
+//! recommended dev tool. This standalone binary uses embedded RocksDB and holds an
+//! exclusive file lock, which conflicts with `dev-proxy` when both are run together.
+//! See issue #955 / PR #956 for context. This binary should be removed or migrated
+//! to HTTP client mode in a follow-up.
 //!
-//! Architecture:
+//! Architecture (current — uses embedded RocksDB, conflicts with dev-proxy):
 //!   AI Agent (Claude Code) → HTTP (port 3100) → MCP Server → NodeService → embedded SurrealDB
-//!                                                                                    ↓
-//!   Frontend             → HTTP (port 3001) → dev-proxy → NodeService → embedded SurrealDB
 //!
-//! Both servers share the same NODESPACE_DEV_DB_PATH database.
+//! Architecture (dev-proxy — preferred):
+//!   AI Agent (Claude Code) → HTTP (port 3100) → dev-proxy MCP → NodeService → SurrealDB HTTP server
+//!                                                                                    ↓
+//!   Frontend             → HTTP (port 3001) → dev-proxy → NodeService → SurrealDB HTTP server
 //!
 //! # Key Features
 //!
