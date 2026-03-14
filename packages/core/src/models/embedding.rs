@@ -226,8 +226,10 @@ pub struct EmbeddingSearchResult {
     /// The node ID (extracted from embedding.node)
     pub node_id: String,
 
-    /// Composite relevance score (max_similarity * breadth_boost)
-    /// This is the primary ranking score.
+    /// Composite relevance score used for final ranking.
+    /// Formula: `max_similarity * (1 + 0.3 * log10(matching_chunks)) [+ TITLE_BOOST if title matches query]`
+    /// The title boost is added in `NodeEmbeddingService::semantic_search` when a query term
+    /// appears in the node title.
     pub score: f64,
 
     /// Best similarity score across all chunks (raw cosine similarity)
