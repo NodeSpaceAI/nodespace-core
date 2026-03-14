@@ -4398,8 +4398,6 @@ impl SurrealStore {
 
         let matching_ids: Vec<String> = rows.into_iter().map(|r| r.id).collect();
 
-        tracing::debug!("BM25 raw matching_ids count={} query='{}'", matching_ids.len(), query);
-
         if matching_ids.is_empty() {
             return Ok(std::collections::HashSet::new());
         }
