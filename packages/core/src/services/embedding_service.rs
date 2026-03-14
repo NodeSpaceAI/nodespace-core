@@ -630,10 +630,15 @@ impl NodeEmbeddingService {
     // Search
     // =========================================================================
 
-    /// Search for nodes by semantic similarity
+    /// Search for nodes using hybrid BM25 + KNN scoring (Issue #951)
     ///
-    /// Generates an embedding for the query text and searches for similar
-    /// root nodes. Returns the node IDs and similarity scores.
+    /// Runs BM25 full-text search and KNN vector search in parallel, then tiers results:
+    /// - **Tier 1** (highest confidence): roots in BOTH BM25 and KNN results
+    /// - **Tier 2**: roots in KNN only (semantic relevance without keyword match)
+    /// - **Tier 3**: roots in BM25 only (keyword match without semantic relevance)
+    ///
+    /// Within each tier, results are sorted by composite score (existing density formula).
+    /// This avoids fragile score normalization between BM25 and cosine similarity.
     pub async fn semantic_search(
         &self,
         query: &str,
@@ -648,7 +653,7 @@ impl NodeEmbeddingService {
             ));
         }
 
-        // Generate query embedding
+        // Generate query embedding (blocking, so do before spawning parallel tasks)
         let embed_start = std::time::Instant::now();
         let query_vector = self.nlp_engine.generate_embedding(query).map_err(|e| {
             NodeServiceError::SerializationError(format!(
@@ -658,24 +663,25 @@ impl NodeEmbeddingService {
         })?;
         let embed_time = embed_start.elapsed();
 
-        // Search embedding table
+        // Run BM25 and KNN searches in parallel (Issue #951)
+        // BM25 is O(log n) via inverted index — sub-millisecond
+        // KNN is ~50-100ms via HNSW — total latency = max(bm25, knn) ≈ same as before
         let search_start = std::time::Instant::now();
-        let mut results = self
-            .store
-            .search_embeddings(&query_vector, limit as i64, Some(threshold as f64))
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Semantic search failed: {}", e))
-            })?;
+        let bm25_limit = (limit as i64) * 5; // Fetch extra BM25 candidates for root resolution
+        let (knn_results, bm25_roots) = tokio::join!(
+            self.store
+                .search_embeddings(&query_vector, limit as i64, Some(threshold as f64)),
+            self.store.bm25_search_roots(query, bm25_limit)
+        );
         let search_time = search_start.elapsed();
 
-        // Apply title keyword boost (Issue #936)
-        // If any query term appears in the node title, add TITLE_BOOST to the score.
+        let mut knn_results = knn_results
+            .map_err(|e| NodeServiceError::query_failed(format!("KNN search failed: {}", e)))?;
+        let bm25_roots = bm25_roots
+            .map_err(|e| NodeServiceError::query_failed(format!("BM25 search failed: {}", e)))?;
+
+        // Apply title keyword boost (Issue #936) to KNN results
         // Punctuation is stripped from tokens so queries like "persistence?" still match.
-        //
-        // Note: This boost runs after the DB threshold filter. Documents scoring just below
-        // threshold with a matching title are not rescued — fixing this would require fetching
-        // more candidates pre-filter (tracked as a future improvement if needed).
         let query_terms: Vec<String> = query
             .split_whitespace()
             .map(|t| {
@@ -684,7 +690,7 @@ impl NodeEmbeddingService {
             })
             .filter(|t| !t.is_empty())
             .collect();
-        for result in &mut results {
+        for result in &mut knn_results {
             if let Some(ref node) = result.node {
                 if let Some(ref title) = node.title {
                     let title_lower = title.to_lowercase();
@@ -697,18 +703,89 @@ impl NodeEmbeddingService {
                 }
             }
         }
-        // Re-sort after applying boost (boost may change relative ordering)
-        results.sort_by(|a, b| {
+
+        // Tier results by intersection signal (Issue #951)
+        //
+        // Tier 1: roots present in BOTH KNN and BM25 → highest confidence
+        // Tier 2: roots in KNN only → semantic relevance alone
+        // Tier 3: roots in BM25 only → keyword match only (no KNN embedding yet, or below threshold)
+        //
+        // Within each tier: sort by composite score (descending).
+        let (mut tier1, mut tier2): (Vec<EmbeddingSearchResult>, Vec<EmbeddingSearchResult>) =
+            knn_results
+                .into_iter()
+                .partition(|r| bm25_roots.contains(&r.node_id));
+
+        tier1.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        tier2.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
+        // Build KNN node ID set for tier 3 filtering
+        let knn_node_ids: HashSet<String> = tier1
+            .iter()
+            .chain(tier2.iter())
+            .map(|r| r.node_id.clone())
+            .collect();
+
+        // Tier 3: BM25-only roots (not in KNN results)
+        // These need node data fetched separately since they bypassed the KNN+FETCH query.
+        // Only include if we have remaining capacity.
+        let knn_count = tier1.len() + tier2.len();
+        let tier2_count = tier2.len();
+        let mut results: Vec<EmbeddingSearchResult> = Vec::with_capacity(limit);
+        results.extend(tier1);
+        results.extend(tier2);
+
+        let mut tier3_count = 0usize;
+        if knn_count < limit {
+            let remaining = limit - knn_count;
+            // Sort by node_id for deterministic ordering within Tier 3
+            // (no embedding score available to rank by, so stable key prevents non-reproducible results)
+            let mut bm25_only_roots: Vec<String> = bm25_roots
+                .into_iter()
+                .filter(|id| !knn_node_ids.contains(id))
+                .collect();
+            bm25_only_roots.sort();
+            bm25_only_roots.truncate(remaining);
+
+            if !bm25_only_roots.is_empty() {
+                // Fetch node data for BM25-only results (no embedding score available)
+                // Score is set to 0.0 to indicate keyword-only match (ranked last within tier 3)
+                for root_id in bm25_only_roots {
+                    if let Ok(Some(node)) = self.store.get_node(&root_id).await {
+                        results.push(EmbeddingSearchResult {
+                            node_id: root_id,
+                            score: 0.0,
+                            max_similarity: 0.0,
+                            matching_chunks: 0,
+                            node: Some(node),
+                        });
+                        tier3_count += 1;
+                    }
+                }
+            }
+        }
+
         let total_time = total_start.elapsed();
+        let intersection_count = results.len() - tier3_count - tier2_count;
 
         tracing::debug!(
-            "SEMANTIC SEARCH PROFILE: total={:?} | embedding={:?} db_search={:?} | results={} query='{}'",
-            total_time, embed_time, search_time, results.len(), &query[..query.len().min(50)]
+            "HYBRID SEARCH PROFILE: total={:?} | embedding={:?} search={:?} | results={} (tier1={} tier2={} tier3={}) query='{}'",
+            total_time,
+            embed_time,
+            search_time,
+            results.len(),
+            intersection_count,
+            tier2_count,
+            tier3_count,
+            &query[..query.len().min(50)]
         );
 
         Ok(results)
