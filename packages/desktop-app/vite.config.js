@@ -30,7 +30,10 @@ export default defineConfig(async () => ({
       '@tauri-apps/plugin-opener'
     ],
     // Include dependencies that should be pre-bundled
-    include: ['uuid', 'clsx', 'tailwind-merge']
+    // mermaid must be pre-bundled so Vite collapses its internal dynamic imports
+    // (dagre, flowDiagram chunks) into a single file — Tauri's webview can't
+    // resolve those lazily-loaded sub-chunks at runtime.
+    include: ['uuid', 'clsx', 'tailwind-merge', 'mermaid']
   },
 
   // Build configuration

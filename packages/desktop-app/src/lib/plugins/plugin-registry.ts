@@ -137,6 +137,14 @@ export class PluginRegistry {
   }
 
   /**
+   * Get all currently loaded node components as a plain object
+   * Used by BaseNodeViewer on remount to restore the full component cache in one pass
+   */
+  getAllLoadedNodeComponents(): Record<string, NodeComponent> {
+    return Object.fromEntries(this.loadedNodes);
+  }
+
+  /**
    * Get a node component for a node type
    * Returns null if no node component is registered (fallback to base node)
    */

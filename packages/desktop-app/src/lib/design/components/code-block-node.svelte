@@ -98,8 +98,17 @@
 
   // Syntax highlighting and Mermaid state
   let highlightedLines = $state<HighlightLine[] | null>(null);
-  let mermaidSvgUri = $state<string | null>(null);
+  let mermaidSvg = $state<string | null>(null);
   let mermaidError = $state<string | null>(null);
+  let mermaidContainer = $state<HTMLDivElement | null>(null);
+
+  // Inject sanitized SVG into the container via DOM — avoids {@html} and its lint warning.
+  // sanitizeSvg() strips all scripts and event handlers before this runs.
+  $effect(() => {
+    if (mermaidContainer) {
+      mermaidContainer.innerHTML = mermaidSvg ?? '';
+    }
+  });
 
   // Monotonic counter to discard stale async results when language/content changes rapidly
   let renderSeq = 0;
@@ -119,14 +128,14 @@
 
     if (lang === 'mermaid') {
       highlightedLines = null;
-      renderMermaid(code, nodeId).then((svg) => {
+      renderMermaid(code, nodeId, dark).then((svg) => {
         if (seq !== renderSeq) return; // stale — language/content changed before render resolved
-        mermaidSvgUri = svg ? `data:image/svg+xml;base64,${btoa(svg)}` : null;
+        mermaidSvg = svg;
         mermaidError =
           svg === null ? 'Diagram rendering failed. Check your Mermaid syntax.' : null;
       });
     } else if (lang !== 'plaintext') {
-      mermaidSvgUri = null;
+      mermaidSvg = null;
       mermaidError = null;
       highlightCode(code, lang, dark).then((lines) => {
         if (seq !== renderSeq) return; // stale — discard
@@ -134,7 +143,7 @@
       });
     } else {
       highlightedLines = null;
-      mermaidSvgUri = null;
+      mermaidSvg = null;
       mermaidError = null;
     }
   });
@@ -328,8 +337,8 @@
 <!-- Custom view content snippet for syntax highlighting and Mermaid diagrams -->
 {#snippet codeViewContent()}
   {#if language === 'mermaid'}
-    {#if mermaidSvgUri}
-      <img class="mermaid-output" src={mermaidSvgUri} alt="Mermaid diagram" />
+    {#if mermaidSvg}
+      <div class="mermaid-output" bind:this={mermaidContainer}></div>
     {:else if mermaidError}
       <div class="mermaid-error">{mermaidError}</div>
     {:else}
@@ -577,8 +586,6 @@
 
   /* Mermaid diagram output */
   :global(.code-block-node-wrapper .mermaid-output) {
-    display: flex;
-    justify-content: flex-start;
     padding: 0.5rem 0;
     overflow-x: auto;
   }
@@ -586,6 +593,7 @@
   :global(.code-block-node-wrapper .mermaid-output svg) {
     max-width: 100%;
     height: auto;
+    display: block;
   }
 
   /* Mermaid error state */

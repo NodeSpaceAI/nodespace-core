@@ -12,7 +12,6 @@
   import { formatTabTitle } from '$lib/utils/text-formatting';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
-  import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
   import { createLogger } from '$lib/utils/logger';
 
   // Logger instance for BaseNodeViewer component
@@ -257,13 +256,10 @@
     // CRITICAL FIX: Populate loadedNodes from registry's cache immediately
     // This prevents race condition where template renders before async loadNodeComponent completes
     // The registry maintains a persistent cache that survives component remounts
-    const types = ['text', 'header', 'task', 'date', 'code-block', 'quote-block', 'ordered-list'];
-    for (const type of types) {
-      const component = pluginRegistry.getLoadedNodeComponent(type);
-      if (component) {
-        loadedNodes[type] = component;
-      }
-    }
+    // Restore all previously loaded node components from the registry's persistent cache.
+    // The registry survives component remounts (tab switches), so this gives us all
+    // components that were ever loaded — including lazily-loaded ones like 'table'.
+    Object.assign(loadedNodes, pluginRegistry.getAllLoadedNodeComponents());
 
     // Set up scroll position management
     // Restore scroll position when viewer becomes active
@@ -1203,8 +1199,8 @@
   }
 
   // Issue #709: Type-specific schema forms loaded via plugin registry
-  // Core types (task, date, entity) use hardcoded forms for compile-time type safety
-  // User-defined types fall back to generic SchemaPropertyForm
+  // null = checked, no form registered (core types like header/text/table)
+  // Component = typed form to render (e.g. TaskSchemaForm)
   let loadedSchemaForms = $state<Record<string, unknown>>({});
 
   /**
@@ -1343,16 +1339,12 @@
   <!-- Schema-Driven Properties Panel - fixed between header and content area -->
   <!-- Issue #709: Type-specific schema forms use plugin registry for smart dispatch -->
   <!-- Core types (task, date) use hardcoded forms; user-defined types use generic SchemaPropertyForm -->
-  {#if currentViewedNode && nodeId}
+  <!-- Only render when a schema form is known to exist: null means "checked, none registered" -->
+  <!-- loadedSchemaForms[type] is null when no form is registered (core types); only renders typed forms -->
+  {#if currentViewedNode && nodeId && loadedSchemaForms[currentViewedNode.nodeType]}
+    {@const TypedSchemaForm = loadedSchemaForms[currentViewedNode.nodeType] as SchemaFormComponent}
     <div class="schema-form-container">
-      {#if currentViewedNode.nodeType in loadedSchemaForms && loadedSchemaForms[currentViewedNode.nodeType]}
-        <!-- Type-specific schema form (TaskSchemaForm, etc.) -->
-        {@const TypedSchemaForm = loadedSchemaForms[currentViewedNode.nodeType] as SchemaFormComponent}
-        <TypedSchemaForm {nodeId} />
-      {:else}
-        <!-- Generic schema form for user-defined types -->
-        <SchemaPropertyForm {nodeId} nodeType={currentViewedNode.nodeType} />
-      {/if}
+      <TypedSchemaForm {nodeId} />
     </div>
   {/if}
 
