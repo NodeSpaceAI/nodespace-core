@@ -4178,7 +4178,8 @@ impl SurrealStore {
         // 3. Middle-outer: Calculate composite_score using density ratio (Issue #944)
         // 4. Outermost: Filter by composite_score > threshold (no duplication)
         //
-        // Formula: composite_score = max_similarity * (1.0 + 0.3 * (matching_chunks / total_chunks))
+        // Formula: composite_score = max_similarity * (1.0 + 0.3 * (<float>matching_chunks / total_chunks))
+        // The <float> cast prevents integer division (both matching_chunks and total_chunks are integers).
         // This replaces the old log10(matching_chunks) formula that rewarded large documents by size.
         // Density ratio ensures a doc only gets full boost if most of its chunks are relevant.
         let knn_limit = limit * 5;
@@ -4192,7 +4193,7 @@ impl SurrealStore {
                         max_similarity,
                         matching_chunks,
                         total_chunks,
-                        max_similarity * (1.0 + 0.3 * (matching_chunks / total_chunks)) AS composite_score
+                        max_similarity * (1.0 + 0.3 * (<float>matching_chunks / total_chunks)) AS composite_score
                     FROM (
                         SELECT
                             node,

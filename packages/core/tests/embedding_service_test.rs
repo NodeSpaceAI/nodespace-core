@@ -685,14 +685,17 @@ async fn test_knn_search_with_multiple_chunks() -> Result<()> {
 
     // With 2 matching chunks out of 2 total (density=1.0), score should be boosted
     // Score = max_similarity * (1 + 0.3 * 1.0) = max_similarity * 1.30
-    assert!(
-        results[0].matching_chunks >= 1,
-        "Should have at least 1 matching chunk"
+    assert_eq!(
+        results[0].matching_chunks, 2,
+        "Should have both chunks counted"
     );
-    // Score should be >= max_similarity (density boost is always positive)
+    // Score must reflect the density boost: max_sim * 1.30 (density=1.0)
+    let expected_score = results[0].max_similarity * 1.30;
     assert!(
-        results[0].score >= results[0].max_similarity * 0.99, // Allow small float error
-        "Score should be at least max_similarity"
+        (results[0].score - expected_score).abs() < 0.01,
+        "Score should equal max_similarity * 1.30 for density=1.0, expected {:.4}, got {:.4}",
+        expected_score,
+        results[0].score
     );
 
     Ok(())
@@ -813,6 +816,153 @@ async fn test_multi_chunk_scoring_density_boost() -> Result<()> {
         "Docs with same max_sim and all-matching chunks (density=1.0) should score equally regardless of size: Doc A={:.3}, Doc B={:.3}",
         doc_a_result.score,
         doc_b_result.score,
+    );
+
+    Ok(())
+}
+
+/// Test that partial match density (density < 1.0) ranks below full density (density = 1.0)
+///
+/// Validates the key property of the density formula: a document with higher max_similarity
+/// but low density (few matching chunks out of many total) should lose to a document with
+/// lower max_similarity but perfect density (all chunks matching).
+///
+/// Setup:
+/// - Doc A: 2 embeddings stored, total_chunks=2, max_sim=0.80 → density=1.0 → score ≈ 1.04
+/// - Doc B: 2 embeddings stored, total_chunks=10, max_sim=0.85 → density=0.2 → score ≈ 0.90
+///
+/// Doc A wins despite lower max_sim because matching_chunks/total_chunks = 1.0 vs 0.2.
+/// The total_chunks=10 is stored in the embedding field to simulate a large document
+/// where only 2 of 10 chunks were indexed near the query vector.
+#[tokio::test]
+async fn test_partial_density_ranks_below_full_density() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Doc A: 2 chunks stored, total_chunks=2 (density will be 1.0)
+    let doc_a = create_root_node(
+        &node_service,
+        "text",
+        "Small precise document, full density",
+    )
+    .await?;
+    // Doc B: 2 chunks stored, but total_chunks=10 (density will be 0.2)
+    let doc_b = create_root_node(
+        &node_service,
+        "text",
+        "Large document with sparse match, partial density",
+    )
+    .await?;
+
+    // Query vector
+    let mut query_vec = vec![0.0f32; 768];
+    query_vec[0] = 1.0;
+
+    // Doc A: max_sim ~0.80, density = 2/2 = 1.0 → score = 0.80 * 1.30 ≈ 1.04
+    let chunks_a: Vec<NewEmbedding> = (0..2i32)
+        .map(|i| {
+            let mut vec = vec![0.0f32; 768];
+            vec[0] = 0.80;
+            vec[1] = 0.45 + (i as f32 * 0.05);
+            NewEmbedding {
+                node_id: doc_a.id.clone(),
+                vector: vec,
+                model_name: Some("test-model".to_string()),
+                chunk_index: i,
+                chunk_start: i * 200,
+                chunk_end: (i + 1) * 200,
+                total_chunks: 2, // All 2 chunks are stored → density = 2/2 = 1.0
+                content_hash: "hash-a-partial".to_string(),
+                token_count: 100,
+            }
+        })
+        .collect();
+    store.upsert_embeddings(&doc_a.id, chunks_a).await?;
+
+    // Doc B: max_sim ~0.85, but total_chunks=10 while only 2 are stored.
+    // density = 2/10 = 0.2 → score = 0.85 * (1 + 0.3 * 0.2) = 0.85 * 1.06 ≈ 0.901
+    let chunks_b: Vec<NewEmbedding> = (0..2i32)
+        .map(|i| {
+            let mut vec = vec![0.0f32; 768];
+            vec[0] = 0.85;
+            vec[1] = 0.45 + (i as f32 * 0.05);
+            NewEmbedding {
+                node_id: doc_b.id.clone(),
+                vector: vec,
+                model_name: Some("test-model".to_string()),
+                chunk_index: i,
+                chunk_start: i * 200,
+                chunk_end: (i + 1) * 200,
+                total_chunks: 10, // Only 2 of 10 chunks stored → density = 2/10 = 0.2
+                content_hash: "hash-b-partial".to_string(),
+                token_count: 100,
+            }
+        })
+        .collect();
+    store.upsert_embeddings(&doc_b.id, chunks_b).await?;
+
+    let results = store.search_embeddings(&query_vec, 10, Some(0.5)).await?;
+
+    assert!(
+        results.len() >= 2,
+        "Should return at least both documents, got {}",
+        results.len()
+    );
+
+    let doc_a_result = results.iter().find(|r| r.node_id == doc_a.id);
+    let doc_b_result = results.iter().find(|r| r.node_id == doc_b.id);
+
+    assert!(
+        doc_a_result.is_some(),
+        "Document A (full density) should be in results"
+    );
+    assert!(
+        doc_b_result.is_some(),
+        "Document B (partial density) should be in results"
+    );
+
+    let doc_a_result = doc_a_result.unwrap();
+    let doc_b_result = doc_b_result.unwrap();
+
+    // Verify the density values are as expected
+    assert_eq!(
+        doc_a_result.matching_chunks, 2,
+        "Doc A should have 2 matching chunks"
+    );
+    // Doc B also returns 2 matching chunks (those are the only ones stored)
+    assert_eq!(
+        doc_b_result.matching_chunks, 2,
+        "Doc B should have 2 matching chunks"
+    );
+
+    // Verify the formula gives the expected density for each doc
+    // Doc A: density = 2/2 = 1.0
+    let density_a = 2.0f64 / 2.0;
+    let expected_score_a = doc_a_result.max_similarity * (1.0 + 0.3 * density_a);
+    assert!(
+        (doc_a_result.score - expected_score_a).abs() < 0.01,
+        "Doc A score should reflect density=1.0: expected {:.4}, got {:.4}",
+        expected_score_a,
+        doc_a_result.score
+    );
+
+    // Doc B: density = 2/10 = 0.2
+    let density_b = 2.0f64 / 10.0;
+    let expected_score_b = doc_b_result.max_similarity * (1.0 + 0.3 * density_b);
+    assert!(
+        (doc_b_result.score - expected_score_b).abs() < 0.01,
+        "Doc B score should reflect density=0.2: expected {:.4}, got {:.4}",
+        expected_score_b,
+        doc_b_result.score
+    );
+
+    // Doc A (full density, lower max_sim) must outrank Doc B (partial density, higher max_sim)
+    assert!(
+        doc_a_result.score > doc_b_result.score,
+        "Full-density doc (score={:.4}) should outrank partial-density doc (score={:.4}) despite lower max_similarity",
+        doc_a_result.score,
+        doc_b_result.score
     );
 
     Ok(())
