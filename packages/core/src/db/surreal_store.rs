@@ -841,7 +841,6 @@ impl SurrealStore {
             result_map.insert(node.id.clone(), node);
         }
 
-
         Ok(result_map)
     }
 

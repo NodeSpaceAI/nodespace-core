@@ -441,7 +441,7 @@ pub async fn handle_update_node(
         collection_removed = Some(collection_id.clone());
     }
 
-    // Re-fetch node to get updated mentions/memberships if collections changed
+    // Re-fetch node to get latest state after collection membership change
     let final_node = if params.add_to_collection.is_some()
         || params.remove_from_collection.is_some()
     {
