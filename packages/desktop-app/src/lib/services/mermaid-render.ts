@@ -91,8 +91,8 @@ export function sanitizeSvg(svg: string): string {
   let result = svg.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
   // Remove event handler attributes (all quoting styles: "...", '...', or unquoted)
   result = result.replace(/\s+on\w+(\s*=\s*("[^"]*"|'[^']*'|[^\s>]*))?/gi, '');
-  // Remove javascript: URIs from attribute values (quoted and unquoted, with optional whitespace)
-  result = result.replace(/(["'\s])\s*javascript\s*:[^"'>]*/gi, '$1');
+  // Strip javascript: URIs from navigable/action attributes (mirrors data: URI treatment above)
+  result = result.replace(/(href|src|xlink:href|action|formaction)\s*=\s*["']\s*javascript\s*:[^"']*/gi, '$1=""');
   // Strip data: URIs from href, src, and xlink:href attributes (can carry executable payloads)
   result = result.replace(/(href|src|xlink:href)\s*=\s*["']\s*data:[^"']*/gi, '$1=""');
   // Strip url(javascript:...) from inline styles and <style> blocks
