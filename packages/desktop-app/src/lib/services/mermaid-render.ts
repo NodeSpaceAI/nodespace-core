@@ -118,7 +118,12 @@ export async function renderMermaid(
       });
       lastThemeKey = themeKey;
     }
-    const { svg } = await mermaid.render(`mermaid-${id}`, definition);
+    // Use a unique render ID per call to avoid ID collisions when rapid re-renders
+    // occur (e.g. two renders in-flight for the same node). After render, clean up
+    // the temp element mermaid injects into the document.
+    const renderId = `mermaid-${id}-${Date.now()}`;
+    const { svg } = await mermaid.render(renderId, definition);
+    document.getElementById(renderId)?.remove();
     return sanitizeSvg(svg);
   } catch (err) {
     log.error('Mermaid render failed', err);
