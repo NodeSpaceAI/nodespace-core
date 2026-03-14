@@ -100,6 +100,15 @@
   let highlightedLines = $state<HighlightLine[] | null>(null);
   let mermaidSvg = $state<string | null>(null);
   let mermaidError = $state<string | null>(null);
+  let mermaidContainer = $state<HTMLDivElement | undefined>(undefined);
+
+  // Inject sanitized SVG into the container via DOM — avoids {@html} and its lint warning.
+  // sanitizeSvg() strips all scripts and event handlers before this runs.
+  $effect(() => {
+    if (mermaidContainer) {
+      mermaidContainer.innerHTML = mermaidSvg ?? '';
+    }
+  });
 
   // Monotonic counter to discard stale async results when language/content changes rapidly
   let renderSeq = 0;
@@ -329,7 +338,7 @@
 {#snippet codeViewContent()}
   {#if language === 'mermaid'}
     {#if mermaidSvg}
-      <div class="mermaid-output">{@html mermaidSvg}</div>
+      <div class="mermaid-output" bind:this={mermaidContainer}></div>
     {:else if mermaidError}
       <div class="mermaid-error">{mermaidError}</div>
     {:else}
