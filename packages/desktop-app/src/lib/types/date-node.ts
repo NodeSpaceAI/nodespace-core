@@ -87,8 +87,9 @@ export function isValidDateId(id: string): boolean {
   const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
   if (!dateRegex.test(id)) return false;
 
-  // Also validate it's a real date
-  const date = new Date(id + 'T00:00:00');
+  // Also validate it's a real date. Use UTC midnight to avoid local-timezone
+  // shifts that cause the ISO-string round-trip to land on the wrong calendar day.
+  const date = new Date(id + 'T00:00:00Z');
   return !isNaN(date.getTime()) && id === date.toISOString().split('T')[0];
 }
 

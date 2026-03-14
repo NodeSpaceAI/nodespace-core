@@ -1691,7 +1691,7 @@ export class SharedNodeStore {
             id: parentId,
             nodeType: 'date',
             content: '',
-            version: 0,
+            version: 0, // 0 = placeholder; real version assigned by backend on first write
             createdAt: now,
             modifiedAt: now,
             properties: {}

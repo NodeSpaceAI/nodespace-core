@@ -1091,6 +1091,33 @@ describe('SharedNodeStore', () => {
       getChildrenTreeSpy.mockRestore();
     });
 
+    it('should synthesize virtual date node when backend returns null for a valid date id', async () => {
+      // A brand-new date with no children yet returns null from the backend.
+      // The store must synthesise a minimal in-memory node so the viewer does not
+      // mistake the missing node for a deleted/stale one and close the tab (#941).
+      const dateId = '2026-03-14';
+
+      const getChildrenTreeSpy = vi
+        .spyOn(await import('../../lib/services/tauri-commands'), 'getChildrenTree')
+        .mockResolvedValue(null);
+
+      const nodes = await store.loadChildrenTree(dateId);
+
+      // No children exist yet – result must be empty.
+      expect(nodes).toHaveLength(0);
+
+      // The virtual node must be present in the store with the correct shape.
+      const virtualNode = store.getNode(dateId);
+      expect(virtualNode).toBeDefined();
+      expect(virtualNode?.nodeType).toBe('date');
+      expect(virtualNode?.id).toBe(dateId);
+
+      // The virtual node must be marked as persisted so no write-back is triggered.
+      expect(store.isNodePersisted(dateId)).toBe(true);
+
+      getChildrenTreeSpy.mockRestore();
+    });
+
     it('should prevent duplicate concurrent loads for same parent', async () => {
       const mockTree: import('$lib/types').NodeWithChildren = {
         id: 'parent-1',
