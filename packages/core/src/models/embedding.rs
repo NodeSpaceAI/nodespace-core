@@ -197,29 +197,31 @@ impl NewEmbedding {
 /// Result of a semantic search including similarity score
 ///
 /// The scoring algorithm considers both the best chunk similarity and the
-/// breadth of relevance (number of matching chunks). This ensures documents
-/// with multiple relevant sections rank higher than those with just one
-/// good match.
+/// match density ratio (matching chunks / total chunks). A document where
+/// all chunks matched the query ranks higher than a large document where
+/// only a few chunks matched, even if both have the same max similarity.
 ///
 /// ## Scoring Formula
 ///
 /// ```text
-/// score = max_similarity * (1 + BREADTH_BOOST * log10(matching_chunks))
+/// score = max_similarity * (1 + DENSITY_BOOST * (matching_chunks / total_chunks))
 /// ```
 ///
 /// Where:
 /// - `max_similarity`: Highest cosine similarity among all chunks
-/// - `matching_chunks`: Number of chunks exceeding the threshold
-/// - `BREADTH_BOOST`: Tuning parameter (default 0.3)
+/// - `matching_chunks`: Number of chunks returned by KNN search for this node
+/// - `total_chunks`: Total chunks stored for this node (from the embedding record)
+/// - `DENSITY_BOOST`: Tuning parameter (default 0.3)
 ///
 /// ## Examples
 ///
-/// | Document | Max Sim | Chunks | Score |
-/// |----------|---------|--------|-------|
-/// | Doc A    | 0.85    | 1      | 0.85  |
-/// | Doc B    | 0.80    | 5      | 0.97  |
+/// | Document | Max Sim | Matching | Total | Density | Score  |
+/// |----------|---------|----------|-------|---------|--------|
+/// | Doc A    | 0.85    | 2        | 2     | 1.0     | 1.105  |
+/// | Doc B    | 0.80    | 2        | 10    | 0.2     | 0.848  |
 ///
-/// Doc B ranks higher due to broader relevance despite lower max similarity.
+/// Doc A ranks higher despite lower max similarity because all its chunks matched
+/// (density=1.0) versus Doc B where only 2 of 10 chunks matched (density=0.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingSearchResult {
@@ -227,7 +229,7 @@ pub struct EmbeddingSearchResult {
     pub node_id: String,
 
     /// Composite relevance score used for final ranking.
-    /// Formula: `max_similarity * (1 + 0.3 * log10(matching_chunks)) [+ TITLE_BOOST if title matches query]`
+    /// Formula: `max_similarity * (1 + 0.3 * (matching_chunks / total_chunks)) [+ TITLE_BOOST if title matches query]`
     /// The title boost is added in `NodeEmbeddingService::semantic_search` when a query term
     /// appears in the node title.
     pub score: f64,
