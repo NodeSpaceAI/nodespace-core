@@ -128,11 +128,15 @@
 
     if (lang === 'mermaid') {
       highlightedLines = null;
+      mermaidError = null; // Clear error at start of new render attempt
       renderMermaid(code, nodeId, dark).then((svg) => {
         if (seq !== renderSeq) return; // stale — language/content changed before render resolved
-        mermaidSvg = svg;
-        mermaidError =
-          svg === null ? 'Diagram rendering failed. Check your Mermaid syntax.' : null;
+        if (svg !== null) {
+          mermaidSvg = svg; // Replace with new render
+        } else {
+          mermaidSvg = null; // Only clear on definitive failure
+          mermaidError = 'Diagram rendering failed. Check your Mermaid syntax.';
+        }
       });
     } else if (lang !== 'plaintext') {
       mermaidSvg = null;
