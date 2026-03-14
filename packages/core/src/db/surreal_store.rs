@@ -1,7 +1,12 @@
 //! SurrealStore - Direct SurrealDB Backend Implementation
 //!
-//! This module provides the primary and only database backend for NodeSpace,
-//! using SurrealDB embedded database with RocksDB storage engine.
+//! This module provides the primary database backend for NodeSpace.
+//! Two connection modes are supported via the `Surreal<Any>` dynamic engine:
+//!
+//! - **Embedded RocksDB** (`SurrealStore::new`): Desktop production (Tauri app).
+//!   Holds an exclusive file lock — only one process at a time.
+//! - **HTTP client** (`SurrealStore::new_http`): Browser development mode (dev-proxy).
+//!   Connects to a running `surreal start` server; multiple clients can share the DB.
 //!
 //! # Architecture
 //!
@@ -12,7 +17,7 @@
 //!
 //! # Design Principles
 //!
-//! 1. **Embedded RocksDB**: Desktop-only backend using `kv-rocksdb` engine
+//! 1. **Dynamic engine (`Surreal<Any>`)**: Same struct works with RocksDB embedded and HTTP remote
 //! 2. **SCHEMAFULL + FLEXIBLE**: Core fields strictly typed, user extensions allowed
 //! 3. **Record IDs**: Native SurrealDB format `node:uuid` (type embedded in ID)
 //! 4. **Universal Storage**: All properties embedded in `node.properties` field
@@ -294,7 +299,9 @@ impl SurrealStore {
     /// ```
     pub async fn new(db_path: PathBuf) -> Result<Self> {
         // Initialize embedded RocksDB via the Any engine (supports both embedded and HTTP).
-        // RocksDb path must be expressed as a rocksdb:// URL for engine::any::connect.
+        // Path must be expressed as a rocksdb:// URL for engine::any::connect.
+        // Note: PathBuf::display() uses OS-native separators. This is macOS/Linux only;
+        // backslashes on Windows would produce an invalid URL. Desktop targets are Unix.
         let url = format!("rocksdb://{}", db_path.display());
         let db: Surreal<Any> = surrealdb::engine::any::connect(url)
             .await

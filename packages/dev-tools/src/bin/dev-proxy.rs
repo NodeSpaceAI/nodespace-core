@@ -357,16 +357,21 @@ async fn main() -> anyhow::Result<()> {
 
     println!("🔧 Initializing dev-proxy...");
 
-    // Determine SurrealDB server host from environment or default
+    // Determine SurrealDB server host and credentials from environment or defaults.
+    // Credentials match the --user/--pass flags on the `surreal start` command.
     let db_host = std::env::var("NODESPACE_DEV_DB_HOST")
         .unwrap_or_else(|_| "127.0.0.1:8000".to_string());
+    let db_user = std::env::var("NODESPACE_DEV_DB_USER")
+        .unwrap_or_else(|_| "root".to_string());
+    let db_pass = std::env::var("NODESPACE_DEV_DB_PASS")
+        .unwrap_or_else(|_| "root".to_string());
 
     println!("📡 Connecting to SurrealDB server at: {}", db_host);
 
     // Connect to the running SurrealDB HTTP server (started by `surreal start` or `bun run dev:browser:db`)
     // HTTP mode allows CLI tools to connect to the same database simultaneously — no exclusive file lock.
     println!("🗄️  Connecting to SurrealDB via HTTP...");
-    let mut store = match SurrealStore::new_http(&db_host, "root", "root").await {
+    let mut store = match SurrealStore::new_http(&db_host, &db_user, &db_pass).await {
         Ok(s) => {
             println!("✅ SurrealDB HTTP connection established");
             Arc::new(s)
