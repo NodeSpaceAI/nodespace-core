@@ -4338,39 +4338,67 @@ impl SurrealStore {
         // Run BM25 search and resolve each result to its root node ID in a single query.
         //
         // Strategy: For each BM25-matching node, walk up via has_child relationships to find the root.
-        // The root is the node that is NOT the `out` (child) of any has_child relationship.
         //
-        // We use a two-step query:
-        // 1. BM25 search to get matching node IDs
-        // 2. For each node, find its root by checking if it has a parent; if so, recurse up
+        // Multi-term OR with scoring (Issue #957):
+        // The naive `content @@ $query` uses AND semantics — all tokens must appear in the same
+        // node. For multi-word queries this misses documents where terms are spread across child
+        // nodes (e.g. "keyboard navigation" in a section header and "focus management" in a
+        // different child). Instead, we build one `@@ $tN` clause per token with OR, rank by the
+        // sum of per-term BM25 scores, and take the top candidates. This ensures root nodes
+        // whose titles contain query keywords are included in the candidate set.
         //
-        // SurrealDB doesn't support recursive CTEs, so we use graph traversal syntax to walk up.
-        // The `<-relationship[WHERE relationship_type = 'has_child']<-node` traversal walks up one level.
-        // We use a flat approach: fetch ancestors and take the one with no parent.
-        //
-        // Simpler approach: get candidate node IDs from BM25, then for each check its root via
-        // the SELECT chain we already use in get_parent_id().
-        //
-        // For performance, we do this in SQL with a subquery that finds all ancestors including self,
-        // then returns the one that is NOT a child of any has_child relationship (i.e., a root).
-        let sql = r#"
-            SELECT VALUE meta::id(id) FROM node
-            WHERE content @@ $query
-              AND lifecycle_status != 'deleted'
-            LIMIT $limit;
-        "#;
+        // Single-term queries fall back to a simple `content @@ $t0` with no OR overhead.
+        let tokens: Vec<String> = query
+            .split_whitespace()
+            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
 
-        let mut response = self
-            .db
-            .query(sql)
-            .bind(("query", query.to_string()))
+        if tokens.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+
+        // Build: (content @@ $t0 OR content @@ $t1 OR ...)
+        let where_clauses: Vec<String> = tokens
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("content @@ $t{}", i))
+            .collect();
+        let where_expr = where_clauses.join(" OR ");
+
+        // Build: search::score(0) + search::score(1) + ...
+        let score_expr: String = (0..tokens.len())
+            .map(|i| format!("search::score({})", i))
+            .collect::<Vec<_>>()
+            .join(" + ");
+
+        let sql = format!(
+            "SELECT meta::id(id) AS id, {} AS score FROM node WHERE ({}) AND lifecycle_status != 'deleted' ORDER BY score DESC LIMIT $limit;",
+            score_expr, where_expr
+        );
+
+        let mut query_builder = self.db.query(&sql);
+        for (i, token) in tokens.iter().enumerate() {
+            query_builder = query_builder.bind((format!("t{}", i), token.clone()));
+        }
+        let mut response = query_builder
             .bind(("limit", candidate_limit))
             .await
             .context("Failed to execute BM25 content search")?;
 
-        let matching_ids: Vec<String> = response
+        #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
+        struct BM25Row {
+            id: String,
+            score: f64,
+        }
+
+        let rows: Vec<BM25Row> = response
             .take(0)
             .context("Failed to extract BM25 search results")?;
+
+        let matching_ids: Vec<String> = rows.into_iter().map(|r| r.id).collect();
+
+        tracing::debug!("BM25 raw matching_ids count={} query='{}'", matching_ids.len(), query);
 
         if matching_ids.is_empty() {
             return Ok(std::collections::HashSet::new());
