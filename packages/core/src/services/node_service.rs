@@ -1590,7 +1590,6 @@ impl NodeService {
             properties: params.properties,
             mentions: vec![],
             mentioned_in: vec![],
-            member_of: vec![],
             created_at: chrono::Utc::now(),
             modified_at: chrono::Utc::now(),
             title,
@@ -1899,7 +1898,6 @@ impl NodeService {
                     properties: serde_json::json!({}),
                     mentions: vec![],
                     mentioned_in: vec![],
-                    member_of: vec![],
                     title: None, // Date nodes don't have indexed titles
                     lifecycle_status: "active".to_string(),
                 };
@@ -4416,7 +4414,6 @@ impl NodeService {
                 properties: properties.clone(),
                 mentions: vec![],
                 mentioned_in: vec![],
-                member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 title: None, // Bulk nodes don't need titles (validated only)
@@ -4528,7 +4525,6 @@ impl NodeService {
                 properties: properties.clone(),
                 mentions: vec![],
                 mentioned_in: vec![],
-                member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 title: None,
@@ -4632,7 +4628,6 @@ impl NodeService {
                 properties: properties.clone(),
                 mentions: vec![],
                 mentioned_in: vec![],
-                member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 title: None,
@@ -4954,7 +4949,6 @@ impl NodeService {
                 properties: serde_json::json!({}),
                 mentions: vec![],
                 mentioned_in: vec![],
-                member_of: vec![],
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
                 title: None, // Title managed by NodeService for root/task nodes
