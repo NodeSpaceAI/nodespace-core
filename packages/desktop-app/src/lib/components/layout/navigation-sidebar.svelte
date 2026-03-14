@@ -260,29 +260,22 @@
     <!-- Collections section (after Daily Journal) - accordion toggle -->
     {#if !isCollapsed}
       <Collapsible.Root open={collectionsExpanded} onOpenChange={(open) => setCollectionsExpanded(open)}>
-        <Collapsible.Trigger class="nav-item">
-          {#if collectionsExpanded}
-            <svg
-              class="nav-icon"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+        <Collapsible.Trigger
+          class="nav-item"
+          aria-label={collectionsExpanded ? 'Collapse Collections' : 'Expand Collections'}
+        >
+          <svg
+            class="nav-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            {#if collectionsExpanded}
               <path d="M2 10h20" />
-            </svg>
-          {:else}
-            <svg
-              class="nav-icon"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-            </svg>
-          {/if}
+            {/if}
+          </svg>
           <span class="nav-label">Collections</span>
         </Collapsible.Trigger>
 
