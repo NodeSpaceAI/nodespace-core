@@ -142,7 +142,7 @@ describe('SharedNodeStore - Extended Coverage', () => {
   });
 
   // ========================================================================
-  // updateTaskNode - Type-safe spoke field updates
+  // updateTaskNode - Type-safe task property updates
   // ========================================================================
 
   describe('updateTaskNode', () => {

@@ -200,7 +200,7 @@ class BrowserSyncService {
    * expected by the frontend stores and components.
    *
    * @param nodeData - Raw node data from SSE event
-   * @returns Normalized node with flat spoke fields for typed nodes
+   * @returns Normalized node with flat type-specific fields for typed nodes
    */
   private normalizeNodeData(nodeData: Node): Node {
     if (nodeData.nodeType === 'task') {

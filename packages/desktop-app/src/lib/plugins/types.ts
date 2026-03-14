@@ -51,7 +51,7 @@ export interface SchemaFormRegistration {
 
 /**
  * Type-specific node updater interface
- * Provides type-safe update operations for nodes with spoke tables
+ * Provides type-safe update operations for nodes with type-specific properties
  *
  * The changes parameter accepts Record<string, unknown> at the interface level,
  * but implementations can use more specific types internally.
@@ -207,9 +207,9 @@ export interface PluginDefinition {
   reference?: ReferenceRegistration;
 
   /**
-   * Type-specific schema form for editing spoke table fields (Issue #709)
+   * Type-specific schema form for editing type-specific properties (Issue #709)
    *
-   * Core node types with spoke tables (task, date, entity) should provide
+   * Core node types with type-specific properties (task, date, entity) should provide
    * hardcoded schema forms for full TypeScript type safety.
    *
    * User-defined types fall back to the generic SchemaPropertyForm.
@@ -222,7 +222,7 @@ export interface PluginDefinition {
   schemaForm?: SchemaFormRegistration;
 
   /**
-   * Type-specific updater for spoke table fields (Issue #709)
+   * Type-specific updater for node properties (Issue #709)
    *
    * Provides type-safe update operations that route to the correct
    * backend method (e.g., updateTaskNode instead of generic updateNode).
@@ -241,10 +241,10 @@ export interface PluginDefinition {
    * Extract and transform node properties into component-compatible metadata
    * Used to handle type-specific property transformations without hardcoding in BaseNodeViewer
    *
-   * Issue #838: Backend returns typed nodes (e.g., TaskNode) with spoke fields at top level.
-   * The function receives node with optional top-level spoke fields AND properties.
+   * Issue #838: Backend returns typed nodes (e.g., TaskNode) with type-specific fields at top level.
+   * The function receives node with optional top-level type-specific fields AND properties.
    *
-   * @param node - Node with optional top-level spoke fields and properties from database
+   * @param node - Node with optional top-level type-specific fields and properties from database
    * @returns Metadata object compatible with node component expectations
    * @example
    * // TaskNode format (status at top level):

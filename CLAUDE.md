@@ -50,15 +50,16 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 >
 > 1. **Check git status**: `git status` - commit any pending changes first
 > 2. **Pull latest changes**: `git fetch origin && git pull origin main` - ensure you're working from the latest codebase
-> 3. **Run test baseline**: `bun run test & bun run rust:test & wait` - run frontend AND backend tests in parallel
-> 4. **Document baseline**: Add comment to issue with baseline test status
+> 3. **Install dependencies**: `bun install` - sync node_modules after pulling (new packages may have been added)
+> 4. **Run test baseline**: `bun run test` - run frontend tests only (Rust tests require a warm cache and full disk space)
+> 5. **Document baseline**: Add comment to issue with baseline test status
 >
 >    > ⚠️ **CRITICAL: All `bun run gh:*` commands MUST be run from the repository root (`nodespace-core/`), NOT from subdirectories like `packages/desktop-app/`. The scripts are defined in the root package.json and will fail with "Script not found" if run from the wrong directory.**
 >
 >    ```bash
 >    # ✅ CORRECT - from repository root
 >    cd /path/to/nodespace-core  # Ensure you're at repo root first!
->    bun run gh:comment <number> "Frontend: X passed, Rust: Y passed"
+>    bun run gh:comment <number> "Frontend: X passed"
 >
 >    # ❌ WRONG - do NOT pipe to gh:comment (it doesn't read stdin)
 >    echo "text" | bun run gh:comment <number>
@@ -69,13 +70,13 @@ NodeSpace is an AI-native knowledge management system built with Rust backend, S
 >    ```
 >    - ⚠️ **WAIT for complete test output** - look for "Test Files X passed" summary line
 >    - ⚠️ **Verify final "Duration" line is visible** - if missing, output was truncated
-> 5. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
-> 6. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
-> 7. **Assign issue**: `bun run gh:assign <number> "@me"` *(run from repo root)*
-> 8. **Update project status**: `bun run gh:status <number> "In Progress"` *(run from repo root)*
-> 9. **Select subagent**: Choose appropriate specialized agent based on task complexity and type
-> 10. **Read issue requirements**: Understand all acceptance criteria
-> 11. **Plan implementation**: Self-contained approach with appropriate subagent
+> 6. **Determine branching strategy**: Check parent issue for specified approach (single branch vs. individual branches)
+> 7. **Create/switch to branch**: Based on strategy - either `git checkout -b feature/issue-<number>-brief-description` OR switch to existing parent issue branch
+> 8. **Assign issue**: `bun run gh:assign <number> "@me"` *(run from repo root)*
+> 9. **Update project status**: `bun run gh:status <number> "In Progress"` *(run from repo root)*
+> 10. **Select subagent**: Choose appropriate specialized agent based on task complexity and type
+> 11. **Read issue requirements**: Understand all acceptance criteria
+> 12. **Plan implementation**: Self-contained approach with appropriate subagent
 >
 > ## 📋 CONTINUING FROM WIP COMMIT
 >
@@ -472,7 +473,7 @@ When using plan mode (EnterPlanMode / ExitPlanMode), the context window is clear
 **Therefore, every plan MUST be self-contained and include:**
 
 1. **Startup sequence as Step 0** — The plan must begin with:
-   > Step 0: Complete startup sequence — git status, pull latest, run test baseline (`bun run test & bun run rust:test & wait`), document baseline in issue (`bun run gh:comment <N> "..."`), create branch (`git checkout -b feature/issue-<N>-description`), assign issue (`bun run gh:assign <N> "@me"`), update status (`bun run gh:status <N> "In Progress"`)
+   > Step 0: Complete startup sequence — git status, pull latest, `bun install`, run test baseline (`bun run test`), document baseline in issue (`bun run gh:comment <N> "..."`), create branch (`git checkout -b feature/issue-<N>-description`), assign issue (`bun run gh:assign <N> "@me"`), update status (`bun run gh:status <N> "In Progress"`)
 
 2. **Finalization steps at the end** — The plan must end with:
    > Final steps: Run `bun run test:all` to verify no new failures vs baseline. Run `bun run quality:fix` and commit any changes. Create PR with `bun run gh:pr <N>`.
@@ -659,8 +660,9 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 **Startup Sequence - NEW TASK (MANDATORY - Steps 1-11 from above):**
 - [ ] Checked git status and committed any pending changes
 - [ ] **Pulled latest changes** (`git fetch origin && git pull origin main`)
-- [ ] **Recorded test baseline** (`bun run test & bun run rust:test & wait` - frontend AND backend counts)
-- [ ] **Documented baseline in issue** using `bun run gh:comment <N> "Frontend: X passed, Rust: Y passed"` (NOT piped via echo)
+- [ ] **Installed dependencies** (`bun install` - sync node_modules after pull)
+- [ ] **Recorded test baseline** (`bun run test` - frontend tests only)
+- [ ] **Documented baseline in issue** using `bun run gh:comment <N> "Frontend: X passed"` (NOT piped via echo)
 - [ ] Determined branching strategy from parent issue (single branch vs. individual branches)
 - [ ] Created/switched to appropriate branch based on strategy
 - [ ] Assigned issue to self (`bun run gh:assign <number> "@me"`)

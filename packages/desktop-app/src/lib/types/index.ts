@@ -34,7 +34,7 @@ export { isQuoteBlockNode, QuoteBlockNodeHelpers } from './quote-block-node';
 export type { OrderedListNode } from './ordered-list-node';
 export { isOrderedListNode, OrderedListNodeHelpers } from './ordered-list-node';
 
-// Type-safe node wrappers - Spoke table types (flat structure matching Rust serialization)
+// Type-safe node wrappers - Type-specific node types (flat structure matching Rust serialization)
 export type {
   TaskNode,
   TaskNodeUpdate,

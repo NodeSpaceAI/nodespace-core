@@ -132,7 +132,7 @@
    * Get property value with backward compatibility (Issue #397)
    *
    * Supports multiple formats:
-   * - Strongly-typed nodes: top-level spoke fields (e.g., task.status)
+   * - Strongly-typed nodes: top-level type-specific fields (e.g., task.status)
    * - New nested: properties.task.status
    * - Old flat: properties.status
    */
@@ -140,7 +140,7 @@
     if (!node) return undefined;
 
     // For strongly-typed nodes (TaskNode, etc.), check top-level fields first
-    // Spoke fields like status, priority, dueDate are at the top level
+    // Type-specific fields like status, priority, dueDate are at the top level
     if (fieldName in node && (node as unknown as Record<string, unknown>)[fieldName] !== undefined) {
       return (node as unknown as Record<string, unknown>)[fieldName];
     }

@@ -6,7 +6,7 @@
  * - SimplePersistenceCoordinator edge cases
  * - Error handling paths in persistence
  * - Batch persistence race conditions
- * - Edge cases in updateNode spoke field routing
+ * - Edge cases in updateNode type-specific property routing
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

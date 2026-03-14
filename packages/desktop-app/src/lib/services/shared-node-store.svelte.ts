@@ -806,21 +806,21 @@ export class SharedNodeStore {
         // FOREIGN KEY validation is handled by persistence coordinator dependencies
         // Structural changes (sibling ordering) are now handled via backend moveNode()
 
-        // Issue #709: Smart routing via plugin system supports spoke fields
-        // Type-specific updaters route to spoke table methods (updateTaskNode, etc.)
-        // The persistence whitelist now includes spoke field changes
+        // Issue #709: Smart routing via plugin system supports type-specific properties
+        // Type-specific updaters route to node-specific methods (updateTaskNode, etc.)
+        // The persistence whitelist now includes type-specific property changes
         const isStructuralChange = false; // Structural changes now handled via backend moveNode()
         const isContentChange = 'content' in changes;
         const isNodeTypeChange = 'nodeType' in changes;
         const isPropertyChange = 'properties' in changes;
-        // Issue #709: Check for spoke field changes (status, priority, dueDate, assignee, etc.)
+        // Issue #709: Check for type-specific property changes (status, priority, dueDate, assignee, etc.)
         // These are persisted via type-specific updaters registered in the plugin system
         const currentNode = this.nodes.get(nodeId);
-        const hasSpokeFieldUpdater = currentNode?.nodeType
+        const hasTypeUpdater = currentNode?.nodeType
           ? pluginRegistry.hasNodeUpdater(currentNode.nodeType)
           : false;
-        const isSpokeFieldChange =
-          hasSpokeFieldUpdater &&
+        const isTypeSpecificChange =
+          hasTypeUpdater &&
           ('status' in changes ||
             'priority' in changes ||
             'dueDate' in changes ||
@@ -833,7 +833,7 @@ export class SharedNodeStore {
           isContentChange ||
           isNodeTypeChange ||
           isPropertyChange ||
-          isSpokeFieldChange;
+          isTypeSpecificChange;
 
         // Issue #479: Do NOT check isPlaceholder here - that's a UI-only concept
         // Real nodes created by user actions (Enter key) should persist even if blank
@@ -922,12 +922,12 @@ export class SharedNodeStore {
 
                   try {
                     // Issue #709: Smart routing via plugin system
-                    // Type-specific updaters route to spoke table methods (updateTaskNode, etc.)
-                    // Generic updater falls back to hub table properties JSON update
+                    // Type-specific updaters route to node-specific methods (updateTaskNode, etc.)
+                    // Generic updater falls back to node properties JSON update
                     //
                     // CRITICAL: Don't use type-specific updater when nodeType is CHANGING
-                    // Type-specific updaters are only for spoke field updates on nodes that
-                    // are ALREADY of that type. Node type changes must go through generic path.
+                    // Type-specific updaters are only for type-specific property updates on nodes
+                    // that are ALREADY of that type. Node type changes must go through generic path.
                     const nodeType = currentNode?.nodeType;
                     const isNodeTypeChanging = 'nodeType' in updatePayload;
                     const typeUpdater =
@@ -936,7 +936,7 @@ export class SharedNodeStore {
                     let updatedNodeFromBackend: Node | null = null;
 
                     if (typeUpdater) {
-                      // Type-specific path → spoke table update
+                      // Type-specific path → node-specific properties update
                       // The plugin updater handles mapping changes to type-specific fields
                       log.debug(`Using type-specific updater for ${nodeType}`);
                       updatedNodeFromBackend = await typeUpdater.update(
@@ -1449,18 +1449,18 @@ export class SharedNodeStore {
   }
 
   /**
-   * Update a task node with type-safe spoke field updates (Issue #709)
+   * Update a task node with type-safe property updates (Issue #709)
    *
    * Routes task-specific field updates (status, priority, dueDate, assignee) through
-   * the type-safe update path that directly modifies the spoke table in the backend.
+   * the type-safe update path that directly modifies task node properties in the backend.
    *
    * This method provides end-to-end type safety for task updates:
    * - Frontend sends TaskNodeUpdate (not generic NodeUpdate)
-   * - Backend updates spoke table fields directly (not via JSON properties)
+   * - Backend updates task node properties directly (not via JSON properties blob)
    * - Returns TaskNode with updated fields and new version
    *
    * @param nodeId - Task node ID to update
-   * @param update - TaskNodeUpdate with spoke fields to update
+   * @param update - TaskNodeUpdate with task-specific fields to update
    * @param source - Source of the update (viewer, database, MCP)
    */
   updateTaskNode(
@@ -1529,7 +1529,7 @@ export class SharedNodeStore {
           const localNode = this.nodes.get(nodeId);
           if (localNode && updatedTaskNode) {
             localNode.version = updatedTaskNode.version;
-            // Also update spoke fields from backend response
+            // Also update type-specific fields from backend response
             // Use Object.assign to safely update fields that may not exist on Node interface
             Object.assign(localNode, {
               status: updatedTaskNode.status,

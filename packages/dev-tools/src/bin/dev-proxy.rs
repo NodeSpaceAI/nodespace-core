@@ -217,7 +217,7 @@ struct UpdateNodeRequest {
 
 /// Update task node request with OCC version (Issue #709)
 ///
-/// Type-safe update for task nodes with spoke-level field validation.
+/// Type-safe update for task nodes with type-specific property validation.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateTaskNodeRequest {
@@ -902,10 +902,10 @@ async fn update_node(
     Ok(Json(typed))
 }
 
-/// Update a task node with type-safe spoke fields (Issue #709)
+/// Update a task node with type-safe properties (Issue #709)
 ///
 /// This endpoint provides type-safe updates for task nodes, with proper
-/// validation of spoke-level fields (status, priority) and OCC version checking.
+/// validation of type-specific properties (status, priority) and OCC version checking.
 ///
 /// # HTTP Endpoint
 /// ```text
@@ -1316,17 +1316,19 @@ async fn get_all_collections(State(state): State<AppState>) -> ApiResult<Vec<Col
         Ok(collections_with_counts) => {
             let result: Vec<CollectionInfo> = collections_with_counts
                 .into_iter()
-                .map(|(node, member_count, parent_collection_ids)| CollectionInfo {
-                    id: node.id,
-                    content: node.content,
-                    node_type: node.node_type,
-                    created_at: node.created_at,
-                    modified_at: node.modified_at,
-                    version: node.version,
-                    properties: node.properties,
-                    member_count,
-                    parent_collection_ids,
-                })
+                .map(
+                    |(node, member_count, parent_collection_ids)| CollectionInfo {
+                        id: node.id,
+                        content: node.content,
+                        node_type: node.node_type,
+                        created_at: node.created_at,
+                        modified_at: node.modified_at,
+                        version: node.version,
+                        properties: node.properties,
+                        member_count,
+                        parent_collection_ids,
+                    },
+                )
                 .collect();
             Ok(Json(result))
         }

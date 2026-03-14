@@ -411,7 +411,7 @@
    * Update a schema field value for a node (schema-aware property update)
    *
    * For task nodes (Issue #709): Routes through type-safe update path that
-   * directly modifies spoke table fields (status, priority, dueDate, assignee).
+   * directly modifies task node properties (status, priority, dueDate, assignee).
    *
    * For other nodes: Uses generic update path via properties JSON.
    *
@@ -423,13 +423,13 @@
     const targetNode = sharedNodeStore.getNode(targetNodeId);
     if (!targetNode) return;
 
-    // Issue #709: Route task node spoke field updates through type-safe path
+    // Issue #709: Route task node property updates through type-safe path
     if (targetNode.nodeType === 'task') {
       // Map field names to TaskNodeUpdate structure
-      // The spoke fields are: status, priority, dueDate, assignee
-      const taskSpokeFields = ['status', 'priority', 'due_date', 'dueDate', 'assignee'];
+      // The task-specific fields are: status, priority, dueDate, assignee
+      const taskFields = ['status', 'priority', 'due_date', 'dueDate', 'assignee'];
 
-      if (taskSpokeFields.includes(fieldName)) {
+      if (taskFields.includes(fieldName)) {
         // Use type-safe task node update
         sharedNodeStore.updateTaskNode(
           targetNodeId,
