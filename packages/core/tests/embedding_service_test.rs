@@ -1315,3 +1315,353 @@ async fn test_title_keyword_boost_applied() -> Result<()> {
 
     Ok(())
 }
+
+// =========================================================================
+// Hybrid Search Tests (Issue #951)
+// =========================================================================
+
+/// Test that BM25 search finds nodes containing query terms
+#[tokio::test]
+async fn test_bm25_search_roots_finds_root_by_content() -> Result<()> {
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Create a root node with specific vocabulary
+    let doc = create_root_node(
+        &node_service,
+        "text",
+        "SharedNodeStore debounce persistence coordinator pattern",
+    )
+    .await?;
+
+    // Create an unrelated node
+    let other = create_root_node(&node_service, "text", "Unrelated content about cats").await?;
+
+    // BM25 search should find the document by exact term
+    let roots = store.bm25_search_roots("persistence", 50).await?;
+
+    assert!(
+        roots.contains(&doc.id),
+        "BM25 should find root with 'persistence' in content"
+    );
+    assert!(
+        !roots.contains(&other.id),
+        "BM25 should not find unrelated document"
+    );
+
+    Ok(())
+}
+
+/// Test that BM25 search resolves child node matches to their root
+#[tokio::test]
+async fn test_bm25_search_roots_resolves_child_to_root() -> Result<()> {
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Create a root node with generic content
+    let root = create_root_node(&node_service, "text", "Overview document").await?;
+
+    // Create a child node with specific technical vocabulary
+    let child = create_child_node(
+        &node_service,
+        &root.id,
+        "text",
+        "SimplePersistenceCoordinator debounce implementation",
+    )
+    .await?;
+
+    // BM25 search should find the ROOT (not the child) when the term is in the child
+    let roots = store.bm25_search_roots("debounce", 50).await?;
+
+    assert!(
+        roots.contains(&root.id),
+        "BM25 should surface the ROOT when query term is in a child node"
+    );
+    assert!(
+        !roots.contains(&child.id),
+        "BM25 should return root IDs, not child IDs"
+    );
+
+    Ok(())
+}
+
+/// Test BM25 with query term buried in a grandchild node
+#[tokio::test]
+async fn test_bm25_search_roots_resolves_grandchild_to_root() -> Result<()> {
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let root = create_root_node(&node_service, "text", "Frontend Architecture").await?;
+    let child =
+        create_child_node(&node_service, &root.id, "text", "State management section").await?;
+    let grandchild = create_child_node(
+        &node_service,
+        &child.id,
+        "text",
+        "reactivity rune derived store update",
+    )
+    .await?;
+
+    // Query term is in grandchild - should resolve to root
+    let roots = store.bm25_search_roots("reactivity", 50).await?;
+
+    assert!(
+        roots.contains(&root.id),
+        "BM25 should surface ROOT when query term is in grandchild"
+    );
+    assert!(
+        !roots.contains(&child.id),
+        "Intermediate child should not appear as root"
+    );
+    assert!(
+        !roots.contains(&grandchild.id),
+        "Grandchild should not appear as root"
+    );
+
+    Ok(())
+}
+
+/// Test that BM25 returns empty set when no content matches
+#[tokio::test]
+async fn test_bm25_search_roots_no_match_returns_empty() -> Result<()> {
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let _doc = create_root_node(&node_service, "text", "cats and dogs").await?;
+
+    let roots = store.bm25_search_roots("xyznonexistentterm123", 50).await?;
+
+    assert!(
+        roots.is_empty(),
+        "BM25 should return empty set when no content matches"
+    );
+
+    Ok(())
+}
+
+/// Test the hybrid tiering logic: intersection (tier 1) vs KNN-only (tier 2)
+///
+/// Verifies intersection signal by directly running BM25 and KNN independently
+/// and checking which docs are in each set. This avoids model initialization.
+#[tokio::test]
+async fn test_hybrid_intersection_tier_signal() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Doc A: Has exact keyword "persistence" in content AND an embedding
+    let doc_a = create_root_node(
+        &node_service,
+        "text",
+        "persistence coordinator pattern for storing node changes",
+    )
+    .await?;
+
+    // Doc B: Has embedding but no keyword match for "persistence"
+    let doc_b = create_root_node(
+        &node_service,
+        "text",
+        "SharedNodeStore debounce coordinator implementation details",
+    )
+    .await?;
+
+    // Give both identical embedding vectors (same KNN similarity)
+    let mut vec_same = vec![0.0f32; 768];
+    vec_same[0] = 1.0;
+    vec_same[1] = 0.5;
+
+    for (node, hash) in [(&doc_a, "hash_a"), (&doc_b, "hash_b")] {
+        store
+            .upsert_embeddings(
+                &node.id,
+                vec![NewEmbedding {
+                    node_id: node.id.clone(),
+                    vector: vec_same.clone(),
+                    model_name: Some("test-model".to_string()),
+                    chunk_index: 0,
+                    chunk_start: 0,
+                    chunk_end: 100,
+                    total_chunks: 1,
+                    content_hash: hash.to_string(),
+                    token_count: 10,
+                }],
+            )
+            .await?;
+    }
+
+    // Run both signals independently (mirrors the hybrid search parallel execution)
+    let bm25_roots = store.bm25_search_roots("persistence", 50).await?;
+    let knn_results = store.search_embeddings(&vec_same, 20, Some(0.1)).await?;
+    let knn_ids: std::collections::HashSet<String> =
+        knn_results.iter().map(|r| r.node_id.clone()).collect();
+
+    // doc_a should be in BOTH (tier 1: intersection)
+    assert!(
+        bm25_roots.contains(&doc_a.id),
+        "doc_a should be in BM25 results (has 'persistence' in content)"
+    );
+    assert!(
+        knn_ids.contains(&doc_a.id),
+        "doc_a should be in KNN results (has embedding)"
+    );
+
+    // doc_b should be in KNN only (tier 2)
+    assert!(
+        !bm25_roots.contains(&doc_b.id),
+        "doc_b should NOT be in BM25 results (no 'persistence' in content)"
+    );
+    assert!(
+        knn_ids.contains(&doc_b.id),
+        "doc_b should be in KNN results (has embedding)"
+    );
+
+    // Intersection is exactly doc_a
+    let intersection: std::collections::HashSet<&String> =
+        bm25_roots.intersection(&knn_ids).collect();
+    assert!(
+        intersection.contains(&&doc_a.id),
+        "doc_a should be in intersection (tier 1)"
+    );
+    assert!(
+        !intersection.contains(&&doc_b.id),
+        "doc_b should not be in intersection (tier 2 only)"
+    );
+
+    Ok(())
+}
+
+/// Test that BM25-only docs (tier 3) have no KNN embedding
+///
+/// Verifies that docs without embeddings appear only in BM25 results,
+/// which the hybrid search will rank last (score=0.0).
+#[tokio::test]
+async fn test_hybrid_bm25_only_tier_has_no_knn_score() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Doc A: Has keyword match but NO embedding (BM25-only, tier 3)
+    let doc_bm25_only = create_root_node(
+        &node_service,
+        "text",
+        "database persistence coordinator pattern",
+    )
+    .await?;
+    // Note: no embedding upserted → won't appear in KNN results
+
+    // Doc B: Has embedding but no keyword match (KNN-only, tier 2)
+    let doc_knn_only = create_root_node(
+        &node_service,
+        "text",
+        "SharedNodeStore implementation with reactive state",
+    )
+    .await?;
+
+    let mut vec_b = vec![0.0f32; 768];
+    vec_b[0] = 0.9;
+    vec_b[1] = 0.4;
+
+    store
+        .upsert_embeddings(
+            &doc_knn_only.id,
+            vec![NewEmbedding {
+                node_id: doc_knn_only.id.clone(),
+                vector: vec_b.clone(),
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 100,
+                total_chunks: 1,
+                content_hash: "hash_knn".to_string(),
+                token_count: 10,
+            }],
+        )
+        .await?;
+
+    // Run both signals
+    let bm25_roots = store.bm25_search_roots("persistence", 50).await?;
+    let knn_results = store.search_embeddings(&vec_b, 20, Some(0.1)).await?;
+    let knn_ids: std::collections::HashSet<String> =
+        knn_results.iter().map(|r| r.node_id.clone()).collect();
+
+    // doc_bm25_only: in BM25 but NOT in KNN
+    assert!(
+        bm25_roots.contains(&doc_bm25_only.id),
+        "doc_bm25_only should appear in BM25 results"
+    );
+    assert!(
+        !knn_ids.contains(&doc_bm25_only.id),
+        "doc_bm25_only should NOT appear in KNN results (no embedding)"
+    );
+
+    // doc_knn_only: in KNN but NOT in BM25
+    assert!(
+        knn_ids.contains(&doc_knn_only.id),
+        "doc_knn_only should appear in KNN results"
+    );
+    assert!(
+        !bm25_roots.contains(&doc_knn_only.id),
+        "doc_knn_only should NOT appear in BM25 results (no 'persistence' in content)"
+    );
+
+    Ok(())
+}
+
+/// Test that conceptual query with no keyword match returns only KNN results from BM25
+///
+/// Verifies that BM25 returns empty when query terms don't match content vocabulary,
+/// while KNN can still find the doc by embedding similarity.
+#[tokio::test]
+async fn test_hybrid_conceptual_query_bm25_misses_knn_hits() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Doc with technical vocabulary — BM25 won't match "pattern for persisting changes"
+    let doc = create_root_node(
+        &node_service,
+        "text",
+        "SharedNodeStore debounce SimplePersistenceCoordinator reactive state",
+    )
+    .await?;
+
+    let mut vec = vec![0.0f32; 768];
+    vec[0] = 1.0;
+
+    store
+        .upsert_embeddings(
+            &doc.id,
+            vec![NewEmbedding {
+                node_id: doc.id.clone(),
+                vector: vec.clone(),
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 100,
+                total_chunks: 1,
+                content_hash: "hash1".to_string(),
+                token_count: 10,
+            }],
+        )
+        .await?;
+
+    // BM25 query uses different vocabulary than the document content → no match
+    let bm25_roots = store
+        .bm25_search_roots("pattern for persisting changes", 50)
+        .await?;
+
+    // KNN finds it via embedding similarity
+    let knn_results = store.search_embeddings(&vec, 20, Some(0.1)).await?;
+    let knn_ids: std::collections::HashSet<String> =
+        knn_results.iter().map(|r| r.node_id.clone()).collect();
+
+    // BM25 misses the doc (vocabulary mismatch)
+    assert!(
+        !bm25_roots.contains(&doc.id),
+        "BM25 should not find doc with different vocabulary (this is the known weakness hybrid search addresses)"
+    );
+
+    // KNN finds it (embedding captures semantic similarity)
+    assert!(
+        knn_ids.contains(&doc.id),
+        "KNN should find doc via embedding similarity (tier 2 fallback)"
+    );
+
+    Ok(())
+}

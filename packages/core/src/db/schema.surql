@@ -60,6 +60,15 @@ DEFINE ANALYZER IF NOT EXISTS analyzer_title TOKENIZERS class FILTERS lowercase,
 -- Full-text index for @mention autocomplete search (Issue #821, upgraded in SurrealDB 3.x)
 DEFINE INDEX IF NOT EXISTS idx_node_title ON TABLE node COLUMNS title FULLTEXT ANALYZER analyzer_title BM25;
 
+-- Full-text analyzer for BM25 content search (Issue #951 - hybrid search)
+-- Uses snowball stemming so "persisting" matches "persist", "persistence", etc.
+DEFINE ANALYZER IF NOT EXISTS nodespace_analyzer TOKENIZERS class FILTERS lowercase, snowball(english);
+
+-- BM25 content index for hybrid search (Issue #951)
+-- Enables keyword search across all nodes (including children) to find roots via BM25+KNN intersection.
+-- Standard BM25 parameters: k1=1.2 (term frequency saturation), b=0.75 (length normalization).
+DEFINE INDEX IF NOT EXISTS idx_node_content_bm25 ON TABLE node COLUMNS content FULLTEXT ANALYZER nodespace_analyzer BM25(1.2, 0.75);
+
 -- Note: Partial indexes (WHERE clause) are not supported in SurrealDB 2.x
 -- Properties are queried via node_type filter + properties.field access
 
