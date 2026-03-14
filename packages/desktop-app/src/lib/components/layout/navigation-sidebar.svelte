@@ -20,8 +20,11 @@
   import SchemaTypesSubPanel from './schema-types-sub-panel.svelte';
   import { backendAdapter } from '$lib/services/backend-adapter.js';
   import type { SchemaNode } from '$lib/types/schema-node';
+  import { createLogger } from '$lib/utils/logger';
 
   import { onMount } from 'svelte';
+
+  const log = createLogger('NavigationSidebar');
 
   // Subscribe to stores using Svelte 5 runes
   let isCollapsed = $derived($layoutState.sidebarCollapsed);
@@ -230,8 +233,12 @@
       collectionsState.clearSelection();
     }
 
-    schemas = await backendAdapter.getAllSchemas();
-    schemaTypesOpen = true;
+    try {
+      schemas = await backendAdapter.getAllSchemas();
+      schemaTypesOpen = true;
+    } catch (err) {
+      log.error('Failed to load schemas', err);
+    }
   }
 
   function handleSchemaClick(schemaId: string) {

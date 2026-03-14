@@ -36,62 +36,57 @@
   <ul class="schema-list">
     {#if builtInSchemas.length > 0}
       <li class="section-label">Built-in</li>
-      {#each builtInSchemas as schema (schema.id)}
-        <li>
-          <button class="schema-item" onclick={() => onSchemaClick(schema.id)}>
-            <svg
-              class="schema-icon"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <!-- 4-shape icon: triangle (top-left), square (top-right), square (bottom-left), diamond (bottom-right) -->
-              <!-- Top-left: triangle -->
-              <path d="M3 3 L9 3 L6 8 Z" />
-              <!-- Top-right: square -->
-              <rect x="11" y="3" width="6" height="6" />
-              <!-- Bottom-left: square -->
-              <rect x="3" y="13" width="6" height="6" />
-              <!-- Bottom-right: diamond (rotated square) -->
-              <path d="M14 13 L17 16 L14 19 L11 16 Z" />
-            </svg>
-            <span class="schema-name">{schema.content}</span>
-          </button>
-        </li>
-      {/each}
     {/if}
+    {#each builtInSchemas as schema (schema.id)}
+      <li>
+        <button class="schema-item" onclick={() => onSchemaClick(schema.id)}>
+          <svg
+            class="schema-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <!-- 4-shape icon: triangle (top-left), square (top-right), square (bottom-left), diamond (bottom-right) -->
+            <path d="M3 3 L9 3 L6 8 Z" />
+            <rect x="11" y="3" width="6" height="6" />
+            <rect x="3" y="13" width="6" height="6" />
+            <path d="M14 13 L17 16 L14 19 L11 16 Z" />
+          </svg>
+          <span class="schema-name">{schema.content}</span>
+        </button>
+      </li>
+    {/each}
 
     {#if customSchemas.length > 0}
       {#if builtInSchemas.length > 0}
         <li class="separator"></li>
       {/if}
       <li class="section-label">Custom</li>
-      {#each customSchemas as schema (schema.id)}
-        <li>
-          <button class="schema-item" onclick={() => onSchemaClick(schema.id)}>
-            <svg
-              class="schema-icon"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <!-- 4-shape icon -->
-              <path d="M3 3 L9 3 L6 8 Z" />
-              <rect x="11" y="3" width="6" height="6" />
-              <rect x="3" y="13" width="6" height="6" />
-              <path d="M14 13 L17 16 L14 19 L11 16 Z" />
-            </svg>
-            <span class="schema-name">{schema.content}</span>
-          </button>
-        </li>
-      {/each}
     {/if}
+    {#each customSchemas as schema (schema.id)}
+      <li>
+        <button class="schema-item" onclick={() => onSchemaClick(schema.id)}>
+          <svg
+            class="schema-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M3 3 L9 3 L6 8 Z" />
+            <rect x="11" y="3" width="6" height="6" />
+            <rect x="3" y="13" width="6" height="6" />
+            <path d="M14 13 L17 16 L14 19 L11 16 Z" />
+          </svg>
+          <span class="schema-name">{schema.content}</span>
+        </button>
+      </li>
+    {/each}
 
     {#if builtInSchemas.length === 0 && customSchemas.length === 0}
       <li class="empty-state">No schema types defined</li>
