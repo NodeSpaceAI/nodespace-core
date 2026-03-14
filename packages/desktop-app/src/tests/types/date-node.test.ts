@@ -164,19 +164,21 @@ describe('getDateObject', () => {
 });
 
 describe('isValidDateId', () => {
-  // NOTE: isValidDateId has a timezone bug - it creates dates in local time
-  // but compares to UTC. This causes validation to fail in non-UTC timezones.
-  // Tests verify actual behavior but this needs fixing in the implementation.
-  // See: packages/desktop-app/src/lib/types/date-node.ts:86-93
+  it('accepts valid date IDs', () => {
+    expect(isValidDateId('2025-01-15')).toBe(true);
+    expect(isValidDateId('2025-06-15')).toBe(true);
+    expect(isValidDateId('2026-03-14')).toBe(true);
+    expect(isValidDateId('2024-02-29')).toBe(true); // Leap year
+    expect(isValidDateId('2024-12-31')).toBe(true);
+  });
 
-  it('validates date format regex', () => {
-    // These should pass format check but may fail date validation due to timezone bug
-    expect(isValidDateId('2025-1-15')).toBe(false); // Single digit month - format fail
-    expect(isValidDateId('2025-01-5')).toBe(false); // Single digit day - format fail
-    expect(isValidDateId('25-01-15')).toBe(false); // Two digit year - format fail
-    expect(isValidDateId('2025/01/15')).toBe(false); // Wrong separator - format fail
-    expect(isValidDateId('15-01-2025')).toBe(false); // Wrong order - format fail
-    expect(isValidDateId('2025-01-15T00:00:00')).toBe(false); // With time - format fail
+  it('rejects malformed date strings', () => {
+    expect(isValidDateId('2025-1-15')).toBe(false); // Single digit month
+    expect(isValidDateId('2025-01-5')).toBe(false); // Single digit day
+    expect(isValidDateId('25-01-15')).toBe(false); // Two digit year
+    expect(isValidDateId('2025/01/15')).toBe(false); // Wrong separator
+    expect(isValidDateId('15-01-2025')).toBe(false); // Wrong order
+    expect(isValidDateId('2025-01-15T00:00:00')).toBe(false); // With time component
   });
 
   it('rejects invalid dates', () => {
@@ -193,15 +195,6 @@ describe('isValidDateId', () => {
     expect(isValidDateId('not-a-date')).toBe(false);
     expect(isValidDateId('2025-01-15-extra')).toBe(false);
     expect(isValidDateId('123')).toBe(false);
-  });
-
-  it('validates date structure is correct', () => {
-    // Function checks both format and that the date is real
-    // But due to timezone bug, actual dates may fail in non-UTC zones
-    const testId = '2025-06-15';
-    const result = isValidDateId(testId);
-    // Result depends on timezone - we're testing the function executes without error
-    expect(typeof result).toBe('boolean');
   });
 });
 
@@ -230,12 +223,11 @@ describe('generateDateId', () => {
     expect(generateDateId(date)).toBe('2025-01-01');
   });
 
-  it('generates consistent date IDs', () => {
+  it('generates consistent date IDs that are valid', () => {
     const date = new Date('2025-03-15T12:00:00Z');
     const id = generateDateId(date);
     expect(id).toBe('2025-03-15');
-    // Note: isValidDateId has timezone bug, so we can't reliably test validation
-    expect(id).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(isValidDateId(id)).toBe(true);
   });
 
   it('uses UTC time for date extraction', () => {
@@ -521,16 +513,15 @@ describe('DateNode Integration', () => {
     // Extract and verify date
     const dateString = getDate(node);
     expect(dateString).toBe('2025-05-20');
-    // Note: Can't test isValidDateId due to timezone bug
-    expect(dateString).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(isValidDateId(dateString)).toBe(true);
 
     // Convert to Date object
     const dateObj = getDateObject(node);
     expect(dateObj).toBeInstanceOf(Date);
 
-    // Verify consistency - generateDateId produces valid format
+    // Verify consistency - generateDateId produces a valid date ID
     const generatedId = generateDateId(dateObj);
-    expect(generatedId).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(isValidDateId(generatedId)).toBe(true);
   });
 
   it('handles date comparisons correctly', () => {
