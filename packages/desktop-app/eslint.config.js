@@ -211,7 +211,8 @@ export default [
         AbortSignal: 'readonly',
         RequestInit: 'readonly',
         Response: 'readonly',
-        BeforeUnloadEvent: 'readonly'
+        BeforeUnloadEvent: 'readonly',
+      btoa: 'readonly'
       }
     },
     plugins: {

@@ -98,7 +98,7 @@
 
   // Syntax highlighting and Mermaid state
   let highlightedLines = $state<HighlightLine[] | null>(null);
-  let mermaidSvg = $state<string | null>(null);
+  let mermaidSvgUri = $state<string | null>(null);
   let mermaidError = $state<string | null>(null);
 
   // Monotonic counter to discard stale async results when language/content changes rapidly
@@ -121,12 +121,12 @@
       highlightedLines = null;
       renderMermaid(code, nodeId).then((svg) => {
         if (seq !== renderSeq) return; // stale — language/content changed before render resolved
-        mermaidSvg = svg;
+        mermaidSvgUri = svg ? `data:image/svg+xml;base64,${btoa(svg)}` : null;
         mermaidError =
           svg === null ? 'Diagram rendering failed. Check your Mermaid syntax.' : null;
       });
     } else if (lang !== 'plaintext') {
-      mermaidSvg = null;
+      mermaidSvgUri = null;
       mermaidError = null;
       highlightCode(code, lang, dark).then((lines) => {
         if (seq !== renderSeq) return; // stale — discard
@@ -134,7 +134,7 @@
       });
     } else {
       highlightedLines = null;
-      mermaidSvg = null;
+      mermaidSvgUri = null;
       mermaidError = null;
     }
   });
@@ -328,8 +328,8 @@
 <!-- Custom view content snippet for syntax highlighting and Mermaid diagrams -->
 {#snippet codeViewContent()}
   {#if language === 'mermaid'}
-    {#if mermaidSvg}
-      <div class="mermaid-output">{@html mermaidSvg}</div>
+    {#if mermaidSvgUri}
+      <img class="mermaid-output" src={mermaidSvgUri} alt="Mermaid diagram" />
     {:else if mermaidError}
       <div class="mermaid-error">{mermaidError}</div>
     {:else}
