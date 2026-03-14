@@ -3,8 +3,12 @@ import type { Mermaid } from 'mermaid';
 
 const log = createLogger('MermaidRender');
 
-// Singleton module import — loaded once, re-initialized per render when theme changes
+// Singleton module import — loaded once, initialized lazily on first render
 let mermaidModule: Promise<Mermaid> | null = null;
+
+// Cache the last-used theme key to skip redundant initialize() calls and prevent
+// race conditions where concurrent renders interleave init + render with different themes
+let lastThemeKey: string | null = null;
 
 async function getMermaidModule(): Promise<Mermaid> {
   if (!mermaidModule) {
@@ -87,8 +91,12 @@ export function sanitizeSvg(svg: string): string {
   let result = svg.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
   // Remove event handler attributes (all quoting styles: "...", '...', or unquoted)
   result = result.replace(/\s+on\w+(\s*=\s*("[^"]*"|'[^']*'|[^\s>]*))?/gi, '');
-  // Remove javascript: URIs (including javascript: with whitespace after colon)
-  result = result.replace(/javascript\s*:[^"'\s>]*/gi, '');
+  // Remove javascript: URIs from attribute values (quoted and unquoted, with optional whitespace)
+  result = result.replace(/(["'\s])\s*javascript\s*:[^"'>]*/gi, '$1');
+  // Strip data: URIs from href, src, and xlink:href attributes (can carry executable payloads)
+  result = result.replace(/(href|src|xlink:href)\s*=\s*["']\s*data:[^"']*/gi, '$1=""');
+  // Strip url(javascript:...) from inline styles and <style> blocks
+  result = result.replace(/url\s*\(\s*['"]?\s*javascript\s*:[^)]*\)/gi, 'url(about:blank)');
   return result;
 }
 
@@ -99,13 +107,17 @@ export async function renderMermaid(
   isDark = false
 ): Promise<string | null> {
   try {
+    const themeKey = isDark ? 'dark' : 'light';
     const mermaid = await getMermaidModule();
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: 'strict',
-      theme: 'base',
-      themeVariables: buildThemeVariables(isDark)
-    });
+    if (themeKey !== lastThemeKey) {
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: 'base',
+        themeVariables: buildThemeVariables(isDark)
+      });
+      lastThemeKey = themeKey;
+    }
     const { svg } = await mermaid.render(`mermaid-${id}`, definition);
     return sanitizeSvg(svg);
   } catch (err) {

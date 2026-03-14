@@ -100,7 +100,7 @@
   let highlightedLines = $state<HighlightLine[] | null>(null);
   let mermaidSvg = $state<string | null>(null);
   let mermaidError = $state<string | null>(null);
-  let mermaidContainer = $state<HTMLDivElement | undefined>(undefined);
+  let mermaidContainer = $state<HTMLDivElement | null>(null);
 
   // Inject sanitized SVG into the container via DOM — avoids {@html} and its lint warning.
   // sanitizeSvg() strips all scripts and event handlers before this runs.
