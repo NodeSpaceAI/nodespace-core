@@ -1601,11 +1601,22 @@ export class SharedNodeStore {
    */
   async loadChildrenForParent(parentId: string): Promise<Node[]> {
     try {
+      const databaseSource = { type: 'database' as const, reason: 'loaded-from-db' };
+
+      // Ensure the parent node itself is in the store before loading children.
+      // This prevents BaseNodeViewer from treating a not-yet-loaded parent as a
+      // stale/deleted node and closing the tab prematurely (issue #941).
+      if (!this.nodes.has(parentId)) {
+        const parentNode = await tauriCommands.getNode(parentId);
+        if (parentNode) {
+          this.setNode(parentNode, databaseSource);
+        }
+      }
+
       const nodes = await tauriCommands.getChildren(parentId);
 
       // Add nodes to store with database source
       // Database source type will automatically mark nodes as persisted (see determinePersistenceBehavior)
-      const databaseSource = { type: 'database' as const, reason: 'loaded-from-db' };
       for (let i = 0; i < nodes.length; i++) {
         const node = nodes[i];
         this.setNode(node, databaseSource); // skipPersistence removed - database source handles it
