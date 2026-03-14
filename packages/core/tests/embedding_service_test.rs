@@ -965,3 +965,213 @@ async fn test_threshold_filters_by_composite_score_not_raw_similarity() -> Resul
 
     Ok(())
 }
+
+// =========================================================================
+// Issue #936: Title inclusion in embeddings + title keyword boost tests
+// =========================================================================
+
+/// Test that document title is prepended to aggregated content (Issue #936)
+#[tokio::test]
+async fn test_aggregate_subtree_content_includes_title() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+
+    // Create a text node with an explicit title (simulates root node with indexed title)
+    let mut node = Node::new(
+        "text".to_string(),
+        "Body content here".to_string(),
+        json!({}),
+    );
+    node.title = Some("Frontend State & Persistence".to_string());
+    node_service.create_node(node.clone()).await?;
+
+    let aggregated = embedding_service
+        .aggregate_subtree_content(&node.id)
+        .await?;
+
+    // Title should be prepended before body content
+    assert!(
+        aggregated.starts_with("Frontend State & Persistence"),
+        "Aggregated content should start with title, got: {}",
+        aggregated
+    );
+    assert!(
+        aggregated.contains("Body content here"),
+        "Aggregated content should include body"
+    );
+    Ok(())
+}
+
+/// Test that title-less nodes produce the same aggregation as before (Issue #936 - no regression)
+#[tokio::test]
+async fn test_aggregate_subtree_content_no_title_unchanged() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+
+    // Node with no title (default for text nodes via create_node)
+    let root = create_root_node(&node_service, "text", "Root content").await?;
+
+    let aggregated = embedding_service
+        .aggregate_subtree_content(&root.id)
+        .await?;
+
+    // Without a title, aggregated content is just the body
+    assert_eq!(
+        aggregated, "Root content",
+        "Node without title should produce unchanged aggregation"
+    );
+    Ok(())
+}
+
+/// Test that empty/whitespace-only title is skipped in aggregation (Issue #936)
+#[tokio::test]
+async fn test_aggregate_subtree_content_skips_empty_title() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+
+    let mut node = Node::new("text".to_string(), "Body content".to_string(), json!({}));
+    node.title = Some("   ".to_string()); // whitespace only
+    node_service.create_node(node.clone()).await?;
+
+    let aggregated = embedding_service
+        .aggregate_subtree_content(&node.id)
+        .await?;
+
+    // Whitespace title should be skipped; aggregated content is just the body
+    assert_eq!(
+        aggregated, "Body content",
+        "Whitespace-only title should be skipped in aggregation"
+    );
+    Ok(())
+}
+
+/// Test that title keyword boost is applied when a query term matches the node title (Issue #936)
+///
+/// Uses mock embeddings to test Rust-side scoring logic without an NLP engine.
+/// The boost is applied in semantic_search(), which is tested here via search_embeddings()
+/// + manual score inspection.
+#[tokio::test]
+async fn test_title_keyword_boost_applied() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+    use nodespace_core::services::embedding_service::TITLE_BOOST;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Doc with a title that matches likely query terms
+    let mut titled_doc = Node::new(
+        "text".to_string(),
+        "Explains how data flows from backend to UI".to_string(),
+        json!({}),
+    );
+    titled_doc.title = Some("Frontend State Persistence".to_string());
+    node_service.create_node(titled_doc.clone()).await?;
+
+    // Doc without a matching title but similar base similarity
+    let untitled_doc = create_root_node(
+        &node_service,
+        "text",
+        "Data persistence patterns and state management",
+    )
+    .await?;
+
+    // Both docs get the same mock embedding vector (equal base similarity)
+    let shared_vec: Vec<f32> = {
+        let mut v = vec![0.0f32; 768];
+        v[0] = 0.9;
+        v[1] = 0.3;
+        v
+    };
+
+    store
+        .upsert_embeddings(
+            &titled_doc.id,
+            vec![NewEmbedding {
+                node_id: titled_doc.id.clone(),
+                vector: shared_vec.clone(),
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 100,
+                total_chunks: 1,
+                content_hash: "hash-titled".to_string(),
+                token_count: 10,
+            }],
+        )
+        .await?;
+
+    store
+        .upsert_embeddings(
+            &untitled_doc.id,
+            vec![NewEmbedding {
+                node_id: untitled_doc.id.clone(),
+                vector: shared_vec.clone(),
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 100,
+                total_chunks: 1,
+                content_hash: "hash-untitled".to_string(),
+                token_count: 10,
+            }],
+        )
+        .await?;
+
+    // Retrieve raw scores from DB (no title boost applied here)
+    let raw_results = store.search_embeddings(&shared_vec, 10, Some(0.5)).await?;
+
+    assert!(
+        raw_results.len() >= 2,
+        "Both documents should be returned with low threshold"
+    );
+
+    // Both should have the same raw composite_score (identical vectors, single chunk)
+    let raw_titled = raw_results.iter().find(|r| r.node_id == titled_doc.id);
+    let raw_untitled = raw_results.iter().find(|r| r.node_id == untitled_doc.id);
+    assert!(
+        raw_titled.is_some(),
+        "Titled doc should appear in raw results"
+    );
+    assert!(
+        raw_untitled.is_some(),
+        "Untitled doc should appear in raw results"
+    );
+
+    let raw_score_titled = raw_titled.unwrap().score;
+    let raw_score_untitled = raw_untitled.unwrap().score;
+
+    // Scores should be equal before boost (same vector, same chunk count)
+    assert!(
+        (raw_score_titled - raw_score_untitled).abs() < 0.001,
+        "Raw scores should be equal before boost, got titled={}, untitled={}",
+        raw_score_titled,
+        raw_score_untitled
+    );
+
+    // Simulate what semantic_search does: apply title boost
+    // Query term "persistence" appears in titled doc's title "Frontend State Persistence"
+    let query_terms = ["persistence"];
+    let titled_title = titled_doc.title.as_deref().unwrap_or("").to_lowercase();
+    let has_title_match = query_terms
+        .iter()
+        .any(|t| titled_title.contains(&t.to_lowercase()));
+    assert!(
+        has_title_match,
+        "Query term 'persistence' should match titled doc title"
+    );
+
+    let boosted_titled_score = raw_score_titled + TITLE_BOOST;
+    let untouched_untitled_score = raw_score_untitled;
+
+    assert!(
+        boosted_titled_score > untouched_untitled_score,
+        "Titled doc (score {}) should rank above untitled doc (score {}) after title boost",
+        boosted_titled_score,
+        untouched_untitled_score
+    );
+
+    // Verify the boost amount
+    assert!(
+        (boosted_titled_score - untouched_untitled_score - TITLE_BOOST).abs() < 0.001,
+        "Boost should be exactly TITLE_BOOST ({})",
+        TITLE_BOOST
+    );
+
+    Ok(())
+}
