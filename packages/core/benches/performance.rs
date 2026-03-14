@@ -446,12 +446,96 @@ fn bench_batch_update(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark BM25 root-walk latency at realistic corpus sizes (Issue #951)
+///
+/// Measures: BM25 `@@` query + iterative parent-walk to resolve roots.
+/// Run at 100, 500, and 1000 nodes with 3-level nesting (root→child→grandchild).
+/// This is the BM25 leg of hybrid search; it runs in parallel with KNN (~50-100ms).
+/// Target: BM25 path completes well under KNN latency so it stays hidden.
+fn bench_bm25_search_roots(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+
+    let mut group = c.benchmark_group("bm25_search_roots");
+
+    for corpus_size in [100usize, 500, 1000] {
+        // Build corpus once outside the benchmark loop
+        let (store_arc, _temp_dir) = rt.block_on(async {
+            let temp_dir = TempDir::new().unwrap();
+            let db_path = temp_dir.path().join("bench.db");
+            let mut store_arc = Arc::new(SurrealStore::new(db_path).await.unwrap());
+            let node_service = Arc::new(NodeService::new(&mut store_arc).await.unwrap());
+
+            // Build corpus: root → child → grandchild trees
+            // Every 3rd node is a root; others are children/grandchildren.
+            // The term "persistence" appears in ~20% of nodes.
+            let roots_count = corpus_size / 3;
+            for i in 0..roots_count {
+                let root_content = if i % 5 == 0 {
+                    format!("Root document {} about persistence coordinator", i)
+                } else {
+                    format!("Root document {} about general architecture", i)
+                };
+                let root_id = node_service
+                    .create_node(Node::new("text".to_string(), root_content, json!({})))
+                    .await
+                    .unwrap();
+
+                let child_content = if i % 7 == 0 {
+                    format!("Child section {} with debounce and persistence details", i)
+                } else {
+                    format!("Child section {} with implementation details", i)
+                };
+                let child_id = node_service
+                    .create_node(Node::new("text".to_string(), child_content, json!({})))
+                    .await
+                    .unwrap();
+                node_service
+                    .move_node_unchecked(&child_id, Some(&root_id), None)
+                    .await
+                    .unwrap();
+
+                let grandchild_content = format!("Grandchild node {} leaf content", i);
+                let grandchild_id = node_service
+                    .create_node(Node::new(
+                        "text".to_string(),
+                        grandchild_content,
+                        json!({}),
+                    ))
+                    .await
+                    .unwrap();
+                node_service
+                    .move_node_unchecked(&grandchild_id, Some(&child_id), None)
+                    .await
+                    .unwrap();
+            }
+
+            (store_arc, temp_dir)
+        });
+
+        group.bench_function(format!("corpus_{}_nodes", corpus_size), |b| {
+            b.iter(|| {
+                rt.block_on(async {
+                    black_box(
+                        store_arc
+                            .bm25_search_roots("persistence", 100)
+                            .await
+                            .unwrap(),
+                    )
+                })
+            });
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_atomic_operations,
     bench_markdown_import,
     bench_occ_overhead,
     bench_batch_get,
-    bench_batch_update
+    bench_batch_update,
+    bench_bm25_search_roots
 );
 criterion_main!(benches);
