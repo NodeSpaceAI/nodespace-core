@@ -551,10 +551,10 @@ async fn test_knn_search_with_mock_embeddings() -> Result<()> {
         (results[0].max_similarity - 1.0).abs() < 0.001,
         "Exact match should have max_similarity ~1.0"
     );
-    // For a single chunk document, score should equal max_similarity (log10(1) = 0)
+    // For a single chunk document, density = 1/1 = 1.0, so score = max_similarity * 1.30
     assert!(
-        (results[0].score - results[0].max_similarity).abs() < 0.001,
-        "Single chunk score should equal max_similarity"
+        (results[0].score - results[0].max_similarity * 1.3).abs() < 0.001,
+        "Single chunk score should equal max_similarity * 1.3 (density boost with density=1.0)"
     );
     assert_eq!(
         results[0].matching_chunks, 1,
@@ -683,13 +683,13 @@ async fn test_knn_search_with_multiple_chunks() -> Result<()> {
         "Should return best chunk similarity"
     );
 
-    // With 2 matching chunks (both above 0.5 threshold), score should be boosted
-    // Score = max_similarity * (1 + 0.3 * log10(2)) ≈ max_similarity * 1.09
+    // With 2 matching chunks out of 2 total (density=1.0), score should be boosted
+    // Score = max_similarity * (1 + 0.3 * 1.0) = max_similarity * 1.30
     assert!(
         results[0].matching_chunks >= 1,
         "Should have at least 1 matching chunk"
     );
-    // Score should be >= max_similarity (breadth boost is always positive)
+    // Score should be >= max_similarity (density boost is always positive)
     assert!(
         results[0].score >= results[0].max_similarity * 0.99, // Allow small float error
         "Score should be at least max_similarity"
@@ -698,61 +698,58 @@ async fn test_knn_search_with_multiple_chunks() -> Result<()> {
     Ok(())
 }
 
-/// Test that multi-chunk scoring boosts documents with broader relevance (Issue #778)
+/// Test that match density ratio score formula is applied correctly (Issue #944)
 ///
-/// Scenario:
-/// - Document A: Single chunk with similarity 0.85
-/// - Document B: Five chunks, best similarity 0.80
+/// Validates formula: score = max_similarity * (1.0 + 0.3 * (matching_chunks / total_chunks))
 ///
-/// Expected: Document B should rank higher due to breadth boost
+/// Two documents with identical max_similarity but different total_chunks:
+/// - Document A: 2 total chunks (density = matching/2)
+/// - Document B: 5 total chunks (density = matching/5)
+///
+/// For the same number of matching chunks, Doc A has higher density and thus higher score.
 #[tokio::test]
-async fn test_multi_chunk_scoring_breadth_boost() -> Result<()> {
+async fn test_multi_chunk_scoring_density_boost() -> Result<()> {
     use nodespace_core::models::NewEmbedding;
 
     let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
 
-    // Document A: Single high-scoring chunk
-    let doc_a = create_root_node(&node_service, "text", "Single chunk document").await?;
+    // Document A: 2-chunk doc — both chunks aligned with query
+    let doc_a = create_root_node(&node_service, "text", "Small precise document").await?;
 
-    // Document B: Multiple moderate-scoring chunks
-    let doc_b = create_root_node(&node_service, "text", "Multi-chunk document").await?;
+    // Document B: 5-chunk doc — all chunks aligned with query, same similarity
+    let doc_b = create_root_node(&node_service, "text", "Larger document same similarity").await?;
 
-    // Create base query vector
+    // Query vector
     let mut query_vec = vec![0.0f32; 768];
     query_vec[0] = 1.0;
 
-    // Document A: Single chunk with higher similarity (0.85)
-    // Vector is close to query but not identical
-    let mut vec_a = vec![0.0f32; 768];
-    vec_a[0] = 0.9;
-    vec_a[1] = 0.3;
-
-    store
-        .upsert_embeddings(
-            &doc_a.id,
-            vec![NewEmbedding {
-                node_id: doc_a.id.clone(),
-                vector: vec_a,
-                model_name: Some("test-model".to_string()),
-                chunk_index: 0,
-                chunk_start: 0,
-                chunk_end: 100,
-                total_chunks: 1,
-                content_hash: "hash-a".to_string(),
-                token_count: 50,
-            }],
-        )
-        .await?;
-
-    // Document B: Multiple chunks with moderate similarity (best ~0.80)
-    // All chunks should pass threshold (0.5) but have lower max than doc_a
-    let chunks: Vec<NewEmbedding> = (0..5)
+    // Doc A: 2 chunks, total_chunks=2, similarity ~0.80
+    let chunks_a: Vec<NewEmbedding> = (0..2i32)
         .map(|i| {
             let mut vec = vec![0.0f32; 768];
-            // Base similarity around 0.75-0.80
-            vec[0] = 0.8 - (i as f32 * 0.02); // 0.80, 0.78, 0.76, 0.74, 0.72
-            vec[1] = 0.4 + (i as f32 * 0.05); // Slight variation
+            vec[0] = 0.80;
+            vec[1] = 0.4 + (i as f32 * 0.05);
+            NewEmbedding {
+                node_id: doc_a.id.clone(),
+                vector: vec,
+                model_name: Some("test-model".to_string()),
+                chunk_index: i,
+                chunk_start: i * 200,
+                chunk_end: (i + 1) * 200,
+                total_chunks: 2,
+                content_hash: "hash-a".to_string(),
+                token_count: 100,
+            }
+        })
+        .collect();
+    store.upsert_embeddings(&doc_a.id, chunks_a).await?;
 
+    // Doc B: 5 chunks, total_chunks=5, same similarity ~0.80
+    let chunks_b: Vec<NewEmbedding> = (0..5i32)
+        .map(|i| {
+            let mut vec = vec![0.0f32; 768];
+            vec[0] = 0.80;
+            vec[1] = 0.4 + (i as f32 * 0.05);
             NewEmbedding {
                 node_id: doc_b.id.clone(),
                 vector: vec,
@@ -766,20 +763,17 @@ async fn test_multi_chunk_scoring_breadth_boost() -> Result<()> {
             }
         })
         .collect();
+    store.upsert_embeddings(&doc_b.id, chunks_b).await?;
 
-    store.upsert_embeddings(&doc_b.id, chunks).await?;
-
-    // Search with threshold that includes all chunks
+    // Search
     let results = store.search_embeddings(&query_vec, 10, Some(0.5)).await?;
 
-    // Should have both documents
     assert!(
         results.len() >= 2,
         "Should return at least both documents, got {}",
         results.len()
     );
 
-    // Find both documents in results
     let doc_a_result = results.iter().find(|r| r.node_id == doc_a.id);
     let doc_b_result = results.iter().find(|r| r.node_id == doc_b.id);
 
@@ -789,42 +783,36 @@ async fn test_multi_chunk_scoring_breadth_boost() -> Result<()> {
     let doc_a_result = doc_a_result.unwrap();
     let doc_b_result = doc_b_result.unwrap();
 
-    // Verify document A has higher max_similarity but only 1 chunk
-    assert_eq!(doc_a_result.matching_chunks, 1, "Doc A should have 1 chunk");
+    // Verify the density formula is applied correctly for each doc
+    // Doc A: matching/2 total chunks
+    // Doc B: matching/5 total chunks
+    let density_a = doc_a_result.matching_chunks as f64 / 2.0; // total_chunks=2
+    let density_b = doc_b_result.matching_chunks as f64 / 5.0; // total_chunks=5
+    let expected_score_a = doc_a_result.max_similarity * (1.0 + 0.3 * density_a);
+    let expected_score_b = doc_b_result.max_similarity * (1.0 + 0.3 * density_b);
+
     assert!(
-        doc_b_result.matching_chunks >= 3,
-        "Doc B should have multiple chunks (got {})",
-        doc_b_result.matching_chunks
+        (doc_a_result.score - expected_score_a).abs() < 0.01,
+        "Doc A score should match density formula: expected {:.4}, got {:.4}",
+        expected_score_a,
+        doc_a_result.score
     );
-
-    // Verify the score boost for document B
-    // Score formula: max_similarity * (1 + 0.3 * log10(matching_chunks))
-    // Doc A: ~0.85 * 1.0 = 0.85 (log10(1) = 0)
-    // Doc B with 5 chunks: ~0.80 * 1.21 = 0.97 (log10(5) ≈ 0.70)
-    let expected_breadth_factor = 1.0 + 0.3 * (doc_b_result.matching_chunks as f64).log10();
-    let expected_doc_b_score = doc_b_result.max_similarity * expected_breadth_factor;
-
     assert!(
-        (doc_b_result.score - expected_doc_b_score).abs() < 0.001,
-        "Doc B score should match formula: expected {}, got {}",
-        expected_doc_b_score,
+        (doc_b_result.score - expected_score_b).abs() < 0.01,
+        "Doc B score should match density formula: expected {:.4}, got {:.4}",
+        expected_score_b,
         doc_b_result.score
     );
 
-    // Key assertion: Document B should have higher SCORE despite lower max_similarity
-    // This validates the breadth boost is working
+    // Both docs have same max_similarity and all chunks matching, but different total_chunks.
+    // Doc A: density = 2/2 = 1.0 → boost = 1.30
+    // Doc B: density = 5/5 = 1.0 → boost = 1.30
+    // Both should get the same score (same density when all chunks match)
     assert!(
-        doc_b_result.score > doc_a_result.score,
-        "Doc B (score: {:.3}, max_sim: {:.3}, chunks: {}) should rank higher than Doc A (score: {:.3}, max_sim: {:.3}, chunks: {})",
-        doc_b_result.score, doc_b_result.max_similarity, doc_b_result.matching_chunks,
-        doc_a_result.score, doc_a_result.max_similarity, doc_a_result.matching_chunks
-    );
-
-    // Verify the results are sorted by score (not max_similarity)
-    let first_result = &results[0];
-    assert_eq!(
-        first_result.node_id, doc_b.id,
-        "Document B should be first due to higher score"
+        (doc_a_result.score - doc_b_result.score).abs() < 0.05,
+        "Docs with same max_sim and all-matching chunks (density=1.0) should score equally regardless of size: Doc A={:.3}, Doc B={:.3}",
+        doc_a_result.score,
+        doc_b_result.score,
     );
 
     Ok(())
@@ -904,19 +892,21 @@ async fn test_threshold_filters_by_composite_score_not_raw_similarity() -> Resul
         result.max_similarity, result.matching_chunks, result.score
     );
 
-    // Verify the composite score formula is applied correctly
-    let expected_composite =
-        result.max_similarity * (1.0 + 0.3 * (result.matching_chunks as f64).log10());
+    // Verify the composite score formula is applied correctly (Issue #944: density ratio)
+    // With 5 matching chunks out of 5 total: density = 1.0
+    // composite = max_similarity * (1.0 + 0.3 * 1.0) = max_similarity * 1.30
+    let density = result.matching_chunks as f64 / 5.0; // total_chunks=5
+    let expected_composite = result.max_similarity * (1.0 + 0.3 * density);
     assert!(
         (result.score - expected_composite).abs() < 0.01,
-        "Composite score should match formula: expected {}, got {}",
+        "Composite score should match density formula: expected {}, got {}",
         expected_composite,
         result.score
     );
 
     // KEY TEST (Issue #787): Find a threshold between raw_similarity and composite_score
-    // With 5 chunks, breadth_factor = 1 + 0.3 * log10(5) ≈ 1.21
-    // If max_similarity = 0.68, composite = 0.68 * 1.21 ≈ 0.82
+    // With 5/5 chunks, density = 1.0, density_factor = 1.30
+    // If max_similarity = 0.68, composite = 0.68 * 1.30 ≈ 0.88
     // We choose a threshold between them
     let threshold = (result.max_similarity + result.score) / 2.0;
 

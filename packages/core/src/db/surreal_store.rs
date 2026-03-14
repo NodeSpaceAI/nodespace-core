@@ -4097,31 +4097,32 @@ impl SurrealStore {
         Ok(())
     }
 
-    /// Search embeddings by vector similarity with multi-chunk scoring (Issue #778, #787)
+    /// Search embeddings by vector similarity with multi-chunk scoring (Issue #778, #787, #944)
     ///
     /// Returns nodes ranked by a composite score that considers both:
     /// 1. Maximum chunk similarity (primary signal)
-    /// 2. Number of matching chunks (breadth of relevance)
+    /// 2. Match density ratio: matching_chunks / total_chunks (breadth signal)
     ///
-    /// Documents with multiple relevant chunks rank higher than those with
-    /// a single high-scoring chunk, ensuring broader relevance is rewarded.
+    /// Documents where most chunks are relevant rank higher than large documents
+    /// with a few weakly matching chunks (avoids size bias).
     ///
     /// ## Scoring Formula (calculated in SQL)
     /// ```text
-    /// score = max_similarity * (1 + 0.3 * log10(matching_chunks))
+    /// density = matching_chunks / total_chunks
+    /// score = max_similarity * (1 + 0.3 * density)
     /// ```
     ///
     /// ## Threshold Behavior (Issue #787)
     /// The threshold filters by **composite score**, not raw similarity.
     /// This means users see results with score > threshold, as expected.
     ///
-    /// Example: A document with raw similarity 0.68 and 3 chunks has
-    /// composite score ~0.78. With threshold 0.7, it IS returned because
-    /// 0.78 > 0.7 (unlike the old behavior which filtered by raw 0.68 < 0.7).
+    /// Example: A document with raw similarity 0.68 and 3/5 chunks matching has
+    /// composite score ~0.80. With threshold 0.7, it IS returned because
+    /// 0.80 > 0.7 (unlike the old behavior which filtered by raw 0.68 < 0.7).
     ///
-    /// ## Examples
-    /// - Doc A: 1 chunk @ 0.85 → score = 0.85
-    /// - Doc B: 5 chunks @ 0.80 max → score = 0.80 * 1.21 = 0.97
+    /// ## Examples (Issue #944 fix: density ratio vs old log10 count)
+    /// - Doc A: 2/2 chunks @ 0.78 max → density=1.0 → score = 0.78 * 1.30 = 1.014
+    /// - Doc B: 10/50 chunks @ 0.72 max → density=0.2 → score = 0.72 * 1.06 = 0.763
     ///
     /// # Arguments
     /// * `query_vector` - The query embedding vector
@@ -4148,14 +4149,16 @@ impl SurrealStore {
             node: SurrealNode,
             max_similarity: f64,
             matching_chunks: i64,
+            total_chunks: i64,
             composite_score: f64,
         }
 
         // Query using KNN operator for HNSW-indexed vector search (Issue #776, SurrealDB 3.x)
         // Enhanced for multi-chunk scoring (Issue #778) with SQL-side composite score (Issue #787):
         // - Calculate similarity for each chunk via KNN
-        // - Group by node, taking max similarity and count
-        // - Calculate composite score in SQL: max_similarity * (1 + 0.3 * log10(chunks))
+        // - Group by node, taking max similarity, matching chunk count, and total chunk count
+        // - Calculate composite score in SQL using density ratio (Issue #944):
+        //     score = max_similarity * (1 + 0.3 * (matching_chunks / total_chunks))
         // - Filter by composite score in outer WHERE (SurrealDB doesn't support HAVING)
         // - Sort by composite score (not max_similarity)
         //
@@ -4167,13 +4170,17 @@ impl SurrealStore {
         // PERFORMANCE: Using FETCH node to retrieve full node data in the same query,
         // eliminating the need for separate get_node() calls (saves ~300ms for 5 results).
         //
-        // BREADTH_BOOST = 0.3 is inlined in SQL (previously was a Rust constant)
+        // DENSITY_BOOST = 0.3 is inlined in SQL (previously was a Rust constant)
         // Note: SurrealDB doesn't support referencing aliases in the same-level WHERE clause,
         // so we use nested subqueries to calculate composite_score once, then filter on it:
         // 1. Innermost: KNN search to get candidate chunks with similarity scores
-        // 2. Middle-inner: GROUP BY node with aggregate calculations (max_similarity, matching_chunks)
-        // 3. Middle-outer: Calculate composite_score from aggregates (defined once here)
+        // 2. Middle-inner: GROUP BY node with aggregate calculations (max_similarity, matching_chunks, total_chunks)
+        // 3. Middle-outer: Calculate composite_score using density ratio (Issue #944)
         // 4. Outermost: Filter by composite_score > threshold (no duplication)
+        //
+        // Formula: composite_score = max_similarity * (1.0 + 0.3 * (matching_chunks / total_chunks))
+        // This replaces the old log10(matching_chunks) formula that rewarded large documents by size.
+        // Density ratio ensures a doc only gets full boost if most of its chunks are relevant.
         let knn_limit = limit * 5;
         let ef = 150; // Search expansion factor for HNSW (matches EFC 200 index parameter)
         let query = format!(
@@ -4184,15 +4191,18 @@ impl SurrealStore {
                         node,
                         max_similarity,
                         matching_chunks,
-                        max_similarity * (1.0 + 0.3 * math::log10(matching_chunks)) AS composite_score
+                        total_chunks,
+                        max_similarity * (1.0 + 0.3 * (matching_chunks / total_chunks)) AS composite_score
                     FROM (
                         SELECT
                             node,
                             math::max(similarity) AS max_similarity,
-                            count() AS matching_chunks
+                            count() AS matching_chunks,
+                            math::max(total_chunks) AS total_chunks
                         FROM (
                             SELECT
                                 node,
+                                total_chunks,
                                 vector::similarity::cosine(vector, $query_vector) AS similarity
                             FROM embedding
                             WHERE stale = false AND vector <|{knn_limit},{ef}|> $query_vector
