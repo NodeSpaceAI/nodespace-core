@@ -79,11 +79,6 @@ fn node_record_id(id: &str) -> RecordId {
 /// the current state, not historical events.
 const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 128;
 
-/// Maximum depth for walking up parent chain during BM25 root resolution (Issue #951).
-///
-/// Documents are rarely nested more than 10 levels deep; 50 is a generous safety limit
-/// that prevents infinite loops on malformed relationship data.
-const MAX_BM25_ROOT_WALK_DEPTH: usize = 50;
 
 /// Represents an relationship from the universal relationship table
 ///
