@@ -79,11 +79,24 @@ fn node_record_id(id: &str) -> RecordId {
 /// the current state, not historical events.
 const DOMAIN_EVENT_CHANNEL_CAPACITY: usize = 128;
 
-/// Maximum depth for walking up parent chain during BM25 root resolution (Issue #951).
-///
-/// Documents are rarely nested more than 10 levels deep; 50 is a generous safety limit
-/// that prevents infinite loops on malformed relationship data.
-const MAX_BM25_ROOT_WALK_DEPTH: usize = 50;
+/// Maximum number of BM25 query tokens to use in the OR fulltext search (Issue #957).
+/// Each additional OR term costs ~20ms on the fulltext index.
+const BM25_MAX_TOKENS: usize = 4;
+
+/// Stop words stripped from BM25 queries before tokenization (Issue #957).
+/// These appear in nearly every document with similar frequency and add no
+/// discriminative power for ranking. Shared with the title-boost tokenizer
+/// in embedding_service.rs to keep both paths consistent.
+const BM25_STOP_WORDS: &[&str] = &[
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "dare", "ought",
+    "i", "me", "my", "we", "our", "you", "your", "he", "she", "it",
+    "they", "them", "their", "what", "which", "who", "whom", "this",
+    "that", "these", "those", "to", "of", "in", "on", "at", "by",
+    "for", "with", "about", "as", "how", "when", "where", "why",
+];
+
 
 /// Represents an relationship from the universal relationship table
 ///
@@ -4338,121 +4351,105 @@ impl SurrealStore {
         // Run BM25 search and resolve each result to its root node ID in a single query.
         //
         // Strategy: For each BM25-matching node, walk up via has_child relationships to find the root.
-        // The root is the node that is NOT the `out` (child) of any has_child relationship.
         //
-        // We use a two-step query:
-        // 1. BM25 search to get matching node IDs
-        // 2. For each node, find its root by checking if it has a parent; if so, recurse up
+        // Multi-term OR with scoring (Issue #957):
+        // The naive `content @@ $query` uses AND semantics — all tokens must appear in the same
+        // node. For multi-word queries this misses documents where terms are spread across child
+        // nodes (e.g. "keyboard navigation" in a section header and "focus management" in a
+        // different child). Instead, we build one `@@ $tN` clause per token with OR, rank by the
+        // sum of per-term BM25 scores, and take the top candidates. This ensures root nodes
+        // whose titles contain query keywords are included in the candidate set.
         //
-        // SurrealDB doesn't support recursive CTEs, so we use graph traversal syntax to walk up.
-        // The `<-relationship[WHERE relationship_type = 'has_child']<-node` traversal walks up one level.
-        // We use a flat approach: fetch ancestors and take the one with no parent.
-        //
-        // Simpler approach: get candidate node IDs from BM25, then for each check its root via
-        // the SELECT chain we already use in get_parent_id().
-        //
-        // For performance, we do this in SQL with a subquery that finds all ancestors including self,
-        // then returns the one that is NOT a child of any has_child relationship (i.e., a root).
-        let sql = r#"
-            SELECT VALUE meta::id(id) FROM node
-            WHERE content @@ $query
-              AND lifecycle_status != 'deleted'
-            LIMIT $limit;
-        "#;
+        // Single-term queries fall back to a simple `content @@ $t0` with no OR overhead.
+        let tokens: Vec<String> = query
+            .split_whitespace()
+            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .filter(|t| !t.is_empty() && !BM25_STOP_WORDS.contains(&t.as_str()))
+            .take(BM25_MAX_TOKENS)
+            .collect();
 
-        let mut response = self
-            .db
-            .query(sql)
-            .bind(("query", query.to_string()))
+        if tokens.is_empty() {
+            return Ok(std::collections::HashSet::new());
+        }
+
+        // Build: (content @@ $t0 OR content @@ $t1 OR ...)
+        let where_clauses: Vec<String> = tokens
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("content @@ $t{}", i))
+            .collect();
+        let where_expr = where_clauses.join(" OR ");
+
+        // Build: search::score(0) + search::score(1) + ...
+        let score_expr: String = (0..tokens.len())
+            .map(|i| format!("search::score({})", i))
+            .collect::<Vec<_>>()
+            .join(" + ");
+
+        let sql = format!(
+            "SELECT meta::id(id) AS id, {} AS score FROM node WHERE ({}) AND lifecycle_status != 'deleted' ORDER BY score DESC LIMIT $limit;",
+            score_expr, where_expr
+        );
+
+        let mut query_builder = self.db.query(&sql);
+        for (i, token) in tokens.iter().enumerate() {
+            query_builder = query_builder.bind((format!("t{}", i), token.clone()));
+        }
+        let mut response = query_builder
             .bind(("limit", candidate_limit))
             .await
             .context("Failed to execute BM25 content search")?;
 
-        let matching_ids: Vec<String> = response
+        #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
+        struct BM25Row {
+            id: String,
+            score: f64,
+        }
+
+        let rows: Vec<BM25Row> = response
             .take(0)
             .context("Failed to extract BM25 search results")?;
+
+        let matching_ids: Vec<String> = rows.into_iter().map(|r| r.id).collect();
 
         if matching_ids.is_empty() {
             return Ok(std::collections::HashSet::new());
         }
 
-        // For each matching node, resolve to root ID.
-        // We batch this: nodes that are themselves roots (not out of any has_child) are done.
-        // For non-roots, we walk up the parent chain.
+        // Resolve each matching node to its root in a single graph traversal query.
         //
-        // Use a single query to find which of these nodes are roots vs children,
-        // and for children, get their immediate parent. We repeat until all are resolved.
-        #[derive(Debug, serde::Deserialize, surrealdb::types::SurrealValue)]
-        struct ParentResult {
-            node_id: String,
-            parent_id: String,
-        }
+        // Uses SurrealDB's {..+collect} to walk up has_child relationships to any depth,
+        // then filters to nodes with no incoming has_child (i.e. the roots).
+        // Input nodes that are already roots are included via array::union.
+        //
+        // This replaces the old iterative Rust loop (up to 50 round-trips) with 1 query.
+        let node_things: Vec<surrealdb::types::RecordId> =
+            matching_ids.iter().map(|id| node_record_id(id)).collect();
 
-        let sql_parents = r#"
-            SELECT
-                meta::id(out) AS node_id,
-                meta::id(in) AS parent_id
-            FROM relationship
-            WHERE out IN $node_ids
-              AND relationship_type = 'has_child';
+        let sql_roots = r#"
+            SELECT VALUE meta::id(id)
+            FROM (
+                SELECT * FROM array::union(
+                    $node_ids,
+                    (SELECT * FROM $node_ids.{..+collect}<-relationship[WHERE relationship_type = 'has_child']<-node)
+                )
+            )
+            WHERE array::len(<-relationship[WHERE relationship_type = 'has_child']) = 0
+              AND lifecycle_status != 'deleted';
         "#;
 
-        let mut root_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut pending: Vec<String> = matching_ids;
+        let mut root_response = self
+            .db
+            .query(sql_roots)
+            .bind(("node_ids", node_things))
+            .await
+            .context("Failed to resolve BM25 matches to root nodes")?;
 
-        // Limit iterations to prevent infinite loop on malformed data
-        for _depth in 0..MAX_BM25_ROOT_WALK_DEPTH {
-            if pending.is_empty() {
-                break;
-            }
+        let root_id_vec: Vec<String> = root_response
+            .take(0)
+            .context("Failed to extract root node IDs")?;
 
-            // Batch query: for each pending node, find its parent (if any)
-            // Returns (node_id, parent_id) for all pending nodes that have a parent
-            // Build SurrealDB record IDs for the query
-            let node_things: Vec<surrealdb::types::RecordId> =
-                pending.iter().map(|id| node_record_id(id)).collect();
-
-            let mut parent_response = self
-                .db
-                .query(sql_parents)
-                .bind(("node_ids", node_things))
-                .await
-                .context("Failed to query parent relationships for BM25 root resolution")?;
-
-            let parent_results: Vec<ParentResult> = parent_response
-                .take(0)
-                .context("Failed to extract parent results")?;
-
-            // Build set of nodes that have parents
-            let has_parent: std::collections::HashMap<String, String> = parent_results
-                .into_iter()
-                .map(|r| (r.node_id, r.parent_id))
-                .collect();
-
-            // Nodes with no parent entry are roots
-            let mut next_pending = Vec::new();
-            for node_id in &pending {
-                if let Some(parent_id) = has_parent.get(node_id) {
-                    // This node has a parent - continue walking up
-                    next_pending.push(parent_id.clone());
-                } else {
-                    // This node is a root (no has_child relationship where it's the child)
-                    root_ids.insert(node_id.clone());
-                }
-            }
-
-            // Deduplicate via HashSet to avoid redundant lookups regardless of order
-            let next_pending_set: std::collections::HashSet<String> =
-                next_pending.into_iter().collect();
-            pending = next_pending_set.into_iter().collect();
-        }
-
-        // Any remaining pending nodes have exceeded max depth - treat as roots (best effort)
-        for node_id in pending {
-            root_ids.insert(node_id);
-        }
-
-        Ok(root_ids)
+        Ok(root_id_vec.into_iter().collect())
     }
 
     // ========================================================================

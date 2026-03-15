@@ -667,7 +667,10 @@ impl NodeEmbeddingService {
         // BM25 is O(log n) via inverted index — sub-millisecond
         // KNN is ~50-100ms via HNSW — total latency = max(bm25, knn) ≈ same as before
         let search_start = std::time::Instant::now();
-        let bm25_limit = (limit as i64) * 5; // Fetch extra BM25 candidates for root resolution
+        // With tokenized OR search, results are already ranked by combined BM25 score so
+        // fewer candidates are needed (top roots bubble up). 2x gives enough headroom after
+        // root resolution deduplication without the cost of resolving 5x nodes.
+        let bm25_limit = (limit as i64) * 2;
         let (knn_results, bm25_roots) = tokio::join!(
             self.store
                 .search_embeddings(&query_vector, limit as i64, Some(threshold as f64)),
