@@ -190,6 +190,13 @@
         previewError = 'Syntax error — check your Mermaid definition.';
       }
     }, 300);
+
+    return () => {
+      if (previewDebounceTimer) {
+        clearTimeout(previewDebounceTimer);
+        previewDebounceTimer = undefined;
+      }
+    };
   });
 
   function handleTypingStart() {
@@ -700,15 +707,12 @@
     min-height: 3rem;
     overflow-x: auto;
     align-self: stretch;
-    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
-    font-size: 0.875rem;
   }
 
   /* Buttons must span full grid when in split mode */
   :global(.code-block-node-wrapper.mermaid-split .code-language-button),
   :global(.code-block-node-wrapper.mermaid-split .code-copy-button) {
     grid-column: 1 / -1;
-    position: absolute;
   }
 
   /* Dropdown must be in normal positioning context */
