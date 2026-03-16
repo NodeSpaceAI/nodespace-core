@@ -456,49 +456,45 @@
 
         <Collapsible.Content>
           <div class="schema-type-list">
-            {#each builtInSchemas as schema (schema.id)}
-              <button class="schema-type-item" onclick={() => handleSchemaClick(schema.id)}>
-                <svg
-                  class="schema-type-icon"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                >
-                  <path d="M3 3 L9 3 L6 8 Z" />
-                  <rect x="11" y="3" width="6" height="6" />
-                  <rect x="3" y="13" width="6" height="6" />
-                  <path d="M14 13 L17 16 L14 19 L11 16 Z" />
-                </svg>
-                <span class="schema-type-name">{schema.content}</span>
-              </button>
-            {/each}
+            {#snippet schemaTypeItemIcon()}
+              <svg
+                class="schema-type-icon"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <!-- 4-shape icon: triangle, square, square, diamond -->
+                <path d="M3 3 L9 3 L6 8 Z" />
+                <rect x="11" y="3" width="6" height="6" />
+                <rect x="3" y="13" width="6" height="6" />
+                <path d="M14 13 L17 16 L14 19 L11 16 Z" />
+              </svg>
+            {/snippet}
 
-            {#if customSchemas.length > 0}
-              {#if builtInSchemas.length > 0}
-                <div class="schema-type-separator"></div>
-              {/if}
-              {#each customSchemas as schema (schema.id)}
+            {#if builtInSchemas.length === 0 && customSchemas.length === 0}
+              <span class="schema-type-empty">No types available</span>
+            {:else}
+              {#each builtInSchemas as schema (schema.id)}
                 <button class="schema-type-item" onclick={() => handleSchemaClick(schema.id)}>
-                  <svg
-                    class="schema-type-icon"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <path d="M3 3 L9 3 L6 8 Z" />
-                    <rect x="11" y="3" width="6" height="6" />
-                    <rect x="3" y="13" width="6" height="6" />
-                    <path d="M14 13 L17 16 L14 19 L11 16 Z" />
-                  </svg>
+                  {@render schemaTypeItemIcon()}
                   <span class="schema-type-name">{schema.content}</span>
                 </button>
               {/each}
+
+              {#if customSchemas.length > 0}
+                {#if builtInSchemas.length > 0}
+                  <div class="schema-type-separator"></div>
+                {/if}
+                {#each customSchemas as schema (schema.id)}
+                  <button class="schema-type-item" onclick={() => handleSchemaClick(schema.id)}>
+                    {@render schemaTypeItemIcon()}
+                    <span class="schema-type-name">{schema.content}</span>
+                  </button>
+                {/each}
+              {/if}
             {/if}
           </div>
         </Collapsible.Content>
@@ -878,5 +874,13 @@
     height: 1px;
     background: hsl(var(--border));
     margin: 0.25rem 1rem;
+  }
+
+  .schema-type-empty {
+    display: block;
+    padding: 0.4rem 1rem 0.4rem 1.25rem;
+    font-size: 0.8125rem;
+    color: hsl(var(--muted-foreground));
+    font-style: italic;
   }
 </style>

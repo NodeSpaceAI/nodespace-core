@@ -103,7 +103,9 @@ export class LayoutPersistenceService {
       // Handle version migrations
       const migrated = this.migrate(parsed);
 
-      log.debug(`State loaded: sidebarCollapsed=${migrated.sidebarCollapsed}`);
+      log.debug(
+        `State loaded: sidebarCollapsed=${migrated.sidebarCollapsed}, collectionsExpanded=${migrated.collectionsExpanded}, schemaTypesExpanded=${migrated.schemaTypesExpanded}`
+      );
       return migrated;
     } catch (error) {
       log.error('Failed to load state:', error);

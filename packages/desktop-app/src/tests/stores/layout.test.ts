@@ -11,6 +11,7 @@ import {
   setActivePane,
   setCollectionsExpanded,
   toggleCollectionsExpanded,
+  setSchemaTypesExpanded,
   type NavigationItem
 } from '$lib/stores/layout';
 import { LayoutPersistenceService } from '$lib/services/layout-persistence-service';
@@ -744,6 +745,18 @@ describe('Layout Store - Persistence Integration', () => {
 
       toggleCollectionsExpanded();
       expect(get(layoutState).collectionsExpanded).toBe(false);
+    });
+  });
+
+  describe('setSchemaTypesExpanded', () => {
+    it('should set schemaTypesExpanded to true', () => {
+      setSchemaTypesExpanded(true);
+      expect(get(layoutState).schemaTypesExpanded).toBe(true);
+    });
+
+    it('should set schemaTypesExpanded to false', () => {
+      setSchemaTypesExpanded(false);
+      expect(get(layoutState).schemaTypesExpanded).toBe(false);
     });
   });
 });
