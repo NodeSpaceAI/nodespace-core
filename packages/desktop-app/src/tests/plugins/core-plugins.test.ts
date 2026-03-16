@@ -144,7 +144,7 @@ describe('Core Plugins Integration', () => {
       const stats = registry.getStats();
       expect(stats.pluginsCount).toBe(12); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection
       expect(stats.slashCommandsCount).toBe(12); // text: 1, header: 3, task: 1, checkbox: 1, code-block: 1, quote-block: 1, ordered-list: 1, horizontal-line: 1, table: 1, query: 1, collection: 0
-      expect(stats.viewersCount).toBe(3); // date, task, and collection have custom viewers (CollectionNodeViewer added in Issue #757)
+      expect(stats.viewersCount).toBe(4); // date, task, collection, and query have custom viewers (QueryNodeViewer added in Issue #441)
       expect(stats.referencesCount).toBe(12); // all plugins have references
     });
 
