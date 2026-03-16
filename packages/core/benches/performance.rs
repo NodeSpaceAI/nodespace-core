@@ -496,11 +496,7 @@ fn bench_bm25_search_roots(c: &mut Criterion) {
 
                 let grandchild_content = format!("Grandchild node {} leaf content", i);
                 let grandchild_id = node_service
-                    .create_node(Node::new(
-                        "text".to_string(),
-                        grandchild_content,
-                        json!({}),
-                    ))
+                    .create_node(Node::new("text".to_string(), grandchild_content, json!({})))
                     .await
                     .unwrap();
                 node_service

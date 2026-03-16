@@ -3296,6 +3296,168 @@ async fn test_handle_query_nodes_with_deprecated_root_id() {
 }
 
 // ============================================================================
+// query_nodes filters parameter tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_handle_query_nodes_filters_title_contains() {
+    let (node_service, _temp_dir) = create_test_env().await.unwrap();
+
+    // Task nodes always get a title derived from content
+    handle_create_node(
+        &node_service,
+        json!({"node_type": "task", "content": "Buy groceries"}),
+    )
+    .await
+    .unwrap();
+
+    handle_create_node(
+        &node_service,
+        json!({"node_type": "task", "content": "Send weekly report"}),
+    )
+    .await
+    .unwrap();
+
+    handle_create_node(
+        &node_service,
+        json!({"node_type": "task", "content": "Schedule dentist appointment"}),
+    )
+    .await
+    .unwrap();
+
+    // Filter by title containing "weekly" — should match only the second task
+    let result = nodespace_core::mcp::handlers::nodes::handle_query_nodes(
+        &node_service,
+        json!({
+            "filters": [{"field": "title", "operator": "contains", "value": "weekly"}]
+        }),
+    )
+    .await;
+    assert!(result.is_ok(), "query should succeed");
+
+    let response = result.unwrap();
+    let nodes = response["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1, "should return exactly one matching node");
+    assert!(
+        nodes[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("weekly report"),
+        "returned node should be the weekly report task"
+    );
+}
+
+#[tokio::test]
+async fn test_handle_query_nodes_filters_content_contains() {
+    let (node_service, _temp_dir) = create_test_env().await.unwrap();
+
+    handle_create_node(
+        &node_service,
+        json!({"node_type": "text", "content": "The quick brown fox"}),
+    )
+    .await
+    .unwrap();
+
+    handle_create_node(
+        &node_service,
+        json!({"node_type": "text", "content": "Lazy dog jumps"}),
+    )
+    .await
+    .unwrap();
+
+    // Filter by content containing "quick"
+    let result = nodespace_core::mcp::handlers::nodes::handle_query_nodes(
+        &node_service,
+        json!({
+            "filters": [{"field": "content", "operator": "contains", "value": "quick"}]
+        }),
+    )
+    .await;
+    assert!(result.is_ok(), "query should succeed");
+
+    let response = result.unwrap();
+    let nodes = response["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1, "should return exactly one matching node");
+    assert!(nodes[0]["content"].as_str().unwrap().contains("quick"));
+}
+
+#[tokio::test]
+async fn test_handle_query_nodes_filters_title_case_insensitive() {
+    let (node_service, _temp_dir) = create_test_env().await.unwrap();
+
+    handle_create_node(
+        &node_service,
+        json!({"node_type": "task", "content": "Review PULL REQUEST"}),
+    )
+    .await
+    .unwrap();
+
+    // Search with different casing
+    let result = nodespace_core::mcp::handlers::nodes::handle_query_nodes(
+        &node_service,
+        json!({
+            "filters": [{"field": "title", "operator": "contains", "value": "pull request"}]
+        }),
+    )
+    .await;
+    assert!(result.is_ok());
+
+    let response = result.unwrap();
+    let nodes = response["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1, "title search should be case-insensitive");
+}
+
+#[tokio::test]
+async fn test_handle_query_nodes_filters_no_match_returns_empty() {
+    let (node_service, _temp_dir) = create_test_env().await.unwrap();
+
+    handle_create_node(
+        &node_service,
+        json!({"node_type": "task", "content": "Something unrelated"}),
+    )
+    .await
+    .unwrap();
+
+    let result = nodespace_core::mcp::handlers::nodes::handle_query_nodes(
+        &node_service,
+        json!({
+            "filters": [{"field": "title", "operator": "contains", "value": "xyzzy_no_match"}]
+        }),
+    )
+    .await;
+    assert!(result.is_ok());
+
+    let response = result.unwrap();
+    let nodes = response["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 0, "no match should return empty array");
+}
+
+#[tokio::test]
+async fn test_handle_query_nodes_filters_unsupported_operator_ignored() {
+    let (node_service, _temp_dir) = create_test_env().await.unwrap();
+
+    handle_create_node(
+        &node_service,
+        json!({"node_type": "text", "content": "Test node"}),
+    )
+    .await
+    .unwrap();
+
+    // Unsupported operator should not error — just warn and be ignored
+    let result = nodespace_core::mcp::handlers::nodes::handle_query_nodes(
+        &node_service,
+        json!({
+            "filters": [{"field": "title", "operator": "equals", "value": "Test node"}]
+        }),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "unsupported operator should not return an error"
+    );
+}
+
+// ============================================================================
 // Get Children with Content Flag Tests
 // ============================================================================
 

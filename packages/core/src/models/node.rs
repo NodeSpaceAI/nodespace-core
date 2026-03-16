@@ -728,6 +728,10 @@ pub struct NodeQuery {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_contains: Option<String>,
 
+    /// Query nodes by title substring (case-insensitive)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_contains: Option<String>,
+
     /// Query by node type
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_type: Option<String>,
@@ -735,6 +739,10 @@ pub struct NodeQuery {
     /// Limit number of results
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+
+    /// Offset for pagination
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
 }
 
 impl NodeQuery {
@@ -846,6 +854,10 @@ pub struct NodeFilter {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_contains: Option<String>,
 
+    /// Filter by title substring (case-insensitive)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_contains: Option<String>,
+
     /// Filter by creation date - nodes created after this time
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_after: Option<DateTime<Utc>>,
@@ -900,6 +912,12 @@ impl NodeFilter {
     /// Filter by content substring
     pub fn with_content_contains(mut self, content: String) -> Self {
         self.content_contains = Some(content);
+        self
+    }
+
+    /// Filter by title substring
+    pub fn with_title_contains(mut self, title: String) -> Self {
+        self.title_contains = Some(title);
         self
     }
 

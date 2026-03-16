@@ -128,6 +128,14 @@ pub struct DeleteNodeParams {
     pub version: Option<i64>,
 }
 
+/// A single filter condition for query_nodes
+#[derive(Debug, Deserialize)]
+pub struct QueryFilter {
+    pub field: String,
+    pub operator: String,
+    pub value: serde_json::Value,
+}
+
 /// Parameters for query_nodes method
 #[derive(Debug, Deserialize)]
 pub struct QueryNodesParams {
@@ -147,6 +155,10 @@ pub struct QueryNodesParams {
     /// Filter by collection path - resolves path to collection ID first
     #[serde(default)]
     pub collection: Option<String>,
+    /// Structured filters: [{field, operator, value}]
+    /// Supported: field="content" operator="contains", field="title" operator="contains"
+    #[serde(default)]
+    pub filters: Option<Vec<QueryFilter>>,
 }
 
 /// Parameters for get_children method
@@ -581,6 +593,37 @@ pub async fn handle_query_nodes(
 
     if let Some(offset) = params.offset {
         filter = filter.with_offset(offset);
+    }
+
+    if let Some(filters) = params.filters {
+        let mut seen_fields = std::collections::HashSet::new();
+        for f in filters {
+            if !seen_fields.insert(f.field.clone()) {
+                tracing::warn!(
+                    "query_nodes: duplicate filter field='{}', only the last value will be used",
+                    f.field
+                );
+            }
+            let value_str = match &f.value {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            match (f.field.as_str(), f.operator.as_str()) {
+                ("content", "contains") => {
+                    filter = filter.with_content_contains(value_str);
+                }
+                ("title", "contains") => {
+                    filter = filter.with_title_contains(value_str);
+                }
+                (field, op) => {
+                    tracing::warn!(
+                        "query_nodes: unsupported filter field='{}' operator='{}', ignored",
+                        field,
+                        op
+                    );
+                }
+            }
+        }
     }
 
     filter = filter.with_order_by(OrderBy::CreatedDesc);
