@@ -59,9 +59,9 @@
     <tbody>
       {#each results as node (node.id)}
         <tr class="result-row">
-          {#each columns as col, i (col.field)}
+          {#each columns as col (col.field)}
             <td>
-              {#if i === 0}
+              {#if col.field === 'content'}
                 <button
                   class="title-link"
                   onclick={() => onRowClick(node.id)}

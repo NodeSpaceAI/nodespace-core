@@ -36,6 +36,8 @@
   let results = $state<Node[]>([]);
   let queryState = $state<'idle' | 'loading' | 'success' | 'error'>('idle');
   let error = $state<string | null>(null);
+  // Sentinel to discard in-flight responses when nodeId changes rapidly (sidenav navigation)
+  let currentLoadId = $state(0);
 
   // Load schema and execute query when nodeId changes
   $effect(() => {
@@ -50,19 +52,24 @@
   });
 
   async function loadAndQuery(schemaId: string) {
+    const loadId = ++currentLoadId;
     queryState = 'loading';
     error = null;
     schemaNode = null;
     results = [];
 
     try {
-      // Load the schema node — nodeId IS the schema id (e.g. "task")
+      // Load the schema node — nodeId IS the schema id (e.g. "task").
+      // SchemaNode.id equals the nodeType string stored on data nodes, so
+      // target.id is the correct value to pass as NodeQuery.nodeType.
       const schema = await backendAdapter.getSchema(schemaId);
+      if (loadId !== currentLoadId) return; // stale response, nodeId changed
       schemaNode = schema;
       log.debug('Loaded schema node', { schemaId, content: schema.content });
 
-      await executeQuery(schema);
+      await executeQuery(schema, loadId);
     } catch (e) {
+      if (loadId !== currentLoadId) return;
       const message = e instanceof Error ? e.message : 'Failed to load schema';
       log.error('Failed to load schema node', { schemaId, error: message });
       error = message;
@@ -70,7 +77,7 @@
     }
   }
 
-  async function executeQuery(schema?: SchemaNode) {
+  async function executeQuery(schema?: SchemaNode, loadId?: number) {
     const target = schema ?? schemaNode;
     if (!target) return;
 
@@ -78,11 +85,14 @@
     error = null;
 
     try {
+      // target.id === nodeType for schema nodes (e.g., "task")
       const nodes = await backendAdapter.queryNodes({ nodeType: target.id });
+      if (loadId !== undefined && loadId !== currentLoadId) return; // stale response
       results = nodes;
       queryState = 'success';
       log.debug('Query executed', { schemaId: target.id, resultCount: nodes.length });
     } catch (e) {
+      if (loadId !== undefined && loadId !== currentLoadId) return;
       const message = e instanceof Error ? e.message : 'Failed to execute query';
       log.error('Query execution failed', { schemaId: target.id, error: message });
       error = message;
@@ -105,7 +115,7 @@
 
 <div class="query-node-viewer">
   <header class="query-header">
-    <h1>{schemaNode?.content ?? 'Loading...'}</h1>
+    <h1>{schemaNode?.content ?? 'Query'}</h1>
     {#if queryState === 'success'}
       <span class="result-count">{results.length} {results.length === 1 ? 'item' : 'items'}</span>
     {/if}
