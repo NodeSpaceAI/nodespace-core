@@ -11,6 +11,7 @@ import {
   setActivePane,
   setCollectionsExpanded,
   toggleCollectionsExpanded,
+  setSchemaTypesExpanded,
   type NavigationItem
 } from '$lib/stores/layout';
 import { LayoutPersistenceService } from '$lib/services/layout-persistence-service';
@@ -45,7 +46,8 @@ describe('Layout Store - Layout State Management', () => {
     layoutState.set({
       sidebarCollapsed: false,
       activePane: 'today',
-      collectionsExpanded: false
+      collectionsExpanded: false,
+      schemaTypesExpanded: false
     });
 
     // Reset the module state by requiring a fresh import
@@ -112,7 +114,8 @@ describe('Layout Store - Layout State Management', () => {
       layoutState.set({
         sidebarCollapsed: true,
         activePane: 'today',
-        collectionsExpanded: false
+        collectionsExpanded: false,
+        schemaTypesExpanded: false
       });
 
       toggleSidebar();
@@ -126,7 +129,8 @@ describe('Layout Store - Layout State Management', () => {
       layoutState.set({
         sidebarCollapsed: false,
         activePane: 'today',
-        collectionsExpanded: false
+        collectionsExpanded: false,
+        schemaTypesExpanded: false
       });
 
       toggleSidebar();
@@ -139,7 +143,8 @@ describe('Layout Store - Layout State Management', () => {
       layoutState.set({
         sidebarCollapsed: false,
         activePane: 'custom-pane',
-        collectionsExpanded: false
+        collectionsExpanded: false,
+        schemaTypesExpanded: false
       });
 
       toggleSidebar();
@@ -175,7 +180,8 @@ describe('Layout Store - Layout State Management', () => {
       layoutState.set({
         sidebarCollapsed: true,
         activePane: 'today',
-        collectionsExpanded: false
+        collectionsExpanded: false,
+        schemaTypesExpanded: false
       });
 
       setActivePane('search');
@@ -402,7 +408,8 @@ describe('Layout Store - Persistence Integration', () => {
     freshModule.layoutState.set({
       sidebarCollapsed: false,
       activePane: 'today',
-      collectionsExpanded: false
+      collectionsExpanded: false,
+      schemaTypesExpanded: false
     });
   });
 
@@ -738,6 +745,18 @@ describe('Layout Store - Persistence Integration', () => {
 
       toggleCollectionsExpanded();
       expect(get(layoutState).collectionsExpanded).toBe(false);
+    });
+  });
+
+  describe('setSchemaTypesExpanded', () => {
+    it('should set schemaTypesExpanded to true', () => {
+      setSchemaTypesExpanded(true);
+      expect(get(layoutState).schemaTypesExpanded).toBe(true);
+    });
+
+    it('should set schemaTypesExpanded to false', () => {
+      setSchemaTypesExpanded(false);
+      expect(get(layoutState).schemaTypesExpanded).toBe(false);
     });
   });
 });

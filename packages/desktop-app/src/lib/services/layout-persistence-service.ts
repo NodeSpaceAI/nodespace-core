@@ -17,6 +17,7 @@ export interface PersistedLayoutState {
   version: number;
   sidebarCollapsed: boolean;
   collectionsExpanded?: boolean; // Added in version 2
+  schemaTypesExpanded?: boolean; // Added in version 3
 }
 
 /**
@@ -56,14 +57,15 @@ export class LayoutPersistenceService {
   private static saveImmediate(state: LayoutState): void {
     try {
       const persisted: PersistedLayoutState = {
-        version: 2,
+        version: 3,
         sidebarCollapsed: state.sidebarCollapsed,
-        collectionsExpanded: state.collectionsExpanded
+        collectionsExpanded: state.collectionsExpanded,
+        schemaTypesExpanded: state.schemaTypesExpanded
       };
 
       localStorage.setItem(this.STORAGE_KEY, JSON.stringify(persisted));
       log.debug(
-        `State saved: sidebarCollapsed=${state.sidebarCollapsed}, collectionsExpanded=${state.collectionsExpanded}`
+        `State saved: sidebarCollapsed=${state.sidebarCollapsed}, collectionsExpanded=${state.collectionsExpanded}, schemaTypesExpanded=${state.schemaTypesExpanded}`
       );
     } catch (error) {
       log.error('Failed to save state:', error);
@@ -101,7 +103,9 @@ export class LayoutPersistenceService {
       // Handle version migrations
       const migrated = this.migrate(parsed);
 
-      log.debug(`State loaded: sidebarCollapsed=${migrated.sidebarCollapsed}`);
+      log.debug(
+        `State loaded: sidebarCollapsed=${migrated.sidebarCollapsed}, collectionsExpanded=${migrated.collectionsExpanded}, schemaTypesExpanded=${migrated.schemaTypesExpanded}`
+      );
       return migrated;
     } catch (error) {
       log.error('Failed to load state:', error);
@@ -135,11 +139,16 @@ export class LayoutPersistenceService {
    * @returns The migrated state
    */
   private static migrate(state: PersistedLayoutState): PersistedLayoutState {
+    let s = state;
     // Version 2 adds collectionsExpanded (defaults to false)
-    if (state.version === 1) {
-      return { ...state, version: 2, collectionsExpanded: false };
+    if (s.version === 1) {
+      s = { ...s, version: 2, collectionsExpanded: false };
     }
-    return state;
+    // Version 3 adds schemaTypesExpanded (defaults to false)
+    if (s.version === 2) {
+      s = { ...s, version: 3, schemaTypesExpanded: false };
+    }
+    return s;
   }
 
   /**
