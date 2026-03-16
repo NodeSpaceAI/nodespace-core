@@ -8,6 +8,7 @@ export interface LayoutState {
   sidebarCollapsed: boolean;
   activePane: string;
   collectionsExpanded: boolean;
+  schemaTypesExpanded: boolean;
 }
 
 export interface NavigationItem {
@@ -22,7 +23,8 @@ export interface NavigationItem {
 const initialLayoutState: LayoutState = {
   sidebarCollapsed: false,
   activePane: 'today',
-  collectionsExpanded: false
+  collectionsExpanded: false,
+  schemaTypesExpanded: false
 };
 
 export const layoutState = writable<LayoutState>(initialLayoutState);
@@ -59,7 +61,8 @@ export function loadPersistedLayoutState(): boolean {
     layoutState.set({
       sidebarCollapsed: persisted.sidebarCollapsed,
       activePane: 'today', // Keep activePane at default for now (not persisted)
-      collectionsExpanded: persisted.collectionsExpanded ?? false
+      collectionsExpanded: persisted.collectionsExpanded ?? false,
+      schemaTypesExpanded: persisted.schemaTypesExpanded ?? false
     });
   }
 
@@ -122,5 +125,12 @@ export function toggleCollectionsExpanded() {
   layoutState.update((state) => ({
     ...state,
     collectionsExpanded: !state.collectionsExpanded
+  }));
+}
+
+export function setSchemaTypesExpanded(expanded: boolean) {
+  layoutState.update((state) => ({
+    ...state,
+    schemaTypesExpanded: expanded
   }));
 }

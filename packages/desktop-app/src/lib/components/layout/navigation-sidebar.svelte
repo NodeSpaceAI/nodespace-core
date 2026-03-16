@@ -4,7 +4,8 @@
     layoutState,
     navigationItems,
     toggleSidebar,
-    setCollectionsExpanded
+    setCollectionsExpanded,
+    setSchemaTypesExpanded
   } from '$lib/stores/layout.js';
   import { tabState, setActiveTab, addTab } from '$lib/stores/navigation.js';
   import {
@@ -17,7 +18,6 @@
   import { formatDateISO } from '$lib/utils/date-formatting.js';
   import { v4 as uuidv4 } from 'uuid';
   import CollectionSubPanel from './collection-sub-panel.svelte';
-  import SchemaTypesSubPanel from './schema-types-sub-panel.svelte';
   import { backendAdapter } from '$lib/services/backend-adapter.js';
   import type { SchemaNode } from '$lib/types/schema-node';
   import { createLogger } from '$lib/utils/logger';
@@ -31,6 +31,8 @@
   let navItems = $derived($navigationItems);
   // Collections expanded state from layout store (persisted)
   let collectionsExpanded = $derived($layoutState.collectionsExpanded);
+  // Schema Types expanded state from layout store (persisted)
+  let schemaTypesExpanded = $derived($layoutState.schemaTypesExpanded);
 
   // Collections state from collections store (UI-only, not persisted)
   let subPanelOpen = $derived($collectionsState.subPanelOpen);
@@ -43,30 +45,29 @@
   let collectionForPanel = $derived($selectedCollection);
   let collectionMembers = $derived($selectedCollectionMembers);
 
-  // Schema Types panel state
-  let schemaTypesOpen = $state(false);
+  // Schema types data
   let schemas: SchemaNode[] = $state([]);
+  let builtInSchemas = $derived(schemas.filter((s) => s.isCore && s.id === 'task'));
+  let customSchemas = $derived(schemas.filter((s) => !s.isCore));
 
-  // Load collections from backend on mount
-  onMount(() => {
+  // Load collections and schemas from backend on mount
+  onMount(async () => {
     collectionsData.loadCollections();
+    try {
+      schemas = await backendAdapter.getAllSchemas();
+    } catch (err) {
+      log.error('Failed to load schemas', err);
+    }
   });
 
   // Element references for click-outside detection
   let navElement: HTMLElement | null = $state(null);
   let subPanelElement: HTMLElement | null = $state(null);
-  let schemaSubPanelElement: HTMLElement | null = $state(null);
 
   // Close sub-panel when sidebar collapses
   $effect(() => {
     if (isCollapsed && subPanelOpen) {
       collectionsState.clearSelection();
-    }
-  });
-
-  $effect(() => {
-    if (isCollapsed && schemaTypesOpen) {
-      schemaTypesOpen = false;
     }
   });
 
@@ -86,28 +87,6 @@
     }
 
     // Use capture phase to catch clicks before they bubble
-    document.addEventListener('click', handleClickOutside, true);
-
-    return () => {
-      document.removeEventListener('click', handleClickOutside, true);
-    };
-  });
-
-  // Click-outside handler for schema types sub-panel dismissal
-  $effect(() => {
-    if (!schemaTypesOpen) return;
-
-    function handleClickOutside(event: MouseEvent) {
-      const target = event.target as Node;
-      const clickedOutsideNav = navElement && !navElement.contains(target);
-      const clickedOutsideSchemaPanel =
-        schemaSubPanelElement && !schemaSubPanelElement.contains(target);
-
-      if (clickedOutsideNav && clickedOutsideSchemaPanel) {
-        schemaTypesOpen = false;
-      }
-    }
-
     document.addEventListener('click', handleClickOutside, true);
 
     return () => {
@@ -222,28 +201,7 @@
     }
   }
 
-  async function handleSchemaTypesClick() {
-    if (schemaTypesOpen) {
-      schemaTypesOpen = false;
-      return;
-    }
-
-    // Close collections panel if open
-    if (subPanelOpen) {
-      collectionsState.clearSelection();
-    }
-
-    try {
-      schemas = await backendAdapter.getAllSchemas();
-      schemaTypesOpen = true;
-    } catch (err) {
-      log.error('Failed to load schemas', err);
-    }
-  }
-
   function handleSchemaClick(schemaId: string) {
-    schemaTypesOpen = false;
-
     const currentState = $tabState;
     const existingTab = currentState.tabs.find((tab) => tab.content?.nodeId === schemaId);
 
@@ -270,9 +228,6 @@
     // Close sub-panels when clicking non-collection nav items
     if (subPanelOpen) {
       collectionsState.clearSelection();
-    }
-    if (schemaTypesOpen) {
-      schemaTypesOpen = false;
     }
 
     // Special handling for Daily Journal
@@ -474,30 +429,80 @@
       </button>
     {/if}
 
-    <!-- Schema Types section (after Collections) -->
+    <!-- Schema Types section (after Collections) - accordion toggle -->
     {#if !isCollapsed}
-      <button
-        class="nav-item"
-        onclick={handleSchemaTypesClick}
-        aria-label="Schema Types"
-      >
-        <svg
-          class="nav-icon"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
+      <Collapsible.Root open={schemaTypesExpanded} onOpenChange={(open) => setSchemaTypesExpanded(open)}>
+        <Collapsible.Trigger
+          class="nav-item"
+          aria-label={schemaTypesExpanded ? 'Collapse Schema Types' : 'Expand Schema Types'}
         >
-          <!-- 4-shape icon: triangle (top-left), square (top-right), square (bottom-left), diamond (bottom-right) -->
-          <path d="M3 3 L9 3 L6 8 Z" />
-          <rect x="11" y="3" width="6" height="6" />
-          <rect x="3" y="13" width="6" height="6" />
-          <path d="M14 13 L17 16 L14 19 L11 16 Z" />
-        </svg>
-        <span class="nav-label">Schema Types</span>
-      </button>
+          <svg
+            class="nav-icon"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <!-- 4-shape icon: triangle (top-left), square (top-right), square (bottom-left), diamond (bottom-right) -->
+            <path d="M3 3 L9 3 L6 8 Z" />
+            <rect x="11" y="3" width="6" height="6" />
+            <rect x="3" y="13" width="6" height="6" />
+            <path d="M14 13 L17 16 L14 19 L11 16 Z" />
+          </svg>
+          <span class="nav-label">Schema Types</span>
+        </Collapsible.Trigger>
+
+        <Collapsible.Content>
+          <div class="schema-type-list">
+            {#each builtInSchemas as schema (schema.id)}
+              <button class="schema-type-item" onclick={() => handleSchemaClick(schema.id)}>
+                <svg
+                  class="schema-type-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M3 3 L9 3 L6 8 Z" />
+                  <rect x="11" y="3" width="6" height="6" />
+                  <rect x="3" y="13" width="6" height="6" />
+                  <path d="M14 13 L17 16 L14 19 L11 16 Z" />
+                </svg>
+                <span class="schema-type-name">{schema.content}</span>
+              </button>
+            {/each}
+
+            {#if customSchemas.length > 0}
+              {#if builtInSchemas.length > 0}
+                <div class="schema-type-separator"></div>
+              {/if}
+              {#each customSchemas as schema (schema.id)}
+                <button class="schema-type-item" onclick={() => handleSchemaClick(schema.id)}>
+                  <svg
+                    class="schema-type-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <path d="M3 3 L9 3 L6 8 Z" />
+                    <rect x="11" y="3" width="6" height="6" />
+                    <rect x="3" y="13" width="6" height="6" />
+                    <path d="M14 13 L17 16 L14 19 L11 16 Z" />
+                  </svg>
+                  <span class="schema-type-name">{schema.content}</span>
+                </button>
+              {/each}
+            {/if}
+          </div>
+        </Collapsible.Content>
+      </Collapsible.Root>
     {:else}
       <!-- Collapsed state: just show icon -->
       <button
@@ -505,6 +510,7 @@
         title="Schema Types"
         onclick={() => {
           toggleSidebar();
+          setSchemaTypesExpanded(true);
         }}
       >
         <svg
@@ -560,15 +566,6 @@
     />
   </div>
 
-  <!-- Schema Types sub-panel -->
-  <div bind:this={schemaSubPanelElement}>
-    <SchemaTypesSubPanel
-      open={schemaTypesOpen}
-      {schemas}
-      onClose={() => (schemaTypesOpen = false)}
-      onSchemaClick={handleSchemaClick}
-    />
-  </div>
 </nav>
 
 <style>
@@ -831,5 +828,55 @@
 
   .expand-chevron.rotate-90 {
     transform: rotate(90deg);
+  }
+
+  /* Schema type list (expanded content) - mirrors collection-list */
+  .schema-type-list {
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    margin: 0 -1rem;
+    background: hsl(var(--active-nav-background));
+  }
+
+  /* Schema type item - mirrors collection-item */
+  .schema-type-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 1rem 0.4rem 1.25rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.8125rem;
+    width: 100%;
+    transition:
+      background-color 0.2s,
+      color 0.2s;
+  }
+
+  .schema-type-item:hover {
+    background: hsl(var(--border));
+    color: hsl(var(--foreground));
+  }
+
+  .schema-type-icon {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+
+  .schema-type-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .schema-type-separator {
+    height: 1px;
+    background: hsl(var(--border));
+    margin: 0.25rem 1rem;
   }
 </style>

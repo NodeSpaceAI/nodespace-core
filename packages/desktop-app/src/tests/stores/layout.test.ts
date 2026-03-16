@@ -45,7 +45,8 @@ describe('Layout Store - Layout State Management', () => {
     layoutState.set({
       sidebarCollapsed: false,
       activePane: 'today',
-      collectionsExpanded: false
+      collectionsExpanded: false,
+      schemaTypesExpanded: false
     });
 
     // Reset the module state by requiring a fresh import
@@ -112,7 +113,8 @@ describe('Layout Store - Layout State Management', () => {
       layoutState.set({
         sidebarCollapsed: true,
         activePane: 'today',
-        collectionsExpanded: false
+        collectionsExpanded: false,
+        schemaTypesExpanded: false
       });
 
       toggleSidebar();
@@ -126,7 +128,8 @@ describe('Layout Store - Layout State Management', () => {
       layoutState.set({
         sidebarCollapsed: false,
         activePane: 'today',
-        collectionsExpanded: false
+        collectionsExpanded: false,
+        schemaTypesExpanded: false
       });
 
       toggleSidebar();
@@ -139,7 +142,8 @@ describe('Layout Store - Layout State Management', () => {
       layoutState.set({
         sidebarCollapsed: false,
         activePane: 'custom-pane',
-        collectionsExpanded: false
+        collectionsExpanded: false,
+        schemaTypesExpanded: false
       });
 
       toggleSidebar();
@@ -175,7 +179,8 @@ describe('Layout Store - Layout State Management', () => {
       layoutState.set({
         sidebarCollapsed: true,
         activePane: 'today',
-        collectionsExpanded: false
+        collectionsExpanded: false,
+        schemaTypesExpanded: false
       });
 
       setActivePane('search');
@@ -402,7 +407,8 @@ describe('Layout Store - Persistence Integration', () => {
     freshModule.layoutState.set({
       sidebarCollapsed: false,
       activePane: 'today',
-      collectionsExpanded: false
+      collectionsExpanded: false,
+      schemaTypesExpanded: false
     });
   });
 
