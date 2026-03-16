@@ -1614,21 +1614,11 @@ impl SurrealStore {
 
         // Handle content_contains query
         if let Some(ref search_query) = query.content_contains {
-            let nodes = self
-                .search_nodes_by_content(search_query, query.limit.map(|l| l as i64))
-                .await?;
-
-            // Note: Filtering by root/task status is done at the Tauri command layer
-            // (mention_autocomplete), not here, since it requires graph traversal.
-            return Ok(nodes);
-        }
-
-        // Handle title_contains query
-        if let Some(ref search_query) = query.title_contains {
-            let sql = if query.limit.is_some() {
-                "SELECT * FROM node WHERE string::lowercase(title) CONTAINS string::lowercase($search_query) LIMIT $limit;"
-            } else {
-                "SELECT * FROM node WHERE string::lowercase(title) CONTAINS string::lowercase($search_query);"
+            let sql = match (query.limit.is_some(), query.offset.is_some()) {
+                (false, false) => "SELECT * FROM node WHERE string::lowercase(content) CONTAINS string::lowercase($search_query);",
+                (true, false) => "SELECT * FROM node WHERE string::lowercase(content) CONTAINS string::lowercase($search_query) LIMIT $limit;",
+                (false, true) => "SELECT * FROM node WHERE string::lowercase(content) CONTAINS string::lowercase($search_query) START AT $offset;",
+                (true, true) => "SELECT * FROM node WHERE string::lowercase(content) CONTAINS string::lowercase($search_query) LIMIT $limit START AT $offset;",
             };
             let mut query_builder = self
                 .db
@@ -1636,6 +1626,40 @@ impl SurrealStore {
                 .bind(("search_query", search_query.to_string()));
             if let Some(limit) = query.limit {
                 query_builder = query_builder.bind(("limit", limit as i64));
+            }
+            if let Some(offset) = query.offset {
+                query_builder = query_builder.bind(("offset", offset as i64));
+            }
+            let mut response = query_builder
+                .await
+                .context("Failed to search nodes by content")?;
+            let surreal_nodes: Vec<SurrealNode> = response
+                .take(0)
+                .context("Failed to extract content search results")?;
+            // Note: Filtering by root/task status is done at the Tauri command layer
+            // (mention_autocomplete), not here, since it requires graph traversal.
+            return Ok(surreal_nodes.into_iter().map(Into::into).collect());
+        }
+
+        // Handle title_contains query
+        if let Some(ref search_query) = query.title_contains {
+            // Guard `title IS NOT NONE` before calling string::lowercase to avoid errors on
+            // nodes that have no title set (SurrealDB 3.x errors on string::lowercase(NONE))
+            let sql = match (query.limit.is_some(), query.offset.is_some()) {
+                (false, false) => "SELECT * FROM node WHERE title IS NOT NONE AND string::lowercase(title) CONTAINS string::lowercase($search_query);",
+                (true, false) => "SELECT * FROM node WHERE title IS NOT NONE AND string::lowercase(title) CONTAINS string::lowercase($search_query) LIMIT $limit;",
+                (false, true) => "SELECT * FROM node WHERE title IS NOT NONE AND string::lowercase(title) CONTAINS string::lowercase($search_query) START AT $offset;",
+                (true, true) => "SELECT * FROM node WHERE title IS NOT NONE AND string::lowercase(title) CONTAINS string::lowercase($search_query) LIMIT $limit START AT $offset;",
+            };
+            let mut query_builder = self
+                .db
+                .query(sql)
+                .bind(("search_query", search_query.to_string()));
+            if let Some(limit) = query.limit {
+                query_builder = query_builder.bind(("limit", limit as i64));
+            }
+            if let Some(offset) = query.offset {
+                query_builder = query_builder.bind(("offset", offset as i64));
             }
             let mut response = query_builder
                 .await

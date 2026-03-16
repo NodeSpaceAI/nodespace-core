@@ -4089,6 +4089,7 @@ impl NodeService {
             title_contains: filter.title_contains,
             mentioned_by: None,
             limit: filter.limit,
+            offset: filter.offset,
         };
 
         let nodes = self

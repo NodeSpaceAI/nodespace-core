@@ -739,6 +739,10 @@ pub struct NodeQuery {
     /// Limit number of results
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+
+    /// Offset for pagination
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub offset: Option<usize>,
 }
 
 impl NodeQuery {

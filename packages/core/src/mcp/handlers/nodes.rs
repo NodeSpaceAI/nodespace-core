@@ -596,7 +596,14 @@ pub async fn handle_query_nodes(
     }
 
     if let Some(filters) = params.filters {
+        let mut seen_fields = std::collections::HashSet::new();
         for f in filters {
+            if !seen_fields.insert(f.field.clone()) {
+                tracing::warn!(
+                    "query_nodes: duplicate filter field='{}', only the last value will be used",
+                    f.field
+                );
+            }
             let value_str = match &f.value {
                 serde_json::Value::String(s) => s.clone(),
                 other => other.to_string(),
