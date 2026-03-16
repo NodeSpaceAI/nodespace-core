@@ -102,11 +102,24 @@
   let mermaidError = $state<string | null>(null);
   let mermaidContainer = $state<HTMLDivElement | null>(null);
 
+  // Split-panel live preview state (mermaid edit mode only)
+  let previewSvg = $state<string | null>(null);
+  let previewError = $state<string | null>(null);
+  let previewContainer = $state<HTMLDivElement | null>(null);
+  let previewRenderSeq = 0;
+  let previewDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+
   // Inject sanitized SVG into the container via DOM — avoids {@html} and its lint warning.
   // sanitizeSvg() strips all scripts and event handlers before this runs.
   $effect(() => {
     if (mermaidContainer) {
       mermaidContainer.innerHTML = mermaidSvg ?? '';
+    }
+  });
+
+  $effect(() => {
+    if (previewContainer) {
+      previewContainer.innerHTML = previewSvg ?? '';
     }
   });
 
@@ -151,6 +164,32 @@
       mermaidSvg = null;
       mermaidError = null;
     }
+  });
+
+  // Debounced live preview for mermaid split-panel (fires only when editing a mermaid block)
+  $effect(() => {
+    if (!isEditing || language !== 'mermaid') {
+      // Clear preview state when leaving edit mode or switching away from mermaid
+      previewSvg = null;
+      previewError = null;
+      return;
+    }
+    const code = displayContent.trim();
+    const dark = isDark;
+
+    if (previewDebounceTimer) clearTimeout(previewDebounceTimer);
+    previewDebounceTimer = setTimeout(async () => {
+      const seq = ++previewRenderSeq;
+      const svg = await renderMermaid(code, `${nodeId}-preview`, dark);
+      if (seq !== previewRenderSeq) return; // stale — discard
+      if (svg !== null) {
+        previewSvg = svg;
+        previewError = null;
+      } else {
+        previewSvg = null;
+        previewError = 'Syntax error — check your Mermaid definition.';
+      }
+    }, 300);
   });
 
   function handleTypingStart() {
@@ -370,7 +409,12 @@
 {/snippet}
 
 <!-- Wrap BaseNode with code-block-specific styling -->
-<div class="code-block-node-wrapper" class:typing={isTyping} bind:this={wrapperElement}>
+<div
+  class="code-block-node-wrapper"
+  class:typing={isTyping}
+  class:mermaid-split={isEditing && language === 'mermaid'}
+  bind:this={wrapperElement}
+>
   <BaseNode
     {nodeId}
     {nodeType}
@@ -396,6 +440,19 @@
     on:nodeTypeChanged={handleNodeTypeChanged}
     on:iconClick={forwardEvent('iconClick')}
   />
+
+  <!-- Mermaid split-panel live preview (edit mode only) -->
+  {#if isEditing && language === 'mermaid'}
+    <div class="mermaid-split-preview">
+      {#if previewSvg}
+        <div class="mermaid-output mermaid-preview-output" bind:this={previewContainer}></div>
+      {:else if previewError}
+        <div class="mermaid-error mermaid-preview-error">{previewError}</div>
+      {:else}
+        <div class="code-loading">Rendering…</div>
+      {/if}
+    </div>
+  {/if}
 
   <!-- Language selector button (appears on hover, only in edit mode) -->
   {#if isEditing}
@@ -616,5 +673,61 @@
     color: hsl(var(--muted-foreground));
     font-style: italic;
     font-size: 0.8125rem;
+  }
+
+  /* Mermaid split-panel edit mode */
+  :global(.code-block-node-wrapper.mermaid-split) {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto;
+    align-items: start;
+  }
+
+  /* Left half: textarea (BaseNode renders this naturally as first child) */
+  :global(.code-block-node-wrapper.mermaid-split .node-content-wrapper) {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  /* Right half: live preview panel */
+  .mermaid-split-preview {
+    grid-column: 2;
+    grid-row: 1;
+    background: hsl(var(--muted));
+    border-left: 1px solid hsl(var(--border));
+    border-radius: 0 var(--radius) var(--radius) 0;
+    padding: 0.25rem 0.5rem;
+    min-height: 3rem;
+    overflow-x: auto;
+    align-self: stretch;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+    font-size: 0.875rem;
+  }
+
+  /* Buttons must span full grid when in split mode */
+  :global(.code-block-node-wrapper.mermaid-split .code-language-button),
+  :global(.code-block-node-wrapper.mermaid-split .code-copy-button) {
+    grid-column: 1 / -1;
+    position: absolute;
+  }
+
+  /* Dropdown must be in normal positioning context */
+  .code-language-dropdown {
+    grid-column: 1 / -1;
+  }
+
+  /* Responsive: stack vertically in narrow containers */
+  @media (max-width: 480px) {
+    :global(.code-block-node-wrapper.mermaid-split) {
+      grid-template-columns: 1fr;
+    }
+
+    .mermaid-split-preview {
+      grid-column: 1;
+      grid-row: 2;
+      border-left: none;
+      border-top: 1px solid hsl(var(--border));
+      border-radius: 0 0 var(--radius) var(--radius);
+    }
   }
 </style>
