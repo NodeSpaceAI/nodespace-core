@@ -1614,11 +1614,12 @@ impl SurrealStore {
 
         // Handle content_contains query
         if let Some(ref search_query) = query.content_contains {
+            // content is required and never NULL, but guard for consistency with title_contains
             let sql = match (query.limit.is_some(), query.offset.is_some()) {
-                (false, false) => "SELECT * FROM node WHERE string::lowercase(content) CONTAINS string::lowercase($search_query);",
-                (true, false) => "SELECT * FROM node WHERE string::lowercase(content) CONTAINS string::lowercase($search_query) LIMIT $limit;",
-                (false, true) => "SELECT * FROM node WHERE string::lowercase(content) CONTAINS string::lowercase($search_query) START AT $offset;",
-                (true, true) => "SELECT * FROM node WHERE string::lowercase(content) CONTAINS string::lowercase($search_query) LIMIT $limit START AT $offset;",
+                (false, false) => "SELECT * FROM node WHERE content IS NOT NONE AND string::lowercase(content) CONTAINS string::lowercase($search_query);",
+                (true, false) => "SELECT * FROM node WHERE content IS NOT NONE AND string::lowercase(content) CONTAINS string::lowercase($search_query) LIMIT $limit;",
+                (false, true) => "SELECT * FROM node WHERE content IS NOT NONE AND string::lowercase(content) CONTAINS string::lowercase($search_query) START AT $offset;",
+                (true, true) => "SELECT * FROM node WHERE content IS NOT NONE AND string::lowercase(content) CONTAINS string::lowercase($search_query) LIMIT $limit START AT $offset;",
             };
             let mut query_builder = self
                 .db
