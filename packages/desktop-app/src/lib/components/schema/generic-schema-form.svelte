@@ -29,6 +29,10 @@
   import type { SchemaNode, SchemaField, EnumValue } from '$lib/types/schema-node';
   import type { Node } from '$lib/types';
   import { parseDate, type DateValue } from '@internationalized/date';
+  import { createLogger } from '$lib/utils/logger';
+
+  const log = createLogger('GenericSchemaForm');
+
   let { nodeId, schema }: { nodeId: string; schema: SchemaNode } = $props();
 
   let isOpen = $state(false);
@@ -51,19 +55,13 @@
     };
   });
 
-  // Only render fields (skip internal/system fields like 'id', 'content', etc.)
-  const renderableFields = $derived(() => {
-    return schema.fields;
-  });
-
   const fieldStats = $derived(() => {
-    const fields = renderableFields();
     let filled = 0;
-    for (const field of fields) {
+    for (const field of schema.fields) {
       const value = getFieldValue(field.name);
       if (value !== null && value !== undefined && value !== '') filled++;
     }
-    return { filled, total: fields.length };
+    return { filled, total: schema.fields.length };
   });
 
   function getFieldValue(fieldName: string): unknown {
@@ -100,7 +98,8 @@
     try {
       const dateOnly = typeof value === 'string' && value.includes('T') ? value.split('T')[0] : value;
       return parseDate(dateOnly as string);
-    } catch {
+    } catch (error) {
+      log.warn(`Failed to parse date value "${value}":`, error);
       return undefined;
     }
   }
@@ -147,7 +146,7 @@
 
       <Collapsible.Content class="pb-4">
         <div class="grid grid-cols-2 gap-4">
-          {#each renderableFields() as field (field.name)}
+          {#each schema.fields as field (field.name)}
             {@const fieldId = `generic-${nodeId}-${field.name}`}
             <div class="space-y-2">
               <label for={fieldId} class="text-sm font-medium">
@@ -217,8 +216,7 @@
                     class="h-4 w-4 rounded border-input"
                   />
                 </div>
-              {:else}
-                <!-- string / text / unknown types → text input -->
+              {:else if field.type === 'string' || field.type === 'text'}
                 <Input
                   id={fieldId}
                   type="text"
@@ -226,6 +224,8 @@
                   oninput={(e) => updateField(field.name, e.currentTarget.value)}
                   placeholder={field.default ? String(field.default) : ''}
                 />
+              {:else}
+                <div class="text-sm text-muted-foreground">Unknown field type: {field.type}</div>
               {/if}
             </div>
           {/each}
