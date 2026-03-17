@@ -91,6 +91,9 @@ pub enum DomainEvent {
     /// A node was deleted
     NodeDeleted {
         id: String,
+        /// Node type (e.g., "schema", "collection") - included so consumers can
+        /// apply structural bypass logic without fetching the already-deleted node
+        node_type: String,
         source_client_id: Option<String>,
     },
 

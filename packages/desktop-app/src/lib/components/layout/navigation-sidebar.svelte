@@ -18,13 +18,9 @@
   import { formatDateISO } from '$lib/utils/date-formatting.js';
   import { v4 as uuidv4 } from 'uuid';
   import CollectionSubPanel from './collection-sub-panel.svelte';
-  import { backendAdapter } from '$lib/services/backend-adapter.js';
-  import type { SchemaNode } from '$lib/types/schema-node';
-  import { createLogger } from '$lib/utils/logger';
-
-  import { onMount } from 'svelte';
-
-  const log = createLogger('NavigationSidebar');
+  import { onMount, onDestroy } from 'svelte';
+  import { schemasData, builtInSchemas as builtInSchemasStore, customSchemas as customSchemasStore } from '$lib/stores/schemas';
+  import { clearCollectionRefreshTimer, clearSchemaRefreshTimer } from '$lib/utils/collection-refresh';
 
   // Subscribe to stores using Svelte 5 runes
   let isCollapsed = $derived($layoutState.sidebarCollapsed);
@@ -45,19 +41,21 @@
   let collectionForPanel = $derived($selectedCollection);
   let collectionMembers = $derived($selectedCollectionMembers);
 
-  // Schema types data
-  let schemas: SchemaNode[] = $state([]);
-  let builtInSchemas = $derived(schemas.filter((s) => s.isCore && s.id === 'task'));
-  let customSchemas = $derived(schemas.filter((s) => !s.isCore));
+  // Schema types from global store (reactive — updates when schemas are created/deleted externally)
+  let builtInSchemas = $derived($builtInSchemasStore);
+  let customSchemas = $derived($customSchemasStore);
 
   // Load collections and schemas from backend on mount
-  onMount(async () => {
+  onMount(() => {
     collectionsData.loadCollections();
-    try {
-      schemas = await backendAdapter.getAllSchemas();
-    } catch (err) {
-      log.error('Failed to load schemas', err);
-    }
+    schemasData.loadSchemas();
+  });
+
+  // Cancel any pending debounced refreshes when the sidebar is destroyed
+  // to prevent async callbacks from firing after teardown.
+  onDestroy(() => {
+    clearCollectionRefreshTimer();
+    clearSchemaRefreshTimer();
   });
 
   // Element references for click-outside detection
@@ -214,7 +212,7 @@
           id: uuidv4(),
           title: 'Loading...',
           type: 'node',
-          content: { nodeId: schemaId, nodeType: 'schema' },
+          content: { nodeId: schemaId, nodeType: 'query' },
           closeable: true,
           paneId: targetPaneId
         },

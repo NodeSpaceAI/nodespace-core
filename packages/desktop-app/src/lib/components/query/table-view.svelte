@@ -3,51 +3,66 @@
 
   Derives columns from schema field definitions (not by enumerating result node keys).
   Always includes 'content' (title) as the first column — rendered as a clickable link.
-  Additional columns: one per schema field definition, in schema order.
+  Additional columns: one per schema field definition, in schema order, using field.label.
   Clicking the content/title cell calls onRowClick(node.id).
+  Results are paginated at 25 rows per page.
 -->
 
 <script lang="ts">
-  import type { Node } from '$lib/types';
-  import type { SchemaNode } from '$lib/types/schema-node';
+  import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
+  import TableRow from '$lib/components/query/table-row.svelte';
 
   let {
-    results,
+    nodeIds,
     schema,
+    fieldSchemaMap,
     onRowClick
   }: {
-    results: Node[];
+    nodeIds: string[];
     schema: SchemaNode | null;
+    fieldSchemaMap: Map<string, SchemaField>;
     onRowClick: (_nodeId: string) => void;
   } = $props();
 
-  // Derive columns from schema fields — schema-driven, not key enumeration
+  const PAGE_SIZE = 25;
+  let currentPage = $state(0);
+
+  // Reset to page 0 when nodeIds change
+  $effect(() => {
+    nodeIds;
+    currentPage = 0;
+  });
+
+  // Derive columns from schema fields — capitalize name and replace underscores with spaces
   const columns = $derived.by(() => {
     const cols: Array<{ field: string; label: string }> = [
-      { field: 'content', label: 'Title' }
+      { field: 'content', label: '' }
     ];
 
     if (schema?.fields) {
       for (const field of schema.fields) {
-        cols.push({ field: field.name, label: field.name.charAt(0).toUpperCase() + field.name.slice(1) });
+        const label = field.description
+          ? field.description
+          : field.name
+              .replace(/_/g, ' ')
+              .replace(/([a-z])([A-Z])/g, '$1 $2')
+              .replace(/^\w/, (c) => c.toUpperCase());
+        cols.push({ field: field.name, label });
       }
     }
 
     return cols;
   });
 
-  function getCellValue(node: Node, field: string): string {
-    if (field === 'content') {
-      return node.content || '';
-    }
-    const val = node.properties?.[field];
-    if (val === null || val === undefined) return '';
-    if (typeof val === 'object') return JSON.stringify(val);
-    return String(val);
-  }
+  const totalPages = $derived(Math.ceil(nodeIds.length / PAGE_SIZE));
+
+  const pageIds = $derived(
+    nodeIds.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE)
+  );
+
 </script>
 
-<div class="table-view">
+<div class="table-wrapper">
   <table>
     <thead>
       <tr>
@@ -57,37 +72,47 @@
       </tr>
     </thead>
     <tbody>
-      {#each results as node (node.id)}
-        <tr class="result-row">
-          {#each columns as col (col.field)}
-            <td>
-              {#if col.field === 'content'}
-                <button
-                  class="title-link"
-                  onclick={() => onRowClick(node.id)}
-                  title="Open {node.content || 'node'} in other panel"
-                >
-                  {getCellValue(node, col.field) || 'Untitled'}
-                </button>
-              {:else}
-                <span class="cell-value">{getCellValue(node, col.field)}</span>
-              {/if}
-            </td>
-          {/each}
-        </tr>
+      {#each pageIds as id (id)}
+        <TableRow {id} {columns} {fieldSchemaMap} {onRowClick} />
       {/each}
     </tbody>
   </table>
+
+  {#if totalPages > 1}
+    <div class="pagination">
+      <button
+        class="page-btn"
+        onclick={() => currentPage--}
+        disabled={currentPage === 0}
+      >
+        ‹
+      </button>
+      <span class="page-info">{currentPage + 1} / {totalPages}</span>
+      <button
+        class="page-btn"
+        onclick={() => currentPage++}
+        disabled={currentPage >= totalPages - 1}
+      >
+        ›
+      </button>
+    </div>
+  {/if}
 </div>
 
 <style>
-  .table-view {
+  .table-wrapper {
     width: 100%;
     overflow-x: auto;
+    scrollbar-width: none; /* Firefox */
+  }
+
+  .table-wrapper::-webkit-scrollbar {
+    display: none; /* Chrome/Safari */
   }
 
   table {
-    width: 100%;
+    width: max-content;
+    min-width: 100%;
     border-collapse: collapse;
     font-size: 0.875rem;
   }
@@ -104,49 +129,39 @@
     text-align: left;
     font-weight: 600;
     font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.03em;
     color: hsl(var(--muted-foreground));
     border-bottom: 2px solid hsl(var(--border));
     white-space: nowrap;
   }
 
-  .result-row {
-    transition: background-color 0.1s ease;
+  .pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    border-top: 1px solid hsl(var(--border));
   }
 
-  .result-row:hover {
-    background: hsl(var(--muted));
-  }
-
-  td {
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid hsl(var(--border));
-    vertical-align: middle;
-    max-width: 300px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .title-link {
-    background: none;
-    border: none;
-    padding: 0;
+  .page-btn {
+    background: hsl(var(--secondary));
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.375rem;
+    padding: 0.25rem 0.625rem;
     cursor: pointer;
-    font-size: 0.875rem;
+    font-size: 1rem;
     color: hsl(var(--foreground));
-    font-weight: 500;
-    text-align: left;
-    transition: color 0.15s ease;
+    line-height: 1;
   }
 
-  .title-link:hover {
-    color: hsl(var(--primary));
-    text-decoration: underline;
+  .page-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
   }
 
-  .cell-value {
+  .page-info {
+    font-size: 0.875rem;
     color: hsl(var(--muted-foreground));
   }
 </style>

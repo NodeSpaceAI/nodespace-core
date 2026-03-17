@@ -1325,6 +1325,7 @@
     <div class="viewer-editable-header">
       <input
         type="text"
+        id="viewer-header-{paneId}-{nodeId ?? 'default'}"
         class="header-input"
         value={isHeaderBeingEdited ? (currentViewedNode?.content || '') : headerDisplayValue}
         oninput={(e) => handleHeaderInput(e.currentTarget.value)}

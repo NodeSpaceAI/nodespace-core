@@ -164,6 +164,7 @@ mod event_emission_tests {
         match event {
             DomainEvent::NodeDeleted {
                 id,
+                node_type: _,
                 source_client_id,
             } => {
                 assert_eq!(id, node_id);

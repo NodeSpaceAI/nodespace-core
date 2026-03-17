@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setContext } from 'svelte';
+  import { setContext, untrack } from 'svelte';
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import { tabState, updateTabTitle, updateTabContent, closeTab } from '$lib/stores/navigation.js';
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
@@ -28,43 +28,67 @@
   // Track loaded viewer components by nodeType
   let viewerComponents = $state<Map<string, unknown>>(new Map());
   let viewerLoadErrors = $state<Map<string, string>>(new Map());
+  let viewerLoading = $state<Set<string>>(new Set());
 
   // Load viewer when needed - moved to function called from onMount to avoid derived context issues
   async function loadViewerForNodeType(nodeType: string) {
-    if (viewerComponents.has(nodeType) || viewerLoadErrors.has(nodeType)) {
+    if (viewerComponents.has(nodeType) || viewerLoadErrors.has(nodeType) || viewerLoading.has(nodeType)) {
       return;
     }
 
+    // Fast path: if no viewer is registered for this type, store the fallback immediately
+    // without entering viewerLoading state (avoids a null→BaseNodeViewer transition that
+    // would unmount/remount the viewer unnecessarily).
+    if (!pluginRegistry.hasViewer(nodeType)) {
+      viewerComponents = new Map(viewerComponents.set(nodeType, BaseNodeViewer));
+      return;
+    }
+
+    viewerLoading = new Set(viewerLoading).add(nodeType);
+
     try {
       const viewer = await pluginRegistry.getViewer(nodeType);
-      if (viewer) {
-        viewerComponents = new Map(viewerComponents.set(nodeType, viewer));
-      }
+      // Always store a result (viewer or BaseNodeViewer fallback) so the guard
+      // viewerComponents.has(nodeType) fires true on subsequent calls and prevents
+      // repeated load attempts that cause mount/unmount loops (issue #967).
+      viewerComponents = new Map(viewerComponents.set(nodeType, viewer ?? BaseNodeViewer));
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error loading viewer';
       log.error(`Failed to load viewer for ${nodeType}:`, error);
       viewerLoadErrors = new Map(viewerLoadErrors.set(nodeType, errorMessage));
+    } finally {
+      const next = new Set(viewerLoading);
+      next.delete(nodeType);
+      viewerLoading = next;
     }
   }
 
-  // Derive viewer component for active tab - use non-reactive snapshot to break tracking
+  // Derive viewer component for active tab.
+  // Returns null while the viewer module is still loading (prevents BaseNodeViewer fallback
+  // from rendering with an incompatible nodeId, e.g. a schema id passed to QueryNodeViewer)
   const ViewerComponent = $derived.by(() => {
     const nodeType = activeTab?.content?.nodeType ?? 'text';
-    const components = $state.snapshot(viewerComponents);
-    return (components.get(nodeType) ?? BaseNodeViewer) as typeof BaseNodeViewer;
+    if (viewerLoading.has(nodeType)) return null;
+    return (viewerComponents.get(nodeType) ?? BaseNodeViewer) as typeof BaseNodeViewer;
   });
 
   const loadError = $derived.by(() => {
     const nodeType = activeTab?.content?.nodeType ?? 'text';
-    const errors = $state.snapshot(viewerLoadErrors);
-    return errors.get(nodeType);
+    return viewerLoadErrors.get(nodeType);
+  });
+
+  const isViewerLoading = $derived.by(() => {
+    const nodeType = activeTab?.content?.nodeType ?? 'text';
+    return viewerLoading.has(nodeType);
   });
 
   // Load viewer when active tab changes - use $effect but call async function
+  // untrack the call to loadViewerForNodeType so mutations to viewerLoading/viewerComponents
+  // inside that function don't re-trigger this effect
   $effect(() => {
     const nodeType = activeTab?.content?.nodeType;
     if (nodeType) {
-      loadViewerForNodeType(nodeType);
+      untrack(() => loadViewerForNodeType(nodeType));
     }
   });
 
@@ -83,6 +107,11 @@
       <p>Unable to load the viewer for node type: <strong>{nodeType}</strong></p>
       <p class="error-message">{loadError}</p>
       <p class="help-text">Try refreshing the page or contact support if the problem persists.</p>
+    </div>
+  {:else if isViewerLoading}
+    <!-- Viewer module still loading — don't render BaseNodeViewer as fallback -->
+    <div class="loading-state">
+      <span>Loading...</span>
     </div>
   {:else}
     <!-- Dynamic viewer routing via plugin registry -->
@@ -130,6 +159,16 @@
   .placeholder-content p {
     margin: 0.5rem 0;
     color: hsl(var(--muted-foreground));
+  }
+
+  /* Loading state - shown while viewer module is being lazy-loaded */
+  .loading-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.875rem;
   }
 
   /* Empty state */

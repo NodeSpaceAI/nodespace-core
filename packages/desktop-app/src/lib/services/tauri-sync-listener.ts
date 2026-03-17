@@ -29,7 +29,7 @@ import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
 import { backendAdapter } from './backend-adapter';
 import { createLogger } from '$lib/utils/logger';
-import { scheduleCollectionRefresh } from '$lib/utils/collection-refresh';
+import { scheduleCollectionRefresh, scheduleSchemaRefresh } from '$lib/utils/collection-refresh';
 
 const log = createLogger('TauriSync');
 
@@ -100,6 +100,11 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       // Issue #832: If a collection node is created, refresh collections sidebar
       if (event.payload.nodeType === 'collection') {
         scheduleCollectionRefresh();
+      }
+
+      // If a schema node is created, refresh the schema types sidebar
+      if (event.payload.nodeType === 'schema') {
+        scheduleSchemaRefresh();
       }
 
       // Fetch full node data since the node might be in the current view

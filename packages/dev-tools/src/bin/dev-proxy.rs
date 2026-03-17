@@ -87,6 +87,10 @@ pub enum SseEvent {
     NodeDeleted {
         #[serde(rename = "nodeId")]
         node_id: String,
+        /// Node type - included so the frontend can apply structural bypass logic
+        /// (schema/collection deletes must pass through even from dev-proxy clients)
+        #[serde(rename = "nodeType")]
+        node_type: String,
         #[serde(rename = "clientId", skip_serializing_if = "Option::is_none")]
         client_id: Option<String>,
     },
@@ -359,12 +363,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Determine SurrealDB server host and credentials from environment or defaults.
     // Credentials match the --user/--pass flags on the `surreal start` command.
-    let db_host = std::env::var("NODESPACE_DEV_DB_HOST")
-        .unwrap_or_else(|_| "127.0.0.1:8000".to_string());
-    let db_user = std::env::var("NODESPACE_DEV_DB_USER")
-        .unwrap_or_else(|_| "root".to_string());
-    let db_pass = std::env::var("NODESPACE_DEV_DB_PASS")
-        .unwrap_or_else(|_| "root".to_string());
+    let db_host =
+        std::env::var("NODESPACE_DEV_DB_HOST").unwrap_or_else(|_| "127.0.0.1:8000".to_string());
+    let db_user = std::env::var("NODESPACE_DEV_DB_USER").unwrap_or_else(|_| "root".to_string());
+    let db_pass = std::env::var("NODESPACE_DEV_DB_PASS").unwrap_or_else(|_| "root".to_string());
 
     println!("📡 Connecting to SurrealDB server at: {}", db_host);
 
@@ -541,7 +543,10 @@ async fn main() -> anyhow::Result<()> {
     println!("   HTTP API:     http://127.0.0.1:3001");
     println!("   SSE endpoint: http://127.0.0.1:3001/api/events");
     println!("   MCP server:   http://127.0.0.1:{}", mcp_port);
-    println!("   Database:     SurrealDB HTTP at {} (NODESPACE_DEV_DB_HOST to override)", db_host);
+    println!(
+        "   Database:     SurrealDB HTTP at {} (NODESPACE_DEV_DB_HOST to override)",
+        db_host
+    );
     println!("\n   AI agents can connect via MCP for real-time sync\n");
 
     axum::serve(listener, app).await?;
@@ -579,8 +584,12 @@ async fn domain_event_to_sse_bridge(
                         node_type,
                         source_client_id,
                     } => {
-                        // Filter out events from dev-proxy (browser operations)
-                        if source_client_id.as_deref() == Some("dev-proxy") {
+                        // Filter out events from dev-proxy (browser operations) to prevent
+                        // feedback loops — EXCEPT for structural node types like "schema" and
+                        // "collection" that need to trigger sidebar refreshes even when created
+                        // via the browser/MCP.
+                        let is_structural = node_type == "schema" || node_type == "collection";
+                        if source_client_id.as_deref() == Some("dev-proxy") && !is_structural {
                             tracing::debug!(
                                 "Filtering out NodeCreated event from dev-proxy for node {}",
                                 node_id
@@ -624,10 +633,14 @@ async fn domain_event_to_sse_bridge(
                     }
                     DomainEvent::NodeDeleted {
                         id,
+                        node_type,
                         source_client_id,
                     } => {
-                        // Filter out events from dev-proxy (browser operations)
-                        if source_client_id.as_deref() == Some("dev-proxy") {
+                        // Filter out events from dev-proxy (browser operations), except for
+                        // structural node types (schema, collection) which need to trigger
+                        // sidebar refreshes even when deleted via the browser.
+                        let is_structural = node_type == "schema" || node_type == "collection";
+                        if source_client_id.as_deref() == Some("dev-proxy") && !is_structural {
                             tracing::debug!(
                                 "Filtering out NodeDeleted event from dev-proxy for node {}",
                                 id
@@ -637,6 +650,7 @@ async fn domain_event_to_sse_bridge(
 
                         let _ = sse_tx.send(SseEvent::NodeDeleted {
                             node_id: id,
+                            node_type,
                             client_id: source_client_id,
                         });
                     }
@@ -772,13 +786,21 @@ async fn sse_handler(
                     SseEvent::RelationshipDeleted { client_id, .. } => client_id,
                 };
 
-                // Skip if event came from dev-proxy (browser operations)
+                // Skip if event came from dev-proxy (browser operations), except for
+                // structural node types (schema, collection) which need to trigger sidebar refreshes.
                 if let Some(event_client) = event_client_id {
                     if event_client == "dev-proxy" {
-                        tracing::debug!(
-                            "Filtering out SSE event from dev-proxy (browser operation)"
+                        let is_structural = matches!(
+                            &sse_event,
+                            SseEvent::NodeCreated { node_type, .. } | SseEvent::NodeDeleted { node_type, .. }
+                                if node_type == "schema" || node_type == "collection"
                         );
-                        return None;
+                        if !is_structural {
+                            tracing::debug!(
+                                "Filtering out SSE event from dev-proxy (browser operation)"
+                            );
+                            return None;
+                        }
                     }
                 }
 

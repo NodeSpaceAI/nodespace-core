@@ -455,8 +455,8 @@ interface ActiveBatch {
 export class SharedNodeStore {
   private static instance: SharedNodeStore | null = null;
 
-  // Core state - using Svelte 5 $state for automatic reactivity
-  // This enables $derived() to properly re-run when nodes change
+  // Core state - using Svelte 5 $state for automatic reactivity.
+  // Key-specific .get() accesses inside $derived are tracked by Svelte's reactive Map proxy.
   nodes = $state(new Map<string, Node>());
 
   // Track which nodes have been persisted to database

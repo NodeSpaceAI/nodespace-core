@@ -27,7 +27,7 @@ import type { Node } from '$lib/types/node';
 import { nodeToTaskNode } from '$lib/types/task-node';
 import { backendAdapter } from './backend-adapter';
 import { createLogger } from '$lib/utils/logger';
-import { scheduleCollectionRefresh } from '$lib/utils/collection-refresh';
+import { scheduleCollectionRefresh, scheduleSchemaRefresh } from '$lib/utils/collection-refresh';
 
 const log = createLogger('BrowserSyncService');
 
@@ -231,6 +231,11 @@ class BrowserSyncService {
         // Issue #832: If a collection node is created, refresh collections sidebar
         if (event.nodeType === 'collection') {
           scheduleCollectionRefresh();
+        }
+
+        // If a schema node is created, refresh the schema types sidebar
+        if (event.nodeType === 'schema') {
+          scheduleSchemaRefresh();
         }
 
         // Issue #724: Fetch full node data only if we need to display it
