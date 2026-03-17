@@ -359,12 +359,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Determine SurrealDB server host and credentials from environment or defaults.
     // Credentials match the --user/--pass flags on the `surreal start` command.
-    let db_host = std::env::var("NODESPACE_DEV_DB_HOST")
-        .unwrap_or_else(|_| "127.0.0.1:8000".to_string());
-    let db_user = std::env::var("NODESPACE_DEV_DB_USER")
-        .unwrap_or_else(|_| "root".to_string());
-    let db_pass = std::env::var("NODESPACE_DEV_DB_PASS")
-        .unwrap_or_else(|_| "root".to_string());
+    let db_host =
+        std::env::var("NODESPACE_DEV_DB_HOST").unwrap_or_else(|_| "127.0.0.1:8000".to_string());
+    let db_user = std::env::var("NODESPACE_DEV_DB_USER").unwrap_or_else(|_| "root".to_string());
+    let db_pass = std::env::var("NODESPACE_DEV_DB_PASS").unwrap_or_else(|_| "root".to_string());
 
     println!("📡 Connecting to SurrealDB server at: {}", db_host);
 
@@ -541,7 +539,10 @@ async fn main() -> anyhow::Result<()> {
     println!("   HTTP API:     http://127.0.0.1:3001");
     println!("   SSE endpoint: http://127.0.0.1:3001/api/events");
     println!("   MCP server:   http://127.0.0.1:{}", mcp_port);
-    println!("   Database:     SurrealDB HTTP at {} (NODESPACE_DEV_DB_HOST to override)", db_host);
+    println!(
+        "   Database:     SurrealDB HTTP at {} (NODESPACE_DEV_DB_HOST to override)",
+        db_host
+    );
     println!("\n   AI agents can connect via MCP for real-time sync\n");
 
     axum::serve(listener, app).await?;

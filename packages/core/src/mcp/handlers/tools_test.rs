@@ -213,7 +213,7 @@ mod async_integration_tests {
     async fn test_tools_list_includes_custom_schemas_in_create_node_enum() {
         let (node_service, _embedding_service, _temp_dir) = setup_test_services().await;
 
-        // Create a custom schema node
+        // Create a custom schema node via create_node (id is a server-generated ULID)
         let create_params = json!({
             "name": "create_node",
             "arguments": {
@@ -224,11 +224,20 @@ mod async_integration_tests {
                 }
             }
         });
-        // Use handle_tools_call so the schema is stored via the real node service path
-        // For this test we just verify that schemas created BEFORE tools/list is called appear in the enum.
-        // We call create_schema directly via tools/call:
         let embedding_service: Option<Arc<NodeEmbeddingService>> = None;
-        let _ = handle_tools_call(&node_service, &embedding_service, create_params).await;
+        let create_response = handle_tools_call(&node_service, &embedding_service, create_params)
+            .await
+            .expect("create_node should succeed");
+
+        // Extract the generated node_id from the tool response
+        let response_text = create_response["content"][0]["text"]
+            .as_str()
+            .expect("Response should have text content");
+        let response_json: serde_json::Value =
+            serde_json::from_str(response_text).expect("Response should be valid JSON");
+        let schema_node_id = response_json["node_id"]
+            .as_str()
+            .expect("Response should contain node_id");
 
         let result = handle_tools_list(&node_service, json!({})).await.unwrap();
         let tools = result["tools"].as_array().unwrap();
@@ -239,9 +248,14 @@ mod async_integration_tests {
             .unwrap();
         let enum_values: Vec<&str> = node_type_enum.iter().map(|v| v.as_str().unwrap()).collect();
 
-        // "invoice" schema ID should appear if schema creation worked
-        // (schema ID is derived from content "Invoice" lowercased, or a generated ID)
-        // At minimum, schema and core types must be present:
+        // The actual schema node ID (a ULID) must appear in the enum
+        assert!(
+            enum_values.contains(&schema_node_id),
+            "Schema node ID '{}' should appear in the node_type enum, got: {:?}",
+            schema_node_id,
+            enum_values
+        );
+        // Core types must still be present
         assert!(enum_values.contains(&"schema"));
         assert!(enum_values.contains(&"text"));
     }

@@ -20,6 +20,7 @@ use crate::mcp::types::MCPError;
 use crate::services::{NodeEmbeddingService, NodeService};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Tool exposure tier for progressive disclosure
@@ -512,23 +513,31 @@ pub async fn handle_tools_call(
 /// while preserving ability to override descriptions (see Issue #312).
 fn get_tool_schemas(schema_ids: &[String]) -> Value {
     // Build the node_type enum: core types + "schema" + all user-defined schema IDs
-    let mut node_types: Vec<String> = vec![
-        "text".to_string(),
-        "header".to_string(),
-        "task".to_string(),
-        "date".to_string(),
-        "code-block".to_string(),
-        "quote-block".to_string(),
-        "ordered-list".to_string(),
-        "collection".to_string(),
-        "schema".to_string(),
+    let mut seen: HashSet<&str> = HashSet::new();
+    let core_types: &[&str] = &[
+        "text",
+        "header",
+        "task",
+        "date",
+        "code-block",
+        "quote-block",
+        "ordered-list",
+        "collection",
+        "schema",
     ];
+    let mut node_types: Vec<String> = core_types
+        .iter()
+        .map(|&t| {
+            seen.insert(t);
+            t.to_string()
+        })
+        .collect();
     for id in schema_ids {
-        if !node_types.contains(id) {
+        if seen.insert(id.as_str()) {
             node_types.push(id.clone());
         }
     }
-    let node_type_enum = serde_json::to_value(&node_types).unwrap_or(json!([]));
+    let node_type_enum = json!(node_types);
 
     json!([
         {
