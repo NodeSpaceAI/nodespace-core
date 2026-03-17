@@ -12,10 +12,19 @@ use std::sync::Arc;
 use tempfile::TempDir;
 
 async fn create_test_service() -> (Arc<NodeService>, TempDir) {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = TempDir::new().expect("tempdir creation failed");
     let db_path = temp_dir.path().join("test.db");
-    let mut store = Arc::new(SurrealStore::new(db_path).await.unwrap());
-    let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+    // NodeService::new takes &mut Arc<SurrealStore> to allow internal Arc replacement during init
+    let mut store = Arc::new(
+        SurrealStore::new(db_path)
+            .await
+            .expect("SurrealStore init failed"),
+    );
+    let node_service = Arc::new(
+        NodeService::new(&mut store)
+            .await
+            .expect("NodeService init failed"),
+    );
     (node_service, temp_dir)
 }
 
@@ -45,7 +54,7 @@ async fn test_create_schema_with_valid_title_template() {
         "Valid title_template should succeed: {:?}",
         result
     );
-    let val = result.unwrap();
+    let val = result.expect("valid create_schema should return Ok");
     assert_eq!(val["schemaId"], "customer");
 }
 
@@ -114,9 +123,12 @@ async fn create_base_schema(svc: &Arc<NodeService>, name: &str, field_names: &[&
 
     let result = handle_create_schema(svc, json!({ "name": name, "fields": fields }))
         .await
-        .unwrap();
+        .expect("create_base_schema: schema creation failed");
 
-    result["schemaId"].as_str().unwrap().to_string()
+    result["schemaId"]
+        .as_str()
+        .expect("create_base_schema: schemaId missing in response")
+        .to_string()
 }
 
 #[tokio::test]
@@ -184,8 +196,8 @@ async fn test_update_schema_remove_field_referenced_by_existing_template_rejecte
         }),
     )
     .await
-    .unwrap();
-    let schema_id = result["schemaId"].as_str().unwrap();
+    .expect("Employee schema creation failed");
+    let schema_id = result["schemaId"].as_str().expect("schemaId missing");
 
     // Now try to remove first_name — template still references it
     let update_result = handle_update_schema(
@@ -226,8 +238,8 @@ async fn test_update_schema_remove_field_and_clear_template_succeeds() {
         }),
     )
     .await
-    .unwrap();
-    let schema_id = result["schemaId"].as_str().unwrap();
+    .expect("Widget schema creation failed");
+    let schema_id = result["schemaId"].as_str().expect("schemaId missing");
 
     // Clearing the template (empty string) while removing sku should succeed:
     // the empty template has no tokens so validation passes.
@@ -269,8 +281,8 @@ async fn test_update_schema_remove_unrelated_field_with_template_succeeds() {
         }),
     )
     .await
-    .unwrap();
-    let schema_id = result["schemaId"].as_str().unwrap();
+    .expect("Product schema creation failed");
+    let schema_id = result["schemaId"].as_str().expect("schemaId missing");
 
     // Remove "notes" — not in the template — should succeed
     let update_result = handle_update_schema(

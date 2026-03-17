@@ -1342,7 +1342,7 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                     },
                     "title_template": {
                         "type": "string",
-                        "description": "Set or update the title template. Syntax: plain text with {field_name} tokens — each token must exactly match a field name in the schema. Examples: '{first_name} {last_name}', 'INV-{invoice_number}', '{company} — {role}'. Tokens referencing undefined fields are rejected. When set, the inline node view shows the computed title as read-only."
+                        "description": "Set or update the title template. Syntax: plain text with {field_name} tokens — each token must exactly match a field name in the schema. Examples: '{first_name} {last_name}', 'INV-{invoice_number}', '{company} — {role}'. Tokens referencing undefined fields are rejected. When set, the inline node view shows the computed title as read-only. To remove an existing title_template, pass an empty string \"\"."
                     }
                 },
                 "required": ["schema_id"]
