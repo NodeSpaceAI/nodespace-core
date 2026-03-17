@@ -1053,6 +1053,8 @@ impl SchemaNodeBehavior {
 
         // Validate title_template syntax: every '{' must have a matching '}' and a non-empty field name
         if let Some(template) = &schema.title_template {
+            let defined_fields: HashSet<&str> =
+                schema.fields.iter().map(|f| f.name.as_str()).collect();
             let bytes = template.as_bytes();
             let mut i = 0;
             while i < bytes.len() {
@@ -1070,6 +1072,13 @@ impl SchemaNodeBehavior {
                                 return Err(NodeValidationError::InvalidProperties(
                                     "title_template contains an empty '{}' placeholder".to_string(),
                                 ));
+                            }
+                            // Cross-check: token must reference a defined field
+                            if !defined_fields.contains(field_name) {
+                                return Err(NodeValidationError::InvalidProperties(format!(
+                                    "title_template references undefined field '{}' — add it to schema.fields",
+                                    field_name
+                                )));
                             }
                             i += 1 + end + 1; // skip past '}'
                             continue;
@@ -2902,7 +2911,10 @@ mod tests {
                 "schemaVersion": 1,
                 "description": "",
                 "titleTemplate": "{first_name} {last_name}",
-                "fields": [],
+                "fields": [
+                    {"name": "first_name", "type": "string", "protection": "user", "indexed": false},
+                    {"name": "last_name", "type": "string", "protection": "user", "indexed": false}
+                ],
                 "relationships": []
             }),
         );
@@ -2988,6 +3000,82 @@ mod tests {
         assert!(
             behavior.validate_schema_node(&schema).is_ok(),
             "Schema without title_template should pass validation"
+        );
+    }
+
+    #[test]
+    fn test_title_template_undefined_field_rejected() {
+        use crate::models::SchemaNode;
+        let behavior = SchemaNodeBehavior;
+
+        // title_template references a field "nonexistent" that is not in schema.fields
+        let node = Node::new(
+            "schema".to_string(),
+            "Customer".to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": "Customer schema",
+                "fields": [
+                    {
+                        "name": "first_name",
+                        "type": "string",
+                        "protection": "user",
+                        "indexed": false
+                    }
+                ],
+                "relationships": [],
+                "titleTemplate": "{nonexistent}"
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        let result = behavior.validate_schema_node(&schema);
+        assert!(
+            result.is_err(),
+            "Undefined field in title_template should fail validation"
+        );
+        assert!(matches!(
+            result,
+            Err(NodeValidationError::InvalidProperties(ref msg))
+                if msg.contains("undefined field") && msg.contains("nonexistent")
+        ));
+    }
+
+    #[test]
+    fn test_title_template_defined_field_accepted() {
+        use crate::models::SchemaNode;
+        let behavior = SchemaNodeBehavior;
+
+        // title_template references fields that exist in schema.fields
+        let node = Node::new(
+            "schema".to_string(),
+            "Customer".to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": "Customer schema",
+                "fields": [
+                    {
+                        "name": "first_name",
+                        "type": "string",
+                        "protection": "user",
+                        "indexed": false
+                    },
+                    {
+                        "name": "last_name",
+                        "type": "string",
+                        "protection": "user",
+                        "indexed": false
+                    }
+                ],
+                "relationships": [],
+                "titleTemplate": "{first_name} {last_name}"
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        assert!(
+            behavior.validate_schema_node(&schema).is_ok(),
+            "title_template referencing defined fields should pass validation"
         );
     }
 

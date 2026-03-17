@@ -31,8 +31,15 @@ async function loadSchemas(): Promise<void> {
   }
 }
 
-// Derived: all built-in (core) schemas shown in sidenav
-export const builtInSchemas = derived(_schemas, ($s) => $s.filter((s) => s.isCore));
+// Core schema IDs that are user-queryable and should appear in the sidenav.
+// Structural/inline types (text, date, header, code-block, etc.) are excluded —
+// they are node content primitives, not entity types users browse or filter.
+const SIDENAV_CORE_TYPES = new Set(['task']);
+
+// Derived: core schemas shown in sidenav (only user-queryable ones like "task")
+export const builtInSchemas = derived(_schemas, ($s) =>
+  $s.filter((s) => s.isCore && SIDENAV_CORE_TYPES.has(s.id))
+);
 
 // Derived: user-created custom schemas
 export const customSchemas = derived(_schemas, ($s) => $s.filter((s) => !s.isCore));
