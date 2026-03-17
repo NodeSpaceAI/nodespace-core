@@ -42,13 +42,16 @@
   // Sentinel to discard in-flight responses when nodeId changes rapidly (sidenav navigation)
   let currentLoadId = $state(0);
 
-  // Derive results reactively from the store — automatically updates when any node changes
+  // Derive results reactively from the store.
+  // sharedNodeStore.nodes is a plain Map (not a Svelte proxy) — Map.set() doesn't trigger
+  // reactivity on its own. Reading nodeVersion ($state counter) ensures this derived re-runs
+  // whenever any node is added or updated.
   const results = $derived.by(() => {
+    sharedNodeStore.nodeVersion; // read reactive counter to subscribe to node changes
     if (!schemaNode) return [] as Node[];
     const nodeType = schemaNode.id;
-    const allNodes = sharedNodeStore.getAllNodes();
     const out: Node[] = [];
-    for (const node of allNodes.values()) {
+    for (const node of sharedNodeStore.nodes.values()) {
       if (node.nodeType === nodeType) out.push(node);
     }
     return out;
