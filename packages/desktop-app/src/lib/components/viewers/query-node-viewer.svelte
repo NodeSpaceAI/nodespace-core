@@ -116,8 +116,7 @@
     // 'core'/'system' fields are top-level typed properties on the node
     let rawValue: unknown;
     if (fieldSchema?.protection === 'user') {
-      const nestedNs = node.properties?.[node.nodeType] as Record<string, unknown> | undefined;
-      rawValue = nestedNs?.[field] ?? node.properties?.[field];
+      rawValue = node.properties?.[field];
     } else {
       rawValue = nodeRecord[field];
     }
