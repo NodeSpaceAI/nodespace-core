@@ -32,8 +32,8 @@
 
   // Load viewer when needed - moved to function called from onMount to avoid derived context issues
   async function loadViewerForNodeType(nodeType: string) {
-    if (viewerComponents.has(nodeType) || viewerLoadErrors.has(nodeType)) {
-      return; // Already cached — ViewerComponent resolves non-null immediately, no loading state needed
+    if (viewerComponents.has(nodeType) || viewerLoadErrors.has(nodeType) || viewerLoading.has(nodeType)) {
+      return; // Already cached or in-flight — avoid duplicate concurrent fetches
     }
 
     viewerLoading = new Set([...viewerLoading, nodeType]); // Svelte 5: reassign for reactivity
@@ -166,7 +166,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 3rem;
+    height: 100%;
     text-align: center;
     color: hsl(var(--muted-foreground));
   }
