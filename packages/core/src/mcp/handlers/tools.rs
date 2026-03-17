@@ -1080,7 +1080,7 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                     },
                     "title_template": {
                         "type": "string",
-                        "description": "Optional template for computing the node display title from field values. Use {field_name} tokens that must match fields defined in 'fields'. Example: '{first_name} {last_name}' for a customer schema. When set, the content area shows the computed title as read-only inline."
+                        "description": "Optional template for computing the node display title from field values. Syntax: plain text with {field_name} tokens — each token must exactly match a field name defined in 'fields'. Examples: '{first_name} {last_name}' (customer), 'INV-{invoice_number}' (invoice), '{company} — {role}' (contact). Tokens referencing undefined fields are rejected with a validation error. When set, the inline node view shows the computed title as read-only; fill in properties to populate it."
                     }
                 },
                 "required": ["name"]
@@ -1342,7 +1342,7 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                     },
                     "title_template": {
                         "type": "string",
-                        "description": "Set or update the title template. Use {field_name} tokens that must match fields in the schema. Example: '{first_name} {last_name}'. When set, the inline node view shows the computed title as read-only."
+                        "description": "Set or update the title template. Syntax: plain text with {field_name} tokens — each token must exactly match a field name in the schema. Examples: '{first_name} {last_name}', 'INV-{invoice_number}', '{company} — {role}'. Tokens referencing undefined fields are rejected. When set, the inline node view shows the computed title as read-only."
                     }
                 },
                 "required": ["schema_id"]
