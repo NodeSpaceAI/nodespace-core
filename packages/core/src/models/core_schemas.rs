@@ -167,6 +167,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 },
             ],
             relationships: vec![],
+            title_template: None,
         },
         // Text schema - plain text content (no extra fields)
         SchemaNode {
@@ -180,6 +181,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             description: "Plain text content".to_string(),
             fields: vec![],
             relationships: vec![],
+            title_template: None,
         },
         // Date schema - daily note containers (no extra fields)
         SchemaNode {
@@ -193,6 +195,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             description: "Date node schema".to_string(),
             fields: vec![],
             relationships: vec![],
+            title_template: None,
         },
         // Header schema - markdown headers (no extra fields)
         SchemaNode {
@@ -206,6 +209,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             description: "Markdown header (h1-h6)".to_string(),
             fields: vec![],
             relationships: vec![],
+            title_template: None,
         },
         // Code block schema - code with syntax highlighting (no extra fields)
         SchemaNode {
@@ -219,6 +223,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             description: "Code block with syntax highlighting".to_string(),
             fields: vec![],
             relationships: vec![],
+            title_template: None,
         },
         // Quote block schema - blockquotes (no extra fields)
         SchemaNode {
@@ -232,6 +237,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             description: "Blockquote for citations".to_string(),
             fields: vec![],
             relationships: vec![],
+            title_template: None,
         },
         // Ordered list schema - numbered list items (no extra fields)
         SchemaNode {
@@ -245,6 +251,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             description: "Numbered list item".to_string(),
             fields: vec![],
             relationships: vec![],
+            title_template: None,
         },
         // Horizontal line schema - thematic break (no extra fields)
         SchemaNode {
@@ -258,6 +265,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             description: "Horizontal rule / thematic break".to_string(),
             fields: vec![],
             relationships: vec![],
+            title_template: None,
         },
         // Table schema - GFM markdown table (no extra fields)
         SchemaNode {
@@ -271,6 +279,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             description: "GFM markdown table with alignment support".to_string(),
             fields: vec![],
             relationships: vec![],
+            title_template: None,
         },
         // Collection schema - hierarchical labels for organizing nodes
         SchemaNode {
@@ -284,6 +293,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             description: "Hierarchical label for organizing nodes into groups".to_string(),
             fields: vec![],        // Uses content for name
             relationships: vec![], // member_of is a native edge, not schema-defined
+            title_template: None,
         },
         // Checkbox schema - pure content node with state encoded in content string
         SchemaNode {
@@ -297,6 +307,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             description: "Checkbox item — markdown annotation, not a managed task".to_string(),
             fields: vec![],
             relationships: vec![],
+            title_template: None,
         },
         // Query schema - saved query definitions
         SchemaNode {
@@ -440,6 +451,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 },
             ],
             relationships: vec![],
+            title_template: None,
         },
     ]
 }

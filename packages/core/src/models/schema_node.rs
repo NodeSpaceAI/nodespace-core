@@ -96,6 +96,14 @@ pub struct SchemaNode {
     /// created when the schema is saved. See [`SchemaRelationship`] for details.
     #[serde(default)]
     pub relationships: Vec<SchemaRelationship>,
+
+    /// Optional template for computing the node's indexed title from its properties.
+    ///
+    /// Uses `{field_name}` syntax, e.g. `"{first_name} {last_name} ({email})"`.
+    /// When set, title is interpolated from node properties instead of content.
+    /// Missing or null fields are replaced with empty strings.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title_template: Option<String>,
 }
 
 fn default_version() -> i64 {
@@ -156,6 +164,12 @@ impl SchemaNode {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
 
+        let title_template = node
+            .properties
+            .get("titleTemplate")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         Ok(Self {
             id: node.id,
             content: node.content,
@@ -167,6 +181,7 @@ impl SchemaNode {
             description,
             fields,
             relationships,
+            title_template,
         })
     }
 
@@ -174,13 +189,17 @@ impl SchemaNode {
     ///
     /// This creates a Node with properties populated from the strongly-typed fields.
     pub fn into_node(self) -> Node {
-        let properties = serde_json::json!({
+        let mut properties = serde_json::json!({
             "isCore": self.is_core,
             "schemaVersion": self.schema_version,
             "description": self.description,
             "fields": self.fields,
             "relationships": self.relationships,
         });
+
+        if let Some(template) = self.title_template {
+            properties["titleTemplate"] = serde_json::Value::String(template);
+        }
 
         Node {
             id: self.id,

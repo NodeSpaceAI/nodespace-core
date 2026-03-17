@@ -96,6 +96,62 @@ pub fn strip_markdown(content: &str) -> String {
     result.trim().to_string()
 }
 
+/// Interpolate a title template string using node properties.
+///
+/// Replaces `{field_name}` tokens with the corresponding property value.
+/// Non-string values (numbers, booleans) are converted to their string representation.
+/// Missing or null fields are replaced with empty strings.
+/// The result is trimmed of leading/trailing whitespace.
+///
+/// # Arguments
+///
+/// * `template` - The template string with `{field_name}` placeholders
+/// * `properties` - The node's properties JSON object
+///
+/// # Examples
+///
+/// ```
+/// use nodespace_core::utils::interpolate_title_template;
+/// use serde_json::json;
+///
+/// let props = json!({"first_name": "John", "last_name": "Doe"});
+/// assert_eq!(
+///     interpolate_title_template("{first_name} {last_name}", &props),
+///     "John Doe"
+/// );
+/// ```
+pub fn interpolate_title_template(template: &str, properties: &serde_json::Value) -> String {
+    let mut result = String::with_capacity(template.len());
+    let chars: Vec<char> = template.chars().collect();
+    let mut i = 0;
+
+    while i < chars.len() {
+        if chars[i] == '{' {
+            // Find the closing brace
+            if let Some(end) = chars[i + 1..].iter().position(|&c| c == '}') {
+                let field_name: String = chars[i + 1..i + 1 + end].iter().collect();
+                // Look up the field value in properties
+                let value = properties.get(&field_name);
+                match value {
+                    Some(serde_json::Value::String(s)) => result.push_str(s),
+                    Some(serde_json::Value::Number(n)) => result.push_str(&n.to_string()),
+                    Some(serde_json::Value::Bool(b)) => result.push_str(&b.to_string()),
+                    Some(serde_json::Value::Null) | None => {} // empty string for missing/null
+                    Some(other) => result.push_str(&other.to_string()),
+                }
+                i += 1 + end + 1; // skip past '}'
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+
+    // Normalize whitespace and trim
+    let normalized = WHITESPACE_RE.replace_all(&result, " ");
+    normalized.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +267,94 @@ mod tests {
         let input = "# Header\n\nSome **bold** text\n- List item";
         let expected = "Header Some bold text List item";
         assert_eq!(strip_markdown(input), expected);
+    }
+
+    // -------------------------------------------------------------------------
+    // interpolate_title_template tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_interpolate_basic_fields() {
+        let props = serde_json::json!({"first_name": "John", "last_name": "Doe"});
+        assert_eq!(
+            interpolate_title_template("{first_name} {last_name}", &props),
+            "John Doe"
+        );
+    }
+
+    #[test]
+    fn test_interpolate_missing_field_is_empty() {
+        let props = serde_json::json!({"first_name": "Jane"});
+        assert_eq!(
+            interpolate_title_template("{first_name} {last_name}", &props),
+            "Jane"
+        );
+    }
+
+    #[test]
+    fn test_interpolate_null_field_is_empty() {
+        let props = serde_json::json!({"first_name": "Alice", "email": null});
+        assert_eq!(
+            interpolate_title_template("{first_name} ({email})", &props),
+            "Alice ()"
+        );
+    }
+
+    #[test]
+    fn test_interpolate_number_value() {
+        let props = serde_json::json!({"invoice_number": 42});
+        assert_eq!(
+            interpolate_title_template("Invoice #{invoice_number}", &props),
+            "Invoice #42"
+        );
+    }
+
+    #[test]
+    fn test_interpolate_boolean_value() {
+        let props = serde_json::json!({"active": true});
+        assert_eq!(
+            interpolate_title_template("Active: {active}", &props),
+            "Active: true"
+        );
+    }
+
+    #[test]
+    fn test_interpolate_multiple_fields() {
+        let props = serde_json::json!({
+            "first_name": "John",
+            "last_name": "Doe",
+            "email": "john@example.com"
+        });
+        assert_eq!(
+            interpolate_title_template("{first_name} {last_name} ({email})", &props),
+            "John Doe (john@example.com)"
+        );
+    }
+
+    #[test]
+    fn test_interpolate_trims_whitespace() {
+        let props = serde_json::json!({"first_name": "Jane", "last_name": ""});
+        assert_eq!(
+            interpolate_title_template("{first_name} {last_name}", &props),
+            "Jane"
+        );
+    }
+
+    #[test]
+    fn test_interpolate_no_placeholders() {
+        let props = serde_json::json!({});
+        assert_eq!(
+            interpolate_title_template("Static Title", &props),
+            "Static Title"
+        );
+    }
+
+    #[test]
+    fn test_interpolate_all_fields_missing() {
+        let props = serde_json::json!({});
+        assert_eq!(
+            interpolate_title_template("{first_name} {last_name}", &props),
+            ""
+        );
     }
 }
