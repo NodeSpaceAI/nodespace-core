@@ -2130,17 +2130,29 @@ impl NodeService {
         }
 
         // Check for title_template in the schema for this node type
-        if let Ok(Some(schema)) = self.get_schema_node(&node.node_type).await {
-            if let Some(template) = &schema.title_template {
-                // Properties are stored namespaced: { "node_type": { "field": value } }
-                // Unwrap to the inner namespace object for template interpolation
-                let flat_props = node
-                    .properties
-                    .get(&node.node_type)
-                    .unwrap_or(&node.properties);
-                return Ok(Some(crate::utils::interpolate_title_template(
-                    template, flat_props,
-                )));
+        match self.get_schema_node(&node.node_type).await {
+            Ok(Some(schema)) => {
+                if let Some(template) = &schema.title_template {
+                    // Properties are stored namespaced: { "node_type": { "field": value } }
+                    // Unwrap to the inner namespace object for template interpolation
+                    let flat_props = node
+                        .properties
+                        .get(&node.node_type)
+                        .unwrap_or(&node.properties);
+                    return Ok(Some(crate::utils::interpolate_title_template(
+                        template, flat_props,
+                    )));
+                }
+            }
+            Ok(None) => {} // No schema for this type — fall through to content-based logic
+            Err(e) => {
+                // Schema lookup failed; fall through to content-based title rather than
+                // blocking the create/update operation
+                tracing::warn!(
+                    node_type = %node.node_type,
+                    error = %e,
+                    "compute_title: schema lookup failed, falling back to content-based title"
+                );
             }
         }
 

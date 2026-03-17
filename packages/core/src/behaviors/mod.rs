@@ -1051,6 +1051,35 @@ impl SchemaNodeBehavior {
             validate_schema_field(field)?;
         }
 
+        // Validate title_template syntax: every '{' must have a matching '}' and a non-empty field name
+        if let Some(template) = &schema.title_template {
+            let bytes = template.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'{' {
+                    // Find matching '}'
+                    match bytes[i + 1..].iter().position(|&c| c == b'}') {
+                        None => {
+                            return Err(NodeValidationError::InvalidProperties(
+                                "title_template contains an unclosed '{' placeholder".to_string(),
+                            ));
+                        }
+                        Some(end) => {
+                            let field_name = &template[i + 1..i + 1 + end];
+                            if field_name.is_empty() {
+                                return Err(NodeValidationError::InvalidProperties(
+                                    "title_template contains an empty '{}' placeholder".to_string(),
+                                ));
+                            }
+                            i += 1 + end + 1; // skip past '}'
+                            continue;
+                        }
+                    }
+                }
+                i += 1;
+            }
+        }
+
         Ok(())
     }
 }
@@ -2854,6 +2883,112 @@ mod tests {
             Err(NodeValidationError::InvalidProperties(ref msg))
                 if msg.contains("Enum field") && msg.contains("must have at least one value")
         ));
+    }
+
+    // =========================================================================
+    // title_template Validation Tests (Issue #824)
+    // =========================================================================
+
+    #[test]
+    fn test_title_template_valid() {
+        use crate::models::SchemaNode;
+        let behavior = SchemaNodeBehavior;
+
+        let node = Node::new(
+            "schema".to_string(),
+            "Customer".to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": "",
+                "titleTemplate": "{first_name} {last_name}",
+                "fields": [],
+                "relationships": []
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        assert!(
+            behavior.validate_schema_node(&schema).is_ok(),
+            "Valid title_template should pass validation"
+        );
+    }
+
+    #[test]
+    fn test_title_template_unclosed_brace_rejected() {
+        use crate::models::SchemaNode;
+        let behavior = SchemaNodeBehavior;
+
+        let node = Node::new(
+            "schema".to_string(),
+            "Customer".to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": "",
+                "titleTemplate": "{first_name",
+                "fields": [],
+                "relationships": []
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        let result = behavior.validate_schema_node(&schema);
+        assert!(result.is_err(), "Unclosed brace should fail validation");
+        assert!(matches!(
+            result,
+            Err(NodeValidationError::InvalidProperties(ref msg))
+                if msg.contains("unclosed")
+        ));
+    }
+
+    #[test]
+    fn test_title_template_empty_placeholder_rejected() {
+        use crate::models::SchemaNode;
+        let behavior = SchemaNodeBehavior;
+
+        let node = Node::new(
+            "schema".to_string(),
+            "Customer".to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": "",
+                "titleTemplate": "{} {last_name}",
+                "fields": [],
+                "relationships": []
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        let result = behavior.validate_schema_node(&schema);
+        assert!(result.is_err(), "Empty placeholder should fail validation");
+        assert!(matches!(
+            result,
+            Err(NodeValidationError::InvalidProperties(ref msg))
+                if msg.contains("empty")
+        ));
+    }
+
+    #[test]
+    fn test_title_template_none_is_valid() {
+        use crate::models::SchemaNode;
+        let behavior = SchemaNodeBehavior;
+
+        // No title_template field at all — should pass
+        let node = Node::new(
+            "schema".to_string(),
+            "Widget".to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": "",
+                "fields": [],
+                "relationships": []
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        assert!(
+            behavior.validate_schema_node(&schema).is_ok(),
+            "Schema without title_template should pass validation"
+        );
     }
 
     // =========================================================================
