@@ -16,6 +16,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "EnterPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun run .claude/hooks/remind-plan-startup-sequence.ts",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }
