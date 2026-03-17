@@ -960,6 +960,10 @@ fn normalize_schema_id(entity_name: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "schema_test.rs"]
+mod schema_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
