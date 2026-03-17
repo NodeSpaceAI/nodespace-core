@@ -28,12 +28,15 @@
   // Track loaded viewer components by nodeType
   let viewerComponents = $state<Map<string, unknown>>(new Map());
   let viewerLoadErrors = $state<Map<string, string>>(new Map());
+  let viewerLoading = $state<Set<string>>(new Set());
 
   // Load viewer when needed - moved to function called from onMount to avoid derived context issues
   async function loadViewerForNodeType(nodeType: string) {
     if (viewerComponents.has(nodeType) || viewerLoadErrors.has(nodeType)) {
-      return;
+      return; // Already cached — ViewerComponent resolves non-null immediately, no loading state needed
     }
+
+    viewerLoading = new Set([...viewerLoading, nodeType]); // Svelte 5: reassign for reactivity
 
     try {
       const viewer = await pluginRegistry.getViewer(nodeType);
@@ -44,13 +47,23 @@
       const errorMessage = error instanceof Error ? error.message : 'Unknown error loading viewer';
       log.error(`Failed to load viewer for ${nodeType}:`, error);
       viewerLoadErrors = new Map(viewerLoadErrors.set(nodeType, errorMessage));
+    } finally {
+      const next = new Set(viewerLoading);
+      next.delete(nodeType);
+      viewerLoading = next; // Svelte 5: reassign for reactivity
     }
   }
 
   // Derive viewer component for active tab - use non-reactive snapshot to break tracking
-  const ViewerComponent = $derived.by(() => {
+  const ViewerComponent = $derived.by((): typeof BaseNodeViewer | null => {
     const nodeType = activeTab?.content?.nodeType ?? 'text';
+    const loading = $state.snapshot(viewerLoading);
     const components = $state.snapshot(viewerComponents);
+
+    if (loading.has(nodeType)) {
+      return null; // Still loading — do not fall back to BaseNodeViewer
+    }
+
     return (components.get(nodeType) ?? BaseNodeViewer) as typeof BaseNodeViewer;
   });
 
@@ -85,22 +98,28 @@
       <p class="help-text">Try refreshing the page or contact support if the problem persists.</p>
     </div>
   {:else}
-    <!-- Dynamic viewer routing via plugin registry -->
-    <!-- Falls back to BaseNodeViewer if no custom viewer registered -->
+    {#if !ViewerComponent}
+      <div class="loading-state">
+        <span>Loading...</span>
+      </div>
+    {:else}
+      <!-- Dynamic viewer routing via plugin registry -->
+      <!-- Falls back to BaseNodeViewer if no custom viewer registered -->
 
-    <!-- KEY FIX: Use {#key} to force separate component instances per pane+nodeId -->
-    <!-- This ensures each pane gets its own BaseNodeViewer instance with isolated state -->
-    {#key `${pane.id}-${content.nodeId}`}
-      <ViewerComponent
-        nodeId={content.nodeId}
-        tabId={activeTabId}
-        onTitleChange={(title: string) => updateTabTitle(activeTabId, title)}
-        onNodeIdChange={(newNodeId: string) => {
-          updateTabContent(activeTabId, { nodeId: newNodeId, nodeType: content.nodeType });
-        }}
-        onNodeNotFound={() => closeTab(activeTabId)}
-      />
-    {/key}
+      <!-- KEY FIX: Use {#key} to force separate component instances per pane+nodeId -->
+      <!-- This ensures each pane gets its own BaseNodeViewer instance with isolated state -->
+      {#key `${pane.id}-${content.nodeId}`}
+        <ViewerComponent
+          nodeId={content.nodeId}
+          tabId={activeTabId}
+          onTitleChange={(title: string) => updateTabTitle(activeTabId, title)}
+          onNodeIdChange={(newNodeId: string) => {
+            updateTabContent(activeTabId, { nodeId: newNodeId, nodeType: content.nodeType });
+          }}
+          onNodeNotFound={() => closeTab(activeTabId)}
+        />
+      {/key}
+    {/if}
   {/if}
 {:else if activeTab}
   <!-- Placeholder content for tabs without node content -->
@@ -138,6 +157,17 @@
     align-items: center;
     justify-content: center;
     height: 100%;
+    color: hsl(var(--muted-foreground));
+  }
+
+  /* Loading state */
+  .loading-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem;
+    text-align: center;
     color: hsl(var(--muted-foreground));
   }
 
