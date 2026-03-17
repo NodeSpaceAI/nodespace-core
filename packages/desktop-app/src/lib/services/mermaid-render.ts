@@ -10,6 +10,9 @@ let mermaidModule: Promise<Mermaid> | null = null;
 // race conditions where concurrent renders interleave init + render with different themes
 let lastThemeKey: string | null = null;
 
+// Monotonic counter for unique render IDs — avoids ms-precision collisions from Date.now()
+let renderCounter = 0;
+
 async function getMermaidModule(): Promise<Mermaid> {
   if (!mermaidModule) {
     mermaidModule = import('mermaid').then(({ default: mermaid }) => mermaid);
@@ -119,12 +122,15 @@ export async function renderMermaid(
       lastThemeKey = themeKey;
     }
     // Use a unique render ID per call to avoid ID collisions when rapid re-renders
-    // occur (e.g. two renders in-flight for the same node). After render, clean up
-    // the temp element mermaid injects into the document.
-    const renderId = `mermaid-${id}-${Date.now()}`;
-    const { svg } = await mermaid.render(renderId, definition);
-    document.getElementById(renderId)?.remove();
-    return sanitizeSvg(svg);
+    // occur (e.g. two renders in-flight for the same node). The temp element mermaid
+    // injects into the document is cleaned up in finally so it always runs even on failure.
+    const renderId = `mermaid-${id}-${++renderCounter}`;
+    try {
+      const { svg } = await mermaid.render(renderId, definition);
+      return sanitizeSvg(svg);
+    } finally {
+      document.getElementById(renderId)?.remove();
+    }
   } catch (err) {
     log.error('Mermaid render failed', err);
     return null;
