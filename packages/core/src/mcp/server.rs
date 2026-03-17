@@ -552,7 +552,10 @@ async fn handle_request(
         "ping" => Ok(json!({})),
 
         // MCP-compliant tool discovery and execution (per 2024-11-05 spec)
-        "tools/list" => crate::mcp::handlers::tools::handle_tools_list(request.params),
+        "tools/list" => {
+            crate::mcp::handlers::tools::handle_tools_list(&services.node_service, request.params)
+                .await
+        }
         "tools/call" => {
             crate::mcp::handlers::tools::handle_tools_call(
                 &services.node_service,

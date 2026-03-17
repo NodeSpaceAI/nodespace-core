@@ -179,12 +179,24 @@ fn tool_supports_node_type(_tool_name: &str, _node_type: &str) -> bool {
 /// # Returns
 ///
 /// Returns filtered tool definitions matching the search criteria
-pub fn handle_search_tools(params: Value) -> Result<Value, MCPError> {
+pub async fn handle_search_tools(
+    node_service: &Arc<NodeService>,
+    params: Value,
+) -> Result<Value, MCPError> {
     let params: SearchToolsParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
+    // Fetch user-defined schema IDs to include in tool schemas
+    let schema_ids: Vec<String> = node_service
+        .get_all_schemas()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+
     // Get all tool schemas
-    let all_tools = get_tool_schemas();
+    let all_tools = get_tool_schemas(&schema_ids);
     let tools_array = all_tools
         .as_array()
         .ok_or_else(|| MCPError::internal_error("Tool schemas not an array".to_string()))?;
@@ -265,9 +277,21 @@ pub fn handle_search_tools(params: Value) -> Result<Value, MCPError> {
 ///   ]
 /// }
 /// ```
-pub fn handle_tools_list(_params: Value) -> Result<Value, MCPError> {
+pub async fn handle_tools_list(
+    node_service: &Arc<NodeService>,
+    _params: Value,
+) -> Result<Value, MCPError> {
+    // Fetch user-defined schema IDs to include in tool schemas
+    let schema_ids: Vec<String> = node_service
+        .get_all_schemas()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+
     // Get all tool schemas
-    let all_tools = get_tool_schemas();
+    let all_tools = get_tool_schemas(&schema_ids);
     let tools_array = all_tools
         .as_array()
         .ok_or_else(|| MCPError::internal_error("Tool schemas not an array".to_string()))?;
@@ -392,7 +416,7 @@ pub async fn handle_tools_call(
         },
 
         // Discovery
-        "search_tools" => handle_search_tools(arguments),
+        "search_tools" => handle_search_tools(node_service, arguments).await,
 
         // Schema creation (uses generic node creation)
         "create_schema" => schema::handle_create_schema(node_service, arguments).await,
@@ -486,7 +510,26 @@ pub async fn handle_tools_call(
 ///
 /// Consider auto-generating schemas from Rust types with proc macros,
 /// while preserving ability to override descriptions (see Issue #312).
-fn get_tool_schemas() -> Value {
+fn get_tool_schemas(schema_ids: &[String]) -> Value {
+    // Build the node_type enum: core types + "schema" + all user-defined schema IDs
+    let mut node_types: Vec<String> = vec![
+        "text".to_string(),
+        "header".to_string(),
+        "task".to_string(),
+        "date".to_string(),
+        "code-block".to_string(),
+        "quote-block".to_string(),
+        "ordered-list".to_string(),
+        "collection".to_string(),
+        "schema".to_string(),
+    ];
+    for id in schema_ids {
+        if !node_types.contains(id) {
+            node_types.push(id.clone());
+        }
+    }
+    let node_type_enum = serde_json::to_value(&node_types).unwrap_or(json!([]));
+
     json!([
         {
             "name": "create_node",
@@ -496,7 +539,7 @@ fn get_tool_schemas() -> Value {
                 "properties": {
                     "node_type": {
                         "type": "string",
-                        "enum": ["text", "header", "task", "date", "code-block", "quote-block", "ordered-list", "collection"],
+                        "enum": node_type_enum,
                         "description": "Type of node to create"
                     },
                     "content": {
@@ -680,7 +723,7 @@ fn get_tool_schemas() -> Value {
                     },
                     "node_type": {
                         "type": "string",
-                        "enum": ["text", "header", "task", "date", "code-block", "quote-block", "ordered-list"],
+                        "enum": node_type_enum,
                         "description": "Type of node to create"
                     },
                     "content": {
