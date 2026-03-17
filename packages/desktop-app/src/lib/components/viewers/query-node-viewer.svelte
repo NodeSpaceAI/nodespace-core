@@ -108,25 +108,24 @@
   });
 
   function getFieldValue(node: Node, field: string): string {
-    // Try top-level field first (covers content, and typed extensions like status/priority)
+    const fieldSchema = fieldSchemaMap.get(field);
     const nodeRecord = node as unknown as Record<string, unknown>;
-    const topLevel = nodeRecord[field];
-    const rawValue =
-      topLevel !== null && topLevel !== undefined
-        ? topLevel
-        : // Fall back to nested namespace (properties[nodeType][field]), then flat
-          (() => {
-            const nestedNs = node.properties?.[node.nodeType] as
-              | Record<string, unknown>
-              | undefined;
-            return nestedNs?.[field] ?? node.properties?.[field];
-          })();
+
+    // Use protection level to determine where the field lives:
+    // 'user' fields are stored in properties[nodeType][field] (user-defined extensions)
+    // 'core'/'system' fields are top-level typed properties on the node
+    let rawValue: unknown;
+    if (fieldSchema?.protection === 'user') {
+      const nestedNs = node.properties?.[node.nodeType] as Record<string, unknown> | undefined;
+      rawValue = nestedNs?.[field] ?? node.properties?.[field];
+    } else {
+      rawValue = nodeRecord[field];
+    }
 
     if (rawValue === null || rawValue === undefined) return '';
     if (typeof rawValue === 'object') return JSON.stringify(rawValue);
 
     // Resolve enum labels from schema if available
-    const fieldSchema = fieldSchemaMap.get(field);
     if (fieldSchema?.type === 'enum') {
       const strVal = String(rawValue);
       const allValues = [...(fieldSchema.coreValues ?? []), ...(fieldSchema.userValues ?? [])];
