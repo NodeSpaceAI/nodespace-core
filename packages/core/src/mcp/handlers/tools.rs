@@ -1077,6 +1077,10 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                                 "description": "Map of field names to their enum values"
                             }
                         }
+                    },
+                    "title_template": {
+                        "type": "string",
+                        "description": "Optional template for computing the node display title from field values. Use {field_name} tokens that must match fields defined in 'fields'. Example: '{first_name} {last_name}' for a customer schema. When set, the content area shows the computed title as read-only inline."
                     }
                 },
                 "required": ["name"]
@@ -1335,6 +1339,10 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Names of relationships to remove (soft-delete)"
+                    },
+                    "title_template": {
+                        "type": "string",
+                        "description": "Set or update the title template. Use {field_name} tokens that must match fields in the schema. Example: '{first_name} {last_name}'. When set, the inline node view shows the computed title as read-only."
                     }
                 },
                 "required": ["schema_id"]

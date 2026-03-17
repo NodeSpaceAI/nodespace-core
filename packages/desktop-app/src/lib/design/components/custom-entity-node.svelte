@@ -45,7 +45,7 @@
 -->
 
 <script lang="ts">
-  import { createEventDispatcher, getContext } from 'svelte';
+  import { createEventDispatcher, getContext, onDestroy } from 'svelte';
   import BaseNode from './base-node.svelte';
   import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
   import { backendAdapter } from '$lib/services/backend-adapter';
@@ -119,7 +119,7 @@
   // For now, we use emoji in the schema description (e.g., "💰 Invoice")
   const customIcon = $derived(extractIconFromDescription(schemaDescription));
   const entityName = $derived(schemaDescription || nodeType);
-  const showEntityHeader = $derived(true); // Always show entity header for custom entities
+  const showEntityHeader = true; // Always show entity header for custom entities
 
   // title_template support: when the schema has a template, content is read-only
   // and the title is derived from schema properties via compute_title()
@@ -152,6 +152,10 @@
       isTyping = false;
     }
   }
+
+  onDestroy(() => {
+    if (typingTimer) clearTimeout(typingTimer);
+  });
 
   /**
    * Handle open button click to navigate to entity viewer
@@ -204,54 +208,30 @@
   {/if}
 
   <!-- Base Content Editing -->
-  {#if hasTitleTemplate && displayContent != null}
-    <!-- title_template mode: show read-only computed title or raw template placeholder -->
-    <BaseNode
-      {nodeId}
-      bind:nodeType
-      bind:content
-      {children}
-      customViewContent={titleTemplateSnippet}
-      on:createNewNode={forwardEvent('createNewNode')}
-      on:contentChanged={(e) => {
-        handleTypingStart();
-        dispatch('contentChanged', e.detail);
-      }}
-      on:indentNode={forwardEvent('indentNode')}
-      on:outdentNode={forwardEvent('outdentNode')}
-      on:navigateArrow={forwardEvent('navigateArrow')}
-      on:combineWithPrevious={forwardEvent('combineWithPrevious')}
-      on:deleteNode={forwardEvent('deleteNode')}
-      on:focus={forwardEvent('focus')}
-      on:blur={forwardEvent('blur')}
-      on:nodeReferenceSelected={forwardEvent('nodeReferenceSelected')}
-      on:slashCommandSelected={forwardEvent('slashCommandSelected')}
-      on:nodeTypeChanged={forwardEvent('nodeTypeChanged')}
-    />
-  {:else}
-    <!-- Normal editable content mode -->
-    <BaseNode
-      {nodeId}
-      bind:nodeType
-      bind:content
-      {children}
-      on:createNewNode={forwardEvent('createNewNode')}
-      on:contentChanged={(e) => {
-        handleTypingStart();
-        dispatch('contentChanged', e.detail);
-      }}
-      on:indentNode={forwardEvent('indentNode')}
-      on:outdentNode={forwardEvent('outdentNode')}
-      on:navigateArrow={forwardEvent('navigateArrow')}
-      on:combineWithPrevious={forwardEvent('combineWithPrevious')}
-      on:deleteNode={forwardEvent('deleteNode')}
-      on:focus={forwardEvent('focus')}
-      on:blur={forwardEvent('blur')}
-      on:nodeReferenceSelected={forwardEvent('nodeReferenceSelected')}
-      on:slashCommandSelected={forwardEvent('slashCommandSelected')}
-      on:nodeTypeChanged={forwardEvent('nodeTypeChanged')}
-    />
-  {/if}
+  <!-- When schema has title_template, pass a read-only snippet for view mode;
+       otherwise BaseNode uses its default editable view. -->
+  <BaseNode
+    {nodeId}
+    bind:nodeType
+    bind:content
+    {children}
+    customViewContent={hasTitleTemplate && displayContent != null ? titleTemplateSnippet : undefined}
+    on:createNewNode={forwardEvent('createNewNode')}
+    on:contentChanged={(e) => {
+      handleTypingStart();
+      dispatch('contentChanged', e.detail);
+    }}
+    on:indentNode={forwardEvent('indentNode')}
+    on:outdentNode={forwardEvent('outdentNode')}
+    on:navigateArrow={forwardEvent('navigateArrow')}
+    on:combineWithPrevious={forwardEvent('combineWithPrevious')}
+    on:deleteNode={forwardEvent('deleteNode')}
+    on:focus={forwardEvent('focus')}
+    on:blur={forwardEvent('blur')}
+    on:nodeReferenceSelected={forwardEvent('nodeReferenceSelected')}
+    on:slashCommandSelected={forwardEvent('slashCommandSelected')}
+    on:nodeTypeChanged={forwardEvent('nodeTypeChanged')}
+  />
 
   <!-- Schema Properties (if schema exists and loaded) -->
   {#if isLoadingSchema}

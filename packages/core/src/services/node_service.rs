@@ -10589,10 +10589,11 @@ mod tests {
         use super::*;
 
         /// Helper: create a custom schema with the given title_template.
-        /// Automatically adds string fields for every {token} found in the template,
+        /// Automatically adds string fields for every unique {token} found in the template,
         /// satisfying the cross-validation that tokens must reference defined fields.
         async fn create_custom_schema(service: &NodeService, type_id: &str, title_template: &str) {
-            // Extract field names from template tokens like {first_name}
+            // Extract unique field names from template tokens like {first_name}
+            let mut seen = std::collections::HashSet::new();
             let mut fields: Vec<serde_json::Value> = vec![];
             let bytes = title_template.as_bytes();
             let mut i = 0;
@@ -10600,7 +10601,7 @@ mod tests {
                 if bytes[i] == b'{' {
                     if let Some(end) = bytes[i + 1..].iter().position(|&c| c == b'}') {
                         let field_name = &title_template[i + 1..i + 1 + end];
-                        if !field_name.is_empty() {
+                        if !field_name.is_empty() && seen.insert(field_name.to_string()) {
                             fields.push(json!({
                                 "name": field_name,
                                 "type": "string",
