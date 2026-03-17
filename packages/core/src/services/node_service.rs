@@ -1370,12 +1370,12 @@ impl NodeService {
         // NOTE: root_id filtering removed - hierarchy now managed via relationships
 
         // Issue #821: Populate title for @mention search
-        // Task nodes always get indexed (regardless of hierarchy level)
-        // Issue #844: Collection nodes always get titles (for indexed lookup)
-        // Other node types will have title set by create_node_with_parent if they're root nodes
+        // Issue #824: Schema-driven title_template support
         // Only set title if not already set (create_node_with_parent may have set it for root nodes)
-        if (node.node_type == "task" || node.node_type == "collection") && node.title.is_none() {
-            node.title = Some(crate::utils::strip_markdown(&node.content));
+        if node.title.is_none() {
+            // For task/collection we know they're always titled; for others we need to check
+            // is_root=None will only trigger a DB lookup for non-task/collection/date/schema types
+            node.title = self.compute_title(&node, None).await?;
         }
 
         // For schema nodes, use atomic creation with DDL generation (Issue #691, #703)
@@ -1564,23 +1564,35 @@ impl NodeService {
         let node_type = params.node_type.clone();
 
         // Issue #821: Determine title for @mention search
-        // Title is set for: task nodes (always), collection nodes (always), OR root nodes (no parent)
-        // Note: create_node will also set title for task nodes, but we set it here too
-        // for root non-task nodes that won't go through the task check in create_node
-        // TODO #824: Refactor to schema-driven title_template approach
-        // Issue #844: Collections now get titles (for indexed lookup) but are excluded from @mention
-        let title = if params.node_type == "task"
-            || params.node_type == "collection"
-            || params.parent_id.is_none()
-        {
-            // Exclude certain types from having titles
-            // TODO #824: Replace hardcoded exclusions with schema-driven title_template
-            match params.node_type.as_str() {
-                "date" | "schema" => None,
-                _ => Some(crate::utils::strip_markdown(&params.content)),
-            }
-        } else {
-            None
+        // Issue #824: Schema-driven title_template support
+        // Normalize properties to namespaced format so compute_title can find fields correctly.
+        // (create_node will normalize again, but the result is idempotent)
+        let title = {
+            let normalized_props = if params.node_type != "schema" {
+                Self::normalize_flat_properties_to_namespace(
+                    &params.node_type,
+                    &params.properties,
+                    None,
+                )
+            } else {
+                params.properties.clone()
+            };
+            let temp_node = Node {
+                id: node_id.clone(),
+                node_type: params.node_type.clone(),
+                content: params.content.clone(),
+                version: 1,
+                properties: normalized_props,
+                mentions: vec![],
+                mentioned_in: vec![],
+                created_at: chrono::Utc::now(),
+                modified_at: chrono::Utc::now(),
+                title: None,
+                lifecycle_status: "active".to_string(),
+            };
+            // is_root = parent_id.is_none() — avoids a DB lookup at create time
+            self.compute_title(&temp_node, Some(params.parent_id.is_none()))
+                .await?
         };
 
         let node = Node {
@@ -2096,6 +2108,65 @@ impl NodeService {
         })
     }
 
+    /// Compute the indexed title for a node (Issue #824).
+    ///
+    /// Priority:
+    /// 1. Schema has `title_template` → interpolate from properties
+    /// 2. task/collection type → `strip_markdown(content)`
+    /// 3. Root node (no parent), not date/schema → `strip_markdown(content)`
+    /// 4. Otherwise → `None`
+    ///
+    /// The `is_root` parameter avoids a redundant DB lookup when the caller already
+    /// knows the root status (e.g. `parent_id.is_none()` at creation time). Pass
+    /// `None` to have this method look it up only when needed.
+    async fn compute_title(
+        &self,
+        node: &Node,
+        is_root: Option<bool>,
+    ) -> Result<Option<String>, NodeServiceError> {
+        // date/schema nodes never get titles regardless of template
+        if node.node_type == "date" || node.node_type == "schema" {
+            return Ok(None);
+        }
+
+        // Check for title_template in the schema for this node type
+        if let Ok(Some(schema)) = self.get_schema_node(&node.node_type).await {
+            if let Some(template) = &schema.title_template {
+                // Properties are stored namespaced: { "node_type": { "field": value } }
+                // Unwrap to the inner namespace object for template interpolation
+                let flat_props = node
+                    .properties
+                    .get(&node.node_type)
+                    .unwrap_or(&node.properties);
+                return Ok(Some(crate::utils::interpolate_title_template(
+                    template, flat_props,
+                )));
+            }
+        }
+
+        // Fall back to content-based title
+        let title = match node.node_type.as_str() {
+            "task" | "collection" => Some(crate::utils::strip_markdown(&node.content)),
+            _ => {
+                let root = match is_root {
+                    Some(v) => v,
+                    None => self
+                        .store
+                        .get_parent_id(&node.id)
+                        .await
+                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                        .is_none(),
+                };
+                if root {
+                    Some(crate::utils::strip_markdown(&node.content))
+                } else {
+                    None
+                }
+            }
+        };
+        Ok(title)
+    }
+
     /// Update a node without version checking (no OCC).
     ///
     /// **Prefer `update_node()`** which enforces optimistic concurrency control.
@@ -2156,6 +2227,7 @@ impl NodeService {
         let mut updated = existing.clone();
         let mut content_changed = false;
         let mut node_type_changed = false;
+        let mut properties_changed = false;
 
         if let Some(node_type) = update.node_type {
             node_type_changed = updated.node_type != node_type;
@@ -2173,6 +2245,7 @@ impl NodeService {
         // Use reorder_siblings() or move_node() for ordering changes.
 
         if let Some(properties) = update.properties {
+            properties_changed = true;
             // Issue #838: Normalize flat client properties to namespaced format before merging
             // Skip for schema nodes - they use a special non-namespaced format
             if updated.node_type == "schema" {
@@ -2221,33 +2294,11 @@ impl NodeService {
             self.validate_node_against_schema(&updated).await?;
         }
 
-        // Issue #821: Sync title when content or node_type changes
-        // Title is indexed for @mention search on task nodes and root nodes
-        // Issue #844: Collection nodes now get titles (for indexed lookup)
-        // TODO #824: Refactor to schema-driven title_template approach
-        let title_update = if content_changed || node_type_changed {
-            // Determine if this node should have a title
-            // 1. Task nodes always get titles (regardless of hierarchy)
-            // 2. Collection nodes always get titles (for indexed lookup, but excluded from @mention)
-            // 3. Root nodes (no parent) get titles
-            // 4. Date and schema nodes never get titles
-            // TODO #824: Replace hardcoded exclusions with schema-driven title_template
-            let should_have_title = match updated.node_type.as_str() {
-                "date" | "schema" => false,
-                "task" | "collection" => true,
-                _ => {
-                    // Check if root node (no parent)
-                    self.get_parent(id).await?.is_none()
-                }
-            };
-
-            if should_have_title {
-                Some(Some(crate::utils::strip_markdown(&updated.content)))
-            } else {
-                // Clear title for nodes that shouldn't have one
-                // (e.g., when changing from task to text child node)
-                Some(None)
-            }
+        // Issue #821: Sync title when content, node_type, or properties change
+        // Issue #824: Schema-driven title_template — also trigger on properties_changed
+        let title_update = if content_changed || node_type_changed || properties_changed {
+            let new_title = self.compute_title(&updated, None).await?;
+            Some(new_title)
         } else {
             None // No title update needed
         };
@@ -2356,6 +2407,7 @@ impl NodeService {
         let mut updated = existing.clone();
         let mut content_changed = false;
         let mut node_type_changed = false;
+        let mut properties_changed = false;
 
         if let Some(node_type) = update.node_type {
             node_type_changed = updated.node_type != node_type;
@@ -2373,6 +2425,7 @@ impl NodeService {
         // Use reorder_siblings() or move_node() for ordering changes.
 
         if let Some(properties) = update.properties {
+            properties_changed = true;
             // Issue #838: Normalize flat client properties to namespaced format before merging
             // Skip for schema nodes - they use a special non-namespaced format
             if updated.node_type == "schema" {
@@ -2403,29 +2456,11 @@ impl NodeService {
             self.validate_node_against_schema(&updated).await?;
         }
 
-        // Issue #821: Sync title when content or node_type changes
-        // Title is indexed for @mention search on task nodes and root nodes
-        // TODO #824: Refactor to schema-driven title_template approach
-        let title_update = if content_changed || node_type_changed {
-            // Determine if this node should have a title
-            // TODO #824: Replace hardcoded exclusions with schema-driven title_template
-            // Use optimized get_parent_id() instead of get_parent() for root check
-            let should_have_title = match updated.node_type.as_str() {
-                "date" | "schema" | "collection" => false,
-                "task" => true,
-                _ => self
-                    .store
-                    .get_parent_id(id)
-                    .await
-                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-                    .is_none(),
-            };
-
-            if should_have_title {
-                Some(Some(crate::utils::strip_markdown(&updated.content)))
-            } else {
-                Some(None)
-            }
+        // Issue #821: Sync title when content, node_type, or properties change
+        // Issue #824: Schema-driven title_template — also trigger on properties_changed
+        let title_update = if content_changed || node_type_changed || properties_changed {
+            let new_title = self.compute_title(&updated, None).await?;
+            Some(new_title)
         } else {
             None
         };
@@ -8851,7 +8886,11 @@ mod tests {
                     {
                         "name": "status",
                         "type": "enum",
-                        "required": true
+                        "required": true,
+                        "coreValues": [
+                            { "value": "open", "label": "Open" },
+                            { "value": "done", "label": "Done" }
+                        ]
                     }
                 ],
                 "relationships": [
@@ -10530,6 +10569,192 @@ mod tests {
                 retrieved.title,
                 Some("Root Collection".to_string()),
                 "Collection created via create_node_with_parent should have title"
+            );
+        }
+    }
+
+    mod title_template_tests {
+        use super::*;
+
+        /// Helper: create a custom schema with the given title_template
+        async fn create_custom_schema(service: &NodeService, type_id: &str, title_template: &str) {
+            let schema_node = Node::new_with_id(
+                type_id.to_string(),
+                "schema".to_string(),
+                type_id.to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": format!("Test schema for {}", type_id),
+                    "titleTemplate": title_template,
+                    "fields": [],
+                    "relationships": []
+                }),
+            );
+            service.create_node(schema_node).await.unwrap();
+        }
+
+        /// Test: creating a node of a custom type with title_template computes title from properties
+        #[tokio::test]
+        async fn test_title_template_on_create() {
+            let (service, _temp) = create_test_service().await;
+
+            create_custom_schema(&service, "customer", "{first_name} {last_name}").await;
+
+            let node = Node::new_with_id(
+                uuid::Uuid::new_v4().to_string(),
+                "customer".to_string(),
+                "".to_string(),
+                json!({"first_name": "John", "last_name": "Doe"}),
+            );
+            let node_id = node.id.clone();
+            service.create_node(node).await.unwrap();
+
+            let retrieved = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(
+                retrieved.title,
+                Some("John Doe".to_string()),
+                "Title should be interpolated from template on create"
+            );
+        }
+
+        /// Test: updating node properties triggers title recomputation via template
+        #[tokio::test]
+        async fn test_title_template_recomputed_on_property_update() {
+            let (service, _temp) = create_test_service().await;
+
+            create_custom_schema(&service, "customer2", "{first_name} {last_name}").await;
+
+            let node = Node::new_with_id(
+                uuid::Uuid::new_v4().to_string(),
+                "customer2".to_string(),
+                "".to_string(),
+                json!({"first_name": "Jane", "last_name": "Smith"}),
+            );
+            let node_id = node.id.clone();
+            service.create_node(node).await.unwrap();
+
+            // Verify initial title
+            let initial = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(initial.title, Some("Jane Smith".to_string()));
+
+            // Update properties → title should recompute
+            let update = crate::models::NodeUpdate {
+                properties: Some(json!({"first_name": "Janet"})),
+                ..Default::default()
+            };
+            service
+                .update_node_unchecked(&node_id, update)
+                .await
+                .unwrap();
+
+            let updated = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(
+                updated.title,
+                Some("Janet Smith".to_string()),
+                "Title should recompute when properties change"
+            );
+        }
+
+        /// Test: updating content does NOT override template-based title
+        #[tokio::test]
+        async fn test_title_template_takes_priority_over_content() {
+            let (service, _temp) = create_test_service().await;
+
+            create_custom_schema(&service, "customer3", "{first_name} {last_name}").await;
+
+            let node = Node::new_with_id(
+                uuid::Uuid::new_v4().to_string(),
+                "customer3".to_string(),
+                "original content".to_string(),
+                json!({"first_name": "Alice", "last_name": "Wonder"}),
+            );
+            let node_id = node.id.clone();
+            service.create_node(node).await.unwrap();
+
+            // Verify template wins over content on create
+            let initial = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(initial.title, Some("Alice Wonder".to_string()));
+
+            // Update content → template should still produce the title
+            let update = crate::models::NodeUpdate {
+                content: Some("updated content".to_string()),
+                ..Default::default()
+            };
+            service
+                .update_node_unchecked(&node_id, update)
+                .await
+                .unwrap();
+
+            let updated = service.get_node(&node_id).await.unwrap().unwrap();
+            assert_eq!(
+                updated.title,
+                Some("Alice Wonder".to_string()),
+                "Template-based title should take priority over content"
+            );
+        }
+
+        /// Test: node type without template falls back to existing content-based behavior
+        #[tokio::test]
+        async fn test_no_title_template_falls_back_to_content() {
+            let (service, _temp) = create_test_service().await;
+
+            // Create a schema without title_template
+            let schema_node = Node::new_with_id(
+                "widget".to_string(),
+                "schema".to_string(),
+                "Widget".to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "Widget schema with no title_template",
+                    "fields": [],
+                    "relationships": []
+                }),
+            );
+            service.create_node(schema_node).await.unwrap();
+
+            // Root widget node (no parent) should get content as title
+            let params = CreateNodeParams {
+                node_type: "widget".to_string(),
+                content: "My Widget".to_string(),
+                parent_id: None,
+                insert_after_node_id: None,
+                properties: json!({}),
+                id: None,
+            };
+            let widget_id = service.create_node_with_parent(params).await.unwrap();
+            let retrieved = service.get_node(&widget_id).await.unwrap().unwrap();
+            assert_eq!(
+                retrieved.title,
+                Some("My Widget".to_string()),
+                "Root node without template should use content as title"
+            );
+        }
+
+        /// Test: missing template fields produce empty strings (not panics)
+        #[tokio::test]
+        async fn test_title_template_missing_fields_graceful() {
+            let (service, _temp) = create_test_service().await;
+
+            create_custom_schema(&service, "contact", "{first_name} {last_name} ({email})").await;
+
+            // Create node with only first_name — last_name and email missing
+            let node = Node::new_with_id(
+                uuid::Uuid::new_v4().to_string(),
+                "contact".to_string(),
+                "".to_string(),
+                json!({"first_name": "Bob"}),
+            );
+            let node_id = node.id.clone();
+            service.create_node(node).await.unwrap();
+
+            let retrieved = service.get_node(&node_id).await.unwrap().unwrap();
+            // Missing fields become empty strings, whitespace is collapsed and trimmed
+            assert_eq!(
+                retrieved.title,
+                Some("Bob ()".to_string()),
+                "Missing fields should produce empty strings, not errors"
             );
         }
     }
