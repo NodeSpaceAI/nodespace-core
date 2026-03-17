@@ -12,6 +12,7 @@
   import { formatTabTitle } from '$lib/utils/text-formatting';
   import BaseNode from '$lib/design/components/base-node.svelte';
   import BacklinksPanel from '$lib/design/components/backlinks-panel.svelte';
+  import GenericSchemaForm from '$lib/components/schema/generic-schema-form.svelte';
   import { createLogger } from '$lib/utils/logger';
 
   // Logger instance for BaseNodeViewer component
@@ -21,6 +22,9 @@
   import type { SchemaFormComponent } from '$lib/plugins/types';
   import { getNodeServices } from '$lib/contexts/node-service-context.svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+  import { backendAdapter } from '$lib/services/backend-adapter';
+  import { isSchemaNode } from '$lib/types/schema-node';
+  import type { SchemaNode } from '$lib/types/schema-node';
   import { focusManager } from '$lib/services/focus-manager.svelte';
   import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
   import { structureTree as reactiveStructureTree } from '$lib/stores/reactive-structure-tree.svelte';
@@ -326,6 +330,8 @@
         // Issue #709: Preload type-specific schema form for viewed node if available
         // This triggers lazy loading of TaskSchemaForm, DateSchemaForm, etc.
         if (node.nodeType) {
+          // Issue #965: Reset generic schema when navigating to a different node
+          genericSchema = null;
           loadSchemaFormComponent(node.nodeType);
         }
 
@@ -1203,6 +1209,28 @@
   // Component = typed form to render (e.g. TaskSchemaForm)
   let loadedSchemaForms = $state<Record<string, unknown>>({});
 
+  // Issue #965: Generic schema form for custom schema node types (UUID nodeType)
+  // Loaded when pluginRegistry has no schema form for the node type
+  let genericSchema = $state<SchemaNode | null>(null);
+
+  /** UUID regex — custom schema node types are stored as UUIDs */
+  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  function isCustomSchemaType(nodeType: string): boolean {
+    return UUID_REGEX.test(nodeType);
+  }
+
+  async function loadGenericSchema(nodeType: string): Promise<void> {
+    try {
+      const schemaNode = await backendAdapter.getSchema(nodeType);
+      if (isSchemaNode(schemaNode)) {
+        genericSchema = schemaNode;
+      }
+    } catch (error) {
+      log.warn(`Failed to load generic schema for ${nodeType}:`, error);
+    }
+  }
+
   /**
    * Load a schema form component from the plugin registry if not already loaded
    * Returns true if type-specific form exists, false if should use generic fallback
@@ -1218,6 +1246,10 @@
     if (!pluginRegistry.hasSchemaForm(nodeType)) {
       // Mark as null to indicate we checked and there's no type-specific form
       loadedSchemaForms = { ...loadedSchemaForms, [nodeType]: null };
+      // Issue #965: For custom schema types (UUID nodeType), load generic schema
+      if (isCustomSchemaType(nodeType)) {
+        loadGenericSchema(nodeType);
+      }
       return false;
     }
 
@@ -1346,6 +1378,11 @@
     {@const TypedSchemaForm = loadedSchemaForms[currentViewedNode.nodeType] as SchemaFormComponent}
     <div class="schema-form-container">
       <TypedSchemaForm {nodeId} />
+    </div>
+  {:else if currentViewedNode && nodeId && genericSchema && isCustomSchemaType(currentViewedNode.nodeType)}
+    <!-- Issue #965: Generic schema form for custom schema node types (UUID nodeType) -->
+    <div class="schema-form-container">
+      <GenericSchemaForm {nodeId} schema={genericSchema} />
     </div>
   {/if}
 
