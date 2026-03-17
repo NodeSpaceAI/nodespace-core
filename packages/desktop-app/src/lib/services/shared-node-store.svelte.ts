@@ -956,12 +956,22 @@ export class SharedNodeStore {
                       );
                     }
 
-                    // Update local node with backend version
+                    // Update local node with backend version and any backend-computed fields
+                    // (e.g. title recomputed from title_template after property changes)
                     const localNode = this.nodes.get(nodeId);
                     if (localNode && updatedNodeFromBackend) {
                       const oldVersion = localNode.version;
                       localNode.version = updatedNodeFromBackend.version;
+                      const titleChanged = updatedNodeFromBackend.title !== undefined &&
+                        updatedNodeFromBackend.title !== localNode.title;
+                      if (updatedNodeFromBackend.title !== undefined) {
+                        localNode.title = updatedNodeFromBackend.title;
+                      }
                       this.nodes.set(nodeId, localNode);
+                      // Notify subscribers if title changed (e.g. title_template recomputed)
+                      if (titleChanged) {
+                        this.notifySubscribers(nodeId, localNode, source);
+                      }
                       log.debug(
                         `[UPDATE] ${shortNodeId}: success, version ${oldVersion} -> ${updatedNodeFromBackend.version}`
                       );

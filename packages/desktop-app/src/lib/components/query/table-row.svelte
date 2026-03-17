@@ -55,12 +55,17 @@
     for (const col of columns) {
       const fieldSchema = fieldSchemaMap.get(col.field);
       // Resolution order:
-      // 1. camelCase top-level (typed core fields like task.dueDate serialized from Rust)
-      // 2. snake_case top-level (fallback)
-      // 3. node.properties[field] (user-defined fields on custom schema nodes)
+      // 1. For 'content' column: prefer node.title (computed by title_template) over raw content
+      // 2. camelCase top-level (typed core fields like task.dueDate serialized from Rust)
+      // 3. snake_case top-level (fallback)
+      // 4. node.properties[field] (user-defined fields on custom schema nodes)
       const camelKey = toCamelCase(col.field);
       const props = node.properties as Record<string, unknown> | undefined;
-      const rawValue = nodeRecord[camelKey] ?? nodeRecord[col.field] ?? props?.[col.field];
+      const rawValue =
+        (col.field === 'content' && node.title ? node.title : undefined) ??
+        nodeRecord[camelKey] ??
+        nodeRecord[col.field] ??
+        props?.[col.field];
 
       if (rawValue === null || rawValue === undefined) {
         map.set(col.field, '');
@@ -94,9 +99,11 @@
     return map;
   });
 
+  // For title_template nodes, prefer the computed title over raw content
   const nodeContent = $derived.by(() => {
     void _updateTrigger;
-    return sharedNodeStore.getNode(id)?.content ?? '';
+    const node = sharedNodeStore.getNode(id);
+    return node?.title ?? node?.content ?? '';
   });
 
   // Reactive existence check — void _updateTrigger ensures the guard re-evaluates

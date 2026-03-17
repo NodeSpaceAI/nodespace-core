@@ -1441,6 +1441,16 @@ impl SurrealStore {
                 .context("Failed to update properties")?;
         }
 
+        // Issue #824: Update title if provided (recomputed by NodeService from title_template)
+        if let Some(title) = update.title {
+            self.db
+                .query("UPDATE type::record('node', $id) SET title = $title;")
+                .bind(("id", id.to_string()))
+                .bind(("title", title))
+                .await
+                .context("Failed to update title")?;
+        }
+
         // Issue #828, #770: Update lifecycle_status if provided
         if let Some(status) = update.lifecycle_status {
             self.db

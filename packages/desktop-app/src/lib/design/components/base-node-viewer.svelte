@@ -336,8 +336,9 @@
         }
 
         // Update tab title after node is loaded
+        // Prefer computed title (from title_template) over raw content when available
         if (!shouldDisableTitleUpdates) {
-          updateTabTitle(node.content);
+          updateTabTitle(node.title || node.content);
         }
       } catch (error) {
         log.error('Failed to load children:', error);
@@ -368,7 +369,8 @@
    * Similar to HeaderNode pattern: show clean title when not editing
    */
   let headerDisplayValue = $derived.by(() => {
-    const rawContent = currentViewedNode?.content || '';
+    // Prefer computed title (from title_template) over raw content when available
+    const rawContent = currentViewedNode?.title || currentViewedNode?.content || '';
     if (!rawContent) return '';
 
     // Strip markdown header syntax (same logic as formatTabTitle)
@@ -1213,6 +1215,9 @@
   // Loaded when pluginRegistry has no schema form for the node type
   let genericSchema = $state<SchemaNode | null>(null);
 
+  /** True when the current schema has a title_template — header should be read-only */
+  const hasTitleTemplate = $derived(genericSchema?.titleTemplate != null);
+
   /** UUID regex — custom schema node types are stored as UUIDs */
   const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -1359,10 +1364,12 @@
         type="text"
         id="viewer-header-{paneId}-{nodeId ?? 'default'}"
         class="header-input"
+        class:header-input--readonly={hasTitleTemplate}
         value={isHeaderBeingEdited ? (currentViewedNode?.content || '') : headerDisplayValue}
-        oninput={(e) => handleHeaderInput(e.currentTarget.value)}
-        onfocus={() => (isHeaderBeingEdited = true)}
+        oninput={(e) => !hasTitleTemplate && handleHeaderInput(e.currentTarget.value)}
+        onfocus={() => { if (!hasTitleTemplate) isHeaderBeingEdited = true; }}
         onblur={() => (isHeaderBeingEdited = false)}
+        readonly={hasTitleTemplate}
         placeholder="Untitled"
         aria-label="Page title"
       />
@@ -1888,6 +1895,11 @@
 
   .header-input::placeholder {
     color: hsl(var(--muted-foreground) / 0.5);
+  }
+
+  .header-input--readonly {
+    cursor: default;
+    color: hsl(var(--foreground));
   }
 
   /* Custom header section - fixed at top, doesn't scroll */
