@@ -9,19 +9,18 @@
 -->
 
 <script lang="ts">
-  import type { Node } from '$lib/types';
-  import type { SchemaNode } from '$lib/types/schema-node';
-  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+  import type { SchemaField, SchemaNode } from '$lib/types/schema-node';
+  import TableRow from '$lib/components/query/table-row.svelte';
 
   let {
     nodeIds,
     schema,
-    getFieldValue,
+    fieldSchemaMap,
     onRowClick
   }: {
     nodeIds: string[];
     schema: SchemaNode | null;
-    getFieldValue: (_node: Node, _field: string) => string;
+    fieldSchemaMap: Map<string, SchemaField>;
     onRowClick: (_nodeId: string) => void;
   } = $props();
 
@@ -42,10 +41,12 @@
 
     if (schema?.fields) {
       for (const field of schema.fields) {
-        const label = field.name
-          .replace(/_/g, ' ')
-          .replace(/([a-z])([A-Z])/g, '$1 $2')
-          .replace(/^\w/, (c) => c.toUpperCase());
+        const label = field.description
+          ? field.description
+          : field.name
+              .replace(/_/g, ' ')
+              .replace(/([a-z])([A-Z])/g, '$1 $2')
+              .replace(/^\w/, (c) => c.toUpperCase());
         cols.push({ field: field.name, label });
       }
     }
@@ -72,26 +73,7 @@
     </thead>
     <tbody>
       {#each pageIds as id (id)}
-        {@const node = sharedNodeStore.getNode(id)}
-        {#if node}
-          <tr class="result-row">
-            {#each columns as col (col.field)}
-              <td>
-                {#if col.field === 'content'}
-                  <button
-                    class="title-link"
-                    onclick={() => onRowClick(id)}
-                    title="Open {node.content || 'node'}"
-                  >
-                    {getFieldValue(node, col.field) || 'Untitled'}
-                  </button>
-                {:else}
-                  <span class="cell-value">{getFieldValue(node, col.field)}</span>
-                {/if}
-              </td>
-            {/each}
-          </tr>
-        {/if}
+        <TableRow {id} {columns} {fieldSchemaMap} {onRowClick} />
       {/each}
     </tbody>
   </table>
@@ -120,14 +102,19 @@
 <style>
   .table-wrapper {
     width: 100%;
-    overflow: hidden;
+    overflow-x: auto;
+    scrollbar-width: none; /* Firefox */
+  }
+
+  .table-wrapper::-webkit-scrollbar {
+    display: none; /* Chrome/Safari */
   }
 
   table {
-    width: 100%;
+    width: max-content;
+    min-width: 100%;
     border-collapse: collapse;
     font-size: 0.875rem;
-    table-layout: fixed;
   }
 
   thead {
@@ -142,55 +129,10 @@
     text-align: left;
     font-weight: 600;
     font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.03em;
     color: hsl(var(--muted-foreground));
     border-bottom: 2px solid hsl(var(--border));
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .result-row {
-    transition: background-color 0.1s ease;
-  }
-
-  .result-row:hover {
-    background: hsl(var(--muted));
-  }
-
-  td {
-    padding: 0.75rem 1rem;
-    border-bottom: 1px solid hsl(var(--border));
-    vertical-align: middle;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .title-link {
-    background: none;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    font-size: 0.875rem;
-    color: hsl(var(--foreground));
-    font-weight: 500;
-    text-align: left;
-    transition: color 0.15s ease;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 100%;
-  }
-
-  .title-link:hover {
-    color: hsl(var(--primary));
-    text-decoration: underline;
-  }
-
-  .cell-value {
-    color: hsl(var(--muted-foreground));
   }
 
   .pagination {

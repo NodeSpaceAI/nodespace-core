@@ -10,6 +10,7 @@
 
 import { get } from 'svelte/store';
 import { collectionsData, collectionsState } from '$lib/stores/collections';
+import { schemasData } from '$lib/stores/schemas';
 import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('CollectionRefresh');
@@ -58,5 +59,35 @@ export function clearCollectionRefreshTimer(): void {
   if (collectionRefreshTimer) {
     clearTimeout(collectionRefreshTimer);
     collectionRefreshTimer = null;
+  }
+}
+
+// Debounce timer for schema refreshes
+let schemaRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Debounced refresh of the schema types sidebar.
+ *
+ * Called when a schema node is created or deleted externally (e.g. via MCP).
+ */
+export function scheduleSchemaRefresh(): void {
+  if (schemaRefreshTimer) {
+    clearTimeout(schemaRefreshTimer);
+  }
+
+  schemaRefreshTimer = setTimeout(async () => {
+    schemaRefreshTimer = null;
+    log.debug('Refreshing schemas after change');
+    await schemasData.loadSchemas();
+  }, COLLECTION_REFRESH_DEBOUNCE_MS);
+}
+
+/**
+ * Clear any pending schema refresh timer.
+ */
+export function clearSchemaRefreshTimer(): void {
+  if (schemaRefreshTimer) {
+    clearTimeout(schemaRefreshTimer);
+    schemaRefreshTimer = null;
   }
 }

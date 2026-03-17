@@ -20,7 +20,6 @@
   import { tabState, setActiveTab } from '$lib/stores/navigation.js';
   import { get } from 'svelte/store';
   import TableView from '$lib/components/query/table-view.svelte';
-  import type { Node } from '$lib/types';
   import type { SchemaNode, SchemaField } from '$lib/types/schema-node';
   import { createLogger } from '$lib/utils/logger';
 
@@ -76,8 +75,8 @@
       log.debug('Loaded schema node', { schemaId, content: schema.content });
 
       // Fetch all nodes of this type and load them into the shared store.
-      // Store the IDs — results derives from per-node getNode() lookups which are
-      // reactive to individual node updates (same pattern as BaseNodeViewer/task-node).
+      // TableRow components use $derived(sharedNodeStore.getNode(id)) per row,
+      // so updates from other panes propagate reactively without re-querying.
       const nodes = await backendAdapter.queryNodes({ nodeType: schema.id });
       if (loadId !== currentLoadId) return;
       const databaseSource = { type: 'database' as const, reason: 'query-node-viewer initial load' };
@@ -104,34 +103,6 @@
     }
     return map;
   });
-
-  function getFieldValue(node: Node, field: string): string {
-    const fieldSchema = fieldSchemaMap.get(field);
-    const nodeRecord = node as unknown as Record<string, unknown>;
-
-    // Use protection level to determine where the field lives:
-    // 'user' fields are stored in properties[nodeType][field] (user-defined extensions)
-    // 'core'/'system' fields are top-level typed properties on the node
-    let rawValue: unknown;
-    if (fieldSchema?.protection === 'user') {
-      rawValue = node.properties?.[field];
-    } else {
-      rawValue = nodeRecord[field];
-    }
-
-    if (rawValue === null || rawValue === undefined) return '';
-    if (typeof rawValue === 'object') return JSON.stringify(rawValue);
-
-    // Resolve enum labels from schema if available
-    if (fieldSchema?.type === 'enum') {
-      const strVal = String(rawValue);
-      const allValues = [...(fieldSchema.coreValues ?? []), ...(fieldSchema.userValues ?? [])];
-      const match = allValues.find((ev) => ev.value === strVal);
-      if (match) return match.label;
-    }
-
-    return String(rawValue);
-  }
 
   function handleRowClick(clickedNodeId: string) {
     // Check if node is already open in any tab — if so, switch to it
@@ -168,7 +139,7 @@
         <p>No nodes of this type yet.</p>
       </div>
     {:else if queryState === 'success'}
-      <TableView nodeIds={loadedNodeIds} schema={schemaNode} {getFieldValue} onRowClick={handleRowClick} />
+      <TableView nodeIds={loadedNodeIds} schema={schemaNode} {fieldSchemaMap} onRowClick={handleRowClick} />
     {/if}
   </div>
 </div>
