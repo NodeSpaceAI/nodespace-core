@@ -13,11 +13,15 @@
 -->
 
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { getNavigationService } from '$lib/services/navigation-service';
+  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+  import { tabState, setActiveTab } from '$lib/stores/navigation.js';
+  import { get } from 'svelte/store';
   import TableView from '$lib/components/query/table-view.svelte';
   import type { Node } from '$lib/types';
-  import type { SchemaNode } from '$lib/types/schema-node';
+  import type { SchemaNode, SchemaField } from '$lib/types/schema-node';
   import { createLogger } from '$lib/utils/logger';
 
   const log = createLogger('QueryNodeViewer');
@@ -33,21 +37,33 @@
   } = $props();
 
   let schemaNode = $state<SchemaNode | null>(null);
-  let results = $state<Node[]>([]);
   let queryState = $state<'idle' | 'loading' | 'success' | 'error'>('idle');
   let error = $state<string | null>(null);
   // Sentinel to discard in-flight responses when nodeId changes rapidly (sidenav navigation)
   let currentLoadId = $state(0);
 
+  // Derive results reactively from the store — automatically updates when any node changes
+  const results = $derived.by(() => {
+    if (!schemaNode) return [] as Node[];
+    const nodeType = schemaNode.id;
+    const allNodes = sharedNodeStore.getAllNodes();
+    const out: Node[] = [];
+    for (const node of allNodes.values()) {
+      if (node.nodeType === nodeType) out.push(node);
+    }
+    return out;
+  });
+
   // Load schema and execute query when nodeId changes
   $effect(() => {
-    loadAndQuery(nodeId);
+    const id = nodeId;
+    untrack(() => loadAndQuery(id));
   });
 
   // Update tab title when schema node is loaded
   $effect(() => {
     if (schemaNode) {
-      onTitleChange?.(schemaNode.content || 'Query');
+      untrack(() => onTitleChange?.(schemaNode!.content || 'Query'));
     }
   });
 
@@ -56,18 +72,23 @@
     queryState = 'loading';
     error = null;
     schemaNode = null;
-    results = [];
 
     try {
-      // Load the schema node — nodeId IS the schema id (e.g. "task").
-      // SchemaNode.id equals the nodeType string stored on data nodes, so
-      // target.id is the correct value to pass as NodeQuery.nodeType.
       const schema = await backendAdapter.getSchema(schemaId);
-      if (loadId !== currentLoadId) return; // stale response, nodeId changed
+      if (loadId !== currentLoadId) return;
       schemaNode = schema;
       log.debug('Loaded schema node', { schemaId, content: schema.content });
 
-      await executeQuery(schema, loadId);
+      // Fetch all nodes of this type and load them into the shared store
+      // From this point, `results` derived value takes over reactively
+      const nodes = await backendAdapter.queryNodes({ nodeType: schema.id });
+      if (loadId !== currentLoadId) return;
+      const databaseSource = { type: 'database' as const, reason: 'query-node-viewer initial load' };
+      for (const node of nodes) {
+        sharedNodeStore.setNode(node, databaseSource);
+      }
+      queryState = 'success';
+      log.debug('Query loaded into store', { schemaId: schema.id, count: nodes.length });
     } catch (e) {
       if (loadId !== currentLoadId) return;
       const message = e instanceof Error ? e.message : 'Failed to load schema';
@@ -77,39 +98,54 @@
     }
   }
 
-  async function executeQuery(schema?: SchemaNode, loadId?: number) {
-    const target = schema ?? schemaNode;
-    if (!target) return;
-
-    queryState = 'loading';
-    error = null;
-
-    try {
-      // target.id === nodeType for schema nodes (e.g., "task")
-      const nodes = await backendAdapter.queryNodes({ nodeType: target.id });
-      if (loadId !== undefined && loadId !== currentLoadId) return; // stale response
-      results = nodes;
-      queryState = 'success';
-      log.debug('Query executed', { schemaId: target.id, resultCount: nodes.length });
-    } catch (e) {
-      if (loadId !== undefined && loadId !== currentLoadId) return;
-      const message = e instanceof Error ? e.message : 'Failed to execute query';
-      log.error('Query execution failed', { schemaId: target.id, error: message });
-      error = message;
-      queryState = 'error';
+  // Build a lookup map from schema fields for enum label resolution
+  const fieldSchemaMap = $derived.by(() => {
+    const map = new Map<string, SchemaField>();
+    if (schemaNode?.fields) {
+      for (const f of schemaNode.fields) map.set(f.name, f);
     }
+    return map;
+  });
+
+  function getFieldValue(node: Node, field: string): string {
+    // Try top-level field first (covers content, and typed extensions like status/priority)
+    const nodeRecord = node as unknown as Record<string, unknown>;
+    const topLevel = nodeRecord[field];
+    const rawValue =
+      topLevel !== null && topLevel !== undefined
+        ? topLevel
+        : // Fall back to nested namespace (properties[nodeType][field]), then flat
+          (() => {
+            const nestedNs = node.properties?.[node.nodeType] as
+              | Record<string, unknown>
+              | undefined;
+            return nestedNs?.[field] ?? node.properties?.[field];
+          })();
+
+    if (rawValue === null || rawValue === undefined) return '';
+    if (typeof rawValue === 'object') return JSON.stringify(rawValue);
+
+    // Resolve enum labels from schema if available
+    const fieldSchema = fieldSchemaMap.get(field);
+    if (fieldSchema?.type === 'enum') {
+      const strVal = String(rawValue);
+      const allValues = [...(fieldSchema.coreValues ?? []), ...(fieldSchema.userValues ?? [])];
+      const match = allValues.find((ev) => ev.value === strVal);
+      if (match) return match.label;
+    }
+
+    return String(rawValue);
   }
 
   function handleRowClick(clickedNodeId: string) {
-    getNavigationService().navigateToNodeInOtherPane(clickedNodeId, paneId);
-  }
-
-  function handleRefresh() {
-    if (schemaNode) {
-      executeQuery();
-    } else {
-      loadAndQuery(nodeId);
+    // Check if node is already open in any tab — if so, switch to it
+    const state = get(tabState);
+    const existingTab = state.tabs.find((t) => t.content?.nodeId === clickedNodeId);
+    if (existingTab) {
+      setActiveTab(existingTab.id, existingTab.paneId);
+      return;
     }
+    getNavigationService().navigateToNodeInOtherPane(clickedNodeId, paneId);
   }
 </script>
 
@@ -119,9 +155,6 @@
     {#if queryState === 'success'}
       <span class="result-count">{results.length} {results.length === 1 ? 'item' : 'items'}</span>
     {/if}
-    <button class="refresh-button" onclick={handleRefresh} disabled={queryState === 'loading'}>
-      Refresh
-    </button>
   </header>
 
   <div class="query-content">
@@ -132,14 +165,14 @@
     {:else if queryState === 'error'}
       <div class="error-state">
         <span>{error}</span>
-        <button class="retry-button" onclick={handleRefresh}>Retry</button>
+        <button class="retry-button" onclick={() => loadAndQuery(nodeId)}>Retry</button>
       </div>
     {:else if queryState === 'success' && results.length === 0}
       <div class="empty-state">
         <p>No nodes of this type yet.</p>
       </div>
     {:else if queryState === 'success'}
-      <TableView {results} schema={schemaNode} onRowClick={handleRowClick} />
+      <TableView {results} schema={schemaNode} {getFieldValue} onRowClick={handleRowClick} />
     {/if}
   </div>
 </div>
@@ -176,26 +209,6 @@
     padding: 0.25rem 0.5rem;
     background: hsl(var(--muted));
     border-radius: 9999px;
-  }
-
-  .refresh-button {
-    padding: 0.375rem 0.75rem;
-    font-size: 0.875rem;
-    background: hsl(var(--secondary));
-    color: hsl(var(--secondary-foreground));
-    border: 1px solid hsl(var(--border));
-    border-radius: 0.375rem;
-    cursor: pointer;
-    transition: background-color 0.15s ease;
-  }
-
-  .refresh-button:hover:not(:disabled) {
-    background: hsl(var(--muted));
-  }
-
-  .refresh-button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
   }
 
   .query-content {

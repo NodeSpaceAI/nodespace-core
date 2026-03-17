@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setContext } from 'svelte';
+  import { setContext, untrack } from 'svelte';
   import BaseNodeViewer from '$lib/design/components/base-node-viewer.svelte';
   import { tabState, updateTabTitle, updateTabContent, closeTab } from '$lib/stores/navigation.js';
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
@@ -54,34 +54,32 @@
     }
   }
 
-  // Derive viewer component for active tab - use non-reactive snapshot to break tracking
+  // Derive viewer component for active tab.
   // Returns null while the viewer module is still loading (prevents BaseNodeViewer fallback
   // from rendering with an incompatible nodeId, e.g. a schema id passed to QueryNodeViewer)
   const ViewerComponent = $derived.by(() => {
     const nodeType = activeTab?.content?.nodeType ?? 'text';
-    const components = $state.snapshot(viewerComponents);
-    const loading = $state.snapshot(viewerLoading);
-    if (loading.has(nodeType)) return null;
-    return (components.get(nodeType) ?? BaseNodeViewer) as typeof BaseNodeViewer;
+    if (viewerLoading.has(nodeType)) return null;
+    return (viewerComponents.get(nodeType) ?? BaseNodeViewer) as typeof BaseNodeViewer;
   });
 
   const loadError = $derived.by(() => {
     const nodeType = activeTab?.content?.nodeType ?? 'text';
-    const errors = $state.snapshot(viewerLoadErrors);
-    return errors.get(nodeType);
+    return viewerLoadErrors.get(nodeType);
   });
 
   const isViewerLoading = $derived.by(() => {
     const nodeType = activeTab?.content?.nodeType ?? 'text';
-    const loading = $state.snapshot(viewerLoading);
-    return loading.has(nodeType);
+    return viewerLoading.has(nodeType);
   });
 
   // Load viewer when active tab changes - use $effect but call async function
+  // untrack the call to loadViewerForNodeType so mutations to viewerLoading/viewerComponents
+  // inside that function don't re-trigger this effect
   $effect(() => {
     const nodeType = activeTab?.content?.nodeType;
     if (nodeType) {
-      loadViewerForNodeType(nodeType);
+      untrack(() => loadViewerForNodeType(nodeType));
     }
   });
 
