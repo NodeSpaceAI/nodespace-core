@@ -28,12 +28,15 @@
   // Track loaded viewer components by nodeType
   let viewerComponents = $state<Map<string, unknown>>(new Map());
   let viewerLoadErrors = $state<Map<string, string>>(new Map());
+  let viewerLoading = $state<Set<string>>(new Set());
 
   // Load viewer when needed - moved to function called from onMount to avoid derived context issues
   async function loadViewerForNodeType(nodeType: string) {
-    if (viewerComponents.has(nodeType) || viewerLoadErrors.has(nodeType)) {
+    if (viewerComponents.has(nodeType) || viewerLoadErrors.has(nodeType) || viewerLoading.has(nodeType)) {
       return;
     }
+
+    viewerLoading = new Set(viewerLoading).add(nodeType);
 
     try {
       const viewer = await pluginRegistry.getViewer(nodeType);
@@ -44,13 +47,21 @@
       const errorMessage = error instanceof Error ? error.message : 'Unknown error loading viewer';
       log.error(`Failed to load viewer for ${nodeType}:`, error);
       viewerLoadErrors = new Map(viewerLoadErrors.set(nodeType, errorMessage));
+    } finally {
+      const next = new Set(viewerLoading);
+      next.delete(nodeType);
+      viewerLoading = next;
     }
   }
 
   // Derive viewer component for active tab - use non-reactive snapshot to break tracking
+  // Returns null while the viewer module is still loading (prevents BaseNodeViewer fallback
+  // from rendering with an incompatible nodeId, e.g. a schema id passed to QueryNodeViewer)
   const ViewerComponent = $derived.by(() => {
     const nodeType = activeTab?.content?.nodeType ?? 'text';
     const components = $state.snapshot(viewerComponents);
+    const loading = $state.snapshot(viewerLoading);
+    if (loading.has(nodeType)) return null;
     return (components.get(nodeType) ?? BaseNodeViewer) as typeof BaseNodeViewer;
   });
 
@@ -58,6 +69,12 @@
     const nodeType = activeTab?.content?.nodeType ?? 'text';
     const errors = $state.snapshot(viewerLoadErrors);
     return errors.get(nodeType);
+  });
+
+  const isViewerLoading = $derived.by(() => {
+    const nodeType = activeTab?.content?.nodeType ?? 'text';
+    const loading = $state.snapshot(viewerLoading);
+    return loading.has(nodeType);
   });
 
   // Load viewer when active tab changes - use $effect but call async function
@@ -83,6 +100,11 @@
       <p>Unable to load the viewer for node type: <strong>{nodeType}</strong></p>
       <p class="error-message">{loadError}</p>
       <p class="help-text">Try refreshing the page or contact support if the problem persists.</p>
+    </div>
+  {:else if isViewerLoading}
+    <!-- Viewer module still loading — don't render BaseNodeViewer as fallback -->
+    <div class="loading-state">
+      <span>Loading...</span>
     </div>
   {:else}
     <!-- Dynamic viewer routing via plugin registry -->
@@ -130,6 +152,16 @@
   .placeholder-content p {
     margin: 0.5rem 0;
     color: hsl(var(--muted-foreground));
+  }
+
+  /* Loading state - shown while viewer module is being lazy-loaded */
+  .loading-state {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: hsl(var(--muted-foreground));
+    font-size: 0.875rem;
   }
 
   /* Empty state */
