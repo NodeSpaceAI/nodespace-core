@@ -129,7 +129,7 @@ export function createPluginFromSchema(schema: SchemaNode): PluginDefinition {
           id: schemaId,
           name: displayName,
           description: description || `Create ${displayName}`,
-          contentTemplate: '',
+          contentTemplate: 'Untitled',
           nodeType: schemaId,
           priority: PLUGIN_PRIORITIES.CUSTOM_ENTITY
         }

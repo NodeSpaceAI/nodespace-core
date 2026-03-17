@@ -74,7 +74,7 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
             id: 'invoice',
             name: 'Sales Invoice',
             description: 'Sales Invoice',
-            contentTemplate: '',
+            contentTemplate: 'Untitled',
             nodeType: 'invoice',
             priority: PLUGIN_PRIORITIES.CUSTOM_ENTITY
           }
@@ -148,6 +148,16 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
 
     expect(plugin.node).toBeDefined();
     expect(plugin.node?.lazyLoad).toBeInstanceOf(Function);
+  });
+
+  it('should set contentTemplate to Untitled so new nodes start with a name', () => {
+    const schemaNode = createMockSchemaNode('customer', {
+      description: 'Customer'
+    });
+
+    const plugin = createPluginFromSchema(schemaNode);
+
+    expect(plugin.config.slashCommands[0].contentTemplate).toBe('Untitled');
   });
 
   it('should set nodeType to schema ID for slash command creation', () => {

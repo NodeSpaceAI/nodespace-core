@@ -4,9 +4,10 @@
 //! Supports both explicit field/relationship definitions and natural language descriptions
 //! with intelligent type inference.
 
+use crate::behaviors::SchemaNodeBehavior;
 use crate::mcp::types::MCPError;
 use crate::models::schema::{EnumValue, SchemaField, SchemaProtectionLevel};
-use crate::models::NodeUpdate;
+use crate::models::{Node, NodeUpdate, SchemaNode};
 use crate::services::{CreateNodeParams, NodeService};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -44,6 +45,11 @@ pub struct CreateSchemaParams {
     /// Optional additional constraints for explicit type hints (used with description)
     #[serde(default)]
     pub additional_constraints: Option<AdditionalConstraints>,
+    /// Optional template for computing display title from field values.
+    /// Use `{field_name}` tokens that reference fields defined in `fields`.
+    /// Example: `"{first_name} {last_name}"` for a customer schema.
+    #[serde(default)]
+    pub title_template: Option<String>,
 }
 
 /// Additional constraints for schema creation
@@ -162,13 +168,16 @@ pub async fn handle_create_schema(
         .description
         .clone()
         .unwrap_or_else(|| format!("Schema for {}", params.name));
-    let properties = serde_json::json!({
+    let mut properties = serde_json::json!({
         "isCore": false,
         "schemaVersion": 1,
         "description": &description_text,
         "fields": &namespaced_fields,
         "relationships": &relationships
     });
+    if let Some(ref template) = params.title_template {
+        properties["titleTemplate"] = serde_json::Value::String(template.clone());
+    }
 
     // Create schema node params
     let schema_node_params = CreateNodeParams {
@@ -251,6 +260,11 @@ pub struct UpdateSchemaParams {
     /// New description (optional)
     #[serde(default)]
     pub description: Option<String>,
+    /// Set or update the title template. Pass `null` (absent) to leave unchanged.
+    /// Use `{field_name}` tokens referencing fields defined in the schema.
+    /// Example: `"{first_name} {last_name}"`
+    #[serde(default)]
+    pub title_template: Option<String>,
 }
 
 /// Output for schema update operations
@@ -494,14 +508,34 @@ pub async fn handle_update_schema(
     // Update description if provided
     let description = params.description.unwrap_or(schema.description);
 
-    // Update schema node
-    let properties = serde_json::json!({
+    // Resolve title_template: use new value if provided, otherwise keep existing
+    let title_template = params.title_template.or(schema.title_template);
+
+    // Build updated properties
+    let mut properties = serde_json::json!({
         "isCore": schema.is_core,
-        "version": schema.schema_version,
+        "schemaVersion": schema.schema_version,
         "description": description,
         "fields": fields,
         "relationships": relationships
     });
+    if let Some(ref template) = title_template {
+        properties["titleTemplate"] = serde_json::Value::String(template.clone());
+    }
+
+    // Validate the updated schema before saving (update_node_unchecked bypasses the behavior
+    // pipeline, so we run SchemaNodeBehavior validation explicitly here)
+    let temp_node = Node::new(
+        "schema".to_string(),
+        description.clone(),
+        properties.clone(),
+    );
+    let updated_schema = SchemaNode::from_node(temp_node).map_err(|e| {
+        MCPError::invalid_params(format!("Failed to build schema for validation: {}", e))
+    })?;
+    SchemaNodeBehavior
+        .validate_schema_node(&updated_schema)
+        .map_err(|e| MCPError::invalid_params(format!("Schema validation failed: {}", e)))?;
 
     let update = NodeUpdate {
         properties: Some(properties),
@@ -924,6 +958,10 @@ fn normalize_and_namespace_fields(inferred_fields: Vec<InferredField>) -> Vec<Sc
 fn normalize_schema_id(entity_name: &str) -> String {
     normalize_field_name(entity_name)
 }
+
+#[cfg(test)]
+#[path = "schema_test.rs"]
+mod schema_test;
 
 #[cfg(test)]
 mod tests {

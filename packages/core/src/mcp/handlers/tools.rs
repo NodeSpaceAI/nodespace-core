@@ -1077,6 +1077,10 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                                 "description": "Map of field names to their enum values"
                             }
                         }
+                    },
+                    "title_template": {
+                        "type": "string",
+                        "description": "Optional template for computing the node display title from field values. Syntax: plain text with {field_name} tokens — each token must exactly match a field name defined in 'fields'. Examples: '{first_name} {last_name}' (customer), 'INV-{invoice_number}' (invoice), '{company} — {role}' (contact). Tokens referencing undefined fields are rejected with a validation error. When set, the inline node view shows the computed title as read-only; fill in properties to populate it."
                     }
                 },
                 "required": ["name"]
@@ -1335,6 +1339,10 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Names of relationships to remove (soft-delete)"
+                    },
+                    "title_template": {
+                        "type": "string",
+                        "description": "Set or update the title template. Syntax: plain text with {field_name} tokens — each token must exactly match a field name in the schema. Examples: '{first_name} {last_name}', 'INV-{invoice_number}', '{company} — {role}'. Tokens referencing undefined fields are rejected. When set, the inline node view shows the computed title as read-only. To remove an existing title_template, pass an empty string \"\"."
                     }
                 },
                 "required": ["schema_id"]

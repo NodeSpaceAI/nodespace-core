@@ -137,6 +137,10 @@ export interface SchemaNode {
 
   /** Array of field definitions */
   fields: SchemaField[];
+
+  /** Optional template for computing display title from properties, e.g. "{first_name} {last_name}".
+   *  When set, content is read-only and title is interpolated from schema properties. */
+  titleTemplate?: string;
 }
 
 /**
