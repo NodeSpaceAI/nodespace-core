@@ -130,11 +130,14 @@ async fn test_initialize_empty_params() {
     assert_eq!(err.code, crate::mcp::types::INVALID_PARAMS);
 }
 
-#[test]
-fn test_tier1_core_tools_present() {
+#[tokio::test]
+async fn test_tier1_core_tools_present() {
     // Use tools/list to get Tier 1 (Core) tool schemas for progressive disclosure
     // AI agents can discover additional tools via search_tools
-    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+    let (node_service, _embedding_service, _temp_dir) = create_test_services().await;
+    let result = crate::mcp::handlers::tools::handle_tools_list(&node_service, json!({}))
+        .await
+        .unwrap();
     let tools = result["tools"].as_array().unwrap();
 
     // Verify all Tier 1 (Core) tools are present
@@ -174,10 +177,13 @@ fn test_tier1_core_tools_present() {
     assert_eq!(tools.len(), 13, "Expected exactly 13 Tier 1 (Core) tools");
 }
 
-#[test]
-fn test_search_tools_discovers_tier2_tools() {
+#[tokio::test]
+async fn test_search_tools_discovers_tier2_tools() {
     // Verify search_tools can discover Tier 2 (Discoverable) tools
-    let result = crate::mcp::handlers::tools::handle_search_tools(json!({})).unwrap();
+    let (node_service, _embedding_service, _temp_dir) = create_test_services().await;
+    let result = crate::mcp::handlers::tools::handle_search_tools(&node_service, json!({}))
+        .await
+        .unwrap();
     let tools = result["tools"].as_array().unwrap();
 
     // Should find some discoverable tools (not exhaustive check)
@@ -207,10 +213,13 @@ fn test_search_tools_discovers_tier2_tools() {
     );
 }
 
-#[test]
-fn test_all_schemas_have_required_fields() {
+#[tokio::test]
+async fn test_all_schemas_have_required_fields() {
     // Verify Tier 1 tool schemas have proper structure
-    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+    let (node_service, _embedding_service, _temp_dir) = create_test_services().await;
+    let result = crate::mcp::handlers::tools::handle_tools_list(&node_service, json!({}))
+        .await
+        .unwrap();
     let tools = result["tools"].as_array().unwrap();
 
     assert_eq!(
@@ -255,9 +264,12 @@ fn test_all_schemas_have_required_fields() {
     }
 }
 
-#[test]
-fn test_create_node_schema_has_required_fields() {
-    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+#[tokio::test]
+async fn test_create_node_schema_has_required_fields() {
+    let (node_service, _embedding_service, _temp_dir) = create_test_services().await;
+    let result = crate::mcp::handlers::tools::handle_tools_list(&node_service, json!({}))
+        .await
+        .unwrap();
     let tools = result["tools"].as_array().unwrap();
 
     let create_node = tools
@@ -289,9 +301,12 @@ fn test_create_node_schema_has_required_fields() {
     assert!(enum_values.contains(&json!("header")));
 }
 
-#[test]
-fn test_get_node_schema_structure() {
-    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+#[tokio::test]
+async fn test_get_node_schema_structure() {
+    let (node_service, _embedding_service, _temp_dir) = create_test_services().await;
+    let result = crate::mcp::handlers::tools::handle_tools_list(&node_service, json!({}))
+        .await
+        .unwrap();
     let tools = result["tools"].as_array().unwrap();
 
     let get_node = tools
@@ -312,9 +327,12 @@ fn test_get_node_schema_structure() {
     assert_eq!(properties["node_id"]["type"], "string");
 }
 
-#[test]
-fn test_update_node_schema_structure() {
-    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+#[tokio::test]
+async fn test_update_node_schema_structure() {
+    let (node_service, _embedding_service, _temp_dir) = create_test_services().await;
+    let result = crate::mcp::handlers::tools::handle_tools_list(&node_service, json!({}))
+        .await
+        .unwrap();
     let tools = result["tools"].as_array().unwrap();
 
     let update_node = tools
@@ -336,10 +354,13 @@ fn test_update_node_schema_structure() {
     assert!(properties["properties"].is_object());
 }
 
-#[test]
-fn test_markdown_import_schema_structure() {
+#[tokio::test]
+async fn test_markdown_import_schema_structure() {
     // create_nodes_from_markdown is now a Tier 1 core tool
-    let result = crate::mcp::handlers::tools::handle_tools_list(json!({})).unwrap();
+    let (node_service, _embedding_service, _temp_dir) = create_test_services().await;
+    let result = crate::mcp::handlers::tools::handle_tools_list(&node_service, json!({}))
+        .await
+        .unwrap();
     let tools = result["tools"].as_array().unwrap();
 
     let markdown_import = tools

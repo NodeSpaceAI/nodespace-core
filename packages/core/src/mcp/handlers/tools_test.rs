@@ -6,76 +6,69 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn test_tools_list_returns_tier1_core_tools() {
-    // Call tools/list with empty params
-    // Progressive disclosure: Only Tier 1 (Core) tools exposed initially (65% token savings)
-    // AI agents discover additional tools via search_tools
-    let result = handle_tools_list(json!({}));
+fn test_tool_schemas_include_core_and_schema_type() {
+    // get_tool_schemas with no user-defined schemas
+    let schemas = get_tool_schemas(&[]);
+    let tools = schemas.as_array().unwrap();
 
-    assert!(result.is_ok());
-    let response = result.unwrap();
+    let create_node = tools.iter().find(|t| t["name"] == "create_node").unwrap();
+    let node_type_enum = create_node["inputSchema"]["properties"]["node_type"]["enum"]
+        .as_array()
+        .unwrap();
+    let enum_values: Vec<&str> = node_type_enum.iter().map(|v| v.as_str().unwrap()).collect();
 
-    // Verify response has tools array
-    assert!(response["tools"].is_array());
-
-    let tools = response["tools"].as_array().unwrap();
-
-    // Verify exactly 13 Tier 1 (Core) tools are present
-    // Tier 2 tools are discoverable via search_tools
-    // Issue #814: Added create_relationship for built-in relationship support
-    assert_eq!(
-        tools.len(),
-        13,
-        "Expected 13 Tier 1 tools, got {}",
-        tools.len()
-    );
-
-    // Verify tool names
-    let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-
-    // Tier 1: Core CRUD
-    assert!(tool_names.contains(&"create_node"));
-    assert!(tool_names.contains(&"get_node"));
-    assert!(tool_names.contains(&"update_node"));
-    assert!(tool_names.contains(&"delete_node"));
-
-    // Tier 1: Essential query
-    assert!(tool_names.contains(&"query_nodes"));
-
-    // Tier 1: Basic hierarchy
-    assert!(tool_names.contains(&"get_children"));
-    assert!(tool_names.contains(&"insert_child_at_index"));
-
-    // Tier 1: Semantic search (core value proposition)
-    assert!(tool_names.contains(&"search_semantic"));
-
-    // Tier 1: Markdown import/export
-    assert!(tool_names.contains(&"create_nodes_from_markdown"));
-    assert!(tool_names.contains(&"get_markdown_from_node_id"));
-
-    // Tier 1: Schema & Discovery
-    assert!(tool_names.contains(&"get_all_schemas"));
-    assert!(tool_names.contains(&"search_tools"));
-
-    // Tier 1: Core Relationships (Issue #814)
+    // Core types must be present
+    assert!(enum_values.contains(&"text"));
+    assert!(enum_values.contains(&"task"));
+    assert!(enum_values.contains(&"date"));
+    assert!(enum_values.contains(&"header"));
+    // schema type must always be included (Issue #964)
     assert!(
-        tool_names.contains(&"create_relationship"),
-        "create_relationship tool should be in Tier 1"
+        enum_values.contains(&"schema"),
+        "schema type must be in node_type enum"
     );
-
-    // Verify deprecated tools are NOT present (removed in cleanup)
-    assert!(!tool_names.contains(&"search_containers")); // Removed
-    assert!(!tool_names.contains(&"search_roots")); // Renamed to search_semantic
-    assert!(!tool_names.contains(&"update_container_from_markdown")); // Removed
-    assert!(!tool_names.contains(&"get_schema_definition")); // Removed in Issue #690
-    assert!(!tool_names.contains(&"add_schema_field")); // Removed in Issue #690
-    assert!(!tool_names.contains(&"remove_schema_field")); // Removed in Issue #690
 }
 
 #[test]
-fn test_tools_list_tool_schema_structure() {
-    let result = handle_tools_list(json!({})).unwrap();
-    let tools = result["tools"].as_array().unwrap();
+fn test_tool_schemas_include_custom_schema_ids() {
+    let custom_ids = vec!["customer".to_string(), "invoice".to_string()];
+    let schemas = get_tool_schemas(&custom_ids);
+    let tools = schemas.as_array().unwrap();
+
+    let create_node = tools.iter().find(|t| t["name"] == "create_node").unwrap();
+    let node_type_enum = create_node["inputSchema"]["properties"]["node_type"]["enum"]
+        .as_array()
+        .unwrap();
+    let enum_values: Vec<&str> = node_type_enum.iter().map(|v| v.as_str().unwrap()).collect();
+
+    assert!(enum_values.contains(&"customer"));
+    assert!(enum_values.contains(&"invoice"));
+    assert!(enum_values.contains(&"schema"));
+}
+
+#[test]
+fn test_tool_schemas_no_duplicate_types() {
+    // schema is in core list; passing it again via schema_ids should not duplicate
+    let schema_ids = vec!["schema".to_string(), "text".to_string()];
+    let schemas = get_tool_schemas(&schema_ids);
+    let tools = schemas.as_array().unwrap();
+
+    let create_node = tools.iter().find(|t| t["name"] == "create_node").unwrap();
+    let node_type_enum = create_node["inputSchema"]["properties"]["node_type"]["enum"]
+        .as_array()
+        .unwrap();
+    let enum_values: Vec<&str> = node_type_enum.iter().map(|v| v.as_str().unwrap()).collect();
+
+    let schema_count = enum_values.iter().filter(|&&v| v == "schema").count();
+    let text_count = enum_values.iter().filter(|&&v| v == "text").count();
+    assert_eq!(schema_count, 1, "schema should appear exactly once");
+    assert_eq!(text_count, 1, "text should appear exactly once");
+}
+
+#[test]
+fn test_tool_schemas_structure() {
+    let schemas = get_tool_schemas(&[]);
+    let tools = schemas.as_array().unwrap();
 
     // Verify each tool has required fields
     for tool in tools {
@@ -151,6 +144,120 @@ mod async_integration_tests {
         let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
 
         (node_service, Some(embedding_service), temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_returns_tier1_core_tools() {
+        let (node_service, _embedding_service, _temp_dir) = setup_test_services().await;
+
+        let result = handle_tools_list(&node_service, json!({})).await;
+        assert!(result.is_ok());
+        let response = result.unwrap();
+
+        assert!(response["tools"].is_array());
+        let tools = response["tools"].as_array().unwrap();
+
+        // Verify exactly 13 Tier 1 (Core) tools are present
+        assert_eq!(
+            tools.len(),
+            13,
+            "Expected 13 Tier 1 tools, got {}",
+            tools.len()
+        );
+
+        let tool_names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+
+        assert!(tool_names.contains(&"create_node"));
+        assert!(tool_names.contains(&"get_node"));
+        assert!(tool_names.contains(&"update_node"));
+        assert!(tool_names.contains(&"delete_node"));
+        assert!(tool_names.contains(&"query_nodes"));
+        assert!(tool_names.contains(&"get_children"));
+        assert!(tool_names.contains(&"insert_child_at_index"));
+        assert!(tool_names.contains(&"search_semantic"));
+        assert!(tool_names.contains(&"create_nodes_from_markdown"));
+        assert!(tool_names.contains(&"get_markdown_from_node_id"));
+        assert!(tool_names.contains(&"get_all_schemas"));
+        assert!(tool_names.contains(&"search_tools"));
+        assert!(tool_names.contains(&"create_relationship"));
+
+        // Verify deprecated tools are NOT present
+        assert!(!tool_names.contains(&"search_containers"));
+        assert!(!tool_names.contains(&"search_roots"));
+        assert!(!tool_names.contains(&"update_container_from_markdown"));
+        assert!(!tool_names.contains(&"get_schema_definition"));
+        assert!(!tool_names.contains(&"add_schema_field"));
+        assert!(!tool_names.contains(&"remove_schema_field"));
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_includes_schema_type_in_create_node_enum() {
+        let (node_service, _embedding_service, _temp_dir) = setup_test_services().await;
+
+        let result = handle_tools_list(&node_service, json!({})).await.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+
+        let create_node = tools.iter().find(|t| t["name"] == "create_node").unwrap();
+        let node_type_enum = create_node["inputSchema"]["properties"]["node_type"]["enum"]
+            .as_array()
+            .unwrap();
+        let enum_values: Vec<&str> = node_type_enum.iter().map(|v| v.as_str().unwrap()).collect();
+
+        assert!(
+            enum_values.contains(&"schema"),
+            "create_node node_type enum must include 'schema'"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_includes_custom_schemas_in_create_node_enum() {
+        let (node_service, _embedding_service, _temp_dir) = setup_test_services().await;
+
+        // Create a custom schema node via create_node (id is a server-generated ULID)
+        let create_params = json!({
+            "name": "create_node",
+            "arguments": {
+                "node_type": "schema",
+                "content": "Invoice",
+                "properties": {
+                    "fields": []
+                }
+            }
+        });
+        let embedding_service: Option<Arc<NodeEmbeddingService>> = None;
+        let create_response = handle_tools_call(&node_service, &embedding_service, create_params)
+            .await
+            .expect("create_node should succeed");
+
+        // Extract the generated node_id from the tool response
+        let response_text = create_response["content"][0]["text"]
+            .as_str()
+            .expect("Response should have text content");
+        let response_json: serde_json::Value =
+            serde_json::from_str(response_text).expect("Response should be valid JSON");
+        let schema_node_id = response_json["node_id"]
+            .as_str()
+            .expect("Response should contain node_id");
+
+        let result = handle_tools_list(&node_service, json!({})).await.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+
+        let create_node = tools.iter().find(|t| t["name"] == "create_node").unwrap();
+        let node_type_enum = create_node["inputSchema"]["properties"]["node_type"]["enum"]
+            .as_array()
+            .unwrap();
+        let enum_values: Vec<&str> = node_type_enum.iter().map(|v| v.as_str().unwrap()).collect();
+
+        // The actual schema node ID (a ULID) must appear in the enum
+        assert!(
+            enum_values.contains(&schema_node_id),
+            "Schema node ID '{}' should appear in the node_type enum, got: {:?}",
+            schema_node_id,
+            enum_values
+        );
+        // Core types must still be present
+        assert!(enum_values.contains(&"schema"));
+        assert!(enum_values.contains(&"text"));
     }
 
     #[tokio::test]
