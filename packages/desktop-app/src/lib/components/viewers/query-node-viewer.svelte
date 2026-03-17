@@ -37,25 +37,17 @@
   } = $props();
 
   let schemaNode = $state<SchemaNode | null>(null);
+  // IDs of nodes loaded for this schema type.
+  // TableView calls sharedNodeStore.getNode(id) per row inside its reactive template,
+  // which is how task-node.svelte achieves live reactivity — the lookup happens inside
+  // the Svelte component's tracked context, not in a pre-computed $derived array.
+  let loadedNodeIds = $state<string[]>([]);
   let queryState = $state<'idle' | 'loading' | 'success' | 'error'>('idle');
   let error = $state<string | null>(null);
   // Sentinel to discard in-flight responses when nodeId changes rapidly (sidenav navigation)
   let currentLoadId = $state(0);
 
-  // Derive results reactively from the store.
-  // sharedNodeStore.nodes is a plain Map (not a Svelte proxy) — Map.set() doesn't trigger
-  // reactivity on its own. Reading nodeVersion ($state counter) ensures this derived re-runs
-  // whenever any node is added or updated.
-  const results = $derived.by(() => {
-    sharedNodeStore.nodeVersion; // read reactive counter to subscribe to node changes
-    if (!schemaNode) return [] as Node[];
-    const nodeType = schemaNode.id;
-    const out: Node[] = [];
-    for (const node of sharedNodeStore.nodes.values()) {
-      if (node.nodeType === nodeType) out.push(node);
-    }
-    return out;
-  });
+  const hasResults = $derived(loadedNodeIds.length > 0);
 
   // Load schema and execute query when nodeId changes
   $effect(() => {
@@ -75,6 +67,7 @@
     queryState = 'loading';
     error = null;
     schemaNode = null;
+    loadedNodeIds = [];
 
     try {
       const schema = await backendAdapter.getSchema(schemaId);
@@ -82,14 +75,16 @@
       schemaNode = schema;
       log.debug('Loaded schema node', { schemaId, content: schema.content });
 
-      // Fetch all nodes of this type and load them into the shared store
-      // From this point, `results` derived value takes over reactively
+      // Fetch all nodes of this type and load them into the shared store.
+      // Store the IDs — results derives from per-node getNode() lookups which are
+      // reactive to individual node updates (same pattern as BaseNodeViewer/task-node).
       const nodes = await backendAdapter.queryNodes({ nodeType: schema.id });
       if (loadId !== currentLoadId) return;
       const databaseSource = { type: 'database' as const, reason: 'query-node-viewer initial load' };
       for (const node of nodes) {
         sharedNodeStore.setNode(node, databaseSource);
       }
+      loadedNodeIds = nodes.map((n) => n.id);
       queryState = 'success';
       log.debug('Query loaded into store', { schemaId: schema.id, count: nodes.length });
     } catch (e) {
@@ -154,7 +149,7 @@
   <header class="query-header">
     <h1>{schemaNode?.content ?? 'Query'}</h1>
     {#if queryState === 'success'}
-      <span class="result-count">{results.length} {results.length === 1 ? 'item' : 'items'}</span>
+      <span class="result-count">{loadedNodeIds.length} {loadedNodeIds.length === 1 ? 'item' : 'items'}</span>
     {/if}
   </header>
 
@@ -168,12 +163,12 @@
         <span>{error}</span>
         <button class="retry-button" onclick={() => loadAndQuery(nodeId)}>Retry</button>
       </div>
-    {:else if queryState === 'success' && results.length === 0}
+    {:else if queryState === 'success' && !hasResults}
       <div class="empty-state">
         <p>No nodes of this type yet.</p>
       </div>
     {:else if queryState === 'success'}
-      <TableView {results} schema={schemaNode} {getFieldValue} onRowClick={handleRowClick} />
+      <TableView nodeIds={loadedNodeIds} schema={schemaNode} {getFieldValue} onRowClick={handleRowClick} />
     {/if}
   </div>
 </div>

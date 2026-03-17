@@ -11,14 +11,15 @@
 <script lang="ts">
   import type { Node } from '$lib/types';
   import type { SchemaNode } from '$lib/types/schema-node';
+  import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 
   let {
-    results,
+    nodeIds,
     schema,
     getFieldValue,
     onRowClick
   }: {
-    results: Node[];
+    nodeIds: string[];
     schema: SchemaNode | null;
     getFieldValue: (_node: Node, _field: string) => string;
     onRowClick: (_nodeId: string) => void;
@@ -27,9 +28,9 @@
   const PAGE_SIZE = 25;
   let currentPage = $state(0);
 
-  // Reset to page 0 when results change
+  // Reset to page 0 when nodeIds change
   $effect(() => {
-    results;
+    nodeIds;
     currentPage = 0;
   });
 
@@ -52,10 +53,10 @@
     return cols;
   });
 
-  const totalPages = $derived(Math.ceil(results.length / PAGE_SIZE));
+  const totalPages = $derived(Math.ceil(nodeIds.length / PAGE_SIZE));
 
-  const pageResults = $derived(
-    results.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE)
+  const pageIds = $derived(
+    nodeIds.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE)
   );
 
 </script>
@@ -70,24 +71,27 @@
       </tr>
     </thead>
     <tbody>
-      {#each pageResults as node (node.id)}
-        <tr class="result-row">
-          {#each columns as col (col.field)}
-            <td>
-              {#if col.field === 'content'}
-                <button
-                  class="title-link"
-                  onclick={() => onRowClick(node.id)}
-                  title="Open {node.content || 'node'}"
-                >
-                  {getFieldValue(node, col.field) || 'Untitled'}
-                </button>
-              {:else}
-                <span class="cell-value">{getFieldValue(node, col.field)}</span>
-              {/if}
-            </td>
-          {/each}
-        </tr>
+      {#each pageIds as id (id)}
+        {@const node = sharedNodeStore.getNode(id)}
+        {#if node}
+          <tr class="result-row">
+            {#each columns as col (col.field)}
+              <td>
+                {#if col.field === 'content'}
+                  <button
+                    class="title-link"
+                    onclick={() => onRowClick(id)}
+                    title="Open {node.content || 'node'}"
+                  >
+                    {getFieldValue(node, col.field) || 'Untitled'}
+                  </button>
+                {:else}
+                  <span class="cell-value">{getFieldValue(node, col.field)}</span>
+                {/if}
+              </td>
+            {/each}
+          </tr>
+        {/if}
       {/each}
     </tbody>
   </table>

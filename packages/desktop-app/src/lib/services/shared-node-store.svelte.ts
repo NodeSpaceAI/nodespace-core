@@ -455,12 +455,9 @@ interface ActiveBatch {
 export class SharedNodeStore {
   private static instance: SharedNodeStore | null = null;
 
-  // Core state - Svelte 5 $state(Map) proxies key-specific .get() accesses for reactivity,
-  // but iterating .values() in a $derived may not reliably re-run on .set() mutations.
-  // nodeVersion is an explicit $state counter incremented on every node change so that
-  // $derived consumers iterating all nodes (e.g. QueryNodeViewer) can subscribe reliably.
+  // Core state - using Svelte 5 $state for automatic reactivity.
+  // Key-specific .get() accesses inside $derived are tracked by Svelte's reactive Map proxy.
   nodes = $state(new Map<string, Node>());
-  nodeVersion = $state(0);
 
   // Track which nodes have been persisted to database
   // Avoids querying database on every update to check existence
@@ -783,7 +780,6 @@ export class SharedNodeStore {
       };
 
       this.nodes.set(nodeId, updatedNode);
-      this.nodeVersion++;
       this.versions.set(nodeId, update.version!);
 
       // Track pending update for potential rollback
@@ -1118,7 +1114,6 @@ export class SharedNodeStore {
     const isHierarchyChange = !existingNode;
 
     this.nodes.set(node.id, node);
-    this.nodeVersion++;
     this.versions.set(node.id, this.getNextVersion(node.id));
     this.notifySubscribers(node.id, node, source);
 
