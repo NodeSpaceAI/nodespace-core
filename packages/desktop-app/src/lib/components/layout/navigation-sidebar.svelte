@@ -214,7 +214,7 @@
           id: uuidv4(),
           title: 'Loading...',
           type: 'node',
-          content: { nodeId: schemaId, nodeType: 'schema' },
+          content: { nodeId: schemaId, nodeType: 'query' },
           closeable: true,
           paneId: targetPaneId
         },
