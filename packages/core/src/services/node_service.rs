@@ -459,6 +459,7 @@ impl NodeService {
                     },
                     StoreOperation::Deleted => DomainEvent::NodeDeleted {
                         id: change.node.id.clone(),
+                        node_type: change.node.node_type.clone(),
                         source_client_id: change.source,
                     },
                 };

@@ -170,10 +170,10 @@ impl DomainEventForwarder {
                     error!("Failed to emit node:updated for {}: {}", node_id, e);
                 }
             }
-            DomainEvent::NodeDeleted { id, .. } => {
+            DomainEvent::NodeDeleted { id, node_type, .. } => {
                 let payload = NodeIdPayload {
                     id: id.clone(),
-                    node_type: None,
+                    node_type: Some(node_type.clone()),
                 };
                 if let Err(e) = self.app.emit("node:deleted", &payload) {
                     error!("Failed to emit node:deleted: {}", e);

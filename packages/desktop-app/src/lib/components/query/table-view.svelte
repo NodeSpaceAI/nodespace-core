@@ -36,7 +36,7 @@
   // Derive columns from schema fields — capitalize name and replace underscores with spaces
   const columns = $derived.by(() => {
     const cols: Array<{ field: string; label: string }> = [
-      { field: 'content', label: 'Title' }
+      { field: 'content', label: '' }
     ];
 
     if (schema?.fields) {

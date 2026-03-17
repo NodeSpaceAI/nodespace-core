@@ -18,8 +18,9 @@
   import { formatDateISO } from '$lib/utils/date-formatting.js';
   import { v4 as uuidv4 } from 'uuid';
   import CollectionSubPanel from './collection-sub-panel.svelte';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { schemasData, builtInSchemas as builtInSchemasStore, customSchemas as customSchemasStore } from '$lib/stores/schemas';
+  import { clearCollectionRefreshTimer, clearSchemaRefreshTimer } from '$lib/utils/collection-refresh';
 
   // Subscribe to stores using Svelte 5 runes
   let isCollapsed = $derived($layoutState.sidebarCollapsed);
@@ -48,6 +49,13 @@
   onMount(() => {
     collectionsData.loadCollections();
     schemasData.loadSchemas();
+  });
+
+  // Cancel any pending debounced refreshes when the sidebar is destroyed
+  // to prevent async callbacks from firing after teardown.
+  onDestroy(() => {
+    clearCollectionRefreshTimer();
+    clearSchemaRefreshTimer();
   });
 
   // Element references for click-outside detection

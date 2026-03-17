@@ -98,9 +98,16 @@
     void _updateTrigger;
     return sharedNodeStore.getNode(id)?.content ?? '';
   });
+
+  // Reactive existence check — void _updateTrigger ensures the guard re-evaluates
+  // when the node is deleted from the store (same pattern as cellValues/nodeContent).
+  const nodeExists = $derived.by(() => {
+    void _updateTrigger;
+    return !!sharedNodeStore.getNode(id);
+  });
 </script>
 
-{#if sharedNodeStore.getNode(id)}
+{#if nodeExists}
   <tr class="result-row">
     {#each columns as col (col.field)}
       <td>

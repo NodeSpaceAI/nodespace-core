@@ -88,15 +88,13 @@ const BM25_MAX_TOKENS: usize = 4;
 /// discriminative power for ranking. Shared with the title-boost tokenizer
 /// in embedding_service.rs to keep both paths consistent.
 const BM25_STOP_WORDS: &[&str] = &[
-    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "shall", "can", "need", "dare", "ought",
-    "i", "me", "my", "we", "our", "you", "your", "he", "she", "it",
-    "they", "them", "their", "what", "which", "who", "whom", "this",
-    "that", "these", "those", "to", "of", "in", "on", "at", "by",
-    "for", "with", "about", "as", "how", "when", "where", "why",
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+    "do", "does", "did", "will", "would", "could", "should", "may", "might", "shall", "can",
+    "need", "dare", "ought", "i", "me", "my", "we", "our", "you", "your", "he", "she", "it",
+    "they", "them", "their", "what", "which", "who", "whom", "this", "that", "these", "those",
+    "to", "of", "in", "on", "at", "by", "for", "with", "about", "as", "how", "when", "where",
+    "why",
 ];
-
 
 /// Represents an relationship from the universal relationship table
 ///
@@ -366,9 +364,12 @@ impl SurrealStore {
             .await
             .context("Failed to connect to SurrealDB HTTP server")?;
 
-        db.signin(Root { username: user.to_string(), password: pass.to_string() })
-            .await
-            .context("Failed to sign in to SurrealDB")?;
+        db.signin(Root {
+            username: user.to_string(),
+            password: pass.to_string(),
+        })
+        .await
+        .context("Failed to sign in to SurrealDB")?;
 
         db.use_ns("nodespace")
             .use_db("nodespace")
@@ -4411,7 +4412,10 @@ impl SurrealStore {
         // Single-term queries fall back to a simple `content @@ $t0` with no OR overhead.
         let tokens: Vec<String> = query
             .split_whitespace()
-            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+            .map(|t| {
+                t.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
             .filter(|t| !t.is_empty() && !BM25_STOP_WORDS.contains(&t.as_str()))
             .take(BM25_MAX_TOKENS)
             .collect();

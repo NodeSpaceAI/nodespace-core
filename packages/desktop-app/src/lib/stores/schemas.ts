@@ -31,11 +31,8 @@ async function loadSchemas(): Promise<void> {
   }
 }
 
-// Public read-only store
-export const schemas = { subscribe: _schemas.subscribe };
-
-// Derived: only the built-in task schema shown in sidenav
-export const builtInSchemas = derived(_schemas, ($s) => $s.filter((s) => s.isCore && s.id === 'task'));
+// Derived: all built-in (core) schemas shown in sidenav
+export const builtInSchemas = derived(_schemas, ($s) => $s.filter((s) => s.isCore));
 
 // Derived: user-created custom schemas
 export const customSchemas = derived(_schemas, ($s) => $s.filter((s) => !s.isCore));

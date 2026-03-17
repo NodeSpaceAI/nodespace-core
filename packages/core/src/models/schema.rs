@@ -86,6 +86,10 @@ pub struct EnumValue {
     pub label: String,
 }
 
+fn default_protection_level() -> SchemaProtectionLevel {
+    SchemaProtectionLevel::User
+}
+
 /// Protection level for schema fields
 ///
 /// Determines whether a field can be modified or deleted by users.
@@ -127,6 +131,7 @@ pub struct SchemaField {
     pub field_type: String,
 
     /// Protection level determining mutability
+    #[serde(default = "default_protection_level")]
     pub protection: SchemaProtectionLevel,
 
     /// Protected enum values (cannot be removed) - enum fields only
@@ -140,6 +145,7 @@ pub struct SchemaField {
     pub user_values: Option<Vec<EnumValue>>,
 
     /// Whether this field should be indexed for faster queries
+    #[serde(default)]
     pub indexed: bool,
 
     /// Whether this field is required (cannot be null/undefined)
