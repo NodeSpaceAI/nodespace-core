@@ -29,6 +29,7 @@
   import type { Node } from '$lib/types';
   import { parseDate, type DateValue } from '@internationalized/date';
   import { createLogger } from '$lib/utils/logger';
+  import { evaluateTitleTemplate } from '$lib/utils/title-template';
 
   // Logger instance for SchemaPropertyForm component
   const log = createLogger('SchemaPropertyForm');
@@ -259,9 +260,17 @@
       });
     }
 
+    // Optimistic title computation: if the schema has a titleTemplate, compute the
+    // new title from the updated field values immediately (before backend responds).
+    // Whitespace normalization mirrors Rust's interpolate_title_template (trim + collapse).
+    // The backend remains authoritative and will overwrite this value on response.
+    const titleUpdate: Partial<Node> = schema.titleTemplate
+      ? { title: evaluateTitleTemplate(schema.titleTemplate, migratedNamespace) || null }
+      : {};
+
     sharedNodeStore.updateNode(
       nodeId,
-      { properties: updatedProperties },
+      { properties: updatedProperties, ...titleUpdate },
       { type: 'viewer', viewerId: 'schema-property-form' }
     );
   }
