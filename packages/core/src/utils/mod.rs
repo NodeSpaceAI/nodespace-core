@@ -4,6 +4,4 @@
 
 mod markdown;
 
-pub use markdown::{
-    interpolate_title_template, interpolate_title_template_with_schema, strip_markdown,
-};
+pub use markdown::{interpolate_title_template_with_schema, strip_markdown};

@@ -97,77 +97,38 @@ pub fn strip_markdown(content: &str) -> String {
     result.trim().to_string()
 }
 
-/// Interpolate a title template string using node properties.
+/// Interpolate a title template string using node properties, resolving enum labels.
 ///
 /// Replaces `{field_name}` tokens with the corresponding property value.
 /// Non-string values (numbers, booleans) are converted to their string representation.
-/// Missing or null fields are replaced with empty strings.
-/// The result is trimmed of leading/trailing whitespace.
+/// Missing or null fields are skipped (produce no output). The result is whitespace-
+/// normalised and trimmed.
 ///
-/// # Arguments
-///
-/// * `template` - The template string with `{field_name}` placeholders
-/// * `properties` - The node's properties JSON object
-///
-/// # Examples
-///
-/// ```
-/// use nodespace_core::utils::interpolate_title_template;
-/// use serde_json::json;
-///
-/// let props = json!({"first_name": "John", "last_name": "Doe"});
-/// assert_eq!(
-///     interpolate_title_template("{first_name} {last_name}", &props),
-///     "John Doe"
-/// );
-/// ```
-pub fn interpolate_title_template(template: &str, properties: &serde_json::Value) -> String {
-    let mut result = String::with_capacity(template.len());
-    let chars: Vec<char> = template.chars().collect();
-    let mut i = 0;
-
-    while i < chars.len() {
-        if chars[i] == '{' {
-            // Find the closing brace
-            if let Some(end) = chars[i + 1..].iter().position(|&c| c == '}') {
-                let field_name: String = chars[i + 1..i + 1 + end].iter().collect();
-                // Look up the field value in properties
-                let value = properties.get(&field_name);
-                match value {
-                    Some(serde_json::Value::String(s)) => result.push_str(s),
-                    Some(serde_json::Value::Number(n)) => result.push_str(&n.to_string()),
-                    Some(serde_json::Value::Bool(b)) => result.push_str(&b.to_string()),
-                    Some(serde_json::Value::Null) | None => {} // empty string for missing/null
-                    Some(other) => result.push_str(&other.to_string()),
-                }
-                i += 1 + end + 1; // skip past '}'
-                continue;
-            }
-        }
-        result.push(chars[i]);
-        i += 1;
-    }
-
-    // Normalize whitespace and trim
-    let normalized = WHITESPACE_RE.replace_all(&result, " ");
-    normalized.trim().to_string()
-}
-
-/// Interpolate a title template string using node properties, resolving enum labels.
-///
-/// Like [`interpolate_title_template`], but additionally resolves enum field values
-/// to their human-readable labels using the provided schema fields.
-///
-/// For each `{field_name}` token, if the field is of type `"enum"`, the raw stored
-/// value (e.g. `"on_hold"`) is replaced with the matching label (e.g. `"On Hold"`).
-/// `core_values` are searched before `user_values`. If no matching label is found,
-/// the raw value is used as-is.
+/// For fields of type `"enum"`, the raw stored value (e.g. `"on_hold"`) is resolved
+/// to the matching human-readable label (e.g. `"On Hold"`) using the schema field
+/// definitions. `core_values` are searched before `user_values`. If no matching label
+/// is found, the raw value is used as-is. Pass `&[]` for `fields` to disable enum
+/// label resolution (equivalent to plain interpolation).
 ///
 /// # Arguments
 ///
 /// * `template` - The template string with `{field_name}` placeholders
 /// * `properties` - The node's properties JSON object
 /// * `fields` - Schema field definitions (from `SchemaNode.fields`)
+///
+/// # Examples
+///
+/// ```
+/// use nodespace_core::utils::interpolate_title_template_with_schema;
+/// use serde_json::json;
+///
+/// // Plain string fields — no schema needed
+/// let props = json!({"first_name": "John", "last_name": "Doe"});
+/// assert_eq!(
+///     interpolate_title_template_with_schema("{first_name} {last_name}", &props, &[]),
+///     "John Doe"
+/// );
+/// ```
 pub fn interpolate_title_template_with_schema(
     template: &str,
     properties: &serde_json::Value,
@@ -194,6 +155,7 @@ pub fn interpolate_title_template_with_schema(
                 if let Some(raw) = raw_string {
                     let resolved = fields
                         .iter()
+                        // "enum" matches SchemaField.field_type JSON serialization — must stay in sync
                         .find(|f| f.name == field_name && f.field_type == "enum")
                         .and_then(|f| {
                             f.core_values
@@ -338,14 +300,14 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // interpolate_title_template tests
+    // interpolate_title_template_with_schema — plain interpolation (fields = &[])
     // -------------------------------------------------------------------------
 
     #[test]
     fn test_interpolate_basic_fields() {
         let props = serde_json::json!({"first_name": "John", "last_name": "Doe"});
         assert_eq!(
-            interpolate_title_template("{first_name} {last_name}", &props),
+            interpolate_title_template_with_schema("{first_name} {last_name}", &props, &[]),
             "John Doe"
         );
     }
@@ -354,7 +316,7 @@ mod tests {
     fn test_interpolate_missing_field_is_empty() {
         let props = serde_json::json!({"first_name": "Jane"});
         assert_eq!(
-            interpolate_title_template("{first_name} {last_name}", &props),
+            interpolate_title_template_with_schema("{first_name} {last_name}", &props, &[]),
             "Jane"
         );
     }
@@ -363,7 +325,7 @@ mod tests {
     fn test_interpolate_null_field_is_empty() {
         let props = serde_json::json!({"first_name": "Alice", "email": null});
         assert_eq!(
-            interpolate_title_template("{first_name} ({email})", &props),
+            interpolate_title_template_with_schema("{first_name} ({email})", &props, &[]),
             "Alice ()"
         );
     }
@@ -372,7 +334,7 @@ mod tests {
     fn test_interpolate_number_value() {
         let props = serde_json::json!({"invoice_number": 42});
         assert_eq!(
-            interpolate_title_template("Invoice #{invoice_number}", &props),
+            interpolate_title_template_with_schema("Invoice #{invoice_number}", &props, &[]),
             "Invoice #42"
         );
     }
@@ -381,7 +343,7 @@ mod tests {
     fn test_interpolate_boolean_value() {
         let props = serde_json::json!({"active": true});
         assert_eq!(
-            interpolate_title_template("Active: {active}", &props),
+            interpolate_title_template_with_schema("Active: {active}", &props, &[]),
             "Active: true"
         );
     }
@@ -394,7 +356,11 @@ mod tests {
             "email": "john@example.com"
         });
         assert_eq!(
-            interpolate_title_template("{first_name} {last_name} ({email})", &props),
+            interpolate_title_template_with_schema(
+                "{first_name} {last_name} ({email})",
+                &props,
+                &[]
+            ),
             "John Doe (john@example.com)"
         );
     }
@@ -403,7 +369,7 @@ mod tests {
     fn test_interpolate_trims_whitespace() {
         let props = serde_json::json!({"first_name": "Jane", "last_name": ""});
         assert_eq!(
-            interpolate_title_template("{first_name} {last_name}", &props),
+            interpolate_title_template_with_schema("{first_name} {last_name}", &props, &[]),
             "Jane"
         );
     }
@@ -412,7 +378,7 @@ mod tests {
     fn test_interpolate_no_placeholders() {
         let props = serde_json::json!({});
         assert_eq!(
-            interpolate_title_template("Static Title", &props),
+            interpolate_title_template_with_schema("Static Title", &props, &[]),
             "Static Title"
         );
     }
@@ -421,7 +387,7 @@ mod tests {
     fn test_interpolate_all_fields_missing() {
         let props = serde_json::json!({});
         assert_eq!(
-            interpolate_title_template("{first_name} {last_name}", &props),
+            interpolate_title_template_with_schema("{first_name} {last_name}", &props, &[]),
             ""
         );
     }
