@@ -129,7 +129,9 @@ export function createPluginFromSchema(schema: SchemaNode): PluginDefinition {
           id: schemaId,
           name: displayName,
           description: description || `Create ${displayName}`,
-          contentTemplate: 'Untitled',
+          // Use 'Untitled' only when titleTemplate is set (content is not the editable name).
+          // Without titleTemplate, leave blank so the node starts empty and editable like a task.
+          contentTemplate: schema.titleTemplate ? 'Untitled' : '',
           nodeType: schemaId,
           priority: PLUGIN_PRIORITIES.CUSTOM_ENTITY
         }

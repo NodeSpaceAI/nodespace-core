@@ -74,7 +74,7 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
             id: 'invoice',
             name: 'Sales Invoice',
             description: 'Sales Invoice',
-            contentTemplate: 'Untitled',
+            contentTemplate: '',
             nodeType: 'invoice',
             priority: PLUGIN_PRIORITIES.CUSTOM_ENTITY
           }
@@ -150,13 +150,18 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     expect(plugin.node?.lazyLoad).toBeInstanceOf(Function);
   });
 
-  it('should set contentTemplate to Untitled so new nodes start with a name', () => {
-    const schemaNode = createMockSchemaNode('customer', {
-      description: 'Customer'
-    });
-
+  it('should set contentTemplate to empty string when no titleTemplate (node name is editable)', () => {
+    const schemaNode = createMockSchemaNode('customer', { description: 'Customer' });
     const plugin = createPluginFromSchema(schemaNode);
+    expect(plugin.config.slashCommands[0].contentTemplate).toBe('');
+  });
 
+  it('should set contentTemplate to Untitled when titleTemplate is set (content is not the name)', () => {
+    const schemaNode: SchemaNode = {
+      ...createMockSchemaNode('customer', { description: 'Customer' }),
+      titleTemplate: '{first_name} {last_name}'
+    };
+    const plugin = createPluginFromSchema(schemaNode);
     expect(plugin.config.slashCommands[0].contentTemplate).toBe('Untitled');
   });
 
