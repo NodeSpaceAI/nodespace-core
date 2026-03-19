@@ -69,7 +69,8 @@
     editableConfig = {},
     metadata = {},
     customViewContent,
-    readonly = false
+    readonly = false,
+    displayContentIsPlaceholder = false
   }: {
     nodeId: string;
     nodeType?: string;
@@ -81,6 +82,7 @@
     metadata?: Record<string, unknown>;
     customViewContent?: import('svelte').Snippet; // Optional override for view mode rendering
     readonly?: boolean; // When true, prevents entering edit mode on click (e.g. title_template nodes)
+    displayContentIsPlaceholder?: boolean; // When true, styles displayContent as faint placeholder
   } = $props();
 
   // Get paneId from Svelte context (set by PaneContent)
@@ -866,6 +868,7 @@
       bind:this={viewElement}
       class="node__content node__content--view"
       class:node__content--readonly={readonly}
+      class:node__content--placeholder={displayContentIsPlaceholder}
       id="view__{paneId}__{nodeId}"
       tabindex="0"
       onclick={(e) => {
@@ -1093,6 +1096,11 @@
   .node__content--readonly {
     cursor: default;
     user-select: text;
+  }
+
+  .node__content--placeholder {
+    color: hsl(var(--muted-foreground) / 0.5);
+    font-style: italic;
   }
 
   .node__content:empty,

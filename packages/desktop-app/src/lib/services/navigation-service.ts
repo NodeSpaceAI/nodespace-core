@@ -128,9 +128,19 @@ export class NavigationService {
       return formatDateTitle(date);
     }
 
-    // For other nodes, use shared utility for consistent formatting
-    if (node.content && typeof node.content === 'string') {
+    // For other nodes, prefer computed title (from title_template) over content
+    if (node.title && typeof node.title === 'string' && node.title.trim()) {
+      return formatTabTitle(node.title, `${node.nodeType} Node`);
+    }
+
+    if (node.content && typeof node.content === 'string' && node.content.trim()) {
       return formatTabTitle(node.content, `${node.nodeType} Node`);
+    }
+
+    // For custom schema types, use the plugin display name (e.g. "Customer")
+    if (isCustomSchemaNodeType(node.nodeType)) {
+      const plugin = pluginRegistry.getPlugin(node.nodeType);
+      if (plugin?.name) return plugin.name;
     }
 
     // Fallback to node type

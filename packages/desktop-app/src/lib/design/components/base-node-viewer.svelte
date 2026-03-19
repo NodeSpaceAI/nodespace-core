@@ -257,12 +257,9 @@
   // ============================================================================
 
   onMount(() => {
-    // CRITICAL FIX: Populate loadedNodes from registry's cache immediately
-    // This prevents race condition where template renders before async loadNodeComponent completes
-    // The registry maintains a persistent cache that survives component remounts
-    // Restore all previously loaded node components from the registry's persistent cache.
-    // The registry survives component remounts (tab switches), so this gives us all
-    // components that were ever loaded — including lazily-loaded ones like 'table'.
+    // Restore previously loaded node components from the registry's persistent cache.
+    // Uses Object.assign (in-place mutation) to avoid triggering Svelte reactive updates
+    // that would cause state_unsafe_mutation errors during template evaluation.
     Object.assign(loadedNodes, pluginRegistry.getAllLoadedNodeComponents());
 
     // Set up scroll position management
@@ -375,6 +372,15 @@
 
     // Strip markdown header syntax (same logic as formatTabTitle)
     return rawContent.replace(/^#+\s*/, '');
+  });
+
+  // Keep tab title in sync with headerDisplayValue (e.g. when title_template computes a new title)
+  $effect(() => {
+    if (disableTitleUpdates) return;
+    const title = headerDisplayValue || (hasTitleTemplate && genericSchema?.titleTemplate) || '';
+    if (!title) return;
+    // Defer to avoid state_unsafe_mutation (this effect is triggered by $derived headerDisplayValue)
+    tick().then(() => updateTabTitle(title));
   });
 
   /**
@@ -1376,7 +1382,7 @@
         onfocus={() => { if (!hasTitleTemplate) isHeaderBeingEdited = true; }}
         onblur={() => (isHeaderBeingEdited = false)}
         readonly={hasTitleTemplate}
-        placeholder="Untitled"
+        placeholder={hasTitleTemplate ? (genericSchema?.titleTemplate ?? 'Untitled') : 'Untitled'}
         aria-label="Page title"
       />
     </div>
@@ -1395,7 +1401,7 @@
   {:else if currentViewedNode && nodeId && genericSchema && isCustomSchemaType(currentViewedNode.nodeType)}
     <!-- Issue #965: Generic schema form for custom schema node types (UUID nodeType) -->
     <div class="schema-form-container">
-      <GenericSchemaForm {nodeId} schema={genericSchema} />
+      <GenericSchemaForm {nodeId} schema={genericSchema} autoOpen={hasTitleTemplate} />
     </div>
   {/if}
 
@@ -1514,9 +1520,8 @@
                   // Use cursor position from event (captured by TextareaController)
                   const cursorPosition = e.detail.cursorPosition ?? 0;
 
-                  // CRITICAL: Load component BEFORE updating node type
-                  // This ensures the correct component is available when the template re-renders
-                  if (!(newNodeType in loadedNodes)) {
+                  // Load component BEFORE updating node type (only if plugin has one)
+                  if (!(newNodeType in loadedNodes) && pluginRegistry.hasNodeComponent(newNodeType)) {
                     await loadNodeComponent(newNodeType);
                   }
 
@@ -1544,9 +1549,8 @@
                   const cursorPosition = e.detail.cursorPosition ?? 0;
                   const newNodeType = e.detail.nodeType;
 
-                  // CRITICAL: Load component BEFORE updating node type
-                  // This ensures the correct component is available when the template re-renders
-                  if (!(newNodeType in loadedNodes)) {
+                  // Load component BEFORE updating node type (only if plugin has one)
+                  if (!(newNodeType in loadedNodes) && pluginRegistry.hasNodeComponent(newNodeType)) {
                     await loadNodeComponent(newNodeType);
                   }
 
@@ -1625,13 +1629,36 @@
                     });
                   } else {
                     log.debug('Updating node type for real node');
-                    // For real nodes, update node type with full persistence
-                    // TODO #978: Custom entity slash commands don't properly convert node type
-                    // when fired on a real (non-placeholder) node. The fix requires:
-                    // 1. Eagerly loading CustomEntityNode into the plugin registry cache
-                    // 2. Using sharedNodeStore.setNode() instead of nodeManager.updateNodeType()
-                    //    to ensure the nodeType change is properly persisted and re-rendered
-                    nodeManager.updateNodeType(node.id, e.detail.nodeType);
+                    // Apply contentTemplate + nodeType atomically via a single store update.
+                    // Two separate updates would race (the second cancels the first's persist).
+                    const cmdDef = pluginRegistry.findSlashCommand(e.detail.command);
+                    const contentTemplate = cmdDef?.contentTemplate;
+                    const updatePayload: Record<string, unknown> = { nodeType: e.detail.nodeType };
+                    if (contentTemplate !== undefined) {
+                      updatePayload.content = contentTemplate;
+                    }
+                    sharedNodeStore.updateNode(node.id, updatePayload, { type: 'viewer', viewerId }, {
+                      skipConflictDetection: true
+                    });
+                    if (isCustomSchemaType(newNodeType)) {
+                      (async () => {
+                        const { getNavigationService } = await import('$lib/services/navigation-service');
+                        getNavigationService().navigateToNodeInOtherPane(node.id, paneId);
+                        // Only create a blank text node below if the schema has a titleTemplate
+                        // (node is read-only inline). Without titleTemplate, node is editable
+                        // inline like task — no need for a sibling.
+                        if (cmdDef?.hasTitleTemplate) {
+                          const rendered = nodesToRender();
+                          const nodeIndex = rendered.findIndex(n => n.id === node.id);
+                          const isLast = nodeIndex === rendered.length - 1;
+                          if (isLast) {
+                            await handleCreateNewNode(new CustomEvent('createNewNode', {
+                              detail: { afterNodeId: node.id, nodeType: 'text', newContent: '' }
+                            }));
+                          }
+                        }
+                      })();
+                    }
                   }
                 }}
                 on:iconClick={handleIconClick}
@@ -1646,13 +1673,25 @@
           {:else}
             <!-- Final fallback to BaseNode with key for re-rendering -->
             <!-- Fallback applies syntax stripping for known types (code-block, header, quote-block) -->
+            <!-- Custom schema entities also render here (no lazy-loaded node component) -->
+            {@const nodeSlashCmd = pluginRegistry.findSlashCommand(node.nodeType)}
+            {@const nodeHasTitleTemplate = !!nodeSlashCmd?.hasTitleTemplate}
+            {@const nodeTitleDisplay = nodeHasTitleTemplate
+              ? (node.title && /\w/.test(node.title)
+                  ? node.title
+                  : (nodeSlashCmd?.titleTemplate ?? ''))
+              : undefined}
             {#key `${node.id}-${node.nodeType}`}
               <BaseNode
                 nodeId={node.id}
                 nodeType={node.nodeType}
                 autoFocus={node.autoFocus}
                 content={node.content}
-                displayContent={extractFallbackDisplayContent(node.content, node.nodeType)}
+                readonly={nodeHasTitleTemplate}
+                displayContentIsPlaceholder={nodeHasTitleTemplate && !(node.title && /\w/.test(node.title))}
+                displayContent={nodeTitleDisplay !== undefined
+                  ? nodeTitleDisplay
+                  : extractFallbackDisplayContent(node.content, node.nodeType)}
                 children={node.children}
                 metadata={extractFallbackMetadata(node.nodeType, node.properties)}
                 editableConfig={{ allowMultiline: true }}
@@ -1728,9 +1767,8 @@
                   // Use cursor position from event (captured by TextareaController)
                   const cursorPosition = e.detail.cursorPosition ?? 0;
 
-                  // CRITICAL: Load component BEFORE updating node type
-                  // This ensures the correct component is available when the template re-renders
-                  if (!(newNodeType in loadedNodes)) {
+                  // Load component BEFORE updating node type (only if plugin has one)
+                  if (!(newNodeType in loadedNodes) && pluginRegistry.hasNodeComponent(newNodeType)) {
                     await loadNodeComponent(newNodeType);
                   }
 
@@ -1787,9 +1825,8 @@
                   const cursorPosition = e.detail.cursorPosition ?? 0;
                   const newNodeType = e.detail.nodeType;
 
-                  // CRITICAL: Load component BEFORE updating node type
-                  // This ensures the correct component is available when the template re-renders
-                  if (!(newNodeType in loadedNodes)) {
+                  // Load component BEFORE updating node type (only if plugin has one)
+                  if (!(newNodeType in loadedNodes) && pluginRegistry.hasNodeComponent(newNodeType)) {
                     await loadNodeComponent(newNodeType);
                   }
 
@@ -1868,13 +1905,35 @@
                     });
                   } else {
                     log.debug('Updating node type for real node');
-                    // For real nodes, update node type with full persistence
-                    // TODO #978: Custom entity slash commands don't properly convert node type
-                    // when fired on a real (non-placeholder) node. The fix requires:
-                    // 1. Eagerly loading CustomEntityNode into the plugin registry cache
-                    // 2. Using sharedNodeStore.setNode() instead of nodeManager.updateNodeType()
-                    //    to ensure the nodeType change is properly persisted and re-rendered
-                    nodeManager.updateNodeType(node.id, e.detail.nodeType);
+                    // Apply contentTemplate + nodeType atomically via a single store update.
+                    // Two separate updates would race (the second cancels the first's persist).
+                    const cmdDef = pluginRegistry.findSlashCommand(e.detail.command);
+                    const contentTemplate = cmdDef?.contentTemplate;
+                    const updatePayload: Record<string, unknown> = { nodeType: e.detail.nodeType };
+                    if (contentTemplate !== undefined) {
+                      updatePayload.content = contentTemplate;
+                    }
+                    sharedNodeStore.updateNode(node.id, updatePayload, { type: 'viewer', viewerId }, {
+                      skipConflictDetection: true
+                    });
+                    if (isCustomSchemaType(newNodeType)) {
+                      (async () => {
+                        const { getNavigationService } = await import('$lib/services/navigation-service');
+                        getNavigationService().navigateToNodeInOtherPane(node.id, paneId);
+                        // Only create blank text node if the entity is the last visible node
+                        // (no existing node below it to continue typing into)
+                        if (cmdDef?.hasTitleTemplate) {
+                          const rendered = nodesToRender();
+                          const nodeIndex = rendered.findIndex(n => n.id === node.id);
+                          const isLast = nodeIndex === rendered.length - 1;
+                          if (isLast) {
+                            await handleCreateNewNode(new CustomEvent('createNewNode', {
+                              detail: { afterNodeId: node.id, nodeType: 'text', newContent: '' }
+                            }));
+                          }
+                        }
+                      })();
+                    }
                   }
                 }}
                 on:iconClick={handleIconClick}
@@ -1886,6 +1945,26 @@
                 on:deleteNode={handleDeleteNode}
               />
             {/key}
+            {#if isCustomSchemaType(node.nodeType)}
+              <button
+                class="custom-entity-open-button"
+                onclick={async (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const { getNavigationService } = await import('$lib/services/navigation-service');
+                  if (e.metaKey || e.ctrlKey) {
+                    getNavigationService().navigateToNode(node.id, true, paneId);
+                  } else {
+                    getNavigationService().navigateToNodeInOtherPane(node.id, paneId);
+                  }
+                }}
+                type="button"
+                aria-label="Open entity in dedicated viewer pane (Cmd+Click for new tab in same pane)"
+                title="Open in viewer"
+              >
+                open
+              </button>
+            {/if}
           {/if}
         </div>
       </div>
@@ -1938,6 +2017,11 @@
   .header-input--readonly {
     cursor: default;
     color: hsl(var(--foreground));
+  }
+
+  .header-input--readonly::placeholder {
+    color: hsl(var(--muted-foreground) / 0.5);
+    font-style: italic;
   }
 
   /* Custom header section - fixed at top, doesn't scroll */
@@ -2045,6 +2129,32 @@
     gap: 0.25rem; /* 4px gap between chevron/spacer and text content */
     position: relative; /* Enable absolute positioning for chevrons */
     width: 100%; /* Ensure wrapper fills parent so flex children can inherit */
+  }
+
+  /* Open button for custom entity nodes (appears on hover like task open button) */
+  .custom-entity-open-button {
+    position: absolute;
+    top: 0.25rem;
+    right: 0.25rem;
+    background: hsl(var(--background));
+    border: 1px solid hsl(var(--border));
+    color: hsl(var(--foreground));
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    text-transform: lowercase;
+    z-index: 5;
+  }
+
+  .node-content-wrapper:hover .custom-entity-open-button {
+    opacity: 1;
+  }
+
+  .custom-entity-open-button:hover {
+    background: hsl(var(--muted));
   }
 
   /* Flex children (node wrappers) should fill available space */
