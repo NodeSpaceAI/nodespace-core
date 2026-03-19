@@ -905,7 +905,21 @@
         focusManager.focusNodeAtPosition(nodeId, editPosition, paneId);
       }}
       onkeydown={(e) => {
-        if (readonly) return; // title_template nodes are not editable inline
+        if (readonly) {
+          if (e.key === 'Enter') {
+            // On readonly nodes (e.g. title_template entities): create a new empty
+            // text node below this one so the user can keep typing, and open the
+            // entity in the other pane so they can fill in its properties.
+            e.preventDefault();
+            dispatch('createNewNode', {
+              afterNodeId: nodeId,
+              nodeType: 'text',
+              currentContent: content,
+              newContent: ''
+            });
+          }
+          return;
+        }
         if (e.key === 'Enter' || e.key === ' ') {
           // Use FocusManager instead of directly setting isEditing
           focusManager.setEditingNode(nodeId, paneId);

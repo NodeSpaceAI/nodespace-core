@@ -176,7 +176,16 @@
     {children}
     readonly={hasTitleTemplate}
     customViewContent={hasTitleTemplate && displayContent != null ? titleTemplateSnippet : undefined}
-    on:createNewNode={forwardEvent('createNewNode')}
+    on:createNewNode={(e) => {
+      // When Enter is pressed on a readonly (titleTemplate) entity node:
+      // forward createNewNode to insert a sibling text node, and open
+      // this entity in the other pane so the user can fill its properties.
+      dispatch('createNewNode', e.detail);
+      if (hasTitleTemplate) {
+        const navigationService = getNavigationService();
+        navigationService.navigateToNodeInOtherPane(nodeId, sourcePaneId);
+      }
+    }}
     on:contentChanged={(e) => {
       handleTypingStart();
       dispatch('contentChanged', e.detail);
