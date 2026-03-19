@@ -114,7 +114,7 @@
   });
 
   // Schema display name for the type badge
-  const schemaDisplayName = $derived(schema?.content || nodeType || '');
+  const schemaDisplayName = $derived(schema?.description || schema?.content || nodeType || '');
 
   // title_template support: when the schema has a template, content is read-only
   // and the title is derived from schema properties via compute_title()
@@ -292,16 +292,14 @@
     white-space: nowrap;
     pointer-events: none;
     background: hsl(var(--background));
-    opacity: 1;
   }
 
   /* Inline variant inside titleTemplate snippet — flows with text */
   .entity-type-badge--inline {
     position: static;
     transform: none;
-    display: inline;
+    display: inline-block;
     margin-left: 0.4rem;
-    top: auto;
     vertical-align: middle;
   }
 
