@@ -214,6 +214,18 @@
     return { status, statusLabel, dueDate };
   });
 
+  /**
+   * Interpolates a title template with current field values.
+   * Replaces `{fieldName}` tokens with their corresponding values.
+   */
+  function evaluateTitleTemplate(template: string, fieldValues: Record<string, unknown>): string {
+    return template.replace(/\{(\w+)\}/g, (_, fieldName) => {
+      const val = fieldValues[fieldName];
+      if (val === null || val === undefined) return '';
+      return String(val);
+    });
+  }
+
   // Update node property
   function updateProperty(fieldName: string, value: unknown) {
     if (!node || !schema) return;
@@ -259,9 +271,17 @@
       });
     }
 
+    // Optimistic title computation: if the schema has a titleTemplate, compute the
+    // new title from the updated field values immediately (before backend responds).
+    const titleTemplate = schema?.titleTemplate;
+    const titleUpdate: Partial<Node> = {};
+    if (titleTemplate) {
+      titleUpdate.title = evaluateTitleTemplate(titleTemplate, migratedNamespace) || null;
+    }
+
     sharedNodeStore.updateNode(
       nodeId,
-      { properties: updatedProperties },
+      { properties: updatedProperties, ...titleUpdate },
       { type: 'viewer', viewerId: 'schema-property-form' }
     );
   }
