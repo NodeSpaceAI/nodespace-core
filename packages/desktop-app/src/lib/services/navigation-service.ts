@@ -33,6 +33,17 @@ import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('NavigationService');
 
+/** Core built-in node types — everything else is a custom schema type */
+const CORE_NODE_TYPES = new Set([
+  'text', 'task', 'date', 'header', 'code-block', 'quote-block',
+  'ordered-list', 'horizontal-line', 'table', 'checkbox', 'collection',
+  'query', 'schema'
+]);
+
+function isCustomSchemaNodeType(nodeType: string): boolean {
+  return !CORE_NODE_TYPES.has(nodeType);
+}
+
 export interface NavigationTarget {
   nodeId: string;
   nodeType: string;
@@ -147,10 +158,9 @@ export class NavigationService {
       return nodeId;
     }
 
-    // Custom schema entity nodes (UUID node types) are root-level entities —
+    // Custom schema entity nodes are root-level entities —
     // always open them directly, not their parent (e.g. date node)
-    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-    if (targetNode && UUID_REGEX.test(targetNode.nodeType)) {
+    if (targetNode && isCustomSchemaNodeType(targetNode.nodeType)) {
       return nodeId;
     }
 

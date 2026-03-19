@@ -1014,11 +1014,9 @@
       const candidateNode = currentVisibleNodes[targetIndex];
 
       // Check if this node accepts navigation (skip if it doesn't)
-      // Custom schema entity nodes (UUID nodeType) with a titleTemplate are read-only inline
-      // — skip them so arrow navigation passes through to the next editable node
-      const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      const isCustomEntity = UUID_REGEX.test(candidateNode.nodeType);
-      const acceptsNavigation = !isCustomEntity;
+      // Custom schema entity nodes are read-only inline — skip them so arrow
+      // navigation passes through to the next editable node
+      const acceptsNavigation = !isCustomSchemaType(candidateNode.nodeType);
 
       if (acceptsNavigation) {
         // Navigate using reactive approach (FocusManager)
@@ -1222,10 +1220,15 @@
   const hasTitleTemplate = $derived(genericSchema?.titleTemplate != null);
 
   /** UUID regex — custom schema node types are stored as UUIDs */
-  const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  /** Core built-in node types that ship with NodeSpace — everything else is a custom schema type */
+  const CORE_NODE_TYPES = new Set([
+    'text', 'task', 'date', 'header', 'code-block', 'quote-block',
+    'ordered-list', 'horizontal-line', 'table', 'checkbox', 'collection',
+    'query', 'schema'
+  ]);
 
   function isCustomSchemaType(nodeType: string): boolean {
-    return UUID_REGEX.test(nodeType);
+    return !CORE_NODE_TYPES.has(nodeType);
   }
 
   async function loadGenericSchema(nodeType: string): Promise<void> {
@@ -1608,6 +1611,17 @@
 
                       // Clear promotion flag after state updates complete
                       isPromoting = false;
+
+                      // Custom entity nodes: open in other pane + create text node below
+                      if (isCustomSchemaType(newNodeType)) {
+                        (async () => {
+                          const { getNavigationService } = await import('$lib/services/navigation-service');
+                          getNavigationService().navigateToNodeInOtherPane(promotedNode.id, paneId);
+                          await handleCreateNewNode(new CustomEvent('createNewNode', {
+                            detail: { afterNodeId: promotedNode.id, nodeType: 'text', currentContent: '', newContent: '' }
+                          }));
+                        })();
+                      }
                     });
                   } else {
                     log.debug('Updating node type for real node');
@@ -1835,6 +1849,17 @@
 
                       // Clear promotion flag after state updates complete
                       isPromoting = false;
+
+                      // Custom entity nodes: open in other pane + create text node below
+                      if (isCustomSchemaType(newNodeType)) {
+                        (async () => {
+                          const { getNavigationService } = await import('$lib/services/navigation-service');
+                          getNavigationService().navigateToNodeInOtherPane(promotedNode.id, paneId);
+                          await handleCreateNewNode(new CustomEvent('createNewNode', {
+                            detail: { afterNodeId: promotedNode.id, nodeType: 'text', currentContent: '', newContent: '' }
+                          }));
+                        })();
+                      }
                     });
                   } else {
                     log.debug('Updating node type for real node');
