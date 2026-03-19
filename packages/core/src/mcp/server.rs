@@ -50,17 +50,24 @@ pub struct McpServices {
 /// Server state tracking initialization status
 ///
 /// Uses Arc<AtomicBool> for thread-safe sharing across async tasks.
-/// The initialized flag must persist across requests in HTTP mode
-/// to maintain session state according to the MCP protocol.
 ///
-/// The MCP protocol requires:
+/// The MCP protocol requires a handshake before other methods are called:
 /// 1. Client sends `initialize` request
 /// 2. Server responds with capabilities
 /// 3. Client sends `initialized` notification
 /// 4. Only then can other methods be called
+///
+/// **Enforcement is transport-dependent** (see `transport` field):
+/// - **Stdio**: guard is enforced — client and server share a process lifetime and
+///   always perform the handshake together.
+/// - **HTTP**: guard is skipped — clients (e.g. Claude Desktop via `mcp-remote`) do
+///   the handshake once and do not redo it when the server restarts. Blocking them
+///   would require the user to restart their client on every server restart.
 struct ServerState {
     /// Whether the client has completed the initialization handshake
     initialized: Arc<AtomicBool>,
+    /// Transport mode — controls whether the initialization guard is enforced.
+    transport: McpTransport,
 }
 
 /// Callback type for handling successful responses
@@ -134,6 +141,7 @@ async fn run_stdio_server(
     // Initialize server state
     let state = ServerState {
         initialized: Arc::new(AtomicBool::new(false)),
+        transport: McpTransport::Stdio,
     };
 
     while let Some(line) = lines.next_line().await? {
@@ -246,6 +254,7 @@ async fn run_http_server(
     let shared_callback = callback;
     let shared_state = Arc::new(ServerState {
         initialized: Arc::new(AtomicBool::new(false)),
+        transport: McpTransport::Http { port },
     });
 
     let state: HttpState = (shared_services, shared_callback, shared_state);
@@ -317,7 +326,11 @@ async fn handle_streamable_http_request(
         // Handle the request using shared state
         let response = handle_request(services.as_ref(), &state, request).await;
 
-        // Auto-initialize for HTTP transport after successful initialize request
+        // Record that the client completed the handshake.
+        // NOTE: the initialized flag is not checked for HTTP requests (the guard in
+        // handle_request is stdio-only), so this write does not gate any behavior.
+        // It is kept for observability (logging/debugging) and in case a future
+        // code path wants to query whether an initialize was ever received.
         if is_initialize && response.result.is_some() {
             state.initialized.store(true, Ordering::SeqCst);
             info!("✅ MCP session initialized (Streamable HTTP) - ready for operations");
@@ -494,7 +507,11 @@ async fn handle_http_mcp_request(
     // Handle the request using shared state
     let response = handle_request(services.as_ref(), &state, request).await;
 
-    // Auto-initialize for HTTP transport after successful initialize request
+    // Record that the client completed the handshake.
+    // NOTE: the initialized flag is not checked for HTTP requests (the guard in
+    // handle_request is stdio-only), so this write does not gate any behavior.
+    // It is kept for observability (logging/debugging) and in case a future
+    // code path wants to query whether an initialize was ever received.
     if is_initialize && response.result.is_some() {
         state.initialized.store(true, Ordering::SeqCst);
         info!("✅ MCP session initialized (HTTP mode) - ready for operations");
@@ -522,9 +539,13 @@ async fn handle_request(
     state: &ServerState,
     request: MCPRequest,
 ) -> MCPResponse {
-    // Check initialization state before processing operations
-    // Allow only 'initialize' and 'ping' methods before initialization is complete
-    if request.method != "initialize"
+    // Check initialization state before processing operations.
+    // HTTP clients may reconnect after a server restart without re-initializing
+    // (e.g. Claude Desktop via mcp-remote already did the handshake). Skip the
+    // guard for HTTP; stdio still requires the explicit handshake.
+    let is_stdio = matches!(state.transport, McpTransport::Stdio);
+    if is_stdio
+        && request.method != "initialize"
         && request.method != "ping"
         && !state.initialized.load(Ordering::SeqCst)
     {
@@ -710,6 +731,7 @@ mod tests {
         let services = create_test_services().await;
         let shared_state = Arc::new(ServerState {
             initialized: Arc::new(AtomicBool::new(false)),
+            transport: McpTransport::Http { port: 3000 },
         });
 
         let app = Router::new()
@@ -739,6 +761,7 @@ mod tests {
         let services = create_test_services().await;
         let shared_state = Arc::new(ServerState {
             initialized: Arc::new(AtomicBool::new(false)),
+            transport: McpTransport::Http { port: 3000 },
         });
 
         let app = Router::new()
@@ -791,6 +814,7 @@ mod tests {
         let services = create_test_services().await;
         let shared_state = Arc::new(ServerState {
             initialized: Arc::new(AtomicBool::new(false)),
+            transport: McpTransport::Http { port: 3000 },
         });
 
         let app = Router::new()
@@ -824,31 +848,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_http_request_before_initialization_fails() {
+    async fn test_http_request_before_initialization_succeeds() {
+        // HTTP transport skips the initialization guard — clients may reconnect
+        // after a server restart without re-doing the handshake.
         let services = create_test_services().await;
         let shared_state = Arc::new(ServerState {
             initialized: Arc::new(AtomicBool::new(false)),
+            transport: McpTransport::Http { port: 3000 },
         });
 
         let app = Router::new()
             .route("/mcp", post(handle_http_mcp_request))
             .with_state((Arc::new(services), None::<ResponseCallback>, shared_state));
 
-        let create_request = json!({
+        let tools_list_request = json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "create_node",
-            "params": {
-                "node_type": "text",
-                "content": "test"
-            }
+            "method": "tools/list",
+            "params": {}
         });
 
         let request = Request::builder()
             .uri("/mcp")
             .method("POST")
             .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_string(&create_request).unwrap()))
+            .body(Body::from(
+                serde_json::to_string(&tools_list_request).unwrap(),
+            ))
             .unwrap();
 
         let response = app.oneshot(request).await.unwrap();
@@ -860,11 +886,8 @@ mod tests {
 
         assert_eq!(json["jsonrpc"], "2.0");
         assert_eq!(json["id"], 1);
-        assert!(json["error"].is_object());
-        assert!(json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("not initialized"));
+        assert!(json["result"].is_object());
+        assert!(json.get("error").is_none() || json["error"].is_null());
     }
 
     #[tokio::test]
@@ -874,6 +897,7 @@ mod tests {
         let services = create_test_services().await;
         let shared_state = Arc::new(ServerState {
             initialized: Arc::new(AtomicBool::new(true)), // Pre-initialized
+            transport: McpTransport::Http { port: 3000 },
         });
 
         let callback_invoked = Arc::new(Mutex::new(false));
@@ -904,5 +928,27 @@ mod tests {
         let _response = app.oneshot(request).await.unwrap();
 
         assert!(*callback_invoked.lock().unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_stdio_request_before_initialization_fails() {
+        // Stdio transport still requires the initialization handshake.
+        let services = create_test_services().await;
+        let state = ServerState {
+            initialized: Arc::new(AtomicBool::new(false)),
+            transport: McpTransport::Stdio,
+        };
+
+        let request = MCPRequest {
+            jsonrpc: "2.0".to_string(),
+            id: 1,
+            method: "tools/list".to_string(),
+            params: json!({}),
+        };
+
+        let response = handle_request(&services, &state, request).await;
+
+        assert!(response.error.is_some());
+        assert!(response.error.unwrap().message.contains("not initialized"));
     }
 }
