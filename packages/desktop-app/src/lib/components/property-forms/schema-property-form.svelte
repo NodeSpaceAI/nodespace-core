@@ -29,6 +29,7 @@
   import type { Node } from '$lib/types';
   import { parseDate, type DateValue } from '@internationalized/date';
   import { createLogger } from '$lib/utils/logger';
+  import { evaluateTitleTemplate } from '$lib/utils/title-template';
 
   // Logger instance for SchemaPropertyForm component
   const log = createLogger('SchemaPropertyForm');
@@ -214,18 +215,6 @@
     return { status, statusLabel, dueDate };
   });
 
-  /**
-   * Interpolates a title template with current field values.
-   * Replaces `{fieldName}` tokens with their corresponding values.
-   */
-  function evaluateTitleTemplate(template: string, fieldValues: Record<string, unknown>): string {
-    return template.replace(/\{(\w+)\}/g, (_, fieldName) => {
-      const val = fieldValues[fieldName];
-      if (val === null || val === undefined) return '';
-      return String(val);
-    });
-  }
-
   // Update node property
   function updateProperty(fieldName: string, value: unknown) {
     if (!node || !schema) return;
@@ -273,11 +262,11 @@
 
     // Optimistic title computation: if the schema has a titleTemplate, compute the
     // new title from the updated field values immediately (before backend responds).
-    const titleTemplate = schema?.titleTemplate;
-    const titleUpdate: Partial<Node> = {};
-    if (titleTemplate) {
-      titleUpdate.title = evaluateTitleTemplate(titleTemplate, migratedNamespace) || null;
-    }
+    // Whitespace normalization mirrors Rust's interpolate_title_template (trim + collapse).
+    // The backend remains authoritative and will overwrite this value on response.
+    const titleUpdate: Partial<Node> = schema.titleTemplate
+      ? { title: evaluateTitleTemplate(schema.titleTemplate, migratedNamespace) || null }
+      : {};
 
     sharedNodeStore.updateNode(
       nodeId,
