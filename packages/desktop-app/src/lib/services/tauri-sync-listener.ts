@@ -182,11 +182,9 @@ export async function initializeTauriSyncListeners(): Promise<void> {
     await listen<RelationshipEvent>('relationship:updated', (event) => {
       const rel = event.payload;
       log.debug(`Relationship updated: ${rel.relationshipType} (${rel.fromId} -> ${rel.toId})`);
-
-      // Handle order updates for hierarchy
-      if (rel.relationshipType === 'has_child') {
-        // Future: Update child order in structure tree
-        log.debug(`Hierarchy order updated for ${rel.toId}`);
+      if (rel.relationshipType === 'has_child' && structureTree) {
+        const order = (rel.properties?.order as number) ?? Date.now();
+        structureTree.updateChildOrder(rel.fromId, rel.toId, order);
       }
     });
 

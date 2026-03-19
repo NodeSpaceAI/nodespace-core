@@ -2550,7 +2550,7 @@ impl SurrealStore {
         node_id: &str,
         new_parent_id: Option<&str>,
         insert_after_sibling_id: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<f64> {
         // Convert parameters to owned strings for 'static lifetime
         let node_id = node_id.to_string();
         let new_parent_id = new_parent_id.map(|s| s.to_string());
@@ -2763,7 +2763,7 @@ impl SurrealStore {
             ))?;
 
         // Note: Domain events are now emitted at NodeService layer for client filtering
-        Ok(())
+        Ok(new_order)
     }
 
     /// Create a mention relationship between two nodes
