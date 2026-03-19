@@ -347,14 +347,6 @@ class BrowserSyncService {
     try {
       const node = await backendAdapter.getNode(nodeId);
       if (node) {
-        // Guard against SSE overwriting optimistic local changes.
-        // If the local store has a different nodeType than the backend returned,
-        // the local change hasn't been persisted yet — preserve it.
-        const localNode = sharedNodeStore.getNode(nodeId);
-        if (localNode && localNode.nodeType !== node.nodeType) {
-          log.debug(`${eventType}: skipping SSE for ${nodeId} — local nodeType '${localNode.nodeType}' differs from backend '${node.nodeType}'`);
-          return;
-        }
         // Normalize node data to type-specific format (e.g., TaskNode with flat status)
         const normalizedNode = this.normalizeNodeData(node);
         // Use database source with sse-sync reason to indicate external change via SSE

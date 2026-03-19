@@ -1237,6 +1237,35 @@
     return !CORE_NODE_TYPES.has(nodeType);
   }
 
+  /**
+   * Handle custom entity slash command side-effects: navigate to other pane and
+   * optionally create a blank text sibling below when the entity is the last visible node.
+   *
+   * @param entityNodeId - ID of the custom entity node
+   * @param hasTitleTemplate - Whether the schema has a title_template (node is read-only inline)
+   */
+  async function handleCustomEntitySlashCommand(
+    entityNodeId: string,
+    hasTitleTemplate: boolean
+  ): Promise<void> {
+    const { getNavigationService } = await import('$lib/services/navigation-service');
+    getNavigationService().navigateToNodeInOtherPane(entityNodeId, paneId);
+    // Only create blank text node if the entity is the last visible node
+    // (no existing node below it to continue typing into).
+    // When hasTitleTemplate is false the node is editable inline (like a task),
+    // so no sibling is needed.
+    if (hasTitleTemplate) {
+      const rendered = nodesToRender();
+      const nodeIndex = rendered.findIndex(n => n.id === entityNodeId);
+      const isLast = nodeIndex === rendered.length - 1;
+      if (isLast) {
+        await handleCreateNewNode(new CustomEvent('createNewNode', {
+          detail: { afterNodeId: entityNodeId, nodeType: 'text', currentContent: '', newContent: '' }
+        }));
+      }
+    }
+  }
+
   async function loadGenericSchema(nodeType: string): Promise<void> {
     try {
       const schemaNode = await backendAdapter.getSchema(nodeType);
@@ -1569,6 +1598,7 @@
                   // They must persist to database, not just update locally
                   // Use same batching logic as real nodes to ensure atomic persistence
                   // Also check if node doesn't already exist in store (prevents duplicate promotion)
+                  const cmdDef = pluginRegistry.findSlashCommand(e.detail.command);
                   const nodeExistsInStore = sharedNodeStore.hasNode(node.id);
                   if (
                     node.isPlaceholder &&
@@ -1616,22 +1646,16 @@
                       // Clear promotion flag after state updates complete
                       isPromoting = false;
 
-                      // Custom entity nodes: open in other pane + create text node below
+                      // Custom entity nodes: open in other pane + optionally create text node below
                       if (isCustomSchemaType(newNodeType)) {
-                        (async () => {
-                          const { getNavigationService } = await import('$lib/services/navigation-service');
-                          getNavigationService().navigateToNodeInOtherPane(promotedNode.id, paneId);
-                          await handleCreateNewNode(new CustomEvent('createNewNode', {
-                            detail: { afterNodeId: promotedNode.id, nodeType: 'text', currentContent: '', newContent: '' }
-                          }));
-                        })();
+                        handleCustomEntitySlashCommand(promotedNode.id, !!cmdDef?.hasTitleTemplate)
+                          .catch((err) => log.error('Custom entity slash command failed (placeholder path):', err));
                       }
                     });
                   } else {
                     log.debug('Updating node type for real node');
                     // Apply contentTemplate + nodeType atomically via a single store update.
                     // Two separate updates would race (the second cancels the first's persist).
-                    const cmdDef = pluginRegistry.findSlashCommand(e.detail.command);
                     const contentTemplate = cmdDef?.contentTemplate;
                     const updatePayload: Record<string, unknown> = { nodeType: e.detail.nodeType };
                     if (contentTemplate !== undefined) {
@@ -1641,23 +1665,8 @@
                       skipConflictDetection: true
                     });
                     if (isCustomSchemaType(newNodeType)) {
-                      (async () => {
-                        const { getNavigationService } = await import('$lib/services/navigation-service');
-                        getNavigationService().navigateToNodeInOtherPane(node.id, paneId);
-                        // Only create a blank text node below if the schema has a titleTemplate
-                        // (node is read-only inline). Without titleTemplate, node is editable
-                        // inline like task — no need for a sibling.
-                        if (cmdDef?.hasTitleTemplate) {
-                          const rendered = nodesToRender();
-                          const nodeIndex = rendered.findIndex(n => n.id === node.id);
-                          const isLast = nodeIndex === rendered.length - 1;
-                          if (isLast) {
-                            await handleCreateNewNode(new CustomEvent('createNewNode', {
-                              detail: { afterNodeId: node.id, nodeType: 'text', newContent: '' }
-                            }));
-                          }
-                        }
-                      })();
+                      handleCustomEntitySlashCommand(node.id, !!cmdDef?.hasTitleTemplate)
+                        .catch((err) => log.error('Custom entity slash command failed (real-node path):', err));
                     }
                   }
                 }}
@@ -1845,6 +1854,7 @@
                   // They must persist to database, not just update locally
                   // Use same batching logic as real nodes to ensure atomic persistence
                   // Also check if node doesn't already exist in store (prevents duplicate promotion)
+                  const cmdDef = pluginRegistry.findSlashCommand(e.detail.command);
                   const nodeExistsInStore = sharedNodeStore.hasNode(node.id);
                   if (
                     node.isPlaceholder &&
@@ -1892,22 +1902,16 @@
                       // Clear promotion flag after state updates complete
                       isPromoting = false;
 
-                      // Custom entity nodes: open in other pane + create text node below
+                      // Custom entity nodes: open in other pane + optionally create text node below
                       if (isCustomSchemaType(newNodeType)) {
-                        (async () => {
-                          const { getNavigationService } = await import('$lib/services/navigation-service');
-                          getNavigationService().navigateToNodeInOtherPane(promotedNode.id, paneId);
-                          await handleCreateNewNode(new CustomEvent('createNewNode', {
-                            detail: { afterNodeId: promotedNode.id, nodeType: 'text', currentContent: '', newContent: '' }
-                          }));
-                        })();
+                        handleCustomEntitySlashCommand(promotedNode.id, !!cmdDef?.hasTitleTemplate)
+                          .catch((err) => log.error('Custom entity slash command failed (placeholder path):', err));
                       }
                     });
                   } else {
                     log.debug('Updating node type for real node');
                     // Apply contentTemplate + nodeType atomically via a single store update.
                     // Two separate updates would race (the second cancels the first's persist).
-                    const cmdDef = pluginRegistry.findSlashCommand(e.detail.command);
                     const contentTemplate = cmdDef?.contentTemplate;
                     const updatePayload: Record<string, unknown> = { nodeType: e.detail.nodeType };
                     if (contentTemplate !== undefined) {
@@ -1917,22 +1921,8 @@
                       skipConflictDetection: true
                     });
                     if (isCustomSchemaType(newNodeType)) {
-                      (async () => {
-                        const { getNavigationService } = await import('$lib/services/navigation-service');
-                        getNavigationService().navigateToNodeInOtherPane(node.id, paneId);
-                        // Only create blank text node if the entity is the last visible node
-                        // (no existing node below it to continue typing into)
-                        if (cmdDef?.hasTitleTemplate) {
-                          const rendered = nodesToRender();
-                          const nodeIndex = rendered.findIndex(n => n.id === node.id);
-                          const isLast = nodeIndex === rendered.length - 1;
-                          if (isLast) {
-                            await handleCreateNewNode(new CustomEvent('createNewNode', {
-                              detail: { afterNodeId: node.id, nodeType: 'text', newContent: '' }
-                            }));
-                          }
-                        }
-                      })();
+                      handleCustomEntitySlashCommand(node.id, !!cmdDef?.hasTitleTemplate)
+                        .catch((err) => log.error('Custom entity slash command failed (real-node path):', err));
                     }
                   }
                 }}

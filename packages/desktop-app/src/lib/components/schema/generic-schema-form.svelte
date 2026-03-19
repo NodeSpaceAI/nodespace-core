@@ -37,9 +37,11 @@
 
   let isOpen = $state(autoOpen);
   let formEl = $state<HTMLElement | null>(null);
+  let autoFocusDone = false;
 
   $effect(() => {
-    if (autoOpen && isOpen) {
+    if (autoOpen && isOpen && !autoFocusDone) {
+      autoFocusDone = true;
       // Delay to allow Collapsible animation to complete before querying DOM
       setTimeout(() => {
         const first = formEl?.querySelector<HTMLElement>('input, select, textarea');
