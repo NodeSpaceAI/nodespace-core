@@ -147,6 +147,13 @@ export class NavigationService {
       return nodeId;
     }
 
+    // Custom schema entity nodes (UUID node types) are root-level entities —
+    // always open them directly, not their parent (e.g. date node)
+    const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (targetNode && UUID_REGEX.test(targetNode.nodeType)) {
+      return nodeId;
+    }
+
     let currentId = nodeId;
     const visited = new Set<string>();
 

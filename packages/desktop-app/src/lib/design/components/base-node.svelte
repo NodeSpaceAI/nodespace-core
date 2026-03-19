@@ -68,7 +68,8 @@
     children = [],
     editableConfig = {},
     metadata = {},
-    customViewContent
+    customViewContent,
+    readonly = false
   }: {
     nodeId: string;
     nodeType?: string;
@@ -79,6 +80,7 @@
     editableConfig?: TextareaControllerConfig;
     metadata?: Record<string, unknown>;
     customViewContent?: import('svelte').Snippet; // Optional override for view mode rendering
+    readonly?: boolean; // When true, prevents entering edit mode on click (e.g. title_template nodes)
   } = $props();
 
   // Get paneId from Svelte context (set by PaneContent)
@@ -866,6 +868,7 @@
       id="view__{paneId}__{nodeId}"
       tabindex="0"
       onclick={(e) => {
+        if (readonly) return; // title_template nodes are not editable inline
         // Capture click coordinates
         const clickX = e.pageX;
         const clickY = e.pageY;
@@ -901,6 +904,7 @@
         focusManager.focusNodeAtPosition(nodeId, editPosition, paneId);
       }}
       onkeydown={(e) => {
+        if (readonly) return; // title_template nodes are not editable inline
         if (e.key === 'Enter' || e.key === ' ') {
           // Use FocusManager instead of directly setting isEditing
           focusManager.setEditingNode(nodeId, paneId);

@@ -47,7 +47,6 @@
 <script lang="ts">
   import { createEventDispatcher, getContext, onDestroy } from 'svelte';
   import BaseNode from './base-node.svelte';
-  import SchemaPropertyForm from '$lib/components/property-forms/schema-property-form.svelte';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { DEFAULT_PANE_ID } from '$lib/stores/navigation';
@@ -78,48 +77,24 @@
   let content = $derived(sharedNode?.content ?? propsContent);
   let children = $derived(childIds ?? propsChildren);
 
-  // Schema state
+  // Schema state — loaded for titleTemplate and entity name display
   let schema = $state<SchemaNode | null>(null);
-  let schemaError = $state<string | null>(null);
-  let isLoadingSchema = $state(true);
 
   // Load schema for this entity type
   $effect(() => {
     async function loadSchema() {
-      if (!nodeType) return; // Guard against undefined nodeType
-
-      isLoadingSchema = true;
-      schemaError = null;
-
+      if (!nodeType) return;
       try {
         const schemaNode = await backendAdapter.getSchema(nodeType);
         if (isSchemaNode(schemaNode)) {
           schema = schemaNode;
-        } else {
-          schemaError = `Invalid schema for type: ${nodeType}`;
-          schema = null;
         }
       } catch (error) {
         log.error(`Failed to load schema for ${nodeType}:`, error);
-        schemaError = error instanceof Error ? error.message : 'Failed to load schema';
-        schema = null;
-      } finally {
-        isLoadingSchema = false;
       }
     }
-
     loadSchema();
   });
-
-  // Get schema description directly from typed field
-  const schemaDescription = $derived(schema?.description ?? '');
-
-  // Get custom icon from schema metadata (if available)
-  // Note: Custom icon support would require extending SchemaNode with metadata
-  // For now, we use emoji in the schema description (e.g., "💰 Invoice")
-  const customIcon = $derived(extractIconFromDescription(schemaDescription));
-  const entityName = $derived(schemaDescription || nodeType);
-  const showEntityHeader = true; // Always show entity header for custom entities
 
   // title_template support: when the schema has a template, content is read-only
   // and the title is derived from schema properties via compute_title()
@@ -129,8 +104,10 @@
   const nodeTitle = $derived(sharedNode?.title ?? '');
   const displayContent = $derived.by(() => {
     if (!hasTitleTemplate) return null; // null = use normal editable content
-    if (nodeTitle && nodeTitle !== 'Untitled') return nodeTitle;
-    // Title not yet computed — show raw template as placeholder hint
+    // Only show computed title if it contains at least one alphanumeric character
+    // (guards against empty interpolations like "()" when no properties are filled yet)
+    if (nodeTitle && /\w/.test(nodeTitle)) return nodeTitle;
+    // Title not yet meaningful — show raw template as placeholder hint
     return schema!.titleTemplate!;
   });
 
@@ -176,14 +153,6 @@
     }
   }
 
-  // Extract emoji icon from description if present (e.g., "💰 Invoice" → "💰")
-  function extractIconFromDescription(description: string): string | null {
-    if (!description) return null;
-    // Match emoji at the start of the description
-    const emojiMatch = description.match(/^([\p{Emoji}])\s/u);
-    return emojiMatch ? emojiMatch[1] : null;
-  }
-
   function forwardEvent<T>(eventName: string) {
     return (event: CustomEvent<T>) => dispatch(eventName, event.detail);
   }
@@ -197,16 +166,6 @@
   role="group"
   aria-label="Custom entity node"
 >
-  <!-- Entity Header (shows entity type name and optional icon) -->
-  {#if showEntityHeader && schema && !isLoadingSchema && entityName}
-    <div class="entity-header">
-      {#if customIcon}
-        <span class="entity-icon">{customIcon}</span>
-      {/if}
-      <span class="entity-type-name">{entityName}</span>
-    </div>
-  {/if}
-
   <!-- Base Content Editing -->
   <!-- When schema has title_template, pass a read-only snippet for view mode;
        otherwise BaseNode uses its default editable view. -->
@@ -215,6 +174,7 @@
     bind:nodeType
     bind:content
     {children}
+    readonly={hasTitleTemplate}
     customViewContent={hasTitleTemplate && displayContent != null ? titleTemplateSnippet : undefined}
     on:createNewNode={forwardEvent('createNewNode')}
     on:contentChanged={(e) => {
@@ -233,21 +193,6 @@
     on:nodeTypeChanged={forwardEvent('nodeTypeChanged')}
   />
 
-  <!-- Schema Properties (if schema exists and loaded) -->
-  {#if isLoadingSchema}
-    <div class="schema-loading">
-      <span class="text-sm text-muted-foreground">Loading properties...</span>
-    </div>
-  {:else if schemaError}
-    <div class="schema-error">
-      <span class="text-sm text-destructive">
-        ⚠️ Schema not found for "{nodeType}".
-      </span>
-    </div>
-  {:else if schema && nodeType}
-    <SchemaPropertyForm {nodeId} {nodeType} />
-  {/if}
-
   <!-- Open button (appears on hover, like task-node) -->
   <button
     class="entity-open-button"
@@ -263,50 +208,13 @@
 {#snippet titleTemplateSnippet()}
   <span
     class="title-template-display"
-    class:title-template-placeholder={!nodeTitle || nodeTitle === 'Untitled'}
+    class:title-template-placeholder={!nodeTitle || !/\w/.test(nodeTitle)}
   >{displayContent}</span>
 {/snippet}
 
 <style>
   .custom-entity-node {
     position: relative;
-    border-left: 3px solid var(--custom-entity-accent, #6366f1);
-    padding-left: 0.75rem;
-  }
-
-  .entity-header {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
-    padding: 0.25rem 0.5rem;
-    background: var(--muted);
-    border-radius: 0.25rem;
-    font-size: 0.875rem;
-    font-weight: 500;
-  }
-
-  .entity-icon {
-    font-size: 1rem;
-  }
-
-  .entity-type-name {
-    color: var(--muted-foreground);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-size: 0.75rem;
-  }
-
-  .schema-loading,
-  .schema-error {
-    padding: 0.5rem;
-    text-align: center;
-  }
-
-  .schema-error {
-    background: var(--destructive-foreground);
-    border-radius: 0.25rem;
-    margin-top: 0.5rem;
   }
 
   /* title_template display styles */
