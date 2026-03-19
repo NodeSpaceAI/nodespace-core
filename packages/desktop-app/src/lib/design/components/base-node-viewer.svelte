@@ -1626,6 +1626,11 @@
                   } else {
                     log.debug('Updating node type for real node');
                     // For real nodes, update node type with full persistence
+                    // TODO #978: Custom entity slash commands don't properly convert node type
+                    // when fired on a real (non-placeholder) node. The fix requires:
+                    // 1. Eagerly loading CustomEntityNode into the plugin registry cache
+                    // 2. Using sharedNodeStore.setNode() instead of nodeManager.updateNodeType()
+                    //    to ensure the nodeType change is properly persisted and re-rendered
                     nodeManager.updateNodeType(node.id, e.detail.nodeType);
                   }
                 }}
@@ -1864,6 +1869,11 @@
                   } else {
                     log.debug('Updating node type for real node');
                     // For real nodes, update node type with full persistence
+                    // TODO #978: Custom entity slash commands don't properly convert node type
+                    // when fired on a real (non-placeholder) node. The fix requires:
+                    // 1. Eagerly loading CustomEntityNode into the plugin registry cache
+                    // 2. Using sharedNodeStore.setNode() instead of nodeManager.updateNodeType()
+                    //    to ensure the nodeType change is properly persisted and re-rendered
                     nodeManager.updateNodeType(node.id, e.detail.nodeType);
                   }
                 }}

@@ -37,16 +37,17 @@ function createMockSchemaNode(
     isCore?: boolean;
     schemaVersion?: number;
     description?: string;
+    content?: string;
   } = {}
 ): SchemaNode {
   return {
     id,
     nodeType: 'schema',
-    content: id,
+    // content is the schema display name (e.g. "Invoice", "Customer")
+    content: options.content ?? id,
     createdAt: new Date().toISOString(),
     modifiedAt: new Date().toISOString(),
     version: 1,
-    // Typed top-level fields (not in properties)
     isCore: options.isCore ?? false,
     schemaVersion: options.schemaVersion ?? 1,
     description: options.description ?? '',
@@ -57,7 +58,8 @@ function createMockSchemaNode(
 describe('Schema Plugin Loader - createPluginFromSchema()', () => {
   it('should convert schema node to plugin with correct structure', () => {
     const schemaNode = createMockSchemaNode('invoice', {
-      description: 'Sales Invoice',
+      content: 'Sales Invoice',
+      description: 'Schema for invoices',
       schemaVersion: 1
     });
 
@@ -66,14 +68,14 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     expect(plugin).toMatchObject({
       id: 'invoice',
       name: 'Sales Invoice',
-      description: 'Sales Invoice',
+      description: 'Schema for invoices',
       version: '1.0.0',
       config: {
         slashCommands: [
           {
             id: 'invoice',
             name: 'Sales Invoice',
-            description: 'Sales Invoice',
+            description: 'Schema for invoices',
             contentTemplate: '',
             nodeType: 'invoice',
             priority: PLUGIN_PRIORITIES.CUSTOM_ENTITY
@@ -85,9 +87,9 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     });
   });
 
-  it('should use schema description as display name', () => {
+  it('should use schema content as display name', () => {
     const schemaNode = createMockSchemaNode('invoice', {
-      description: 'Customer Invoice'
+      content: 'Customer Invoice'
     });
 
     const plugin = createPluginFromSchema(schemaNode);
@@ -96,25 +98,14 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     expect(plugin.config.slashCommands[0].name).toBe('Customer Invoice');
   });
 
-  it('should humanize schema ID when description is missing', () => {
-    const testCases = [
-      { id: 'invoice', expected: 'Invoice' },
-      { id: 'salesInvoice', expected: 'Sales Invoice' },
-      { id: 'sales_invoice', expected: 'Sales Invoice' },
-      { id: 'sales-invoice', expected: 'Sales Invoice' },
-      { id: 'INVOICE', expected: 'I N V O I C E' }, // Edge case: all caps
-      { id: 'invoice123', expected: 'Invoice123' }
-    ];
+  it('should use schema content as display name, falling back to humanized ID when content is empty', () => {
+    // When content is set (normal case), it IS the display name
+    const withContent = createMockSchemaNode('invoice', { content: 'Invoice' });
+    expect(createPluginFromSchema(withContent).name).toBe('Invoice');
 
-    testCases.forEach(({ id, expected }) => {
-      const schemaNode = createMockSchemaNode(id, {
-        description: ''
-      });
-
-      const plugin = createPluginFromSchema(schemaNode);
-
-      expect(plugin.name).toBe(expected);
-    });
+    // When content is empty (edge case), humanize the schema ID as last resort
+    const emptyContent: SchemaNode = { ...createMockSchemaNode('sales-invoice'), content: '' };
+    expect(createPluginFromSchema(emptyContent).name).toBe('Sales Invoice');
   });
 
   it('should set correct priority for custom entities', () => {

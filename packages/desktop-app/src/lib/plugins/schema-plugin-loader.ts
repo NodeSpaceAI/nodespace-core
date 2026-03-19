@@ -111,12 +111,12 @@ function humanizeSchemaId(id: string): string {
  */
 export function createPluginFromSchema(schema: SchemaNode): PluginDefinition {
   const schemaId = schema.id;
-  // Access typed fields directly (no helpers needed)
-  const description = schema.description;
   const version = schema.schemaVersion;
 
-  // Extract display name: description > schema content (name) > humanize ID as last resort
-  const displayName = description || schema.content || humanizeSchemaId(schemaId);
+  // Display name comes from schema content (the schema's name, e.g. "Customer").
+  // description is for human-readable purpose/context, not the display name.
+  const displayName = schema.content || humanizeSchemaId(schemaId);
+  const description = schema.description;
 
   return {
     id: schemaId,
