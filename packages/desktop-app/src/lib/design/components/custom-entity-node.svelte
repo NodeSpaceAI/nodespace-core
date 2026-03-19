@@ -113,6 +113,9 @@
     return evaluateSummaryTemplate(template, fieldValues, schema.fields);
   });
 
+  // Schema display name for the type badge
+  const schemaDisplayName = $derived(schema?.description || schema?.content || nodeType || '');
+
   // title_template support: when the schema has a template, content is read-only
   // and the title is derived from schema properties via compute_title()
   const hasTitleTemplate = $derived(schema?.titleTemplate != null);
@@ -224,6 +227,13 @@
     <span class="entity-property-summary">{propertySummary}</span>
   {/if}
 
+  <!-- Type badge (always visible, right of content before open button) -->
+  {#if !hasTitleTemplate && schemaDisplayName}
+    <span class="entity-type-badge" aria-label="Entity type: {schemaDisplayName}">
+      {schemaDisplayName}
+    </span>
+  {/if}
+
   <!-- Open button (appears on hover, like task-node) -->
   <button
     class="entity-open-button"
@@ -240,7 +250,7 @@
   <span
     class="title-template-display"
     class:title-template-placeholder={!nodeTitle || !/\w/.test(nodeTitle)}
-  >{displayContent}</span>
+  >{displayContent}</span>{#if schemaDisplayName}<span class="entity-type-badge entity-type-badge--inline">{schemaDisplayName}</span>{/if}
 {/snippet}
 
 <style>
@@ -266,6 +276,31 @@
     color: hsl(var(--muted-foreground));
     line-height: 1.4;
     margin-top: 0.125rem;
+  }
+
+  /* Type badge — absolute position, right of content before open button */
+  .entity-type-badge {
+    position: absolute;
+    right: 3rem; /* leaves room for open button (~2.5rem wide at right: 0.25rem) */
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 0.7rem;
+    color: hsl(var(--muted-foreground));
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.2rem;
+    padding: 0.05rem 0.3rem;
+    white-space: nowrap;
+    pointer-events: none;
+    background: hsl(var(--background));
+  }
+
+  /* Inline variant inside titleTemplate snippet — flows with text */
+  .entity-type-badge--inline {
+    position: static;
+    transform: none;
+    display: inline-block;
+    margin-left: 0.4rem;
+    vertical-align: middle;
   }
 
   /* Open button (top-right, appears on hover) - matches task-node pattern */
