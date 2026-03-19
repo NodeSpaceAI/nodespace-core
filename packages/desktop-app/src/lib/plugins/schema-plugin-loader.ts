@@ -312,20 +312,6 @@ export async function initializeSchemaPluginSystem(): Promise<InitializationResu
       customSchemas.map((node) => registerSchemaPlugin(node.id))
     );
 
-    // TODO: Add Tauri event listeners for schema:created and schema:deleted
-    // This will be implemented in a future iteration when Tauri events are added
-    //
-    // await listen<SchemaCreatedEvent>('schema:created', async (event) => {
-    //   const { schema_id, is_core } = event.payload;
-    //   if (!is_core) {
-    //     await registerSchemaPlugin(schema_id);
-    //   }
-    // });
-    //
-    // await listen<SchemaDeletedEvent>('schema:deleted', (event) => {
-    //   unregisterSchemaPlugin(event.payload.schema_id);
-    // });
-
     log.info(
       `Schema plugin system initialized (${customSchemas.length} custom entities registered)`
     );

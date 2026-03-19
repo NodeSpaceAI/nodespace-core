@@ -28,6 +28,7 @@ import { nodeToTaskNode } from '$lib/types/task-node';
 import { backendAdapter } from './backend-adapter';
 import { createLogger } from '$lib/utils/logger';
 import { scheduleCollectionRefresh, scheduleSchemaRefresh } from '$lib/utils/collection-refresh';
+import { registerSchemaPlugin, unregisterSchemaPlugin } from '$lib/plugins/schema-plugin-loader';
 
 const log = createLogger('BrowserSyncService');
 
@@ -236,6 +237,9 @@ class BrowserSyncService {
         // If a schema node is created, refresh the schema types sidebar
         if (event.nodeType === 'schema') {
           scheduleSchemaRefresh();
+          registerSchemaPlugin(event.nodeId).catch((err) =>
+            log.error('Failed to register schema plugin:', err)
+          );
         }
 
         // Issue #724: Fetch full node data only if we need to display it
@@ -262,6 +266,7 @@ class BrowserSyncService {
         // Issue #832: We don't know if deleted node was a collection without fetching,
         // but if we have it cached in collectionsData, we should refresh
         // For simplicity, we rely on the UI to handle stale data gracefully
+        unregisterSchemaPlugin(event.nodeId);
         break;
 
       // ======================================================================
