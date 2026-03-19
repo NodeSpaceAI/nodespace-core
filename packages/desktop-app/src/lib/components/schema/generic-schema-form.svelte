@@ -122,7 +122,7 @@
       <Collapsible.Trigger
         class="flex w-full items-center justify-between py-3 font-medium transition-all hover:opacity-80"
       >
-        <span class="text-sm font-medium">{schema.content || schema.id}</span>
+        <span class="text-sm font-medium"></span>
         <div class="flex items-center gap-2">
           <span class="text-sm text-muted-foreground">
             {fieldStats().filled}/{fieldStats().total} fields

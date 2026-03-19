@@ -852,7 +852,7 @@
   </div>
 
   <!-- Content area: textarea for editing, div for viewing -->
-  {#if isEditing}
+  {#if isEditing && !readonly}
     <textarea
       bind:this={textareaElement}
       use:positionCursor={{ data: cursorPositionData, controller }}
@@ -865,6 +865,7 @@
     <div
       bind:this={viewElement}
       class="node__content node__content--view"
+      class:node__content--readonly={readonly}
       id="view__{paneId}__{nodeId}"
       tabindex="0"
       onclick={(e) => {
@@ -1073,6 +1074,11 @@
     cursor: text;
     /* Override flex-basis to take full available width, not just content size */
     flex: 1 1 100%;
+  }
+
+  .node__content--readonly {
+    cursor: default;
+    user-select: text;
   }
 
   .node__content:empty,

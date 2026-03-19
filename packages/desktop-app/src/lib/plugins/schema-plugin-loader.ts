@@ -115,8 +115,8 @@ export function createPluginFromSchema(schema: SchemaNode): PluginDefinition {
   const description = schema.description;
   const version = schema.schemaVersion;
 
-  // Extract display name from schema description or humanize schema ID as fallback
-  const displayName = description || humanizeSchemaId(schemaId);
+  // Extract display name: description > schema content (name) > humanize ID as last resort
+  const displayName = description || schema.content || humanizeSchemaId(schemaId);
 
   return {
     id: schemaId,
