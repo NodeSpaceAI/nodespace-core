@@ -1014,8 +1014,11 @@
       const candidateNode = currentVisibleNodes[targetIndex];
 
       // Check if this node accepts navigation (skip if it doesn't)
-      // For now, assume all nodes accept navigation (will be refined per node type)
-      const acceptsNavigation = true; // candidateNode.navigationMethods?.canAcceptNavigation() ?? true;
+      // Custom schema entity nodes (UUID nodeType) with a titleTemplate are read-only inline
+      // — skip them so arrow navigation passes through to the next editable node
+      const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const isCustomEntity = UUID_REGEX.test(candidateNode.nodeType);
+      const acceptsNavigation = !isCustomEntity;
 
       if (acceptsNavigation) {
         // Navigate using reactive approach (FocusManager)
