@@ -129,22 +129,21 @@ export function createPluginFromSchema(schema: SchemaNode): PluginDefinition {
           id: schemaId,
           name: displayName,
           description: description || `Create ${displayName}`,
-          // Use 'Untitled' only when titleTemplate is set (content is not the editable name).
-          // Without titleTemplate, leave blank so the node starts empty and editable like a task.
-          contentTemplate: schema.titleTemplate ? 'Untitled' : '',
+          // Always start with empty content — the viewer shows the raw titleTemplate as a
+          // faint placeholder hint when titleTemplate is set, and editable blank otherwise.
+          contentTemplate: '',
           nodeType: schemaId,
-          priority: PLUGIN_PRIORITIES.CUSTOM_ENTITY
+          priority: PLUGIN_PRIORITIES.CUSTOM_ENTITY,
+          hasTitleTemplate: !!schema.titleTemplate,
+          titleTemplate: schema.titleTemplate
         }
       ],
       canHaveChildren: true,
       canBeChild: true
-    },
-    node: {
-      // Use generic custom entity component for all custom types
-      lazyLoad: () => import('../design/components/custom-entity-node.svelte')
     }
-    // No custom viewer - falls back to BaseNodeViewer
-    // No custom reference component - falls back to BaseNodeReference
+    // No node component — custom entities render via BaseNode fallback.
+    // No custom viewer — falls back to BaseNodeViewer.
+    // No custom reference — falls back to BaseNodeReference.
   };
 }
 

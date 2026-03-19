@@ -172,6 +172,10 @@ export interface SlashCommandDefinition {
    * Example: For code-block with '```plaintext\n\n```', set to 13 to place cursor after first fence line
    */
   desiredCursorPosition?: number;
+  /** True if the schema has a titleTemplate — viewer shows template as faint hint instead of editable content */
+  hasTitleTemplate?: boolean;
+  /** The raw titleTemplate string (e.g. '{first_name} {last_name}') for placeholder display */
+  titleTemplate?: string;
 }
 
 // Node type configuration

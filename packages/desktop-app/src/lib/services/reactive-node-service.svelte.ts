@@ -549,9 +549,9 @@ export function createReactiveNodeService(events: NodeManagerEvents) {
     const node = sharedNodeStore.getNode(nodeId);
     if (!node) return;
 
-    // CRITICAL: Include content with nodeType update to ensure backend persistence works
-    // Some backends may not support updating nodeType alone
-    const updatePayload: Partial<Node> = { nodeType, content: node.content };
+    // Only send nodeType — don't include content to avoid cancelling
+    // a pending content update from insertSlashCommand (contentTemplate)
+    const updatePayload: Partial<Node> = { nodeType };
 
     // Note: Schema defaults extraction was removed in Issue #690 simplification
     // The backend handles defaults via SchemaNode if needed

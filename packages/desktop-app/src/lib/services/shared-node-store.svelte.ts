@@ -867,6 +867,15 @@ export class SharedNodeStore {
           // not the stale state captured when persist() was called.
           // This prevents race conditions where rapid typing causes earlier states to overwrite later ones.
           const changedFields = Object.keys(changes);
+          // Capture non-content fields (e.g. nodeType) at schedule time.
+          // Content is intentionally re-read at execute time to get latest typed value,
+          // but nodeType must be captured now — SSE can overwrite the store before execution.
+          const capturedNonContentFields: Record<string, unknown> = {};
+          for (const field of changedFields) {
+            if (field !== 'content') {
+              capturedNonContentFields[field] = (changes as unknown as Record<string, unknown>)[field];
+            }
+          }
           const handle = PersistenceCoordinator.getInstance().persist(
             nodeId,
             async () => {
@@ -900,12 +909,11 @@ export class SharedNodeStore {
                     }
                   }
 
-                  // IMPORTANT: For UPDATE, only send the changed fields with CURRENT values
-                  // The backend expects NodeUpdate which is a partial update of specific fields
-                  // Build updatePayload from current node state for the fields that were marked as changed
-                  const updatePayload: Record<string, unknown> = {};
-                  for (const field of changedFields) {
-                    updatePayload[field] = (currentNode as unknown as Record<string, unknown>)[field];
+                  // Build updatePayload: content from current store state (latest typed value),
+                  // all other fields from captured values at schedule time (immune to SSE overwrites).
+                  const updatePayload: Record<string, unknown> = { ...capturedNonContentFields };
+                  if (changedFields.includes('content')) {
+                    updatePayload['content'] = currentNode.content;
                   }
 
                   // Get current node version for optimistic concurrency control
@@ -1720,9 +1728,18 @@ export class SharedNodeStore {
 
       // OPTIMIZATION: Add parent node itself to the store
       // This eliminates the need for a separate getNode() call in base-node-viewer
+      // CRITICAL: Only add parent if not already in store to avoid overwriting pending
+      // optimistic updates. If the parent was recently modified (e.g., slash command type
+      // conversion), batchSetNodes with a database source would overwrite the in-memory
+      // version with stale data, causing the subsequent persist to send wrong content.
+      // Example: /customer slash command sets content='Untitled', but loadChildrenTree
+      // immediately overwrites it with content='/customer' from the database before the
+      // 500ms debounce persist fires.
       const { children: _children, ...parentNodeFields } = tree;
       const parentNode: Node = parentNodeFields as Node;
-      allNodes.push(parentNode);
+      if (!this.nodes.has(parentNode.id)) {
+        allNodes.push(parentNode);
+      }
 
       // Helper to recursively process NodeWithChildren and collect nodes + edges
       // OPTIMIZED: Collects all nodes first, then batch adds them

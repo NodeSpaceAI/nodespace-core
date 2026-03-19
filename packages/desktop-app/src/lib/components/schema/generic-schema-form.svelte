@@ -33,9 +33,22 @@
 
   const log = createLogger('GenericSchemaForm');
 
-  let { nodeId, schema }: { nodeId: string; schema: SchemaNode } = $props();
+  let { nodeId, schema, autoOpen = false }: { nodeId: string; schema: SchemaNode; autoOpen?: boolean } = $props();
 
-  let isOpen = $state(false);
+  let isOpen = $state(autoOpen);
+  let formEl = $state<HTMLElement | null>(null);
+  let autoFocusDone = false;
+
+  $effect(() => {
+    if (autoOpen && isOpen && !autoFocusDone) {
+      autoFocusDone = true;
+      // Delay to allow Collapsible animation to complete before querying DOM
+      setTimeout(() => {
+        const first = formEl?.querySelector<HTMLElement>('input, select, textarea');
+        first?.focus();
+      }, 150);
+    }
+  });
   let node = $state<Node | null>(null);
 
   $effect(() => {
@@ -145,7 +158,7 @@
       </Collapsible.Trigger>
 
       <Collapsible.Content class="pb-4">
-        <div class="grid grid-cols-2 gap-4">
+        <div class="grid grid-cols-2 gap-4" bind:this={formEl}>
           {#each schema.fields as field (field.name)}
             {@const fieldId = `generic-${nodeId}-${field.name}`}
             <div class="space-y-2">

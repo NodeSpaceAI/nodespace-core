@@ -130,15 +130,14 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     expect(plugin.version).toBe('5.0.0');
   });
 
-  it('should include lazy-loaded CustomEntityNode component', () => {
+  it('should not include a node component (custom entities use BaseNode fallback)', () => {
     const schemaNode = createMockSchemaNode('invoice', {
       description: 'Invoice'
     });
 
     const plugin = createPluginFromSchema(schemaNode);
 
-    expect(plugin.node).toBeDefined();
-    expect(plugin.node?.lazyLoad).toBeInstanceOf(Function);
+    expect(plugin.node).toBeUndefined();
   });
 
   it('should set contentTemplate to empty string when no titleTemplate (node name is editable)', () => {
@@ -147,13 +146,13 @@ describe('Schema Plugin Loader - createPluginFromSchema()', () => {
     expect(plugin.config.slashCommands[0].contentTemplate).toBe('');
   });
 
-  it('should set contentTemplate to Untitled when titleTemplate is set (content is not the name)', () => {
+  it('should set contentTemplate to empty string when titleTemplate is set (viewer shows template as hint)', () => {
     const schemaNode: SchemaNode = {
       ...createMockSchemaNode('customer', { description: 'Customer' }),
       titleTemplate: '{first_name} {last_name}'
     };
     const plugin = createPluginFromSchema(schemaNode);
-    expect(plugin.config.slashCommands[0].contentTemplate).toBe('Untitled');
+    expect(plugin.config.slashCommands[0].contentTemplate).toBe('');
   });
 
   it('should set nodeType to schema ID for slash command creation', () => {
