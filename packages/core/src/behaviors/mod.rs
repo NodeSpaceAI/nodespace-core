@@ -1097,8 +1097,7 @@ impl SchemaNodeBehavior {
             validate_schema_field(field)?;
         }
 
-        let defined_fields: HashSet<&str> =
-            schema.fields.iter().map(|f| f.name.as_str()).collect();
+        let defined_fields: HashSet<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
 
         // Validate title_template syntax: every '{' must have a matching '}' and a non-empty field name
         if let Some(template) = &schema.title_template {
@@ -3102,6 +3101,67 @@ mod tests {
             behavior.validate_schema_node(&schema).is_ok(),
             "title_template referencing defined fields should pass validation"
         );
+    }
+
+    #[test]
+    fn test_properties_header_summary_template_valid() {
+        use crate::models::SchemaNode;
+        let behavior = SchemaNodeBehavior;
+
+        // propertiesHeaderSummaryTemplate referencing defined fields should pass
+        let node = Node::new(
+            "schema".to_string(),
+            "Customer".to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": "Customer schema",
+                "fields": [
+                    {"name": "status", "type": "enum", "protection": "user", "indexed": false},
+                    {"name": "company", "type": "string", "protection": "user", "indexed": false}
+                ],
+                "relationships": [],
+                "propertiesHeaderSummaryTemplate": "{status} · {company}"
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        assert!(
+            behavior.validate_schema_node(&schema).is_ok(),
+            "Valid propertiesHeaderSummaryTemplate should pass validation"
+        );
+    }
+
+    #[test]
+    fn test_properties_header_summary_template_undefined_field_rejected() {
+        use crate::models::SchemaNode;
+        let behavior = SchemaNodeBehavior;
+
+        // propertiesHeaderSummaryTemplate references a field not in schema.fields
+        let node = Node::new(
+            "schema".to_string(),
+            "Customer".to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": "Customer schema",
+                "fields": [
+                    {"name": "status", "type": "enum", "protection": "user", "indexed": false}
+                ],
+                "relationships": [],
+                "propertiesHeaderSummaryTemplate": "{status} · {nonexistent}"
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        let result = behavior.validate_schema_node(&schema);
+        assert!(
+            result.is_err(),
+            "propertiesHeaderSummaryTemplate referencing undefined field should fail"
+        );
+        assert!(matches!(
+            result,
+            Err(NodeValidationError::InvalidProperties(ref msg))
+                if msg.contains("nonexistent")
+        ));
     }
 
     // =========================================================================

@@ -107,8 +107,10 @@ pub struct SchemaNode {
 
     /// Optional template for rendering a compact property summary inline below the node title.
     ///
-    /// Uses the same `{field_name}` syntax as `title_template`. Evaluated client-side only —
-    /// never persisted. Enum values resolve to labels; dates are human-formatted.
+    /// Uses the same `{field_name}` syntax as `title_template`. The template string itself
+    /// is persisted in the schema's properties JSON, but the **evaluation result** is
+    /// computed client-side only and never written back to any node.
+    /// Enum values resolve to labels; dates are human-formatted.
     /// Example: `"{status} · {company}"` → `"Active · Acme Corp"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub properties_header_summary_template: Option<String>,
