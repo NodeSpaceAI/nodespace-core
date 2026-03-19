@@ -213,54 +213,12 @@ export async function registerSchemaPlugin(schemaId: string): Promise<void> {
  */
 export function unregisterSchemaPlugin(schemaId: string): void {
   if (!pluginRegistry.hasPlugin(schemaId)) {
-    log.warn(`Attempted to unregister non-existent plugin: ${schemaId}`);
+    log.debug(`Skipping unregister, plugin not found: ${schemaId}`);
     return;
   }
 
   pluginRegistry.unregister(schemaId);
   log.info(`Unregistered plugin: ${schemaId}`);
-}
-
-/**
- * Register all existing custom entity schemas on app startup
- *
- * Queries for all schema nodes and registers non-core types
- * as plugins. This ensures existing custom entities are available on launch.
- *
- * Note: This function is not directly exported, but is used internally by
- * initializeSchemaPluginSystem() during app startup.
- *
- * @throws {Error} If schema fetching or registration fails
- *
- * @example
- * ```typescript
- * // Called internally during app initialization
- * await registerExistingSchemas();
- * // All custom entities now available in slash menu
- * ```
- */
-async function _registerExistingSchemas(): Promise<void> {
-  try {
-    log.debug('Registering existing custom entity schemas...');
-
-    const nodes = await backendAdapter.getAllSchemas();
-
-    // Filter to schema nodes that are not core types
-    // Access typed field directly (no helper needed)
-    const customSchemas = nodes.filter(
-      (node) => isSchemaNode(node) && !node.isCore
-    );
-
-    // Parallelize registration for better performance
-    await Promise.all(
-      customSchemas.map((node) => registerSchemaPlugin(node.id))
-    );
-
-    log.info(`Registered ${customSchemas.length} custom entity schemas`);
-  } catch (error) {
-    log.error('Failed to register existing schemas:', error);
-    throw error;
-  }
 }
 
 /**
@@ -275,10 +233,12 @@ export interface InitializationResult {
 /**
  * Initialize schema plugin auto-registration system
  *
- * Sets up the complete auto-registration workflow:
- * 1. Registers all existing custom entity schemas on startup
- * 2. Listens for schema creation events (future: Tauri events)
- * 3. Listens for schema deletion events (future: Tauri events)
+ * Registers all existing custom entity schemas on startup so they are
+ * available in the slash command picker immediately on launch.
+ *
+ * Dynamic registration for schemas created/deleted at runtime is handled
+ * by BrowserSyncService and TauriSyncListener, which call
+ * registerSchemaPlugin / unregisterSchemaPlugin on domain events.
  *
  * Call this once during app startup in the root layout.
  *
@@ -310,20 +270,6 @@ export async function initializeSchemaPluginSystem(): Promise<InitializationResu
     await Promise.all(
       customSchemas.map((node) => registerSchemaPlugin(node.id))
     );
-
-    // TODO: Add Tauri event listeners for schema:created and schema:deleted
-    // This will be implemented in a future iteration when Tauri events are added
-    //
-    // await listen<SchemaCreatedEvent>('schema:created', async (event) => {
-    //   const { schema_id, is_core } = event.payload;
-    //   if (!is_core) {
-    //     await registerSchemaPlugin(schema_id);
-    //   }
-    // });
-    //
-    // await listen<SchemaDeletedEvent>('schema:deleted', (event) => {
-    //   unregisterSchemaPlugin(event.payload.schema_id);
-    // });
 
     log.info(
       `Schema plugin system initialized (${customSchemas.length} custom entities registered)`

@@ -30,6 +30,7 @@ import { nodeToTaskNode } from '$lib/types/task-node';
 import { backendAdapter } from './backend-adapter';
 import { createLogger } from '$lib/utils/logger';
 import { scheduleCollectionRefresh, scheduleSchemaRefresh } from '$lib/utils/collection-refresh';
+import { registerSchemaPlugin, unregisterSchemaPlugin } from '$lib/plugins/schema-plugin-loader';
 
 const log = createLogger('TauriSync');
 
@@ -105,6 +106,9 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       // If a schema node is created, refresh the schema types sidebar
       if (event.payload.nodeType === 'schema') {
         scheduleSchemaRefresh();
+        registerSchemaPlugin(event.payload.id).catch((err) =>
+          log.error('Failed to register schema plugin:', err)
+        );
       }
 
       // Fetch full node data since the node might be in the current view
@@ -129,6 +133,7 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       // but if we have it cached in collectionsData, we should refresh
       // For simplicity, we rely on the UI to handle stale data gracefully
       // A more robust solution would cache node types or include type in delete events
+      unregisterSchemaPlugin(event.payload.id);
     });
 
     // ========================================================================

@@ -104,6 +104,16 @@ pub struct SchemaNode {
     /// Missing or null fields are replaced with empty strings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title_template: Option<String>,
+
+    /// Optional template for rendering a compact property summary inline below the node title.
+    ///
+    /// Uses the same `{field_name}` syntax as `title_template`. The template string itself
+    /// is persisted in the schema's properties JSON, but the **evaluation result** is
+    /// computed client-side only and never written back to any node.
+    /// Enum values resolve to labels; dates are human-formatted.
+    /// Example: `"{status} · {company}"` → `"Active · Acme Corp"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub properties_header_summary_template: Option<String>,
 }
 
 fn default_version() -> i64 {
@@ -170,6 +180,12 @@ impl SchemaNode {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
+        let properties_header_summary_template = node
+            .properties
+            .get("propertiesHeaderSummaryTemplate")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
         Ok(Self {
             id: node.id,
             content: node.content,
@@ -182,6 +198,7 @@ impl SchemaNode {
             fields,
             relationships,
             title_template,
+            properties_header_summary_template,
         })
     }
 
@@ -199,6 +216,10 @@ impl SchemaNode {
 
         if let Some(template) = self.title_template {
             properties["titleTemplate"] = serde_json::Value::String(template);
+        }
+
+        if let Some(template) = self.properties_header_summary_template {
+            properties["propertiesHeaderSummaryTemplate"] = serde_json::Value::String(template);
         }
 
         Node {
