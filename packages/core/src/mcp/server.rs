@@ -50,14 +50,19 @@ pub struct McpServices {
 /// Server state tracking initialization status
 ///
 /// Uses Arc<AtomicBool> for thread-safe sharing across async tasks.
-/// The initialized flag must persist across requests in HTTP mode
-/// to maintain session state according to the MCP protocol.
 ///
-/// The MCP protocol requires:
+/// The MCP protocol requires a handshake before other methods are called:
 /// 1. Client sends `initialize` request
 /// 2. Server responds with capabilities
 /// 3. Client sends `initialized` notification
 /// 4. Only then can other methods be called
+///
+/// **Enforcement is transport-dependent** (see `transport` field):
+/// - **Stdio**: guard is enforced — client and server share a process lifetime and
+///   always perform the handshake together.
+/// - **HTTP**: guard is skipped — clients (e.g. Claude Desktop via `mcp-remote`) do
+///   the handshake once and do not redo it when the server restarts. Blocking them
+///   would require the user to restart their client on every server restart.
 struct ServerState {
     /// Whether the client has completed the initialization handshake
     initialized: Arc<AtomicBool>,
@@ -321,7 +326,11 @@ async fn handle_streamable_http_request(
         // Handle the request using shared state
         let response = handle_request(services.as_ref(), &state, request).await;
 
-        // Auto-initialize for HTTP transport after successful initialize request
+        // Record that the client completed the handshake.
+        // NOTE: the initialized flag is not checked for HTTP requests (the guard in
+        // handle_request is stdio-only), so this write does not gate any behavior.
+        // It is kept for observability (logging/debugging) and in case a future
+        // code path wants to query whether an initialize was ever received.
         if is_initialize && response.result.is_some() {
             state.initialized.store(true, Ordering::SeqCst);
             info!("✅ MCP session initialized (Streamable HTTP) - ready for operations");
@@ -498,7 +507,11 @@ async fn handle_http_mcp_request(
     // Handle the request using shared state
     let response = handle_request(services.as_ref(), &state, request).await;
 
-    // Auto-initialize for HTTP transport after successful initialize request
+    // Record that the client completed the handshake.
+    // NOTE: the initialized flag is not checked for HTTP requests (the guard in
+    // handle_request is stdio-only), so this write does not gate any behavior.
+    // It is kept for observability (logging/debugging) and in case a future
+    // code path wants to query whether an initialize was ever received.
     if is_initialize && response.result.is_some() {
         state.initialized.store(true, Ordering::SeqCst);
         info!("✅ MCP session initialized (HTTP mode) - ready for operations");
