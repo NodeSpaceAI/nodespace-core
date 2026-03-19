@@ -50,6 +50,11 @@ pub struct CreateSchemaParams {
     /// Example: `"{first_name} {last_name}"` for a customer schema.
     #[serde(default)]
     pub title_template: Option<String>,
+    /// Optional template for rendering a compact property summary inline below the node title.
+    /// Uses the same `{field_name}` syntax. Evaluated client-side only.
+    /// Example: `"{status} · {company}"` → `"Active · Acme Corp"`.
+    #[serde(default)]
+    pub properties_header_summary_template: Option<String>,
 }
 
 /// Additional constraints for schema creation
@@ -178,6 +183,9 @@ pub async fn handle_create_schema(
     if let Some(ref template) = params.title_template {
         properties["titleTemplate"] = serde_json::Value::String(template.clone());
     }
+    if let Some(ref template) = params.properties_header_summary_template {
+        properties["propertiesHeaderSummaryTemplate"] = serde_json::Value::String(template.clone());
+    }
 
     // Create schema node params
     let schema_node_params = CreateNodeParams {
@@ -265,6 +273,11 @@ pub struct UpdateSchemaParams {
     /// Example: `"{first_name} {last_name}"`
     #[serde(default)]
     pub title_template: Option<String>,
+    /// Set or update the properties header summary template. Pass `null` (absent) to leave unchanged.
+    /// Uses the same `{field_name}` syntax. Evaluated client-side only.
+    /// Example: `"{status} · {company}"`
+    #[serde(default)]
+    pub properties_header_summary_template: Option<String>,
 }
 
 /// Output for schema update operations
@@ -511,6 +524,11 @@ pub async fn handle_update_schema(
     // Resolve title_template: use new value if provided, otherwise keep existing
     let title_template = params.title_template.or(schema.title_template);
 
+    // Resolve properties_header_summary_template: use new value if provided, otherwise keep existing
+    let properties_header_summary_template = params
+        .properties_header_summary_template
+        .or(schema.properties_header_summary_template);
+
     // Build updated properties
     let mut properties = serde_json::json!({
         "isCore": schema.is_core,
@@ -521,6 +539,9 @@ pub async fn handle_update_schema(
     });
     if let Some(ref template) = title_template {
         properties["titleTemplate"] = serde_json::Value::String(template.clone());
+    }
+    if let Some(ref template) = properties_header_summary_template {
+        properties["propertiesHeaderSummaryTemplate"] = serde_json::Value::String(template.clone());
     }
 
     // Validate the updated schema before saving (update_node_unchecked bypasses the behavior

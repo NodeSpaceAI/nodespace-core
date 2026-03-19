@@ -141,6 +141,12 @@ export interface SchemaNode {
   /** Optional template for computing display title from properties, e.g. "{first_name} {last_name}".
    *  When set, content is read-only and title is interpolated from schema properties. */
   titleTemplate?: string;
+
+  /** Optional template for rendering a compact property summary inline below the node title.
+   *  Uses `{field_name}` syntax. Evaluated client-side only — never persisted.
+   *  Enum values resolve to labels; dates are human-formatted.
+   *  Example: `"{status} · {company}"` → `"Active · Acme Corp"`. */
+  propertiesHeaderSummaryTemplate?: string;
 }
 
 /**

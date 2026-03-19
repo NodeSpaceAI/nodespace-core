@@ -55,6 +55,7 @@
   import type { NodeComponentProps } from '$lib/types/node-viewers';
   import { type SchemaNode, isSchemaNode } from '$lib/types/schema-node';
   import { createLogger } from '$lib/utils/logger';
+  import { evaluateSummaryTemplate } from '$lib/utils/title-template';
 
   const log = createLogger('CustomEntityNode');
 
@@ -94,6 +95,22 @@
       }
     }
     loadSchema();
+  });
+
+  // propertiesHeaderSummaryTemplate: evaluated client-side from current property values
+  const propertySummary = $derived.by(() => {
+    const template = schema?.propertiesHeaderSummaryTemplate;
+    if (!template || !schema) return '';
+    const node = sharedNode;
+    if (!node) return '';
+    // Properties are namespaced under properties[nodeType][fieldName]
+    const props = node.properties as Record<string, unknown> | undefined;
+    const typeNamespace = nodeType ? props?.[nodeType] : undefined;
+    const fieldValues: Record<string, unknown> =
+      typeNamespace && typeof typeNamespace === 'object'
+        ? (typeNamespace as Record<string, unknown>)
+        : {};
+    return evaluateSummaryTemplate(template, fieldValues, schema.fields);
   });
 
   // title_template support: when the schema has a template, content is read-only
@@ -202,6 +219,11 @@
     on:nodeTypeChanged={forwardEvent('nodeTypeChanged')}
   />
 
+  <!-- Property summary line (propertiesHeaderSummaryTemplate) -->
+  {#if propertySummary}
+    <span class="entity-property-summary">{propertySummary}</span>
+  {/if}
+
   <!-- Open button (appears on hover, like task-node) -->
   <button
     class="entity-open-button"
@@ -235,6 +257,15 @@
     color: hsl(var(--muted-foreground));
     font-style: italic;
     opacity: 0.7;
+  }
+
+  /* Compact property summary below the title */
+  .entity-property-summary {
+    display: block;
+    font-size: 0.75rem;
+    color: hsl(var(--muted-foreground));
+    line-height: 1.4;
+    margin-top: 0.125rem;
   }
 
   /* Open button (top-right, appears on hover) - matches task-node pattern */

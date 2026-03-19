@@ -1005,6 +1005,52 @@ fn validate_schema_field(field: &SchemaField) -> Result<(), NodeValidationError>
     Ok(())
 }
 
+/// Validate `{token}` syntax in a template string against a set of defined field names.
+///
+/// Every `{field_name}` token must:
+/// - Have a matching closing `}`
+/// - Not be empty (`{}` is invalid)
+/// - Reference a field that exists in `defined_fields`
+fn validate_template_tokens(
+    template: &str,
+    defined_fields: &HashSet<&str>,
+    template_field: &str,
+) -> Result<(), NodeValidationError> {
+    let bytes = template.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            match bytes[i + 1..].iter().position(|&c| c == b'}') {
+                None => {
+                    return Err(NodeValidationError::InvalidProperties(format!(
+                        "{} contains an unclosed '{{' placeholder",
+                        template_field
+                    )));
+                }
+                Some(end) => {
+                    let field_name = &template[i + 1..i + 1 + end];
+                    if field_name.is_empty() {
+                        return Err(NodeValidationError::InvalidProperties(format!(
+                            "{} contains an empty '{{}}' placeholder",
+                            template_field
+                        )));
+                    }
+                    if !defined_fields.contains(field_name) {
+                        return Err(NodeValidationError::InvalidProperties(format!(
+                            "{} references undefined field '{}' — add it to schema.fields",
+                            template_field, field_name
+                        )));
+                    }
+                    i += 1 + end + 1; // skip past '}'
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    Ok(())
+}
+
 impl SchemaNodeBehavior {
     /// Validate a strongly-typed SchemaNode directly
     ///
@@ -1051,42 +1097,20 @@ impl SchemaNodeBehavior {
             validate_schema_field(field)?;
         }
 
+        let defined_fields: HashSet<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+
         // Validate title_template syntax: every '{' must have a matching '}' and a non-empty field name
         if let Some(template) = &schema.title_template {
-            let defined_fields: HashSet<&str> =
-                schema.fields.iter().map(|f| f.name.as_str()).collect();
-            let bytes = template.as_bytes();
-            let mut i = 0;
-            while i < bytes.len() {
-                if bytes[i] == b'{' {
-                    // Find matching '}'
-                    match bytes[i + 1..].iter().position(|&c| c == b'}') {
-                        None => {
-                            return Err(NodeValidationError::InvalidProperties(
-                                "title_template contains an unclosed '{' placeholder".to_string(),
-                            ));
-                        }
-                        Some(end) => {
-                            let field_name = &template[i + 1..i + 1 + end];
-                            if field_name.is_empty() {
-                                return Err(NodeValidationError::InvalidProperties(
-                                    "title_template contains an empty '{}' placeholder".to_string(),
-                                ));
-                            }
-                            // Cross-check: token must reference a defined field
-                            if !defined_fields.contains(field_name) {
-                                return Err(NodeValidationError::InvalidProperties(format!(
-                                    "title_template references undefined field '{}' — add it to schema.fields",
-                                    field_name
-                                )));
-                            }
-                            i += 1 + end + 1; // skip past '}'
-                            continue;
-                        }
-                    }
-                }
-                i += 1;
-            }
+            validate_template_tokens(template, &defined_fields, "title_template")?;
+        }
+
+        // Validate properties_header_summary_template with the same rules
+        if let Some(template) = &schema.properties_header_summary_template {
+            validate_template_tokens(
+                template,
+                &defined_fields,
+                "properties_header_summary_template",
+            )?;
         }
 
         Ok(())
@@ -3077,6 +3101,67 @@ mod tests {
             behavior.validate_schema_node(&schema).is_ok(),
             "title_template referencing defined fields should pass validation"
         );
+    }
+
+    #[test]
+    fn test_properties_header_summary_template_valid() {
+        use crate::models::SchemaNode;
+        let behavior = SchemaNodeBehavior;
+
+        // propertiesHeaderSummaryTemplate referencing defined fields should pass
+        let node = Node::new(
+            "schema".to_string(),
+            "Customer".to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": "Customer schema",
+                "fields": [
+                    {"name": "status", "type": "enum", "protection": "user", "indexed": false},
+                    {"name": "company", "type": "string", "protection": "user", "indexed": false}
+                ],
+                "relationships": [],
+                "propertiesHeaderSummaryTemplate": "{status} · {company}"
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        assert!(
+            behavior.validate_schema_node(&schema).is_ok(),
+            "Valid propertiesHeaderSummaryTemplate should pass validation"
+        );
+    }
+
+    #[test]
+    fn test_properties_header_summary_template_undefined_field_rejected() {
+        use crate::models::SchemaNode;
+        let behavior = SchemaNodeBehavior;
+
+        // propertiesHeaderSummaryTemplate references a field not in schema.fields
+        let node = Node::new(
+            "schema".to_string(),
+            "Customer".to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": "Customer schema",
+                "fields": [
+                    {"name": "status", "type": "enum", "protection": "user", "indexed": false}
+                ],
+                "relationships": [],
+                "propertiesHeaderSummaryTemplate": "{status} · {nonexistent}"
+            }),
+        );
+        let schema = SchemaNode::from_node(node).unwrap();
+        let result = behavior.validate_schema_node(&schema);
+        assert!(
+            result.is_err(),
+            "propertiesHeaderSummaryTemplate referencing undefined field should fail"
+        );
+        assert!(matches!(
+            result,
+            Err(NodeValidationError::InvalidProperties(ref msg))
+                if msg.contains("nonexistent")
+        ));
     }
 
     // =========================================================================
