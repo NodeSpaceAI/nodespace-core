@@ -3,6 +3,7 @@
 //! This module provides functions to strip markdown formatting from content,
 //! producing clean plain text suitable for search indexing and display.
 
+use crate::models::SchemaField;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -96,50 +97,80 @@ pub fn strip_markdown(content: &str) -> String {
     result.trim().to_string()
 }
 
-/// Interpolate a title template string using node properties.
+/// Interpolate a title template string using node properties, resolving enum labels.
 ///
 /// Replaces `{field_name}` tokens with the corresponding property value.
 /// Non-string values (numbers, booleans) are converted to their string representation.
-/// Missing or null fields are replaced with empty strings.
-/// The result is trimmed of leading/trailing whitespace.
+/// Missing or null fields are skipped (produce no output). The result is whitespace-
+/// normalised and trimmed.
+///
+/// For fields of type `"enum"`, the raw stored value (e.g. `"on_hold"`) is resolved
+/// to the matching human-readable label (e.g. `"On Hold"`) using the schema field
+/// definitions. `core_values` are searched before `user_values`. If no matching label
+/// is found, the raw value is used as-is. Pass `&[]` for `fields` to disable enum
+/// label resolution (equivalent to plain interpolation).
 ///
 /// # Arguments
 ///
 /// * `template` - The template string with `{field_name}` placeholders
 /// * `properties` - The node's properties JSON object
+/// * `fields` - Schema field definitions (from `SchemaNode.fields`)
 ///
 /// # Examples
 ///
 /// ```
-/// use nodespace_core::utils::interpolate_title_template;
+/// use nodespace_core::utils::interpolate_title_template_with_schema;
 /// use serde_json::json;
 ///
+/// // Plain string fields — no schema needed
 /// let props = json!({"first_name": "John", "last_name": "Doe"});
 /// assert_eq!(
-///     interpolate_title_template("{first_name} {last_name}", &props),
+///     interpolate_title_template_with_schema("{first_name} {last_name}", &props, &[]),
 ///     "John Doe"
 /// );
 /// ```
-pub fn interpolate_title_template(template: &str, properties: &serde_json::Value) -> String {
+pub fn interpolate_title_template_with_schema(
+    template: &str,
+    properties: &serde_json::Value,
+    fields: &[SchemaField],
+) -> String {
     let mut result = String::with_capacity(template.len());
     let chars: Vec<char> = template.chars().collect();
     let mut i = 0;
 
     while i < chars.len() {
         if chars[i] == '{' {
-            // Find the closing brace
             if let Some(end) = chars[i + 1..].iter().position(|&c| c == '}') {
                 let field_name: String = chars[i + 1..i + 1 + end].iter().collect();
-                // Look up the field value in properties
                 let value = properties.get(&field_name);
-                match value {
-                    Some(serde_json::Value::String(s)) => result.push_str(s),
-                    Some(serde_json::Value::Number(n)) => result.push_str(&n.to_string()),
-                    Some(serde_json::Value::Bool(b)) => result.push_str(&b.to_string()),
-                    Some(serde_json::Value::Null) | None => {} // empty string for missing/null
-                    Some(other) => result.push_str(&other.to_string()),
+
+                let raw_string: Option<String> = match value {
+                    Some(serde_json::Value::String(s)) => Some(s.clone()),
+                    Some(serde_json::Value::Number(n)) => Some(n.to_string()),
+                    Some(serde_json::Value::Bool(b)) => Some(b.to_string()),
+                    Some(serde_json::Value::Null) | None => None,
+                    Some(other) => Some(other.to_string()),
+                };
+
+                if let Some(raw) = raw_string {
+                    let resolved = fields
+                        .iter()
+                        // "enum" matches SchemaField.field_type JSON serialization — must stay in sync
+                        .find(|f| f.name == field_name && f.field_type == "enum")
+                        .and_then(|f| {
+                            f.core_values
+                                .iter()
+                                .flatten()
+                                .chain(f.user_values.iter().flatten())
+                                .find(|ev| ev.value == raw)
+                                .map(|ev| ev.label.clone())
+                        })
+                        .unwrap_or(raw);
+
+                    result.push_str(&resolved);
                 }
-                i += 1 + end + 1; // skip past '}'
+
+                i += 1 + end + 1;
                 continue;
             }
         }
@@ -147,7 +178,6 @@ pub fn interpolate_title_template(template: &str, properties: &serde_json::Value
         i += 1;
     }
 
-    // Normalize whitespace and trim
     let normalized = WHITESPACE_RE.replace_all(&result, " ");
     normalized.trim().to_string()
 }
@@ -270,14 +300,14 @@ mod tests {
     }
 
     // -------------------------------------------------------------------------
-    // interpolate_title_template tests
+    // interpolate_title_template_with_schema — plain interpolation (fields = &[])
     // -------------------------------------------------------------------------
 
     #[test]
     fn test_interpolate_basic_fields() {
         let props = serde_json::json!({"first_name": "John", "last_name": "Doe"});
         assert_eq!(
-            interpolate_title_template("{first_name} {last_name}", &props),
+            interpolate_title_template_with_schema("{first_name} {last_name}", &props, &[]),
             "John Doe"
         );
     }
@@ -286,7 +316,7 @@ mod tests {
     fn test_interpolate_missing_field_is_empty() {
         let props = serde_json::json!({"first_name": "Jane"});
         assert_eq!(
-            interpolate_title_template("{first_name} {last_name}", &props),
+            interpolate_title_template_with_schema("{first_name} {last_name}", &props, &[]),
             "Jane"
         );
     }
@@ -295,7 +325,7 @@ mod tests {
     fn test_interpolate_null_field_is_empty() {
         let props = serde_json::json!({"first_name": "Alice", "email": null});
         assert_eq!(
-            interpolate_title_template("{first_name} ({email})", &props),
+            interpolate_title_template_with_schema("{first_name} ({email})", &props, &[]),
             "Alice ()"
         );
     }
@@ -304,7 +334,7 @@ mod tests {
     fn test_interpolate_number_value() {
         let props = serde_json::json!({"invoice_number": 42});
         assert_eq!(
-            interpolate_title_template("Invoice #{invoice_number}", &props),
+            interpolate_title_template_with_schema("Invoice #{invoice_number}", &props, &[]),
             "Invoice #42"
         );
     }
@@ -313,7 +343,7 @@ mod tests {
     fn test_interpolate_boolean_value() {
         let props = serde_json::json!({"active": true});
         assert_eq!(
-            interpolate_title_template("Active: {active}", &props),
+            interpolate_title_template_with_schema("Active: {active}", &props, &[]),
             "Active: true"
         );
     }
@@ -326,7 +356,11 @@ mod tests {
             "email": "john@example.com"
         });
         assert_eq!(
-            interpolate_title_template("{first_name} {last_name} ({email})", &props),
+            interpolate_title_template_with_schema(
+                "{first_name} {last_name} ({email})",
+                &props,
+                &[]
+            ),
             "John Doe (john@example.com)"
         );
     }
@@ -335,7 +369,7 @@ mod tests {
     fn test_interpolate_trims_whitespace() {
         let props = serde_json::json!({"first_name": "Jane", "last_name": ""});
         assert_eq!(
-            interpolate_title_template("{first_name} {last_name}", &props),
+            interpolate_title_template_with_schema("{first_name} {last_name}", &props, &[]),
             "Jane"
         );
     }
@@ -344,7 +378,7 @@ mod tests {
     fn test_interpolate_no_placeholders() {
         let props = serde_json::json!({});
         assert_eq!(
-            interpolate_title_template("Static Title", &props),
+            interpolate_title_template_with_schema("Static Title", &props, &[]),
             "Static Title"
         );
     }
@@ -353,8 +387,190 @@ mod tests {
     fn test_interpolate_all_fields_missing() {
         let props = serde_json::json!({});
         assert_eq!(
-            interpolate_title_template("{first_name} {last_name}", &props),
+            interpolate_title_template_with_schema("{first_name} {last_name}", &props, &[]),
             ""
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // interpolate_title_template_with_schema tests
+    // -------------------------------------------------------------------------
+
+    fn make_status_field(core: &[(&str, &str)], user: &[(&str, &str)]) -> SchemaField {
+        use crate::models::schema::EnumValue;
+        SchemaField {
+            name: "status".to_string(),
+            field_type: "enum".to_string(),
+            protection: crate::models::schema::SchemaProtectionLevel::Core,
+            core_values: if core.is_empty() {
+                None
+            } else {
+                Some(
+                    core.iter()
+                        .map(|(v, l)| EnumValue {
+                            value: v.to_string(),
+                            label: l.to_string(),
+                        })
+                        .collect(),
+                )
+            },
+            user_values: if user.is_empty() {
+                None
+            } else {
+                Some(
+                    user.iter()
+                        .map(|(v, l)| EnumValue {
+                            value: v.to_string(),
+                            label: l.to_string(),
+                        })
+                        .collect(),
+                )
+            },
+            indexed: false,
+            required: None,
+            extensible: None,
+            default: None,
+            description: None,
+            item_type: None,
+            fields: None,
+            item_fields: None,
+        }
+    }
+
+    #[test]
+    fn test_enum_label_resolved_from_core_values() {
+        let fields = vec![make_status_field(
+            &[("on_hold", "On Hold"), ("active", "Active")],
+            &[],
+        )];
+        let props = serde_json::json!({"status": "on_hold"});
+        assert_eq!(
+            interpolate_title_template_with_schema("{status}", &props, &fields),
+            "On Hold"
+        );
+    }
+
+    #[test]
+    fn test_enum_label_resolved_from_user_values() {
+        let fields = vec![make_status_field(
+            &[("active", "Active")],
+            &[("custom_val", "Custom Label")],
+        )];
+        let props = serde_json::json!({"status": "custom_val"});
+        assert_eq!(
+            interpolate_title_template_with_schema("{status}", &props, &fields),
+            "Custom Label"
+        );
+    }
+
+    #[test]
+    fn test_unknown_enum_value_falls_back_to_raw() {
+        let fields = vec![make_status_field(&[("active", "Active")], &[])];
+        let props = serde_json::json!({"status": "unknown_value"});
+        assert_eq!(
+            interpolate_title_template_with_schema("{status}", &props, &fields),
+            "unknown_value"
+        );
+    }
+
+    #[test]
+    fn test_mixed_template_non_enum_and_enum() {
+        use crate::models::schema::EnumValue;
+        let name_field = SchemaField {
+            name: "name".to_string(),
+            field_type: "string".to_string(),
+            protection: crate::models::schema::SchemaProtectionLevel::User,
+            core_values: None,
+            user_values: None,
+            indexed: false,
+            required: None,
+            extensible: None,
+            default: None,
+            description: None,
+            item_type: None,
+            fields: None,
+            item_fields: None,
+        };
+        let status_field = SchemaField {
+            name: "status".to_string(),
+            field_type: "enum".to_string(),
+            protection: crate::models::schema::SchemaProtectionLevel::Core,
+            core_values: Some(vec![
+                EnumValue {
+                    value: "on_hold".to_string(),
+                    label: "On Hold".to_string(),
+                },
+                EnumValue {
+                    value: "active".to_string(),
+                    label: "Active".to_string(),
+                },
+            ]),
+            user_values: None,
+            indexed: false,
+            required: None,
+            extensible: None,
+            default: None,
+            description: None,
+            item_type: None,
+            fields: None,
+            item_fields: None,
+        };
+        let fields = vec![name_field, status_field];
+        let props = serde_json::json!({"name": "Data Migration", "status": "on_hold"});
+        assert_eq!(
+            interpolate_title_template_with_schema("{name} ({status})", &props, &fields),
+            "Data Migration (On Hold)"
+        );
+    }
+
+    #[test]
+    fn test_missing_field_empty_with_schema() {
+        let fields = vec![make_status_field(&[("active", "Active")], &[])];
+        let props = serde_json::json!({});
+        assert_eq!(
+            interpolate_title_template_with_schema("{status}", &props, &fields),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_empty_fields_slice_behaves_like_basic() {
+        let props = serde_json::json!({"status": "on_hold", "name": "Test"});
+        assert_eq!(
+            interpolate_title_template_with_schema("{name} {status}", &props, &[]),
+            "Test on_hold"
+        );
+    }
+
+    #[test]
+    fn test_core_values_searched_before_user_values() {
+        use crate::models::schema::EnumValue;
+        // Same value in both core and user with different labels — core should win
+        let field = SchemaField {
+            name: "status".to_string(),
+            field_type: "enum".to_string(),
+            protection: crate::models::schema::SchemaProtectionLevel::Core,
+            core_values: Some(vec![EnumValue {
+                value: "shared".to_string(),
+                label: "Core Label".to_string(),
+            }]),
+            user_values: Some(vec![EnumValue {
+                value: "shared".to_string(),
+                label: "User Label".to_string(),
+            }]),
+            indexed: false,
+            required: None,
+            extensible: None,
+            default: None,
+            description: None,
+            item_type: None,
+            fields: None,
+            item_fields: None,
+        };
+        let props = serde_json::json!({"status": "shared"});
+        assert_eq!(
+            interpolate_title_template_with_schema("{status}", &props, &[field]),
+            "Core Label"
         );
     }
 }

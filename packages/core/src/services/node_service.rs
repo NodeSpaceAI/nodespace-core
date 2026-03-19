@@ -2139,8 +2139,10 @@ impl NodeService {
                         .properties
                         .get(&node.node_type)
                         .unwrap_or(&node.properties);
-                    return Ok(Some(crate::utils::interpolate_title_template(
-                        template, flat_props,
+                    return Ok(Some(crate::utils::interpolate_title_template_with_schema(
+                        template,
+                        flat_props,
+                        &schema.fields,
                     )));
                 }
             }
