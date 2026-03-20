@@ -147,18 +147,17 @@ export async function initializeTauriSyncListeners(): Promise<void> {
 
       // Handle different relationship types
       if (rel.relationshipType === 'has_child') {
-        // Hierarchy relationship
+        // Hierarchy relationship — always call addChild so the backend's authoritative
+        // fractional order overwrites any optimistic order set during creation.
+        // addChild handles deduplication internally: if the child already exists it
+        // updates the order and re-sorts rather than inserting a duplicate.
         if (structureTree) {
           const order = (rel.properties?.order as number) ?? Date.now();
-          const existingChildren = structureTree.getChildrenWithOrder(rel.fromId);
-          const alreadyExists = existingChildren.some((c) => c.nodeId === rel.toId);
-          if (!alreadyExists) {
-            structureTree.addChild({
-              parentId: rel.fromId,
-              childId: rel.toId,
-              order
-            });
-          }
+          structureTree.addChild({
+            parentId: rel.fromId,
+            childId: rel.toId,
+            order
+          });
         }
       } else if (rel.relationshipType === 'member_of') {
         // Collection membership changed - refresh collections sidebar

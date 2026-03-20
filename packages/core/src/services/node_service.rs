@@ -1508,27 +1508,40 @@ impl NodeService {
 
         // Step 3: Validate sibling (if provided) - treat as best-effort hint
         // If sibling doesn't exist or has moved to different parent, fall back to append
-        // This prevents data loss from race conditions during rapid indent/outdent operations
+        // This prevents data loss from race conditions during rapid indent/outdent operations.
+        //
+        // Retry up to 5 times with 50ms backoff to handle SurrealDB eventual consistency:
+        // rapid empty-node creation (Enter, Enter, Enter) can cause the sibling's parent edge
+        // to not yet be visible when the next node's CREATE fires immediately after.
         if let Some(ref sibling_id) = params.insert_after_node_id.clone() {
-            let sibling_valid = match self.get_node(sibling_id).await {
-                Ok(Some(_)) => {
-                    // Sibling exists, verify it has same parent
-                    match self.get_parent(sibling_id).await {
-                        Ok(sibling_parent) => {
-                            let sibling_parent_id = sibling_parent.as_ref().map(|p| p.id.as_str());
-                            sibling_parent_id == params.parent_id.as_deref()
+            use tokio::time::{sleep, Duration};
+            let mut sibling_valid = false;
+            for _attempt in 0..5 {
+                sibling_valid = match self.get_node(sibling_id).await {
+                    Ok(Some(_)) => {
+                        // Sibling exists, verify it has same parent
+                        match self.get_parent(sibling_id).await {
+                            Ok(sibling_parent) => {
+                                let sibling_parent_id =
+                                    sibling_parent.as_ref().map(|p| p.id.as_str());
+                                sibling_parent_id == params.parent_id.as_deref()
+                            }
+                            Err(_) => false,
                         }
-                        Err(_) => false,
                     }
+                    _ => false,
+                };
+                if sibling_valid {
+                    break;
                 }
-                _ => false,
-            };
+                sleep(Duration::from_millis(50)).await;
+            }
 
             if !sibling_valid {
                 tracing::warn!(
                     sibling_id = %sibling_id,
                     parent_id = ?params.parent_id,
-                    "insert_after_node_id is stale (sibling moved or deleted), falling back to append"
+                    "insert_after_node_id is stale after retries (sibling moved or deleted), falling back to append"
                 );
                 params.insert_after_node_id = None;
             }

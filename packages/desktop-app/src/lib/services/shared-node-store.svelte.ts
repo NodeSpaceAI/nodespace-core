@@ -1777,29 +1777,12 @@ export class SharedNodeStore {
 
       // Batch register all relationships to avoid effect loops
       // This triggers only ONE reactivity update instead of N updates
-      // Filter out relationships that already exist to avoid duplicate detection overhead
+      // Always pass ALL relationships — batchAddRelationships / addChildInternal handles
+      // deduplication internally: existing children get their order updated and re-sorted,
+      // which corrects any stale optimistic order values (e.g. from empty nodes whose
+      // relationship:created event fired before the backend persisted the correct order).
       if (allRelationships.length > 0) {
-        // OPTIMIZATION: Build Set of existing child IDs across all parents (one pass)
-        // This avoids O(n²) complexity from repeated getChildren() calls in filter
-        const existingChildIds = new Set<string>();
-        const seenParents = new Set<string>();
-
-        for (const rel of allRelationships) {
-          if (!seenParents.has(rel.parentId)) {
-            seenParents.add(rel.parentId);
-            const children = structureTree.getChildren(rel.parentId);
-            children.forEach(id => existingChildIds.add(id));
-          }
-        }
-
-        // Filter using Set lookup (O(1) per check instead of O(n))
-        const newRelationships = allRelationships.filter(rel =>
-          !existingChildIds.has(rel.childId)
-        );
-
-        if (newRelationships.length > 0) {
-          structureTree.batchAddRelationships(newRelationships);
-        }
+        structureTree.batchAddRelationships(allRelationships);
       }
 
       return allNodes;
