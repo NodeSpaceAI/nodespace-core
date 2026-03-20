@@ -4,6 +4,17 @@ on:
   release:
     types: [created]
   workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build (or all)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - macos-arm
+          - macos-intel
+          - windows
 
 # Required permissions for uploading release assets
 permissions:
@@ -19,19 +30,28 @@ jobs:
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
             rust_targets: 'aarch64-apple-darwin'
+            id: 'macos-arm'
           # Windows
           - platform: 'windows-latest'
             args: ''
             rust_targets: ''
+            id: 'windows'
           # NOTE: Ubuntu disabled for now
           - platform: 'macos-latest'
             args: '--target x86_64-apple-darwin'
             rust_targets: 'x86_64-apple-darwin'
+            id: 'macos-intel'
           # - platform: 'ubuntu-22.04'
           #   args: ''
           #   rust_targets: ''
+          #   id: 'ubuntu'
 
     runs-on: ${{ matrix.platform }}
+    # Skip platforms not matching the selected input (workflow_dispatch only)
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      inputs.platform == 'all' ||
+      inputs.platform == matrix.id
 
     steps:
       - name: Checkout repository
