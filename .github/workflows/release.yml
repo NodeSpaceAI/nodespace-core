@@ -150,8 +150,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS minimum version (required for llama-cpp std::filesystem)
-          MACOSX_DEPLOYMENT_TARGET: "10.15"
+          # macOS minimum version — must be 14.0+ for Metal GPU embeddings (ggml)
+          # 10.15 caused ggml_mul_mat assertion failures in build_pooling (#990)
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
           # Apple code signing and notarization (macOS only)
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
