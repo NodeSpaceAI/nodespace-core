@@ -1508,27 +1508,40 @@ impl NodeService {
 
         // Step 3: Validate sibling (if provided) - treat as best-effort hint
         // If sibling doesn't exist or has moved to different parent, fall back to append
-        // This prevents data loss from race conditions during rapid indent/outdent operations
+        // This prevents data loss from race conditions during rapid indent/outdent operations.
+        //
+        // Retry up to 5 times with 50ms backoff to handle SurrealDB eventual consistency:
+        // rapid empty-node creation (Enter, Enter, Enter) can cause the sibling's parent edge
+        // to not yet be visible when the next node's CREATE fires immediately after.
         if let Some(ref sibling_id) = params.insert_after_node_id.clone() {
-            let sibling_valid = match self.get_node(sibling_id).await {
-                Ok(Some(_)) => {
-                    // Sibling exists, verify it has same parent
-                    match self.get_parent(sibling_id).await {
-                        Ok(sibling_parent) => {
-                            let sibling_parent_id = sibling_parent.as_ref().map(|p| p.id.as_str());
-                            sibling_parent_id == params.parent_id.as_deref()
+            use tokio::time::{sleep, Duration};
+            let mut sibling_valid = false;
+            for _attempt in 0..5 {
+                sibling_valid = match self.get_node(sibling_id).await {
+                    Ok(Some(_)) => {
+                        // Sibling exists, verify it has same parent
+                        match self.get_parent(sibling_id).await {
+                            Ok(sibling_parent) => {
+                                let sibling_parent_id =
+                                    sibling_parent.as_ref().map(|p| p.id.as_str());
+                                sibling_parent_id == params.parent_id.as_deref()
+                            }
+                            Err(_) => false,
                         }
-                        Err(_) => false,
                     }
+                    _ => false,
+                };
+                if sibling_valid {
+                    break;
                 }
-                _ => false,
-            };
+                sleep(Duration::from_millis(50)).await;
+            }
 
             if !sibling_valid {
                 tracing::warn!(
                     sibling_id = %sibling_id,
                     parent_id = ?params.parent_id,
-                    "insert_after_node_id is stale (sibling moved or deleted), falling back to append"
+                    "insert_after_node_id is stale after retries (sibling moved or deleted), falling back to insert at beginning (None)"
                 );
                 params.insert_after_node_id = None;
             }
@@ -3564,26 +3577,24 @@ impl NodeService {
         }
 
         // Hierarchy is now managed via relationships - use store's move_node
-        self.store
+        let actual_order = self
+            .store
             .move_node(node_id, new_parent, insert_after_node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         // Emit RelationshipUpdated event (Issue #811: unified relationship events)
         if let Some(parent_id) = new_parent {
-            let children = self.get_children(parent_id).await?;
-            if let Some(child_pos) = children.iter().position(|c| c.id == node_id) {
-                self.emit_event(DomainEvent::RelationshipUpdated {
-                    relationship: crate::db::events::RelationshipEvent {
-                        id: format!("relationship:{}:{}", parent_id, node_id),
-                        from_id: parent_id.to_string(),
-                        to_id: node_id.to_string(),
-                        relationship_type: "has_child".to_string(),
-                        properties: serde_json::json!({"order": child_pos as f64}),
-                    },
-                    source_client_id: self.client_id.clone(),
-                });
-            }
+            self.emit_event(DomainEvent::RelationshipUpdated {
+                relationship: crate::db::events::RelationshipEvent {
+                    id: format!("relationship:{}:{}", parent_id, node_id),
+                    from_id: parent_id.to_string(),
+                    to_id: node_id.to_string(),
+                    relationship_type: "has_child".to_string(),
+                    properties: serde_json::json!({"order": actual_order}),
+                },
+                source_client_id: self.client_id.clone(),
+            });
         }
 
         Ok(())
@@ -3600,7 +3611,7 @@ impl NodeService {
     /// * `node_id` - The node to move
     /// * `expected_version` - The version the caller expects (for OCC)
     /// * `new_parent` - The new parent ID (None to make it a root node)
-    /// * `insert_after_node_id` - Optional sibling to insert after (None = append at end)
+    /// * `insert_after_node_id` - Optional sibling to insert after (None = insert at beginning)
     ///
     /// # Errors
     ///
@@ -3674,26 +3685,24 @@ impl NodeService {
         }
 
         // Perform the move
-        self.store
+        let actual_order = self
+            .store
             .move_node(node_id, new_parent, insert_after_node_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         // Emit RelationshipUpdated event (Issue #811: unified relationship events)
         if let Some(parent_id) = new_parent {
-            let children = self.get_children(parent_id).await?;
-            if let Some(child_pos) = children.iter().position(|c| c.id == node_id) {
-                self.emit_event(DomainEvent::RelationshipUpdated {
-                    relationship: crate::db::events::RelationshipEvent {
-                        id: format!("relationship:{}:{}", parent_id, node_id),
-                        from_id: parent_id.to_string(),
-                        to_id: node_id.to_string(),
-                        relationship_type: "has_child".to_string(),
-                        properties: serde_json::json!({"order": child_pos as f64}),
-                    },
-                    source_client_id: self.client_id.clone(),
-                });
-            }
+            self.emit_event(DomainEvent::RelationshipUpdated {
+                relationship: crate::db::events::RelationshipEvent {
+                    id: format!("relationship:{}:{}", parent_id, node_id),
+                    from_id: parent_id.to_string(),
+                    to_id: node_id.to_string(),
+                    relationship_type: "has_child".to_string(),
+                    properties: serde_json::json!({"order": actual_order}),
+                },
+                source_client_id: self.client_id.clone(),
+            });
         }
 
         // Bump the node's version to support OCC
@@ -3790,7 +3799,7 @@ impl NodeService {
     ///
     /// * `child_id` - ID of the child node (must already exist)
     /// * `parent_id` - ID of the parent node
-    /// * `insert_after_node_id` - Optional sibling to insert after (None = append at end)
+    /// * `insert_after_node_id` - Optional sibling to insert after (None = insert at beginning)
     pub async fn create_parent_edge(
         &self,
         child_id: &str,
@@ -3812,9 +3821,15 @@ impl NodeService {
         //   insert_after_node_id = None → "insert at beginning"
 
         // Use store's move_node which creates the has_child relationship atomically
-        // Retry if sibling not found (eventual consistency)
+        // Retry if sibling not found (eventual consistency).
+        // Note: create_parent_edge uses 10×100ms (up to 1s) because it is called during
+        // outdent operations where the sibling to insert after may have a freshly created
+        // parent edge that hasn't propagated yet. This is a larger retry budget than the
+        // sibling-validation loop in create_node_with_parent (5×50ms) because outdent
+        // races involve two independent write paths that both need time to settle.
         let mut last_error = None;
         let mut attempt_count = 0;
+        let mut actual_order: f64 = 0.0;
         for _attempt in 0..10 {
             attempt_count += 1;
             match self
@@ -3822,7 +3837,8 @@ impl NodeService {
                 .move_node(child_id, Some(parent_id), insert_after_node_id)
                 .await
             {
-                Ok(()) => {
+                Ok(order) => {
+                    actual_order = order;
                     tracing::debug!(
                         "create_parent_edge: move_node succeeded on attempt {} at {}ms",
                         attempt_count,
@@ -3862,6 +3878,7 @@ impl NodeService {
                 start.elapsed().as_millis()
             );
             let mut verify_attempt = 0;
+            let mut position_verified = false;
             'outer: for _attempt in 0..20 {
                 verify_attempt += 1;
                 // Wait for write propagation
@@ -3879,6 +3896,7 @@ impl NodeService {
                             verify_attempt,
                             start.elapsed().as_millis()
                         );
+                        position_verified = true;
                         break 'outer;
                     }
                     (Some(_), Some(_)) => {
@@ -3887,10 +3905,12 @@ impl NodeService {
                             "create_parent_edge: wrong position, reordering at {}ms",
                             start.elapsed().as_millis()
                         );
-                        self.store
+                        let reorder_result = self
+                            .store
                             .move_node(child_id, Some(parent_id), Some(after_id))
                             .await
                             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                        actual_order = reorder_result;
 
                         // Wait and verify reorder took effect
                         for _verify in 0..10 {
@@ -3901,6 +3921,7 @@ impl NodeService {
 
                             if let (Some(c), Some(a)) = (v_child_pos, v_after_pos) {
                                 if c == a + 1 {
+                                    position_verified = true;
                                     break 'outer; // Successfully reordered
                                 }
                             }
@@ -3917,6 +3938,20 @@ impl NodeService {
                     }
                 }
             }
+            // If verification exhausted without confirming position, the emitted actual_order
+            // may still be 0.0 (unconfirmed initial value), which would sort the child to the
+            // front of the parent on the frontend. Log a warning so this is observable.
+            if !position_verified {
+                tracing::warn!(
+                    child_id = %child_id,
+                    parent_id = %parent_id,
+                    after_id = %after_id,
+                    actual_order = %actual_order,
+                    "create_parent_edge: position verification exhausted after {} attempts — \
+                     emitting event with unconfirmed order (SurrealDB eventual consistency)",
+                    verify_attempt
+                );
+            }
         } else {
             tracing::debug!(
                 "create_parent_edge: no insert_after, skipping verification at {}ms",
@@ -3926,22 +3961,19 @@ impl NodeService {
 
         // Emit RelationshipCreated event (Issue #811: unified relationship events)
         tracing::debug!(
-            "create_parent_edge: getting children for event at {}ms",
+            "create_parent_edge: emitting event at {}ms",
             start.elapsed().as_millis()
         );
-        let children = self.get_children(parent_id).await?;
-        if let Some(child_pos) = children.iter().position(|c| c.id == child_id) {
-            self.emit_event(DomainEvent::RelationshipCreated {
-                relationship: crate::db::events::RelationshipEvent {
-                    id: format!("relationship:{}:{}", parent_id, child_id),
-                    from_id: parent_id.to_string(),
-                    to_id: child_id.to_string(),
-                    relationship_type: "has_child".to_string(),
-                    properties: serde_json::json!({"order": child_pos as f64}),
-                },
-                source_client_id: self.client_id.clone(),
-            });
-        }
+        self.emit_event(DomainEvent::RelationshipCreated {
+            relationship: crate::db::events::RelationshipEvent {
+                id: format!("relationship:{}:{}", parent_id, child_id),
+                from_id: parent_id.to_string(),
+                to_id: child_id.to_string(),
+                relationship_type: "has_child".to_string(),
+                properties: serde_json::json!({"order": actual_order}),
+            },
+            source_client_id: self.client_id.clone(),
+        });
 
         tracing::debug!(
             "create_parent_edge: COMPLETE at {}ms",
@@ -4006,28 +4038,25 @@ impl NodeService {
         let parent_id = parent.map(|p| p.id);
 
         // Use move_node to handle edge ordering (insert_after semantics)
-        self.store
+        let actual_order = self
+            .store
             .move_node(node_id, parent_id.as_deref(), insert_after)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         // Emit RelationshipUpdated event (Issue #811: unified relationship events)
         // Reordering updates the hierarchy edge's order field
-        if let Some(parent_id) = parent_id {
-            // Get the updated edge information
-            let children = self.get_children(&parent_id).await?;
-            if let Some(child_pos) = children.iter().position(|c| c.id == node_id) {
-                self.emit_event(DomainEvent::RelationshipUpdated {
-                    relationship: crate::db::events::RelationshipEvent {
-                        id: format!("relationship:{}:{}", parent_id, node_id),
-                        from_id: parent_id.clone(),
-                        to_id: node_id.to_string(),
-                        relationship_type: "has_child".to_string(),
-                        properties: serde_json::json!({"order": child_pos as f64}),
-                    },
-                    source_client_id: self.client_id.clone(),
-                });
-            }
+        if let Some(ref parent_id) = parent_id {
+            self.emit_event(DomainEvent::RelationshipUpdated {
+                relationship: crate::db::events::RelationshipEvent {
+                    id: format!("relationship:{}:{}", parent_id, node_id),
+                    from_id: parent_id.clone(),
+                    to_id: node_id.to_string(),
+                    relationship_type: "has_child".to_string(),
+                    properties: serde_json::json!({"order": actual_order}),
+                },
+                source_client_id: self.client_id.clone(),
+            });
         }
 
         Ok(())
@@ -4970,7 +4999,8 @@ impl NodeService {
             // NOTE: NodeUpdated event is now automatically emitted by store notifier (Issue #718)
 
             // Update parent relationship via edge (handles sibling ordering)
-            self.store
+            let actual_order = self
+                .store
                 .move_node(node_id, Some(parent_id), before_sibling_id)
                 .await
                 .map_err(|e| {
@@ -4978,19 +5008,16 @@ impl NodeService {
                 })?;
 
             // Emit RelationshipUpdated event (Issue #811: unified relationship events)
-            let children = self.get_children(parent_id).await?;
-            if let Some(child_pos) = children.iter().position(|c| c.id == node_id) {
-                self.emit_event(DomainEvent::RelationshipUpdated {
-                    relationship: crate::db::events::RelationshipEvent {
-                        id: format!("relationship:{}:{}", parent_id, node_id),
-                        from_id: parent_id.to_string(),
-                        to_id: node_id.to_string(),
-                        relationship_type: "has_child".to_string(),
-                        properties: serde_json::json!({"order": child_pos as f64}),
-                    },
-                    source_client_id: self.client_id.clone(),
-                });
-            }
+            self.emit_event(DomainEvent::RelationshipUpdated {
+                relationship: crate::db::events::RelationshipEvent {
+                    id: format!("relationship:{}:{}", parent_id, node_id),
+                    from_id: parent_id.to_string(),
+                    to_id: node_id.to_string(),
+                    relationship_type: "has_child".to_string(),
+                    properties: serde_json::json!({"order": actual_order}),
+                },
+                source_client_id: self.client_id.clone(),
+            });
         } else {
             // Create new node
             let node = Node {
@@ -5016,7 +5043,8 @@ impl NodeService {
             // NOTE: NodeCreated event is now automatically emitted by store notifier (Issue #718)
 
             // Create parent relationship via edge (handles sibling ordering)
-            self.store
+            let actual_order = self
+                .store
                 .move_node(node_id, Some(parent_id), before_sibling_id)
                 .await
                 .map_err(|e| {
@@ -5024,19 +5052,16 @@ impl NodeService {
                 })?;
 
             // Emit RelationshipCreated event (Issue #811: unified relationship events)
-            let children = self.get_children(parent_id).await?;
-            if let Some(child_pos) = children.iter().position(|c| c.id == node_id) {
-                self.emit_event(DomainEvent::RelationshipCreated {
-                    relationship: crate::db::events::RelationshipEvent {
-                        id: format!("relationship:{}:{}", parent_id, node_id),
-                        from_id: parent_id.to_string(),
-                        to_id: node_id.to_string(),
-                        relationship_type: "has_child".to_string(),
-                        properties: serde_json::json!({"order": child_pos as f64}),
-                    },
-                    source_client_id: self.client_id.clone(),
-                });
-            }
+            self.emit_event(DomainEvent::RelationshipCreated {
+                relationship: crate::db::events::RelationshipEvent {
+                    id: format!("relationship:{}:{}", parent_id, node_id),
+                    from_id: parent_id.to_string(),
+                    to_id: node_id.to_string(),
+                    relationship_type: "has_child".to_string(),
+                    properties: serde_json::json!({"order": actual_order}),
+                },
+                source_client_id: self.client_id.clone(),
+            });
         }
 
         Ok(())

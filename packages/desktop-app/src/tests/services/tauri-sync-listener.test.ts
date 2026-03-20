@@ -325,24 +325,25 @@ describe('TauriSyncListener', () => {
 			expect(structureTree.getChildrenWithOrder('parent1')).toHaveLength(0);
 		});
 
-		it('should handle relationship:updated for hierarchy (currently logs only)', async () => {
-			// Add edge first
+		it('should update child order on relationship:updated for has_child', async () => {
+			// Add edge first at order 100
 			structureTree.addChild({
 				parentId: 'parent1',
 				childId: 'child1',
 				order: 100
 			});
 
-			// Update should not crash (currently just logs)
-			expect(() => {
-				emitTauriEvent('relationship:updated', {
-					id: 'relationship:parent1:child1',
-					fromId: 'parent1',
-					toId: 'child1',
-					relationshipType: 'has_child',
-					properties: { order: 200 }
-				});
-			}).not.toThrow();
+			// Emit relationship:updated with new order
+			emitTauriEvent('relationship:updated', {
+				id: 'relationship:parent1:child1',
+				fromId: 'parent1',
+				toId: 'child1',
+				relationshipType: 'has_child',
+				properties: { order: 200 }
+			});
+
+			const children = structureTree.getChildrenWithOrder('parent1');
+			expect(children[0].order).toBe(200);
 		});
 	});
 

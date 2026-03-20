@@ -279,6 +279,19 @@ class ReactiveStructureTree {
     });
   }
 
+  updateChildOrder(parentId: string, childId: string, order: number): void {
+    const children = this.children.get(parentId);
+    if (!children) return;
+    const existingIndex = children.findIndex((c) => c.nodeId === childId);
+    if (existingIndex < 0) return;
+    if (children[existingIndex].order !== order) {
+      children[existingIndex].order = order;
+      children.sort((a, b) => a.order - b.order);
+      this.children.set(parentId, children);
+      this.notifyChange();
+    }
+  }
+
   /**
    * TEST ONLY: Direct access to addChild for testing binary search algorithm
    * @internal

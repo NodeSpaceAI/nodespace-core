@@ -147,18 +147,17 @@ export async function initializeTauriSyncListeners(): Promise<void> {
 
       // Handle different relationship types
       if (rel.relationshipType === 'has_child') {
-        // Hierarchy relationship
+        // Hierarchy relationship — always call addChild so the backend's authoritative
+        // fractional order overwrites any optimistic order set during creation.
+        // addChild handles deduplication internally: if the child already exists it
+        // updates the order and re-sorts rather than inserting a duplicate.
         if (structureTree) {
           const order = (rel.properties?.order as number) ?? Date.now();
-          const existingChildren = structureTree.getChildrenWithOrder(rel.fromId);
-          const alreadyExists = existingChildren.some((c) => c.nodeId === rel.toId);
-          if (!alreadyExists) {
-            structureTree.addChild({
-              parentId: rel.fromId,
-              childId: rel.toId,
-              order
-            });
-          }
+          structureTree.addChild({
+            parentId: rel.fromId,
+            childId: rel.toId,
+            order
+          });
         }
       } else if (rel.relationshipType === 'member_of') {
         // Collection membership changed - refresh collections sidebar
@@ -182,11 +181,12 @@ export async function initializeTauriSyncListeners(): Promise<void> {
     await listen<RelationshipEvent>('relationship:updated', (event) => {
       const rel = event.payload;
       log.debug(`Relationship updated: ${rel.relationshipType} (${rel.fromId} -> ${rel.toId})`);
-
-      // Handle order updates for hierarchy
-      if (rel.relationshipType === 'has_child') {
-        // Future: Update child order in structure tree
-        log.debug(`Hierarchy order updated for ${rel.toId}`);
+      if (rel.relationshipType === 'has_child' && structureTree) {
+        // Date.now() is a defensive fallback only — a millisecond timestamp (~1.7e12) is
+        // far outside the normal fractional order range and will sort the node to the end.
+        // In practice, relationship:updated events from the backend always include order.
+        const order = (rel.properties?.order as number) ?? Date.now();
+        structureTree.updateChildOrder(rel.fromId, rel.toId, order);
       }
     });
 
