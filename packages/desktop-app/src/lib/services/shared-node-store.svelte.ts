@@ -231,6 +231,16 @@ class SimplePersistenceCoordinator {
     }
   }
 
+  /**
+   * Clear any queued operation for a node (e.g., after OCC conflict to prevent stale retries)
+   */
+  clearQueued(nodeId: string): void {
+    if (this.queuedOperations.has(nodeId)) {
+      coordLog.debug(`Cleared queued operation for ${nodeId.substring(0, 8)} (OCC conflict)`);
+      this.queuedOperations.delete(nodeId);
+    }
+  }
+
   isPending(nodeId: string): boolean {
     return this.pendingOperations.has(nodeId);
   }
@@ -1062,12 +1072,15 @@ export class SharedNodeStore {
                 // Rollback the optimistic update
                 this.rollbackUpdate(nodeId, update);
 
-                // If this is an OCC error, resync from server to unstuck the node
+                // If this is an OCC error, clear queued ops and resync from server
                 if (isOccError) {
                   log.warn(
                     `OCC error detected for node ${nodeId}. ` +
-                    `Resyncing from server to prevent stuck state...`
+                    `Clearing queued ops and resyncing from server...`
                   );
+
+                  // Clear queued operations to prevent stale-version retries
+                  PersistenceCoordinator.getInstance().clearQueued(nodeId);
 
                   // Resync asynchronously - don't block the error propagation
                   this.resyncNodeFromServer(nodeId).catch((resyncError) => {
@@ -1082,7 +1095,7 @@ export class SharedNodeStore {
               }
             },
             {
-              mode: isStructuralChange ? 'immediate' : 'debounce',
+              mode: (isStructuralChange || isPropertyChange || isNodeTypeChange || isTypeSpecificChange) ? 'immediate' : 'debounce',
               dependencies: dependencies.length > 0 ? dependencies : undefined
             }
           );
@@ -1530,14 +1543,16 @@ export class SharedNodeStore {
     this.nodes.set(nodeId, updatedNode);
     this.notifySubscribers(nodeId, updatedNode, source);
 
-    // Persist to backend via type-safe task update
-    const currentVersion = existingNode.version ?? 1;
-
     // Capture handle to catch cancellation errors
     const handle = PersistenceCoordinator.getInstance().persist(
       nodeId,
       async () => {
         try {
+          // Read version at EXECUTION time (not call time) to pick up any
+          // resync that occurred while this operation was queued
+          const currentNode = this.nodes.get(nodeId);
+          const currentVersion = currentNode?.version ?? existingNode.version ?? 1;
+
           const updatedTaskNode = await tauriCommands.updateTaskNode(
             nodeId,
             currentVersion,
@@ -1565,6 +1580,7 @@ export class SharedNodeStore {
           }
         } catch (dbError) {
           const error = dbError instanceof Error ? dbError : new Error(String(dbError));
+          const isOccError = isVersionConflict(dbError);
 
           // Suppress expected errors in in-memory test mode
           if (shouldLogDatabaseErrors()) {
@@ -1577,6 +1593,21 @@ export class SharedNodeStore {
           // Rollback the optimistic update
           this.nodes.set(nodeId, existingNode);
           this.notifySubscribers(nodeId, existingNode, source);
+
+          // If this is an OCC error, clear queued ops and resync from server
+          if (isOccError) {
+            log.warn(
+              `OCC error detected for task node ${nodeId}. ` +
+              `Clearing queued ops and resyncing from server...`
+            );
+            PersistenceCoordinator.getInstance().clearQueued(nodeId);
+            this.resyncNodeFromServer(nodeId).catch((resyncError) => {
+              log.error(
+                `Failed to resync after OCC error for task node ${nodeId}:`,
+                resyncError
+              );
+            });
+          }
 
           throw error;
         }

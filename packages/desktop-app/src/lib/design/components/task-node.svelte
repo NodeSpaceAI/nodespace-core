@@ -174,12 +174,12 @@
     const cleanedContent = cleanContentForDisplay(content);
     if (cleanedContent !== content) {
       content = cleanedContent;
+      // Only dispatch contentChanged if content actually changed (prevents
+      // a redundant updateNode that races updateTaskNode → VERSION_CONFLICT)
+      dispatch('contentChanged', { content: content });
     }
 
-    // Dispatch standard contentChanged event to update node manager
-    dispatch('contentChanged', { content: content });
-
-    // Also dispatch specialized taskStateChanged event with the new state
+    // Dispatch specialized taskStateChanged event with the new state
     dispatch('taskStateChanged', {
       nodeId,
       state: newState,
