@@ -36,47 +36,54 @@ jobs:
             args: ''
             rust_targets: ''
             id: 'windows'
-          # NOTE: Ubuntu disabled for now
+          # macOS Intel
           - platform: 'macos-latest'
             args: '--target x86_64-apple-darwin'
             rust_targets: 'x86_64-apple-darwin'
             id: 'macos-intel'
-          # - platform: 'ubuntu-22.04'
-          #   args: ''
-          #   rust_targets: ''
-          #   id: 'ubuntu'
 
     runs-on: ${{ matrix.platform }}
-    # Skip platforms not matching the selected input (workflow_dispatch only)
-    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id
 
     steps:
+      # Platform filter: skip early for unselected platforms (workflow_dispatch only)
+      - name: Check platform filter
+        id: filter
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]] || [[ "${{ inputs.platform }}" == "all" ]] || [[ "${{ inputs.platform }}" == "${{ matrix.id }}" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Skipping ${{ matrix.id }} (selected: ${{ inputs.platform }})"
+          fi
+
       - name: Checkout repository
+        if: steps.filter.outputs.skip != 'true'
         uses: actions/checkout@v6.0.2
 
       - name: Install Rust stable
+        if: steps.filter.outputs.skip != 'true'
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.91.0
           targets: ${{ matrix.rust_targets }}
 
       - name: Rust cache
+        if: steps.filter.outputs.skip != 'true'
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './packages/desktop-app/src-tauri -> target'
 
       - name: Install Protobuf (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: steps.filter.outputs.skip != 'true' && matrix.platform == 'macos-latest'
         run: brew install protobuf
 
       - name: Install Protobuf (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: steps.filter.outputs.skip != 'true' && matrix.platform == 'windows-latest'
         run: choco install protoc
 
       # Pre-install WiX toolset to avoid flaky GitHub release downloads during tauri build
-      # The tauri-action downloads WiX on-demand which can fail with HTTP 504 timeouts
       - name: Install WiX Toolset (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: steps.filter.outputs.skip != 'true' && matrix.platform == 'windows-latest'
         run: |
           $wixDir = "$env:LOCALAPPDATA\tauri\WixTools314"
           New-Item -ItemType Directory -Force -Path $wixDir | Out-Null
@@ -101,19 +108,22 @@ jobs:
           Write-Host "WiX toolset installed to $wixDir"
 
       - name: Setup Bun
+        if: steps.filter.outputs.skip != 'true'
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.1.38"
 
       - name: Install frontend dependencies
+        if: steps.filter.outputs.skip != 'true'
         run: bun install
 
       - name: Generate SvelteKit types
+        if: steps.filter.outputs.skip != 'true'
         run: bun run --cwd packages/desktop-app sync
 
       # Download nomic-embed-text GGUF model for llama.cpp embeddings
       - name: Download embedding model for bundling (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: steps.filter.outputs.skip != 'true' && matrix.platform == 'macos-latest'
         run: |
           mkdir -p packages/desktop-app/src-tauri/resources/models
           # Download pre-packaged model from GitHub releases (models-v2 for llama.cpp)
@@ -124,7 +134,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download embedding model for bundling (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: steps.filter.outputs.skip != 'true' && matrix.platform == 'windows-latest'
         run: |
           $modelsDir = "packages/desktop-app/src-tauri/resources/models"
           New-Item -ItemType Directory -Force -Path $modelsDir | Out-Null
@@ -136,6 +146,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Tauri app
+        if: steps.filter.outputs.skip != 'true'
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -156,7 +167,7 @@ jobs:
           releaseId: ${{ github.event_name == 'release' && github.event.release.id || '' }}
 
       - name: Upload artifacts (workflow_dispatch only)
-        if: github.event_name == 'workflow_dispatch'
+        if: steps.filter.outputs.skip != 'true' && github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.platform }}-${{ matrix.rust_targets || 'default' }}
