@@ -182,6 +182,9 @@ export async function initializeTauriSyncListeners(): Promise<void> {
       const rel = event.payload;
       log.debug(`Relationship updated: ${rel.relationshipType} (${rel.fromId} -> ${rel.toId})`);
       if (rel.relationshipType === 'has_child' && structureTree) {
+        // Date.now() is a defensive fallback only — a millisecond timestamp (~1.7e12) is
+        // far outside the normal fractional order range and will sort the node to the end.
+        // In practice, relationship:updated events from the backend always include order.
         const order = (rel.properties?.order as number) ?? Date.now();
         structureTree.updateChildOrder(rel.fromId, rel.toId, order);
       }

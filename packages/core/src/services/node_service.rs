@@ -1541,7 +1541,7 @@ impl NodeService {
                 tracing::warn!(
                     sibling_id = %sibling_id,
                     parent_id = ?params.parent_id,
-                    "insert_after_node_id is stale after retries (sibling moved or deleted), falling back to append"
+                    "insert_after_node_id is stale after retries (sibling moved or deleted), falling back to insert at beginning (None)"
                 );
                 params.insert_after_node_id = None;
             }
@@ -3799,7 +3799,7 @@ impl NodeService {
     ///
     /// * `child_id` - ID of the child node (must already exist)
     /// * `parent_id` - ID of the parent node
-    /// * `insert_after_node_id` - Optional sibling to insert after (None = append at end)
+    /// * `insert_after_node_id` - Optional sibling to insert after (None = insert at beginning)
     pub async fn create_parent_edge(
         &self,
         child_id: &str,
@@ -3821,7 +3821,12 @@ impl NodeService {
         //   insert_after_node_id = None → "insert at beginning"
 
         // Use store's move_node which creates the has_child relationship atomically
-        // Retry if sibling not found (eventual consistency)
+        // Retry if sibling not found (eventual consistency).
+        // Note: create_parent_edge uses 10×100ms (up to 1s) because it is called during
+        // outdent operations where the sibling to insert after may have a freshly created
+        // parent edge that hasn't propagated yet. This is a larger retry budget than the
+        // sibling-validation loop in create_node_with_parent (5×50ms) because outdent
+        // races involve two independent write paths that both need time to settle.
         let mut last_error = None;
         let mut attempt_count = 0;
         let mut actual_order: f64 = 0.0;
@@ -3873,6 +3878,7 @@ impl NodeService {
                 start.elapsed().as_millis()
             );
             let mut verify_attempt = 0;
+            let mut position_verified = false;
             'outer: for _attempt in 0..20 {
                 verify_attempt += 1;
                 // Wait for write propagation
@@ -3890,6 +3896,7 @@ impl NodeService {
                             verify_attempt,
                             start.elapsed().as_millis()
                         );
+                        position_verified = true;
                         break 'outer;
                     }
                     (Some(_), Some(_)) => {
@@ -3914,6 +3921,7 @@ impl NodeService {
 
                             if let (Some(c), Some(a)) = (v_child_pos, v_after_pos) {
                                 if c == a + 1 {
+                                    position_verified = true;
                                     break 'outer; // Successfully reordered
                                 }
                             }
@@ -3929,6 +3937,20 @@ impl NodeService {
                         );
                     }
                 }
+            }
+            // If verification exhausted without confirming position, the emitted actual_order
+            // may still be 0.0 (unconfirmed initial value), which would sort the child to the
+            // front of the parent on the frontend. Log a warning so this is observable.
+            if !position_verified {
+                tracing::warn!(
+                    child_id = %child_id,
+                    parent_id = %parent_id,
+                    after_id = %after_id,
+                    actual_order = %actual_order,
+                    "create_parent_edge: position verification exhausted after {} attempts — \
+                     emitting event with unconfirmed order (SurrealDB eventual consistency)",
+                    verify_attempt
+                );
             }
         } else {
             tracing::debug!(
