@@ -48,10 +48,7 @@ jobs:
 
     runs-on: ${{ matrix.platform }}
     # Skip platforms not matching the selected input (workflow_dispatch only)
-    if: >-
-      github.event_name != 'workflow_dispatch' ||
-      inputs.platform == 'all' ||
-      inputs.platform == matrix.id
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == matrix.id
 
     steps:
       - name: Checkout repository
