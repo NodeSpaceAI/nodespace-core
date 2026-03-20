@@ -37,4 +37,4 @@ panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = 3  # Use speed optimization, not size - critical for SurrealDB performance
-strip = true
+strip = false  # Keep debug symbols for crash diagnostics (see #990)

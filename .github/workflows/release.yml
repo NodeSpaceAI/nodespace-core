@@ -40,6 +40,7 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.91.0
           targets: ${{ matrix.rust_targets }}
 
       - name: Rust cache

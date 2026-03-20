@@ -2,6 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // Enable backtraces in release builds for crash diagnostics (#990)
+    if std::env::var("RUST_BACKTRACE").is_err() {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
+
     // Configure tokio runtime with larger thread stack size for SurrealDB performance
     // See: https://surrealdb.com/docs/surrealdb/reference-guide/performance-best-practices
     // Default stack size is too small for SurrealDB's embedded RocksDB operations
