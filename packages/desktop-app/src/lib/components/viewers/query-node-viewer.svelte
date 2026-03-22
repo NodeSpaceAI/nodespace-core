@@ -106,7 +106,7 @@
   function isSchemaNotFound(message: string): boolean {
     // Tauri CommandError: "Schema '<id>' not found" (code: SCHEMA_NOT_FOUND)
     // HTTP adapter: parsed from ApiError with code SCHEMA_NOT_FOUND
-    return message.includes('not found') || message.includes('SCHEMA_NOT_FOUND');
+    return /Schema '.*' not found/.test(message) || message.includes('SCHEMA_NOT_FOUND');
   }
 
   // Build a lookup map from schema fields for enum label resolution
