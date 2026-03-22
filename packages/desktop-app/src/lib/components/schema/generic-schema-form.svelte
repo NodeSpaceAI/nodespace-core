@@ -35,7 +35,11 @@
 
   let { nodeId, schema, autoOpen = false }: { nodeId: string; schema: SchemaNode; autoOpen?: boolean } = $props();
 
-  let isOpen = $state(autoOpen);
+  let isOpen = $state(false);
+  // Sync isOpen with the autoOpen prop (captures reactive updates, not just initial value)
+  $effect(() => {
+    if (autoOpen) isOpen = true;
+  });
   let formEl = $state<HTMLElement | null>(null);
   let autoFocusDone = false;
 

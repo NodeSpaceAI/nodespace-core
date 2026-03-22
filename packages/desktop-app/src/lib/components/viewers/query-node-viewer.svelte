@@ -88,11 +88,25 @@
       log.debug('Query loaded into store', { schemaId: schema.id, count: nodes.length });
     } catch (e) {
       if (loadId !== currentLoadId) return;
-      const message = e instanceof Error ? e.message : 'Failed to load schema';
+      const message = e instanceof Error ? e.message : String(e);
+
+      // Schema not found on a fresh database is expected — show empty state, not error
+      if (isSchemaNotFound(message)) {
+        log.debug('Schema not yet created, showing empty state', { schemaId });
+        queryState = 'success';
+        return;
+      }
+
       log.error('Failed to load schema node', { schemaId, error: message });
       error = message;
       queryState = 'error';
     }
+  }
+
+  function isSchemaNotFound(message: string): boolean {
+    // Tauri CommandError: "Schema '<id>' not found" (code: SCHEMA_NOT_FOUND)
+    // HTTP adapter: parsed from ApiError with code SCHEMA_NOT_FOUND
+    return message.includes('not found') || message.includes('SCHEMA_NOT_FOUND');
   }
 
   // Build a lookup map from schema fields for enum label resolution
