@@ -309,6 +309,11 @@ impl SurrealStore {
     /// # }
     /// ```
     pub async fn new(db_path: PathBuf) -> Result<Self> {
+        // Apply desktop-appropriate RocksDB tuning before SurrealDB opens the store.
+        // Environment variables are only set when not already present, so callers
+        // can override any value by setting it before this call.
+        Self::configure_rocksdb_defaults();
+
         // Initialize embedded RocksDB via the Any engine (supports both embedded and HTTP).
         // Path must be expressed as a rocksdb:// URL for engine::any::connect.
         // Note: PathBuf::display() uses OS-native separators. This is macOS/Linux only;
@@ -393,6 +398,61 @@ impl SurrealStore {
             valid_node_types,
             notifier: None,
         })
+    }
+
+    /// Set desktop-appropriate RocksDB defaults via environment variables.
+    ///
+    /// SurrealDB reads `SURREAL_ROCKSDB_*` env vars at connection time.
+    /// The defaults are tuned for a server workload with large write buffers
+    /// and lazy compaction — which causes WAL bloat on a desktop app where
+    /// imports are bursty and the user expects reasonable disk usage.
+    ///
+    /// We only set vars that are not already present, so power users (or
+    /// tests) can override any value by setting the env var before init.
+    ///
+    /// Tuning rationale (Issue #992):
+    /// - **WAL size limit 64 MiB**: Force flush when WAL exceeds this.
+    ///   Desktop imports of ~200 docs produce ~150 MiB of WAL under defaults;
+    ///   capping this forces earlier memtable flushes into SST files.
+    /// - **Write buffer 8 MiB** (down from 32-128 MiB default): Smaller
+    ///   memtables flush sooner, converting WAL to compact SST files.
+    /// - **Target file size 16 MiB** (down from 64 MiB): Produces smaller
+    ///   SST files suited for a desktop dataset (hundreds to low-thousands
+    ///   of documents).
+    /// - **L0 compaction trigger 2** (down from 4): Compact sooner so the
+    ///   database reaches its steady-state size quickly after bulk writes.
+    /// - **Background flush interval 100ms** (down from 200ms): Flush WAL
+    ///   to SST more frequently during sustained writes.
+    /// - **Max write buffers 3**: Allow some write buffering for burst
+    ///   performance while keeping memory bounded.
+    fn configure_rocksdb_defaults() {
+        use std::env;
+        use std::sync::Once;
+
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let defaults: &[(&str, &str)] = &[
+                // WAL: cap total WAL size to force earlier flushing (MiB)
+                ("SURREAL_ROCKSDB_WAL_SIZE_LIMIT", "64"),
+                // Memtable: smaller buffers → faster flush to SST
+                ("SURREAL_ROCKSDB_WRITE_BUFFER_SIZE", "8388608"), // 8 MiB
+                ("SURREAL_ROCKSDB_MAX_WRITE_BUFFER_NUMBER", "3"),
+                ("SURREAL_ROCKSDB_MIN_WRITE_BUFFER_NUMBER_TO_MERGE", "1"),
+                // Compaction: trigger earlier, produce smaller files
+                ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_BASE", "16777216"), // 16 MiB
+                ("SURREAL_ROCKSDB_FILE_COMPACTION_TRIGGER", "2"),
+                // Background flush: more frequent WAL→SST conversion
+                ("SURREAL_ROCKSDB_BACKGROUND_FLUSH_INTERVAL", "100"),
+                // Keep log files bounded
+                ("SURREAL_ROCKSDB_KEEP_LOG_FILE_NUM", "5"),
+            ];
+
+            for (key, value) in defaults {
+                if env::var(key).is_err() {
+                    env::set_var(key, value);
+                }
+            }
+        });
     }
 }
 
