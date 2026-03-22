@@ -430,6 +430,13 @@ pub fn run() {
 ///
 /// Guarded by an `AtomicBool` because Tauri may fire both `CloseRequested` and
 /// `ExitRequested` events, and we must only run the shutdown sequence once.
+///
+/// NOTE (Issue #992): SurrealDB 3.0 has no explicit `close()` / `flush()` method
+/// for the embedded RocksDB backend (upstream: surrealdb/surrealdb#2399). The
+/// `Surreal<Any>` handle is cleaned up on drop — RocksDB's C++ destructor runs
+/// `CancelAllBackgroundWork(true)` and committed WAL data is safe because each
+/// write is flushed to the OS page cache before returning. If SurrealDB adds a
+/// `close()` API, wire it in here before `release_gpu_resources()`.
 pub(crate) fn graceful_shutdown(app_handle: &tauri::AppHandle) {
     use std::sync::atomic::{AtomicBool, Ordering};
     use tauri::Manager;
