@@ -423,6 +423,12 @@ impl SurrealStore {
     ///   database reaches its steady-state size quickly after bulk writes.
     /// - **Max write buffers 3**: Allow some write buffering for burst
     ///   performance while keeping memory bounded.
+    /// - **Blob files disabled**: BlobDB separates large values into `.blob`
+    ///   files which adds ~30% overhead for small desktop datasets. Inline
+    ///   storage in SSTs compacts better at our scale.
+    /// - **Target file size multiplier 1**: Uniform file sizes across all
+    ///   compaction levels (all 16 MiB) instead of doubling per level,
+    ///   which produces tighter compaction for small datasets.
     fn configure_rocksdb_defaults() {
         use std::env;
         use std::sync::Once;
@@ -438,7 +444,12 @@ impl SurrealStore {
                 ("SURREAL_ROCKSDB_MIN_WRITE_BUFFER_NUMBER_TO_MERGE", "2"),
                 // Compaction: trigger earlier, produce smaller files
                 ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_BASE", "16777216"), // 16 MiB
+                ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_MULTIPLIER", "1"), // uniform across levels
                 ("SURREAL_ROCKSDB_FILE_COMPACTION_TRIGGER", "2"),
+                // Blob files: disable for desktop — BlobDB separates large values
+                // into .blob files which adds overhead for small datasets. Keeping
+                // everything in SSTs compacts better at our scale (~200-10K docs).
+                ("SURREAL_ROCKSDB_ENABLE_BLOB_FILES", "false"),
                 // Keep log files bounded
                 ("SURREAL_ROCKSDB_KEEP_LOG_FILE_NUM", "5"),
             ];
