@@ -309,6 +309,11 @@ impl SurrealStore {
     /// # }
     /// ```
     pub async fn new(db_path: PathBuf) -> Result<Self> {
+        // Apply desktop-appropriate RocksDB tuning before SurrealDB opens the store.
+        // Environment variables are only set when not already present, so callers
+        // can override any value by setting it before this call.
+        Self::configure_rocksdb_defaults();
+
         // Initialize embedded RocksDB via the Any engine (supports both embedded and HTTP).
         // Path must be expressed as a rocksdb:// URL for engine::any::connect.
         // Note: PathBuf::display() uses OS-native separators. This is macOS/Linux only;
@@ -393,6 +398,68 @@ impl SurrealStore {
             valid_node_types,
             notifier: None,
         })
+    }
+
+    /// Set desktop-appropriate RocksDB defaults via environment variables.
+    ///
+    /// SurrealDB reads `SURREAL_ROCKSDB_*` env vars at connection time.
+    /// The defaults are tuned for a server workload with large write buffers
+    /// and lazy compaction — which causes WAL bloat on a desktop app where
+    /// imports are bursty and the user expects reasonable disk usage.
+    ///
+    /// We only set vars that are not already present, so power users (or
+    /// tests) can override any value by setting the env var before init.
+    ///
+    /// Tuning rationale (Issue #992):
+    /// - **WAL size limit 64 MiB**: Force flush when WAL exceeds this.
+    ///   Desktop imports of ~200 docs produce ~150 MiB of WAL under defaults;
+    ///   capping this forces earlier memtable flushes into SST files.
+    /// - **Write buffer 8 MiB** (down from 32-128 MiB default): Smaller
+    ///   memtables flush sooner, converting WAL to compact SST files.
+    /// - **Target file size 16 MiB** (down from 64 MiB): Produces smaller
+    ///   SST files suited for a desktop dataset (hundreds to low-thousands
+    ///   of documents).
+    /// - **L0 compaction trigger 2** (down from 4): Compact sooner so the
+    ///   database reaches its steady-state size quickly after bulk writes.
+    /// - **Max write buffers 3**: Allow some write buffering for burst
+    ///   performance while keeping memory bounded.
+    /// - **Blob files disabled**: BlobDB separates large values into `.blob`
+    ///   files which adds ~30% overhead for small desktop datasets. Inline
+    ///   storage in SSTs compacts better at our scale.
+    /// - **Target file size multiplier 1**: Uniform file sizes across all
+    ///   compaction levels (all 16 MiB) instead of doubling per level,
+    ///   which produces tighter compaction for small datasets.
+    fn configure_rocksdb_defaults() {
+        use std::env;
+        use std::sync::Once;
+
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let defaults: &[(&str, &str)] = &[
+                // WAL: cap total WAL size to force earlier flushing (MiB)
+                ("SURREAL_ROCKSDB_WAL_SIZE_LIMIT", "64"),
+                // Memtable: smaller buffers → faster flush to SST
+                ("SURREAL_ROCKSDB_WRITE_BUFFER_SIZE", "8388608"), // 8 MiB
+                ("SURREAL_ROCKSDB_MAX_WRITE_BUFFER_NUMBER", "3"),
+                ("SURREAL_ROCKSDB_MIN_WRITE_BUFFER_NUMBER_TO_MERGE", "2"),
+                // Compaction: trigger earlier, produce smaller files
+                ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_BASE", "16777216"), // 16 MiB
+                ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_MULTIPLIER", "1"), // uniform across levels
+                ("SURREAL_ROCKSDB_FILE_COMPACTION_TRIGGER", "2"),
+                // Blob files: disable for desktop — BlobDB separates large values
+                // into .blob files which adds overhead for small datasets. Keeping
+                // everything in SSTs compacts better at our scale (~200-10K docs).
+                ("SURREAL_ROCKSDB_ENABLE_BLOB_FILES", "false"),
+                // Keep log files bounded
+                ("SURREAL_ROCKSDB_KEEP_LOG_FILE_NUM", "5"),
+            ];
+
+            for (key, value) in defaults {
+                if env::var(key).is_err() {
+                    env::set_var(key, value);
+                }
+            }
+        });
     }
 }
 
