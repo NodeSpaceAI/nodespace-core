@@ -421,8 +421,6 @@ impl SurrealStore {
     ///   of documents).
     /// - **L0 compaction trigger 2** (down from 4): Compact sooner so the
     ///   database reaches its steady-state size quickly after bulk writes.
-    /// - **Background flush interval 100ms** (down from 200ms): Flush WAL
-    ///   to SST more frequently during sustained writes.
     /// - **Max write buffers 3**: Allow some write buffering for burst
     ///   performance while keeping memory bounded.
     fn configure_rocksdb_defaults() {
@@ -437,12 +435,10 @@ impl SurrealStore {
                 // Memtable: smaller buffers → faster flush to SST
                 ("SURREAL_ROCKSDB_WRITE_BUFFER_SIZE", "8388608"), // 8 MiB
                 ("SURREAL_ROCKSDB_MAX_WRITE_BUFFER_NUMBER", "3"),
-                ("SURREAL_ROCKSDB_MIN_WRITE_BUFFER_NUMBER_TO_MERGE", "1"),
+                ("SURREAL_ROCKSDB_MIN_WRITE_BUFFER_NUMBER_TO_MERGE", "2"),
                 // Compaction: trigger earlier, produce smaller files
                 ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_BASE", "16777216"), // 16 MiB
                 ("SURREAL_ROCKSDB_FILE_COMPACTION_TRIGGER", "2"),
-                // Background flush: more frequent WAL→SST conversion
-                ("SURREAL_ROCKSDB_BACKGROUND_FLUSH_INTERVAL", "100"),
                 // Keep log files bounded
                 ("SURREAL_ROCKSDB_KEEP_LOG_FILE_NUM", "5"),
             ];
