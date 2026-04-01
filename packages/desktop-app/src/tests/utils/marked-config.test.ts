@@ -305,9 +305,9 @@ describe('marked.js Integration', () => {
       const result = markdownToHtml(largeText);
       const duration = Date.now() - start;
 
-      // Should complete within reasonable time (less than 200ms for this size)
-      // Updated threshold based on actual performance: ~165ms consistently
-      expect(duration).toBeLessThan(200);
+      // Should complete within reasonable time
+      // Threshold set with headroom for CI/cold-cache variance
+      expect(duration).toBeLessThan(500);
       expect(result).toContain('class="markdown-bold"');
       expect(result).toContain('class="markdown-italic"');
     });

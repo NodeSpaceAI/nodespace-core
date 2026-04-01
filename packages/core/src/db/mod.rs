@@ -26,7 +26,10 @@ mod index_manager;
 mod surreal_store;
 
 pub use error::DatabaseError;
-pub use events::{DomainEvent, RelationshipEvent};
+pub use events::{
+    DomainEvent, EventEnvelope, EventMetadata, PlaybookExecutionContext, PropertyChange,
+    RelationshipEvent,
+};
 pub use fractional_ordering::FractionalOrderCalculator;
 pub use index_manager::IndexManager;
 pub use surreal_store::{RelationshipRecord, StoreChange, StoreOperation, SurrealStore};

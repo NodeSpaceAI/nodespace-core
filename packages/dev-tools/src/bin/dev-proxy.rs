@@ -31,7 +31,10 @@ use axum::{
 };
 use futures::stream::Stream;
 use nodespace_core::{
-    db::{events::DomainEvent, SurrealStore},
+    db::{
+        events::{DomainEvent, EventEnvelope},
+        SurrealStore,
+    },
     models,
     models::{Node, NodeFilter, NodeUpdate, SchemaNode, TaskNode, TaskNodeUpdate},
     services::{
@@ -567,23 +570,20 @@ async fn main() -> anyhow::Result<()> {
 /// Note: Tauri desktop app would subscribe directly to DomainEvent and emit Tauri events,
 /// without this conversion layer.
 async fn domain_event_to_sse_bridge(
-    mut domain_rx: broadcast::Receiver<DomainEvent>,
+    mut domain_rx: broadcast::Receiver<EventEnvelope>,
     sse_tx: broadcast::Sender<SseEvent>,
 ) {
     tracing::info!("🌉 Domain event bridge started, waiting for events...");
 
     loop {
         match domain_rx.recv().await {
-            Ok(event) => {
-                tracing::debug!("🔔 Received DomainEvent: {:?}", event);
+            Ok(envelope) => {
+                tracing::debug!("🔔 Received DomainEvent: {:?}", envelope.event);
+                let source_client_id = envelope.metadata.source_client_id;
                 // Convert DomainEvent to SseEvent(s)
                 // Issue #811: All relationship events use unified format
-                match event {
-                    DomainEvent::NodeCreated {
-                        node_id,
-                        node_type,
-                        source_client_id,
-                    } => {
+                match envelope.event {
+                    DomainEvent::NodeCreated { node_id, node_type } => {
                         // Filter out events from dev-proxy (browser operations) to prevent
                         // feedback loops — EXCEPT for structural node types like "schema" and
                         // "collection" that need to trigger sidebar refreshes even when created
@@ -605,10 +605,7 @@ async fn domain_event_to_sse_bridge(
                             client_id: source_client_id,
                         });
                     }
-                    DomainEvent::NodeUpdated {
-                        node_id,
-                        source_client_id,
-                    } => {
+                    DomainEvent::NodeUpdated { node_id, .. } => {
                         // Filter out events from dev-proxy (browser operations)
                         // Don't send browser's own changes back to it
                         if source_client_id.as_deref() == Some("dev-proxy") {
@@ -631,11 +628,7 @@ async fn domain_event_to_sse_bridge(
                         });
                         tracing::debug!("📤 SSE broadcast result: {:?}", result);
                     }
-                    DomainEvent::NodeDeleted {
-                        id,
-                        node_type,
-                        source_client_id,
-                    } => {
+                    DomainEvent::NodeDeleted { id, node_type } => {
                         // Filter out events from dev-proxy (browser operations), except for
                         // structural node types (schema, collection) which need to trigger
                         // sidebar refreshes even when deleted via the browser.
@@ -656,10 +649,7 @@ async fn domain_event_to_sse_bridge(
                     }
                     // Unified relationship events (Issue #811)
                     // All relationship types (has_child, member_of, mentions, custom) use these events
-                    DomainEvent::RelationshipCreated {
-                        relationship,
-                        source_client_id,
-                    } => {
+                    DomainEvent::RelationshipCreated { relationship } => {
                         // Filter out events from dev-proxy (browser operations)
                         if source_client_id.as_deref() == Some("dev-proxy") {
                             tracing::debug!(
@@ -676,10 +666,7 @@ async fn domain_event_to_sse_bridge(
                             client_id: source_client_id,
                         });
                     }
-                    DomainEvent::RelationshipUpdated {
-                        relationship,
-                        source_client_id,
-                    } => {
+                    DomainEvent::RelationshipUpdated { relationship } => {
                         // Filter out events from dev-proxy (browser operations)
                         if source_client_id.as_deref() == Some("dev-proxy") {
                             tracing::debug!(
@@ -701,7 +688,6 @@ async fn domain_event_to_sse_bridge(
                         from_id,
                         to_id,
                         relationship_type,
-                        source_client_id,
                     } => {
                         // Filter out events from dev-proxy (browser operations)
                         if source_client_id.as_deref() == Some("dev-proxy") {

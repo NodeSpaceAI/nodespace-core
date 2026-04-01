@@ -1,5 +1,5 @@
 use anyhow::Result;
-use nodespace_core::db::DomainEvent;
+use nodespace_core::db::{DomainEvent, EventEnvelope};
 use nodespace_core::NodeService;
 use serde::Serialize;
 use std::sync::Arc;
@@ -82,9 +82,9 @@ impl DomainEventForwarder {
             tokio::select! {
                 result = rx.recv() => {
                     match result {
-                        Ok(event) => {
-                            debug!("Received domain event: {:?}", event);
-                            self.forward_event(&event);
+                        Ok(envelope) => {
+                            debug!("Received domain event: {:?}", &envelope);
+                            self.forward_event(&envelope);
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
                             debug!("Event queue lagged, some events may have been skipped");
@@ -111,46 +111,23 @@ impl DomainEventForwarder {
     /// Filters out events that originated from this client (prevents feedback loop).
     ///
     /// Issue #811: All relationship events use unified format (RelationshipCreated/Updated/Deleted).
-    fn forward_event(&self, event: &DomainEvent) {
-        // Extract source_client_id from the event
-        let source_client_id = match event {
-            DomainEvent::NodeCreated {
-                source_client_id, ..
-            } => source_client_id,
-            DomainEvent::NodeUpdated {
-                source_client_id, ..
-            } => source_client_id,
-            DomainEvent::NodeDeleted {
-                source_client_id, ..
-            } => source_client_id,
-            // Unified relationship events (Issue #811)
-            DomainEvent::RelationshipCreated {
-                source_client_id, ..
-            } => source_client_id,
-            DomainEvent::RelationshipUpdated {
-                source_client_id, ..
-            } => source_client_id,
-            DomainEvent::RelationshipDeleted {
-                source_client_id, ..
-            } => source_client_id,
-        };
-
+    /// Issue #995: Events are now wrapped in EventEnvelope with metadata (source_client_id, playbook_context).
+    fn forward_event(&self, envelope: &EventEnvelope) {
         // Filter out events from this client (prevent feedback loop)
-        if let Some(event_client_id) = source_client_id {
+        // source_client_id is now in envelope metadata, not per-variant
+        if let Some(ref event_client_id) = envelope.metadata.source_client_id {
             if event_client_id == &self.client_id {
                 debug!(
                     "Filtering out event from same client ({}): {:?}",
-                    self.client_id, event
+                    self.client_id, envelope.event
                 );
                 return;
             }
         }
 
         // Forward the event to the frontend (Issue #724: ID-only payloads)
-        match event {
-            DomainEvent::NodeCreated {
-                node_id, node_type, ..
-            } => {
+        match &envelope.event {
+            DomainEvent::NodeCreated { node_id, node_type } => {
                 // Include node_type for reactive UI updates (e.g., collections sidebar)
                 let payload = NodeIdPayload {
                     id: node_id.clone(),
@@ -170,7 +147,7 @@ impl DomainEventForwarder {
                     error!("Failed to emit node:updated for {}: {}", node_id, e);
                 }
             }
-            DomainEvent::NodeDeleted { id, node_type, .. } => {
+            DomainEvent::NodeDeleted { id, node_type } => {
                 let payload = NodeIdPayload {
                     id: id.clone(),
                     node_type: Some(node_type.clone()),
@@ -181,7 +158,7 @@ impl DomainEventForwarder {
             }
             // Unified relationship events (Issue #811)
             // All relationship types (has_child, member_of, mentions, custom) use these events
-            DomainEvent::RelationshipCreated { relationship, .. } => {
+            DomainEvent::RelationshipCreated { relationship } => {
                 debug!(
                     "Forwarding RelationshipCreated: {} ({})",
                     relationship.id, relationship.relationship_type
@@ -190,7 +167,7 @@ impl DomainEventForwarder {
                     error!("Failed to emit relationship:created: {}", e);
                 }
             }
-            DomainEvent::RelationshipUpdated { relationship, .. } => {
+            DomainEvent::RelationshipUpdated { relationship } => {
                 debug!(
                     "Forwarding RelationshipUpdated: {} ({})",
                     relationship.id, relationship.relationship_type
@@ -204,7 +181,6 @@ impl DomainEventForwarder {
                 from_id,
                 to_id,
                 relationship_type,
-                ..
             } => {
                 #[derive(Serialize)]
                 #[serde(rename_all = "camelCase")]

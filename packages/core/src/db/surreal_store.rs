@@ -50,7 +50,6 @@
 //! }
 //! ```
 
-use crate::db::events::DomainEvent;
 use crate::db::extract_record_key;
 use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
@@ -152,6 +151,8 @@ pub enum StoreOperation {
 /// - `source` is passed per-operation (not stored in SurrealStore) because
 ///   NodeService is a shared singleton - different clients pass their ID per-request
 /// - For deleted nodes, `node` contains the node state before deletion
+/// - `previous_node` carries pre-mutation state for updates, enabling property
+///   change detection in the playbook engine (Issue #995)
 #[derive(Debug, Clone)]
 pub struct StoreChange {
     /// The type of operation that occurred
@@ -160,6 +161,8 @@ pub struct StoreChange {
     pub node: Node,
     /// Optional client identifier for filtering events
     pub source: Option<String>,
+    /// Pre-mutation node state (only populated for updates where available)
+    pub previous_node: Option<Node>,
 }
 
 /// Type alias for the store change notifier callback
@@ -258,7 +261,8 @@ pub struct SurrealStore {
     /// SurrealDB connection (Any engine: supports embedded RocksDB and HTTP)
     db: Arc<Surreal<Any>>,
     /// Broadcast channel for domain events (128 subscriber capacity)
-    event_tx: broadcast::Sender<DomainEvent>,
+    /// Issue #995: Changed to EventEnvelope
+    event_tx: broadcast::Sender<crate::db::events::EventEnvelope>,
     /// Cache of all valid node types (derived from schema definitions)
     ///
     /// Contains all schema IDs from the database, used for validating
@@ -444,7 +448,7 @@ impl SurrealStore {
                 ("SURREAL_ROCKSDB_MIN_WRITE_BUFFER_NUMBER_TO_MERGE", "2"),
                 // Compaction: trigger earlier, produce smaller files
                 ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_BASE", "16777216"), // 16 MiB
-                ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_MULTIPLIER", "1"), // uniform across levels
+                ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_MULTIPLIER", "1"),  // uniform across levels
                 ("SURREAL_ROCKSDB_FILE_COMPACTION_TRIGGER", "2"),
                 // Blob files: disable for desktop — BlobDB separates large values
                 // into .blob files which adds overhead for small datasets. Keeping
@@ -506,14 +510,14 @@ impl SurrealStore {
     ///
     /// ```rust,no_run
     /// # use nodespace_core::db::SurrealStore;
-    /// # use nodespace_core::DomainEvent;
+    /// # use nodespace_core::db::events::{DomainEvent, EventEnvelope};
     /// # use std::path::PathBuf;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let store = SurrealStore::new(PathBuf::from("./data/test.db")).await?;
     /// let mut rx = store.subscribe_to_events();
-    /// while let Ok(event) = rx.recv().await {
-    ///     match event {
+    /// while let Ok(envelope) = rx.recv().await {
+    ///     match &envelope.event {
     ///         DomainEvent::NodeCreated { node_id, .. } => {
     ///             println!("Node created: {}", node_id)
     ///         }
@@ -527,7 +531,7 @@ impl SurrealStore {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn subscribe_to_events(&self) -> broadcast::Receiver<DomainEvent> {
+    pub fn subscribe_to_events(&self) -> broadcast::Receiver<crate::db::events::EventEnvelope> {
         self.event_tx.subscribe()
     }
 
@@ -741,6 +745,7 @@ impl SurrealStore {
             operation: StoreOperation::Created,
             node: node.clone(),
             source,
+            previous_node: None,
         });
 
         // Return the created node directly
@@ -911,6 +916,7 @@ impl SurrealStore {
             operation: StoreOperation::Created,
             node: node.clone(),
             source,
+            previous_node: None,
         });
 
         Ok(node)
@@ -1068,6 +1074,7 @@ impl SurrealStore {
             operation: StoreOperation::Updated,
             node: updated_node.clone(),
             source,
+            previous_node: None,
         });
 
         Ok(updated_node)
@@ -1182,6 +1189,7 @@ impl SurrealStore {
             operation: StoreOperation::Created,
             node: created_node.clone(),
             source,
+            previous_node: None,
         });
 
         Ok(created_node)
@@ -1267,6 +1275,7 @@ impl SurrealStore {
             operation: StoreOperation::Updated,
             node: updated_node.clone(),
             source,
+            previous_node: None,
         });
 
         Ok(updated_node)
@@ -1400,6 +1409,7 @@ impl SurrealStore {
             operation: StoreOperation::Updated,
             node: node.clone(),
             source,
+            previous_node: None,
         });
 
         Ok(node)
@@ -1452,10 +1462,14 @@ impl SurrealStore {
         source: Option<String>,
     ) -> Result<Option<Node>> {
         // Fetch current node to build update values
+        // Clone for pre-mutation state before fields are consumed (Issue #995)
         let current = self
             .get_node(id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found: {}", id))?;
+
+        // Snapshot pre-mutation state before fields are consumed (Issue #995)
+        let previous_node = current.clone();
 
         // Calculate new version for explicit binding
         let new_version = expected_version + 1;
@@ -1534,11 +1548,12 @@ impl SurrealStore {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found after update"))?;
 
-        // Notify registered callback of the store change (Issue #718)
+        // Notify registered callback of the store change (Issue #718, #995)
         self.notify(StoreChange {
             operation: StoreOperation::Updated,
             node: node.clone(),
             source,
+            previous_node: Some(previous_node),
         });
 
         Ok(Some(node))
@@ -1588,6 +1603,7 @@ impl SurrealStore {
             operation: StoreOperation::Deleted,
             node,
             source,
+            previous_node: None,
         });
 
         Ok(DeleteResult { existed: true })
@@ -1681,6 +1697,7 @@ impl SurrealStore {
             operation: StoreOperation::Deleted,
             node,
             source,
+            previous_node: None,
         });
 
         Ok(DeleteResult { existed: true })
@@ -3447,6 +3464,7 @@ impl SurrealStore {
                 operation: StoreOperation::Created,
                 node,
                 source: Some("bulk_create_hierarchy".to_string()),
+                previous_node: None,
             });
         }
 
@@ -3560,6 +3578,7 @@ impl SurrealStore {
                     operation: StoreOperation::Created,
                     node,
                     source: Some("bulk_create_hierarchy".to_string()),
+                    previous_node: None,
                 });
             }
         }
@@ -3657,6 +3676,7 @@ impl SurrealStore {
             operation: StoreOperation::Created,
             node,
             source: Some("streaming_import".to_string()),
+            previous_node: None,
         });
 
         Ok(id)

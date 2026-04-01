@@ -31,7 +31,10 @@ pub use behaviors::{
     CollectionNodeBehavior, CustomNodeBehavior, DateNodeBehavior, NodeBehavior,
     NodeBehaviorRegistry, ProcessingError, TaskNodeBehavior, TextNodeBehavior,
 };
-pub use db::{DatabaseError, DomainEvent, RelationshipEvent, RelationshipRecord, SurrealStore};
+pub use db::{
+    DatabaseError, DomainEvent, EventEnvelope, EventMetadata, PlaybookExecutionContext,
+    PropertyChange, RelationshipEvent, RelationshipRecord, SurrealStore,
+};
 pub use models::{
     FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter, SchemaNode,
     TaskNode, TaskNodeUpdate, TaskStatus, ValidationError,

@@ -1397,16 +1397,13 @@ mod collection_service_tests {
             .add_to_collection("event-doc", &collection_id)
             .await?;
 
-        // Check for RelationshipCreated event (unified format from NodeService)
-        let event = timeout(Duration::from_secs(1), event_rx.recv())
+        // Check for RelationshipCreated event (unified format from NodeService, Issue #995: EventEnvelope)
+        let envelope = timeout(Duration::from_secs(1), event_rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
-        match event {
-            DomainEvent::RelationshipCreated {
-                relationship,
-                source_client_id: _,
-            } => {
+        match &envelope.event {
+            DomainEvent::RelationshipCreated { relationship } => {
                 assert_eq!(relationship.from_id, "event-doc");
                 assert_eq!(relationship.to_id, collection_id);
                 assert_eq!(relationship.relationship_type, "member_of");
@@ -1419,16 +1416,14 @@ mod collection_service_tests {
             .remove_from_collection("event-doc", &collection_id)
             .await?;
 
-        // Check for RelationshipDeleted event (unified format from NodeService)
-        let event = timeout(Duration::from_secs(1), event_rx.recv())
+        // Check for RelationshipDeleted event (unified format from NodeService, Issue #995: EventEnvelope)
+        let envelope = timeout(Duration::from_secs(1), event_rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
-        match event {
+        match &envelope.event {
             DomainEvent::RelationshipDeleted {
-                relationship_type,
-                source_client_id: _,
-                ..
+                relationship_type, ..
             } => {
                 assert_eq!(relationship_type, "member_of");
             }

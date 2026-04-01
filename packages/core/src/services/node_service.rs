@@ -44,6 +44,87 @@ fn extract_record_id_string(record_id: &RecordId) -> String {
     format!("{}:{}", record_id.table, extract_record_key(record_id))
 }
 
+/// Compute property changes between pre-mutation and post-mutation node properties (Issue #995)
+///
+/// Diffs the top-level keys within each namespace. For namespaced properties
+/// (e.g., `{"task": {"status": "done"}}`), diffs within each namespace object.
+/// For flat properties, diffs top-level keys directly.
+///
+/// Returns a `Vec<PropertyChange>` describing what changed.
+fn compute_property_changes(old: &Value, new: &Value) -> Vec<crate::db::events::PropertyChange> {
+    use crate::db::events::PropertyChange;
+
+    let mut changes = Vec::new();
+
+    let old_obj = match old.as_object() {
+        Some(o) => o,
+        None => return changes,
+    };
+    let new_obj = match new.as_object() {
+        Some(o) => o,
+        None => return changes,
+    };
+
+    // Collect all keys from both old and new
+    let mut all_keys: HashSet<&String> = old_obj.keys().collect();
+    all_keys.extend(new_obj.keys());
+
+    for key in all_keys {
+        let old_val = old_obj.get(key);
+        let new_val = new_obj.get(key);
+
+        match (old_val, new_val) {
+            (Some(ov), Some(nv)) => {
+                // Both exist — check if the value changed
+                if ov != nv {
+                    // If both are objects (namespace), diff their contents
+                    if let (Some(old_ns), Some(new_ns)) = (ov.as_object(), nv.as_object()) {
+                        let mut ns_keys: HashSet<&String> = old_ns.keys().collect();
+                        ns_keys.extend(new_ns.keys());
+                        for ns_key in ns_keys {
+                            let old_ns_val = old_ns.get(ns_key);
+                            let new_ns_val = new_ns.get(ns_key);
+                            if old_ns_val != new_ns_val {
+                                changes.push(PropertyChange {
+                                    key: format!("{}.{}", key, ns_key),
+                                    old_value: old_ns_val.cloned(),
+                                    new_value: new_ns_val.cloned(),
+                                });
+                            }
+                        }
+                    } else {
+                        // Scalar change at top level
+                        changes.push(PropertyChange {
+                            key: key.clone(),
+                            old_value: Some(ov.clone()),
+                            new_value: Some(nv.clone()),
+                        });
+                    }
+                }
+            }
+            (Some(ov), None) => {
+                // Property removed
+                changes.push(PropertyChange {
+                    key: key.clone(),
+                    old_value: Some(ov.clone()),
+                    new_value: None,
+                });
+            }
+            (None, Some(nv)) => {
+                // Property added
+                changes.push(PropertyChange {
+                    key: key.clone(),
+                    old_value: None,
+                    new_value: Some(nv.clone()),
+                });
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+
+    changes
+}
+
 /// Default limit for query_nodes_simple when no limit is specified.
 /// Prevents accidental full table scans and improves performance.
 pub const DEFAULT_QUERY_LIMIT: usize = 100;
@@ -367,15 +448,22 @@ pub struct NodeService {
     migration_registry: Arc<MigrationRegistry>,
 
     /// Broadcast channel for domain events (128 subscriber capacity)
-    event_tx: broadcast::Sender<DomainEvent>,
+    /// Issue #995: Changed from DomainEvent to EventEnvelope
+    event_tx: broadcast::Sender<crate::db::events::EventEnvelope>,
 
     /// Optional client identifier for event source tracking (Issue #665)
     ///
-    /// When set, all emitted events will include this client_id as source_client_id.
-    /// This enables clients to filter out their own events (prevent feedback loops).
+    /// When set, all emitted events will include this client_id as source_client_id
+    /// in the EventEnvelope metadata.
     ///
     /// Use `with_client()` to create a new NodeService instance with client_id set.
     client_id: Option<String>,
+
+    /// Optional playbook execution context for cycle detection (Issue #995)
+    ///
+    /// When set, emitted events carry this context in EventEnvelope metadata.
+    /// Use `with_execution_context()` to create a scoped instance.
+    execution_context: Option<crate::db::events::PlaybookExecutionContext>,
 
     /// Optional waker to trigger embedding processor (Issue #729)
     ///
@@ -395,6 +483,7 @@ impl Clone for NodeService {
             migration_registry: self.migration_registry.clone(),
             event_tx: self.event_tx.clone(),
             client_id: self.client_id.clone(),
+            execution_context: self.execution_context.clone(),
             embedding_waker: self.embedding_waker.clone(),
         }
     }
@@ -434,38 +523,59 @@ impl NodeService {
         // Infrastructure exists for future schema evolution post-deployment
         let migration_registry = MigrationRegistry::new();
 
-        // Initialize broadcast channel for domain events
+        // Initialize broadcast channel for domain events (Issue #995: EventEnvelope)
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
 
         // Register store-level notifier for automatic domain event emission (Issue #718)
-        // This callback converts StoreChange notifications to DomainEvents.
+        // This callback converts StoreChange notifications to EventEnvelopes.
         // Must be set BEFORE seed_core_schemas so schema seeding also emits events.
         //
         // Issue #724: Events now send only node_id (not full payload) for efficiency.
-        // Subscribers fetch full node data via get_node() if needed.
+        // Issue #995: Events wrapped in EventEnvelope with metadata.
         {
             let tx = event_tx.clone();
             let notifier = Arc::new(move |change: StoreChange| {
+                use crate::db::events::{EventEnvelope, EventMetadata};
+
+                // Compute changed properties for updates (Issue #995)
+                let changed_properties = if change.operation == StoreOperation::Updated {
+                    if let Some(ref prev) = change.previous_node {
+                        compute_property_changes(&prev.properties, &change.node.properties)
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                };
+
                 // Map store operation to domain event (ID-only, no payload conversion)
                 let event = match change.operation {
                     StoreOperation::Created => DomainEvent::NodeCreated {
                         node_id: change.node.id.clone(),
                         node_type: change.node.node_type.clone(),
-                        source_client_id: change.source,
                     },
                     StoreOperation::Updated => DomainEvent::NodeUpdated {
                         node_id: change.node.id.clone(),
-                        source_client_id: change.source,
+                        node_type: change.node.node_type.clone(),
+                        changed_properties,
                     },
                     StoreOperation::Deleted => DomainEvent::NodeDeleted {
                         id: change.node.id.clone(),
                         node_type: change.node.node_type.clone(),
+                    },
+                };
+
+                // Wrap in EventEnvelope with metadata (Issue #995)
+                let envelope = EventEnvelope {
+                    event,
+                    metadata: EventMetadata {
                         source_client_id: change.source,
+                        playbook_context: None,
                     },
                 };
 
                 // Send to broadcast channel (ignore if no subscribers)
-                let _ = tx.send(event);
+                let _ = tx.send(envelope);
             });
 
             // Get mutable reference to store to set notifier
@@ -488,6 +598,7 @@ impl NodeService {
             migration_registry: Arc::new(migration_registry),
             event_tx,
             client_id: None,
+            execution_context: None,
             embedding_waker: None,
         };
 
@@ -654,40 +765,39 @@ impl NodeService {
         cloned
     }
 
-    /// Subscribe to domain events
+    /// Create a scoped NodeService with playbook execution context (Issue #995)
     ///
-    /// Returns a broadcast receiver that receives all domain events (node created,
-    /// updated, deleted, hierarchy changed, mentions added/removed).
+    /// Events emitted through this instance carry the execution context in
+    /// `EventEnvelope.metadata.playbook_context` for cycle detection.
+    pub fn with_execution_context(&self, ctx: crate::db::events::PlaybookExecutionContext) -> Self {
+        let mut cloned = self.clone();
+        cloned.execution_context = Some(ctx);
+        cloned
+    }
+
+    /// Subscribe to domain events (Issue #995: returns EventEnvelope)
     ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::SurrealStore;
-    /// # use std::sync::Arc;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut store = Arc::new(SurrealStore::new("./data/nodespace.db".into()).await?);
-    /// # let service = NodeService::new(&mut store).await?;
-    /// let mut rx = service.subscribe_to_events();
-    /// tokio::spawn(async move {
-    ///     while let Ok(event) = rx.recv().await {
-    ///         println!("Event: {:?}", event);
-    ///     }
-    /// });
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn subscribe_to_events(&self) -> broadcast::Receiver<DomainEvent> {
+    /// Returns a broadcast receiver that receives all domain events wrapped
+    /// in `EventEnvelope` with metadata (source_client_id, playbook_context).
+    pub fn subscribe_to_events(&self) -> broadcast::Receiver<crate::db::events::EventEnvelope> {
         self.event_tx.subscribe()
     }
 
-    /// Emit a domain event to all subscribers
+    /// Emit a domain event to all subscribers (Issue #995: wraps in EventEnvelope)
     ///
     /// Internal helper for emitting events after successful operations.
-    /// Ignores errors if no subscribers (expected in some tests).
+    /// Wraps the event in an EventEnvelope with this instance's client_id
+    /// and execution_context as metadata.
     fn emit_event(&self, event: DomainEvent) {
-        let _ = self.event_tx.send(event);
+        use crate::db::events::{EventEnvelope, EventMetadata};
+        let envelope = EventEnvelope {
+            event,
+            metadata: EventMetadata {
+                source_client_id: self.client_id.clone(),
+                playbook_context: self.execution_context.clone(),
+            },
+        };
+        let _ = self.event_tx.send(envelope);
     }
 
     // NOTE: emit_node_created and emit_node_updated helpers removed (Issue #718)
@@ -1801,7 +1911,7 @@ impl NodeService {
 
         // Emit event if relationship was created (not already existing)
         if let Some(rel_id) = relationship_id {
-            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+            self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent {
                     id: rel_id,
                     from_id: mentioning_node_id.to_string(),
@@ -1809,7 +1919,6 @@ impl NodeService {
                     relationship_type: "mentions".to_string(),
                     properties: serde_json::json!({}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -1858,12 +1967,11 @@ impl NodeService {
 
         // Emit event if relationship was deleted (existed)
         if let Some(rel_id) = relationship_id {
-            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
+            self.emit_event(DomainEvent::RelationshipDeleted {
                 id: rel_id,
                 from_id: mentioning_node_id.to_string(),
                 to_id: mentioned_node_id.to_string(),
                 relationship_type: "mentions".to_string(),
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -3593,7 +3701,6 @@ impl NodeService {
                     relationship_type: "has_child".to_string(),
                     properties: serde_json::json!({"order": actual_order}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -3701,7 +3808,6 @@ impl NodeService {
                     relationship_type: "has_child".to_string(),
                     properties: serde_json::json!({"order": actual_order}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -3972,7 +4078,6 @@ impl NodeService {
                 relationship_type: "has_child".to_string(),
                 properties: serde_json::json!({"order": actual_order}),
             },
-            source_client_id: self.client_id.clone(),
         });
 
         tracing::debug!(
@@ -4055,7 +4160,6 @@ impl NodeService {
                     relationship_type: "has_child".to_string(),
                     properties: serde_json::json!({"order": actual_order}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -5016,7 +5120,6 @@ impl NodeService {
                     relationship_type: "has_child".to_string(),
                     properties: serde_json::json!({"order": actual_order}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         } else {
             // Create new node
@@ -5060,7 +5163,6 @@ impl NodeService {
                     relationship_type: "has_child".to_string(),
                     properties: serde_json::json!({"order": actual_order}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -5164,7 +5266,7 @@ impl NodeService {
 
         // Emit event if relationship was created (not already existing)
         if let Some(rel_id) = relationship_id {
-            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+            self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent {
                     id: rel_id,
                     from_id: source_id.to_string(),
@@ -5172,7 +5274,6 @@ impl NodeService {
                     relationship_type: "mentions".to_string(),
                     properties: serde_json::json!({}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -5219,12 +5320,11 @@ impl NodeService {
 
         // Emit event if relationship was deleted (existed)
         if let Some(rel_id) = relationship_id {
-            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
+            self.emit_event(DomainEvent::RelationshipDeleted {
                 id: rel_id,
                 from_id: source_id.to_string(),
                 to_id: target_id.to_string(),
                 relationship_type: "mentions".to_string(),
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -5546,7 +5646,7 @@ impl NodeService {
                     let order_result: Vec<OrderResult> = resp.take(0).unwrap_or_default();
                     let order = order_result.first().and_then(|r| r.order).unwrap_or(1.0);
 
-                    let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+                    self.emit_event(DomainEvent::RelationshipCreated {
                         relationship: crate::db::events::RelationshipEvent {
                             id,
                             from_id: source_id.to_string(),
@@ -5554,7 +5654,6 @@ impl NodeService {
                             relationship_type: "member_of".to_string(),
                             properties: json!({"order": order}),
                         },
-                        source_client_id: self.client_id.clone(),
                     });
                 }
                 return Ok(());
@@ -5652,7 +5751,7 @@ impl NodeService {
         let results: Vec<RelateResult> = result.take(0).unwrap_or_default();
 
         if let Some(rel_result) = results.first() {
-            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+            self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent {
                     id: extract_record_id_string(&rel_result.id),
                     from_id: source_id.to_string(),
@@ -5660,7 +5759,6 @@ impl NodeService {
                     relationship_type: relationship_name.to_string(),
                     properties: final_edge_data,
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -5753,12 +5851,11 @@ impl NodeService {
 
         // Emit RelationshipDeleted event
         if let Some(rel_id) = existing_ids.first() {
-            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
+            self.emit_event(DomainEvent::RelationshipDeleted {
                 id: extract_record_id_string(rel_id),
                 from_id: source_id.to_string(),
                 to_id: target_id.to_string(),
                 relationship_type: relationship_name.to_string(),
-                source_client_id: self.client_id.clone(),
             });
         }
 
