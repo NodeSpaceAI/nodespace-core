@@ -45,7 +45,7 @@ use serde::{Deserialize, Serialize};
 /// - `mentions`: `{"context": "optional context"}`
 /// - `member_of`: `{}` (no additional properties)
 /// - Custom: User-defined JSON properties
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelationshipEvent {
     /// Unique relationship ID in SurrealDB format (e.g., "relationship:abc123")
@@ -64,7 +64,7 @@ pub struct RelationshipEvent {
 ///
 /// Computed by diffing pre-mutation and post-mutation node properties.
 /// Used by the playbook engine for fine-grained `property_changed` triggers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PropertyChange {
     /// Property key that changed (namespaced, e.g., "task.status")
     pub key: String,
@@ -78,7 +78,7 @@ pub struct PropertyChange {
 ///
 /// When the playbook engine executes actions that mutate the graph, the resulting
 /// events carry this context so the engine can track chain depth and attribution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlaybookExecutionContext {
     /// UUID of the root user event that started this chain
     pub originating_event_id: String,
@@ -92,7 +92,7 @@ pub struct PlaybookExecutionContext {
 ///
 /// Wraps `DomainEvent` in an envelope so metadata like `source_client_id` lives
 /// in one place instead of being duplicated across every event variant.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EventMetadata {
     /// Client that originated the mutation (e.g., "tauri-main", "playbook-engine")
     pub source_client_id: Option<String>,
@@ -105,7 +105,7 @@ pub struct EventMetadata {
 /// Carried on the broadcast channel. All subscribers receive envelopes.
 /// `source_client_id` has been moved from individual event variants into
 /// `metadata` to eliminate duplication and support future metadata fields.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EventEnvelope {
     /// The domain event payload
     pub event: DomainEvent,
@@ -123,7 +123,7 @@ pub struct EventEnvelope {
 ///
 /// Node events send only the `node_id` (not full payload) for efficiency.
 /// Subscribers fetch the full node data via `get_node()` if needed (Issue #724).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DomainEvent {
     /// A new node was created
     NodeCreated {

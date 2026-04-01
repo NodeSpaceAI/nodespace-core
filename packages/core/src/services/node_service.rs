@@ -47,8 +47,10 @@ fn extract_record_id_string(record_id: &RecordId) -> String {
 /// Compute property changes between pre-mutation and post-mutation node properties (Issue #995)
 ///
 /// Diffs the top-level keys within each namespace. For namespaced properties
-/// (e.g., `{"task": {"status": "done"}}`), diffs within each namespace object.
-/// For flat properties, diffs top-level keys directly.
+/// (e.g., `{"task": {"status": "done"}}`), diffs within each namespace object,
+/// producing keys like `"task.status"`. Only handles single-level nesting
+/// (namespace → property), matching NodeSpace's storage format where properties
+/// are stored as `{ "node_type": { "prop": value } }`.
 ///
 /// Returns a `Vec<PropertyChange>` describing what changed.
 fn compute_property_changes(old: &Value, new: &Value) -> Vec<crate::db::events::PropertyChange> {
@@ -123,6 +125,210 @@ fn compute_property_changes(old: &Value, new: &Value) -> Vec<crate::db::events::
     }
 
     changes
+}
+
+#[cfg(test)]
+mod property_change_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Helper: find a PropertyChange by key in the result vec.
+    fn find_change<'a>(
+        changes: &'a [crate::db::events::PropertyChange],
+        key: &str,
+    ) -> Option<&'a crate::db::events::PropertyChange> {
+        changes.iter().find(|c| c.key == key)
+    }
+
+    #[test]
+    fn test_no_changes() {
+        let old = json!({"title": "hello", "task": {"status": "todo"}});
+        let new = json!({"title": "hello", "task": {"status": "todo"}});
+        let changes = compute_property_changes(&old, &new);
+        assert!(changes.is_empty(), "identical objects should produce no changes");
+    }
+
+    #[test]
+    fn test_scalar_property_changed() {
+        let old = json!({"title": "old title", "color": "red"});
+        let new = json!({"title": "new title", "color": "red"});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "title");
+        assert_eq!(c.old_value, Some(json!("old title")));
+        assert_eq!(c.new_value, Some(json!("new title")));
+    }
+
+    #[test]
+    fn test_scalar_property_changed_number() {
+        let old = json!({"count": 1});
+        let new = json!({"count": 42});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "count");
+        assert_eq!(c.old_value, Some(json!(1)));
+        assert_eq!(c.new_value, Some(json!(42)));
+    }
+
+    #[test]
+    fn test_namespace_inner_property_changed() {
+        let old = json!({"task": {"status": "todo", "priority": "low"}});
+        let new = json!({"task": {"status": "done", "priority": "low"}});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "task.status");
+        assert_eq!(c.old_value, Some(json!("todo")));
+        assert_eq!(c.new_value, Some(json!("done")));
+    }
+
+    #[test]
+    fn test_namespace_multiple_inner_changes() {
+        let old = json!({"task": {"status": "todo", "priority": "low"}});
+        let new = json!({"task": {"status": "done", "priority": "high"}});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 2);
+        let status = find_change(&changes, "task.status").expect("should have task.status change");
+        assert_eq!(status.old_value, Some(json!("todo")));
+        assert_eq!(status.new_value, Some(json!("done")));
+
+        let priority = find_change(&changes, "task.priority").expect("should have task.priority change");
+        assert_eq!(priority.old_value, Some(json!("low")));
+        assert_eq!(priority.new_value, Some(json!("high")));
+    }
+
+    #[test]
+    fn test_namespace_inner_property_added() {
+        let old = json!({"task": {"status": "todo"}});
+        let new = json!({"task": {"status": "todo", "due": "2026-04-01"}});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "task.due");
+        assert_eq!(c.old_value, None);
+        assert_eq!(c.new_value, Some(json!("2026-04-01")));
+    }
+
+    #[test]
+    fn test_namespace_inner_property_removed() {
+        let old = json!({"task": {"status": "todo", "due": "2026-04-01"}});
+        let new = json!({"task": {"status": "todo"}});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "task.due");
+        assert_eq!(c.old_value, Some(json!("2026-04-01")));
+        assert_eq!(c.new_value, None);
+    }
+
+    #[test]
+    fn test_property_added() {
+        let old = json!({"title": "hello"});
+        let new = json!({"title": "hello", "color": "blue"});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "color");
+        assert_eq!(c.old_value, None);
+        assert_eq!(c.new_value, Some(json!("blue")));
+    }
+
+    #[test]
+    fn test_property_removed() {
+        let old = json!({"title": "hello", "color": "blue"});
+        let new = json!({"title": "hello"});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "color");
+        assert_eq!(c.old_value, Some(json!("blue")));
+        assert_eq!(c.new_value, None);
+    }
+
+    #[test]
+    fn test_non_object_inputs_return_empty() {
+        // old is not an object
+        let changes = compute_property_changes(&json!("string"), &json!({"a": 1}));
+        assert!(changes.is_empty(), "non-object old should return empty");
+
+        // new is not an object
+        let changes = compute_property_changes(&json!({"a": 1}), &json!(42));
+        assert!(changes.is_empty(), "non-object new should return empty");
+
+        // both non-objects
+        let changes = compute_property_changes(&json!(null), &json!(true));
+        assert!(changes.is_empty(), "both non-object should return empty");
+
+        // null values
+        let changes = compute_property_changes(&json!(null), &json!(null));
+        assert!(changes.is_empty(), "null inputs should return empty");
+    }
+
+    #[test]
+    fn test_both_empty_objects() {
+        let changes = compute_property_changes(&json!({}), &json!({}));
+        assert!(changes.is_empty(), "two empty objects should produce no changes");
+    }
+
+    #[test]
+    fn test_mixed_scalar_and_namespace_changes() {
+        let old = json!({
+            "title": "old",
+            "task": {"status": "todo"}
+        });
+        let new = json!({
+            "title": "new",
+            "task": {"status": "done"}
+        });
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 2);
+        let title = find_change(&changes, "title").expect("should have title change");
+        assert_eq!(title.old_value, Some(json!("old")));
+        assert_eq!(title.new_value, Some(json!("new")));
+
+        let status = find_change(&changes, "task.status").expect("should have task.status change");
+        assert_eq!(status.old_value, Some(json!("todo")));
+        assert_eq!(status.new_value, Some(json!("done")));
+    }
+
+    #[test]
+    fn test_type_change_scalar_to_object() {
+        // old has a scalar, new has an object for the same key — treated as scalar change
+        // because old value is not an object for that key
+        let old = json!({"task": "simple string"});
+        let new = json!({"task": {"status": "todo"}});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "task");
+        assert_eq!(c.old_value, Some(json!("simple string")));
+        assert_eq!(c.new_value, Some(json!({"status": "todo"})));
+    }
+
+    #[test]
+    fn test_type_change_object_to_scalar() {
+        let old = json!({"task": {"status": "todo"}});
+        let new = json!({"task": "collapsed"});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "task");
+        assert_eq!(c.old_value, Some(json!({"status": "todo"})));
+        assert_eq!(c.new_value, Some(json!("collapsed")));
+    }
 }
 
 /// Default limit for query_nodes_simple when no limit is specified.
@@ -570,7 +776,7 @@ impl NodeService {
                     event,
                     metadata: EventMetadata {
                         source_client_id: change.source,
-                        playbook_context: None,
+                        playbook_context: change.playbook_context,
                     },
                 };
 

@@ -163,6 +163,11 @@ pub struct StoreChange {
     pub source: Option<String>,
     /// Pre-mutation node state (only populated for updates where available)
     pub previous_node: Option<Node>,
+    /// Playbook execution context for cycle detection (Issue #995)
+    /// Threaded from NodeService.execution_context → StoreChange → EventEnvelope.metadata.
+    /// Currently None for all store methods — Phase 4 (Action Executor) will thread
+    /// execution_context through specific store methods the engine calls.
+    pub playbook_context: Option<crate::db::events::PlaybookExecutionContext>,
 }
 
 /// Type alias for the store change notifier callback
@@ -746,6 +751,7 @@ impl SurrealStore {
             node: node.clone(),
             source,
             previous_node: None,
+            playbook_context: None,
         });
 
         // Return the created node directly
@@ -917,6 +923,7 @@ impl SurrealStore {
             node: node.clone(),
             source,
             previous_node: None,
+            playbook_context: None,
         });
 
         Ok(node)
@@ -1075,6 +1082,7 @@ impl SurrealStore {
             node: updated_node.clone(),
             source,
             previous_node: None,
+            playbook_context: None,
         });
 
         Ok(updated_node)
@@ -1190,6 +1198,7 @@ impl SurrealStore {
             node: created_node.clone(),
             source,
             previous_node: None,
+            playbook_context: None,
         });
 
         Ok(created_node)
@@ -1276,6 +1285,7 @@ impl SurrealStore {
             node: updated_node.clone(),
             source,
             previous_node: None,
+            playbook_context: None,
         });
 
         Ok(updated_node)
@@ -1410,6 +1420,7 @@ impl SurrealStore {
             node: node.clone(),
             source,
             previous_node: None,
+            playbook_context: None,
         });
 
         Ok(node)
@@ -1554,6 +1565,7 @@ impl SurrealStore {
             node: node.clone(),
             source,
             previous_node: Some(previous_node),
+            playbook_context: None,
         });
 
         Ok(Some(node))
@@ -1604,6 +1616,7 @@ impl SurrealStore {
             node,
             source,
             previous_node: None,
+            playbook_context: None,
         });
 
         Ok(DeleteResult { existed: true })
@@ -1698,6 +1711,7 @@ impl SurrealStore {
             node,
             source,
             previous_node: None,
+            playbook_context: None,
         });
 
         Ok(DeleteResult { existed: true })
@@ -3465,6 +3479,7 @@ impl SurrealStore {
                 node,
                 source: Some("bulk_create_hierarchy".to_string()),
                 previous_node: None,
+                playbook_context: None,
             });
         }
 
@@ -3579,6 +3594,7 @@ impl SurrealStore {
                     node,
                     source: Some("bulk_create_hierarchy".to_string()),
                     previous_node: None,
+                    playbook_context: None,
                 });
             }
         }
@@ -3677,6 +3693,7 @@ impl SurrealStore {
             node,
             source: Some("streaming_import".to_string()),
             previous_node: None,
+            playbook_context: None,
         });
 
         Ok(id)
