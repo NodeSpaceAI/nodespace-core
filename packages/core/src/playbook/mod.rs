@@ -13,8 +13,9 @@
 //! # Implementation Phases
 //!
 //! - Phase 0: EventEnvelope + enriched NodeUpdated (done)
-//! - Phase 1: Lifecycle Manager + Rule Matching (this module)
-//! - Phase 2+: ExecutionQueue, CEL Evaluator, Action Executor, CronRunner
+//! - Phase 1: Lifecycle Manager + Rule Matching (done)
+//! - Phase 2: ExecutionQueue + RuleProcessor (done)
+//! - Phase 3+: CEL Evaluator, Action Executor, CronRunner
 
 pub mod engine;
 pub mod lifecycle;

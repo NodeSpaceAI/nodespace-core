@@ -384,6 +384,10 @@ pub(crate) async fn rule_processor_loop(mut rx: mpsc::Receiver<ExecutionWorkItem
             .map(|ctx| ctx.depth)
             .unwrap_or(0);
 
+        // TODO(#995-phase6): Enforce max depth (10) here — skip work item and
+        // disable the originating playbook when depth + 1 > MAX_CHAIN_DEPTH.
+        // Currently depth is logged but not enforced.
+
         debug!(
             "RuleProcessor received work item: {} rules for node {} (type: {}, depth: {})",
             work_item.rules.len(),
