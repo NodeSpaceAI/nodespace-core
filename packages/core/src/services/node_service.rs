@@ -145,7 +145,10 @@ mod property_change_tests {
         let old = json!({"title": "hello", "task": {"status": "todo"}});
         let new = json!({"title": "hello", "task": {"status": "todo"}});
         let changes = compute_property_changes(&old, &new);
-        assert!(changes.is_empty(), "identical objects should produce no changes");
+        assert!(
+            changes.is_empty(),
+            "identical objects should produce no changes"
+        );
     }
 
     #[test]
@@ -198,7 +201,8 @@ mod property_change_tests {
         assert_eq!(status.old_value, Some(json!("todo")));
         assert_eq!(status.new_value, Some(json!("done")));
 
-        let priority = find_change(&changes, "task.priority").expect("should have task.priority change");
+        let priority =
+            find_change(&changes, "task.priority").expect("should have task.priority change");
         assert_eq!(priority.old_value, Some(json!("low")));
         assert_eq!(priority.new_value, Some(json!("high")));
     }
@@ -277,7 +281,10 @@ mod property_change_tests {
     #[test]
     fn test_both_empty_objects() {
         let changes = compute_property_changes(&json!({}), &json!({}));
-        assert!(changes.is_empty(), "two empty objects should produce no changes");
+        assert!(
+            changes.is_empty(),
+            "two empty objects should produce no changes"
+        );
     }
 
     #[test]
@@ -1004,6 +1011,41 @@ impl NodeService {
             },
         };
         let _ = self.event_tx.send(envelope);
+    }
+
+    /// Query nodes by type with optional lifecycle_status filter.
+    ///
+    /// Used by the playbook engine to load all active playbooks at startup.
+    /// If `lifecycle_status` is `None`, returns all lifecycle statuses.
+    pub async fn query_nodes_by_type(
+        &self,
+        node_type: &str,
+        lifecycle_status: Option<&str>,
+    ) -> Result<Vec<Node>, NodeServiceError> {
+        let query = crate::models::NodeQuery {
+            node_type: Some(node_type.to_string()),
+            ..Default::default()
+        };
+
+        let nodes = self
+            .store
+            .query_nodes(query)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // In-memory filter: NodeQuery doesn't support lifecycle_status yet.
+        // Acceptable for desktop (low playbook counts). If scaling becomes
+        // a concern, add lifecycle_status to NodeQuery/SurrealStore query.
+        let filtered: Vec<Node> = if let Some(status) = lifecycle_status {
+            nodes
+                .into_iter()
+                .filter(|n| n.lifecycle_status == status)
+                .collect()
+        } else {
+            nodes
+        };
+
+        Ok(filtered)
     }
 
     // NOTE: emit_node_created and emit_node_updated helpers removed (Issue #718)
