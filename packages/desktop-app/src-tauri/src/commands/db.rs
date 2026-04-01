@@ -216,6 +216,14 @@ async fn init_services(app: &AppHandle, config: &crate::config::AppConfig) -> Re
         tracing::error!("Failed to initialize domain event forwarder: {}", e);
     }
 
+    // Initialize playbook engine (Issue #995 Phase 1)
+    if let Err(e) =
+        crate::initialize_playbook_engine(bundle.node_service.clone(), session_token.clone())
+    {
+        tracing::error!("Failed to initialize playbook engine: {}", e);
+        // Don't fail database init if playbook engine fails — it's non-critical
+    }
+
     tracing::info!("Service initialization complete");
     Ok(())
 }

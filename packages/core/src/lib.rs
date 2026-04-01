@@ -23,6 +23,7 @@ pub mod behaviors;
 pub mod db;
 pub mod mcp;
 pub mod models;
+pub mod playbook;
 pub mod services;
 pub mod utils;
 
@@ -39,4 +40,5 @@ pub use models::{
     FilterOperator, Node, NodeFilter, NodeQuery, NodeUpdate, OrderBy, PropertyFilter, SchemaNode,
     TaskNode, TaskNodeUpdate, TaskStatus, ValidationError,
 };
+pub use playbook::PlaybookEngine;
 pub use services::{CreateNodeParams, NodeService, NodeServiceError};

@@ -87,6 +87,51 @@ pub fn initialize_domain_event_forwarder(
     Ok(())
 }
 
+/// Initialize the playbook engine background task.
+///
+/// Subscribes to domain events (as a second subscriber alongside DomainEventForwarder),
+/// loads active playbooks, and begins matching events against trigger rules.
+pub fn initialize_playbook_engine(
+    node_service: std::sync::Arc<nodespace_core::NodeService>,
+    cancel_token: tokio_util::sync::CancellationToken,
+) -> anyhow::Result<()> {
+    use futures::FutureExt;
+
+    tracing::info!("🔧 Initializing playbook engine...");
+
+    // Create a watch channel for shutdown signaling (bridges tokio_util → watch)
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // Spawn a task that converts cancellation token to watch signal
+    let cancel_for_bridge = cancel_token.clone();
+    tauri::async_runtime::spawn(async move {
+        cancel_for_bridge.cancelled().await;
+        let _ = shutdown_tx.send(true);
+    });
+
+    let engine = std::sync::Arc::new(nodespace_core::PlaybookEngine::new(node_service));
+
+    tauri::async_runtime::spawn(async move {
+        let result = std::panic::AssertUnwindSafe(engine.start(shutdown_rx))
+            .catch_unwind()
+            .await;
+
+        match result {
+            Ok(Ok(_)) => {
+                tracing::info!("✅ Playbook engine exited normally");
+            }
+            Ok(Err(e)) => {
+                tracing::error!("❌ Playbook engine error: {}", e);
+            }
+            Err(panic_info) => {
+                tracing::error!("💥 Playbook engine panicked: {:?}", panic_info);
+            }
+        }
+    });
+
+    Ok(())
+}
+
 /// Initialize MCP server with shared services
 ///
 /// Takes Arc<NodeService> and Arc<NodeEmbeddingService> directly rather than
