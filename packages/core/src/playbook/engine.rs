@@ -1,18 +1,24 @@
 //! Playbook Engine
 //!
 //! The top-level engine that subscribes to domain events, matches them against
-//! the trigger index, and (in Phase 2+) enqueues work items for processing.
+//! the trigger index, and enqueues work items for the RuleProcessor.
 //!
-//! Phase 1 scope: subscribe to events, manage lifecycle, match triggers.
-//! Phase 2 will add the ExecutionQueue and RuleProcessor.
+//! Phase 1: subscribe to events, manage lifecycle, match triggers.
+//! Phase 2: ExecutionQueue (bounded mpsc) + RuleProcessor (single tokio task).
 
 use crate::db::events::{DomainEvent, EventEnvelope};
 use crate::playbook::lifecycle::{trigger_keys_for_event, PlaybookLifecycleManager};
 use crate::playbook::types::*;
 use crate::services::NodeService;
 use std::sync::{Arc, RwLock};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
+
+/// Bounded capacity for the ExecutionQueue.
+///
+/// Backpressure prevents unbounded memory growth if the engine falls behind
+/// (e.g., desktop wakes from sleep and many events arrive at once).
+pub(crate) const EXECUTION_QUEUE_CAPACITY: usize = 1024;
 
 /// The playbook engine — subscribes to domain events and manages playbook lifecycle.
 ///
@@ -43,7 +49,8 @@ impl PlaybookEngine {
     /// 1. Subscribe to event broadcast channel FIRST (to avoid race)
     /// 2. Query all active playbook nodes
     /// 3. Parse rules, build TriggerIndex and CronRegistry
-    /// 4. Begin processing events
+    /// 4. Start the RuleProcessor task (drains the ExecutionQueue)
+    /// 5. Begin processing events
     ///
     /// The `shutdown_rx` watch channel signals graceful shutdown when it receives `true`.
     pub async fn start(
@@ -57,33 +64,45 @@ impl PlaybookEngine {
         // Step 2-3: Load active playbooks and build indexes
         self.load_active_playbooks().await?;
 
+        // Step 4: Create ExecutionQueue and spawn RuleProcessor
+        let (queue_tx, queue_rx) = mpsc::channel::<ExecutionWorkItem>(EXECUTION_QUEUE_CAPACITY);
+        let processor_handle = tokio::spawn(rule_processor_loop(queue_rx));
+
         info!("Playbook engine started, processing events...");
 
-        // Step 4: Process events
-        loop {
+        // Step 5: Process events
+        let result = loop {
             tokio::select! {
                 result = rx.recv() => {
                     match result {
                         Ok(envelope) => {
-                            self.handle_event(envelope).await;
+                            self.handle_event(envelope, &queue_tx).await;
                         }
                         Err(broadcast::error::RecvError::Lagged(count)) => {
                             warn!("Playbook engine lagged, missed {} events", count);
                         }
                         Err(broadcast::error::RecvError::Closed) => {
                             info!("Event channel closed, playbook engine shutting down");
-                            return Ok(());
+                            break Ok(());
                         }
                     }
                 }
                 _ = shutdown_rx.changed() => {
                     if *shutdown_rx.borrow() {
                         info!("Playbook engine received shutdown signal");
-                        return Ok(());
+                        break Ok(());
                     }
                 }
             }
+        };
+
+        // Shutdown: drop the sender to signal the processor to drain and exit
+        drop(queue_tx);
+        if let Err(e) = processor_handle.await {
+            error!("RuleProcessor task panicked: {:?}", e);
         }
+
+        result
     }
 
     /// Load all active playbook nodes from the database and activate them.
@@ -114,8 +133,14 @@ impl PlaybookEngine {
 
     /// Handle a single event from the broadcast channel.
     ///
-    /// Performs lifecycle management (detect playbook CRUD) and trigger matching.
-    async fn handle_event(&self, envelope: EventEnvelope) {
+    /// Performs lifecycle management (detect playbook/schema CRUD), then trigger
+    /// matching. Matched rules are bundled with the pre-fetched trigger node
+    /// into an ExecutionWorkItem and sent to the RuleProcessor queue.
+    async fn handle_event(
+        &self,
+        envelope: EventEnvelope,
+        queue_tx: &mpsc::Sender<ExecutionWorkItem>,
+    ) {
         // Lifecycle management: detect playbook node events
         match &envelope.event {
             DomainEvent::NodeCreated { node_type, node_id } if node_type == "playbook" => {
@@ -166,8 +191,47 @@ impl PlaybookEngine {
                 .collect::<Vec<_>>()
         );
 
-        // Phase 2 will enqueue these into the ExecutionQueue.
-        // For now, we just log the matches.
+        // Pre-fetch the trigger node
+        let trigger_node_id = match trigger_node_id(&envelope.event) {
+            Some(id) => id,
+            None => return,
+        };
+
+        let trigger_node = match self.node_service.get_node(trigger_node_id).await {
+            Ok(Some(node)) => node,
+            Ok(None) => {
+                debug!(
+                    "Trigger node {} not found (deleted before processing?), skipping",
+                    trigger_node_id
+                );
+                return;
+            }
+            Err(e) => {
+                error!("Failed to fetch trigger node {}: {}", trigger_node_id, e);
+                return;
+            }
+        };
+
+        // Enqueue the work item
+        let work_item = ExecutionWorkItem {
+            rules: matched_rules,
+            trigger_event: envelope,
+            trigger_node,
+        };
+
+        if let Err(e) = queue_tx.try_send(work_item) {
+            match e {
+                mpsc::error::TrySendError::Full(_) => {
+                    warn!(
+                        "ExecutionQueue full (capacity {}), dropping work item",
+                        EXECUTION_QUEUE_CAPACITY
+                    );
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    debug!("ExecutionQueue closed, engine shutting down");
+                }
+            }
+        }
     }
 
     /// Handle a new playbook node being created — parse and activate it.
@@ -293,5 +357,74 @@ impl PlaybookEngine {
     /// Get a snapshot of the lifecycle manager for inspection/testing.
     pub fn lifecycle(&self) -> &Arc<RwLock<PlaybookLifecycleManager>> {
         &self.lifecycle
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RuleProcessor
+// ---------------------------------------------------------------------------
+
+/// The RuleProcessor loop — single tokio task draining the ExecutionQueue.
+///
+/// Sequential processing eliminates concurrency concerns: no two rules
+/// execute simultaneously, no race between condition evaluation and action
+/// execution, no concurrent modifications to the same node.
+///
+/// Phase 3 (CEL Evaluator) and Phase 4 (Action Executor) will add the
+/// condition evaluation and action execution logic here.
+pub(crate) async fn rule_processor_loop(mut rx: mpsc::Receiver<ExecutionWorkItem>) {
+    info!("RuleProcessor started, waiting for work items...");
+
+    while let Some(work_item) = rx.recv().await {
+        let depth = work_item
+            .trigger_event
+            .metadata
+            .playbook_context
+            .as_ref()
+            .map(|ctx| ctx.depth)
+            .unwrap_or(0);
+
+        debug!(
+            "RuleProcessor received work item: {} rules for node {} (type: {}, depth: {})",
+            work_item.rules.len(),
+            work_item.trigger_node.id,
+            work_item.trigger_node.node_type,
+            depth,
+        );
+
+        // Process each matched rule in order
+        for rule_ref in &work_item.rules {
+            debug!(
+                "Processing rule '{}' from playbook {} (index {})",
+                rule_ref.rule.name, rule_ref.playbook_id, rule_ref.rule_index,
+            );
+
+            // TODO(#995-phase3): Evaluate CEL conditions against trigger_node + graph
+            // TODO(#995-phase4): Execute actions with binding context
+            // For now, log that the rule would fire.
+            info!(
+                "Rule '{}' (playbook {}) matched — execution pending Phase 3+4",
+                rule_ref.rule.name, rule_ref.playbook_id,
+            );
+        }
+    }
+
+    info!("RuleProcessor shutting down (queue closed)");
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Extract the trigger node ID from a domain event.
+///
+/// Returns the node_id for events that can trigger playbook rules.
+/// Returns `None` for events that don't carry a node_id relevant to triggers
+/// (e.g., RelationshipCreated — those need source node lookup, deferred to Phase 2+).
+pub(crate) fn trigger_node_id(event: &DomainEvent) -> Option<&str> {
+    match event {
+        DomainEvent::NodeCreated { node_id, .. } => Some(node_id.as_str()),
+        DomainEvent::NodeUpdated { node_id, .. } => Some(node_id.as_str()),
+        _ => None,
     }
 }

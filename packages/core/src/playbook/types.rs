@@ -169,6 +169,28 @@ pub enum ActionType {
 }
 
 // ---------------------------------------------------------------------------
+// ExecutionWorkItem
+// ---------------------------------------------------------------------------
+
+/// Work item for the RuleProcessor queue.
+///
+/// Carries everything the processor needs to evaluate and execute matched rules:
+/// the sorted rules, the original event envelope (for playbook_context/depth),
+/// and the pre-fetched trigger node in wire format.
+///
+/// Created by the EventSubscriber (for event-triggered rules) and the CronRunner
+/// (for scheduled rules). Consumed by the single RuleProcessor tokio task.
+#[derive(Debug)]
+pub struct ExecutionWorkItem {
+    /// Matched rules to evaluate, sorted by (playbook_created_at, rule_index)
+    pub rules: Vec<OrderedRuleRef>,
+    /// Original event envelope (carries playbook_context for cycle detection depth)
+    pub trigger_event: crate::db::events::EventEnvelope,
+    /// Pre-fetched node that fired the trigger (wire-format)
+    pub trigger_node: crate::models::Node,
+}
+
+// ---------------------------------------------------------------------------
 // TriggerIndex
 // ---------------------------------------------------------------------------
 

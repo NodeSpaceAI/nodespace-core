@@ -1,10 +1,11 @@
-//! Tests for the Playbook Engine Phase 1
+//! Tests for the Playbook Engine
 //!
-//! Covers: TriggerKey matching, lifecycle operations, trigger index management,
-//! schema drift detection, PropertyChanged dual lookup, and rule parsing.
+//! Phase 1: TriggerKey matching, lifecycle operations, trigger index management,
+//!          schema drift detection, PropertyChanged dual lookup, and rule parsing.
+//! Phase 2: ExecutionWorkItem, trigger_node_id helper, queue/processor behavior.
 
 mod tests {
-    use crate::db::events::{DomainEvent, PropertyChange};
+    use crate::db::events::{DomainEvent, EventEnvelope, EventMetadata, PropertyChange};
     use crate::models::Node;
     use crate::playbook::lifecycle::*;
     use crate::playbook::types::*;
@@ -934,5 +935,317 @@ mod tests {
         let remaining = mgr.lookup_rules(&[key]);
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].playbook_id, "pb2");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 2: ExecutionWorkItem and trigger_node_id tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_trigger_node_id_node_created() {
+        let event = DomainEvent::NodeCreated {
+            node_id: "node:abc".to_string(),
+            node_type: "invoice".to_string(),
+        };
+        assert_eq!(
+            super::super::engine::trigger_node_id(&event),
+            Some("node:abc")
+        );
+    }
+
+    #[test]
+    fn test_trigger_node_id_node_updated() {
+        let event = DomainEvent::NodeUpdated {
+            node_id: "node:xyz".to_string(),
+            node_type: "task".to_string(),
+            changed_properties: vec![],
+        };
+        assert_eq!(
+            super::super::engine::trigger_node_id(&event),
+            Some("node:xyz")
+        );
+    }
+
+    #[test]
+    fn test_trigger_node_id_node_deleted_returns_none() {
+        let event = DomainEvent::NodeDeleted {
+            id: "node:123".to_string(),
+            node_type: "invoice".to_string(),
+        };
+        assert_eq!(super::super::engine::trigger_node_id(&event), None);
+    }
+
+    #[test]
+    fn test_trigger_node_id_relationship_returns_none() {
+        let event = DomainEvent::RelationshipCreated {
+            relationship: crate::db::events::RelationshipEvent {
+                id: "rel:1".to_string(),
+                from_id: "node:a".to_string(),
+                to_id: "node:b".to_string(),
+                relationship_type: "has_child".to_string(),
+                properties: json!({}),
+            },
+        };
+        assert_eq!(super::super::engine::trigger_node_id(&event), None);
+    }
+
+    #[test]
+    fn test_execution_work_item_construction() {
+        let mut mgr = PlaybookLifecycleManager::new();
+        let pb_node = make_playbook_node(
+            "pb1",
+            json!([{
+                "name": "on task created",
+                "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                "conditions": ["node.status == 'open'"],
+                "actions": [{"action_type": "update_node", "params": {}}]
+            }]),
+        );
+        mgr.activate_playbook(&pb_node).unwrap();
+
+        let key = TriggerKey::NodeEvent {
+            event: NodeEventType::NodeCreated,
+            node_type: "task".to_string(),
+            property_key: None,
+        };
+        let matched_rules = mgr.lookup_rules(&[key]);
+        assert_eq!(matched_rules.len(), 1);
+
+        let trigger_node = Node {
+            id: "node:task-1".to_string(),
+            node_type: "task".to_string(),
+            content: "My task".to_string(),
+            version: 1,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            properties: json!({"status": "open"}),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: Some("My task".to_string()),
+            lifecycle_status: "active".to_string(),
+        };
+
+        let envelope = EventEnvelope {
+            event: DomainEvent::NodeCreated {
+                node_id: "node:task-1".to_string(),
+                node_type: "task".to_string(),
+            },
+            metadata: EventMetadata {
+                source_client_id: Some("tauri-main".to_string()),
+                playbook_context: None,
+            },
+        };
+
+        let work_item = ExecutionWorkItem {
+            rules: matched_rules,
+            trigger_event: envelope,
+            trigger_node,
+        };
+
+        // Verify the work item carries all the data the processor needs
+        assert_eq!(work_item.rules.len(), 1);
+        assert_eq!(work_item.rules[0].playbook_id, "pb1");
+        assert_eq!(work_item.rules[0].rule.name, "on task created");
+        assert_eq!(work_item.rules[0].rule.conditions.len(), 1);
+        assert_eq!(work_item.rules[0].rule.actions.len(), 1);
+        assert_eq!(work_item.trigger_node.id, "node:task-1");
+        assert_eq!(work_item.trigger_node.node_type, "task");
+        assert!(work_item.trigger_event.metadata.playbook_context.is_none());
+    }
+
+    #[test]
+    fn test_execution_work_item_with_playbook_context() {
+        use crate::db::events::PlaybookExecutionContext;
+
+        let trigger_node = Node {
+            id: "node:invoice-1".to_string(),
+            node_type: "invoice".to_string(),
+            content: "Invoice".to_string(),
+            version: 1,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            properties: json!({}),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+
+        let envelope = EventEnvelope {
+            event: DomainEvent::NodeUpdated {
+                node_id: "node:invoice-1".to_string(),
+                node_type: "invoice".to_string(),
+                changed_properties: vec![PropertyChange {
+                    key: "status".to_string(),
+                    old_value: Some(json!("draft")),
+                    new_value: Some(json!("sent")),
+                }],
+            },
+            metadata: EventMetadata {
+                source_client_id: Some("playbook_engine".to_string()),
+                playbook_context: Some(PlaybookExecutionContext {
+                    originating_event_id: "evt-root-123".to_string(),
+                    depth: 3,
+                    source_playbook_id: "pb-upstream".to_string(),
+                }),
+            },
+        };
+
+        let work_item = ExecutionWorkItem {
+            rules: vec![],
+            trigger_event: envelope,
+            trigger_node,
+        };
+
+        // Verify playbook_context is carried through for cycle detection
+        let ctx = work_item
+            .trigger_event
+            .metadata
+            .playbook_context
+            .as_ref()
+            .unwrap();
+        assert_eq!(ctx.depth, 3);
+        assert_eq!(ctx.originating_event_id, "evt-root-123");
+        assert_eq!(ctx.source_playbook_id, "pb-upstream");
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase 2: Queue and RuleProcessor async tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_execution_queue_send_receive() {
+        let (tx, mut rx) =
+            tokio::sync::mpsc::channel::<ExecutionWorkItem>(super::super::engine::EXECUTION_QUEUE_CAPACITY);
+
+        let trigger_node = Node {
+            id: "node:1".to_string(),
+            node_type: "task".to_string(),
+            content: "".to_string(),
+            version: 1,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            properties: json!({}),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+
+        let envelope = EventEnvelope {
+            event: DomainEvent::NodeCreated {
+                node_id: "node:1".to_string(),
+                node_type: "task".to_string(),
+            },
+            metadata: EventMetadata {
+                source_client_id: None,
+                playbook_context: None,
+            },
+        };
+
+        let work_item = ExecutionWorkItem {
+            rules: vec![],
+            trigger_event: envelope,
+            trigger_node,
+        };
+
+        tx.try_send(work_item).unwrap();
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.trigger_node.id, "node:1");
+    }
+
+    #[tokio::test]
+    async fn test_execution_queue_backpressure() {
+        // Use a tiny capacity to test backpressure
+        let (tx, _rx) = tokio::sync::mpsc::channel::<ExecutionWorkItem>(1);
+
+        let make_item = || {
+            let trigger_node = Node {
+                id: "node:1".to_string(),
+                node_type: "task".to_string(),
+                content: "".to_string(),
+                version: 1,
+                created_at: Utc::now(),
+                modified_at: Utc::now(),
+                properties: json!({}),
+                mentions: vec![],
+                mentioned_in: vec![],
+                title: None,
+                lifecycle_status: "active".to_string(),
+            };
+            let envelope = EventEnvelope {
+                event: DomainEvent::NodeCreated {
+                    node_id: "node:1".to_string(),
+                    node_type: "task".to_string(),
+                },
+                metadata: EventMetadata {
+                    source_client_id: None,
+                    playbook_context: None,
+                },
+            };
+            ExecutionWorkItem {
+                rules: vec![],
+                trigger_event: envelope,
+                trigger_node,
+            }
+        };
+
+        // First send succeeds
+        assert!(tx.try_send(make_item()).is_ok());
+        // Second send fails (channel full, capacity=1)
+        assert!(tx.try_send(make_item()).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_rule_processor_drains_and_shuts_down() {
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<ExecutionWorkItem>(super::super::engine::EXECUTION_QUEUE_CAPACITY);
+
+        // Spawn the processor
+        let handle = tokio::spawn(super::super::engine::rule_processor_loop(rx));
+
+        // Send a work item
+        let trigger_node = Node {
+            id: "node:1".to_string(),
+            node_type: "task".to_string(),
+            content: "".to_string(),
+            version: 1,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            properties: json!({}),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+        let envelope = EventEnvelope {
+            event: DomainEvent::NodeCreated {
+                node_id: "node:1".to_string(),
+                node_type: "task".to_string(),
+            },
+            metadata: EventMetadata {
+                source_client_id: None,
+                playbook_context: None,
+            },
+        };
+        tx.send(ExecutionWorkItem {
+            rules: vec![],
+            trigger_event: envelope,
+            trigger_node,
+        })
+        .await
+        .unwrap();
+
+        // Drop sender → processor will drain remaining items and exit
+        drop(tx);
+
+        // Processor should complete without error
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+        assert!(result.is_ok(), "RuleProcessor should shut down promptly");
+        assert!(
+            result.unwrap().is_ok(),
+            "RuleProcessor should not panic"
+        );
     }
 }
