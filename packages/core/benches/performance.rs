@@ -540,25 +540,20 @@ fn bench_bm25_search_roots(c: &mut Criterion) {
 
 /// Helper: create a playbook node with the given rules JSON.
 fn make_playbook_node(id: &str, rules_json: serde_json::Value) -> Node {
-    Node {
-        id: id.to_string(),
-        node_type: "playbook".to_string(),
-        content: format!("playbook {}", id),
-        version: 1,
-        created_at: chrono::Utc::now(),
-        modified_at: chrono::Utc::now(),
-        properties: json!({ "rules": rules_json }),
-        mentions: vec![],
-        mentioned_in: vec![],
-        title: Some(format!("Playbook {}", id)),
-        lifecycle_status: "active".to_string(),
-    }
+    Node::new_with_id(
+        id.to_string(),
+        "playbook".to_string(),
+        format!("playbook {}", id),
+        json!({ "rules": rules_json }),
+    )
 }
 
 /// Generate N playbooks all triggering on the same node_type.
 ///
 /// Each playbook has a single rule with a `node_created` trigger on the
-/// given `node_type` and a simple condition.
+/// given `node_type`. Conditions and actions are empty because the
+/// trigger-index and event-matching benchmarks only exercise lookup, not
+/// condition evaluation.
 fn generate_playbooks(count: usize, node_type: &str) -> Vec<Node> {
     (0..count)
         .map(|i| {
@@ -571,7 +566,7 @@ fn generate_playbooks(count: usize, node_type: &str) -> Vec<Node> {
                         "on": "node_created",
                         "node_type": node_type
                     },
-                    "conditions": ["node.status == 'open'"],
+                    "conditions": [],
                     "actions": []
                 }]),
             )
@@ -672,6 +667,11 @@ fn bench_graph_resolver(c: &mut Criterion) {
 
     // Setup: create a schema chain of depth 5
     // type_0 -> type_1 -> type_2 -> type_3 -> type_4
+    //
+    // SAFETY: _temp_dir must outlive all benchmark iterations — it holds the
+    // on-disk DB files that `svc` (via SurrealStore) references. Dropping it
+    // early would delete the database out from under the NodeService. The
+    // binding is kept alive until `group.finish()` returns at function end.
     let (svc, _temp_dir, root_node, schema_names) = rt.block_on(async {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("bench_resolver.db");
@@ -732,14 +732,16 @@ fn bench_graph_resolver(c: &mut Criterion) {
         });
     }
 
-    // Benchmark: 5-hop resolution (root -> type_1 -> ... -> type_4 -> property)
+    // Benchmark: 4-hop + property resolution
+    // (root -> type_1 -> type_2 -> type_3 -> type_4 . status)
+    // 4 relationship hops through the schema chain, then 1 scalar property access
     {
         let svc_clone = Arc::clone(&svc);
         let root = root_node.clone();
-        let mut segments: Vec<String> = schema_names[1..].to_vec();
-        segments.push("status".to_string()); // final property access
+        let mut segments: Vec<String> = schema_names[1..].to_vec(); // 4 relationship segments
+        segments.push("status".to_string()); // final property access (not a hop)
 
-        group.bench_function("5_hop_to_property_cold", |b| {
+        group.bench_function("4_hop_to_property_cold", |b| {
             b.iter_custom(|iters| {
                 rt.block_on(async {
                     let mut total = std::time::Duration::ZERO;
@@ -868,7 +870,12 @@ fn bench_cel_evaluation_e2e(c: &mut Criterion) {
     let mut group = c.benchmark_group("playbook/cel_evaluation");
     group.sample_size(20);
 
-    // Setup: create a 3-node chain with relationships
+    // Setup: create a 3-node chain with relationships:
+    //   bench_type_0 --[bench_type_1]--> bench_type_1 --[bench_type_2]--> bench_type_2
+    // Each node has a "status": "active" property.
+    // CEL expressions reference this chain, e.g. `node.bench_type_1.bench_type_2.status`.
+    //
+    // SAFETY: _temp_dir must outlive all benchmark iterations (holds DB files on disk).
     let (svc, _temp_dir, root_node) = rt.block_on(async {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("bench_cel.db");
@@ -966,8 +973,11 @@ fn bench_cel_evaluation_e2e(c: &mut Criterion) {
 
 /// Benchmark 5: Playbook activation at scale
 ///
-/// Measures `PlaybookLifecycleManager::activate_playbook()` at various
-/// scale points to characterize index building time.
+/// Measures the full activation pipeline — JSON rule parsing
+/// (`parse_rules_from_properties`) **and** trigger-index insertion
+/// (`activate_playbook`) — as a combined metric. Both steps run inside
+/// `activate_playbook()`, so this benchmark reflects the real cost of
+/// onboarding N playbooks at startup.
 fn bench_playbook_activation(c: &mut Criterion) {
     let mut group = c.benchmark_group("playbook/activation");
     group.sample_size(20);
