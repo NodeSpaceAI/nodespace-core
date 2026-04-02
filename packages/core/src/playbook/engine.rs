@@ -505,11 +505,62 @@ pub(crate) async fn rule_processor_loop(
                 }
             }
 
-            // TODO(#995-phase4): Execute actions with binding context
-            info!(
-                "Rule '{}' (playbook {}) conditions passed — action execution pending Phase 4",
-                rule_ref.rule.name, rule_ref.playbook_id,
-            );
+            // Build execution context for cycle detection.
+            // Actions will emit events tagged with this context so the engine
+            // can track chain depth on re-entrant event processing.
+            let execution_context = crate::db::events::PlaybookExecutionContext {
+                originating_event_id: work_item
+                    .trigger_event
+                    .metadata
+                    .playbook_context
+                    .as_ref()
+                    .map(|ctx| ctx.originating_event_id.clone())
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                depth: depth + 1,
+                source_playbook_id: rule_ref.playbook_id.clone(),
+            };
+
+            // Execute actions
+            let action_result = crate::playbook::actions::execute_actions(
+                &rule_ref.rule.actions,
+                &work_item.trigger_node,
+                &work_item.trigger_event.event,
+                &node_service,
+                execution_context,
+            )
+            .await;
+
+            match action_result {
+                crate::playbook::actions::ActionResult::Success => {
+                    info!(
+                        "Rule '{}' (playbook {}) executed successfully",
+                        rule_ref.rule.name, rule_ref.playbook_id,
+                    );
+                }
+                crate::playbook::actions::ActionResult::Failed(err) => {
+                    warn!(
+                        "Rule '{}' (playbook {}) action failed: {}",
+                        rule_ref.rule.name, rule_ref.playbook_id, err,
+                    );
+                    // Disable the playbook on action failure (per spec)
+                    {
+                        let mut lm = lifecycle.write().expect("lifecycle lock poisoned");
+                        lm.disable_playbook(&rule_ref.playbook_id);
+                    }
+                    let _ = create_or_update_log_node(
+                        &node_service,
+                        &rule_ref.playbook_id,
+                        &rule_ref.rule.name,
+                        rule_ref.rule_index,
+                        PlaybookErrorType::ActionError,
+                        &format!("Action execution failed: {}", err),
+                        &work_item.trigger_node.id,
+                    )
+                    .await;
+                    // Skip remaining rules from this playbook in the current batch
+                    continue;
+                }
+            }
         }
     }
 

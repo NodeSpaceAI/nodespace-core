@@ -15,7 +15,7 @@
 //! `{dot.path}` bindings in action params are resolved at execution time
 //! against the live graph state.
 
-use crate::db::events::DomainEvent;
+use crate::db::events::{DomainEvent, PlaybookExecutionContext};
 use crate::models::{Node, NodeUpdate};
 use crate::playbook::types::{ActionType, ParsedAction};
 use crate::services::{NodeService, NodeServiceError};
@@ -369,12 +369,19 @@ fn resolve_bindings_in_string(s: &str, ctx: &BindingContext) -> Result<Value, Ac
 /// action in order. After each action completes, its result is added to
 /// `actions[N].result`. If any action fails, remaining actions are skipped
 /// and `ActionResult::Failed` is returned.
+///
+/// The `execution_context` is threaded through to `NodeService` so that events
+/// emitted by action mutations carry `PlaybookExecutionContext` for cycle detection.
 pub async fn execute_actions(
     actions: &[ParsedAction],
     trigger_node: &Node,
     event: &DomainEvent,
     node_service: &Arc<NodeService>,
+    execution_context: PlaybookExecutionContext,
 ) -> ActionResult {
+    // Create a scoped NodeService that tags all mutations with the execution context.
+    // This ensures events emitted by actions carry playbook_context for cycle detection.
+    let scoped_service = Arc::new(node_service.with_execution_context(execution_context));
     let mut ctx = BindingContext::new(trigger_node, event);
 
     for (i, action) in actions.iter().enumerate() {
@@ -417,7 +424,7 @@ pub async fn execute_actions(
                     Err(e) => return ActionResult::Failed(e),
                 };
 
-                match execute_single_action(i, &action.action_type, &item_params, node_service)
+                match execute_single_action(i, &action.action_type, &item_params, &scoped_service)
                     .await
                 {
                     Ok(_) => {
@@ -447,7 +454,7 @@ pub async fn execute_actions(
                 Err(e) => return ActionResult::Failed(e),
             };
 
-            match execute_single_action(i, &action.action_type, &resolved_params, node_service)
+            match execute_single_action(i, &action.action_type, &resolved_params, &scoped_service)
                 .await
             {
                 Ok(result_value) => {
