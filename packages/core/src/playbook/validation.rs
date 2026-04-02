@@ -1034,5 +1034,136 @@ mod tests {
             let result = validate_playbook(&rules, &svc).await;
             assert!(result.is_ok());
         }
+
+        // -- Schema-aware path validation tests (#1010) --
+
+        #[tokio::test]
+        async fn test_valid_multi_hop_path_passes() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // Chain: vp_task -> story (rel) -> vp_story
+            create_schema(&svc, "vp_story", 1, json!([])).await;
+            create_schema(
+                &svc,
+                "vp_task",
+                1,
+                json!([{
+                    "name": "story",
+                    "targetType": "vp_story",
+                    "direction": "out",
+                    "cardinality": "one"
+                }]),
+            )
+            .await;
+
+            // Condition: node.story.status — "story" is a relationship, "status" is a field on vp_story
+            let rules = vec![make_rule(
+                "vp_task",
+                vec!["node.story.status == 'active'"],
+                vec![],
+            )];
+            let result = validate_playbook(&rules, &svc).await;
+            assert!(result.is_ok(), "valid multi-hop path should pass: {:?}", result);
+        }
+
+        #[tokio::test]
+        async fn test_broken_path_unknown_segment_fails() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vp_task2", 1, json!([])).await;
+
+            // "nonexistent" is neither a field nor relationship on vp_task2
+            let rules = vec![make_rule(
+                "vp_task2",
+                vec!["node.nonexistent.foo == 'bar'"],
+                vec![],
+            )];
+            let result = validate_playbook(&rules, &svc).await;
+            assert!(result.is_err());
+            let errors = result.unwrap_err();
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlaybookValidationError::BrokenPath { segment, .. } if segment == "nonexistent"
+                )),
+                "should report broken path for 'nonexistent': {:?}",
+                errors
+            );
+        }
+
+        #[tokio::test]
+        async fn test_broken_path_field_as_non_terminal() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vp_task3", 1, json!([])).await;
+
+            // "status" is a field on vp_task3 — can't traverse further
+            let rules = vec![make_rule(
+                "vp_task3",
+                vec!["node.status.deeper == 'x'"],
+                vec![],
+            )];
+            let result = validate_playbook(&rules, &svc).await;
+            assert!(result.is_err());
+            let errors = result.unwrap_err();
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlaybookValidationError::BrokenPath { segment, .. } if segment == "status"
+                )),
+                "should report broken path for field-as-non-terminal: {:?}",
+                errors
+            );
+        }
+
+        #[tokio::test]
+        async fn test_single_hop_property_path_skips_validation() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vp_task4", 1, json!([])).await;
+
+            // Single-hop (node.status) is handled by existing property-level evaluation
+            // and should NOT be validated against the schema graph
+            let rules = vec![make_rule(
+                "vp_task4",
+                vec!["node.status == 'open'"],
+                vec![],
+            )];
+            let result = validate_playbook(&rules, &svc).await;
+            assert!(result.is_ok(), "single-hop paths should skip schema validation");
+        }
+
+        #[tokio::test]
+        async fn test_broken_path_relationship_without_target_type() {
+            let (svc, _tmp) = create_test_service().await;
+            // Relationship with no target_type
+            create_schema(
+                &svc,
+                "vp_task5",
+                1,
+                json!([{
+                    "name": "linked",
+                    "direction": "out",
+                    "cardinality": "many"
+                    // no target_type
+                }]),
+            )
+            .await;
+
+            // Trying to traverse past a relationship without target_type
+            let rules = vec![make_rule(
+                "vp_task5",
+                vec!["node.linked.status == 'x'"],
+                vec![],
+            )];
+            let result = validate_playbook(&rules, &svc).await;
+            assert!(result.is_err());
+            let errors = result.unwrap_err();
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlaybookValidationError::BrokenPath { segment, .. } if segment == "linked"
+                )),
+                "should report broken path for rel without target_type: {:?}",
+                errors
+            );
+        }
     }
 }

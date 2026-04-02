@@ -165,12 +165,29 @@ pub fn node_to_cel_value(node: &Node) -> Value {
         Value::String(Arc::new(node.lifecycle_status.clone())),
     );
 
-    // Flatten properties into the map, stripping namespace prefixes
+    // Flatten properties into the map, stripping namespace prefixes.
+    //
+    // NodeSpace stores properties in a type-namespaced format after create_node:
+    //   {"task": {"status": "open", "priority": "high"}}
+    // We unwrap the type namespace so CEL conditions can use `node.status` directly.
+    // Also handles colon-prefixed namespaces: "custom:amount" → "amount".
     if let Some(obj) = node.properties.as_object() {
         for (k, v) in obj {
-            // Strip namespace prefix: "custom:amount" → "amount"
-            let bare_key = k.find(':').map(|i| &k[i + 1..]).unwrap_or(k.as_str());
-            map.insert(key(bare_key), json_to_cel(v));
+            if k == &node.node_type {
+                // Type namespace: unwrap inner properties
+                if let Some(inner_obj) = v.as_object() {
+                    for (ik, iv) in inner_obj {
+                        // Skip internal fields like _schema_version
+                        if !ik.starts_with('_') {
+                            map.insert(key(ik), json_to_cel(iv));
+                        }
+                    }
+                }
+            } else {
+                // Strip colon namespace prefix: "custom:amount" → "amount"
+                let bare_key = k.find(':').map(|i| &k[i + 1..]).unwrap_or(k.as_str());
+                map.insert(key(bare_key), json_to_cel(v));
+            }
         }
     }
 

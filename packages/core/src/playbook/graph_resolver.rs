@@ -262,14 +262,30 @@ impl GraphResolver {
     }
 }
 
-/// Get a property value from a node, checking both namespaced and bare keys.
+/// Get a property value from a node, checking multiple formats.
+///
+/// NodeSpace stores properties in a type-namespaced format:
+/// `{"task": {"status": "open"}}` — so we check inside the type namespace too.
+/// Also checks `custom:key` namespace prefix format.
 fn get_node_property(node: &Node, key: &str) -> Option<serde_json::Value> {
     if let Some(obj) = node.properties.as_object() {
-        // Direct match
+        // Direct match (e.g., key "status" on {"status": "open"})
         if let Some(val) = obj.get(key) {
-            return Some(val.clone());
+            // Don't return the whole type namespace object as a "property"
+            if !val.is_object() || obj.len() > 1 {
+                return Some(val.clone());
+            }
         }
-        // Try with namespace prefix (e.g., "status" → "custom:status")
+
+        // Check inside the type-namespaced object (e.g., {"task": {"status": "open"}})
+        // The type namespace key matches the node_type
+        if let Some(type_obj) = obj.get(&node.node_type).and_then(|v| v.as_object()) {
+            if let Some(val) = type_obj.get(key) {
+                return Some(val.clone());
+            }
+        }
+
+        // Try with colon namespace prefix (e.g., "status" → "custom:status")
         for (k, v) in obj {
             if let Some(bare) = k.find(':').map(|i| &k[i + 1..]) {
                 if bare == key {
@@ -348,4 +364,596 @@ fn inject_nested_value(
             map: Arc::new(inner_map),
         }),
     );
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cel_interpreter::objects::Key;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------------
+    // inject_resolved_paths / inject_nested_value — pure unit tests (no DB)
+    // -----------------------------------------------------------------------
+
+    fn make_cel_map(pairs: Vec<(&str, Value)>) -> Value {
+        let map: HashMap<Key, Value> = pairs
+            .into_iter()
+            .map(|(k, v)| (Key::String(Arc::new(k.to_string())), v))
+            .collect();
+        Value::Map(cel_interpreter::objects::Map {
+            map: Arc::new(map),
+        })
+    }
+
+    fn get_map_field(val: &Value, field: &str) -> Option<Value> {
+        match val {
+            Value::Map(m) => m
+                .map
+                .get(&Key::String(Arc::new(field.to_string())))
+                .cloned(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn inject_single_level_path() {
+        let base = make_cel_map(vec![("id", Value::String(Arc::new("n1".to_string())))]);
+        let mut resolved = HashMap::new();
+        resolved.insert(
+            vec!["node".to_string(), "status".to_string()],
+            Value::String(Arc::new("open".to_string())),
+        );
+
+        let result = inject_resolved_paths(&base, &resolved);
+        assert_eq!(
+            get_map_field(&result, "status"),
+            Some(Value::String(Arc::new("open".to_string())))
+        );
+        // Original field preserved
+        assert_eq!(
+            get_map_field(&result, "id"),
+            Some(Value::String(Arc::new("n1".to_string())))
+        );
+    }
+
+    #[test]
+    fn inject_nested_path_creates_intermediate_maps() {
+        let base = make_cel_map(vec![("id", Value::String(Arc::new("n1".to_string())))]);
+        let mut resolved = HashMap::new();
+        resolved.insert(
+            vec![
+                "node".to_string(),
+                "story".to_string(),
+                "epic".to_string(),
+                "status".to_string(),
+            ],
+            Value::String(Arc::new("active".to_string())),
+        );
+
+        let result = inject_resolved_paths(&base, &resolved);
+
+        // node.story should be a Map
+        let story = get_map_field(&result, "story");
+        assert!(story.is_some(), "story should exist");
+        // node.story.epic should be a Map
+        let epic = get_map_field(&story.unwrap(), "epic");
+        assert!(epic.is_some(), "epic should exist");
+        // node.story.epic.status should be "active"
+        let status = get_map_field(&epic.unwrap(), "status");
+        assert_eq!(status, Some(Value::String(Arc::new("active".to_string()))));
+    }
+
+    #[test]
+    fn inject_multiple_paths_same_prefix() {
+        let base = make_cel_map(vec![]);
+        let mut resolved = HashMap::new();
+        resolved.insert(
+            vec![
+                "node".to_string(),
+                "story".to_string(),
+                "title".to_string(),
+            ],
+            Value::String(Arc::new("My Story".to_string())),
+        );
+        resolved.insert(
+            vec![
+                "node".to_string(),
+                "story".to_string(),
+                "status".to_string(),
+            ],
+            Value::String(Arc::new("active".to_string())),
+        );
+
+        let result = inject_resolved_paths(&base, &resolved);
+        let story = get_map_field(&result, "story").unwrap();
+        assert_eq!(
+            get_map_field(&story, "title"),
+            Some(Value::String(Arc::new("My Story".to_string())))
+        );
+        assert_eq!(
+            get_map_field(&story, "status"),
+            Some(Value::String(Arc::new("active".to_string())))
+        );
+    }
+
+    #[test]
+    fn inject_empty_resolved_returns_base() {
+        let base = make_cel_map(vec![("id", Value::Int(42))]);
+        let resolved = HashMap::new();
+        let result = inject_resolved_paths(&base, &resolved);
+        assert_eq!(get_map_field(&result, "id"), Some(Value::Int(42)));
+    }
+
+    #[test]
+    fn inject_non_node_root_paths_ignored() {
+        let base = make_cel_map(vec![]);
+        let mut resolved = HashMap::new();
+        // Path with root "trigger" (not "node") should be ignored
+        resolved.insert(
+            vec![
+                "trigger".to_string(),
+                "property".to_string(),
+                "key".to_string(),
+            ],
+            Value::String(Arc::new("status".to_string())),
+        );
+        let result = inject_resolved_paths(&base, &resolved);
+        // Should not inject anything
+        assert!(get_map_field(&result, "property").is_none());
+    }
+
+    #[test]
+    fn inject_list_value() {
+        let base = make_cel_map(vec![]);
+        let list = Value::List(
+            vec![
+                Value::String(Arc::new("a".to_string())),
+                Value::String(Arc::new("b".to_string())),
+            ]
+            .into(),
+        );
+        let mut resolved = HashMap::new();
+        resolved.insert(
+            vec!["node".to_string(), "tasks".to_string()],
+            list.clone(),
+        );
+        let result = inject_resolved_paths(&base, &resolved);
+        let tasks = get_map_field(&result, "tasks");
+        assert!(matches!(tasks, Some(Value::List(_))));
+    }
+
+    // -----------------------------------------------------------------------
+    // get_node_property — unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn get_property_direct_key() {
+        let node = crate::models::Node {
+            id: "n1".to_string(),
+            node_type: "task".to_string(),
+            content: "".to_string(),
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: json!({"status": "open"}),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+        assert_eq!(
+            get_node_property(&node, "status"),
+            Some(json!("open"))
+        );
+        assert_eq!(get_node_property(&node, "missing"), None);
+    }
+
+    #[test]
+    fn get_property_with_namespace_prefix() {
+        let node = crate::models::Node {
+            id: "n1".to_string(),
+            node_type: "task".to_string(),
+            content: "".to_string(),
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: json!({"custom:amount": 1500}),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+        // "amount" should match "custom:amount"
+        assert_eq!(get_node_property(&node, "amount"), Some(json!(1500)));
+    }
+
+    // -----------------------------------------------------------------------
+    // ResolvedValue — basic enum tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolved_value_missing_is_default() {
+        let rv = ResolvedValue::Missing;
+        assert!(matches!(rv, ResolvedValue::Missing));
+    }
+
+    #[test]
+    fn resolved_value_scalar() {
+        let rv = ResolvedValue::Scalar(json!("hello"));
+        match rv {
+            ResolvedValue::Scalar(v) => assert_eq!(v, json!("hello")),
+            _ => panic!("expected Scalar"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests with real NodeService (requires multi_thread runtime)
+    // -----------------------------------------------------------------------
+
+    mod integration {
+        use super::*;
+        use crate::db::SurrealStore;
+        use crate::models::Node;
+        use crate::services::NodeService;
+        use serde_json::json;
+        use tempfile::TempDir;
+
+        async fn create_test_service() -> (Arc<NodeService>, TempDir) {
+            let temp_dir = TempDir::new().unwrap();
+            let db_path = temp_dir.path().join("test.db");
+            let mut store: Arc<SurrealStore> =
+                Arc::new(SurrealStore::new(db_path).await.unwrap());
+            let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+            (node_service, temp_dir)
+        }
+
+        async fn create_schema(
+            svc: &Arc<NodeService>,
+            type_name: &str,
+            relationships: serde_json::Value,
+        ) {
+            let schema_node = Node::new_with_id(
+                type_name.to_string(),
+                "schema".to_string(),
+                type_name.to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": format!("{} schema", type_name),
+                    "fields": [{"name": "status", "type": "string"}, {"name": "title", "type": "string"}],
+                    "relationships": relationships
+                }),
+            );
+            svc.create_node(schema_node)
+                .await
+                .unwrap_or_else(|_| panic!("Failed to create schema '{}'", type_name));
+        }
+
+        fn make_node(id: &str, node_type: &str, props: serde_json::Value) -> Node {
+            Node {
+                id: id.to_string(),
+                node_type: node_type.to_string(),
+                content: format!("{} content", id),
+                version: 1,
+                created_at: chrono::Utc::now(),
+                modified_at: chrono::Utc::now(),
+                properties: props,
+                mentions: vec![],
+                mentioned_in: vec![],
+                title: Some(format!("{} title", id)),
+                lifecycle_status: "active".to_string(),
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resolve_property_on_root_node() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_task", json!([])).await;
+
+            let node = make_node("gr-t1", "gr_task", json!({"status": "open"}));
+            svc.create_node(node.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver.resolve_path(&node, &["status".to_string()]);
+            match result {
+                ResolvedValue::Scalar(v) => assert_eq!(v, json!("open")),
+                other => panic!("expected Scalar, got {:?}", other),
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resolve_missing_property_returns_missing() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_task2", json!([])).await;
+
+            let node = make_node("gr-t2", "gr_task2", json!({"status": "open"}));
+            svc.create_node(node.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            // "nonexistent" is neither a property nor a relationship
+            let result = resolver.resolve_path(&node, &["nonexistent".to_string()]);
+            assert!(matches!(result, ResolvedValue::Missing));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resolve_single_hop_relationship() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // Create schemas: gr_story has no rels, gr_issue -> story
+            create_schema(&svc, "gr_story", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_issue",
+                json!([{
+                    "name": "story",
+                    "target_type": "gr_story",
+                    "direction": "out",
+                    "cardinality": "one"
+                }]),
+            )
+            .await;
+
+            // Create nodes
+            let story = make_node("gr-s1", "gr_story", json!({"status": "active"}));
+            svc.create_node(story.clone()).await.unwrap();
+
+            let issue = make_node("gr-i1", "gr_issue", json!({"status": "open"}));
+            svc.create_node(issue.clone()).await.unwrap();
+
+            // Create relationship
+            svc.create_relationship("gr-i1", "story", "gr-s1", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver.resolve_path(&issue, &["story".to_string()]);
+            match result {
+                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-s1"),
+                other => panic!("expected Node, got {:?}", other),
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resolve_multi_hop_relationship_chain() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // Chain: gr_task3 -> story -> epic
+            create_schema(&svc, "gr_epic", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_story3",
+                json!([{
+                    "name": "epic",
+                    "target_type": "gr_epic",
+                    "direction": "out",
+                    "cardinality": "one"
+                }]),
+            )
+            .await;
+            create_schema(
+                &svc,
+                "gr_task3",
+                json!([{
+                    "name": "story",
+                    "target_type": "gr_story3",
+                    "direction": "out",
+                    "cardinality": "one"
+                }]),
+            )
+            .await;
+
+            let epic = make_node("gr-e1", "gr_epic", json!({"status": "in_progress"}));
+            svc.create_node(epic).await.unwrap();
+
+            let story = make_node("gr-s3", "gr_story3", json!({"status": "active"}));
+            svc.create_node(story).await.unwrap();
+
+            let task = make_node("gr-t3", "gr_task3", json!({"status": "open"}));
+            svc.create_node(task.clone()).await.unwrap();
+
+            svc.create_relationship("gr-t3", "story", "gr-s3", json!({}))
+                .await
+                .unwrap();
+            svc.create_relationship("gr-s3", "epic", "gr-e1", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+
+            // Resolve task -> story -> epic
+            let result = resolver.resolve_path(
+                &task,
+                &["story".to_string(), "epic".to_string()],
+            );
+            match result {
+                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-e1"),
+                other => panic!("expected Node for story.epic, got {:?}", other),
+            }
+
+            // Resolve task -> story -> epic -> status (scalar property on the target)
+            let result = resolver.resolve_path(
+                &task,
+                &[
+                    "story".to_string(),
+                    "epic".to_string(),
+                    "status".to_string(),
+                ],
+            );
+            match result {
+                ResolvedValue::Scalar(v) => assert_eq!(v, json!("in_progress")),
+                other => panic!("expected Scalar for story.epic.status, got {:?}", other),
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resolve_path_cache_hit() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_story4", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_task4",
+                json!([{
+                    "name": "story",
+                    "target_type": "gr_story4",
+                    "direction": "out",
+                    "cardinality": "one"
+                }]),
+            )
+            .await;
+
+            let story = make_node("gr-s4", "gr_story4", json!({"status": "done"}));
+            svc.create_node(story).await.unwrap();
+            let task = make_node("gr-t4", "gr_task4", json!({}));
+            svc.create_node(task.clone()).await.unwrap();
+            svc.create_relationship("gr-t4", "story", "gr-s4", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+
+            // First call populates cache
+            let r1 = resolver.resolve_path(
+                &task,
+                &["story".to_string(), "status".to_string()],
+            );
+            assert!(matches!(r1, ResolvedValue::Scalar(_)));
+
+            // Second call should hit cache (same result)
+            let r2 = resolver.resolve_path(
+                &task,
+                &["story".to_string(), "status".to_string()],
+            );
+            assert!(matches!(r2, ResolvedValue::Scalar(_)));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resolve_collection_returns_multiple_nodes() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_subtask", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_parent",
+                json!([{
+                    "name": "subtasks",
+                    "target_type": "gr_subtask",
+                    "direction": "out",
+                    "cardinality": "many"
+                }]),
+            )
+            .await;
+
+            let sub1 = make_node("gr-sub1", "gr_subtask", json!({"status": "done"}));
+            let sub2 = make_node("gr-sub2", "gr_subtask", json!({"status": "open"}));
+            svc.create_node(sub1).await.unwrap();
+            svc.create_node(sub2).await.unwrap();
+
+            let parent = make_node("gr-p1", "gr_parent", json!({}));
+            svc.create_node(parent.clone()).await.unwrap();
+
+            svc.create_relationship("gr-p1", "subtasks", "gr-sub1", json!({}))
+                .await
+                .unwrap();
+            svc.create_relationship("gr-p1", "subtasks", "gr-sub2", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver.resolve_path(&parent, &["subtasks".to_string()]);
+            match result {
+                ResolvedValue::Collection(nodes) => {
+                    assert_eq!(nodes.len(), 2);
+                    let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+                    assert!(ids.contains(&"gr-sub1"));
+                    assert!(ids.contains(&"gr-sub2"));
+                }
+                other => panic!("expected Collection, got {:?}", other),
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn enrich_context_builds_cel_values() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_target5", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_source5",
+                json!([{
+                    "name": "target",
+                    "target_type": "gr_target5",
+                    "direction": "out",
+                    "cardinality": "one"
+                }]),
+            )
+            .await;
+
+            let target = make_node("gr-tgt5", "gr_target5", json!({"status": "ready"}));
+            svc.create_node(target).await.unwrap();
+            let source = make_node("gr-src5", "gr_source5", json!({}));
+            svc.create_node(source.clone()).await.unwrap();
+            svc.create_relationship("gr-src5", "target", "gr-tgt5", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+
+            let paths = vec![ExtractedPath {
+                segments: vec![
+                    "node".to_string(),
+                    "target".to_string(),
+                    "status".to_string(),
+                ],
+                root: "node".to_string(),
+            }];
+
+            let result = resolver.enrich_context(&source, &paths, &[]);
+            // Should have resolved node.target.status
+            let key = vec![
+                "node".to_string(),
+                "target".to_string(),
+                "status".to_string(),
+            ];
+            assert!(result.contains_key(&key), "should contain resolved path");
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resolve_empty_segments_returns_root_node() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_task6", json!([])).await;
+
+            let node = make_node("gr-t6", "gr_task6", json!({}));
+            svc.create_node(node.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver.resolve_path(&node, &[]);
+            match result {
+                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-t6"),
+                other => panic!("expected Node, got {:?}", other),
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn cannot_walk_past_scalar() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_task7", json!([])).await;
+
+            let node = make_node("gr-t7", "gr_task7", json!({"status": "open"}));
+            svc.create_node(node.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            // "status" is a scalar property, can't walk further
+            let result = resolver.resolve_path(
+                &node,
+                &["status".to_string(), "deeper".to_string()],
+            );
+            assert!(matches!(result, ResolvedValue::Missing));
+        }
+    }
 }

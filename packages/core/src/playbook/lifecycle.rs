@@ -381,3 +381,320 @@ pub fn trigger_keys_for_event(event: &crate::db::events::DomainEvent) -> Vec<Tri
         DomainEvent::RelationshipDeleted { .. } => vec![], // TODO(#995-phase2): same as RelationshipCreated above
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::Node;
+    use chrono::Utc;
+    use serde_json::json;
+
+    /// Helper: create a playbook node with rules JSON.
+    fn make_playbook_node(id: &str, rules_json: serde_json::Value) -> Node {
+        Node {
+            id: id.to_string(),
+            node_type: "playbook".to_string(),
+            content: format!("playbook {}", id),
+            version: 1,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            properties: json!({ "rules": rules_json }),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: Some(format!("Playbook {}", id)),
+            lifecycle_status: "active".to_string(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // activate / deactivate / disable
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn activate_and_lookup() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_playbook_node(
+            "pb-1",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        lm.activate_playbook(&node).unwrap();
+        assert!(lm.active_playbooks().contains_key("pb-1"));
+        assert_eq!(lm.active_playbooks()["pb-1"].status, PlaybookStatus::Active);
+    }
+
+    #[test]
+    fn deactivate_removes_from_all_indexes() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_playbook_node(
+            "pb-2",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        lm.activate_playbook(&node).unwrap();
+        assert!(!lm.trigger_index().is_empty());
+
+        lm.deactivate_playbook("pb-2");
+        assert!(!lm.active_playbooks().contains_key("pb-2"));
+        assert!(lm.trigger_index().is_empty());
+    }
+
+    #[test]
+    fn disable_keeps_in_active_but_removes_from_index() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_playbook_node(
+            "pb-3",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        lm.activate_playbook(&node).unwrap();
+        lm.disable_playbook("pb-3");
+
+        // Still in active_playbooks but disabled
+        assert!(lm.active_playbooks().contains_key("pb-3"));
+        assert_eq!(
+            lm.active_playbooks()["pb-3"].status,
+            PlaybookStatus::Disabled
+        );
+        // Removed from trigger index
+        assert!(lm.trigger_index().is_empty());
+    }
+
+    #[test]
+    fn lookup_rules_returns_matching_rules() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_playbook_node(
+            "pb-4",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": ["node.status == 'open'"],
+                "actions": []
+            }]),
+        );
+        lm.activate_playbook(&node).unwrap();
+
+        let keys = vec![TriggerKey::NodeEvent {
+            event: NodeEventType::NodeCreated,
+            node_type: "task".to_string(),
+            property_key: None,
+        }];
+        let rules = lm.lookup_rules(&keys);
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].rule.name, "r1");
+    }
+
+    #[test]
+    fn lookup_rules_no_match_returns_empty() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_playbook_node(
+            "pb-5",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        lm.activate_playbook(&node).unwrap();
+
+        // Wrong node type
+        let keys = vec![TriggerKey::NodeEvent {
+            event: NodeEventType::NodeCreated,
+            node_type: "invoice".to_string(),
+            property_key: None,
+        }];
+        let rules = lm.lookup_rules(&keys);
+        assert!(rules.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // handle_schema_update — path-aware drift detection (#1010)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn schema_update_disables_directly_referencing_playbook() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_playbook_node(
+            "pb-drift-1",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": ["node.status == 'open'"],
+                "actions": []
+            }]),
+        );
+        lm.activate_playbook(&node).unwrap();
+
+        let disabled = lm.handle_schema_update("task", "2");
+        assert_eq!(disabled, vec!["pb-drift-1"]);
+        assert_eq!(
+            lm.active_playbooks()["pb-drift-1"].status,
+            PlaybookStatus::Disabled
+        );
+    }
+
+    #[test]
+    fn schema_update_disables_playbook_with_path_through_schema() {
+        let mut lm = PlaybookLifecycleManager::new();
+        // Playbook triggers on "task" but has conditions traversing through "epic"
+        let node = make_playbook_node(
+            "pb-drift-2",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": ["node.story.epic.status == 'active'"],
+                "actions": []
+            }]),
+        );
+        lm.activate_playbook(&node).unwrap();
+
+        // Updating "epic" schema should detect the path traversal
+        let disabled = lm.handle_schema_update("epic", "2");
+        assert_eq!(disabled, vec!["pb-drift-2"]);
+    }
+
+    #[test]
+    fn schema_update_does_not_affect_unrelated_playbook() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_playbook_node(
+            "pb-drift-3",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": ["node.status == 'open'"],
+                "actions": []
+            }]),
+        );
+        lm.activate_playbook(&node).unwrap();
+
+        // Updating "invoice" schema should not affect this playbook
+        let disabled = lm.handle_schema_update("invoice", "2");
+        assert!(disabled.is_empty());
+        assert_eq!(
+            lm.active_playbooks()["pb-drift-3"].status,
+            PlaybookStatus::Active
+        );
+    }
+
+    #[test]
+    fn schema_update_skips_already_disabled_playbooks() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_playbook_node(
+            "pb-drift-4",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        lm.activate_playbook(&node).unwrap();
+        lm.disable_playbook("pb-drift-4");
+
+        let disabled = lm.handle_schema_update("task", "2");
+        assert!(disabled.is_empty(), "already-disabled playbooks should not appear");
+    }
+
+    // -----------------------------------------------------------------------
+    // playbook_has_paths_through_schema
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn paths_through_schema_detects_multi_hop() {
+        let pb = ParsedPlaybook {
+            id: "test-pb".to_string(),
+            created_at: Utc::now(),
+            rules: vec![Arc::new(ParsedRule {
+                name: "r1".to_string(),
+                trigger: ParsedTrigger::GraphEvent {
+                    on: GraphEventType::NodeCreated,
+                    node_type: "task".to_string(),
+                    property_key: None,
+                },
+                conditions: vec!["node.story.epic.status == 'active'".to_string()],
+                actions: vec![],
+            })],
+            status: PlaybookStatus::Active,
+        };
+
+        assert!(playbook_has_paths_through_schema(&pb, "story"));
+        assert!(playbook_has_paths_through_schema(&pb, "epic"));
+        assert!(!playbook_has_paths_through_schema(&pb, "invoice"));
+    }
+
+    #[test]
+    fn paths_through_schema_no_conditions() {
+        let pb = ParsedPlaybook {
+            id: "test-pb".to_string(),
+            created_at: Utc::now(),
+            rules: vec![Arc::new(ParsedRule {
+                name: "r1".to_string(),
+                trigger: ParsedTrigger::GraphEvent {
+                    on: GraphEventType::NodeCreated,
+                    node_type: "task".to_string(),
+                    property_key: None,
+                },
+                conditions: vec![],
+                actions: vec![],
+            })],
+            status: PlaybookStatus::Active,
+        };
+
+        assert!(!playbook_has_paths_through_schema(&pb, "task"));
+    }
+
+    // -----------------------------------------------------------------------
+    // trigger_keys_for_event
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn trigger_keys_for_node_created() {
+        let event = crate::db::events::DomainEvent::NodeCreated {
+            node_type: "task".to_string(),
+            node_id: "n1".to_string(),
+        };
+        let keys = trigger_keys_for_event(&event);
+        assert_eq!(keys.len(), 1);
+        assert!(matches!(
+            &keys[0],
+            TriggerKey::NodeEvent {
+                event: NodeEventType::NodeCreated,
+                node_type,
+                property_key: None,
+            } if node_type == "task"
+        ));
+    }
+
+    #[test]
+    fn trigger_keys_for_property_changed_includes_wildcard() {
+        let event = crate::db::events::DomainEvent::NodeUpdated {
+            node_type: "task".to_string(),
+            node_id: "n1".to_string(),
+            changed_properties: vec![crate::db::events::PropertyChange {
+                key: "status".to_string(),
+                old_value: Some(json!("open")),
+                new_value: Some(json!("done")),
+            }],
+        };
+        let keys = trigger_keys_for_event(&event);
+        // Should have exact key + wildcard
+        assert_eq!(keys.len(), 2);
+    }
+}

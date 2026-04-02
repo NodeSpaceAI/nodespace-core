@@ -128,3 +128,155 @@ pub async fn handle_get_workflow_state(
         "rules": results,
     }))
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::SurrealStore;
+    use crate::models::Node;
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    async fn create_test_service() -> (Arc<NodeService>, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let mut store: Arc<SurrealStore> = Arc::new(SurrealStore::new(db_path).await.unwrap());
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+        (node_service, temp_dir)
+    }
+
+    async fn create_schema(svc: &Arc<NodeService>, type_name: &str) {
+        let schema_node = Node::new_with_id(
+            type_name.to_string(),
+            "schema".to_string(),
+            type_name.to_string(),
+            json!({
+                "isCore": false,
+                "schemaVersion": 1,
+                "description": format!("{} schema", type_name),
+                "fields": [{"name": "status", "type": "string"}],
+                "relationships": []
+            }),
+        );
+        svc.create_node(schema_node).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_node_id_returns_error() {
+        let (svc, _tmp) = create_test_service().await;
+        let result = handle_get_workflow_state(&svc, json!({})).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn nonexistent_node_returns_error() {
+        let (svc, _tmp) = create_test_service().await;
+        let result = handle_get_workflow_state(&svc, json!({"node_id": "nonexistent"})).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn node_with_no_matching_playbooks_returns_empty() {
+        let (svc, _tmp) = create_test_service().await;
+        create_schema(&svc, "wf_widget").await;
+
+        let node = Node::new("wf_widget".to_string(), "test widget".to_string(), json!({}));
+        let node_id = node.id.clone();
+        svc.create_node(node).await.unwrap();
+
+        let result = handle_get_workflow_state(&svc, json!({"node_id": node_id}))
+            .await
+            .unwrap();
+        assert_eq!(result["matched_rules"], 0);
+        assert_eq!(result["rules"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn evaluates_matching_playbook_conditions() {
+        let (svc, _tmp) = create_test_service().await;
+        create_schema(&svc, "wf_task").await;
+
+        // Create a playbook that triggers on wf_task
+        let playbook = Node::new(
+            "playbook".to_string(),
+            "test playbook".to_string(),
+            json!({
+                "rules": [{
+                    "name": "check-status",
+                    "trigger": {
+                        "type": "graph_event",
+                        "on": "node_created",
+                        "node_type": "wf_task"
+                    },
+                    "conditions": ["node.status == 'open'"],
+                    "actions": []
+                }]
+            }),
+        );
+        svc.create_node(playbook).await.unwrap();
+
+        // Create a matching node
+        let node = Node::new(
+            "wf_task".to_string(),
+            "my task".to_string(),
+            json!({"status": "open"}),
+        );
+        let node_id = node.id.clone();
+        svc.create_node(node).await.unwrap();
+
+        let result = handle_get_workflow_state(&svc, json!({"node_id": node_id}))
+            .await
+            .unwrap();
+        assert_eq!(result["matched_rules"], 1);
+
+        let rule = &result["rules"][0];
+        assert_eq!(rule["rule_name"], "check-status");
+        assert_eq!(rule["all_conditions_passed"], true);
+        assert_eq!(rule["conditions"][0]["passed"], true);
+    }
+
+    #[tokio::test]
+    async fn reports_failing_conditions() {
+        let (svc, _tmp) = create_test_service().await;
+        create_schema(&svc, "wf_task2").await;
+
+        let playbook = Node::new(
+            "playbook".to_string(),
+            "test playbook".to_string(),
+            json!({
+                "rules": [{
+                    "name": "check-done",
+                    "trigger": {
+                        "type": "graph_event",
+                        "on": "node_created",
+                        "node_type": "wf_task2"
+                    },
+                    "conditions": ["node.status == 'done'"],
+                    "actions": []
+                }]
+            }),
+        );
+        svc.create_node(playbook).await.unwrap();
+
+        let node = Node::new(
+            "wf_task2".to_string(),
+            "my task".to_string(),
+            json!({"status": "open"}),
+        );
+        let node_id = node.id.clone();
+        svc.create_node(node).await.unwrap();
+
+        let result = handle_get_workflow_state(&svc, json!({"node_id": node_id}))
+            .await
+            .unwrap();
+        assert_eq!(result["matched_rules"], 1);
+
+        let rule = &result["rules"][0];
+        assert_eq!(rule["all_conditions_passed"], false);
+        assert_eq!(rule["conditions"][0]["passed"], false);
+    }
+}
