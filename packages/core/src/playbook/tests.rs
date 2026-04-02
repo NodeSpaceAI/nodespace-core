@@ -261,6 +261,28 @@ mod tests {
         assert_eq!(rules[1].name, "rule2");
     }
 
+    #[test]
+    fn test_parse_rules_from_namespace_nested_properties() {
+        // DB-stored format: properties are wrapped under {"playbook": {"rules": [...]}}
+        // after create_node's namespace normalization
+        let properties = json!({
+            "playbook": {
+                "rules": [
+                    {
+                        "name": "db-rule",
+                        "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                        "conditions": ["node.status == 'open'"],
+                        "actions": []
+                    }
+                ]
+            }
+        });
+
+        let rules = parse_rules_from_properties(&properties).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "db-rule");
+    }
+
     // -----------------------------------------------------------------------
     // Lifecycle manager tests
     // -----------------------------------------------------------------------

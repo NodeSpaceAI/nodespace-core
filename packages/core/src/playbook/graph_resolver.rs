@@ -271,8 +271,8 @@ fn get_node_property(node: &Node, key: &str) -> Option<serde_json::Value> {
     if let Some(obj) = node.properties.as_object() {
         // Direct match (e.g., key "status" on {"status": "open"})
         if let Some(val) = obj.get(key) {
-            // Don't return the whole type namespace object as a "property"
-            if !val.is_object() || obj.len() > 1 {
+            // Don't return the type namespace wrapper as a property
+            if key != node.node_type || !val.is_object() {
                 return Some(val.clone());
             }
         }
@@ -570,6 +570,29 @@ mod tests {
         };
         // "amount" should match "custom:amount"
         assert_eq!(get_node_property(&node, "amount"), Some(json!(1500)));
+    }
+
+    #[test]
+    fn get_property_with_type_namespace() {
+        // DB-stored format: properties are wrapped under the node_type key
+        let node = crate::models::Node {
+            id: "n1".to_string(),
+            node_type: "task".to_string(),
+            content: "".to_string(),
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: json!({"task": {"status": "open", "priority": "high"}}),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+        assert_eq!(get_node_property(&node, "status"), Some(json!("open")));
+        assert_eq!(get_node_property(&node, "priority"), Some(json!("high")));
+        // "task" itself should NOT be returned as a property (it's the namespace wrapper)
+        assert_eq!(get_node_property(&node, "task"), None);
+        assert_eq!(get_node_property(&node, "missing"), None);
     }
 
     // -----------------------------------------------------------------------

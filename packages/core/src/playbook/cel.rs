@@ -170,6 +170,8 @@ pub fn node_to_cel_value(node: &Node) -> Value {
     // NodeSpace stores properties in a type-namespaced format after create_node:
     //   {"task": {"status": "open", "priority": "high"}}
     // We unwrap the type namespace so CEL conditions can use `node.status` directly.
+    // NOTE: Parallel logic exists in graph_resolver::get_node_property — if the
+    // property storage format changes, both must be updated.
     // Also handles colon-prefixed namespaces: "custom:amount" → "amount".
     if let Some(obj) = node.properties.as_object() {
         for (k, v) in obj {

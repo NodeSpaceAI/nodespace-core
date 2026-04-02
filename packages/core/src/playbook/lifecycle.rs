@@ -296,6 +296,11 @@ fn playbook_references_node_type(playbook: &ParsedPlaybook, node_type: &str) -> 
 /// graph, but that's expensive for a lifecycle operation. The heuristic is conservative
 /// (may produce false positives, triggering unnecessary re-validation, but never
 /// false negatives that would leave a broken playbook active).
+///
+/// NOTE: Action binding templates (e.g., `{trigger.node.story.epic.title}`) are not
+/// checked here since they're template strings, not CEL expressions. If an action
+/// binding references a path through a changed schema, drift detection won't catch it.
+/// The action will fail at execution time and the playbook will be disabled then.
 fn playbook_has_paths_through_schema(playbook: &ParsedPlaybook, schema_node_type: &str) -> bool {
     for rule in &playbook.rules {
         for condition in &rule.conditions {
