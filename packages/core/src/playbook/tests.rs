@@ -261,6 +261,28 @@ mod tests {
         assert_eq!(rules[1].name, "rule2");
     }
 
+    #[test]
+    fn test_parse_rules_from_namespace_nested_properties() {
+        // DB-stored format: properties are wrapped under {"playbook": {"rules": [...]}}
+        // after create_node's namespace normalization
+        let properties = json!({
+            "playbook": {
+                "rules": [
+                    {
+                        "name": "db-rule",
+                        "trigger": {"type": "graph_event", "on": "node_created", "node_type": "task"},
+                        "conditions": ["node.status == 'open'"],
+                        "actions": []
+                    }
+                ]
+            }
+        });
+
+        let rules = parse_rules_from_properties(&properties).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "db-rule");
+    }
+
     // -----------------------------------------------------------------------
     // Lifecycle manager tests
     // -----------------------------------------------------------------------
@@ -1115,8 +1137,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_queue_send_receive() {
-        let (tx, mut rx) =
-            tokio::sync::mpsc::channel::<ExecutionWorkItem>(super::super::engine::EXECUTION_QUEUE_CAPACITY);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ExecutionWorkItem>(
+            super::super::engine::EXECUTION_QUEUE_CAPACITY,
+        );
 
         let trigger_node = Node {
             id: "node:1".to_string(),
@@ -1202,8 +1225,9 @@ mod tests {
         use crate::playbook::lifecycle::PlaybookLifecycleManager;
         use std::sync::{Arc, RwLock};
 
-        let (tx, rx) =
-            tokio::sync::mpsc::channel::<ExecutionWorkItem>(super::super::engine::EXECUTION_QUEUE_CAPACITY);
+        let (tx, rx) = tokio::sync::mpsc::channel::<ExecutionWorkItem>(
+            super::super::engine::EXECUTION_QUEUE_CAPACITY,
+        );
 
         // The processor now requires lifecycle and node_service args.
         // Since we can't easily create a real NodeService without a database,

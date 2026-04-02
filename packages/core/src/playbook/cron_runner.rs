@@ -46,7 +46,10 @@ pub async fn cron_runner_loop(
     queue_tx: mpsc::Sender<ExecutionWorkItem>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
-    debug!("CronRunner started, polling every {} seconds", POLL_INTERVAL.as_secs());
+    debug!(
+        "CronRunner started, polling every {} seconds",
+        POLL_INTERVAL.as_secs()
+    );
 
     loop {
         tokio::select! {
@@ -101,10 +104,7 @@ async fn check_and_enqueue(
         // We look backward from `now` by the poll interval — if there's an
         // occurrence between (now - 60s) and now, the expression matches.
         let window_start = now - chrono::Duration::seconds(POLL_INTERVAL.as_secs() as i64);
-        let matches = schedule
-            .after(&window_start)
-            .take(1)
-            .any(|t| t <= now);
+        let matches = schedule.after(&window_start).take(1).any(|t| t <= now);
 
         if !matches {
             continue;

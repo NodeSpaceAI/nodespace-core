@@ -365,11 +365,22 @@ pub fn parse_action(def: &ActionDefinition) -> Result<ParsedAction, PlaybookPars
 }
 
 /// Parse the `rules` array from a playbook node's properties JSON.
+///
+/// Checks both top-level `properties["rules"]` and namespace-nested
+/// `properties["playbook"]["rules"]` to support both in-memory and
+/// DB-stored (namespace-normalized) formats.
 pub fn parse_rules_from_properties(
     properties: &serde_json::Value,
 ) -> Result<Vec<RuleDefinition>, PlaybookParseError> {
+    // Try top-level first: {"rules": [...]}
     let rules_value = properties
         .get("rules")
+        // Then try inside the "playbook" namespace: {"playbook": {"rules": [...]}}
+        .or_else(|| {
+            properties
+                .get("playbook")
+                .and_then(|pb| pb.get("rules"))
+        })
         .ok_or_else(|| PlaybookParseError::MissingField("rules".to_string()))?;
 
     serde_json::from_value(rules_value.clone())

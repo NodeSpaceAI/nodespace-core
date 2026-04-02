@@ -4019,6 +4019,7 @@ dependencies = [
  "async-trait",
  "axum 0.7.9",
  "cel-interpreter",
+ "cel-parser",
  "chrono",
  "criterion",
  "cron",

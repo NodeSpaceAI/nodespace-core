@@ -9,9 +9,14 @@
 //! Before evaluation, node properties are flattened into the CEL Map and namespace
 //! prefixes are stripped: `custom:amount` → `node.amount`. Properties are read
 //! directly from `node.properties` (the raw DB format), not via
-//! `flatten_properties_for_api`. This is sufficient for trigger nodes returned
-//! by `get_node()`. Full wire-format normalization will be added alongside
-//! graph traversal in #1010.
+//! `flatten_properties_for_api`.
+//!
+//! # Graph Traversal (#1010)
+//!
+//! Dot-path relationship walking (e.g., `node.story.epic.status`) is resolved
+//! before evaluation by the `GraphResolver`. The path extractor parses CEL ASTs
+//! to discover multi-hop paths, the resolver fetches related nodes, and the
+//! results are injected as nested CEL Maps into the evaluation context.
 //!
 //! # Missing Path Behavior
 //!
@@ -19,12 +24,6 @@
 //! but the playbook stays active. This matches the spec: relationships are built
 //! progressively, so a condition checking `node.story.epic.status` should wait
 //! until the chain exists, not disable itself.
-//!
-//! # Phase 3 Scope
-//!
-//! This phase covers property-level condition evaluation on the trigger node.
-//! Graph traversal (dot-path relationship walking like `node.story.epic.status`)
-//! requires async NodeService calls and is deferred to a future phase.
 
 use cel_interpreter::{Context, ExecutionError, Program, Value};
 use chrono::{Local, Utc};
@@ -34,6 +33,8 @@ use tracing::{debug, warn};
 
 use crate::db::events::DomainEvent;
 use crate::models::Node;
+use crate::playbook::graph_resolver::{inject_resolved_paths, GraphResolver};
+use crate::playbook::path_extractor;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -101,7 +102,7 @@ pub fn compile_condition(expr: &str) -> Result<Program, CelCompileError> {
 /// - string → String
 /// - array → List
 /// - object → Map
-fn json_to_cel(json: &serde_json::Value) -> Value {
+pub fn json_to_cel(json: &serde_json::Value) -> Value {
     match json {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(*b),
@@ -129,9 +130,7 @@ fn json_to_cel(json: &serde_json::Value) -> Value {
                     )
                 })
                 .collect();
-            Value::Map(cel_interpreter::objects::Map {
-                map: Arc::new(map),
-            })
+            Value::Map(cel_interpreter::objects::Map { map: Arc::new(map) })
         }
     }
 }
@@ -166,25 +165,39 @@ pub fn node_to_cel_value(node: &Node) -> Value {
         Value::String(Arc::new(node.lifecycle_status.clone())),
     );
 
-    // Flatten properties into the map, stripping namespace prefixes
+    // Flatten properties into the map, stripping namespace prefixes.
+    //
+    // NodeSpace stores properties in a type-namespaced format after create_node:
+    //   {"task": {"status": "open", "priority": "high"}}
+    // We unwrap the type namespace so CEL conditions can use `node.status` directly.
+    // NOTE: Parallel logic exists in graph_resolver::get_node_property — if the
+    // property storage format changes, both must be updated.
+    // Also handles colon-prefixed namespaces: "custom:amount" → "amount".
     if let Some(obj) = node.properties.as_object() {
         for (k, v) in obj {
-            // Strip namespace prefix: "custom:amount" → "amount"
-            let bare_key = k
-                .find(':')
-                .map(|i| &k[i + 1..])
-                .unwrap_or(k.as_str());
-            map.insert(key(bare_key), json_to_cel(v));
+            if k == &node.node_type {
+                // Type namespace: unwrap inner properties
+                if let Some(inner_obj) = v.as_object() {
+                    for (ik, iv) in inner_obj {
+                        // Skip internal fields like _schema_version
+                        if !ik.starts_with('_') {
+                            map.insert(key(ik), json_to_cel(iv));
+                        }
+                    }
+                }
+            } else {
+                // Strip colon namespace prefix: "custom:amount" → "amount"
+                let bare_key = k.find(':').map(|i| &k[i + 1..]).unwrap_or(k.as_str());
+                map.insert(key(bare_key), json_to_cel(v));
+            }
         }
     }
 
-    Value::Map(cel_interpreter::objects::Map {
-        map: Arc::new(map),
-    })
+    Value::Map(cel_interpreter::objects::Map { map: Arc::new(map) })
 }
 
 /// Convenience: create a CEL Map Key from a string.
-fn key(s: &str) -> cel_interpreter::objects::Key {
+pub fn key(s: &str) -> cel_interpreter::objects::Key {
     cel_interpreter::objects::Key::String(Arc::new(s.to_string()))
 }
 
@@ -203,20 +216,33 @@ fn key(s: &str) -> cel_interpreter::objects::Key {
 /// - `days_since(date_string)`: Days elapsed since ISO 8601 date
 /// - `days_until(date_string)`: Days remaining until ISO 8601 date
 /// - `today()`: Current date as ISO 8601 string
-pub fn build_condition_context<'a>(
+pub fn build_condition_context<'a>(node: &Node, event: &DomainEvent) -> Context<'a> {
+    build_condition_context_with_resolved(node, event, &HashMap::new())
+}
+
+/// Build a CEL evaluation context with pre-resolved graph paths injected.
+///
+/// `resolved_values` maps path segments → CEL Values resolved by GraphResolver.
+/// These are injected as nested Maps into the `node` variable so that
+/// expressions like `node.story.epic.status` resolve correctly.
+fn build_condition_context_with_resolved<'a>(
     node: &Node,
     event: &DomainEvent,
+    resolved_values: &HashMap<Vec<String>, Value>,
 ) -> Context<'a> {
     let mut ctx = Context::default();
 
-    // `node` variable — the trigger node in wire format
-    ctx.add_variable_from_value("node", node_to_cel_value(node));
+    // `node` variable — the trigger node in wire format, enriched with resolved paths
+    let base_node = node_to_cel_value(node);
+    let enriched_node = inject_resolved_paths(&base_node, resolved_values);
+    ctx.add_variable_from_value("node", enriched_node);
 
     // `trigger` variable — event-specific context
     let mut trigger_map: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
 
-    // Add trigger.node as an alias
-    trigger_map.insert(key("node"), node_to_cel_value(node));
+    // Add trigger.node as an alias (also enriched with resolved paths)
+    let trigger_node_value = inject_resolved_paths(&node_to_cel_value(node), resolved_values);
+    trigger_map.insert(key("node"), trigger_node_value);
 
     // For PropertyChanged events, add trigger.property with old/new values
     if let DomainEvent::NodeUpdated {
@@ -258,15 +284,19 @@ pub fn build_condition_context<'a>(
                 m.insert(key("key"), Value::String(Arc::new(pc.key.clone())));
                 m.insert(
                     key("old_value"),
-                    pc.old_value.as_ref().map(json_to_cel).unwrap_or(Value::Null),
+                    pc.old_value
+                        .as_ref()
+                        .map(json_to_cel)
+                        .unwrap_or(Value::Null),
                 );
                 m.insert(
                     key("new_value"),
-                    pc.new_value.as_ref().map(json_to_cel).unwrap_or(Value::Null),
+                    pc.new_value
+                        .as_ref()
+                        .map(json_to_cel)
+                        .unwrap_or(Value::Null),
                 );
-                Value::Map(cel_interpreter::objects::Map {
-                    map: Arc::new(m),
-                })
+                Value::Map(cel_interpreter::objects::Map { map: Arc::new(m) })
             })
             .collect();
         trigger_map.insert(key("properties"), Value::List(props_list.into()));
@@ -343,18 +373,46 @@ fn parse_date_and_compute_days(date_str: &str, since: bool) -> Result<Value, Exe
 /// Conditions are evaluated in order with short-circuit on first failure.
 /// An empty conditions list results in `ConditionResult::Pass`.
 ///
+/// When `resolver` is provided, dot-path references (e.g., `node.story.epic.status`)
+/// are pre-resolved via graph traversal before CEL evaluation. Without a resolver,
+/// only property-level conditions on the trigger node are evaluated (backward
+/// compatible with the Phase 3 behavior).
+///
 /// Missing path errors (NoSuchKey, UndeclaredReference) evaluate to `false`
 /// per the spec — the condition fails but the playbook remains active.
 pub fn evaluate_conditions(
     conditions: &[String],
     node: &Node,
     event: &DomainEvent,
+    resolver: Option<&mut GraphResolver>,
 ) -> ConditionResult {
     if conditions.is_empty() {
         return ConditionResult::Pass;
     }
 
-    let ctx = build_condition_context(node, event);
+    // Pre-resolve graph paths if a resolver is available
+    let resolved_values = if let Some(resolver) = resolver {
+        // Extract all paths from all conditions
+        let mut all_paths = Vec::new();
+        let mut all_collections = Vec::new();
+        for condition in conditions {
+            if let Ok(extraction) = path_extractor::extract_paths(condition) {
+                all_paths.extend(extraction.paths);
+                all_collections.extend(extraction.collections);
+            }
+        }
+
+        // Resolve paths that need graph traversal (multi-hop)
+        if !all_paths.is_empty() || !all_collections.is_empty() {
+            resolver.enrich_context(node, &all_paths, &all_collections)
+        } else {
+            HashMap::new()
+        }
+    } else {
+        HashMap::new()
+    };
+
+    let ctx = build_condition_context_with_resolved(node, event, &resolved_values);
 
     for (i, condition) in conditions.iter().enumerate() {
         let program = match compile_condition(condition) {
@@ -378,9 +436,7 @@ pub fn evaluate_conditions(
             }
             Ok(Value::Bool(false)) => {
                 debug!("Condition[{}] failed (false): {}", i, condition);
-                return ConditionResult::Fail {
-                    condition_index: i,
-                };
+                return ConditionResult::Fail { condition_index: i };
             }
             Ok(other) => {
                 // Non-boolean result — treat as failure
@@ -388,20 +444,15 @@ pub fn evaluate_conditions(
                     "Condition[{}] returned non-boolean {:?}: {}",
                     i, other, condition
                 );
-                return ConditionResult::Fail {
-                    condition_index: i,
-                };
+                return ConditionResult::Fail { condition_index: i };
             }
-            Err(ExecutionError::NoSuchKey(_))
-            | Err(ExecutionError::UndeclaredReference(_)) => {
+            Err(ExecutionError::NoSuchKey(_)) | Err(ExecutionError::UndeclaredReference(_)) => {
                 // Missing path → false (spec: condition not met, playbook stays active)
                 debug!(
                     "Condition[{}] has missing path (evaluates to false): {}",
                     i, condition
                 );
-                return ConditionResult::Fail {
-                    condition_index: i,
-                };
+                return ConditionResult::Fail { condition_index: i };
             }
             Err(e) => {
                 // Other runtime errors — treat as condition failure, not compile error
@@ -410,9 +461,7 @@ pub fn evaluate_conditions(
                     "Condition[{}] runtime error (evaluates to false): {} — {}",
                     i, condition, e
                 );
-                return ConditionResult::Fail {
-                    condition_index: i,
-                };
+                return ConditionResult::Fail { condition_index: i };
             }
         }
     }
@@ -457,10 +506,7 @@ mod tests {
     }
 
     /// Helper: create a NodeUpdated event with property changes.
-    fn node_updated_event(
-        node_type: &str,
-        changes: Vec<PropertyChange>,
-    ) -> DomainEvent {
+    fn node_updated_event(node_type: &str, changes: Vec<PropertyChange>) -> DomainEvent {
         DomainEvent::NodeUpdated {
             node_type: node_type.to_string(),
             node_id: "test-node-1".to_string(),
@@ -539,7 +585,10 @@ mod tests {
 
         let ctx = eval_context_with_node(&node);
         let result = Program::compile("node.id").unwrap().execute(&ctx);
-        assert_eq!(result, Ok(Value::String(Arc::new("test-node-1".to_string()))));
+        assert_eq!(
+            result,
+            Ok(Value::String(Arc::new("test-node-1".to_string())))
+        );
 
         let result = Program::compile("node.node_type").unwrap().execute(&ctx);
         assert_eq!(result, Ok(Value::String(Arc::new("task".to_string()))));
@@ -578,7 +627,7 @@ mod tests {
         let node = test_node("task", json!({}));
         let event = node_created_event("task");
         assert_eq!(
-            evaluate_conditions(&[], &node, &event),
+            evaluate_conditions(&[], &node, &event, None),
             ConditionResult::Pass
         );
     }
@@ -587,11 +636,8 @@ mod tests {
     fn simple_true_condition_passes() {
         let node = test_node("task", json!({"status": "open"}));
         let event = node_created_event("task");
-        let result = evaluate_conditions(
-            &["node.status == 'open'".to_string()],
-            &node,
-            &event,
-        );
+        let result =
+            evaluate_conditions(&["node.status == 'open'".to_string()], &node, &event, None);
         assert_eq!(result, ConditionResult::Pass);
     }
 
@@ -599,17 +645,9 @@ mod tests {
     fn simple_false_condition_fails() {
         let node = test_node("task", json!({"status": "open"}));
         let event = node_created_event("task");
-        let result = evaluate_conditions(
-            &["node.status == 'done'".to_string()],
-            &node,
-            &event,
-        );
-        assert_eq!(
-            result,
-            ConditionResult::Fail {
-                condition_index: 0
-            }
-        );
+        let result =
+            evaluate_conditions(&["node.status == 'done'".to_string()], &node, &event, None);
+        assert_eq!(result, ConditionResult::Fail { condition_index: 0 });
     }
 
     #[test]
@@ -623,6 +661,7 @@ mod tests {
             ],
             &node,
             &event,
+            None,
         );
         assert_eq!(result, ConditionResult::Pass);
     }
@@ -638,14 +677,10 @@ mod tests {
             ],
             &node,
             &event,
+            None,
         );
         // Should fail on condition 0, not 1
-        assert_eq!(
-            result,
-            ConditionResult::Fail {
-                condition_index: 0
-            }
-        );
+        assert_eq!(result, ConditionResult::Fail { condition_index: 0 });
     }
 
     #[test]
@@ -656,28 +691,19 @@ mod tests {
             &["node.nonexistent_field == 'something'".to_string()],
             &node,
             &event,
+            None,
         );
-        assert_eq!(
-            result,
-            ConditionResult::Fail {
-                condition_index: 0
-            }
-        );
+        assert_eq!(result, ConditionResult::Fail { condition_index: 0 });
     }
 
     #[test]
     fn compile_error_in_condition() {
         let node = test_node("task", json!({}));
         let event = node_created_event("task");
-        let result = evaluate_conditions(
-            &["invalid @@@ syntax".to_string()],
-            &node,
-            &event,
-        );
+        let result = evaluate_conditions(&["invalid @@@ syntax".to_string()], &node, &event, None);
         match result {
             ConditionResult::CompileError {
-                condition_index: 0,
-                ..
+                condition_index: 0, ..
             } => {} // OK
             other => panic!("expected CompileError, got {:?}", other),
         }
@@ -688,17 +714,8 @@ mod tests {
         let node = test_node("task", json!({"status": "open"}));
         let event = node_created_event("task");
         // Expression returns a string, not a boolean
-        let result = evaluate_conditions(
-            &["node.status".to_string()],
-            &node,
-            &event,
-        );
-        assert_eq!(
-            result,
-            ConditionResult::Fail {
-                condition_index: 0
-            }
-        );
+        let result = evaluate_conditions(&["node.status".to_string()], &node, &event, None);
+        assert_eq!(result, ConditionResult::Fail { condition_index: 0 });
     }
 
     // -- PropertyChanged trigger context tests --
@@ -719,6 +736,7 @@ mod tests {
             &["trigger.property.old_value == 'open'".to_string()],
             &node,
             &event,
+            None,
         );
         assert_eq!(result, ConditionResult::Pass);
 
@@ -726,6 +744,7 @@ mod tests {
             &["trigger.property.new_value == 'done'".to_string()],
             &node,
             &event,
+            None,
         );
         assert_eq!(result, ConditionResult::Pass);
     }
@@ -737,11 +756,7 @@ mod tests {
         let node = test_node("task", json!({}));
         let event = node_created_event("task");
         // today() should return a string matching YYYY-MM-DD pattern
-        let result = evaluate_conditions(
-            &["size(today()) == 10".to_string()],
-            &node,
-            &event,
-        );
+        let result = evaluate_conditions(&["size(today()) == 10".to_string()], &node, &event, None);
         assert_eq!(result, ConditionResult::Pass);
     }
 
@@ -754,6 +769,7 @@ mod tests {
             &["days_since('2020-01-01') > 0".to_string()],
             &node,
             &event,
+            None,
         );
         assert_eq!(result, ConditionResult::Pass);
     }
@@ -767,6 +783,7 @@ mod tests {
             &["days_until('2099-12-31') > 0".to_string()],
             &node,
             &event,
+            None,
         );
         assert_eq!(result, ConditionResult::Pass);
     }
@@ -780,13 +797,9 @@ mod tests {
             &["days_since('not-a-date') > 0".to_string()],
             &node,
             &event,
+            None,
         );
-        assert_eq!(
-            result,
-            ConditionResult::Fail {
-                condition_index: 0
-            }
-        );
+        assert_eq!(result, ConditionResult::Fail { condition_index: 0 });
     }
 
     // -- Numeric comparison tests --
@@ -795,11 +808,7 @@ mod tests {
     fn numeric_property_comparison() {
         let node = test_node("invoice", json!({"amount": 1500}));
         let event = node_created_event("invoice");
-        let result = evaluate_conditions(
-            &["node.amount > 1000".to_string()],
-            &node,
-            &event,
-        );
+        let result = evaluate_conditions(&["node.amount > 1000".to_string()], &node, &event, None);
         assert_eq!(result, ConditionResult::Pass);
     }
 
@@ -809,11 +818,8 @@ mod tests {
     fn boolean_property_evaluation() {
         let node = test_node("task", json!({"archived": false}));
         let event = node_created_event("task");
-        let result = evaluate_conditions(
-            &["node.archived == false".to_string()],
-            &node,
-            &event,
-        );
+        let result =
+            evaluate_conditions(&["node.archived == false".to_string()], &node, &event, None);
         assert_eq!(result, ConditionResult::Pass);
     }
 
