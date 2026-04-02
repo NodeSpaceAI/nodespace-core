@@ -278,6 +278,10 @@ pub struct UpdateSchemaParams {
     /// Example: `"{status} · {company}"`
     #[serde(default)]
     pub properties_header_summary_template: Option<String>,
+    /// If true, proceed with the schema update even if active playbooks would be
+    /// affected. If false (default), return an error listing the affected playbooks.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Output for schema update operations
@@ -294,6 +298,9 @@ pub struct SchemaUpdateOutput {
     pub relationships_added: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relationships_removed: Option<usize>,
+    /// Playbooks affected by this schema change (present when force=true and playbooks were affected)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub affected_playbooks: Option<Vec<String>>,
 }
 
 /// Add a relationship definition to an existing schema
@@ -558,6 +565,34 @@ pub async fn handle_update_schema(
         .validate_schema_node(&updated_schema)
         .map_err(|e| MCPError::invalid_params(format!("Schema validation failed: {}", e)))?;
 
+    // Issue #1012: Check if any active playbooks would be affected by this schema change
+    let affected = crate::playbook::validation::check_schema_change_impact(
+        &params.schema_id,
+        node_service,
+    )
+    .await
+    .map_err(|e| MCPError::internal_error(format!("Impact analysis failed: {}", e)))?;
+
+    if !affected.is_empty() && !params.force {
+        let names: Vec<String> = affected.iter().map(|a| a.to_string()).collect();
+        return Err(MCPError::invalid_params(format!(
+            "Schema change would affect {} active playbook(s): {}. Use force=true to proceed.",
+            affected.len(),
+            names.join("; ")
+        )));
+    }
+
+    let affected_names: Option<Vec<String>> = if !affected.is_empty() {
+        Some(
+            affected
+                .iter()
+                .map(|a| format!("{} ({})", a.playbook_name, a.playbook_id))
+                .collect(),
+        )
+    } else {
+        None
+    };
+
     let update = NodeUpdate {
         properties: Some(properties),
         ..Default::default()
@@ -591,6 +626,7 @@ pub async fn handle_update_schema(
         } else {
             None
         },
+        affected_playbooks: affected_names,
     };
 
     serde_json::to_value(&output)

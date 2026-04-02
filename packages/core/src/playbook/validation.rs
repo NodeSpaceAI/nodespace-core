@@ -136,7 +136,7 @@ pub type ValidationResult = Result<(), Vec<PlaybookValidationError>>;
 /// Returns `Ok(())` if all checks pass, or `Err(Vec<...>)` with all errors found.
 pub async fn validate_playbook(
     rules: &[Arc<ParsedRule>],
-    node_service: &Arc<NodeService>,
+    node_service: &NodeService,
 ) -> ValidationResult {
     let mut errors: Vec<PlaybookValidationError> = Vec::new();
 
@@ -243,7 +243,7 @@ fn trigger_node_type(rule: &ParsedRule) -> Option<String> {
 /// Ensure a schema is in the cache, fetching from DB if not yet loaded.
 async fn ensure_schema_cached(
     node_type: &str,
-    node_service: &Arc<NodeService>,
+    node_service: &NodeService,
     cache: &mut HashMap<String, Option<SchemaNode>>,
 ) {
     if cache.contains_key(node_type) {
@@ -277,7 +277,7 @@ async fn validate_schema_path(
     segments: &[String],
     trigger_node_type: &str,
     location: &str,
-    node_service: &Arc<NodeService>,
+    node_service: &NodeService,
     schema_cache: &mut HashMap<String, Option<SchemaNode>>,
     errors: &mut Vec<PlaybookValidationError>,
 ) {
@@ -362,7 +362,7 @@ async fn validate_action(
     action: &ParsedAction,
     location: &str,
     trigger_node_type: Option<&str>,
-    node_service: &Arc<NodeService>,
+    node_service: &NodeService,
     schema_cache: &mut HashMap<String, Option<SchemaNode>>,
     errors: &mut Vec<PlaybookValidationError>,
 ) {
@@ -407,7 +407,7 @@ async fn validate_action(
 async fn validate_create_node_action(
     params: &serde_json::Value,
     location: &str,
-    node_service: &Arc<NodeService>,
+    node_service: &NodeService,
     schema_cache: &mut HashMap<String, Option<SchemaNode>>,
     errors: &mut Vec<PlaybookValidationError>,
 ) {
@@ -473,7 +473,7 @@ async fn validate_relationship_action(
     params: &serde_json::Value,
     location: &str,
     trigger_node_type: Option<&str>,
-    node_service: &Arc<NodeService>,
+    node_service: &NodeService,
     schema_cache: &mut HashMap<String, Option<SchemaNode>>,
     errors: &mut Vec<PlaybookValidationError>,
 ) {
@@ -513,6 +513,170 @@ async fn validate_relationship_action(
         }
     }
     // If schema is None, we already flagged the missing node_type
+}
+
+// ---------------------------------------------------------------------------
+// Schema Change Impact Analysis (Issue #1012 Phase 2)
+// ---------------------------------------------------------------------------
+
+/// A playbook affected by a schema change, with the specific broken paths.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AffectedPlaybook {
+    /// The playbook node ID
+    pub playbook_id: String,
+    /// Human-readable playbook name (from content/title)
+    pub playbook_name: String,
+    /// Dot-paths in conditions that traverse through the changed schema
+    pub broken_paths: Vec<String>,
+}
+
+impl std::fmt::Display for AffectedPlaybook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "playbook '{}' ({}): paths [{}]",
+            self.playbook_name,
+            self.playbook_id,
+            self.broken_paths.join(", ")
+        )
+    }
+}
+
+/// Check which active playbooks would be affected by a schema change.
+///
+/// Queries all active playbook nodes, parses their rules, and checks whether
+/// any trigger, condition, or action references the given schema's node_type.
+/// Specifically checks:
+/// - Trigger node_type matches
+/// - Condition dot-paths that traverse through the schema's node_type
+/// - `create_node` actions targeting the schema's node_type
+/// - Relationship actions whose `relationship_type` matches the schema's node_type
+///
+/// TODO: This is currently over-broad — any change to a schema (including adding
+/// new fields, which can't break playbooks) triggers the warning. Making this
+/// diff-aware (only flag breaking changes like field removal/rename) requires
+/// accepting the proposed schema changes as a parameter, which is a larger
+/// refactor. The conservative approach is acceptable for v1.
+///
+/// Returns a list of affected playbooks with their broken paths.
+pub async fn check_schema_change_impact(
+    schema_node_type: &str,
+    node_service: &NodeService,
+) -> Result<Vec<AffectedPlaybook>, String> {
+    use crate::playbook::types::{parse_rule, parse_rules_from_properties};
+
+    let playbook_nodes = node_service
+        .query_nodes_by_type("playbook", Some("active"))
+        .await
+        .map_err(|e| format!("Failed to query playbook nodes: {}", e))?;
+
+    let mut affected = Vec::new();
+
+    for pb_node in &playbook_nodes {
+        let rule_defs = match parse_rules_from_properties(&pb_node.properties) {
+            Ok(defs) => defs,
+            Err(_) => continue, // Skip unparseable playbooks
+        };
+
+        let mut broken_paths = Vec::new();
+
+        for def in &rule_defs {
+            let parsed = match parse_rule(def) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            // Check trigger node_type
+            let trigger_nt = match &parsed.trigger {
+                ParsedTrigger::GraphEvent { node_type, .. } => Some(node_type.as_str()),
+                ParsedTrigger::Scheduled { node_type, .. } => Some(node_type.as_str()),
+            };
+            if trigger_nt == Some(schema_node_type) {
+                broken_paths.push(format!("trigger.node_type={}", schema_node_type));
+            }
+
+            // Check condition paths
+            for condition in &parsed.conditions {
+                if let Ok(extraction) = path_extractor::extract_paths(condition) {
+                    for path in &extraction.paths {
+                        if path.segments.iter().any(|s| s == schema_node_type) {
+                            broken_paths.push(path.segments.join("."));
+                        }
+                    }
+                    for coll in &extraction.collections {
+                        if coll
+                            .collection
+                            .segments
+                            .iter()
+                            .any(|s| s == schema_node_type)
+                        {
+                            broken_paths.push(coll.collection.segments.join("."));
+                        }
+                    }
+                }
+            }
+
+            // Check action params for schema references
+            for (i, action) in parsed.actions.iter().enumerate() {
+                let action_loc = format!("action[{}]", i);
+                match action.action_type {
+                    ActionType::CreateNode | ActionType::UpdateNode => {
+                        if let Some(nt) =
+                            action.params.get("node_type").and_then(|v| v.as_str())
+                        {
+                            if nt == schema_node_type {
+                                broken_paths
+                                    .push(format!("{}.node_type={}", action_loc, nt));
+                            }
+                        }
+                    }
+                    ActionType::AddRelationship | ActionType::RemoveRelationship => {
+                        if let Some(rt) = action
+                            .params
+                            .get("relationship_type")
+                            .and_then(|v| v.as_str())
+                        {
+                            if rt == schema_node_type {
+                                broken_paths.push(format!(
+                                    "{}.relationship_type={}",
+                                    action_loc, rt
+                                ));
+                            }
+                        }
+                        // Also check target_type if it references the schema
+                        if let Some(tt) = action
+                            .params
+                            .get("target_type")
+                            .and_then(|v| v.as_str())
+                        {
+                            if tt == schema_node_type {
+                                broken_paths.push(format!(
+                                    "{}.target_type={}",
+                                    action_loc, tt
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !broken_paths.is_empty() {
+            // Deduplicate paths
+            broken_paths.sort();
+            broken_paths.dedup();
+            affected.push(AffectedPlaybook {
+                playbook_id: pb_node.id.clone(),
+                playbook_name: pb_node
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| pb_node.content.clone()),
+                broken_paths,
+            });
+        }
+    }
+
+    Ok(affected)
 }
 
 // ---------------------------------------------------------------------------
@@ -754,7 +918,7 @@ mod tests {
         /// Note: schemas with relationships that reference target types require
         /// those target schemas to exist first (for edge table DDL).
         async fn create_schema(
-            node_service: &Arc<NodeService>,
+            node_service: &NodeService,
             type_name: &str,
             schema_version: u32,
             relationships: serde_json::Value,
@@ -1166,6 +1330,361 @@ mod tests {
                 )),
                 "should report broken path for rel without target_type: {:?}",
                 errors
+            );
+        }
+
+        // ---------------------------------------------------------------
+        // check_schema_change_impact tests (Issue #1012 Phase 2)
+        // ---------------------------------------------------------------
+
+        /// Helper: create a playbook node in the database.
+        async fn create_playbook(
+            node_service: &NodeService,
+            id: &str,
+            rules_json: serde_json::Value,
+        ) {
+            let node = Node::new_with_id(
+                id.to_string(),
+                "playbook".to_string(),
+                format!("Playbook {}", id),
+                json!({ "rules": rules_json }),
+            );
+            node_service
+                .create_node(node)
+                .await
+                .expect(&format!("Failed to create playbook '{}'", id));
+        }
+
+        #[tokio::test]
+        async fn test_schema_impact_detects_affected_playbooks() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vi_task", 1, json!([])).await;
+
+            // Create a playbook that triggers on "vi_task"
+            create_playbook(
+                &svc,
+                "pb-impact-1",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vi_task" },
+                    "conditions": ["node.status == 'open'"],
+                    "actions": []
+                }]),
+            )
+            .await;
+
+            let affected = check_schema_change_impact("vi_task", &svc)
+                .await
+                .unwrap();
+            assert_eq!(affected.len(), 1);
+            assert_eq!(affected[0].playbook_id, "pb-impact-1");
+            assert!(
+                affected[0]
+                    .broken_paths
+                    .iter()
+                    .any(|p| p.contains("vi_task")),
+                "should list the trigger path: {:?}",
+                affected[0].broken_paths
+            );
+        }
+
+        #[tokio::test]
+        async fn test_schema_impact_unrelated_schema_passes_clean() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vi_order", 1, json!([])).await;
+            create_schema(&svc, "vi_invoice", 1, json!([])).await;
+
+            // Create a playbook that triggers on "vi_order" only
+            create_playbook(
+                &svc,
+                "pb-impact-2",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vi_order" },
+                    "conditions": ["node.status == 'open'"],
+                    "actions": []
+                }]),
+            )
+            .await;
+
+            // Changing "vi_invoice" should not affect the vi_order playbook
+            let affected = check_schema_change_impact("vi_invoice", &svc)
+                .await
+                .unwrap();
+            assert!(
+                affected.is_empty(),
+                "unrelated schema change should not affect playbooks: {:?}",
+                affected
+            );
+        }
+
+        #[tokio::test]
+        async fn test_schema_impact_detects_path_traversal() {
+            let (svc, _tmp) = create_test_service().await;
+            // Create vi_epic first (target of relationship)
+            create_schema(&svc, "vi_epic", 1, json!([])).await;
+            // Create vi_story with a relationship to vi_epic, so the playbook passes validation
+            // Note: SchemaRelationship uses camelCase serialization
+            create_schema(
+                &svc,
+                "vi_story",
+                1,
+                json!([{
+                    "name": "vi_epic",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "targetType": "vi_epic"
+                }]),
+            )
+            .await;
+
+            // Playbook triggers on vi_story but has a condition traversing through vi_epic
+            create_playbook(
+                &svc,
+                "pb-impact-3",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vi_story" },
+                    "conditions": ["node.vi_epic.status == 'active'"],
+                    "actions": []
+                }]),
+            )
+            .await;
+
+            let affected = check_schema_change_impact("vi_epic", &svc)
+                .await
+                .unwrap();
+            assert_eq!(affected.len(), 1);
+            assert_eq!(affected[0].playbook_id, "pb-impact-3");
+            assert!(
+                affected[0]
+                    .broken_paths
+                    .iter()
+                    .any(|p| p.contains("vi_epic")),
+                "should detect path traversal through vi_epic: {:?}",
+                affected[0].broken_paths
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // NodeService synchronous validation gate tests (Issue #1012 Phase 1)
+    // ---------------------------------------------------------------
+
+    mod sync_gate_tests {
+        use crate::db::SurrealStore;
+        use crate::models::Node;
+        use crate::services::NodeService;
+        use serde_json::json;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        async fn create_test_service() -> (Arc<NodeService>, TempDir) {
+            let temp_dir = TempDir::new().unwrap();
+            let db_path = temp_dir.path().join("test.db");
+            let mut store: Arc<SurrealStore> = Arc::new(SurrealStore::new(db_path).await.unwrap());
+            let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+            (node_service, temp_dir)
+        }
+
+        async fn create_schema(
+            node_service: &NodeService,
+            type_name: &str,
+            schema_version: u32,
+        ) {
+            let schema_node = Node::new_with_id(
+                type_name.to_string(),
+                "schema".to_string(),
+                type_name.to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": schema_version,
+                    "description": format!("{} schema", type_name),
+                    "fields": [
+                        {"name": "status", "type": "string"}
+                    ],
+                    "relationships": []
+                }),
+            );
+            node_service
+                .create_node(schema_node)
+                .await
+                .expect(&format!("Failed to create schema '{}'", type_name));
+        }
+
+        #[tokio::test]
+        async fn test_invalid_playbook_rejected_on_create() {
+            let (svc, _tmp) = create_test_service().await;
+            // Don't create a schema for "nonexistent_type" — it should be rejected
+
+            let playbook_node = Node::new_with_id(
+                "pb-gate-1".to_string(),
+                "playbook".to_string(),
+                "Test Playbook".to_string(),
+                json!({
+                    "rules": [{
+                        "name": "r1",
+                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "nonexistent_type" },
+                        "conditions": [],
+                        "actions": []
+                    }]
+                }),
+            );
+
+            let result = svc.create_node(playbook_node).await;
+            assert!(
+                result.is_err(),
+                "invalid playbook should be rejected on create"
+            );
+            let err = result.unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Playbook validation failed"),
+                "error should indicate validation failure: {}",
+                msg
+            );
+            assert!(
+                msg.contains("nonexistent_type"),
+                "error should mention the bad node_type: {}",
+                msg
+            );
+        }
+
+        #[tokio::test]
+        async fn test_valid_playbook_accepted_on_create() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vg_widget", 1).await;
+
+            let playbook_node = Node::new_with_id(
+                "pb-gate-2".to_string(),
+                "playbook".to_string(),
+                "Valid Playbook".to_string(),
+                json!({
+                    "rules": [{
+                        "name": "r1",
+                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vg_widget" },
+                        "conditions": ["node.status == 'open'"],
+                        "actions": []
+                    }]
+                }),
+            );
+
+            let result = svc.create_node(playbook_node).await;
+            assert!(
+                result.is_ok(),
+                "valid playbook should be accepted: {:?}",
+                result
+            );
+        }
+
+        #[tokio::test]
+        async fn test_invalid_cel_rejected_on_create() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vg_item", 1).await;
+
+            let playbook_node = Node::new_with_id(
+                "pb-gate-3".to_string(),
+                "playbook".to_string(),
+                "Bad CEL Playbook".to_string(),
+                json!({
+                    "rules": [{
+                        "name": "r1",
+                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vg_item" },
+                        "conditions": ["1 + + 2"],
+                        "actions": []
+                    }]
+                }),
+            );
+
+            let result = svc.create_node(playbook_node).await;
+            assert!(
+                result.is_err(),
+                "playbook with invalid CEL should be rejected"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("Playbook validation failed"),
+                "error should indicate validation failure: {}",
+                msg
+            );
+        }
+
+        #[tokio::test]
+        async fn test_update_with_broken_rules_rejected() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vg_part", 1).await;
+
+            // Create a valid playbook first
+            let playbook_node = Node::new_with_id(
+                "pb-gate-4".to_string(),
+                "playbook".to_string(),
+                "Initially Valid Playbook".to_string(),
+                json!({
+                    "rules": [{
+                        "name": "r1",
+                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vg_part" },
+                        "conditions": [],
+                        "actions": []
+                    }]
+                }),
+            );
+            svc.create_node(playbook_node).await.unwrap();
+
+            // Now update it with broken rules (reference nonexistent node_type)
+            let update = crate::models::NodeUpdate {
+                properties: Some(json!({
+                    "rules": [{
+                        "name": "r1_updated",
+                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "vanished_type" },
+                        "conditions": [],
+                        "actions": []
+                    }]
+                })),
+                ..Default::default()
+            };
+
+            let result = svc.update_node("pb-gate-4", 1, update).await;
+            assert!(
+                result.is_err(),
+                "update with broken rules should be rejected"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("Playbook validation failed"),
+                "error should indicate validation failure: {}",
+                msg
+            );
+        }
+
+        #[tokio::test]
+        async fn test_parse_error_rejected_on_create() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // Playbook with an invalid trigger type
+            let playbook_node = Node::new_with_id(
+                "pb-gate-5".to_string(),
+                "playbook".to_string(),
+                "Bad Trigger Playbook".to_string(),
+                json!({
+                    "rules": [{
+                        "name": "r1",
+                        "trigger": { "type": "bad_trigger_type", "on": "node_created", "node_type": "task" },
+                        "conditions": [],
+                        "actions": []
+                    }]
+                }),
+            );
+
+            let result = svc.create_node(playbook_node).await;
+            assert!(
+                result.is_err(),
+                "playbook with invalid trigger type should be rejected"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("Playbook validation failed"),
+                "error should indicate validation failure: {}",
+                msg
             );
         }
     }

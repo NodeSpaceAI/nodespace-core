@@ -88,6 +88,10 @@ pub enum NodeServiceError {
     /// Maximum collection depth exceeded
     #[error("Collection path exceeds maximum depth of {max_depth} levels: {path}")]
     CollectionDepthExceeded { path: String, max_depth: usize },
+
+    /// Playbook validation failed (synchronous gate before persist)
+    #[error("Playbook validation failed: {errors}")]
+    PlaybookValidationFailed { errors: String },
 }
 
 impl NodeServiceError {
@@ -190,6 +194,18 @@ impl NodeServiceError {
             path: path.into(),
             max_depth,
         }
+    }
+
+    /// Create a playbook validation failed error from a list of validation errors
+    pub fn playbook_validation_failed(
+        errors: &[crate::playbook::validation::PlaybookValidationError],
+    ) -> Self {
+        let msg = errors
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        Self::PlaybookValidationFailed { errors: msg }
     }
 }
 
@@ -328,6 +344,31 @@ mod tests {
             NodeServiceError::CollectionDepthExceeded { .. }
         ));
         assert!(msg.contains("maximum depth of 5"));
+    }
+
+    #[test]
+    fn test_playbook_validation_failed_error() {
+        use crate::playbook::validation::PlaybookValidationError;
+        let errors = vec![
+            PlaybookValidationError::UnknownNodeType {
+                node_type: "bogus".to_string(),
+                location: "rule[0].trigger".to_string(),
+            },
+            PlaybookValidationError::InvalidCondition {
+                expression: "1++2".to_string(),
+                message: "parse error".to_string(),
+                location: "rule[0].condition[0]".to_string(),
+            },
+        ];
+        let err = NodeServiceError::playbook_validation_failed(&errors);
+        let msg = err.to_string();
+        assert!(matches!(
+            err,
+            NodeServiceError::PlaybookValidationFailed { .. }
+        ));
+        assert!(msg.contains("Playbook validation failed"));
+        assert!(msg.contains("bogus"));
+        assert!(msg.contains("parse error"));
     }
 
     #[test]

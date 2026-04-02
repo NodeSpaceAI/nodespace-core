@@ -1165,6 +1165,50 @@ impl NodeService {
         self.validate_node_with_fields(node, &fields)
     }
 
+    /// Validate playbook rules before persisting (Issue #1012).
+    ///
+    /// Parses the rules from properties, then runs the full validation pipeline
+    /// (CEL compile, schema existence, version match, relationship existence, path
+    /// validation). Returns `Err(PlaybookValidationFailed)` if any check fails.
+    async fn validate_playbook_rules(
+        &self,
+        properties: &serde_json::Value,
+    ) -> Result<(), NodeServiceError> {
+        use crate::playbook::types::{parse_rule, parse_rules_from_properties};
+
+        // Step 1: Parse rules from properties
+        let rule_defs = match parse_rules_from_properties(properties) {
+            Ok(defs) => defs,
+            Err(e) => {
+                return Err(NodeServiceError::PlaybookValidationFailed {
+                    errors: format!("Failed to parse playbook rules: {}", e),
+                });
+            }
+        };
+
+        // Step 2: Parse each rule definition into a ParsedRule
+        let mut parsed_rules = Vec::with_capacity(rule_defs.len());
+        for def in &rule_defs {
+            match parse_rule(def) {
+                Ok(rule) => parsed_rules.push(Arc::new(rule)),
+                Err(e) => {
+                    return Err(NodeServiceError::PlaybookValidationFailed {
+                        errors: format!("Failed to parse rule '{}': {}", def.name, e),
+                    });
+                }
+            }
+        }
+
+        // Step 3: Run the full validation pipeline (schema checks, CEL compile, paths)
+        if let Err(errors) =
+            crate::playbook::validation::validate_playbook(&parsed_rules, self).await
+        {
+            return Err(NodeServiceError::playbook_validation_failed(&errors));
+        }
+
+        Ok(())
+    }
+
     /// Apply schema default values to missing fields using pre-loaded fields
     ///
     /// For each field in the schema that has a default value, if the field is missing
@@ -1734,6 +1778,11 @@ impl NodeService {
             // For task/collection we know they're always titled; for others we need to check
             // is_root=None will only trigger a DB lookup for non-task/collection/date/schema types
             node.title = self.compute_title(&node, None).await?;
+        }
+
+        // Issue #1012: Synchronous playbook validation gate — reject invalid playbooks before persist
+        if node.node_type == "playbook" {
+            self.validate_playbook_rules(&node.properties).await?;
         }
 
         // For schema nodes, use atomic creation with DDL generation (Issue #691, #703)
@@ -2841,6 +2890,11 @@ impl NodeService {
         // This avoids a ~760ms database lookup for every update.
         if updated.node_type == "task" {
             self.validate_node_against_schema(&updated).await?;
+        }
+
+        // Issue #1012: Synchronous playbook validation gate — reject invalid rule changes before persist
+        if updated.node_type == "playbook" && properties_changed {
+            self.validate_playbook_rules(&updated.properties).await?;
         }
 
         // Issue #821: Sync title when content, node_type, or properties change
