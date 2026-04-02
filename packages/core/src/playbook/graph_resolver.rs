@@ -385,9 +385,7 @@ mod tests {
             .into_iter()
             .map(|(k, v)| (Key::String(Arc::new(k.to_string())), v))
             .collect();
-        Value::Map(cel_interpreter::objects::Map {
-            map: Arc::new(map),
-        })
+        Value::Map(cel_interpreter::objects::Map { map: Arc::new(map) })
     }
 
     fn get_map_field(val: &Value, field: &str) -> Option<Value> {
@@ -453,11 +451,7 @@ mod tests {
         let base = make_cel_map(vec![]);
         let mut resolved = HashMap::new();
         resolved.insert(
-            vec![
-                "node".to_string(),
-                "story".to_string(),
-                "title".to_string(),
-            ],
+            vec!["node".to_string(), "story".to_string(), "title".to_string()],
             Value::String(Arc::new("My Story".to_string())),
         );
         resolved.insert(
@@ -518,10 +512,7 @@ mod tests {
             .into(),
         );
         let mut resolved = HashMap::new();
-        resolved.insert(
-            vec!["node".to_string(), "tasks".to_string()],
-            list.clone(),
-        );
+        resolved.insert(vec!["node".to_string(), "tasks".to_string()], list.clone());
         let result = inject_resolved_paths(&base, &resolved);
         let tasks = get_map_field(&result, "tasks");
         assert!(matches!(tasks, Some(Value::List(_))));
@@ -546,10 +537,7 @@ mod tests {
             title: None,
             lifecycle_status: "active".to_string(),
         };
-        assert_eq!(
-            get_node_property(&node, "status"),
-            Some(json!("open"))
-        );
+        assert_eq!(get_node_property(&node, "status"), Some(json!("open")));
         assert_eq!(get_node_property(&node, "missing"), None);
     }
 
@@ -629,8 +617,7 @@ mod tests {
         async fn create_test_service() -> (Arc<NodeService>, TempDir) {
             let temp_dir = TempDir::new().unwrap();
             let db_path = temp_dir.path().join("test.db");
-            let mut store: Arc<SurrealStore> =
-                Arc::new(SurrealStore::new(db_path).await.unwrap());
+            let mut store: Arc<SurrealStore> = Arc::new(SurrealStore::new(db_path).await.unwrap());
             let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
             (node_service, temp_dir)
         }
@@ -789,10 +776,7 @@ mod tests {
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
 
             // Resolve task -> story -> epic
-            let result = resolver.resolve_path(
-                &task,
-                &["story".to_string(), "epic".to_string()],
-            );
+            let result = resolver.resolve_path(&task, &["story".to_string(), "epic".to_string()]);
             match result {
                 ResolvedValue::Node(n) => assert_eq!(n.id, "gr-e1"),
                 other => panic!("expected Node for story.epic, got {:?}", other),
@@ -841,17 +825,11 @@ mod tests {
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
 
             // First call populates cache
-            let r1 = resolver.resolve_path(
-                &task,
-                &["story".to_string(), "status".to_string()],
-            );
+            let r1 = resolver.resolve_path(&task, &["story".to_string(), "status".to_string()]);
             assert!(matches!(r1, ResolvedValue::Scalar(_)));
 
             // Second call should hit cache (same result)
-            let r2 = resolver.resolve_path(
-                &task,
-                &["story".to_string(), "status".to_string()],
-            );
+            let r2 = resolver.resolve_path(&task, &["story".to_string(), "status".to_string()]);
             assert!(matches!(r2, ResolvedValue::Scalar(_)));
         }
 
@@ -972,10 +950,8 @@ mod tests {
 
             let mut resolver = GraphResolver::new(Arc::clone(&svc));
             // "status" is a scalar property, can't walk further
-            let result = resolver.resolve_path(
-                &node,
-                &["status".to_string(), "deeper".to_string()],
-            );
+            let result =
+                resolver.resolve_path(&node, &["status".to_string(), "deeper".to_string()]);
             assert!(matches!(result, ResolvedValue::Missing));
         }
     }

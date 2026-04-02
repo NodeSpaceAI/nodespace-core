@@ -1063,7 +1063,11 @@ mod tests {
                 vec![],
             )];
             let result = validate_playbook(&rules, &svc).await;
-            assert!(result.is_ok(), "valid multi-hop path should pass: {:?}", result);
+            assert!(
+                result.is_ok(),
+                "valid multi-hop path should pass: {:?}",
+                result
+            );
         }
 
         #[tokio::test]
@@ -1121,13 +1125,12 @@ mod tests {
 
             // Single-hop (node.status) is handled by existing property-level evaluation
             // and should NOT be validated against the schema graph
-            let rules = vec![make_rule(
-                "vp_task4",
-                vec!["node.status == 'open'"],
-                vec![],
-            )];
+            let rules = vec![make_rule("vp_task4", vec!["node.status == 'open'"], vec![])];
             let result = validate_playbook(&rules, &svc).await;
-            assert!(result.is_ok(), "single-hop paths should skip schema validation");
+            assert!(
+                result.is_ok(),
+                "single-hop paths should skip schema validation"
+            );
         }
 
         #[tokio::test]

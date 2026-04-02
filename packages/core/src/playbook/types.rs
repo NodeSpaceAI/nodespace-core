@@ -376,11 +376,7 @@ pub fn parse_rules_from_properties(
     let rules_value = properties
         .get("rules")
         // Then try inside the "playbook" namespace: {"playbook": {"rules": [...]}}
-        .or_else(|| {
-            properties
-                .get("playbook")
-                .and_then(|pb| pb.get("rules"))
-        })
+        .or_else(|| properties.get("playbook").and_then(|pb| pb.get("rules")))
         .ok_or_else(|| PlaybookParseError::MissingField("rules".to_string()))?;
 
     serde_json::from_value(rules_value.clone())
