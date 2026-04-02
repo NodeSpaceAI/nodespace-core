@@ -1,12 +1,13 @@
-//! Event Emission Tests (Issue #643, updated for Issue #665)
+//! Event Emission Tests (Issue #643, updated for Issue #665, #995)
 //!
 //! Tests that verify correct event emission for all major operations.
 //! As of Issue #665, events are now emitted at the NodeService layer
 //! (not SurrealStore) to support client filtering.
+//! As of Issue #995, events are wrapped in EventEnvelope with metadata.
 //!
 //! These tests verify:
 //! 1. Correct events are emitted for each operation type
-//! 2. Events contain proper source_client_id when set via with_client()
+//! 2. Events contain proper source_client_id in envelope metadata when set via with_client()
 //! 3. Events are emitted AFTER the transaction completes successfully
 
 #[cfg(test)]
@@ -68,25 +69,24 @@ mod event_emission_tests {
             .create_node(node)
             .await?;
 
-        // Receive the emitted event
-        let event = timeout(Duration::from_secs(1), rx.recv())
+        // Receive the emitted event (Issue #995: EventEnvelope)
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's a NodeCreated event with correct client_id (Issue #724: ID-only events)
-        // Issue #832: node_type is now included for reactive UI updates
-        match event {
-            DomainEvent::NodeCreated {
-                node_id,
-                node_type,
-                source_client_id,
-            } => {
-                assert_eq!(node_id, expected_id);
+        // Verify it's a NodeCreated event with correct client_id in envelope metadata
+        // (Issue #724: ID-only events, Issue #832: node_type, Issue #995: EventEnvelope)
+        match &envelope.event {
+            DomainEvent::NodeCreated { node_id, node_type } => {
+                assert_eq!(node_id, &expected_id);
                 assert_eq!(node_type, "text");
-                assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
+                assert_eq!(
+                    envelope.metadata.source_client_id,
+                    Some(TEST_CLIENT_ID.to_string())
+                );
             }
-            _ => panic!("Expected NodeCreated event, got {:?}", event),
+            _ => panic!("Expected NodeCreated event, got {:?}", envelope.event),
         }
 
         Ok(())
@@ -115,22 +115,26 @@ mod event_emission_tests {
             )
             .await?;
 
-        // Receive the emitted event
-        let event = timeout(Duration::from_secs(1), rx.recv())
+        // Receive the emitted event (Issue #995: EventEnvelope)
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's a NodeUpdated event with correct client_id (Issue #724: ID-only events)
-        match event {
+        // Verify it's a NodeUpdated event with correct client_id in envelope metadata
+        // (Issue #724: ID-only events, Issue #995: EventEnvelope + node_type + changed_properties)
+        match &envelope.event {
             DomainEvent::NodeUpdated {
                 node_id: updated_id,
-                source_client_id,
+                ..
             } => {
-                assert_eq!(updated_id, node_id);
-                assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
+                assert_eq!(updated_id, &node_id);
+                assert_eq!(
+                    envelope.metadata.source_client_id,
+                    Some(TEST_CLIENT_ID.to_string())
+                );
             }
-            _ => panic!("Expected NodeUpdated event, got {:?}", event),
+            _ => panic!("Expected NodeUpdated event, got {:?}", envelope.event),
         }
 
         Ok(())
@@ -154,23 +158,22 @@ mod event_emission_tests {
             .await?;
         assert!(result.existed);
 
-        // Receive the emitted event
-        let event = timeout(Duration::from_secs(1), rx.recv())
+        // Receive the emitted event (Issue #995: EventEnvelope)
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's a NodeDeleted event with correct client_id
-        match event {
-            DomainEvent::NodeDeleted {
-                id,
-                node_type: _,
-                source_client_id,
-            } => {
-                assert_eq!(id, node_id);
-                assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
+        // Verify it's a NodeDeleted event with correct client_id in envelope metadata
+        match &envelope.event {
+            DomainEvent::NodeDeleted { id, node_type: _ } => {
+                assert_eq!(id, &node_id);
+                assert_eq!(
+                    envelope.metadata.source_client_id,
+                    Some(TEST_CLIENT_ID.to_string())
+                );
             }
-            _ => panic!("Expected NodeDeleted event, got {:?}", event),
+            _ => panic!("Expected NodeDeleted event, got {:?}", envelope.event),
         }
 
         Ok(())
@@ -200,24 +203,27 @@ mod event_emission_tests {
             .move_node_unchecked(&child.id, Some(&parent2.id), None)
             .await?;
 
-        // Receive the emitted event (Issue #811: unified relationship events)
-        let event = timeout(Duration::from_secs(1), rx.recv())
+        // Receive the emitted event (Issue #811: unified relationship events, Issue #995: EventEnvelope)
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's a RelationshipUpdated event for has_child with correct client_id
-        match event {
-            DomainEvent::RelationshipUpdated {
-                relationship,
-                source_client_id,
-            } => {
+        // Verify it's a RelationshipUpdated event for has_child with correct client_id in metadata
+        match &envelope.event {
+            DomainEvent::RelationshipUpdated { relationship } => {
                 assert_eq!(relationship.relationship_type, "has_child");
                 assert_eq!(relationship.from_id, parent2.id);
                 assert_eq!(relationship.to_id, child.id);
-                assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
+                assert_eq!(
+                    envelope.metadata.source_client_id,
+                    Some(TEST_CLIENT_ID.to_string())
+                );
             }
-            _ => panic!("Expected RelationshipUpdated event, got {:?}", event),
+            _ => panic!(
+                "Expected RelationshipUpdated event, got {:?}",
+                envelope.event
+            ),
         }
 
         Ok(())
@@ -240,24 +246,27 @@ mod event_emission_tests {
             .create_mention(&source_node.id, &target_node.id)
             .await?;
 
-        // Receive the emitted event (Issue #811: unified relationship events)
-        let event = timeout(Duration::from_secs(1), rx.recv())
+        // Receive the emitted event (Issue #811: unified relationship events, Issue #995: EventEnvelope)
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's a RelationshipCreated event for mentions with correct client_id
-        match event {
-            DomainEvent::RelationshipCreated {
-                relationship,
-                source_client_id,
-            } => {
+        // Verify it's a RelationshipCreated event for mentions with correct client_id in metadata
+        match &envelope.event {
+            DomainEvent::RelationshipCreated { relationship } => {
                 assert_eq!(relationship.relationship_type, "mentions");
                 assert_eq!(relationship.from_id, source_node.id);
                 assert_eq!(relationship.to_id, target_node.id);
-                assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
+                assert_eq!(
+                    envelope.metadata.source_client_id,
+                    Some(TEST_CLIENT_ID.to_string())
+                );
             }
-            _ => panic!("Expected RelationshipCreated event, got {:?}", event),
+            _ => panic!(
+                "Expected RelationshipCreated event, got {:?}",
+                envelope.event
+            ),
         }
 
         Ok(())
@@ -284,21 +293,20 @@ mod event_emission_tests {
             .remove_mention(&source_node.id, &target_node.id)
             .await?;
 
-        // Receive the emitted event (Issue #811: unified relationship events)
-        let event = timeout(Duration::from_secs(1), rx.recv())
+        // Receive the emitted event (Issue #811: unified relationship events, Issue #995: EventEnvelope)
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify it's a RelationshipDeleted event with correct client_id
+        // Verify it's a RelationshipDeleted event with correct client_id in metadata
         // Issue #813: Relationship IDs are now from universal `relationship` table
-        match event {
+        match &envelope.event {
             DomainEvent::RelationshipDeleted {
                 id,
                 from_id,
                 to_id,
                 relationship_type,
-                source_client_id,
             } => {
                 // Universal relationship table IDs contain "relationship:"
                 assert!(
@@ -306,12 +314,18 @@ mod event_emission_tests {
                     "Expected relationship table ID, got: {}",
                     id
                 );
-                assert_eq!(from_id, source_node.id);
-                assert_eq!(to_id, target_node.id);
+                assert_eq!(from_id, &source_node.id);
+                assert_eq!(to_id, &target_node.id);
                 assert_eq!(relationship_type, "mentions");
-                assert_eq!(source_client_id, Some(TEST_CLIENT_ID.to_string()));
+                assert_eq!(
+                    envelope.metadata.source_client_id,
+                    Some(TEST_CLIENT_ID.to_string())
+                );
             }
-            _ => panic!("Expected RelationshipDeleted event, got {:?}", event),
+            _ => panic!(
+                "Expected RelationshipDeleted event, got {:?}",
+                envelope.event
+            ),
         }
 
         Ok(())
@@ -340,13 +354,13 @@ mod event_emission_tests {
             )
             .await?;
 
-        // Should receive exactly ONE event
-        let event1 = timeout(Duration::from_secs(1), rx.recv())
+        // Should receive exactly ONE event (Issue #995: EventEnvelope)
+        let envelope1 = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Should receive event")
             .expect("Should receive event");
 
-        assert!(matches!(event1, DomainEvent::NodeUpdated { .. }));
+        assert!(matches!(envelope1.event, DomainEvent::NodeUpdated { .. }));
 
         // Attempting to receive another event should timeout
         let result = timeout(Duration::from_millis(100), rx.recv()).await;
@@ -369,23 +383,21 @@ mod event_emission_tests {
         let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
         service.create_node(node).await?;
 
-        // Receive the emitted event
-        let event = timeout(Duration::from_secs(1), rx.recv())
+        // Receive the emitted event (Issue #995: EventEnvelope)
+        let envelope = timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("Event should be emitted within 1 second")
             .expect("Should receive event");
 
-        // Verify source_client_id is None when not set
-        match event {
-            DomainEvent::NodeCreated {
-                source_client_id, ..
-            } => {
+        // Verify source_client_id is None in envelope metadata when not set
+        match &envelope.event {
+            DomainEvent::NodeCreated { .. } => {
                 assert_eq!(
-                    source_client_id, None,
+                    envelope.metadata.source_client_id, None,
                     "source_client_id should be None when not set"
                 );
             }
-            _ => panic!("Expected NodeCreated event, got {:?}", event),
+            _ => panic!("Expected NodeCreated event, got {:?}", envelope.event),
         }
 
         Ok(())

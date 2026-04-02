@@ -42,6 +42,8 @@ axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tower = "0.5"
 tokio-stream = { version = "0.1", features = ["sync"] }
+cel-interpreter = { version = "0.10.0", features = ["json"] }
+cron = "0.16"
 
 [dev-dependencies]
 tokio-test = { workspace = true }

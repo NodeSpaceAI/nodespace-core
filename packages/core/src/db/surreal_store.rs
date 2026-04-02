@@ -50,7 +50,6 @@
 //! }
 //! ```
 
-use crate::db::events::DomainEvent;
 use crate::db::extract_record_key;
 use crate::db::fractional_ordering::FractionalOrderCalculator;
 use crate::models::{DeleteResult, Node, NodeQuery, NodeUpdate};
@@ -152,6 +151,8 @@ pub enum StoreOperation {
 /// - `source` is passed per-operation (not stored in SurrealStore) because
 ///   NodeService is a shared singleton - different clients pass their ID per-request
 /// - For deleted nodes, `node` contains the node state before deletion
+/// - `previous_node` carries pre-mutation state for updates, enabling property
+///   change detection in the playbook engine (Issue #995)
 #[derive(Debug, Clone)]
 pub struct StoreChange {
     /// The type of operation that occurred
@@ -160,6 +161,13 @@ pub struct StoreChange {
     pub node: Node,
     /// Optional client identifier for filtering events
     pub source: Option<String>,
+    /// Pre-mutation node state (only populated for updates where available)
+    pub previous_node: Option<Node>,
+    /// Playbook execution context for cycle detection (Issue #995)
+    /// Threaded from NodeService.execution_context → StoreChange → EventEnvelope.metadata.
+    /// Currently None for all store methods — Phase 4 (Action Executor) will thread
+    /// execution_context through specific store methods the engine calls.
+    pub playbook_context: Option<crate::db::events::PlaybookExecutionContext>,
 }
 
 /// Type alias for the store change notifier callback
@@ -258,7 +266,8 @@ pub struct SurrealStore {
     /// SurrealDB connection (Any engine: supports embedded RocksDB and HTTP)
     db: Arc<Surreal<Any>>,
     /// Broadcast channel for domain events (128 subscriber capacity)
-    event_tx: broadcast::Sender<DomainEvent>,
+    /// Issue #995: Changed to EventEnvelope
+    event_tx: broadcast::Sender<crate::db::events::EventEnvelope>,
     /// Cache of all valid node types (derived from schema definitions)
     ///
     /// Contains all schema IDs from the database, used for validating
@@ -444,7 +453,7 @@ impl SurrealStore {
                 ("SURREAL_ROCKSDB_MIN_WRITE_BUFFER_NUMBER_TO_MERGE", "2"),
                 // Compaction: trigger earlier, produce smaller files
                 ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_BASE", "16777216"), // 16 MiB
-                ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_MULTIPLIER", "1"), // uniform across levels
+                ("SURREAL_ROCKSDB_TARGET_FILE_SIZE_MULTIPLIER", "1"),  // uniform across levels
                 ("SURREAL_ROCKSDB_FILE_COMPACTION_TRIGGER", "2"),
                 // Blob files: disable for desktop — BlobDB separates large values
                 // into .blob files which adds overhead for small datasets. Keeping
@@ -506,14 +515,14 @@ impl SurrealStore {
     ///
     /// ```rust,no_run
     /// # use nodespace_core::db::SurrealStore;
-    /// # use nodespace_core::DomainEvent;
+    /// # use nodespace_core::db::events::{DomainEvent, EventEnvelope};
     /// # use std::path::PathBuf;
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// # let store = SurrealStore::new(PathBuf::from("./data/test.db")).await?;
     /// let mut rx = store.subscribe_to_events();
-    /// while let Ok(event) = rx.recv().await {
-    ///     match event {
+    /// while let Ok(envelope) = rx.recv().await {
+    ///     match &envelope.event {
     ///         DomainEvent::NodeCreated { node_id, .. } => {
     ///             println!("Node created: {}", node_id)
     ///         }
@@ -527,7 +536,7 @@ impl SurrealStore {
     /// # Ok(())
     /// # }
     /// ```
-    pub fn subscribe_to_events(&self) -> broadcast::Receiver<DomainEvent> {
+    pub fn subscribe_to_events(&self) -> broadcast::Receiver<crate::db::events::EventEnvelope> {
         self.event_tx.subscribe()
     }
 
@@ -665,7 +674,12 @@ impl SurrealStore {
 }
 
 impl SurrealStore {
-    pub async fn create_node(&self, node: Node, source: Option<String>) -> Result<Node> {
+    pub async fn create_node(
+        &self,
+        node: Node,
+        source: Option<String>,
+        playbook_context: Option<crate::db::events::PlaybookExecutionContext>,
+    ) -> Result<Node> {
         // Universal Graph Architecture (Issue #783): All properties stored in node.properties
         // Embeddings are managed separately in dedicated embedding table
 
@@ -741,6 +755,8 @@ impl SurrealStore {
             operation: StoreOperation::Created,
             node: node.clone(),
             source,
+            previous_node: None,
+            playbook_context,
         });
 
         // Return the created node directly
@@ -911,6 +927,8 @@ impl SurrealStore {
             operation: StoreOperation::Created,
             node: node.clone(),
             source,
+            previous_node: None,
+            playbook_context: None,
         });
 
         Ok(node)
@@ -1068,6 +1086,8 @@ impl SurrealStore {
             operation: StoreOperation::Updated,
             node: updated_node.clone(),
             source,
+            previous_node: None,
+            playbook_context: None,
         });
 
         Ok(updated_node)
@@ -1182,6 +1202,8 @@ impl SurrealStore {
             operation: StoreOperation::Created,
             node: created_node.clone(),
             source,
+            previous_node: None,
+            playbook_context: None,
         });
 
         Ok(created_node)
@@ -1267,6 +1289,8 @@ impl SurrealStore {
             operation: StoreOperation::Updated,
             node: updated_node.clone(),
             source,
+            previous_node: None,
+            playbook_context: None,
         });
 
         Ok(updated_node)
@@ -1400,6 +1424,8 @@ impl SurrealStore {
             operation: StoreOperation::Updated,
             node: node.clone(),
             source,
+            previous_node: None,
+            playbook_context: None,
         });
 
         Ok(node)
@@ -1437,7 +1463,7 @@ impl SurrealStore {
     ///     ..Default::default()
     /// };
     ///
-    /// match store.update_node_with_version_check("node-id", 5, update, None).await? {
+    /// match store.update_node_with_version_check("node-id", 5, update, None, None).await? {
     ///     Some(node) => println!("Updated to version {}", node.version),
     ///     None => println!("Version mismatch - node was modified by another process"),
     /// }
@@ -1450,12 +1476,17 @@ impl SurrealStore {
         expected_version: i64,
         update: NodeUpdate,
         source: Option<String>,
+        playbook_context: Option<crate::db::events::PlaybookExecutionContext>,
     ) -> Result<Option<Node>> {
         // Fetch current node to build update values
+        // Clone for pre-mutation state before fields are consumed (Issue #995)
         let current = self
             .get_node(id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found: {}", id))?;
+
+        // Snapshot pre-mutation state before fields are consumed (Issue #995)
+        let previous_node = current.clone();
 
         // Calculate new version for explicit binding
         let new_version = expected_version + 1;
@@ -1534,11 +1565,13 @@ impl SurrealStore {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Node not found after update"))?;
 
-        // Notify registered callback of the store change (Issue #718)
+        // Notify registered callback of the store change (Issue #718, #995)
         self.notify(StoreChange {
             operation: StoreOperation::Updated,
             node: node.clone(),
             source,
+            previous_node: Some(previous_node),
+            playbook_context,
         });
 
         Ok(Some(node))
@@ -1588,6 +1621,8 @@ impl SurrealStore {
             operation: StoreOperation::Deleted,
             node,
             source,
+            previous_node: None,
+            playbook_context: None,
         });
 
         Ok(DeleteResult { existed: true })
@@ -1681,6 +1716,8 @@ impl SurrealStore {
             operation: StoreOperation::Deleted,
             node,
             source,
+            previous_node: None,
+            playbook_context: None,
         });
 
         Ok(DeleteResult { existed: true })
@@ -3187,7 +3224,7 @@ impl SurrealStore {
                 node_type.to_string(),
                 schema.clone(),
             );
-            self.create_node(node, None).await?;
+            self.create_node(node, None, None).await?;
         }
 
         Ok(())
@@ -3319,7 +3356,7 @@ impl SurrealStore {
         let mut created_nodes = Vec::new();
 
         for node in nodes {
-            let created = self.create_node(node, None).await?;
+            let created = self.create_node(node, None, None).await?;
             created_nodes.push(created);
         }
 
@@ -3447,6 +3484,8 @@ impl SurrealStore {
                 operation: StoreOperation::Created,
                 node,
                 source: Some("bulk_create_hierarchy".to_string()),
+                previous_node: None,
+                playbook_context: None,
             });
         }
 
@@ -3560,6 +3599,8 @@ impl SurrealStore {
                     operation: StoreOperation::Created,
                     node,
                     source: Some("bulk_create_hierarchy".to_string()),
+                    previous_node: None,
+                    playbook_context: None,
                 });
             }
         }
@@ -3657,6 +3698,8 @@ impl SurrealStore {
             operation: StoreOperation::Created,
             node,
             source: Some("streaming_import".to_string()),
+            previous_node: None,
+            playbook_context: None,
         });
 
         Ok(id)
@@ -5572,7 +5615,7 @@ mod tests {
 
         let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
 
-        let created = store.create_node(node.clone(), None).await?;
+        let created = store.create_node(node.clone(), None, None).await?;
         assert_eq!(created.id, node.id);
         assert_eq!(created.content, "Test content");
 
@@ -5593,7 +5636,7 @@ mod tests {
             json!({}),
         );
 
-        let created = store.create_node(node.clone(), None).await?;
+        let created = store.create_node(node.clone(), None, None).await?;
 
         let update = NodeUpdate {
             content: Some("Updated content".to_string()),
@@ -5612,7 +5655,7 @@ mod tests {
 
         let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
 
-        let created = store.create_node(node.clone(), None).await?;
+        let created = store.create_node(node.clone(), None, None).await?;
 
         let result = store.delete_node(&created.id, None).await?;
         assert!(result.existed);
@@ -5703,7 +5746,7 @@ mod tests {
 
         // Create parent node
         let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
-        let parent = store.create_node(parent, None).await?;
+        let parent = store.create_node(parent, None, None).await?;
 
         // Create child atomically
         let child = store
@@ -5728,7 +5771,7 @@ mod tests {
 
         // Create parent
         let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
-        let parent = store.create_node(parent, None).await?;
+        let parent = store.create_node(parent, None, None).await?;
 
         // Create task child atomically with properties
         let properties = json!({
@@ -5785,11 +5828,13 @@ mod tests {
             .create_node(
                 Node::new("text".to_string(), "Parent 1".to_string(), json!({})),
                 None,
+                None,
             )
             .await?;
         let parent2 = store
             .create_node(
                 Node::new("text".to_string(), "Parent 2".to_string(), json!({})),
+                None,
                 None,
             )
             .await?;
@@ -5824,6 +5869,7 @@ mod tests {
             .create_node(
                 Node::new("text".to_string(), "Parent".to_string(), json!({})),
                 None,
+                None,
             )
             .await?;
         let child = store
@@ -5852,6 +5898,7 @@ mod tests {
             .create_node(
                 Node::new("text".to_string(), "Parent".to_string(), json!({})),
                 None,
+                None,
             )
             .await?;
         let child = store
@@ -5877,6 +5924,7 @@ mod tests {
         let parent = store
             .create_node(
                 Node::new("text".to_string(), "Parent".to_string(), json!({})),
+                None,
                 None,
             )
             .await?;
@@ -5926,7 +5974,7 @@ mod tests {
             "Task content".to_string(),
             json!({"status": "TODO"}),
         );
-        let task = store.create_node(task, None).await?;
+        let task = store.create_node(task, None, None).await?;
 
         // Delete task (should delete both node and task-specific record)
         let result = store.delete_node_cascade_atomic(&task.id, None).await?;
@@ -5947,6 +5995,7 @@ mod tests {
         let node = store
             .create_node(
                 Node::new("text".to_string(), "Original text".to_string(), json!({})),
+                None,
                 None,
             )
             .await?;
@@ -5985,6 +6034,7 @@ mod tests {
                     json!({"status": "done"}),
                 ),
                 None,
+                None,
             )
             .await?;
 
@@ -6010,6 +6060,7 @@ mod tests {
         let node = store
             .create_node(
                 Node::new("text".to_string(), "Content".to_string(), json!({})),
+                None,
                 None,
             )
             .await?;
@@ -6045,9 +6096,9 @@ mod tests {
         let child = Node::new("text".to_string(), "Child".to_string(), json!({}));
         let grandchild = Node::new("text".to_string(), "Grandchild".to_string(), json!({}));
 
-        store.create_node(root.clone(), None).await?;
-        store.create_node(child.clone(), None).await?;
-        store.create_node(grandchild.clone(), None).await?;
+        store.create_node(root.clone(), None, None).await?;
+        store.create_node(child.clone(), None, None).await?;
+        store.create_node(grandchild.clone(), None, None).await?;
 
         // Create relationships: root -> child -> grandchild
         store.move_node(&child.id, Some(&root.id), None).await?;
@@ -6076,7 +6127,7 @@ mod tests {
 
         // Create a leaf node with no children
         let leaf = Node::new("text".to_string(), "Leaf".to_string(), json!({}));
-        store.create_node(leaf.clone(), None).await?;
+        store.create_node(leaf.clone(), None, None).await?;
 
         // Get nodes in subtree of leaf - should return empty vec
         let subtree_nodes = store.get_nodes_in_subtree(&leaf.id).await?;
@@ -6098,9 +6149,9 @@ mod tests {
         let child = Node::new("text".to_string(), "Child".to_string(), json!({}));
         let grandchild = Node::new("text".to_string(), "Grandchild".to_string(), json!({}));
 
-        store.create_node(root.clone(), None).await?;
-        store.create_node(child.clone(), None).await?;
-        store.create_node(grandchild.clone(), None).await?;
+        store.create_node(root.clone(), None, None).await?;
+        store.create_node(child.clone(), None, None).await?;
+        store.create_node(grandchild.clone(), None, None).await?;
 
         // Create relationships: root -> child -> grandchild
         store.move_node(&child.id, Some(&root.id), None).await?;
@@ -6170,10 +6221,10 @@ mod tests {
         );
         task_node.title = Some("searchable content".to_string());
 
-        store.create_node(text_node.clone(), None).await?;
-        store.create_node(date_node.clone(), None).await?;
-        store.create_node(schema_node.clone(), None).await?;
-        store.create_node(task_node.clone(), None).await?;
+        store.create_node(text_node.clone(), None, None).await?;
+        store.create_node(date_node.clone(), None, None).await?;
+        store.create_node(schema_node.clone(), None, None).await?;
+        store.create_node(task_node.clone(), None, None).await?;
 
         // Search for matching content (searches title field)
         let results = store.mention_autocomplete("searchable", None).await?;
@@ -6248,14 +6299,14 @@ mod tests {
             json!({}),
         );
 
-        store.create_node(root_text.clone(), None).await?;
-        store.create_node(root_header.clone(), None).await?;
-        store.create_node(root_code.clone(), None).await?;
-        store.create_node(root_quote.clone(), None).await?;
-        store.create_node(root_ordered.clone(), None).await?;
-        store.create_node(parent.clone(), None).await?;
-        store.create_node(nested_text.clone(), None).await?;
-        store.create_node(nested_quote.clone(), None).await?;
+        store.create_node(root_text.clone(), None, None).await?;
+        store.create_node(root_header.clone(), None, None).await?;
+        store.create_node(root_code.clone(), None, None).await?;
+        store.create_node(root_quote.clone(), None, None).await?;
+        store.create_node(root_ordered.clone(), None, None).await?;
+        store.create_node(parent.clone(), None, None).await?;
+        store.create_node(nested_text.clone(), None, None).await?;
+        store.create_node(nested_quote.clone(), None, None).await?;
 
         // Make nested nodes children of parent
         store
@@ -6336,10 +6387,10 @@ mod tests {
         );
         nested_query.title = Some("findme nested query".to_string());
 
-        store.create_node(parent.clone(), None).await?;
-        store.create_node(root_task.clone(), None).await?;
-        store.create_node(nested_task.clone(), None).await?;
-        store.create_node(nested_query.clone(), None).await?;
+        store.create_node(parent.clone(), None, None).await?;
+        store.create_node(root_task.clone(), None, None).await?;
+        store.create_node(nested_task.clone(), None, None).await?;
+        store.create_node(nested_query.clone(), None, None).await?;
 
         // Make tasks and query children of parent
         store
@@ -6397,9 +6448,9 @@ mod tests {
         );
         node3.title = Some("MixedCase Content".to_string());
 
-        store.create_node(node1.clone(), None).await?;
-        store.create_node(node2.clone(), None).await?;
-        store.create_node(node3.clone(), None).await?;
+        store.create_node(node1.clone(), None, None).await?;
+        store.create_node(node2.clone(), None, None).await?;
+        store.create_node(node3.clone(), None, None).await?;
 
         // Search with lowercase should find all
         let results = store.mention_autocomplete("content", None).await?;
@@ -6428,7 +6479,7 @@ mod tests {
                 json!({}),
             );
             node.title = Some(format!("searchterm item {}", i));
-            store.create_node(node, None).await?;
+            store.create_node(node, None, None).await?;
         }
 
         // Search with limit
@@ -6451,7 +6502,7 @@ mod tests {
         let (store, _temp) = create_test_store().await?;
 
         let node = Node::new("text".to_string(), "some content".to_string(), json!({}));
-        store.create_node(node, None).await?;
+        store.create_node(node, None, None).await?;
 
         // Search for non-existent term
         let results = store.mention_autocomplete("nonexistent", None).await?;
@@ -6482,9 +6533,9 @@ mod tests {
         let mut task_node = Node::new("task".to_string(), "searchable task".to_string(), json!({}));
         task_node.title = Some("searchable task".to_string());
 
-        store.create_node(collection_node.clone(), None).await?;
-        store.create_node(text_node.clone(), None).await?;
-        store.create_node(task_node.clone(), None).await?;
+        store.create_node(collection_node.clone(), None, None).await?;
+        store.create_node(text_node.clone(), None, None).await?;
+        store.create_node(task_node.clone(), None, None).await?;
 
         // Search for matching content (searches title field)
         let results = store.mention_autocomplete("searchable", None).await?;
@@ -6522,7 +6573,7 @@ mod tests {
         );
         collection_node.title = Some("Test Collection".to_string());
 
-        store.create_node(collection_node.clone(), None).await?;
+        store.create_node(collection_node.clone(), None, None).await?;
 
         // Should find by name (case-insensitive via title)
         let result = store.get_collection_by_name("Test Collection").await?;
@@ -6569,9 +6620,9 @@ mod tests {
         let mut collection3 = Node::new("collection".to_string(), "Testing".to_string(), json!({}));
         collection3.title = Some("Testing".to_string());
 
-        store.create_node(collection1.clone(), None).await?;
-        store.create_node(collection2.clone(), None).await?;
-        store.create_node(collection3.clone(), None).await?;
+        store.create_node(collection1.clone(), None, None).await?;
+        store.create_node(collection2.clone(), None, None).await?;
+        store.create_node(collection3.clone(), None, None).await?;
 
         // Batch fetch by names (case-insensitive)
         let names = vec![
@@ -6624,16 +6675,16 @@ mod tests {
             json!({}),
         );
         collection.title = Some("Test Collection".to_string());
-        let collection = store.create_node(collection, None).await?;
+        let collection = store.create_node(collection, None, None).await?;
 
         // Create member nodes
         let member1 = Node::new("text".to_string(), "Member 1".to_string(), json!({}));
         let member2 = Node::new("text".to_string(), "Member 2".to_string(), json!({}));
         let member3 = Node::new("text".to_string(), "Member 3".to_string(), json!({}));
 
-        let member1 = store.create_node(member1, None).await?;
-        let member2 = store.create_node(member2, None).await?;
-        let member3 = store.create_node(member3, None).await?;
+        let member1 = store.create_node(member1, None, None).await?;
+        let member2 = store.create_node(member2, None, None).await?;
+        let member3 = store.create_node(member3, None, None).await?;
 
         // Add members to collection
         let rel1_id = store.add_to_collection(&member1.id, &collection.id).await?;
@@ -6722,16 +6773,16 @@ mod tests {
             json!({}),
         );
         collection.title = Some("Ordered Collection".to_string());
-        let collection = store.create_node(collection, None).await?;
+        let collection = store.create_node(collection, None, None).await?;
 
         // Create member nodes with distinct content
         let member_a = Node::new("text".to_string(), "AAA - First".to_string(), json!({}));
         let member_b = Node::new("text".to_string(), "BBB - Second".to_string(), json!({}));
         let member_c = Node::new("text".to_string(), "CCC - Third".to_string(), json!({}));
 
-        let member_a = store.create_node(member_a, None).await?;
-        let member_b = store.create_node(member_b, None).await?;
-        let member_c = store.create_node(member_c, None).await?;
+        let member_a = store.create_node(member_a, None, None).await?;
+        let member_b = store.create_node(member_b, None, None).await?;
+        let member_c = store.create_node(member_c, None, None).await?;
 
         // Add members in specific order: A, B, C
         store
@@ -6784,7 +6835,7 @@ mod tests {
             json!({}),
         );
         collection.title = Some("Order Test Collection".to_string());
-        let collection = store.create_node(collection, None).await?;
+        let collection = store.create_node(collection, None, None).await?;
 
         // First call should return ~1.0 (first child pattern)
         let order1 = store.get_next_member_order(&collection.id).await?;
@@ -6796,7 +6847,7 @@ mod tests {
 
         // Add a member
         let member = Node::new("text".to_string(), "Test Member".to_string(), json!({}));
-        let member = store.create_node(member, None).await?;
+        let member = store.create_node(member, None, None).await?;
         store.add_to_collection(&member.id, &collection.id).await?;
 
         // Second call should return ~2.0 (after first)
@@ -6817,7 +6868,7 @@ mod tests {
 
         // Create a parent node
         let parent = Node::new("text".to_string(), "Parent Node".to_string(), json!({}));
-        let parent = store.create_node(parent, None).await?;
+        let parent = store.create_node(parent, None, None).await?;
 
         // First call should return ~1.0 (first child pattern)
         let order1 = store.get_next_child_order(&parent.id).await?;
@@ -6852,9 +6903,9 @@ mod tests {
         let node2 = Node::new("text".to_string(), "Content 2".to_string(), json!({}));
         let node3 = Node::new("text".to_string(), "Content 3".to_string(), json!({}));
 
-        let created1 = store.create_node(node1, None).await?;
-        let created2 = store.create_node(node2, None).await?;
-        let created3 = store.create_node(node3, None).await?;
+        let created1 = store.create_node(node1, None, None).await?;
+        let created2 = store.create_node(node2, None, None).await?;
+        let created3 = store.create_node(node3, None, None).await?;
 
         // Batch fetch all three nodes
         let ids = vec![
@@ -6878,7 +6929,7 @@ mod tests {
 
         // Create one node
         let node = Node::new("text".to_string(), "Existing node".to_string(), json!({}));
-        let created = store.create_node(node, None).await?;
+        let created = store.create_node(node, None, None).await?;
 
         // Try to fetch existing and non-existent nodes
         let ids = vec![
@@ -6923,8 +6974,8 @@ mod tests {
             json!({"status": "done"}),
         );
 
-        let created1 = store.create_node(task1, None).await?;
-        let created2 = store.create_node(task2, None).await?;
+        let created1 = store.create_node(task1, None, None).await?;
+        let created2 = store.create_node(task2, None, None).await?;
 
         let ids = vec![created1.id.clone(), created2.id.clone()];
         let result = store.get_nodes_by_ids(&ids).await?;
@@ -6956,8 +7007,8 @@ mod tests {
             json!({"status": "pending"}),
         );
 
-        let text_created = store.create_node(text_node, None).await?;
-        let task_created = store.create_node(task_node, None).await?;
+        let text_created = store.create_node(text_node, None, None).await?;
+        let task_created = store.create_node(task_node, None, None).await?;
 
         let ids = vec![text_created.id.clone(), task_created.id.clone()];
         let result = store.get_nodes_by_ids(&ids).await?;
@@ -6984,7 +7035,7 @@ mod tests {
         let mut ids = Vec::new();
         for i in 0..20 {
             let node = Node::new("text".to_string(), format!("Content {}", i), json!({}));
-            let created = store.create_node(node, None).await?;
+            let created = store.create_node(node, None, None).await?;
             ids.push(created.id);
         }
 
@@ -7047,6 +7098,7 @@ mod tests {
             .create_node(
                 Node::new("text".to_string(), "Parent".to_string(), json!({})),
                 None,
+                None,
             )
             .await?;
 
@@ -7099,6 +7151,7 @@ mod tests {
             .create_node(
                 Node::new("text".to_string(), "Parent".to_string(), json!({})),
                 None,
+                None,
             )
             .await?;
 
@@ -7142,11 +7195,13 @@ mod tests {
             .create_node(
                 Node::new("text".to_string(), "Parent 1".to_string(), json!({})),
                 None,
+                None,
             )
             .await?;
         let parent2 = store
             .create_node(
                 Node::new("text".to_string(), "Parent 2".to_string(), json!({})),
+                None,
                 None,
             )
             .await?;
@@ -7197,6 +7252,7 @@ mod tests {
             .create_node(
                 Node::new("text".to_string(), "Parent".to_string(), json!({})),
                 None,
+                None,
             )
             .await?;
 
@@ -7241,8 +7297,8 @@ mod tests {
         // Create source and target nodes
         let source_node = Node::new("text".to_string(), "Source Doc".to_string(), json!({}));
         let target_node = Node::new("text".to_string(), "Target Doc".to_string(), json!({}));
-        let source = store.create_node(source_node, None).await?;
-        let target = store.create_node(target_node, None).await?;
+        let source = store.create_node(source_node, None, None).await?;
+        let target = store.create_node(target_node, None, None).await?;
 
         // Bulk create mention
         let mentions = vec![(source.id.clone(), target.id.clone())];
@@ -7269,8 +7325,8 @@ mod tests {
         // Create source and target nodes
         let source_node = Node::new("text".to_string(), "Source Doc".to_string(), json!({}));
         let target_node = Node::new("text".to_string(), "Target Doc".to_string(), json!({}));
-        let source = store.create_node(source_node, None).await?;
-        let target = store.create_node(target_node, None).await?;
+        let source = store.create_node(source_node, None, None).await?;
+        let target = store.create_node(target_node, None, None).await?;
 
         // Create the same mention twice via bulk
         let mentions = vec![(source.id.clone(), target.id.clone())];
@@ -7297,7 +7353,7 @@ mod tests {
 
         // Create a single node
         let node_data = Node::new("text".to_string(), "Self Doc".to_string(), json!({}));
-        let node = store.create_node(node_data, None).await?;
+        let node = store.create_node(node_data, None, None).await?;
 
         // Try to create a self-referencing mention
         let mentions = vec![(node.id.clone(), node.id.clone())];
@@ -7331,10 +7387,10 @@ mod tests {
         let target1_node = Node::new("text".to_string(), "Target 1".to_string(), json!({}));
         let target2_node = Node::new("text".to_string(), "Target 2".to_string(), json!({}));
         let target3_node = Node::new("text".to_string(), "Target 3".to_string(), json!({}));
-        let source = store.create_node(source_node, None).await?;
-        let target1 = store.create_node(target1_node, None).await?;
-        let target2 = store.create_node(target2_node, None).await?;
-        let target3 = store.create_node(target3_node, None).await?;
+        let source = store.create_node(source_node, None, None).await?;
+        let target1 = store.create_node(target1_node, None, None).await?;
+        let target2 = store.create_node(target2_node, None, None).await?;
+        let target3 = store.create_node(target3_node, None, None).await?;
 
         // Create mentions to multiple targets
         let mentions = vec![
@@ -7368,7 +7424,7 @@ mod tests {
         let (store, _temp_dir) = create_test_store().await?;
 
         let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
-        let created = store.create_node(node.clone(), None).await?;
+        let created = store.create_node(node.clone(), None, None).await?;
 
         let exists = store.node_exists(&created.id).await?;
         assert!(exists, "node_exists should return true for existing node");
@@ -7394,7 +7450,7 @@ mod tests {
         let (store, _temp_dir) = create_test_store().await?;
 
         let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
-        let created = store.create_node(node.clone(), None).await?;
+        let created = store.create_node(node.clone(), None, None).await?;
 
         // Verify exists before deletion
         let exists_before = store.node_exists(&created.id).await?;
@@ -7420,7 +7476,7 @@ mod tests {
 
         // Create a root node (no parent)
         let root = Node::new("text".to_string(), "Root node".to_string(), json!({}));
-        let created = store.create_node(root.clone(), None).await?;
+        let created = store.create_node(root.clone(), None, None).await?;
 
         let parent_id = store.get_parent_id(&created.id).await?;
         assert!(parent_id.is_none(), "Root node should have no parent");
@@ -7434,7 +7490,7 @@ mod tests {
 
         // Create parent node
         let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
-        let created_parent = store.create_node(parent.clone(), None).await?;
+        let created_parent = store.create_node(parent.clone(), None, None).await?;
 
         // Create child with parent using create_child_node_atomic (creates has_child relationship)
         let created_child = store
@@ -7474,7 +7530,7 @@ mod tests {
         let (store, _temp_dir) = create_test_store().await?;
 
         let node = Node::new("text".to_string(), "Test".to_string(), json!({}));
-        let created = store.create_node(node.clone(), None).await?;
+        let created = store.create_node(node.clone(), None, None).await?;
 
         let node_type = store.get_node_type(&created.id).await?;
         assert!(node_type.is_some(), "Should return node type");
@@ -7492,7 +7548,7 @@ mod tests {
             "[ ] Task item".to_string(),
             json!({"status": "todo"}),
         );
-        let created = store.create_node(node.clone(), None).await?;
+        let created = store.create_node(node.clone(), None, None).await?;
 
         let node_type = store.get_node_type(&created.id).await?;
         assert!(node_type.is_some(), "Should return node type");
@@ -7506,7 +7562,7 @@ mod tests {
         let (store, _temp_dir) = create_test_store().await?;
 
         let node = Node::new("date".to_string(), "2024-01-15".to_string(), json!({}));
-        let created = store.create_node(node.clone(), None).await?;
+        let created = store.create_node(node.clone(), None, None).await?;
 
         let node_type = store.get_node_type(&created.id).await?;
         assert!(node_type.is_some(), "Should return node type");
@@ -7538,7 +7594,7 @@ mod tests {
 
         // Create a root node (container)
         let root = Node::new("text".to_string(), "Root page".to_string(), json!({}));
-        let root = store.create_node(root, None).await?;
+        let root = store.create_node(root, None, None).await?;
 
         // Create a child text node that will mention the target
         let child = Node::new_with_id(
@@ -7547,7 +7603,7 @@ mod tests {
             "See @target-node".to_string(),
             json!({}),
         );
-        let child = store.create_node(child, None).await?;
+        let child = store.create_node(child, None, None).await?;
 
         // Establish parent-child relationship
         store.move_node(&child.id, Some(&root.id), None).await?;
@@ -7559,7 +7615,7 @@ mod tests {
             "Target page".to_string(),
             json!({}),
         );
-        let target = store.create_node(target, None).await?;
+        let target = store.create_node(target, None, None).await?;
 
         // Create mention relationship from child to target
         store.create_mention(&child.id, &target.id).await?;
@@ -7585,7 +7641,7 @@ mod tests {
 
         // Create a root node
         let root = Node::new("text".to_string(), "Root page".to_string(), json!({}));
-        let root = store.create_node(root, None).await?;
+        let root = store.create_node(root, None, None).await?;
 
         // Create a task node that will mention the target
         // Tasks are their own containers even when nested
@@ -7595,7 +7651,7 @@ mod tests {
             "Review @target-task".to_string(),
             json!({"status": "open"}),
         );
-        let task = store.create_node(task, None).await?;
+        let task = store.create_node(task, None, None).await?;
 
         // Make task a child of root
         store.move_node(&task.id, Some(&root.id), None).await?;
@@ -7607,7 +7663,7 @@ mod tests {
             "Target page".to_string(),
             json!({}),
         );
-        let target = store.create_node(target, None).await?;
+        let target = store.create_node(target, None, None).await?;
 
         // Task mentions target
         store.create_mention(&task.id, &target.id).await?;
@@ -7637,7 +7693,7 @@ mod tests {
             "Root page".to_string(),
             json!({}),
         );
-        let root = store.create_node(root, None).await?;
+        let root = store.create_node(root, None, None).await?;
 
         let level1 = Node::new_with_id(
             "deep-level1".to_string(),
@@ -7645,7 +7701,7 @@ mod tests {
             "Level 1".to_string(),
             json!({}),
         );
-        let level1 = store.create_node(level1, None).await?;
+        let level1 = store.create_node(level1, None, None).await?;
         store.move_node(&level1.id, Some(&root.id), None).await?;
 
         let level2 = Node::new_with_id(
@@ -7654,7 +7710,7 @@ mod tests {
             "Level 2".to_string(),
             json!({}),
         );
-        let level2 = store.create_node(level2, None).await?;
+        let level2 = store.create_node(level2, None, None).await?;
         store.move_node(&level2.id, Some(&level1.id), None).await?;
 
         let level3 = Node::new_with_id(
@@ -7663,7 +7719,7 @@ mod tests {
             "Level 3 mentions @target".to_string(),
             json!({}),
         );
-        let level3 = store.create_node(level3, None).await?;
+        let level3 = store.create_node(level3, None, None).await?;
         store.move_node(&level3.id, Some(&level2.id), None).await?;
 
         // Create target node
@@ -7673,7 +7729,7 @@ mod tests {
             "Target page".to_string(),
             json!({}),
         );
-        let target = store.create_node(target, None).await?;
+        let target = store.create_node(target, None, None).await?;
 
         // Level3 mentions target
         store.create_mention(&level3.id, &target.id).await?;
@@ -7702,7 +7758,7 @@ mod tests {
             "Nobody mentions me".to_string(),
             json!({}),
         );
-        let target = store.create_node(target, None).await?;
+        let target = store.create_node(target, None, None).await?;
 
         // Get incoming mention containers
         let containers = store.get_incoming_mention_containers(&target.id).await?;
@@ -7724,7 +7780,7 @@ mod tests {
             "Root page".to_string(),
             json!({}),
         );
-        let root = store.create_node(root, None).await?;
+        let root = store.create_node(root, None, None).await?;
 
         // Create two child nodes that both mention the target
         let child1 = Node::new_with_id(
@@ -7733,7 +7789,7 @@ mod tests {
             "First mention @target".to_string(),
             json!({}),
         );
-        let child1 = store.create_node(child1, None).await?;
+        let child1 = store.create_node(child1, None, None).await?;
         store.move_node(&child1.id, Some(&root.id), None).await?;
 
         let child2 = Node::new_with_id(
@@ -7742,7 +7798,7 @@ mod tests {
             "Second mention @target".to_string(),
             json!({}),
         );
-        let child2 = store.create_node(child2, None).await?;
+        let child2 = store.create_node(child2, None, None).await?;
         store.move_node(&child2.id, Some(&root.id), None).await?;
 
         // Create target node
@@ -7752,7 +7808,7 @@ mod tests {
             "Target page".to_string(),
             json!({}),
         );
-        let target = store.create_node(target, None).await?;
+        let target = store.create_node(target, None, None).await?;
 
         // Both children mention target
         store.create_mention(&child1.id, &target.id).await?;
@@ -7783,7 +7839,7 @@ mod tests {
             "Document with references".to_string(),
             json!({}),
         );
-        let root = store.create_node(root, None).await?;
+        let root = store.create_node(root, None, None).await?;
 
         // Create child that mentions target
         let child = Node::new_with_id(
@@ -7792,7 +7848,7 @@ mod tests {
             "Link to @target".to_string(),
             json!({}),
         );
-        let child = store.create_node(child, None).await?;
+        let child = store.create_node(child, None, None).await?;
         store.move_node(&child.id, Some(&root.id), None).await?;
 
         // Create target
@@ -7802,7 +7858,7 @@ mod tests {
             "Target".to_string(),
             json!({}),
         );
-        let target = store.create_node(target, None).await?;
+        let target = store.create_node(target, None, None).await?;
 
         // Create mention
         store.create_mention(&child.id, &target.id).await?;

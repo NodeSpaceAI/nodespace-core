@@ -44,6 +44,300 @@ fn extract_record_id_string(record_id: &RecordId) -> String {
     format!("{}:{}", record_id.table, extract_record_key(record_id))
 }
 
+/// Compute property changes between pre-mutation and post-mutation node properties (Issue #995)
+///
+/// Diffs the top-level keys within each namespace. For namespaced properties
+/// (e.g., `{"task": {"status": "done"}}`), diffs within each namespace object,
+/// producing keys like `"task.status"`. Only handles single-level nesting
+/// (namespace → property), matching NodeSpace's storage format where properties
+/// are stored as `{ "node_type": { "prop": value } }`.
+///
+/// Returns a `Vec<PropertyChange>` describing what changed.
+fn compute_property_changes(old: &Value, new: &Value) -> Vec<crate::db::events::PropertyChange> {
+    use crate::db::events::PropertyChange;
+
+    let mut changes = Vec::new();
+
+    let old_obj = match old.as_object() {
+        Some(o) => o,
+        None => return changes,
+    };
+    let new_obj = match new.as_object() {
+        Some(o) => o,
+        None => return changes,
+    };
+
+    // Collect all keys from both old and new
+    let mut all_keys: HashSet<&String> = old_obj.keys().collect();
+    all_keys.extend(new_obj.keys());
+
+    for key in all_keys {
+        let old_val = old_obj.get(key);
+        let new_val = new_obj.get(key);
+
+        match (old_val, new_val) {
+            (Some(ov), Some(nv)) => {
+                // Both exist — check if the value changed
+                if ov != nv {
+                    // If both are objects (namespace), diff their contents
+                    if let (Some(old_ns), Some(new_ns)) = (ov.as_object(), nv.as_object()) {
+                        let mut ns_keys: HashSet<&String> = old_ns.keys().collect();
+                        ns_keys.extend(new_ns.keys());
+                        for ns_key in ns_keys {
+                            let old_ns_val = old_ns.get(ns_key);
+                            let new_ns_val = new_ns.get(ns_key);
+                            if old_ns_val != new_ns_val {
+                                changes.push(PropertyChange {
+                                    key: format!("{}.{}", key, ns_key),
+                                    old_value: old_ns_val.cloned(),
+                                    new_value: new_ns_val.cloned(),
+                                });
+                            }
+                        }
+                    } else {
+                        // Scalar change at top level
+                        changes.push(PropertyChange {
+                            key: key.clone(),
+                            old_value: Some(ov.clone()),
+                            new_value: Some(nv.clone()),
+                        });
+                    }
+                }
+            }
+            (Some(ov), None) => {
+                // Property removed
+                changes.push(PropertyChange {
+                    key: key.clone(),
+                    old_value: Some(ov.clone()),
+                    new_value: None,
+                });
+            }
+            (None, Some(nv)) => {
+                // Property added
+                changes.push(PropertyChange {
+                    key: key.clone(),
+                    old_value: None,
+                    new_value: Some(nv.clone()),
+                });
+            }
+            (None, None) => unreachable!(),
+        }
+    }
+
+    changes
+}
+
+#[cfg(test)]
+mod property_change_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Helper: find a PropertyChange by key in the result vec.
+    fn find_change<'a>(
+        changes: &'a [crate::db::events::PropertyChange],
+        key: &str,
+    ) -> Option<&'a crate::db::events::PropertyChange> {
+        changes.iter().find(|c| c.key == key)
+    }
+
+    #[test]
+    fn test_no_changes() {
+        let old = json!({"title": "hello", "task": {"status": "todo"}});
+        let new = json!({"title": "hello", "task": {"status": "todo"}});
+        let changes = compute_property_changes(&old, &new);
+        assert!(
+            changes.is_empty(),
+            "identical objects should produce no changes"
+        );
+    }
+
+    #[test]
+    fn test_scalar_property_changed() {
+        let old = json!({"title": "old title", "color": "red"});
+        let new = json!({"title": "new title", "color": "red"});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "title");
+        assert_eq!(c.old_value, Some(json!("old title")));
+        assert_eq!(c.new_value, Some(json!("new title")));
+    }
+
+    #[test]
+    fn test_scalar_property_changed_number() {
+        let old = json!({"count": 1});
+        let new = json!({"count": 42});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "count");
+        assert_eq!(c.old_value, Some(json!(1)));
+        assert_eq!(c.new_value, Some(json!(42)));
+    }
+
+    #[test]
+    fn test_namespace_inner_property_changed() {
+        let old = json!({"task": {"status": "todo", "priority": "low"}});
+        let new = json!({"task": {"status": "done", "priority": "low"}});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "task.status");
+        assert_eq!(c.old_value, Some(json!("todo")));
+        assert_eq!(c.new_value, Some(json!("done")));
+    }
+
+    #[test]
+    fn test_namespace_multiple_inner_changes() {
+        let old = json!({"task": {"status": "todo", "priority": "low"}});
+        let new = json!({"task": {"status": "done", "priority": "high"}});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 2);
+        let status = find_change(&changes, "task.status").expect("should have task.status change");
+        assert_eq!(status.old_value, Some(json!("todo")));
+        assert_eq!(status.new_value, Some(json!("done")));
+
+        let priority =
+            find_change(&changes, "task.priority").expect("should have task.priority change");
+        assert_eq!(priority.old_value, Some(json!("low")));
+        assert_eq!(priority.new_value, Some(json!("high")));
+    }
+
+    #[test]
+    fn test_namespace_inner_property_added() {
+        let old = json!({"task": {"status": "todo"}});
+        let new = json!({"task": {"status": "todo", "due": "2026-04-01"}});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "task.due");
+        assert_eq!(c.old_value, None);
+        assert_eq!(c.new_value, Some(json!("2026-04-01")));
+    }
+
+    #[test]
+    fn test_namespace_inner_property_removed() {
+        let old = json!({"task": {"status": "todo", "due": "2026-04-01"}});
+        let new = json!({"task": {"status": "todo"}});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "task.due");
+        assert_eq!(c.old_value, Some(json!("2026-04-01")));
+        assert_eq!(c.new_value, None);
+    }
+
+    #[test]
+    fn test_property_added() {
+        let old = json!({"title": "hello"});
+        let new = json!({"title": "hello", "color": "blue"});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "color");
+        assert_eq!(c.old_value, None);
+        assert_eq!(c.new_value, Some(json!("blue")));
+    }
+
+    #[test]
+    fn test_property_removed() {
+        let old = json!({"title": "hello", "color": "blue"});
+        let new = json!({"title": "hello"});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "color");
+        assert_eq!(c.old_value, Some(json!("blue")));
+        assert_eq!(c.new_value, None);
+    }
+
+    #[test]
+    fn test_non_object_inputs_return_empty() {
+        // old is not an object
+        let changes = compute_property_changes(&json!("string"), &json!({"a": 1}));
+        assert!(changes.is_empty(), "non-object old should return empty");
+
+        // new is not an object
+        let changes = compute_property_changes(&json!({"a": 1}), &json!(42));
+        assert!(changes.is_empty(), "non-object new should return empty");
+
+        // both non-objects
+        let changes = compute_property_changes(&json!(null), &json!(true));
+        assert!(changes.is_empty(), "both non-object should return empty");
+
+        // null values
+        let changes = compute_property_changes(&json!(null), &json!(null));
+        assert!(changes.is_empty(), "null inputs should return empty");
+    }
+
+    #[test]
+    fn test_both_empty_objects() {
+        let changes = compute_property_changes(&json!({}), &json!({}));
+        assert!(
+            changes.is_empty(),
+            "two empty objects should produce no changes"
+        );
+    }
+
+    #[test]
+    fn test_mixed_scalar_and_namespace_changes() {
+        let old = json!({
+            "title": "old",
+            "task": {"status": "todo"}
+        });
+        let new = json!({
+            "title": "new",
+            "task": {"status": "done"}
+        });
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 2);
+        let title = find_change(&changes, "title").expect("should have title change");
+        assert_eq!(title.old_value, Some(json!("old")));
+        assert_eq!(title.new_value, Some(json!("new")));
+
+        let status = find_change(&changes, "task.status").expect("should have task.status change");
+        assert_eq!(status.old_value, Some(json!("todo")));
+        assert_eq!(status.new_value, Some(json!("done")));
+    }
+
+    #[test]
+    fn test_type_change_scalar_to_object() {
+        // old has a scalar, new has an object for the same key — treated as scalar change
+        // because old value is not an object for that key
+        let old = json!({"task": "simple string"});
+        let new = json!({"task": {"status": "todo"}});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "task");
+        assert_eq!(c.old_value, Some(json!("simple string")));
+        assert_eq!(c.new_value, Some(json!({"status": "todo"})));
+    }
+
+    #[test]
+    fn test_type_change_object_to_scalar() {
+        let old = json!({"task": {"status": "todo"}});
+        let new = json!({"task": "collapsed"});
+        let changes = compute_property_changes(&old, &new);
+
+        assert_eq!(changes.len(), 1);
+        let c = &changes[0];
+        assert_eq!(c.key, "task");
+        assert_eq!(c.old_value, Some(json!({"status": "todo"})));
+        assert_eq!(c.new_value, Some(json!("collapsed")));
+    }
+}
+
 /// Default limit for query_nodes_simple when no limit is specified.
 /// Prevents accidental full table scans and improves performance.
 pub const DEFAULT_QUERY_LIMIT: usize = 100;
@@ -367,15 +661,22 @@ pub struct NodeService {
     migration_registry: Arc<MigrationRegistry>,
 
     /// Broadcast channel for domain events (128 subscriber capacity)
-    event_tx: broadcast::Sender<DomainEvent>,
+    /// Issue #995: Changed from DomainEvent to EventEnvelope
+    event_tx: broadcast::Sender<crate::db::events::EventEnvelope>,
 
     /// Optional client identifier for event source tracking (Issue #665)
     ///
-    /// When set, all emitted events will include this client_id as source_client_id.
-    /// This enables clients to filter out their own events (prevent feedback loops).
+    /// When set, all emitted events will include this client_id as source_client_id
+    /// in the EventEnvelope metadata.
     ///
     /// Use `with_client()` to create a new NodeService instance with client_id set.
     client_id: Option<String>,
+
+    /// Optional playbook execution context for cycle detection (Issue #995)
+    ///
+    /// When set, emitted events carry this context in EventEnvelope metadata.
+    /// Use `with_execution_context()` to create a scoped instance.
+    execution_context: Option<crate::db::events::PlaybookExecutionContext>,
 
     /// Optional waker to trigger embedding processor (Issue #729)
     ///
@@ -395,6 +696,7 @@ impl Clone for NodeService {
             migration_registry: self.migration_registry.clone(),
             event_tx: self.event_tx.clone(),
             client_id: self.client_id.clone(),
+            execution_context: self.execution_context.clone(),
             embedding_waker: self.embedding_waker.clone(),
         }
     }
@@ -434,38 +736,59 @@ impl NodeService {
         // Infrastructure exists for future schema evolution post-deployment
         let migration_registry = MigrationRegistry::new();
 
-        // Initialize broadcast channel for domain events
+        // Initialize broadcast channel for domain events (Issue #995: EventEnvelope)
         let (event_tx, _) = broadcast::channel(DOMAIN_EVENT_CHANNEL_CAPACITY);
 
         // Register store-level notifier for automatic domain event emission (Issue #718)
-        // This callback converts StoreChange notifications to DomainEvents.
+        // This callback converts StoreChange notifications to EventEnvelopes.
         // Must be set BEFORE seed_core_schemas so schema seeding also emits events.
         //
         // Issue #724: Events now send only node_id (not full payload) for efficiency.
-        // Subscribers fetch full node data via get_node() if needed.
+        // Issue #995: Events wrapped in EventEnvelope with metadata.
         {
             let tx = event_tx.clone();
             let notifier = Arc::new(move |change: StoreChange| {
+                use crate::db::events::{EventEnvelope, EventMetadata};
+
+                // Compute changed properties for updates (Issue #995)
+                let changed_properties = if change.operation == StoreOperation::Updated {
+                    if let Some(ref prev) = change.previous_node {
+                        compute_property_changes(&prev.properties, &change.node.properties)
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                };
+
                 // Map store operation to domain event (ID-only, no payload conversion)
                 let event = match change.operation {
                     StoreOperation::Created => DomainEvent::NodeCreated {
                         node_id: change.node.id.clone(),
                         node_type: change.node.node_type.clone(),
-                        source_client_id: change.source,
                     },
                     StoreOperation::Updated => DomainEvent::NodeUpdated {
                         node_id: change.node.id.clone(),
-                        source_client_id: change.source,
+                        node_type: change.node.node_type.clone(),
+                        changed_properties,
                     },
                     StoreOperation::Deleted => DomainEvent::NodeDeleted {
                         id: change.node.id.clone(),
                         node_type: change.node.node_type.clone(),
+                    },
+                };
+
+                // Wrap in EventEnvelope with metadata (Issue #995)
+                let envelope = EventEnvelope {
+                    event,
+                    metadata: EventMetadata {
                         source_client_id: change.source,
+                        playbook_context: change.playbook_context,
                     },
                 };
 
                 // Send to broadcast channel (ignore if no subscribers)
-                let _ = tx.send(event);
+                let _ = tx.send(envelope);
             });
 
             // Get mutable reference to store to set notifier
@@ -488,6 +811,7 @@ impl NodeService {
             migration_registry: Arc::new(migration_registry),
             event_tx,
             client_id: None,
+            execution_context: None,
             embedding_waker: None,
         };
 
@@ -654,40 +978,74 @@ impl NodeService {
         cloned
     }
 
-    /// Subscribe to domain events
+    /// Create a scoped NodeService with playbook execution context (Issue #995)
     ///
-    /// Returns a broadcast receiver that receives all domain events (node created,
-    /// updated, deleted, hierarchy changed, mentions added/removed).
+    /// Events emitted through this instance carry the execution context in
+    /// `EventEnvelope.metadata.playbook_context` for cycle detection.
+    pub fn with_execution_context(&self, ctx: crate::db::events::PlaybookExecutionContext) -> Self {
+        let mut cloned = self.clone();
+        cloned.execution_context = Some(ctx);
+        cloned
+    }
+
+    /// Subscribe to domain events (Issue #995: returns EventEnvelope)
     ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use nodespace_core::services::NodeService;
-    /// # use nodespace_core::db::SurrealStore;
-    /// # use std::sync::Arc;
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    /// # let mut store = Arc::new(SurrealStore::new("./data/nodespace.db".into()).await?);
-    /// # let service = NodeService::new(&mut store).await?;
-    /// let mut rx = service.subscribe_to_events();
-    /// tokio::spawn(async move {
-    ///     while let Ok(event) = rx.recv().await {
-    ///         println!("Event: {:?}", event);
-    ///     }
-    /// });
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn subscribe_to_events(&self) -> broadcast::Receiver<DomainEvent> {
+    /// Returns a broadcast receiver that receives all domain events wrapped
+    /// in `EventEnvelope` with metadata (source_client_id, playbook_context).
+    pub fn subscribe_to_events(&self) -> broadcast::Receiver<crate::db::events::EventEnvelope> {
         self.event_tx.subscribe()
     }
 
-    /// Emit a domain event to all subscribers
+    /// Emit a domain event to all subscribers (Issue #995: wraps in EventEnvelope)
     ///
     /// Internal helper for emitting events after successful operations.
-    /// Ignores errors if no subscribers (expected in some tests).
+    /// Wraps the event in an EventEnvelope with this instance's client_id
+    /// and execution_context as metadata.
     fn emit_event(&self, event: DomainEvent) {
-        let _ = self.event_tx.send(event);
+        use crate::db::events::{EventEnvelope, EventMetadata};
+        let envelope = EventEnvelope {
+            event,
+            metadata: EventMetadata {
+                source_client_id: self.client_id.clone(),
+                playbook_context: self.execution_context.clone(),
+            },
+        };
+        let _ = self.event_tx.send(envelope);
+    }
+
+    /// Query nodes by type with optional lifecycle_status filter.
+    ///
+    /// Used by the playbook engine to load all active playbooks at startup.
+    /// If `lifecycle_status` is `None`, returns all lifecycle statuses.
+    pub async fn query_nodes_by_type(
+        &self,
+        node_type: &str,
+        lifecycle_status: Option<&str>,
+    ) -> Result<Vec<Node>, NodeServiceError> {
+        let query = crate::models::NodeQuery {
+            node_type: Some(node_type.to_string()),
+            ..Default::default()
+        };
+
+        let nodes = self
+            .store
+            .query_nodes(query)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        // In-memory filter: NodeQuery doesn't support lifecycle_status yet.
+        // Acceptable for desktop (low playbook counts). If scaling becomes
+        // a concern, add lifecycle_status to NodeQuery/SurrealStore query.
+        let filtered: Vec<Node> = if let Some(status) = lifecycle_status {
+            nodes
+                .into_iter()
+                .filter(|n| n.lifecycle_status == status)
+                .collect()
+        } else {
+            nodes
+        };
+
+        Ok(filtered)
     }
 
     // NOTE: emit_node_created and emit_node_updated helpers removed (Issue #718)
@@ -1408,7 +1766,7 @@ impl NodeService {
             // Regular node creation
             let db_start = std::time::Instant::now();
             self.store
-                .create_node(node.clone(), self.client_id.clone())
+                .create_node(node.clone(), self.client_id.clone(), self.execution_context.clone())
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to insert node: {}", e))
@@ -1801,7 +2159,7 @@ impl NodeService {
 
         // Emit event if relationship was created (not already existing)
         if let Some(rel_id) = relationship_id {
-            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+            self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent {
                     id: rel_id,
                     from_id: mentioning_node_id.to_string(),
@@ -1809,7 +2167,6 @@ impl NodeService {
                     relationship_type: "mentions".to_string(),
                     properties: serde_json::json!({}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -1858,12 +2215,11 @@ impl NodeService {
 
         // Emit event if relationship was deleted (existed)
         if let Some(rel_id) = relationship_id {
-            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
+            self.emit_event(DomainEvent::RelationshipDeleted {
                 id: rel_id,
                 from_id: mentioning_node_id.to_string(),
                 to_id: mentioned_node_id.to_string(),
                 relationship_type: "mentions".to_string(),
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -2510,6 +2866,7 @@ impl NodeService {
                 expected_version,
                 node_update,
                 self.client_id.clone(),
+                self.execution_context.clone(),
             )
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
@@ -3593,7 +3950,6 @@ impl NodeService {
                     relationship_type: "has_child".to_string(),
                     properties: serde_json::json!({"order": actual_order}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -3701,7 +4057,6 @@ impl NodeService {
                     relationship_type: "has_child".to_string(),
                     properties: serde_json::json!({"order": actual_order}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -3972,7 +4327,6 @@ impl NodeService {
                 relationship_type: "has_child".to_string(),
                 properties: serde_json::json!({"order": actual_order}),
             },
-            source_client_id: self.client_id.clone(),
         });
 
         tracing::debug!(
@@ -4055,7 +4409,6 @@ impl NodeService {
                     relationship_type: "has_child".to_string(),
                     properties: serde_json::json!({"order": actual_order}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -4103,6 +4456,7 @@ impl NodeService {
                 expected_version,
                 node_update,
                 self.client_id.clone(),
+                self.execution_context.clone(),
             )
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
@@ -4970,7 +5324,7 @@ impl NodeService {
                 serde_json::json!({}),
             );
             self.store
-                .create_node(parent_node, self.client_id.clone())
+                .create_node(parent_node, self.client_id.clone(), self.execution_context.clone())
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to create parent node: {}", e))
@@ -5016,7 +5370,6 @@ impl NodeService {
                     relationship_type: "has_child".to_string(),
                     properties: serde_json::json!({"order": actual_order}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         } else {
             // Create new node
@@ -5034,7 +5387,7 @@ impl NodeService {
                 lifecycle_status: "active".to_string(),
             };
             self.store
-                .create_node(node, self.client_id.clone())
+                .create_node(node, self.client_id.clone(), self.execution_context.clone())
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to create node: {}", e))
@@ -5060,7 +5413,6 @@ impl NodeService {
                     relationship_type: "has_child".to_string(),
                     properties: serde_json::json!({"order": actual_order}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -5164,7 +5516,7 @@ impl NodeService {
 
         // Emit event if relationship was created (not already existing)
         if let Some(rel_id) = relationship_id {
-            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+            self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent {
                     id: rel_id,
                     from_id: source_id.to_string(),
@@ -5172,7 +5524,6 @@ impl NodeService {
                     relationship_type: "mentions".to_string(),
                     properties: serde_json::json!({}),
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -5219,12 +5570,11 @@ impl NodeService {
 
         // Emit event if relationship was deleted (existed)
         if let Some(rel_id) = relationship_id {
-            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
+            self.emit_event(DomainEvent::RelationshipDeleted {
                 id: rel_id,
                 from_id: source_id.to_string(),
                 to_id: target_id.to_string(),
                 relationship_type: "mentions".to_string(),
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -5546,7 +5896,7 @@ impl NodeService {
                     let order_result: Vec<OrderResult> = resp.take(0).unwrap_or_default();
                     let order = order_result.first().and_then(|r| r.order).unwrap_or(1.0);
 
-                    let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+                    self.emit_event(DomainEvent::RelationshipCreated {
                         relationship: crate::db::events::RelationshipEvent {
                             id,
                             from_id: source_id.to_string(),
@@ -5554,7 +5904,6 @@ impl NodeService {
                             relationship_type: "member_of".to_string(),
                             properties: json!({"order": order}),
                         },
-                        source_client_id: self.client_id.clone(),
                     });
                 }
                 return Ok(());
@@ -5652,7 +6001,7 @@ impl NodeService {
         let results: Vec<RelateResult> = result.take(0).unwrap_or_default();
 
         if let Some(rel_result) = results.first() {
-            let _ = self.event_tx.send(DomainEvent::RelationshipCreated {
+            self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent {
                     id: extract_record_id_string(&rel_result.id),
                     from_id: source_id.to_string(),
@@ -5660,7 +6009,6 @@ impl NodeService {
                     relationship_type: relationship_name.to_string(),
                     properties: final_edge_data,
                 },
-                source_client_id: self.client_id.clone(),
             });
         }
 
@@ -5753,12 +6101,11 @@ impl NodeService {
 
         // Emit RelationshipDeleted event
         if let Some(rel_id) = existing_ids.first() {
-            let _ = self.event_tx.send(DomainEvent::RelationshipDeleted {
+            self.emit_event(DomainEvent::RelationshipDeleted {
                 id: extract_record_id_string(rel_id),
                 from_id: source_id.to_string(),
                 to_id: target_id.to_string(),
                 relationship_type: relationship_name.to_string(),
-                source_client_id: self.client_id.clone(),
             });
         }
 

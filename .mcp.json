@@ -1,25 +1,5 @@
 {
   "mcpServers": {
-    "chrome-devtools": {
-      "type": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "chrome-devtools-mcp@latest"
-      ],
-      "env": {}
-    },
-    "playwright": {
-      "type": "stdio",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@playwright/mcp@latest",
-        "--browser",
-        "webkit"
-      ],
-      "env": {}
-    },
     "nodespace": {
       "type": "http",
       "url": "http://localhost:3100/mcp"

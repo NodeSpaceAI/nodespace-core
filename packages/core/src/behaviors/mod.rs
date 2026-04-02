@@ -3117,7 +3117,7 @@ mod tests {
                 "schemaVersion": 1,
                 "description": "Customer schema",
                 "fields": [
-                    {"name": "status", "type": "enum", "protection": "user", "indexed": false},
+                    {"name": "status", "type": "enum", "protection": "user", "indexed": false, "coreValues": [{"value": "active", "label": "Active"}, {"value": "inactive", "label": "Inactive"}]},
                     {"name": "company", "type": "string", "protection": "user", "indexed": false}
                 ],
                 "relationships": [],
@@ -3145,7 +3145,7 @@ mod tests {
                 "schemaVersion": 1,
                 "description": "Customer schema",
                 "fields": [
-                    {"name": "status", "type": "enum", "protection": "user", "indexed": false}
+                    {"name": "status", "type": "enum", "protection": "user", "indexed": false, "coreValues": [{"value": "active", "label": "Active"}, {"value": "inactive", "label": "Inactive"}]}
                 ],
                 "relationships": [],
                 "propertiesHeaderSummaryTemplate": "{status} · {nonexistent}"
