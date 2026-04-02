@@ -15,6 +15,7 @@
 
 use crate::models::SchemaNode;
 use crate::playbook::cel::compile_condition;
+use crate::playbook::path_extractor;
 use crate::playbook::types::{ActionType, ParsedAction, ParsedRule, ParsedTrigger};
 use crate::services::NodeService;
 use std::collections::HashMap;
@@ -54,8 +55,13 @@ pub enum PlaybookValidationError {
         location: String,
     },
     /// A required param is missing from an action definition.
-    MissingActionParam {
-        param: String,
+    MissingActionParam { param: String, location: String },
+    /// A dot-path in a condition references a field or relationship that doesn't
+    /// exist on the schema graph.
+    BrokenPath {
+        path: String,
+        segment: String,
+        message: String,
         location: String,
     },
 }
@@ -98,6 +104,18 @@ impl std::fmt::Display for PlaybookValidationError {
             Self::MissingActionParam { param, location } => {
                 write!(f, "missing required param '{}' at {}", param, location)
             }
+            Self::BrokenPath {
+                path,
+                segment,
+                message,
+                location,
+            } => {
+                write!(
+                    f,
+                    "broken path '{}' at {}: segment '{}' — {}",
+                    path, location, segment, message
+                )
+            }
         }
     }
 }
@@ -130,7 +148,11 @@ pub async fn validate_playbook(
         let trigger_node_type = trigger_node_type(rule);
         if let Some(nt) = &trigger_node_type {
             ensure_schema_cached(nt, node_service, &mut schema_cache).await;
-            if schema_cache.get(nt.as_str()).and_then(|s| s.as_ref()).is_none() {
+            if schema_cache
+                .get(nt.as_str())
+                .and_then(|s| s.as_ref())
+                .is_none()
+            {
                 errors.push(PlaybookValidationError::UnknownNodeType {
                     node_type: nt.clone(),
                     location: format!("rule[{}].trigger", rule_idx),
@@ -140,12 +162,47 @@ pub async fn validate_playbook(
 
         // -- Validate CEL conditions --
         for (cond_idx, condition) in rule.conditions.iter().enumerate() {
+            let location = format!("rule[{}].condition[{}]", rule_idx, cond_idx);
             if let Err(e) = compile_condition(condition) {
                 errors.push(PlaybookValidationError::InvalidCondition {
                     expression: e.expression,
                     message: e.message,
-                    location: format!("rule[{}].condition[{}]", rule_idx, cond_idx),
+                    location,
                 });
+                continue; // Can't extract paths from unparseable conditions
+            }
+
+            // Schema-aware path validation (#1010): extract dot-paths and
+            // verify each segment resolves to a field or relationship on the schema graph
+            if let Some(nt) = &trigger_node_type {
+                if let Ok(extraction) = path_extractor::extract_paths(condition) {
+                    for path in &extraction.paths {
+                        if path.root == "node" && path.segments.len() > 2 {
+                            validate_schema_path(
+                                &path.segments,
+                                nt,
+                                &location,
+                                node_service,
+                                &mut schema_cache,
+                                &mut errors,
+                            )
+                            .await;
+                        }
+                    }
+                    for coll in &extraction.collections {
+                        if coll.collection.root == "node" && coll.collection.segments.len() > 1 {
+                            validate_schema_path(
+                                &coll.collection.segments,
+                                nt,
+                                &location,
+                                node_service,
+                                &mut schema_cache,
+                                &mut errors,
+                            )
+                            .await;
+                        }
+                    }
+                }
             }
         }
 
@@ -205,6 +262,101 @@ async fn ensure_schema_cached(
     cache.insert(node_type.to_string(), schema);
 }
 
+/// Validate a dot-path against the schema graph.
+///
+/// Walks the path segments starting from the trigger schema, checking each segment:
+/// 1. Is it a field on the current schema? → terminal (scalar property)
+/// 2. Is it a relationship on the current schema? → follow to target schema
+/// 3. Neither → broken path error
+///
+/// Path format: `["node", "story", "epic", "status"]`
+/// - First segment ("node") is skipped (it's the root variable)
+/// - Second segment ("story") checked against the trigger schema
+/// - Remaining segments checked against subsequent schemas
+async fn validate_schema_path(
+    segments: &[String],
+    trigger_node_type: &str,
+    location: &str,
+    node_service: &Arc<NodeService>,
+    schema_cache: &mut HashMap<String, Option<SchemaNode>>,
+    errors: &mut Vec<PlaybookValidationError>,
+) {
+    if segments.len() < 2 {
+        return; // Single-segment paths (just "node") don't need validation
+    }
+
+    let full_path = segments.join(".");
+    let mut current_type = trigger_node_type.to_string();
+
+    // Walk from segments[1] onward (skipping "node")
+    for (i, segment) in segments[1..].iter().enumerate() {
+        ensure_schema_cached(&current_type, node_service, schema_cache).await;
+
+        let schema = match schema_cache.get(&current_type).and_then(|s| s.as_ref()) {
+            Some(s) => s,
+            None => {
+                // Schema not found — can't validate further
+                // (UnknownNodeType error is already reported by trigger validation)
+                return;
+            }
+        };
+
+        // Check if the segment is a field on this schema
+        let is_field = schema.fields.iter().any(|f| f.name == *segment);
+        if is_field {
+            // Fields are terminal — if there are more segments after this, it's broken
+            if i + 1 < segments.len() - 1 {
+                errors.push(PlaybookValidationError::BrokenPath {
+                    path: full_path.clone(),
+                    segment: segment.clone(),
+                    message: format!(
+                        "'{}' is a field on '{}', not a relationship (cannot traverse further)",
+                        segment, current_type
+                    ),
+                    location: location.to_string(),
+                });
+            }
+            return;
+        }
+
+        // Check if the segment is a relationship on this schema
+        let relationship = schema.relationships.iter().find(|r| r.name == *segment);
+        if let Some(rel) = relationship {
+            if let Some(ref target_type) = rel.target_type {
+                // Follow the relationship to the target schema
+                current_type = target_type.clone();
+            } else {
+                // Relationship has no target_type — can't traverse further
+                if i + 1 < segments.len() - 1 {
+                    errors.push(PlaybookValidationError::BrokenPath {
+                        path: full_path.clone(),
+                        segment: segment.clone(),
+                        message: format!(
+                            "relationship '{}' on '{}' has no target_type (cannot traverse further)",
+                            segment, current_type
+                        ),
+                        location: location.to_string(),
+                    });
+                }
+                return;
+            }
+        } else {
+            // Neither a field nor a relationship — broken path
+            // But only report if the schema actually exists (to avoid duplicate errors)
+            errors.push(PlaybookValidationError::BrokenPath {
+                path: full_path.clone(),
+                segment: segment.clone(),
+                message: format!(
+                    "'{}' is not a field or relationship on schema '{}'",
+                    segment, current_type
+                ),
+                location: location.to_string(),
+            });
+            return;
+        }
+    }
+}
+
 /// Validate a single action's params.
 async fn validate_action(
     action: &ParsedAction,
@@ -216,8 +368,14 @@ async fn validate_action(
 ) {
     match action.action_type {
         ActionType::CreateNode => {
-            validate_create_node_action(&action.params, location, node_service, schema_cache, errors)
-                .await;
+            validate_create_node_action(
+                &action.params,
+                location,
+                node_service,
+                schema_cache,
+                errors,
+            )
+            .await;
         }
         ActionType::UpdateNode => {
             // update_node may optionally reference a node_type for type conversion
@@ -344,10 +502,7 @@ async fn validate_relationship_action(
     ensure_schema_cached(nt, node_service, schema_cache).await;
 
     if let Some(Some(schema)) = schema_cache.get(nt) {
-        let rel_exists = schema
-            .relationships
-            .iter()
-            .any(|r| r.name == rel_type);
+        let rel_exists = schema.relationships.iter().any(|r| r.name == rel_type);
 
         if !rel_exists {
             errors.push(PlaybookValidationError::UnknownRelationshipType {
@@ -390,11 +545,7 @@ mod tests {
         })
     }
 
-    fn make_scheduled_rule(
-        cron: &str,
-        node_type: &str,
-        conditions: Vec<&str>,
-    ) -> Arc<ParsedRule> {
+    fn make_scheduled_rule(cron: &str, node_type: &str, conditions: Vec<&str>) -> Arc<ParsedRule> {
         Arc::new(ParsedRule {
             name: "test-scheduled-rule".to_string(),
             trigger: ParsedTrigger::Scheduled {
@@ -593,8 +744,7 @@ mod tests {
         async fn create_test_service() -> (Arc<NodeService>, TempDir) {
             let temp_dir = TempDir::new().unwrap();
             let db_path = temp_dir.path().join("test.db");
-            let mut store: Arc<SurrealStore> =
-                Arc::new(SurrealStore::new(db_path).await.unwrap());
+            let mut store: Arc<SurrealStore> = Arc::new(SurrealStore::new(db_path).await.unwrap());
             let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
             (node_service, temp_dir)
         }
@@ -740,9 +890,7 @@ mod tests {
             let errors = result.unwrap_err();
             assert_eq!(errors.len(), 1);
             match &errors[0] {
-                PlaybookValidationError::InvalidCondition {
-                    location, ..
-                } => {
+                PlaybookValidationError::InvalidCondition { location, .. } => {
                     assert_eq!(location, "rule[0].condition[0]");
                 }
                 other => panic!("expected InvalidCondition, got {:?}", other),
@@ -824,7 +972,11 @@ mod tests {
             assert!(result.is_err());
             let errors = result.unwrap_err();
             // Should have at least: unknown trigger node_type + bad CEL + unknown action node_type
-            assert!(errors.len() >= 3, "expected >= 3 errors, got {}", errors.len());
+            assert!(
+                errors.len() >= 3,
+                "expected >= 3 errors, got {}",
+                errors.len()
+            );
         }
 
         #[tokio::test]
@@ -832,7 +984,11 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             // "vt_cron_target" doesn't exist
 
-            let rules = vec![make_scheduled_rule("0 * * * * * *", "vt_cron_target", vec![])];
+            let rules = vec![make_scheduled_rule(
+                "0 * * * * * *",
+                "vt_cron_target",
+                vec![],
+            )];
             let result = validate_playbook(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
@@ -874,11 +1030,7 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             // "task" is a core schema seeded by NodeService::new — should pass
 
-            let rules = vec![make_rule(
-                "task",
-                vec!["node.status == 'open'"],
-                vec![],
-            )];
+            let rules = vec![make_rule("task", vec!["node.status == 'open'"], vec![])];
             let result = validate_playbook(&rules, &svc).await;
             assert!(result.is_ok());
         }

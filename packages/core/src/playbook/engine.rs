@@ -581,11 +581,14 @@ pub(crate) async fn rule_processor_loop(
                 rule_ref.rule.name, rule_ref.playbook_id, rule_ref.rule_index,
             );
 
-            // Phase 3: Evaluate CEL conditions
+            // Phase 3 + #1010: Evaluate CEL conditions with graph resolver
+            let mut resolver =
+                crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&node_service));
             let condition_result = crate::playbook::cel::evaluate_conditions(
                 &rule_ref.rule.conditions,
                 &work_item.trigger_node,
                 &work_item.trigger_event.event,
+                Some(&mut resolver),
             );
 
             match condition_result {
@@ -621,7 +624,10 @@ pub(crate) async fn rule_processor_loop(
                         &rule_ref.rule.name,
                         rule_ref.rule_index,
                         PlaybookErrorType::CompileError,
-                        &format!("CEL compile error in condition[{}]: {}", condition_index, message),
+                        &format!(
+                            "CEL compile error in condition[{}]: {}",
+                            condition_index, message
+                        ),
                         &work_item.trigger_node.id,
                     )
                     .await;

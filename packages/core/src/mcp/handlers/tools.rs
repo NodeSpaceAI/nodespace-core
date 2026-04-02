@@ -15,7 +15,7 @@
 //! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 //! As of Issue #690, SchemaService was removed - schema nodes use generic CRUD.
 
-use crate::mcp::handlers::{markdown, nodes, relationships, schema, search};
+use crate::mcp::handlers::{markdown, nodes, playbook, relationships, schema, search};
 use crate::mcp::types::MCPError;
 use crate::services::{NodeEmbeddingService, NodeService};
 use serde::{Deserialize, Serialize};
@@ -453,6 +453,11 @@ pub async fn handle_tools_call(
             schema::handle_remove_schema_relationship(node_service, arguments).await
         }
         "update_schema" => schema::handle_update_schema(node_service, arguments).await,
+
+        // Playbook / Workflow (#1010)
+        "get_workflow_state" => {
+            playbook::handle_get_workflow_state(node_service, arguments).await
+        }
 
         _ => {
             return Err(MCPError::invalid_params(format!(
@@ -1346,6 +1351,20 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                     }
                 },
                 "required": ["schema_id"]
+            }
+        },
+        {
+            "name": "get_workflow_state",
+            "description": "Evaluate a node against all active playbook rules and return which conditions pass or fail. Read-only inspection tool — does not execute actions. Uses the same CEL evaluation and graph traversal infrastructure as the playbook engine.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "node_id": {
+                        "type": "string",
+                        "description": "ID of the node to evaluate against active playbook rules"
+                    }
+                },
+                "required": ["node_id"]
             }
         }
     ])

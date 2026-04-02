@@ -150,8 +150,7 @@ pub async fn create_or_update_log_node(
         // Update the latest trigger_node_id for debugging context
         new_properties["trigger_node_id"] = json!(trigger_node_id);
 
-        let update =
-            crate::models::NodeUpdate::new().with_properties(new_properties);
+        let update = crate::models::NodeUpdate::new().with_properties(new_properties);
 
         if let Err(e) = node_service
             .update_node(&log_node.id, log_node.version, update)

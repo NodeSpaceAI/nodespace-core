@@ -17,6 +17,7 @@
 
 use crate::db::events::{DomainEvent, PlaybookExecutionContext};
 use crate::models::{Node, NodeUpdate};
+use crate::playbook::graph_resolver::GraphResolver;
 use crate::playbook::types::{ActionType, ParsedAction};
 use crate::services::{NodeService, NodeServiceError};
 use serde_json::{json, Value};
@@ -35,9 +36,15 @@ pub enum ActionError {
     /// Missing required parameter in action params.
     MissingParam { param: String, action_index: usize },
     /// NodeService error (create/update/relationship failed).
-    ServiceError { message: String, action_index: usize },
+    ServiceError {
+        message: String,
+        action_index: usize,
+    },
     /// Version conflict during `update_node` (optimistic concurrency).
-    VersionConflict { node_id: String, action_index: usize },
+    VersionConflict {
+        node_id: String,
+        action_index: usize,
+    },
     /// `for_each` collection could not be resolved or is not an array.
     ForEachResolutionFailed { path: String, message: String },
 }
@@ -75,11 +82,7 @@ impl std::fmt::Display for ActionError {
                 )
             }
             Self::ForEachResolutionFailed { path, message } => {
-                write!(
-                    f,
-                    "for_each resolution failed for '{}': {}",
-                    path, message
-                )
+                write!(f, "for_each resolution failed for '{}': {}", path, message)
             }
         }
     }
@@ -120,12 +123,16 @@ struct PropertyBindings {
 pub struct BindingContext {
     /// `trigger.node` -- the wire-format trigger node as JSON
     trigger_node: Value,
+    /// The trigger node as a `Node` struct (for graph traversal)
+    trigger_node_model: Node,
     /// `trigger.property.{key,old_value,new_value}` for PropertyChanged events
     trigger_property: Option<PropertyBindings>,
     /// `actions[N].result` -- results from completed actions
     action_results: Vec<Value>,
     /// `item` -- current `for_each` iteration element
     current_item: Option<Value>,
+    /// Optional graph resolver for multi-hop dot-path resolution
+    graph_resolver: Option<GraphResolver>,
 }
 
 impl BindingContext {
@@ -134,7 +141,11 @@ impl BindingContext {
     /// Populates `trigger.node` with the full JSON representation and, for
     /// `NodeUpdated` events, populates `trigger.property` from the first
     /// changed property.
-    pub fn new(trigger_node: &Node, event: &DomainEvent) -> Self {
+    pub fn new(
+        trigger_node: &Node,
+        event: &DomainEvent,
+        graph_resolver: Option<GraphResolver>,
+    ) -> Self {
         let trigger_node_value = serde_json::to_value(trigger_node).unwrap_or(json!({}));
 
         let trigger_property = if let DomainEvent::NodeUpdated {
@@ -152,9 +163,11 @@ impl BindingContext {
 
         Self {
             trigger_node: trigger_node_value,
+            trigger_node_model: trigger_node.clone(),
             trigger_property,
             action_results: Vec::new(),
             current_item: None,
+            graph_resolver,
         }
     }
 
@@ -163,7 +176,7 @@ impl BindingContext {
     /// Supported roots: `trigger`, `actions`, `item`.
     ///
     /// Handles both `actions[0].result.field` and `actions.0.result.field` formats.
-    pub fn resolve_binding(&self, path: &str) -> Result<Value, String> {
+    pub fn resolve_binding(&mut self, path: &str) -> Result<Value, String> {
         let segments: Vec<&str> = path.split('.').collect();
         let first = segments.first().copied().ok_or("empty binding path")?;
 
@@ -184,9 +197,43 @@ impl BindingContext {
         }
     }
 
-    fn resolve_trigger_path(&self, segments: &[&str]) -> Result<Value, String> {
+    fn resolve_trigger_path(&mut self, segments: &[&str]) -> Result<Value, String> {
         match segments.first().copied() {
-            Some("node") => navigate_json(&self.trigger_node, &segments[1..]),
+            Some("node") => {
+                // Try JSON navigation first (direct properties)
+                match navigate_json(&self.trigger_node, &segments[1..]) {
+                    Ok(val) => Ok(val),
+                    Err(_) if segments.len() > 2 => {
+                        // JSON navigation failed and we have a multi-hop path
+                        // Try graph traversal via GraphResolver
+                        if let Some(ref mut resolver) = self.graph_resolver {
+                            let path_segments: Vec<String> =
+                                segments[1..].iter().map(|s| s.to_string()).collect();
+                            match resolver.resolve_path(&self.trigger_node_model, &path_segments) {
+                                crate::playbook::graph_resolver::ResolvedValue::Node(n) => {
+                                    serde_json::to_value(&n).map_err(|e| e.to_string())
+                                }
+                                crate::playbook::graph_resolver::ResolvedValue::Collection(
+                                    nodes,
+                                ) => serde_json::to_value(&nodes).map_err(|e| e.to_string()),
+                                crate::playbook::graph_resolver::ResolvedValue::Scalar(v) => Ok(v),
+                                crate::playbook::graph_resolver::ResolvedValue::Missing => {
+                                    Err(format!(
+                                        "path segment '{}' not found (graph traversal)",
+                                        segments.last().unwrap_or(&"")
+                                    ))
+                                }
+                            }
+                        } else {
+                            Err(format!(
+                                "path segment '{}' not found",
+                                segments.last().unwrap_or(&"")
+                            ))
+                        }
+                    }
+                    Err(e) => Err(e),
+                }
+            }
             Some("property") => {
                 let prop = self
                     .trigger_property
@@ -224,9 +271,7 @@ impl BindingContext {
             .ok_or("actions path requires an index (e.g., actions[0].result)")?;
 
         // Parse the index -- accept "[N]" or just "N"
-        let index_str = index_segment
-            .trim_start_matches('[')
-            .trim_end_matches(']');
+        let index_str = index_segment.trim_start_matches('[').trim_end_matches(']');
         let index: usize = index_str
             .parse()
             .map_err(|_| format!("invalid action index: '{}'", index_segment))?;
@@ -279,7 +324,10 @@ fn navigate_json(value: &Value, segments: &[&str]) -> Result<Value, String> {
 // ---------------------------------------------------------------------------
 
 /// Resolve all `{binding}` templates in a JSON value recursively.
-fn resolve_bindings_in_value(value: &Value, ctx: &BindingContext) -> Result<Value, ActionError> {
+fn resolve_bindings_in_value(
+    value: &Value,
+    ctx: &mut BindingContext,
+) -> Result<Value, ActionError> {
     match value {
         Value::String(s) => resolve_bindings_in_string(s, ctx),
         Value::Object(obj) => {
@@ -290,8 +338,10 @@ fn resolve_bindings_in_value(value: &Value, ctx: &BindingContext) -> Result<Valu
             Ok(Value::Object(resolved))
         }
         Value::Array(arr) => {
-            let resolved: Result<Vec<_>, _> =
-                arr.iter().map(|v| resolve_bindings_in_value(v, ctx)).collect();
+            let resolved: Result<Vec<_>, _> = arr
+                .iter()
+                .map(|v| resolve_bindings_in_value(v, ctx))
+                .collect();
             Ok(Value::Array(resolved?))
         }
         other => Ok(other.clone()),
@@ -305,7 +355,7 @@ fn resolve_bindings_in_value(value: &Value, ctx: &BindingContext) -> Result<Valu
 ///
 /// If the string contains bindings mixed with literal text, each binding is
 /// stringified and interpolated into the result (always returns a string).
-fn resolve_bindings_in_string(s: &str, ctx: &BindingContext) -> Result<Value, ActionError> {
+fn resolve_bindings_in_string(s: &str, ctx: &mut BindingContext) -> Result<Value, ActionError> {
     // Fast path: entire string is a single binding like "{trigger.node.id}"
     if s.starts_with('{') && s.ends_with('}') && !s[1..s.len() - 1].contains('{') {
         let path = &s[1..s.len() - 1];
@@ -382,7 +432,8 @@ pub async fn execute_actions(
     // Create a scoped NodeService that tags all mutations with the execution context.
     // This ensures events emitted by actions carry playbook_context for cycle detection.
     let scoped_service = Arc::new(node_service.with_execution_context(execution_context));
-    let mut ctx = BindingContext::new(trigger_node, event);
+    let graph_resolver = GraphResolver::new(Arc::clone(node_service));
+    let mut ctx = BindingContext::new(trigger_node, event, Some(graph_resolver));
 
     for (i, action) in actions.iter().enumerate() {
         if let Some(for_each_path) = &action.for_each {
@@ -419,7 +470,7 @@ pub async fn execute_actions(
                 ctx.current_item = Some(item.clone());
 
                 // Re-resolve params with the item binding available
-                let item_params = match resolve_bindings_in_value(&action.params, &ctx) {
+                let item_params = match resolve_bindings_in_value(&action.params, &mut ctx) {
                     Ok(p) => p,
                     Err(e) => return ActionResult::Failed(e),
                 };
@@ -449,7 +500,7 @@ pub async fn execute_actions(
             // ---------------------------------------------------------------
 
             // Resolve bindings in params
-            let resolved_params = match resolve_bindings_in_value(&action.params, &ctx) {
+            let resolved_params = match resolve_bindings_in_value(&action.params, &mut ctx) {
                 Ok(p) => p,
                 Err(e) => return ActionResult::Failed(e),
             };
@@ -500,17 +551,15 @@ async fn execute_create_node(
     params: &Value,
     node_service: &Arc<NodeService>,
 ) -> Result<Value, ActionError> {
-    let node_type = params
-        .get("node_type")
-        .and_then(|v| v.as_str())
-        .ok_or(ActionError::MissingParam {
-            param: "node_type".to_string(),
-            action_index,
-        })?;
-    let content = params
-        .get("content")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let node_type =
+        params
+            .get("node_type")
+            .and_then(|v| v.as_str())
+            .ok_or(ActionError::MissingParam {
+                param: "node_type".to_string(),
+                action_index,
+            })?;
+    let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
     let properties = params.get("properties").cloned().unwrap_or(json!({}));
 
     let node = Node::new(node_type.to_string(), content.to_string(), properties);
@@ -548,13 +597,14 @@ async fn execute_update_node(
     params: &Value,
     node_service: &Arc<NodeService>,
 ) -> Result<Value, ActionError> {
-    let node_id = params
-        .get("node_id")
-        .and_then(|v| v.as_str())
-        .ok_or(ActionError::MissingParam {
-            param: "node_id".to_string(),
-            action_index,
-        })?;
+    let node_id =
+        params
+            .get("node_id")
+            .and_then(|v| v.as_str())
+            .ok_or(ActionError::MissingParam {
+                param: "node_id".to_string(),
+                action_index,
+            })?;
 
     // Fetch current node for optimistic concurrency
     let current = node_service
@@ -616,12 +666,13 @@ async fn execute_add_relationship(
                 param: "source_id".to_string(),
                 action_index,
             })?;
-    let relationship_type = params.get("relationship_type").and_then(|v| v.as_str()).ok_or(
-        ActionError::MissingParam {
+    let relationship_type = params
+        .get("relationship_type")
+        .and_then(|v| v.as_str())
+        .ok_or(ActionError::MissingParam {
             param: "relationship_type".to_string(),
             action_index,
-        },
-    )?;
+        })?;
     let target_id =
         params
             .get("target_id")
@@ -660,12 +711,13 @@ async fn execute_remove_relationship(
                 param: "source_id".to_string(),
                 action_index,
             })?;
-    let relationship_type = params.get("relationship_type").and_then(|v| v.as_str()).ok_or(
-        ActionError::MissingParam {
+    let relationship_type = params
+        .get("relationship_type")
+        .and_then(|v| v.as_str())
+        .ok_or(ActionError::MissingParam {
             param: "relationship_type".to_string(),
             action_index,
-        },
-    )?;
+        })?;
     let target_id =
         params
             .get("target_id")
@@ -789,7 +841,7 @@ mod tests {
     fn test_resolve_trigger_node_id() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let result = ctx.resolve_binding("trigger.node.id").unwrap();
         assert_eq!(result, json!("node-123"));
@@ -799,7 +851,7 @@ mod tests {
     fn test_resolve_trigger_node_type() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let result = ctx.resolve_binding("trigger.node.nodeType").unwrap();
         assert_eq!(result, json!("task"));
@@ -809,7 +861,7 @@ mod tests {
     fn test_resolve_trigger_node_content() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let result = ctx.resolve_binding("trigger.node.content").unwrap();
         assert_eq!(result, json!("Test content"));
@@ -819,7 +871,7 @@ mod tests {
     fn test_resolve_trigger_node_nested_properties() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let result = ctx
             .resolve_binding("trigger.node.properties.task.status")
@@ -831,7 +883,7 @@ mod tests {
     fn test_resolve_trigger_node_title() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let result = ctx.resolve_binding("trigger.node.title").unwrap();
         assert_eq!(result, json!("Test Node"));
@@ -853,7 +905,7 @@ mod tests {
                 new_value: Some(json!("done")),
             }],
         );
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         assert_eq!(
             ctx.resolve_binding("trigger.property.key").unwrap(),
@@ -873,7 +925,7 @@ mod tests {
                 new_value: Some(json!("done")),
             }],
         );
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         assert_eq!(
             ctx.resolve_binding("trigger.property.old_value").unwrap(),
@@ -893,7 +945,7 @@ mod tests {
                 new_value: Some(json!("done")),
             }],
         );
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         assert_eq!(
             ctx.resolve_binding("trigger.property.new_value").unwrap(),
@@ -913,7 +965,7 @@ mod tests {
                 new_value: Some(json!("high")),
             }],
         );
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         assert_eq!(
             ctx.resolve_binding("trigger.property.old_value").unwrap(),
@@ -925,7 +977,7 @@ mod tests {
     fn test_resolve_trigger_property_not_available_on_created() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let err = ctx.resolve_binding("trigger.property.key").unwrap_err();
         assert!(err.contains("not a PropertyChanged event"));
@@ -939,7 +991,7 @@ mod tests {
     fn test_resolve_action_result() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let mut ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         ctx.action_results
             .push(json!({"id": "new-node-456", "nodeType": "text"}));
@@ -952,7 +1004,7 @@ mod tests {
     fn test_resolve_action_result_no_bracket_syntax() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let mut ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         ctx.action_results.push(json!({"id": "abc"}));
 
@@ -965,7 +1017,7 @@ mod tests {
     fn test_resolve_action_result_not_yet_available() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let err = ctx.resolve_binding("actions[0].result.id").unwrap_err();
         assert!(err.contains("has no result yet"));
@@ -979,7 +1031,7 @@ mod tests {
     fn test_resolve_item_path() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let mut ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         ctx.current_item = Some(json!({"id": "item-1", "name": "First"}));
 
@@ -991,7 +1043,7 @@ mod tests {
     fn test_resolve_item_not_in_loop() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let err = ctx.resolve_binding("item.id").unwrap_err();
         assert!(err.contains("not in a for_each loop"));
@@ -1005,7 +1057,7 @@ mod tests {
     fn test_resolve_unknown_root() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let err = ctx.resolve_binding("unknown.field").unwrap_err();
         assert!(err.contains("unknown binding root"));
@@ -1019,10 +1071,10 @@ mod tests {
     fn test_single_binding_preserves_type_number() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         // version is a number, should be preserved as json number
-        let result = resolve_bindings_in_string("{trigger.node.version}", &ctx).unwrap();
+        let result = resolve_bindings_in_string("{trigger.node.version}", &mut ctx).unwrap();
         assert_eq!(result, json!(1));
     }
 
@@ -1030,9 +1082,9 @@ mod tests {
     fn test_single_binding_preserves_type_string() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
-        let result = resolve_bindings_in_string("{trigger.node.id}", &ctx).unwrap();
+        let result = resolve_bindings_in_string("{trigger.node.id}", &mut ctx).unwrap();
         assert_eq!(result, json!("node-123"));
     }
 
@@ -1040,10 +1092,10 @@ mod tests {
     fn test_single_binding_preserves_type_object() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let result =
-            resolve_bindings_in_string("{trigger.node.properties.task}", &ctx).unwrap();
+            resolve_bindings_in_string("{trigger.node.properties.task}", &mut ctx).unwrap();
         assert_eq!(result, json!({"status": "open", "priority": "high"}));
     }
 
@@ -1051,11 +1103,13 @@ mod tests {
     fn test_mixed_text_and_bindings() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
-        let result =
-            resolve_bindings_in_string("Node {trigger.node.id} is type {trigger.node.nodeType}", &ctx)
-                .unwrap();
+        let result = resolve_bindings_in_string(
+            "Node {trigger.node.id} is type {trigger.node.nodeType}",
+            &mut ctx,
+        )
+        .unwrap();
         assert_eq!(result, json!("Node node-123 is type task"));
     }
 
@@ -1063,9 +1117,9 @@ mod tests {
     fn test_no_bindings_returns_literal() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
-        let result = resolve_bindings_in_string("just a plain string", &ctx).unwrap();
+        let result = resolve_bindings_in_string("just a plain string", &mut ctx).unwrap();
         assert_eq!(result, json!("just a plain string"));
     }
 
@@ -1073,9 +1127,9 @@ mod tests {
     fn test_binding_resolution_failed_error() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
-        let err = resolve_bindings_in_string("{nonexistent.path}", &ctx).unwrap_err();
+        let err = resolve_bindings_in_string("{nonexistent.path}", &mut ctx).unwrap_err();
         match err {
             ActionError::BindingResolutionFailed { path, .. } => {
                 assert_eq!(path, "nonexistent.path");
@@ -1092,7 +1146,7 @@ mod tests {
     fn test_resolve_bindings_in_value_object() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let params = json!({
             "node_type": "text",
@@ -1102,7 +1156,7 @@ mod tests {
             }
         });
 
-        let resolved = resolve_bindings_in_value(&params, &ctx).unwrap();
+        let resolved = resolve_bindings_in_value(&params, &mut ctx).unwrap();
         assert_eq!(resolved["content"], json!("Created from node-123"));
         assert_eq!(resolved["properties"]["source"], json!("node-123"));
         // node_type has no binding, preserved as-is
@@ -1113,11 +1167,11 @@ mod tests {
     fn test_resolve_bindings_in_value_array() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let params = json!(["{trigger.node.id}", "literal", "{trigger.node.nodeType}"]);
 
-        let resolved = resolve_bindings_in_value(&params, &ctx).unwrap();
+        let resolved = resolve_bindings_in_value(&params, &mut ctx).unwrap();
         assert_eq!(resolved[0], json!("node-123"));
         assert_eq!(resolved[1], json!("literal"));
         assert_eq!(resolved[2], json!("task"));
@@ -1127,18 +1181,18 @@ mod tests {
     fn test_resolve_bindings_in_value_non_string_passthrough() {
         let node = make_test_node("node-123", "task");
         let event = make_node_created_event("node-123", "task");
-        let ctx = BindingContext::new(&node, &event);
+        let mut ctx = BindingContext::new(&node, &event, None);
 
         let params = json!(42);
-        let resolved = resolve_bindings_in_value(&params, &ctx).unwrap();
+        let resolved = resolve_bindings_in_value(&params, &mut ctx).unwrap();
         assert_eq!(resolved, json!(42));
 
         let params = json!(true);
-        let resolved = resolve_bindings_in_value(&params, &ctx).unwrap();
+        let resolved = resolve_bindings_in_value(&params, &mut ctx).unwrap();
         assert_eq!(resolved, json!(true));
 
         let params = json!(null);
-        let resolved = resolve_bindings_in_value(&params, &ctx).unwrap();
+        let resolved = resolve_bindings_in_value(&params, &mut ctx).unwrap();
         assert_eq!(resolved, Value::Null);
     }
 

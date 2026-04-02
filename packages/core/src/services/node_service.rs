@@ -1766,7 +1766,11 @@ impl NodeService {
             // Regular node creation
             let db_start = std::time::Instant::now();
             self.store
-                .create_node(node.clone(), self.client_id.clone(), self.execution_context.clone())
+                .create_node(
+                    node.clone(),
+                    self.client_id.clone(),
+                    self.execution_context.clone(),
+                )
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to insert node: {}", e))
@@ -5324,7 +5328,11 @@ impl NodeService {
                 serde_json::json!({}),
             );
             self.store
-                .create_node(parent_node, self.client_id.clone(), self.execution_context.clone())
+                .create_node(
+                    parent_node,
+                    self.client_id.clone(),
+                    self.execution_context.clone(),
+                )
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to create parent node: {}", e))

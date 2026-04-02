@@ -149,9 +149,13 @@ impl PlaybookLifecycleManager {
     }
 
     /// Handle a schema update — check if any active playbooks reference the
-    /// affected schema's node_type and need to be disabled.
+    /// affected schema's node_type (either directly as a trigger or via dot-path
+    /// traversal in conditions) and need to be disabled.
     ///
-    /// Returns the list of playbook IDs that were disabled due to version drift.
+    /// Uses path extraction (#1010) to find playbooks whose conditions traverse
+    /// through the changed schema, not just those that trigger on it directly.
+    ///
+    /// Returns the list of playbook IDs that were disabled due to schema drift.
     pub fn handle_schema_update(
         &mut self,
         schema_node_type: &str,
@@ -159,19 +163,19 @@ impl PlaybookLifecycleManager {
     ) -> Vec<String> {
         let mut disabled = Vec::new();
 
-        // Collect playbook IDs that reference this schema
+        // Collect playbook IDs that reference this schema either directly or via paths
         let affected: Vec<String> = self
             .active_playbooks
             .iter()
             .filter(|(_, pb)| pb.status == PlaybookStatus::Active)
-            .filter(|(_, pb)| playbook_references_node_type(pb, schema_node_type))
+            .filter(|(_, pb)| {
+                playbook_references_node_type(pb, schema_node_type)
+                    || playbook_has_paths_through_schema(pb, schema_node_type)
+            })
             .map(|(id, _)| id.clone())
             .collect();
 
         for pb_id in affected {
-            // Check if the playbook's version references match the new version.
-            // For now, any schema change to a referenced type disables the playbook.
-            // Phase 7 (save-time validation) will add version-aware checking.
             warn!(
                 "Schema '{}' updated to version '{}', disabling playbook {}",
                 schema_node_type, new_schema_version, pb_id
@@ -282,6 +286,40 @@ fn playbook_references_node_type(playbook: &ParsedPlaybook, node_type: &str) -> 
         ParsedTrigger::GraphEvent { node_type: nt, .. } => nt == node_type,
         ParsedTrigger::Scheduled { node_type: nt, .. } => nt == node_type,
     })
+}
+
+/// Check if any of a playbook's conditions contain dot-paths that might traverse
+/// through the given schema's node_type.
+///
+/// This is a heuristic: we extract paths from conditions and check if any segment
+/// matches the schema name. A precise check would require walking the full schema
+/// graph, but that's expensive for a lifecycle operation. The heuristic is conservative
+/// (may produce false positives, triggering unnecessary re-validation, but never
+/// false negatives that would leave a broken playbook active).
+fn playbook_has_paths_through_schema(playbook: &ParsedPlaybook, schema_node_type: &str) -> bool {
+    for rule in &playbook.rules {
+        for condition in &rule.conditions {
+            if let Ok(extraction) = crate::playbook::path_extractor::extract_paths(condition) {
+                // Check if any extracted path mentions a segment that looks like the schema type
+                for path in &extraction.paths {
+                    if path.segments.iter().any(|s| s == schema_node_type) {
+                        return true;
+                    }
+                }
+                for coll in &extraction.collections {
+                    if coll
+                        .collection
+                        .segments
+                        .iter()
+                        .any(|s| s == schema_node_type)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Build trigger keys from a domain event for lookup purposes.

@@ -6533,7 +6533,9 @@ mod tests {
         let mut task_node = Node::new("task".to_string(), "searchable task".to_string(), json!({}));
         task_node.title = Some("searchable task".to_string());
 
-        store.create_node(collection_node.clone(), None, None).await?;
+        store
+            .create_node(collection_node.clone(), None, None)
+            .await?;
         store.create_node(text_node.clone(), None, None).await?;
         store.create_node(task_node.clone(), None, None).await?;
 
@@ -6573,7 +6575,9 @@ mod tests {
         );
         collection_node.title = Some("Test Collection".to_string());
 
-        store.create_node(collection_node.clone(), None, None).await?;
+        store
+            .create_node(collection_node.clone(), None, None)
+            .await?;
 
         // Should find by name (case-insensitive via title)
         let result = store.get_collection_by_name("Test Collection").await?;

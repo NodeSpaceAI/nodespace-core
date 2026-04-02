@@ -9,6 +9,7 @@
 pub mod initialize;
 pub mod markdown;
 pub mod nodes;
+pub mod playbook;
 pub mod relationships;
 pub mod schema;
 pub mod search;

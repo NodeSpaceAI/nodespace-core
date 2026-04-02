@@ -1115,8 +1115,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_execution_queue_send_receive() {
-        let (tx, mut rx) =
-            tokio::sync::mpsc::channel::<ExecutionWorkItem>(super::super::engine::EXECUTION_QUEUE_CAPACITY);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ExecutionWorkItem>(
+            super::super::engine::EXECUTION_QUEUE_CAPACITY,
+        );
 
         let trigger_node = Node {
             id: "node:1".to_string(),
@@ -1202,8 +1203,9 @@ mod tests {
         use crate::playbook::lifecycle::PlaybookLifecycleManager;
         use std::sync::{Arc, RwLock};
 
-        let (tx, rx) =
-            tokio::sync::mpsc::channel::<ExecutionWorkItem>(super::super::engine::EXECUTION_QUEUE_CAPACITY);
+        let (tx, rx) = tokio::sync::mpsc::channel::<ExecutionWorkItem>(
+            super::super::engine::EXECUTION_QUEUE_CAPACITY,
+        );
 
         // The processor now requires lifecycle and node_service args.
         // Since we can't easily create a real NodeService without a database,
