@@ -51,6 +51,9 @@ fn service_error_to_mcp(error: NodeServiceError) -> MCPError {
         NodeServiceError::HierarchyViolation(msg) => {
             MCPError::validation_error(format!("Hierarchy violation: {}", msg))
         }
+        NodeServiceError::PlaybookValidationFailed { .. } => {
+            MCPError::invalid_params(error.to_string())
+        }
         NodeServiceError::DatabaseError(e) => {
             MCPError::internal_error(format!("Database error: {}", e))
         }

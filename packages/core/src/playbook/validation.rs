@@ -545,8 +545,18 @@ impl std::fmt::Display for AffectedPlaybook {
 /// Check which active playbooks would be affected by a schema change.
 ///
 /// Queries all active playbook nodes, parses their rules, and checks whether
-/// any condition dot-paths traverse through the given schema's node_type.
-/// Also checks if any trigger directly references the schema.
+/// any trigger, condition, or action references the given schema's node_type.
+/// Specifically checks:
+/// - Trigger node_type matches
+/// - Condition dot-paths that traverse through the schema's node_type
+/// - `create_node` actions targeting the schema's node_type
+/// - Relationship actions whose `relationship_type` matches the schema's node_type
+///
+/// TODO: This is currently over-broad — any change to a schema (including adding
+/// new fields, which can't break playbooks) triggers the warning. Making this
+/// diff-aware (only flag breaking changes like field removal/rename) requires
+/// accepting the proposed schema changes as a parameter, which is a larger
+/// refactor. The conservative approach is acceptable for v1.
 ///
 /// Returns a list of affected playbooks with their broken paths.
 pub async fn check_schema_change_impact(
@@ -601,6 +611,50 @@ pub async fn check_schema_change_impact(
                             .any(|s| s == schema_node_type)
                         {
                             broken_paths.push(coll.collection.segments.join("."));
+                        }
+                    }
+                }
+            }
+
+            // Check action params for schema references
+            for (i, action) in parsed.actions.iter().enumerate() {
+                let action_loc = format!("action[{}]", i);
+                match action.action_type {
+                    ActionType::CreateNode | ActionType::UpdateNode => {
+                        if let Some(nt) =
+                            action.params.get("node_type").and_then(|v| v.as_str())
+                        {
+                            if nt == schema_node_type {
+                                broken_paths
+                                    .push(format!("{}.node_type={}", action_loc, nt));
+                            }
+                        }
+                    }
+                    ActionType::AddRelationship | ActionType::RemoveRelationship => {
+                        if let Some(rt) = action
+                            .params
+                            .get("relationship_type")
+                            .and_then(|v| v.as_str())
+                        {
+                            if rt == schema_node_type {
+                                broken_paths.push(format!(
+                                    "{}.relationship_type={}",
+                                    action_loc, rt
+                                ));
+                            }
+                        }
+                        // Also check target_type if it references the schema
+                        if let Some(tt) = action
+                            .params
+                            .get("target_type")
+                            .and_then(|v| v.as_str())
+                        {
+                            if tt == schema_node_type {
+                                broken_paths.push(format!(
+                                    "{}.target_type={}",
+                                    action_loc, tt
+                                ));
+                            }
                         }
                     }
                 }
