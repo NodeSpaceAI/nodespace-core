@@ -954,5 +954,203 @@ mod tests {
                 resolver.resolve_path(&node, &["status".to_string(), "deeper".to_string()]);
             assert!(matches!(result, ResolvedValue::Missing));
         }
+
+        // -------------------------------------------------------------------
+        // enrich_context and resolve_collection — direct integration tests
+        // -------------------------------------------------------------------
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn enrich_context_resolves_multi_hop_path() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // Chain: gr_task8 -> story8 -> epic8
+            create_schema(&svc, "gr_epic8", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_story8",
+                json!([{
+                    "name": "epic",
+                    "target_type": "gr_epic8",
+                    "direction": "out",
+                    "cardinality": "one"
+                }]),
+            )
+            .await;
+            create_schema(
+                &svc,
+                "gr_task8",
+                json!([{
+                    "name": "story",
+                    "target_type": "gr_story8",
+                    "direction": "out",
+                    "cardinality": "one"
+                }]),
+            )
+            .await;
+
+            let epic = make_node("gr-e8", "gr_epic8", json!({"status": "in_progress"}));
+            svc.create_node(epic).await.unwrap();
+            let story = make_node("gr-s8", "gr_story8", json!({"status": "active"}));
+            svc.create_node(story).await.unwrap();
+            let task = make_node("gr-t8", "gr_task8", json!({"status": "open"}));
+            svc.create_node(task.clone()).await.unwrap();
+
+            svc.create_relationship("gr-t8", "story", "gr-s8", json!({}))
+                .await
+                .unwrap();
+            svc.create_relationship("gr-s8", "epic", "gr-e8", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+
+            use crate::playbook::path_extractor::ExtractedPath;
+
+            // Multi-hop path: node.story.epic.status (3+ segments, root="node")
+            let paths = vec![ExtractedPath {
+                segments: vec![
+                    "node".to_string(),
+                    "story".to_string(),
+                    "epic".to_string(),
+                    "status".to_string(),
+                ],
+                root: "node".to_string(),
+            }];
+
+            let result = resolver.enrich_context(&task, &paths, &[]);
+
+            let key = vec![
+                "node".to_string(),
+                "story".to_string(),
+                "epic".to_string(),
+                "status".to_string(),
+            ];
+            assert!(
+                result.contains_key(&key),
+                "enrich_context should resolve multi-hop path node.story.epic.status"
+            );
+            // The value should be a CEL String("in_progress")
+            match result.get(&key) {
+                Some(Value::String(s)) => assert_eq!(s.as_ref(), "in_progress"),
+                other => panic!(
+                    "expected CEL String('in_progress'), got {:?}",
+                    other
+                ),
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn resolve_collection_with_collection_path() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_item9", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_parent9",
+                json!([{
+                    "name": "items",
+                    "target_type": "gr_item9",
+                    "direction": "out",
+                    "cardinality": "many"
+                }]),
+            )
+            .await;
+
+            let item1 = make_node("gr-i9a", "gr_item9", json!({"status": "done"}));
+            let item2 = make_node("gr-i9b", "gr_item9", json!({"status": "open"}));
+            svc.create_node(item1).await.unwrap();
+            svc.create_node(item2).await.unwrap();
+
+            let parent = make_node("gr-p9", "gr_parent9", json!({}));
+            svc.create_node(parent.clone()).await.unwrap();
+
+            svc.create_relationship("gr-p9", "items", "gr-i9a", json!({}))
+                .await
+                .unwrap();
+            svc.create_relationship("gr-p9", "items", "gr-i9b", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+
+            use crate::playbook::path_extractor::ExtractedPath;
+
+            // resolve_collection expects segments like ["node", "items"]
+            let collection_path = ExtractedPath {
+                segments: vec!["node".to_string(), "items".to_string()],
+                root: "node".to_string(),
+            };
+
+            let nodes = resolver.resolve_collection(&parent, &collection_path);
+            assert_eq!(nodes.len(), 2, "should resolve 2 collection nodes");
+            let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+            assert!(ids.contains(&"gr-i9a"));
+            assert!(ids.contains(&"gr-i9b"));
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn enrich_context_with_collection() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_sub10", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_parent10",
+                json!([{
+                    "name": "tasks",
+                    "target_type": "gr_sub10",
+                    "direction": "out",
+                    "cardinality": "many"
+                }]),
+            )
+            .await;
+
+            let sub1 = make_node("gr-s10a", "gr_sub10", json!({"status": "done"}));
+            let sub2 = make_node("gr-s10b", "gr_sub10", json!({"status": "open"}));
+            svc.create_node(sub1).await.unwrap();
+            svc.create_node(sub2).await.unwrap();
+
+            let parent = make_node("gr-p10", "gr_parent10", json!({}));
+            svc.create_node(parent.clone()).await.unwrap();
+
+            svc.create_relationship("gr-p10", "tasks", "gr-s10a", json!({}))
+                .await
+                .unwrap();
+            svc.create_relationship("gr-p10", "tasks", "gr-s10b", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+
+            use crate::playbook::path_extractor::{CollectionPath, ExtractedPath};
+
+            let collections = vec![CollectionPath {
+                collection: ExtractedPath {
+                    segments: vec!["node".to_string(), "tasks".to_string()],
+                    root: "node".to_string(),
+                },
+                iter_var: "t".to_string(),
+                item_paths: vec![ExtractedPath {
+                    segments: vec!["t".to_string(), "status".to_string()],
+                    root: "t".to_string(),
+                }],
+            }];
+
+            let result = resolver.enrich_context(&parent, &[], &collections);
+
+            let key = vec!["node".to_string(), "tasks".to_string()];
+            assert!(
+                result.contains_key(&key),
+                "enrich_context should resolve collection path node.tasks"
+            );
+
+            // The value should be a CEL List with 2 elements
+            match result.get(&key) {
+                Some(Value::List(list)) => {
+                    assert_eq!(list.len(), 2, "collection should have 2 nodes");
+                }
+                other => panic!("expected CEL List, got {:?}", other),
+            }
+        }
     }
 }
