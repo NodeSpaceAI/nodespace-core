@@ -69,7 +69,7 @@ pub async fn cron_runner_loop(
 }
 
 /// Check all cron entries and enqueue work items for matching nodes.
-async fn check_and_enqueue(
+pub(crate) async fn check_and_enqueue(
     lifecycle: &Arc<RwLock<PlaybookLifecycleManager>>,
     node_service: &Arc<NodeService>,
     queue_tx: &mpsc::Sender<ExecutionWorkItem>,
@@ -334,5 +334,172 @@ mod tests {
         assert_eq!(entry.node_type, "invoice");
         assert_eq!(entry.rules.len(), 1);
         assert_eq!(entry.rules[0].playbook_id, "playbook-1");
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests — check_and_enqueue with real NodeService + lifecycle
+    // -----------------------------------------------------------------------
+
+    mod integration {
+        use super::*;
+        use crate::db::SurrealStore;
+        use crate::models::Node;
+        use crate::playbook::lifecycle::PlaybookLifecycleManager;
+        use crate::services::NodeService;
+        use serde_json::json;
+        use std::sync::{Arc, RwLock};
+        use tempfile::TempDir;
+        use tokio::sync::mpsc;
+
+        async fn create_test_service() -> (Arc<NodeService>, TempDir) {
+            let temp_dir = TempDir::new().unwrap();
+            let db_path = temp_dir.path().join("test.db");
+            let mut store: Arc<SurrealStore> = Arc::new(SurrealStore::new(db_path).await.unwrap());
+            let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+            (node_service, temp_dir)
+        }
+
+        fn make_lifecycle_with_cron(
+            cron_expr: &str,
+            node_type: &str,
+        ) -> Arc<RwLock<PlaybookLifecycleManager>> {
+            let mut lm = PlaybookLifecycleManager::new();
+
+            // Manually create a playbook node with a scheduled trigger and activate it
+            let playbook_node = Node {
+                id: "pb-cron-1".to_string(),
+                node_type: "playbook".to_string(),
+                content: "cron playbook".to_string(),
+                version: 1,
+                created_at: chrono::Utc::now(),
+                modified_at: chrono::Utc::now(),
+                properties: json!({
+                    "rules": [{
+                        "name": "cron-rule-1",
+                        "trigger": {
+                            "type": "scheduled",
+                            "cron": cron_expr,
+                            "node_type": node_type
+                        },
+                        "conditions": [],
+                        "actions": [{
+                            "action_type": "update_node",
+                            "params": {"target": "trigger.node"}
+                        }]
+                    }]
+                }),
+                mentions: vec![],
+                mentioned_in: vec![],
+                title: Some("Cron Playbook".to_string()),
+                lifecycle_status: "active".to_string(),
+            };
+            lm.activate_playbook(&playbook_node).unwrap();
+
+            Arc::new(RwLock::new(lm))
+        }
+
+        #[tokio::test]
+        async fn check_and_enqueue_enqueues_for_matching_cron() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // Create schema for the node type
+            let schema = Node::new_with_id(
+                "cr_task".to_string(),
+                "schema".to_string(),
+                "cr_task".to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "cr_task schema",
+                    "fields": [{"name": "status", "type": "string"}],
+                    "relationships": []
+                }),
+            );
+            svc.create_node(schema).await.unwrap();
+
+            // Create active nodes of type "cr_task"
+            let node1 = Node::new_with_id(
+                "cr-t1".to_string(),
+                "cr_task".to_string(),
+                "task 1".to_string(),
+                json!({"status": "open"}),
+            );
+            let node2 = Node::new_with_id(
+                "cr-t2".to_string(),
+                "cr_task".to_string(),
+                "task 2".to_string(),
+                json!({"status": "open"}),
+            );
+            svc.create_node(node1).await.unwrap();
+            svc.create_node(node2).await.unwrap();
+
+            // Use "every minute" cron — guaranteed to match in any 60s window
+            let lifecycle = make_lifecycle_with_cron("0 * * * * * *", "cr_task");
+
+            let (tx, mut rx) = mpsc::channel::<ExecutionWorkItem>(100);
+            check_and_enqueue(&lifecycle, &svc, &tx).await;
+
+            // Should have enqueued work items for both nodes
+            let mut received = vec![];
+            while let Ok(item) = rx.try_recv() {
+                received.push(item);
+            }
+            assert_eq!(
+                received.len(),
+                2,
+                "should enqueue one work item per matching node"
+            );
+
+            // Each work item should carry the cron rule
+            for item in &received {
+                assert_eq!(item.rules.len(), 1);
+                assert_eq!(item.rules[0].rule.name, "cron-rule-1");
+            }
+
+            // Both node IDs should be represented
+            let ids: Vec<&str> = received.iter().map(|w| w.trigger_node.id.as_str()).collect();
+            assert!(ids.contains(&"cr-t1"));
+            assert!(ids.contains(&"cr-t2"));
+        }
+
+        #[tokio::test]
+        async fn check_and_enqueue_skips_non_matching_cron() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // Create schema
+            let schema = Node::new_with_id(
+                "cr_task2".to_string(),
+                "schema".to_string(),
+                "cr_task2".to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "cr_task2 schema",
+                    "fields": [],
+                    "relationships": []
+                }),
+            );
+            svc.create_node(schema).await.unwrap();
+
+            let node = Node::new_with_id(
+                "cr-t3".to_string(),
+                "cr_task2".to_string(),
+                "task 3".to_string(),
+                json!({}),
+            );
+            svc.create_node(node).await.unwrap();
+
+            // Far-future cron expression — should NOT match current window
+            let lifecycle = make_lifecycle_with_cron("0 0 0 29 2 * 2099", "cr_task2");
+
+            let (tx, mut rx) = mpsc::channel::<ExecutionWorkItem>(100);
+            check_and_enqueue(&lifecycle, &svc, &tx).await;
+
+            // Should not enqueue anything
+            assert!(
+                rx.try_recv().is_err(),
+                "non-matching cron should not enqueue any work items"
+            );
+        }
     }
 }

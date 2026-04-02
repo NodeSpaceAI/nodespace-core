@@ -130,10 +130,20 @@ pub async fn create_or_update_log_node(
         .await?;
 
     let existing = existing_logs.iter().find(|n| {
-        n.properties
+        // Check both flat and namespaced property formats.
+        // NodeService normalizes flat properties under the node_type namespace
+        // on storage, so queried nodes have {"playbook_log": {"error_fingerprint": "..."}}.
+        let fp = n
+            .properties
             .get("error_fingerprint")
             .and_then(|v| v.as_str())
-            == Some(&fingerprint)
+            .or_else(|| {
+                n.properties
+                    .get("playbook_log")
+                    .and_then(|ns| ns.get("error_fingerprint"))
+                    .and_then(|v| v.as_str())
+            });
+        fp == Some(&fingerprint)
     });
 
     if let Some(log_node) = existing {
@@ -142,13 +152,27 @@ pub async fn create_or_update_log_node(
             .properties
             .get("occurrences")
             .and_then(|v| v.as_u64())
+            .or_else(|| {
+                log_node
+                    .properties
+                    .get("playbook_log")
+                    .and_then(|ns| ns.get("occurrences"))
+                    .and_then(|v| v.as_u64())
+            })
             .unwrap_or(1);
 
+        // Update properties within the namespace if present, otherwise flat.
+        // Queried nodes have namespaced format: {"playbook_log": {...}}.
         let mut new_properties = log_node.properties.clone();
-        new_properties["occurrences"] = json!(current_occurrences + 1);
-        new_properties["last_seen"] = json!(now);
-        // Update the latest trigger_node_id for debugging context
-        new_properties["trigger_node_id"] = json!(trigger_node_id);
+        if let Some(ns) = new_properties.get_mut("playbook_log").and_then(|v| v.as_object_mut()) {
+            ns.insert("occurrences".to_string(), json!(current_occurrences + 1));
+            ns.insert("last_seen".to_string(), json!(now));
+            ns.insert("trigger_node_id".to_string(), json!(trigger_node_id));
+        } else {
+            new_properties["occurrences"] = json!(current_occurrences + 1);
+            new_properties["last_seen"] = json!(now);
+            new_properties["trigger_node_id"] = json!(trigger_node_id);
+        }
 
         let update = crate::models::NodeUpdate::new().with_properties(new_properties);
 
@@ -202,4 +226,241 @@ pub async fn create_or_update_log_node(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // error_fingerprint — pure unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn fingerprint_consistent_for_same_inputs() {
+        let fp1 = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CycleLimit);
+        let fp2 = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CycleLimit);
+        assert_eq!(fp1, fp2, "same inputs should produce identical fingerprints");
+        // SHA-256 hex is 64 chars
+        assert_eq!(fp1.len(), 64);
+    }
+
+    #[test]
+    fn fingerprint_differs_for_different_inputs() {
+        let fp1 = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CycleLimit);
+        let fp2 = error_fingerprint("pb-2", "rule-a", 0, &PlaybookErrorType::CycleLimit);
+        let fp3 = error_fingerprint("pb-1", "rule-b", 0, &PlaybookErrorType::CycleLimit);
+        let fp4 = error_fingerprint("pb-1", "rule-a", 1, &PlaybookErrorType::CycleLimit);
+        assert_ne!(fp1, fp2, "different playbook_id should differ");
+        assert_ne!(fp1, fp3, "different rule_name should differ");
+        assert_ne!(fp1, fp4, "different error_location_index should differ");
+    }
+
+    #[test]
+    fn fingerprint_differs_for_different_error_types() {
+        let fp_cycle = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CycleLimit);
+        let fp_missing = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::MissingPath);
+        let fp_type = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::TypeMismatch);
+        let fp_compile = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CompileError);
+        assert_ne!(fp_cycle, fp_missing);
+        assert_ne!(fp_cycle, fp_type);
+        assert_ne!(fp_cycle, fp_compile);
+        assert_ne!(fp_missing, fp_type);
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration tests — create_or_update_log_node with real NodeService
+    // -----------------------------------------------------------------------
+
+    mod integration {
+        use super::*;
+        use crate::db::SurrealStore;
+        use crate::services::NodeService;
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        async fn create_test_service() -> (Arc<NodeService>, TempDir) {
+            let temp_dir = TempDir::new().unwrap();
+            let db_path = temp_dir.path().join("test.db");
+            let mut store: Arc<SurrealStore> = Arc::new(SurrealStore::new(db_path).await.unwrap());
+            let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+            (node_service, temp_dir)
+        }
+
+        #[tokio::test]
+        async fn create_log_node_creates_new_node() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // Create a schema for playbook_log so NodeService accepts it
+            let schema = crate::models::Node::new_with_id(
+                "playbook_log".to_string(),
+                "schema".to_string(),
+                "playbook_log".to_string(),
+                serde_json::json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "playbook log schema",
+                    "fields": [],
+                    "relationships": []
+                }),
+            );
+            svc.create_node(schema).await.unwrap();
+
+            create_or_update_log_node(
+                &svc,
+                "pb-1",
+                "rule-a",
+                0,
+                PlaybookErrorType::CycleLimit,
+                "Cycle limit exceeded",
+                "trigger-node-1",
+            )
+            .await
+            .unwrap();
+
+            // Verify a playbook_log node was created
+            let logs = svc
+                .query_nodes_by_type("playbook_log", Some("active"))
+                .await
+                .unwrap();
+            assert_eq!(logs.len(), 1);
+            // Properties are stored under the "playbook_log" namespace by NodeService
+            let props = &logs[0].properties["playbook_log"];
+            assert_eq!(props["occurrences"], 1);
+            assert_eq!(props["error_type"], "cycle_limit");
+            assert_eq!(props["playbook_id"], "pb-1");
+            assert_eq!(props["rule_name"], "rule-a");
+            assert_eq!(props["trigger_node_id"], "trigger-node-1");
+        }
+
+        #[tokio::test]
+        async fn create_log_node_deduplicates_same_fingerprint() {
+            let (svc, _tmp) = create_test_service().await;
+
+            let schema = crate::models::Node::new_with_id(
+                "playbook_log".to_string(),
+                "schema".to_string(),
+                "playbook_log".to_string(),
+                serde_json::json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "playbook log schema",
+                    "fields": [],
+                    "relationships": []
+                }),
+            );
+            svc.create_node(schema).await.unwrap();
+
+            // First call — creates node
+            create_or_update_log_node(
+                &svc,
+                "pb-1",
+                "rule-a",
+                0,
+                PlaybookErrorType::MissingPath,
+                "Path not found",
+                "trigger-node-1",
+            )
+            .await
+            .unwrap();
+
+            // Second call with same structural params — should deduplicate
+            create_or_update_log_node(
+                &svc,
+                "pb-1",
+                "rule-a",
+                0,
+                PlaybookErrorType::MissingPath,
+                "Path not found (again)",
+                "trigger-node-2",
+            )
+            .await
+            .unwrap();
+
+            let logs = svc
+                .query_nodes_by_type("playbook_log", Some("active"))
+                .await
+                .unwrap();
+            assert_eq!(
+                logs.len(),
+                1,
+                "should still have only 1 log node after dedup"
+            );
+        }
+
+        #[tokio::test]
+        async fn create_log_node_increments_occurrences_on_dedup() {
+            let (svc, _tmp) = create_test_service().await;
+
+            let schema = crate::models::Node::new_with_id(
+                "playbook_log".to_string(),
+                "schema".to_string(),
+                "playbook_log".to_string(),
+                serde_json::json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "playbook log schema",
+                    "fields": [],
+                    "relationships": []
+                }),
+            );
+            svc.create_node(schema).await.unwrap();
+
+            // Create initial log
+            create_or_update_log_node(
+                &svc,
+                "pb-1",
+                "rule-a",
+                0,
+                PlaybookErrorType::ActionError,
+                "Action failed",
+                "trigger-1",
+            )
+            .await
+            .unwrap();
+
+            // Dedup — occurrences should go to 2
+            create_or_update_log_node(
+                &svc,
+                "pb-1",
+                "rule-a",
+                0,
+                PlaybookErrorType::ActionError,
+                "Action failed again",
+                "trigger-2",
+            )
+            .await
+            .unwrap();
+
+            // Dedup again — occurrences should go to 3
+            create_or_update_log_node(
+                &svc,
+                "pb-1",
+                "rule-a",
+                0,
+                PlaybookErrorType::ActionError,
+                "Action failed yet again",
+                "trigger-3",
+            )
+            .await
+            .unwrap();
+
+            let logs = svc
+                .query_nodes_by_type("playbook_log", Some("active"))
+                .await
+                .unwrap();
+            assert_eq!(logs.len(), 1);
+            let props = &logs[0].properties["playbook_log"];
+            assert_eq!(
+                props["occurrences"], 3,
+                "occurrences should be 3 after initial + 2 dedup calls"
+            );
+            // Latest trigger_node_id should be updated
+            assert_eq!(props["trigger_node_id"], "trigger-3");
+        }
+    }
 }
