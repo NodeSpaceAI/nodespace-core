@@ -5,9 +5,11 @@
 //!
 //! Phase 1: subscribe to events, manage lifecycle, match triggers.
 //! Phase 2: ExecutionQueue (bounded mpsc) + RuleProcessor (single tokio task).
+//! Phase 6: Cycle detection (max depth 10) + log node deduplication.
 
 use crate::db::events::{DomainEvent, EventEnvelope};
 use crate::playbook::lifecycle::{trigger_keys_for_event, PlaybookLifecycleManager};
+use crate::playbook::logging::{create_or_update_log_node, PlaybookErrorType, MAX_CHAIN_DEPTH};
 use crate::playbook::types::*;
 use crate::services::NodeService;
 use std::sync::{Arc, RwLock};
@@ -50,7 +52,8 @@ impl PlaybookEngine {
     /// 2. Query all active playbook nodes
     /// 3. Parse rules, build TriggerIndex and CronRegistry
     /// 4. Start the RuleProcessor task (drains the ExecutionQueue)
-    /// 5. Begin processing events
+    /// 5. Start the CronRunner task (60-second polling for scheduled triggers)
+    /// 6. Begin processing events
     ///
     /// The `shutdown_rx` watch channel signals graceful shutdown when it receives `true`.
     pub async fn start(
@@ -66,11 +69,23 @@ impl PlaybookEngine {
 
         // Step 4: Create ExecutionQueue and spawn RuleProcessor
         let (queue_tx, queue_rx) = mpsc::channel::<ExecutionWorkItem>(EXECUTION_QUEUE_CAPACITY);
-        let processor_handle = tokio::spawn(rule_processor_loop(queue_rx));
+        let processor_handle = tokio::spawn(rule_processor_loop(
+            queue_rx,
+            Arc::clone(&self.lifecycle),
+            Arc::clone(&self.node_service),
+        ));
+
+        // Step 5: Spawn CronRunner (60-second polling loop for scheduled triggers)
+        let cron_handle = tokio::spawn(crate::playbook::cron_runner::cron_runner_loop(
+            Arc::clone(&self.lifecycle),
+            Arc::clone(&self.node_service),
+            queue_tx.clone(),
+            shutdown_rx.clone(),
+        ));
 
         info!("Playbook engine started, processing events...");
 
-        // Step 5: Process events
+        // Step 6: Process events
         let result = loop {
             tokio::select! {
                 result = rx.recv() => {
@@ -96,10 +111,14 @@ impl PlaybookEngine {
             }
         };
 
-        // Shutdown: drop the sender to signal the processor to drain and exit
+        // Shutdown: drop the sender to signal the processor to drain and exit.
+        // The CronRunner exits via the shutdown_rx watch (already signalled).
         drop(queue_tx);
         if let Err(e) = processor_handle.await {
             error!("RuleProcessor task panicked: {:?}", e);
+        }
+        if let Err(e) = cron_handle.await {
+            error!("CronRunner task panicked: {:?}", e);
         }
 
         result
@@ -370,9 +389,14 @@ impl PlaybookEngine {
 /// execute simultaneously, no race between condition evaluation and action
 /// execution, no concurrent modifications to the same node.
 ///
-/// Phase 3 (CEL Evaluator) and Phase 4 (Action Executor) will add the
-/// condition evaluation and action execution logic here.
-pub(crate) async fn rule_processor_loop(mut rx: mpsc::Receiver<ExecutionWorkItem>) {
+/// Enforces cycle detection: when `depth + 1 > MAX_CHAIN_DEPTH`, the work
+/// item is skipped, offending playbooks are disabled, and log nodes are
+/// created with fingerprint-based deduplication.
+pub(crate) async fn rule_processor_loop(
+    mut rx: mpsc::Receiver<ExecutionWorkItem>,
+    lifecycle: Arc<RwLock<PlaybookLifecycleManager>>,
+    node_service: Arc<NodeService>,
+) {
     info!("RuleProcessor started, waiting for work items...");
 
     while let Some(work_item) = rx.recv().await {
@@ -384,9 +408,39 @@ pub(crate) async fn rule_processor_loop(mut rx: mpsc::Receiver<ExecutionWorkItem
             .map(|ctx| ctx.depth)
             .unwrap_or(0);
 
-        // TODO(#995-phase6): Enforce max depth (10) here — skip work item and
-        // disable the originating playbook when depth + 1 > MAX_CHAIN_DEPTH.
-        // Currently depth is logged but not enforced.
+        // Cycle detection: if the next execution would exceed MAX_CHAIN_DEPTH,
+        // skip this work item, disable offending playbooks, and create log nodes.
+        if depth + 1 > MAX_CHAIN_DEPTH {
+            warn!(
+                "Cycle limit reached (depth {}), skipping work item for node {}",
+                depth, work_item.trigger_node.id,
+            );
+
+            for rule_ref in &work_item.rules {
+                // Disable the playbook that would have fired
+                {
+                    let mut lm = lifecycle.write().expect("lifecycle lock poisoned");
+                    lm.disable_playbook(&rule_ref.playbook_id);
+                }
+
+                // Create (or deduplicate) a log node for this error
+                let _ = create_or_update_log_node(
+                    &node_service,
+                    &rule_ref.playbook_id,
+                    &rule_ref.rule.name,
+                    rule_ref.rule_index,
+                    PlaybookErrorType::CycleLimit,
+                    &format!(
+                        "Cycle depth limit ({}) exceeded for rule '{}' in playbook {}",
+                        MAX_CHAIN_DEPTH, rule_ref.rule.name, rule_ref.playbook_id,
+                    ),
+                    &work_item.trigger_node.id,
+                )
+                .await;
+            }
+
+            continue;
+        }
 
         debug!(
             "RuleProcessor received work item: {} rules for node {} (type: {}, depth: {})",
@@ -403,11 +457,57 @@ pub(crate) async fn rule_processor_loop(mut rx: mpsc::Receiver<ExecutionWorkItem
                 rule_ref.rule.name, rule_ref.playbook_id, rule_ref.rule_index,
             );
 
-            // TODO(#995-phase3): Evaluate CEL conditions against trigger_node + graph
+            // Phase 3: Evaluate CEL conditions
+            let condition_result = crate::playbook::cel::evaluate_conditions(
+                &rule_ref.rule.conditions,
+                &work_item.trigger_node,
+                &work_item.trigger_event.event,
+            );
+
+            match condition_result {
+                crate::playbook::cel::ConditionResult::Pass => {
+                    debug!(
+                        "Rule '{}' (playbook {}) conditions passed",
+                        rule_ref.rule.name, rule_ref.playbook_id,
+                    );
+                }
+                crate::playbook::cel::ConditionResult::Fail { condition_index } => {
+                    debug!(
+                        "Rule '{}' (playbook {}) skipped: condition[{}] evaluated to false",
+                        rule_ref.rule.name, rule_ref.playbook_id, condition_index,
+                    );
+                    continue;
+                }
+                crate::playbook::cel::ConditionResult::CompileError {
+                    condition_index,
+                    message,
+                } => {
+                    warn!(
+                        "Rule '{}' (playbook {}) has compile error in condition[{}]: {}",
+                        rule_ref.rule.name, rule_ref.playbook_id, condition_index, message,
+                    );
+                    // Compile errors indicate a structural issue — disable the playbook
+                    {
+                        let mut lm = lifecycle.write().expect("lifecycle lock poisoned");
+                        lm.disable_playbook(&rule_ref.playbook_id);
+                    }
+                    let _ = create_or_update_log_node(
+                        &node_service,
+                        &rule_ref.playbook_id,
+                        &rule_ref.rule.name,
+                        rule_ref.rule_index,
+                        PlaybookErrorType::CompileError,
+                        &format!("CEL compile error in condition[{}]: {}", condition_index, message),
+                        &work_item.trigger_node.id,
+                    )
+                    .await;
+                    continue;
+                }
+            }
+
             // TODO(#995-phase4): Execute actions with binding context
-            // For now, log that the rule would fire.
             info!(
-                "Rule '{}' (playbook {}) matched — execution pending Phase 3+4",
+                "Rule '{}' (playbook {}) conditions passed — action execution pending Phase 4",
                 rule_ref.rule.name, rule_ref.playbook_id,
             );
         }
