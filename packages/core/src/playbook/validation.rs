@@ -257,15 +257,8 @@ async fn validate_create_node_action(
     let node_type = match params.get("node_type").and_then(|v| v.as_str()) {
         Some(nt) => nt,
         None => {
-            // Skip if it's a binding template (e.g., "{trigger.node.node_type}")
-            // — can't validate dynamically-resolved types at save time
-            if params
-                .get("node_type")
-                .and_then(|v| v.as_str())
-                .is_none()
-                && params.get("node_type").is_some()
-            {
-                // Non-string node_type (unexpected but not our problem here)
+            if params.get("node_type").is_some() {
+                // Non-string node_type (e.g., number, object) — can't validate, skip
                 return;
             }
             errors.push(PlaybookValidationError::MissingActionParam {

@@ -3,9 +3,14 @@
 //! The top-level engine that subscribes to domain events, matches them against
 //! the trigger index, and enqueues work items for the RuleProcessor.
 //!
-//! Phase 1: subscribe to events, manage lifecycle, match triggers.
-//! Phase 2: ExecutionQueue (bounded mpsc) + RuleProcessor (single tokio task).
-//! Phase 6: Cycle detection (max depth 10) + log node deduplication.
+//! Phases wired through this module:
+//! - Phase 1: subscribe to events, manage lifecycle, match triggers
+//! - Phase 2: ExecutionQueue (bounded mpsc) + RuleProcessor (single tokio task)
+//! - Phase 3: CEL condition evaluation (via `cel.rs`)
+//! - Phase 4: Action execution (via `actions.rs`)
+//! - Phase 5: CronRunner spawn and shutdown (via `cron_runner.rs`)
+//! - Phase 6: Cycle detection (max depth 10) + log node deduplication
+//! - Phase 7: Save-time validation before playbook activation
 
 use crate::db::events::{DomainEvent, EventEnvelope};
 use crate::playbook::lifecycle::{trigger_keys_for_event, PlaybookLifecycleManager};
@@ -265,6 +270,19 @@ impl PlaybookEngine {
                     Ok(rules) => rules,
                     Err(e) => {
                         warn!("Failed to parse playbook {} for validation: {}", node_id, e);
+                        let _ = create_or_update_log_node(
+                            &self.node_service,
+                            node_id,
+                            "parse",
+                            0,
+                            PlaybookErrorType::CompileError,
+                            &format!("Failed to parse playbook rules: {}", e),
+                            "n/a",
+                        )
+                        .await;
+                        let mut lifecycle =
+                            self.lifecycle.write().expect("lifecycle lock poisoned");
+                        lifecycle.disable_playbook(node_id);
                         return;
                     }
                 };

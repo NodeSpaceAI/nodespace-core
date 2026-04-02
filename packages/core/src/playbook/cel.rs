@@ -4,11 +4,14 @@
 //! trigger nodes. Uses the `cel-interpreter` crate with custom variable resolution
 //! and built-in functions for date operations.
 //!
-//! # Wire Format
+//! # Property Flattening
 //!
-//! Before evaluation, nodes are converted to wire format via `flatten_properties_for_api`.
-//! The CEL context sees flat properties: `node.status`, not `node.properties.task.status`.
-//! Namespace prefixes are stripped: `custom:amount` → `node.amount`.
+//! Before evaluation, node properties are flattened into the CEL Map and namespace
+//! prefixes are stripped: `custom:amount` → `node.amount`. Properties are read
+//! directly from `node.properties` (the raw DB format), not via
+//! `flatten_properties_for_api`. This is sufficient for trigger nodes returned
+//! by `get_node()`. Full wire-format normalization will be added alongside
+//! graph traversal in #1010.
 //!
 //! # Missing Path Behavior
 //!
