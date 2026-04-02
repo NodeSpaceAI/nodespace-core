@@ -184,7 +184,11 @@ mod tests {
         let (svc, _tmp) = create_test_service().await;
         create_schema(&svc, "wf_widget").await;
 
-        let node = Node::new("wf_widget".to_string(), "test widget".to_string(), json!({}));
+        let node = Node::new(
+            "wf_widget".to_string(),
+            "test widget".to_string(),
+            json!({}),
+        );
         let node_id = node.id.clone();
         svc.create_node(node).await.unwrap();
 

@@ -614,7 +614,10 @@ mod tests {
         lm.disable_playbook("pb-drift-4");
 
         let disabled = lm.handle_schema_update("task", "2");
-        assert!(disabled.is_empty(), "already-disabled playbooks should not appear");
+        assert!(
+            disabled.is_empty(),
+            "already-disabled playbooks should not appear"
+        );
     }
 
     // -----------------------------------------------------------------------
