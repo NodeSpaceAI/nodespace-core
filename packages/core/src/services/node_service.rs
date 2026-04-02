@@ -1766,7 +1766,7 @@ impl NodeService {
             // Regular node creation
             let db_start = std::time::Instant::now();
             self.store
-                .create_node(node.clone(), self.client_id.clone())
+                .create_node(node.clone(), self.client_id.clone(), self.execution_context.clone())
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to insert node: {}", e))
@@ -2866,6 +2866,7 @@ impl NodeService {
                 expected_version,
                 node_update,
                 self.client_id.clone(),
+                self.execution_context.clone(),
             )
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
@@ -4455,6 +4456,7 @@ impl NodeService {
                 expected_version,
                 node_update,
                 self.client_id.clone(),
+                self.execution_context.clone(),
             )
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
@@ -5322,7 +5324,7 @@ impl NodeService {
                 serde_json::json!({}),
             );
             self.store
-                .create_node(parent_node, self.client_id.clone())
+                .create_node(parent_node, self.client_id.clone(), self.execution_context.clone())
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to create parent node: {}", e))
@@ -5385,7 +5387,7 @@ impl NodeService {
                 lifecycle_status: "active".to_string(),
             };
             self.store
-                .create_node(node, self.client_id.clone())
+                .create_node(node, self.client_id.clone(), self.execution_context.clone())
                 .await
                 .map_err(|e| {
                     NodeServiceError::query_failed(format!("Failed to create node: {}", e))
