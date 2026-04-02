@@ -19,7 +19,7 @@
 //! - Phase 4: Action Executor — binding context, sequential execution (done)
 //! - Phase 5: CronRunner — 60-second polling loop (done)
 //! - Phase 6: Cycle Detection + Log Node Deduplication (done)
-//! - Phase 7: Save-Time Validation
+//! - Phase 7: Save-Time Validation (done)
 
 pub mod actions;
 pub mod cel;
@@ -30,6 +30,7 @@ pub mod logging;
 #[cfg(test)]
 mod tests;
 pub mod types;
+pub mod validation;
 
 pub use engine::PlaybookEngine;
 pub use lifecycle::PlaybookLifecycleManager;

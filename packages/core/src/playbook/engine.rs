@@ -253,10 +253,53 @@ impl PlaybookEngine {
         }
     }
 
-    /// Handle a new playbook node being created — parse and activate it.
+    /// Handle a new playbook node being created — validate, then parse and activate.
+    ///
+    /// Phase 7: runs save-time validation before activation. If validation fails,
+    /// the playbook is disabled and a log node is created for each error.
     async fn handle_playbook_created(&self, node_id: &str) {
         match self.node_service.get_node(node_id).await {
             Ok(Some(node)) if node.lifecycle_status == "active" => {
+                // Parse rules first for validation
+                let parsed_rules = match parse_rules_for_validation(&node) {
+                    Ok(rules) => rules,
+                    Err(e) => {
+                        warn!("Failed to parse playbook {} for validation: {}", node_id, e);
+                        return;
+                    }
+                };
+
+                // Phase 7: Save-time validation
+                if let Err(errors) = crate::playbook::validation::validate_playbook(
+                    &parsed_rules,
+                    &self.node_service,
+                )
+                .await
+                {
+                    warn!(
+                        "Playbook {} failed save-time validation with {} error(s)",
+                        node_id,
+                        errors.len()
+                    );
+                    for err in &errors {
+                        warn!("  Validation error: {}", err);
+                        let _ = create_or_update_log_node(
+                            &self.node_service,
+                            node_id,
+                            "validation",
+                            0,
+                            PlaybookErrorType::CompileError,
+                            &err.to_string(),
+                            "n/a",
+                        )
+                        .await;
+                    }
+                    // Disable the playbook — do not activate
+                    let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+                    lifecycle.disable_playbook(node_id);
+                    return;
+                }
+
                 let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
                 if let Err(e) = lifecycle.activate_playbook(&node) {
                     warn!("Failed to activate new playbook {}: {}", node_id, e);
@@ -282,46 +325,90 @@ impl PlaybookEngine {
 
     /// Handle a playbook node being updated — detect status transitions.
     ///
-    /// If lifecycle_status changed from disabled→active, re-enable.
-    /// If rules changed, re-parse.
+    /// If lifecycle_status changed from disabled→active, re-enable (with validation).
+    /// If rules changed, re-parse (with validation).
+    /// Phase 7: validates before (re-)activation.
     async fn handle_playbook_updated(&self, node_id: &str) {
-        match self.node_service.get_node(node_id).await {
-            Ok(Some(node)) => {
-                let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-
-                let current_status = lifecycle.get_playbook(node_id).map(|pb| pb.status.clone());
-
-                match (current_status, node.lifecycle_status.as_str()) {
-                    // Disabled → Active: re-enable
-                    (Some(PlaybookStatus::Disabled), "active") => {
-                        if let Err(e) = lifecycle.reenable_playbook(&node) {
-                            warn!("Failed to re-enable playbook {}: {}", node_id, e);
-                        }
-                    }
-                    // Active → Non-active: disable
-                    (Some(PlaybookStatus::Active), status) if status != "active" => {
-                        lifecycle.disable_playbook(node_id);
-                    }
-                    // Active → Active: rules may have changed, re-parse
-                    (Some(PlaybookStatus::Active), "active") => {
-                        if let Err(e) = lifecycle.reenable_playbook(&node) {
-                            warn!("Failed to update playbook {}: {}", node_id, e);
-                        }
-                    }
-                    // Not tracked yet but now active: activate
-                    (None, "active") => {
-                        if let Err(e) = lifecycle.activate_playbook(&node) {
-                            warn!("Failed to activate playbook {}: {}", node_id, e);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+        let node = match self.node_service.get_node(node_id).await {
+            Ok(Some(n)) => n,
             Ok(None) => {
                 warn!("Playbook {} not found after NodeUpdated event", node_id);
+                return;
             }
             Err(e) => {
                 error!("Failed to fetch playbook {}: {}", node_id, e);
+                return;
+            }
+        };
+
+        // Read current status (short lock)
+        let current_status = {
+            let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
+            lifecycle.get_playbook(node_id).map(|pb| pb.status.clone())
+        };
+
+        let needs_activation = matches!(
+            (&current_status, node.lifecycle_status.as_str()),
+            (Some(PlaybookStatus::Disabled), "active")
+                | (Some(PlaybookStatus::Active), "active")
+                | (None, "active")
+        );
+
+        // Active → Non-active: just disable, no validation needed
+        if matches!(
+            (&current_status, node.lifecycle_status.as_str()),
+            (Some(PlaybookStatus::Active), status) if status != "active"
+        ) {
+            let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+            lifecycle.disable_playbook(node_id);
+            return;
+        }
+
+        if needs_activation {
+            // Phase 7: validate before (re-)activation
+            if let Ok(parsed_rules) = parse_rules_for_validation(&node) {
+                if let Err(errors) = crate::playbook::validation::validate_playbook(
+                    &parsed_rules,
+                    &self.node_service,
+                )
+                .await
+                {
+                    warn!(
+                        "Playbook {} failed validation on update with {} error(s)",
+                        node_id,
+                        errors.len()
+                    );
+                    for err in &errors {
+                        warn!("  Validation error: {}", err);
+                        let _ = create_or_update_log_node(
+                            &self.node_service,
+                            node_id,
+                            "validation",
+                            0,
+                            PlaybookErrorType::CompileError,
+                            &err.to_string(),
+                            "n/a",
+                        )
+                        .await;
+                    }
+                    let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+                    lifecycle.disable_playbook(node_id);
+                    return;
+                }
+            }
+
+            let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+            match &current_status {
+                Some(PlaybookStatus::Disabled) | Some(PlaybookStatus::Active) => {
+                    if let Err(e) = lifecycle.reenable_playbook(&node) {
+                        warn!("Failed to re-enable/update playbook {}: {}", node_id, e);
+                    }
+                }
+                None => {
+                    if let Err(e) = lifecycle.activate_playbook(&node) {
+                        warn!("Failed to activate playbook {}: {}", node_id, e);
+                    }
+                }
             }
         }
     }
@@ -377,6 +464,25 @@ impl PlaybookEngine {
     pub fn lifecycle(&self) -> &Arc<RwLock<PlaybookLifecycleManager>> {
         &self.lifecycle
     }
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+/// Parse a playbook node's rules into `Vec<Arc<ParsedRule>>` for validation.
+///
+/// This is used by the engine before activation to feed the validator.
+/// It mirrors the parsing in `PlaybookLifecycleManager::activate_playbook`.
+fn parse_rules_for_validation(
+    node: &crate::models::Node,
+) -> Result<Vec<Arc<ParsedRule>>, PlaybookParseError> {
+    let rule_defs = parse_rules_from_properties(&node.properties)?;
+    let mut parsed = Vec::with_capacity(rule_defs.len());
+    for def in &rule_defs {
+        parsed.push(Arc::new(parse_rule(def)?));
+    }
+    Ok(parsed)
 }
 
 // ---------------------------------------------------------------------------
