@@ -593,6 +593,41 @@ export const collectionNodePlugin: PluginDefinition = {
   }
 };
 
+/**
+ * AI Chat Node Plugin
+ *
+ * AI chat conversations stored as first-class knowledge graph nodes.
+ * Messages are nested properties (ADR-028), enabling semantic search,
+ * Stamped ACL permissions, and cloud sync.
+ */
+export const aiChatNodePlugin: PluginDefinition = {
+  id: 'ai-chat',
+  name: 'AI Chat',
+  description: 'AI conversation node',
+  version: '1.0.0',
+  config: {
+    slashCommands: [
+      {
+        id: 'ai-chat',
+        name: 'AI Chat',
+        description: 'Start an AI conversation',
+        contentTemplate: '',
+        nodeType: 'ai-chat'
+      }
+    ],
+    canHaveChildren: false,
+    canBeChild: true
+  },
+  viewer: {
+    lazyLoad: () => import('../components/viewers/ai-chat-node-viewer.svelte'),
+    priority: 1
+  },
+  reference: {
+    component: BaseNodeReference as NodeReferenceComponent,
+    priority: 1
+  }
+};
+
 // Export all core plugins
 // These are the foundation plugins - external developers can create additional plugins
 // like WhiteBoardNode, ImageNode, etc. in separate packages
@@ -608,7 +643,8 @@ export const corePlugins = [
   horizontalLineNodePlugin,
   tableNodePlugin,
   queryNodePlugin,
-  collectionNodePlugin
+  collectionNodePlugin,
+  aiChatNodePlugin
   // Note: userNodePlugin and documentNodePlugin are defined but not registered
   // They will be added when user/document reference system is implemented
 ];

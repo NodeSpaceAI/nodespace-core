@@ -1433,6 +1433,151 @@ impl NodeBehavior for CollectionNodeBehavior {
     }
 }
 
+/// Built-in behavior for AI chat nodes
+///
+/// AI chat nodes store conversations (user messages, assistant responses, tool calls)
+/// as nested properties following the same pattern as playbook `rules[]`.
+/// Conversations are stored as nodes to enable semantic search, Stamped ACL
+/// permissions, cloud sync, and development traceability.
+///
+/// # Storage Architecture (ADR-028)
+///
+/// - **Content (`node.content`)**: Chat title (e.g., "Implement webhook handler")
+/// - **Properties**: Provider, model, status, messages[] array
+/// - **Messages**: Nested objects with role, content, timestamp, referenced_nodes
+/// - **Tool calls**: Stored as messages with role "tool_call", result_summary preserved,
+///   full result nulled at write time for storage efficiency
+///
+/// # Embedding (ADR-029)
+///
+/// `get_embeddable_content()` extracts user + assistant text from `properties.messages[]`,
+/// skipping tool_call messages. This enables semantic search over chat history.
+///
+/// # Examples
+///
+/// ```rust
+/// use nodespace_core::behaviors::{NodeBehavior, AiChatNodeBehavior};
+/// use nodespace_core::models::Node;
+/// use serde_json::json;
+///
+/// let behavior = AiChatNodeBehavior;
+/// let node = Node::new(
+///     "ai-chat".to_string(),
+///     "Implement webhook handler".to_string(),
+///     json!({
+///         "provider": "native",
+///         "model": "ministral-3b-instruct-q4_k_m",
+///         "status": "active",
+///         "messages": [
+///             {"role": "user", "content": "Help me implement the webhook handler", "timestamp": "2026-04-03T10:28:00Z"},
+///             {"role": "assistant", "content": "I can help with that.", "timestamp": "2026-04-03T10:28:05Z"}
+///         ]
+///     }),
+/// );
+/// assert!(behavior.validate(&node).is_ok());
+/// ```
+pub struct AiChatNodeBehavior;
+
+impl NodeBehavior for AiChatNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "ai-chat"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Validate provider if present
+        if let Some(provider) = node.properties.get("provider") {
+            if let Some(provider_str) = provider.as_str() {
+                match provider_str {
+                    "native" | "anthropic" | "gemini" | "mistral" => {}
+                    _ => {
+                        return Err(NodeValidationError::InvalidProperties(format!(
+                            "Invalid provider '{}': must be one of native, anthropic, gemini, mistral",
+                            provider_str
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Validate status if present
+        if let Some(status) = node.properties.get("status") {
+            if let Some(status_str) = status.as_str() {
+                match status_str {
+                    "active" | "archived" => {}
+                    _ => {
+                        return Err(NodeValidationError::InvalidProperties(format!(
+                            "Invalid status '{}': must be one of active, archived",
+                            status_str
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Validate messages is an array if present
+        if let Some(messages) = node.properties.get("messages") {
+            if !messages.is_array() && !messages.is_null() {
+                return Err(NodeValidationError::InvalidProperties(
+                    "messages must be an array".to_string(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        false // Conversations are self-contained; tool-created nodes are siblings, not children
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false // Chat content is rendered by the chat viewer, not the markdown pipeline
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "provider": "native",
+            "model": "",
+            "status": "active",
+            "last_active": null,
+            "context_tokens": 0,
+            "created_nodes": [],
+            "messages": []
+        })
+    }
+
+    /// Extract user and assistant message content for semantic search embedding.
+    ///
+    /// Iterates over `properties.messages[]`, includes only messages with
+    /// role "user" or "assistant", and joins their content with double newlines.
+    /// Tool call messages (role "tool_call") are skipped as they contain
+    /// structured data rather than semantic text.
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        let messages = node.properties.get("messages")?.as_array()?;
+        let text: Vec<&str> = messages
+            .iter()
+            .filter_map(|m| match m.get("role")?.as_str()? {
+                "user" | "assistant" => m.get("content")?.as_str(),
+                _ => None,
+            })
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text.join("\n\n"))
+        }
+    }
+
+    /// AI chat nodes don't contribute to parent embeddings.
+    ///
+    /// Chat conversations are standalone semantic units; they shouldn't
+    /// pollute the embedding of a parent node (e.g., a date container).
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
+    }
+}
+
 /// Fallback behavior for schema-defined custom types
 ///
 /// This behavior is used for node types that have a schema definition but no
@@ -1611,6 +1756,7 @@ impl NodeBehaviorRegistry {
         registry.register(Arc::new(CollectionNodeBehavior));
         registry.register(Arc::new(HorizontalLineNodeBehavior));
         registry.register(Arc::new(TableNodeBehavior));
+        registry.register(Arc::new(AiChatNodeBehavior));
 
         registry
     }
@@ -2305,7 +2451,8 @@ mod tests {
         assert!(types.contains(&"collection".to_string()));
         assert!(types.contains(&"horizontal-line".to_string()));
         assert!(types.contains(&"table".to_string()));
-        assert_eq!(types.len(), 12);
+        assert!(types.contains(&"ai-chat".to_string()));
+        assert_eq!(types.len(), 13);
     }
 
     #[test]
@@ -3484,5 +3631,192 @@ mod tests {
         // Collection nodes should not be embedded (organizational containers)
         assert!(behavior.get_embeddable_content(&node).is_none());
         assert!(behavior.get_parent_contribution(&node).is_none());
+    }
+
+    // ---- AI Chat Node Behavior Tests ----
+
+    #[test]
+    fn test_ai_chat_node_behavior_validation() {
+        let behavior = AiChatNodeBehavior;
+
+        // Valid ai-chat node with all properties
+        let node = Node::new(
+            "ai-chat".to_string(),
+            "Implement webhook handler".to_string(),
+            json!({
+                "provider": "native",
+                "model": "ministral-3b-instruct-q4_k_m",
+                "status": "active",
+                "messages": []
+            }),
+        );
+        assert!(behavior.validate(&node).is_ok());
+
+        // Minimal valid node (no properties)
+        let minimal = Node::new("ai-chat".to_string(), "".to_string(), json!({}));
+        assert!(behavior.validate(&minimal).is_ok());
+    }
+
+    #[test]
+    fn test_ai_chat_node_invalid_provider() {
+        let behavior = AiChatNodeBehavior;
+        let node = Node::new(
+            "ai-chat".to_string(),
+            "Chat".to_string(),
+            json!({"provider": "openai"}),
+        );
+        let err = behavior.validate(&node).unwrap_err();
+        match err {
+            NodeValidationError::InvalidProperties(msg) => {
+                assert!(msg.contains("Invalid provider"));
+                assert!(msg.contains("openai"));
+            }
+            _ => panic!("Expected InvalidProperties error"),
+        }
+    }
+
+    #[test]
+    fn test_ai_chat_node_invalid_status() {
+        let behavior = AiChatNodeBehavior;
+        let node = Node::new(
+            "ai-chat".to_string(),
+            "Chat".to_string(),
+            json!({"status": "deleted"}),
+        );
+        let err = behavior.validate(&node).unwrap_err();
+        match err {
+            NodeValidationError::InvalidProperties(msg) => {
+                assert!(msg.contains("Invalid status"));
+                assert!(msg.contains("deleted"));
+            }
+            _ => panic!("Expected InvalidProperties error"),
+        }
+    }
+
+    #[test]
+    fn test_ai_chat_node_invalid_messages_type() {
+        let behavior = AiChatNodeBehavior;
+        let node = Node::new(
+            "ai-chat".to_string(),
+            "Chat".to_string(),
+            json!({"messages": "not an array"}),
+        );
+        let err = behavior.validate(&node).unwrap_err();
+        match err {
+            NodeValidationError::InvalidProperties(msg) => {
+                assert!(msg.contains("messages must be an array"));
+            }
+            _ => panic!("Expected InvalidProperties error"),
+        }
+    }
+
+    #[test]
+    fn test_ai_chat_node_valid_providers() {
+        let behavior = AiChatNodeBehavior;
+        for provider in &["native", "anthropic", "gemini", "mistral"] {
+            let node = Node::new(
+                "ai-chat".to_string(),
+                "Chat".to_string(),
+                json!({"provider": provider}),
+            );
+            assert!(
+                behavior.validate(&node).is_ok(),
+                "Provider '{}' should be valid",
+                provider
+            );
+        }
+    }
+
+    #[test]
+    fn test_ai_chat_node_capabilities() {
+        let behavior = AiChatNodeBehavior;
+        assert_eq!(behavior.type_name(), "ai-chat");
+        assert!(!behavior.can_have_children());
+        assert!(!behavior.supports_markdown());
+    }
+
+    #[test]
+    fn test_ai_chat_node_default_metadata() {
+        let behavior = AiChatNodeBehavior;
+        let meta = behavior.default_metadata();
+        assert_eq!(meta["provider"], "native");
+        assert_eq!(meta["status"], "active");
+        assert_eq!(meta["context_tokens"], 0);
+        assert!(meta["messages"].as_array().unwrap().is_empty());
+        assert!(meta["created_nodes"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_ai_chat_node_embeddable_content() {
+        let behavior = AiChatNodeBehavior;
+
+        // Node with user and assistant messages
+        let node = Node::new(
+            "ai-chat".to_string(),
+            "Chat about webhooks".to_string(),
+            json!({
+                "messages": [
+                    {"role": "user", "content": "Help me implement the webhook handler"},
+                    {"role": "tool_call", "tool": "search_semantic", "result_summary": "Found 3 nodes"},
+                    {"role": "assistant", "content": "Based on the spec, here is my approach"},
+                    {"role": "user", "content": "Looks good, please proceed"}
+                ]
+            }),
+        );
+        let content = behavior.get_embeddable_content(&node).unwrap();
+        assert!(content.contains("Help me implement the webhook handler"));
+        assert!(content.contains("Based on the spec, here is my approach"));
+        assert!(content.contains("Looks good, please proceed"));
+        // Tool call messages should be excluded
+        assert!(!content.contains("search_semantic"));
+        assert!(!content.contains("Found 3 nodes"));
+    }
+
+    #[test]
+    fn test_ai_chat_node_embeddable_content_empty_messages() {
+        let behavior = AiChatNodeBehavior;
+
+        // Empty messages array
+        let node = Node::new(
+            "ai-chat".to_string(),
+            "Empty chat".to_string(),
+            json!({"messages": []}),
+        );
+        assert!(behavior.get_embeddable_content(&node).is_none());
+
+        // Only tool call messages (no user/assistant text)
+        let node = Node::new(
+            "ai-chat".to_string(),
+            "Tool-only chat".to_string(),
+            json!({
+                "messages": [
+                    {"role": "tool_call", "tool": "search_semantic", "result_summary": "Found 3 nodes"}
+                ]
+            }),
+        );
+        assert!(behavior.get_embeddable_content(&node).is_none());
+
+        // No messages property
+        let node = Node::new("ai-chat".to_string(), "No messages".to_string(), json!({}));
+        assert!(behavior.get_embeddable_content(&node).is_none());
+    }
+
+    #[test]
+    fn test_ai_chat_node_no_parent_contribution() {
+        let behavior = AiChatNodeBehavior;
+        let node = Node::new(
+            "ai-chat".to_string(),
+            "Chat".to_string(),
+            json!({"messages": [{"role": "user", "content": "Hello"}]}),
+        );
+        assert!(behavior.get_parent_contribution(&node).is_none());
+    }
+
+    #[test]
+    fn test_ai_chat_node_registered_in_registry() {
+        let registry = NodeBehaviorRegistry::new();
+        let behavior = registry.get("ai-chat");
+        assert!(behavior.is_some(), "ai-chat should be registered");
+        assert_eq!(behavior.unwrap().type_name(), "ai-chat");
     }
 }

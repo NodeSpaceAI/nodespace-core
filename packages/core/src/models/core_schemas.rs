@@ -320,6 +320,331 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             title_template: None,
             properties_header_summary_template: None,
         },
+        // AI Chat schema - conversation nodes with messages as nested properties
+        SchemaNode {
+            id: "ai-chat".to_string(),
+            content: "AI Chat".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            schema_version: 1,
+            description: "AI conversation node with messages stored as nested properties"
+                .to_string(),
+            fields: vec![
+                SchemaField {
+                    name: "provider".to_string(),
+                    field_type: "enum".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(vec![
+                        EnumValue {
+                            value: "native".to_string(),
+                            label: "Native (Local)".to_string(),
+                        },
+                        EnumValue {
+                            value: "anthropic".to_string(),
+                            label: "Anthropic".to_string(),
+                        },
+                        EnumValue {
+                            value: "gemini".to_string(),
+                            label: "Gemini".to_string(),
+                        },
+                        EnumValue {
+                            value: "mistral".to_string(),
+                            label: "Mistral".to_string(),
+                        },
+                    ]),
+                    user_values: Some(vec![]),
+                    indexed: true,
+                    required: Some(true),
+                    extensible: Some(true),
+                    default: Some(serde_json::json!("native")),
+                    description: Some("AI provider for this conversation".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "model".to_string(),
+                    field_type: "text".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("Model identifier used for this conversation".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "status".to_string(),
+                    field_type: "enum".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(vec![
+                        EnumValue {
+                            value: "active".to_string(),
+                            label: "Active".to_string(),
+                        },
+                        EnumValue {
+                            value: "archived".to_string(),
+                            label: "Archived".to_string(),
+                        },
+                    ]),
+                    user_values: Some(vec![]),
+                    indexed: true,
+                    required: Some(true),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!("active")),
+                    description: Some("Conversation status".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "last_active".to_string(),
+                    field_type: "date".to_string(),
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("Timestamp of last activity".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "context_tokens".to_string(),
+                    field_type: "number".to_string(),
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!(0)),
+                    description: Some(
+                        "Approximate token count of conversation context".to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "created_nodes".to_string(),
+                    field_type: "array".to_string(),
+                    protection: SchemaProtectionLevel::System,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!([])),
+                    description: Some(
+                        "IDs of nodes created by the agent during this chat".to_string(),
+                    ),
+                    item_type: Some("text".to_string()),
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "messages".to_string(),
+                    field_type: "array".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(true),
+                    extensible: None,
+                    default: Some(serde_json::json!([])),
+                    description: Some("Conversation messages array".to_string()),
+                    item_type: Some("object".to_string()),
+                    fields: None,
+                    item_fields: Some(vec![
+                        SchemaField {
+                            name: "role".to_string(),
+                            field_type: "enum".to_string(),
+                            protection: SchemaProtectionLevel::Core,
+                            core_values: Some(vec![
+                                EnumValue {
+                                    value: "user".to_string(),
+                                    label: "User".to_string(),
+                                },
+                                EnumValue {
+                                    value: "assistant".to_string(),
+                                    label: "Assistant".to_string(),
+                                },
+                                EnumValue {
+                                    value: "tool_call".to_string(),
+                                    label: "Tool Call".to_string(),
+                                },
+                                EnumValue {
+                                    value: "system".to_string(),
+                                    label: "System".to_string(),
+                                },
+                            ]),
+                            user_values: Some(vec![]),
+                            indexed: false,
+                            required: Some(true),
+                            extensible: Some(false),
+                            default: None,
+                            description: Some("Message sender role".to_string()),
+                            item_type: None,
+                            fields: None,
+                            item_fields: None,
+                        },
+                        SchemaField {
+                            name: "content".to_string(),
+                            field_type: "text".to_string(),
+                            protection: SchemaProtectionLevel::Core,
+                            core_values: None,
+                            user_values: None,
+                            indexed: false,
+                            required: Some(false),
+                            extensible: None,
+                            default: None,
+                            description: Some("Message text content".to_string()),
+                            item_type: None,
+                            fields: None,
+                            item_fields: None,
+                        },
+                        SchemaField {
+                            name: "timestamp".to_string(),
+                            field_type: "date".to_string(),
+                            protection: SchemaProtectionLevel::System,
+                            core_values: None,
+                            user_values: None,
+                            indexed: false,
+                            required: Some(false),
+                            extensible: None,
+                            default: None,
+                            description: Some("Message timestamp".to_string()),
+                            item_type: None,
+                            fields: None,
+                            item_fields: None,
+                        },
+                        SchemaField {
+                            name: "referenced_nodes".to_string(),
+                            field_type: "array".to_string(),
+                            protection: SchemaProtectionLevel::Core,
+                            core_values: None,
+                            user_values: None,
+                            indexed: false,
+                            required: Some(false),
+                            extensible: None,
+                            default: None,
+                            description: Some("Node IDs referenced in this message".to_string()),
+                            item_type: Some("text".to_string()),
+                            fields: None,
+                            item_fields: None,
+                        },
+                        SchemaField {
+                            name: "tool".to_string(),
+                            field_type: "text".to_string(),
+                            protection: SchemaProtectionLevel::Core,
+                            core_values: None,
+                            user_values: None,
+                            indexed: false,
+                            required: Some(false),
+                            extensible: None,
+                            default: None,
+                            description: Some(
+                                "Tool name (for tool_call role messages)".to_string(),
+                            ),
+                            item_type: None,
+                            fields: None,
+                            item_fields: None,
+                        },
+                        SchemaField {
+                            name: "args".to_string(),
+                            field_type: "object".to_string(),
+                            protection: SchemaProtectionLevel::Core,
+                            core_values: None,
+                            user_values: None,
+                            indexed: false,
+                            required: Some(false),
+                            extensible: None,
+                            default: None,
+                            description: Some(
+                                "Tool call arguments (for tool_call role messages)".to_string(),
+                            ),
+                            item_type: None,
+                            fields: None,
+                            item_fields: None,
+                        },
+                        SchemaField {
+                            name: "status".to_string(),
+                            field_type: "enum".to_string(),
+                            protection: SchemaProtectionLevel::Core,
+                            core_values: Some(vec![
+                                EnumValue {
+                                    value: "completed".to_string(),
+                                    label: "Completed".to_string(),
+                                },
+                                EnumValue {
+                                    value: "error".to_string(),
+                                    label: "Error".to_string(),
+                                },
+                            ]),
+                            user_values: Some(vec![]),
+                            indexed: false,
+                            required: Some(false),
+                            extensible: Some(false),
+                            default: None,
+                            description: Some(
+                                "Tool execution status (for tool_call role messages)".to_string(),
+                            ),
+                            item_type: None,
+                            fields: None,
+                            item_fields: None,
+                        },
+                        SchemaField {
+                            name: "result_summary".to_string(),
+                            field_type: "text".to_string(),
+                            protection: SchemaProtectionLevel::Core,
+                            core_values: None,
+                            user_values: None,
+                            indexed: false,
+                            required: Some(false),
+                            extensible: None,
+                            default: None,
+                            description: Some(
+                                "Archived summary of tool result (full result nulled at write time)"
+                                    .to_string(),
+                            ),
+                            item_type: None,
+                            fields: None,
+                            item_fields: None,
+                        },
+                        SchemaField {
+                            name: "duration_ms".to_string(),
+                            field_type: "number".to_string(),
+                            protection: SchemaProtectionLevel::System,
+                            core_values: None,
+                            user_values: None,
+                            indexed: false,
+                            required: Some(false),
+                            extensible: None,
+                            default: None,
+                            description: Some(
+                                "Duration of tool execution in milliseconds".to_string(),
+                            ),
+                            item_type: None,
+                            fields: None,
+                            item_fields: None,
+                        },
+                    ]),
+                },
+            ],
+            relationships: vec![],
+            title_template: None,
+            properties_header_summary_template: None,
+        },
         // Query schema - saved query definitions
         SchemaNode {
             id: "query".to_string(),
@@ -475,7 +800,7 @@ mod tests {
     #[test]
     fn test_get_core_schemas_returns_all() {
         let schemas = get_core_schemas();
-        assert_eq!(schemas.len(), 12);
+        assert_eq!(schemas.len(), 13);
     }
 
     #[test]
@@ -534,6 +859,36 @@ mod tests {
         assert!(query.get_field("generator_context").is_some());
         assert!(query.get_field("execution_count").is_some());
         assert!(query.get_field("last_executed").is_some());
+    }
+
+    #[test]
+    fn test_ai_chat_schema_has_fields() {
+        let schemas = get_core_schemas();
+        let ai_chat = schemas.iter().find(|s| s.id == "ai-chat").unwrap();
+
+        assert_eq!(ai_chat.fields.len(), 7);
+        assert!(ai_chat.get_field("provider").is_some());
+        assert!(ai_chat.get_field("model").is_some());
+        assert!(ai_chat.get_field("status").is_some());
+        assert!(ai_chat.get_field("last_active").is_some());
+        assert!(ai_chat.get_field("context_tokens").is_some());
+        assert!(ai_chat.get_field("created_nodes").is_some());
+        assert!(ai_chat.get_field("messages").is_some());
+
+        // Verify messages has item_fields (nested schema for message objects)
+        let messages_field = ai_chat.get_field("messages").unwrap();
+        assert_eq!(messages_field.field_type, "array");
+        assert_eq!(messages_field.item_type.as_deref(), Some("object"));
+        let item_fields = messages_field.item_fields.as_ref().unwrap();
+        assert!(item_fields.iter().any(|f| f.name == "role"));
+        assert!(item_fields.iter().any(|f| f.name == "content"));
+        assert!(item_fields.iter().any(|f| f.name == "timestamp"));
+        assert!(item_fields.iter().any(|f| f.name == "referenced_nodes"));
+        assert!(item_fields.iter().any(|f| f.name == "tool"));
+        assert!(item_fields.iter().any(|f| f.name == "args"));
+        assert!(item_fields.iter().any(|f| f.name == "status"));
+        assert!(item_fields.iter().any(|f| f.name == "result_summary"));
+        assert!(item_fields.iter().any(|f| f.name == "duration_ms"));
     }
 
     #[test]

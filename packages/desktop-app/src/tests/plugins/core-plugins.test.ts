@@ -16,6 +16,7 @@ import {
   dateNodePlugin,
   userNodePlugin,
   documentNodePlugin,
+  aiChatNodePlugin,
   corePlugins,
   registerCorePlugins,
   registerExternalPlugin
@@ -87,6 +88,22 @@ describe('Core Plugins Integration', () => {
       // Date nodes do not have slash commands - they exist implicitly for all dates
     });
 
+    it('should have valid aiChatNodePlugin definition', () => {
+      expect(aiChatNodePlugin.id).toBe('ai-chat');
+      expect(aiChatNodePlugin.name).toBe('AI Chat');
+      expect(aiChatNodePlugin.description).toBe('AI conversation node');
+      expect(aiChatNodePlugin.config.slashCommands).toHaveLength(1);
+      expect(aiChatNodePlugin.config.canHaveChildren).toBe(false);
+      expect(aiChatNodePlugin.config.canBeChild).toBe(true);
+      expect(aiChatNodePlugin.viewer).toBeDefined();
+      expect(aiChatNodePlugin.viewer?.lazyLoad).toBeDefined();
+      expect(aiChatNodePlugin.reference).toBeDefined();
+
+      const chatCommand = aiChatNodePlugin.config.slashCommands[0];
+      expect(chatCommand.id).toBe('ai-chat');
+      expect(chatCommand.nodeType).toBe('ai-chat');
+    });
+
     it('should have valid reference-only plugins', () => {
       // User plugin - reference only
       expect(userNodePlugin.id).toBe('user');
@@ -106,11 +123,12 @@ describe('Core Plugins Integration', () => {
 
   describe('Core Plugins Collection', () => {
     it('should export all core plugins in corePlugins array', () => {
-      expect(corePlugins).toHaveLength(12); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection
+      expect(corePlugins).toHaveLength(13); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, ai-chat
       expect(corePlugins).toContain(textNodePlugin);
       expect(corePlugins).toContain(headerNodePlugin);
       expect(corePlugins).toContain(taskNodePlugin);
       expect(corePlugins).toContain(dateNodePlugin);
+      expect(corePlugins).toContain(aiChatNodePlugin);
       // Note: userNodePlugin and documentNodePlugin are defined but not yet registered
       // They will be added when the user/document reference system is implemented
     });
@@ -127,7 +145,7 @@ describe('Core Plugins Integration', () => {
     it('should register all core plugins successfully', () => {
       registerCorePlugins(registry);
 
-      expect(registry.getAllPlugins()).toHaveLength(12); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection
+      expect(registry.getAllPlugins()).toHaveLength(13); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, ai-chat
 
       // Verify each core plugin is registered
       for (const plugin of corePlugins) {
@@ -142,10 +160,10 @@ describe('Core Plugins Integration', () => {
       // Verify registration statistics through the registry API
       // Note: Logger output is intentionally silenced during tests
       const stats = registry.getStats();
-      expect(stats.pluginsCount).toBe(12); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection
-      expect(stats.slashCommandsCount).toBe(12); // text: 1, header: 3, task: 1, checkbox: 1, code-block: 1, quote-block: 1, ordered-list: 1, horizontal-line: 1, table: 1, query: 1, collection: 0
-      expect(stats.viewersCount).toBe(4); // date, task, collection, and query have custom viewers (QueryNodeViewer added in Issue #441)
-      expect(stats.referencesCount).toBe(12); // all plugins have references
+      expect(stats.pluginsCount).toBe(13); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, ai-chat
+      expect(stats.slashCommandsCount).toBe(13); // text: 1, header: 3, task: 1, checkbox: 1, code-block: 1, quote-block: 1, ordered-list: 1, horizontal-line: 1, table: 1, query: 1, ai-chat: 1, collection: 0, date: 0
+      expect(stats.viewersCount).toBe(5); // date, task, collection, query, and ai-chat have custom viewers
+      expect(stats.referencesCount).toBe(13); // all plugins have references
     });
 
     it('should provide correct slash command count', () => {
@@ -153,8 +171,8 @@ describe('Core Plugins Integration', () => {
 
       const stats = registry.getStats();
 
-      // text: 1, header: 3, task: 1, checkbox: 1, code-block: 1, quote-block: 1, ordered-list: 1, horizontal-line: 1, table: 1, query: 1, date: 0, collection: 0 = 12 total
-      expect(stats.slashCommandsCount).toBe(12);
+      // text: 1, header: 3, task: 1, checkbox: 1, code-block: 1, quote-block: 1, ordered-list: 1, horizontal-line: 1, table: 1, query: 1, ai-chat: 1, date: 0, collection: 0 = 13 total
+      expect(stats.slashCommandsCount).toBe(13);
     });
 
     it('should provide all slash commands with proper inheritance', () => {
@@ -162,7 +180,7 @@ describe('Core Plugins Integration', () => {
 
       const commands = registry.getAllSlashCommands();
 
-      expect(commands).toHaveLength(12); // text, header1-3, task, checkbox, code, quote, ordered-list, hr, table, query
+      expect(commands).toHaveLength(13); // text, header1-3, task, checkbox, code, quote, ordered-list, hr, table, query, ai-chat
 
       // Verify text node commands from BasicNodeTypeRegistry work
       const textCommands = commands.filter((cmd) =>
@@ -338,7 +356,7 @@ describe('Core Plugins Integration', () => {
       registerExternalPlugin(registry, externalPlugin);
 
       expect(registry.getAllPlugins()).toHaveLength(initialCount + 1);
-      expect(registry.getAllSlashCommands()).toHaveLength(13); // 12 core + 1 external
+      expect(registry.getAllSlashCommands()).toHaveLength(14); // 13 core + 1 external
     });
   });
 
@@ -371,7 +389,7 @@ describe('Core Plugins Integration', () => {
     });
 
     it('should handle registry clearing', () => {
-      expect(registry.getAllPlugins()).toHaveLength(12); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection
+      expect(registry.getAllPlugins()).toHaveLength(13); // text, header, task, checkbox, date, code-block, quote-block, ordered-list, horizontal-line, table, query, collection, ai-chat
 
       registry.clear();
 
