@@ -29,9 +29,6 @@ pub mod mcp_integration;
 // Background services
 pub mod services;
 
-// Local agent subsystem (Issue #1007)
-pub mod local_agent;
-
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
