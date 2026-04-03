@@ -9,6 +9,7 @@
     const categories = [
         { id: 'database', label: 'Database' },
         { id: 'display', label: 'Display' },
+        { id: 'ai-models', label: 'AI Models' },
         { id: 'import', label: 'Import Sources' },
         { id: 'about', label: 'About' },
     ];

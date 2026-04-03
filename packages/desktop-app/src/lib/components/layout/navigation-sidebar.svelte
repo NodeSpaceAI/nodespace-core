@@ -221,6 +221,31 @@
     }
   }
 
+  /**
+   * Handle AI Chat navigation
+   * Opens or activates an AI chat tab
+   */
+  function handleAiChatClick() {
+    const currentState = $tabState;
+    const existingTab = currentState.tabs.find((tab) => tab.type === 'chat');
+
+    if (existingTab) {
+      setActiveTab(existingTab.id, existingTab.paneId);
+    } else {
+      const targetPaneId = getTargetPaneId();
+      addTab(
+        {
+          id: 'ai-chat',
+          title: 'AI Chat',
+          type: 'chat',
+          closeable: true,
+          paneId: targetPaneId
+        },
+        true
+      );
+    }
+  }
+
   // Handle navigation item clicks
   function handleNavItemClick(itemId: string) {
     // Close sub-panels when clicking non-collection nav items
@@ -231,6 +256,11 @@
     // Special handling for Daily Journal
     if (itemId === 'daily-journal') {
       handleDailyJournalClick();
+    }
+
+    // Special handling for AI Chat
+    if (itemId === 'ai-chat') {
+      handleAiChatClick();
     }
 
     // Update active state in navigation items

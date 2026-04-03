@@ -84,6 +84,13 @@ export const navigationItems = writable<NavigationItem[]>([
   // Note: "Collections" is rendered inline in NavigationSidebar
   // using bits-ui Collapsible - inserted after Daily Journal
   {
+    id: 'ai-chat',
+    label: 'AI Chat',
+    icon: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z', // message-square icon
+    active: false,
+    type: 'link'
+  },
+  {
     id: 'search',
     label: 'Search',
     icon: 'M11 11m-8 0a8 8 0 1 0 16 0a8 8 0 1 0-16 0M21 21l-4.35-4.35', // search icon
