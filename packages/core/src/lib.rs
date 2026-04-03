@@ -29,7 +29,7 @@ pub mod utils;
 
 // Re-exports
 pub use behaviors::{
-    CollectionNodeBehavior, CustomNodeBehavior, DateNodeBehavior, NodeBehavior,
+    AiChatNodeBehavior, CollectionNodeBehavior, CustomNodeBehavior, DateNodeBehavior, NodeBehavior,
     NodeBehaviorRegistry, ProcessingError, TaskNodeBehavior, TextNodeBehavior,
 };
 pub use db::{
