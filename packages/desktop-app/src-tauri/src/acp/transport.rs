@@ -677,7 +677,7 @@ mod tests {
             args: vec![
                 "-c".to_string(),
                 // Use printf to write partial data, then complete the line.
-                r#"printf '{"jsonrpc":"2.0",' && sleep 0.1 && echo '"id":1,"method":"test/partial","params":{}}'""#
+                r#"printf '{"jsonrpc":"2.0",' && sleep 0.2 && echo '"id":1,"method":"test/partial","params":{}}' && sleep 0.2"#
                     .to_string(),
             ],
             env: HashMap::new(),
