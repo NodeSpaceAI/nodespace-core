@@ -1,3 +1,7 @@
+// Shared types, traits, and interface contracts for agent subsystems (Issue #998)
+pub mod agent_types;
+pub use agent_types::*;
+
 // Tauri commands module (public for dev-server access)
 pub mod commands;
 

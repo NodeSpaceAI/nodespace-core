@@ -3988,6 +3988,7 @@ version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-stream",
+ "async-trait",
  "axum 0.7.9",
  "chrono",
  "dirs 5.0.1",
@@ -4002,6 +4003,7 @@ dependencies = [
  "tauri-plugin-decorum",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tokio-util",
