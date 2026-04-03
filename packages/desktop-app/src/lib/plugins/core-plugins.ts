@@ -620,7 +620,7 @@ export const aiChatNodePlugin: PluginDefinition = {
   },
   viewer: {
     lazyLoad: () => import('../components/viewers/ai-chat-node-viewer.svelte'),
-    priority: 10
+    priority: 1
   },
   reference: {
     component: BaseNodeReference as NodeReferenceComponent,

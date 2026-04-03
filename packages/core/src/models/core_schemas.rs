@@ -561,6 +561,49 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                             item_fields: None,
                         },
                         SchemaField {
+                            name: "args".to_string(),
+                            field_type: "object".to_string(),
+                            protection: SchemaProtectionLevel::Core,
+                            core_values: None,
+                            user_values: None,
+                            indexed: false,
+                            required: Some(false),
+                            extensible: None,
+                            default: None,
+                            description: Some(
+                                "Tool call arguments (for tool_call role messages)".to_string(),
+                            ),
+                            item_type: None,
+                            fields: None,
+                            item_fields: None,
+                        },
+                        SchemaField {
+                            name: "status".to_string(),
+                            field_type: "enum".to_string(),
+                            protection: SchemaProtectionLevel::Core,
+                            core_values: Some(vec![
+                                EnumValue {
+                                    value: "completed".to_string(),
+                                    label: "Completed".to_string(),
+                                },
+                                EnumValue {
+                                    value: "error".to_string(),
+                                    label: "Error".to_string(),
+                                },
+                            ]),
+                            user_values: Some(vec![]),
+                            indexed: false,
+                            required: Some(false),
+                            extensible: Some(false),
+                            default: None,
+                            description: Some(
+                                "Tool execution status (for tool_call role messages)".to_string(),
+                            ),
+                            item_type: None,
+                            fields: None,
+                            item_fields: None,
+                        },
+                        SchemaField {
                             name: "result_summary".to_string(),
                             field_type: "text".to_string(),
                             protection: SchemaProtectionLevel::Core,
@@ -842,6 +885,8 @@ mod tests {
         assert!(item_fields.iter().any(|f| f.name == "timestamp"));
         assert!(item_fields.iter().any(|f| f.name == "referenced_nodes"));
         assert!(item_fields.iter().any(|f| f.name == "tool"));
+        assert!(item_fields.iter().any(|f| f.name == "args"));
+        assert!(item_fields.iter().any(|f| f.name == "status"));
         assert!(item_fields.iter().any(|f| f.name == "result_summary"));
         assert!(item_fields.iter().any(|f| f.name == "duration_ms"));
     }

@@ -26,7 +26,6 @@
     onTitleChange,
   }: {
     nodeId: string;
-    paneId?: string;
     onTitleChange?: (_title: string) => void;
   } = $props();
 
@@ -139,7 +138,7 @@
     flushTimer = setTimeout(() => flushToStore(), FLUSH_DEBOUNCE_MS);
   }
 
-  async function flushToStore(): Promise<void> {
+  function flushToStore(): void {
     if (!node || !hasUnsavedChanges) return;
     if (flushTimer) {
       clearTimeout(flushTimer);
@@ -147,14 +146,14 @@
     }
     try {
       const archivedMessages = archiveMessages(inMemoryMessages);
-      await sharedNodeStore.updateNode(nodeId, node.version, {
+      sharedNodeStore.updateNode(nodeId, {
         properties: {
           ...node.properties,
           messages: archivedMessages,
           last_active: new Date().toISOString(),
           context_tokens: estimateTokens(inMemoryMessages),
         },
-      });
+      }, { type: 'viewer', viewerId: 'ai-chat-viewer' });
       hasUnsavedChanges = false;
       log.debug('Flushed messages to store', { messageCount: archivedMessages.length });
     } catch (err) {
