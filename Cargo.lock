@@ -3993,6 +3993,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "futures",
+ "libc",
  "nodespace-core",
  "nodespace-nlp-engine",
  "serde",

@@ -2,6 +2,9 @@
 pub mod agent_types;
 pub use agent_types::*;
 
+// ACP (Agent Communication Protocol) transport layer (Issue #1001)
+pub mod acp;
+
 // Tauri commands module (public for dev-server access)
 pub mod commands;
 
