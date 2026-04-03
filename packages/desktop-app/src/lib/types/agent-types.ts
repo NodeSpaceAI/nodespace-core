@@ -224,7 +224,7 @@ export interface InferenceUsage {
 export interface ToolDefinition {
 	readonly name: string;
 	readonly description: string;
-	readonly parameters_schema: unknown;
+	readonly parameters_schema: Record<string, unknown>;
 }
 
 /** Result of a single tool invocation. */
@@ -233,6 +233,13 @@ export interface ToolResult {
 	readonly name: string;
 	readonly result: unknown;
 	readonly is_error: boolean;
+}
+
+/** A raw tool call parsed from model output before execution. */
+export interface ToolCallRaw {
+	readonly id: string;
+	readonly function_name: string;
+	readonly arguments_json: string;
 }
 
 /** Complete record of a tool execution for session history. */
@@ -309,6 +316,13 @@ export interface AgentSession {
 	readonly status: LocalAgentStatus;
 	readonly created_at: string;
 	readonly tool_executions: ToolExecutionRecord[];
+}
+
+/** Result of a complete agent turn (one round of generation + tool execution). */
+export interface AgentTurnResult {
+	readonly response: string;
+	readonly tool_calls_made: ToolExecutionRecord[];
+	readonly usage: InferenceUsage;
 }
 
 /** Assembled context packet ready for injection into a system prompt. */

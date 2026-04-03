@@ -291,7 +291,8 @@ pub enum AcpAuthMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelFamily {
-    /// Mistral AI model family.
+    /// Ministral — Mistral AI's small model series (Ministral 3B, Ministral 8B).
+    /// Named after the specific product line, not the parent company.
     Ministral,
 }
 
@@ -360,6 +361,20 @@ pub struct ToolResult {
     pub result: serde_json::Value,
     /// Whether the tool execution itself failed.
     pub is_error: bool,
+}
+
+/// A raw tool call parsed from model output before execution.
+///
+/// Represents the model's intent to invoke a tool. The `arguments_json` field
+/// contains the raw JSON string as emitted by the model (may need validation).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallRaw {
+    /// Unique identifier for this tool call (from the model).
+    pub id: String,
+    /// Name of the tool the model wants to invoke.
+    pub function_name: String,
+    /// Raw JSON string of tool arguments as produced by the model.
+    pub arguments_json: String,
 }
 
 /// Complete record of a tool execution for session history / debugging.
@@ -502,6 +517,20 @@ pub struct AgentSession {
     pub tool_executions: Vec<ToolExecutionRecord>,
 }
 
+/// Result of a complete agent turn (one round of generation + tool execution).
+///
+/// Captures the final assistant response text, any tool calls that were made
+/// and executed, and token usage for the turn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentTurnResult {
+    /// The final text response produced by the agent (after all tool calls).
+    pub response: String,
+    /// Tool calls that were made and executed during this turn.
+    pub tool_calls_made: Vec<ToolExecutionRecord>,
+    /// Token usage statistics for this turn.
+    pub usage: InferenceUsage,
+}
+
 // ---------------------------------------------------------------------------
 // Structs -- Context Assembly
 // ---------------------------------------------------------------------------
@@ -550,14 +579,20 @@ pub struct ContextRelationship {
 /// Implementors manage model state and produce streaming or complete responses.
 #[async_trait]
 pub trait ChatInferenceEngine: Send + Sync {
-    /// Run inference on the given request and return a stream of chunks.
+    /// Run streaming inference on the given request.
     ///
-    /// The caller should iterate over the returned chunks until a
-    /// [`StreamingChunk::Done`] or [`StreamingChunk::Error`] is received.
+    /// Chunks are delivered incrementally via `on_chunk`. The callback receives
+    /// each [`StreamingChunk`] as it becomes available (tokens, tool call
+    /// fragments, errors). When inference completes, the method returns
+    /// aggregate [`InferenceUsage`] statistics.
+    ///
+    /// This callback-based design avoids buffering the entire response and
+    /// lets callers forward chunks to the frontend in real time.
     async fn generate(
         &self,
         request: InferenceRequest,
-    ) -> Result<Vec<StreamingChunk>, InferenceError>;
+        on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+    ) -> Result<InferenceUsage, InferenceError>;
 
     /// Return metadata about the currently loaded model.
     ///
