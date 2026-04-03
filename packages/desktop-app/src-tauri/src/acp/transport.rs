@@ -98,15 +98,18 @@ impl StdioTransport {
         })?;
 
         // Take ownership of piped handles before moving child into shared state.
-        let child_stdin = child.stdin.take().ok_or_else(|| {
-            TransportError::SendFailed("failed to open stdin pipe".to_string())
-        })?;
-        let child_stdout = child.stdout.take().ok_or_else(|| {
-            TransportError::SendFailed("failed to open stdout pipe".to_string())
-        })?;
-        let child_stderr = child.stderr.take().ok_or_else(|| {
-            TransportError::SendFailed("failed to open stderr pipe".to_string())
-        })?;
+        let child_stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| TransportError::SendFailed("failed to open stdin pipe".to_string()))?;
+        let child_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| TransportError::SendFailed("failed to open stdout pipe".to_string()))?;
+        let child_stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| TransportError::SendFailed("failed to open stderr pipe".to_string()))?;
 
         // Channels connecting callers to the I/O tasks.
         // Writer: caller -> writer task -> stdin
@@ -305,9 +308,9 @@ impl AcpTransport for StdioTransport {
         }
 
         let mut rx = self.inner.read_rx.lock().await;
-        rx.recv()
-            .await
-            .ok_or(TransportError::ProcessExited("agent stdout closed".to_string()))
+        rx.recv().await.ok_or(TransportError::ProcessExited(
+            "agent stdout closed".to_string(),
+        ))
     }
 
     async fn is_alive(&self) -> bool {
@@ -357,11 +360,8 @@ impl AcpTransport for StdioTransport {
         if let Some(ref mut child) = *child_guard {
             // Phase 1: Wait up to 5 seconds for the process to exit on its own
             // (it should notice stdin EOF and exit gracefully).
-            let exited = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                child.wait(),
-            )
-            .await;
+            let exited =
+                tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
 
             if let Ok(Ok(status)) = exited {
                 info!(status = ?status, "Agent process exited gracefully");
@@ -384,11 +384,8 @@ impl AcpTransport for StdioTransport {
                 let _ = child.start_kill();
             }
 
-            let exited_after_term = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                child.wait(),
-            )
-            .await;
+            let exited_after_term =
+                tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await;
 
             if let Ok(Ok(status)) = exited_after_term {
                 info!(status = ?status, "Agent process exited after SIGTERM");
@@ -463,13 +460,10 @@ mod tests {
         let msg = test_request(1, "test/echo");
         transport.send(msg.clone()).await.unwrap();
 
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            transport.receive(),
-        )
-        .await
-        .expect("receive timed out")
-        .expect("receive failed");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+            .await
+            .expect("receive timed out")
+            .expect("receive failed");
 
         assert_eq!(response.jsonrpc, "2.0");
         assert_eq!(response.method.as_deref(), Some("test/echo"));
@@ -488,13 +482,11 @@ mod tests {
         }
 
         for i in 1..=5 {
-            let response = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                transport.receive(),
-            )
-            .await
-            .expect("receive timed out")
-            .expect("receive failed");
+            let response =
+                tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+                    .await
+                    .expect("receive timed out")
+                    .expect("receive failed");
 
             assert_eq!(response.id, Some(serde_json::json!(i)));
         }
@@ -568,12 +560,9 @@ mod tests {
         assert!(!transport.is_alive().await);
 
         // Receiving should return a ProcessExited error since stdout is closed.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            transport.receive(),
-        )
-        .await
-        .expect("receive timed out");
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), transport.receive())
+            .await
+            .expect("receive timed out");
 
         assert!(result.is_err());
 
@@ -599,13 +588,10 @@ mod tests {
         let msg = test_request(42, "test/stderr_check");
         transport.send(msg).await.unwrap();
 
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            transport.receive(),
-        )
-        .await
-        .expect("receive timed out")
-        .expect("receive failed");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+            .await
+            .expect("receive timed out")
+            .expect("receive failed");
 
         // The response should be the echoed message, not stderr output.
         assert_eq!(response.id, Some(serde_json::json!(42)));
@@ -625,7 +611,7 @@ mod tests {
 
         let result = StdioTransport::spawn(config).await;
         assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.err().expect("expected error");
         assert!(
             matches!(err, TransportError::SendFailed(_)),
             "Expected SendFailed, got: {err:?}"
@@ -642,8 +628,7 @@ mod tests {
             binary: "/bin/bash".to_string(),
             args: vec![
                 "-c".to_string(),
-                r#"echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"$ACP_TEST_VAR\"}""#
-                    .to_string(),
+                r#"echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"$ACP_TEST_VAR\"}""#.to_string(),
             ],
             env,
             working_dir: None,
@@ -651,19 +636,13 @@ mod tests {
 
         let transport = StdioTransport::spawn(config).await.unwrap();
 
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            transport.receive(),
-        )
-        .await
-        .expect("receive timed out")
-        .expect("receive failed");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+            .await
+            .expect("receive timed out")
+            .expect("receive failed");
 
         assert_eq!(response.jsonrpc, "2.0");
-        assert_eq!(
-            response.result,
-            Some(serde_json::json!("hello_acp"))
-        );
+        assert_eq!(response.result, Some(serde_json::json!("hello_acp")));
 
         transport.shutdown().await.unwrap();
     }
@@ -686,13 +665,10 @@ mod tests {
 
         let transport = StdioTransport::spawn(config).await.unwrap();
 
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            transport.receive(),
-        )
-        .await
-        .expect("receive timed out")
-        .expect("receive failed");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+            .await
+            .expect("receive timed out")
+            .expect("receive failed");
 
         assert_eq!(response.jsonrpc, "2.0");
         assert_eq!(response.id, Some(serde_json::json!(1)));
@@ -718,13 +694,10 @@ mod tests {
         let transport = StdioTransport::spawn(config).await.unwrap();
 
         // Should skip the invalid line and return the valid message.
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            transport.receive(),
-        )
-        .await
-        .expect("receive timed out")
-        .expect("receive failed");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+            .await
+            .expect("receive timed out")
+            .expect("receive failed");
 
         assert_eq!(response.id, Some(serde_json::json!(1)));
         assert_eq!(response.method.as_deref(), Some("test/valid"));

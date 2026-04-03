@@ -79,7 +79,9 @@ fn require_str(args: &Value, field: &str, tool_name: &str) -> Result<String, Too
 
 /// Extract an optional string field from JSON args.
 fn optional_str(args: &Value, field: &str) -> Option<String> {
-    args.get(field).and_then(|v| v.as_str()).map(|s| s.to_string())
+    args.get(field)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 /// Extract an optional integer field, with a default.
@@ -341,9 +343,10 @@ impl GraphToolExecutor {
             ..Default::default()
         };
 
-        let nodes = ns.query_nodes(filter).await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("search_nodes failed: {}", e))
-        })?;
+        let nodes = ns
+            .query_nodes(filter)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("search_nodes failed: {}", e)))?;
 
         let summaries: Vec<Value> = nodes.iter().map(node_summary).collect();
         Ok(ok_result(
@@ -366,9 +369,7 @@ impl GraphToolExecutor {
         let results = emb
             .semantic_search(&query, limit, SEMANTIC_THRESHOLD)
             .await
-            .map_err(|e| {
-                ToolError::ExecutionFailed(format!("search_semantic failed: {}", e))
-            })?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("search_semantic failed: {}", e)))?;
 
         let items: Vec<Value> = results
             .iter()
@@ -445,9 +446,10 @@ impl GraphToolExecutor {
             properties,
         };
 
-        let node_id = ns.create_node_with_parent(params).await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("create_node failed: {}", e))
-        })?;
+        let node_id = ns
+            .create_node_with_parent(params)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("create_node failed: {}", e)))?;
 
         Ok(ok_result(
             tool_call_id,
@@ -485,8 +487,7 @@ impl GraphToolExecutor {
         if update.content.is_none() && update.properties.is_none() && update.title.is_none() {
             return Err(ToolError::InvalidArguments {
                 tool: "update_node".into(),
-                reason: "At least one of 'title', 'body', or 'properties' must be provided"
-                    .into(),
+                reason: "At least one of 'title', 'body', or 'properties' must be provided".into(),
             });
         }
 
@@ -510,9 +511,7 @@ impl GraphToolExecutor {
 
         ns.update_node(&id, node.version, update)
             .await
-            .map_err(|e| {
-                ToolError::ExecutionFailed(format!("update_node failed: {}", e))
-            })?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("update_node failed: {}", e)))?;
 
         Ok(ok_result(
             tool_call_id,
@@ -551,10 +550,9 @@ impl GraphToolExecutor {
         args: Value,
     ) -> Result<ToolResult, ToolError> {
         let id = require_str(&args, "id", "get_related_nodes")?;
-        let rel_type = optional_str(&args, "relationship_type")
-            .unwrap_or_else(|| "mentions".to_string());
-        let direction = optional_str(&args, "direction")
-            .unwrap_or_else(|| "both".to_string());
+        let rel_type =
+            optional_str(&args, "relationship_type").unwrap_or_else(|| "mentions".to_string());
+        let direction = optional_str(&args, "direction").unwrap_or_else(|| "both".to_string());
 
         // Validate direction before acquiring the service to ensure
         // argument errors are reported correctly even without a database.
@@ -610,10 +608,7 @@ impl GraphToolExecutor {
             .await
             .map(|(svc, _)| svc)
             .map_err(|e| {
-                ToolError::ExecutionFailed(format!(
-                    "Embedding service unavailable: {}",
-                    e.message
-                ))
+                ToolError::ExecutionFailed(format!("Embedding service unavailable: {}", e.message))
             })
     }
 }
@@ -635,12 +630,8 @@ impl AgentToolExecutor for GraphToolExecutor {
             "get_node" => self.exec_get_node(&tool_call_id, args).await,
             "create_node" => self.exec_create_node(&tool_call_id, args).await,
             "update_node" => self.exec_update_node(&tool_call_id, args).await,
-            "create_relationship" => {
-                self.exec_create_relationship(&tool_call_id, args).await
-            }
-            "get_related_nodes" => {
-                self.exec_get_related_nodes(&tool_call_id, args).await
-            }
+            "create_relationship" => self.exec_create_relationship(&tool_call_id, args).await,
+            "get_related_nodes" => self.exec_get_related_nodes(&tool_call_id, args).await,
             _ => Err(ToolError::UnknownTool(name.to_string())),
         }
     }
@@ -803,7 +794,10 @@ mod tests {
         assert!(r.is_error);
         assert_eq!(r.name, "test");
         assert_eq!(r.tool_call_id, "id1");
-        assert!(r.result["error"].as_str().unwrap().contains("something went wrong"));
+        assert!(r.result["error"]
+            .as_str()
+            .unwrap()
+            .contains("something went wrong"));
     }
 
     #[test]
@@ -986,9 +980,7 @@ mod tests {
     #[tokio::test]
     async fn get_related_nodes_missing_id() {
         let executor = GraphToolExecutor::new(AppServices::new());
-        let result = executor
-            .execute("get_related_nodes", json!({}))
-            .await;
+        let result = executor.execute("get_related_nodes", json!({})).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::InvalidArguments { tool, .. } => {

@@ -128,7 +128,10 @@ impl GgufModelManager {
             let path = models_dir.join(entry.filename);
             let status = if path.exists() {
                 ModelStatus::Ready
-            } else if models_dir.join(format!("{}.partial", entry.filename)).exists() {
+            } else if models_dir
+                .join(format!("{}.partial", entry.filename))
+                .exists()
+            {
                 // Partial file from interrupted download
                 ModelStatus::NotDownloaded
             } else {
@@ -148,10 +151,7 @@ impl GgufModelManager {
     }
 
     /// Register a progress callback for download events.
-    pub async fn set_progress_callback(
-        &self,
-        callback: Box<dyn Fn(DownloadEvent) + Send + Sync>,
-    ) {
+    pub async fn set_progress_callback(&self, callback: Box<dyn Fn(DownloadEvent) + Send + Sync>) {
         let mut guard = self.on_progress.write().await;
         *guard = Some(callback);
     }
@@ -481,9 +481,10 @@ async fn perform_download(
         request = request.header("Range", format!("bytes={}-", resume_offset));
     }
 
-    let response = request.send().await.map_err(|e| {
-        ModelError::DownloadFailed(format!("HTTP request failed: {}", e))
-    })?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| ModelError::DownloadFailed(format!("HTTP request failed: {}", e)))?;
 
     let status_code = response.status();
     if !status_code.is_success() && status_code != reqwest::StatusCode::PARTIAL_CONTENT {
@@ -601,9 +602,9 @@ async fn perform_download(
         }
     }
 
-    file.flush().await.map_err(|e| {
-        ModelError::DownloadFailed(format!("flush failed: {}", e))
-    })?;
+    file.flush()
+        .await
+        .map_err(|e| ModelError::DownloadFailed(format!("flush failed: {}", e)))?;
     drop(file);
 
     tracing::info!(
@@ -797,11 +798,7 @@ mod tests {
     async fn list_detects_existing_model_file_as_ready() {
         let tmp = TempDir::new().unwrap();
         // Pre-create a model file
-        std::fs::write(
-            tmp.path().join(MINISTRAL_3B.filename),
-            b"fake model data",
-        )
-        .unwrap();
+        std::fs::write(tmp.path().join(MINISTRAL_3B.filename), b"fake model data").unwrap();
 
         let mgr = GgufModelManager::with_dir(tmp.path().to_path_buf()).unwrap();
         let models = mgr.list().await.unwrap();
@@ -830,9 +827,7 @@ mod tests {
     #[test]
     fn recommended_spec_has_valid_fields() {
         let spec = GgufModelManager::recommended_model_spec();
-        assert!(
-            spec.model_id == "ministral-3b-q4km" || spec.model_id == "ministral-8b-q4km"
-        );
+        assert!(spec.model_id == "ministral-3b-q4km" || spec.model_id == "ministral-8b-q4km");
         assert!(spec.context_window > 0);
         assert!(spec.default_temperature > 0.0);
     }
