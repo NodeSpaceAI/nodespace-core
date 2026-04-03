@@ -253,7 +253,7 @@ pub enum AcpSessionState {
 }
 
 /// Current status of the local agent.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum LocalAgentStatus {
     /// Agent is idle, waiting for user input.
