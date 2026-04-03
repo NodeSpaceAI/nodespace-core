@@ -6,6 +6,7 @@
   import type { Pane } from '$lib/stores/navigation.js';
   import { createLogger } from '$lib/utils/logger';
   import SettingsPane from '$lib/components/settings/settings-pane.svelte';
+  import ChatPanel from '$lib/components/chat/ChatPanel.svelte';
 
   const log = createLogger('PaneContent');
 
@@ -96,6 +97,8 @@
 
 {#if activeTab?.type === 'settings'}
   <SettingsPane />
+{:else if activeTab?.type === 'chat'}
+  <ChatPanel />
 {:else if activeTab?.content}
   {@const content = activeTab.content}
   {@const nodeType = content.nodeType ?? 'text'}
