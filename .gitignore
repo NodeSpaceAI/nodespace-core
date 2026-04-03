@@ -107,6 +107,7 @@ debug_*.rs
 research_*.rs
 *_investigation.rs
 session*.rs
+!**/src/acp/session.rs
 *_test.rs.bak
 check_*.rs
 temp_*.rs
