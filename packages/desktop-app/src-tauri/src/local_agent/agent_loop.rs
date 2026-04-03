@@ -282,7 +282,8 @@ impl<E: ChatInferenceEngine, T: AgentToolExecutor> LocalAgentLoop<E, T> {
         let mut text = String::new();
         let mut tool_calls: Vec<ToolCallRaw> = Vec::new();
         // Accumulate tool call args by id
-        let mut tool_call_args: HashMap<String, (String, String)> = HashMap::new(); // id -> (name, args_json)
+        // Use Vec to preserve tool call ordering (important for causal dependencies)
+        let mut pending_calls: Vec<(String, String, String)> = Vec::new(); // (id, name, args_json)
 
         for chunk in chunks {
             match chunk {
@@ -290,19 +291,19 @@ impl<E: ChatInferenceEngine, T: AgentToolExecutor> LocalAgentLoop<E, T> {
                     text.push_str(t);
                 }
                 StreamingChunk::ToolCallStart { id, name } => {
-                    tool_call_args.insert(id.clone(), (name.clone(), String::new()));
+                    pending_calls.push((id.clone(), name.clone(), String::new()));
                 }
                 StreamingChunk::ToolCallArgs { id, args_json } => {
-                    if let Some((_, ref mut args)) = tool_call_args.get_mut(id) {
-                        args.push_str(args_json);
+                    if let Some(call) = pending_calls.iter_mut().rev().find(|(cid, _, _)| cid == id) {
+                        call.2.push_str(args_json);
                     }
                 }
                 StreamingChunk::Done { .. } | StreamingChunk::Error { .. } => {}
             }
         }
 
-        // Convert accumulated tool call args into ToolCallRaw
-        for (id, (name, args_json)) in tool_call_args {
+        // Convert accumulated tool calls into ToolCallRaw (order preserved)
+        for (id, name, args_json) in pending_calls {
             tool_calls.push(ToolCallRaw {
                 id,
                 function_name: name,
