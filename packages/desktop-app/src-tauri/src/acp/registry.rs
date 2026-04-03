@@ -132,13 +132,22 @@ async fn version_probe(binary_path: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 /// Check whether the required authentication is satisfied.
-fn auth_satisfied(method: &AcpAuthMethod) -> bool {
+///
+/// The `env_lookup` closure resolves environment variable names to their values,
+/// allowing tests to inject mock lookups instead of mutating process-global env
+/// vars (which is unsound under multi-threaded test runners).
+fn auth_satisfied(method: &AcpAuthMethod, env_lookup: impl Fn(&str) -> Option<String>) -> bool {
     match method {
         AcpAuthMethod::AgentManaged => true,
-        AcpAuthMethod::EnvApiKey { var_name } => std::env::var(var_name)
+        AcpAuthMethod::EnvApiKey { var_name } => env_lookup(var_name)
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false),
     }
+}
+
+/// Default env lookup using `std::env::var`.
+fn std_env_lookup(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -191,7 +200,7 @@ impl SystemAgentRegistry {
             let (available, version, binary_path) = if probe.found {
                 let path = probe.path.as_deref().unwrap_or(entry.binary_name);
                 let ver = version_probe(path).await;
-                let auth_ok = auth_satisfied(&entry.auth_method);
+                let auth_ok = auth_satisfied(&entry.auth_method, std_env_lookup);
                 (auth_ok, ver, path.to_string())
             } else {
                 (false, None, entry.binary_name.to_string())
@@ -231,6 +240,13 @@ impl SystemAgentRegistry {
         let cache = Arc::clone(&self.cache);
 
         tokio::spawn(async move {
+            // Create a temporary registry that shares no state but can run
+            // full_probe(). The results are written into the shared cache.
+            let probe_registry = SystemAgentRegistry {
+                cache: Arc::clone(&cache),
+                background_started: Arc::new(RwLock::new(true)),
+            };
+
             let mut interval = tokio::time::interval(BACKGROUND_REFRESH_INTERVAL);
             // The first tick completes immediately; skip it since we just probed.
             interval.tick().await;
@@ -238,36 +254,8 @@ impl SystemAgentRegistry {
             loop {
                 interval.tick().await;
 
-                let catalog = agent_catalog();
-                let mut agents = Vec::with_capacity(catalog.len());
-
-                for entry in &catalog {
-                    let probe = probe_binary(entry.binary_name);
-                    let (available, version, binary_path) = if probe.found {
-                        let path = probe.path.as_deref().unwrap_or(entry.binary_name);
-                        let ver = version_probe(path).await;
-                        let auth_ok = auth_satisfied(&entry.auth_method);
-                        (auth_ok, ver, path.to_string())
-                    } else {
-                        (false, None, entry.binary_name.to_string())
-                    };
-
-                    agents.push(AcpAgentInfo {
-                        id: entry.id.to_string(),
-                        name: entry.name.to_string(),
-                        binary: binary_path,
-                        args: entry.args.iter().map(|s| s.to_string()).collect(),
-                        auth_method: entry.auth_method.clone(),
-                        available,
-                        version,
-                    });
-                }
-
-                let mut guard = cache.write().await;
-                *guard = Some(CachedDiscovery {
-                    agents,
-                    discovered_at: Instant::now(),
-                });
+                let agents = probe_registry.full_probe().await;
+                probe_registry.update_cache(agents).await;
             }
         });
     }
@@ -387,53 +375,58 @@ mod tests {
     }
 
     // -- Auth validation -----------------------------------------------------
+    //
+    // Tests inject a mock env lookup closure instead of mutating process-global
+    // env vars, which would be unsound under Rust's multi-threaded test runner.
 
     #[test]
     fn agent_managed_auth_always_satisfied() {
-        assert!(auth_satisfied(&AcpAuthMethod::AgentManaged));
+        let no_env = |_: &str| -> Option<String> { None };
+        assert!(auth_satisfied(&AcpAuthMethod::AgentManaged, no_env));
     }
 
     #[test]
     fn env_api_key_satisfied_when_set() {
-        // Use a unique env var name to avoid test interference.
-        let var = "NODESPACE_TEST_KEY_PRESENT_123";
-        std::env::set_var(var, "sk-test-key");
-        let result = auth_satisfied(&AcpAuthMethod::EnvApiKey {
-            var_name: var.to_string(),
-        });
-        std::env::remove_var(var);
-        assert!(result);
+        let lookup = |_: &str| -> Option<String> { Some("sk-test-key".to_string()) };
+        assert!(auth_satisfied(
+            &AcpAuthMethod::EnvApiKey {
+                var_name: "ANY_KEY".to_string(),
+            },
+            lookup,
+        ));
     }
 
     #[test]
     fn env_api_key_not_satisfied_when_missing() {
-        let var = "NODESPACE_TEST_KEY_ABSENT_456";
-        std::env::remove_var(var);
-        assert!(!auth_satisfied(&AcpAuthMethod::EnvApiKey {
-            var_name: var.to_string(),
-        }));
+        let lookup = |_: &str| -> Option<String> { None };
+        assert!(!auth_satisfied(
+            &AcpAuthMethod::EnvApiKey {
+                var_name: "MISSING_KEY".to_string(),
+            },
+            lookup,
+        ));
     }
 
     #[test]
     fn env_api_key_not_satisfied_when_empty() {
-        let var = "NODESPACE_TEST_KEY_EMPTY_789";
-        std::env::set_var(var, "");
-        let result = auth_satisfied(&AcpAuthMethod::EnvApiKey {
-            var_name: var.to_string(),
-        });
-        std::env::remove_var(var);
-        assert!(!result);
+        let lookup = |_: &str| -> Option<String> { Some("".to_string()) };
+        assert!(!auth_satisfied(
+            &AcpAuthMethod::EnvApiKey {
+                var_name: "EMPTY_KEY".to_string(),
+            },
+            lookup,
+        ));
     }
 
     #[test]
     fn env_api_key_not_satisfied_when_whitespace_only() {
-        let var = "NODESPACE_TEST_KEY_WS_012";
-        std::env::set_var(var, "   ");
-        let result = auth_satisfied(&AcpAuthMethod::EnvApiKey {
-            var_name: var.to_string(),
-        });
-        std::env::remove_var(var);
-        assert!(!result);
+        let lookup = |_: &str| -> Option<String> { Some("   ".to_string()) };
+        assert!(!auth_satisfied(
+            &AcpAuthMethod::EnvApiKey {
+                var_name: "WS_KEY".to_string(),
+            },
+            lookup,
+        ));
     }
 
     // -- Binary probe (real PATH) -------------------------------------------
@@ -543,12 +536,11 @@ mod tests {
 
     #[tokio::test]
     async fn env_api_key_agent_unavailable_without_key() {
-        // Ensure the env var is unset for this test.
-        std::env::remove_var("MISTRAL_API_KEY");
+        // The `vibe-acp` binary is not installed in test environments, so
+        // `available` is false before auth is even checked. This test validates
+        // the end-to-end path without needing to manipulate env vars.
         let registry = SystemAgentRegistry::new();
         let agent = registry.get_agent("mistral-vibe").await.unwrap();
-        // If the binary isn't found, available is false regardless.
-        // If it IS found but the key is missing, available should still be false.
         assert!(!agent.available);
     }
 }

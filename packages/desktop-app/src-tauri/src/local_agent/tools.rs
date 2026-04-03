@@ -153,10 +153,6 @@ fn def_search_semantic() -> ToolDefinition {
                 "limit": {
                     "type": "integer",
                     "description": "Max results to return (default 5)"
-                },
-                "collection": {
-                    "type": "string",
-                    "description": "Optional collection name to filter results"
                 }
             },
             "required": ["query"]
@@ -271,7 +267,7 @@ fn def_create_relationship() -> ToolDefinition {
 fn def_get_related_nodes() -> ToolDefinition {
     ToolDefinition {
         name: "get_related_nodes".into(),
-        description: "Get all nodes related to a given node".into(),
+        description: "Get nodes related to a given node. Defaults to 'mentions' relationship type if not specified.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -281,7 +277,7 @@ fn def_get_related_nodes() -> ToolDefinition {
                 },
                 "relationship_type": {
                     "type": "string",
-                    "description": "Optional filter by relationship type"
+                    "description": "Relationship type to query (default: 'mentions')"
                 },
                 "direction": {
                     "type": "string",
@@ -364,9 +360,6 @@ impl GraphToolExecutor {
     ) -> Result<ToolResult, ToolError> {
         let query = require_str(&args, "query", "search_semantic")?;
         let limit = optional_usize(&args, "limit", DEFAULT_SEMANTIC_LIMIT);
-        // `collection` is accepted by the schema but filtering by collection
-        // is not directly supported by the embedding service's semantic_search.
-        // We accept the param for forward-compatibility but ignore it for now.
 
         let emb = self.embedding_service().await?;
 
@@ -563,8 +556,8 @@ impl GraphToolExecutor {
         let direction = optional_str(&args, "direction")
             .unwrap_or_else(|| "both".to_string());
 
-        let ns = self.node_service().await?;
-
+        // Validate direction before acquiring the service to ensure
+        // argument errors are reported correctly even without a database.
         let directions: Vec<&str> = match direction.as_str() {
             "out" => vec!["out"],
             "in" => vec!["in"],
@@ -576,6 +569,8 @@ impl GraphToolExecutor {
                 });
             }
         };
+
+        let ns = self.node_service().await?;
 
         let mut all_nodes: Vec<Value> = Vec::new();
         for dir in &directions {

@@ -493,6 +493,33 @@ async fn perform_download(
         )));
     }
 
+    // If we requested a range but the server responded with 200 (not 206),
+    // the server is sending the entire file from the beginning. Truncate the
+    // partial file to avoid prepending stale bytes.
+    let effective_offset = if resume_offset > 0 && status_code == reqwest::StatusCode::OK {
+        tracing::warn!(
+            "Server returned 200 instead of 206 for range request on '{}'; \
+             truncating partial file and restarting from byte 0",
+            model_id
+        );
+        // Truncate the existing partial file
+        tokio::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&partial_path)
+            .await
+            .map_err(|e| {
+                ModelError::DownloadFailed(format!(
+                    "failed to truncate partial file {}: {}",
+                    partial_path.display(),
+                    e
+                ))
+            })?;
+        0u64
+    } else {
+        resume_offset
+    };
+
     // Open file for append (resume) or create
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
@@ -507,7 +534,7 @@ async fn perform_download(
             ))
         })?;
 
-    let mut bytes_downloaded = resume_offset;
+    let mut bytes_downloaded = effective_offset;
     let mut stream = std::pin::pin!(response.bytes_stream());
     let mut last_progress_report = std::time::Instant::now();
     let progress_interval = std::time::Duration::from_millis(250);
