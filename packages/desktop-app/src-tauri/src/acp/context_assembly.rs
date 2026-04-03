@@ -898,7 +898,7 @@ mod tests {
             "Hello world",                                      // 11 chars
             "This is a typical sentence with several words.",    // 46 chars
             "# Heading\n\nSome **markdown** content here.\n",   // 42 chars
-            &"Mixed content with code: `fn main() {}` and lists:\n- item 1\n- item 2\n".to_string(),
+            "Mixed content with code: `fn main() {}` and lists:\n- item 1\n- item 2\n",
         ];
 
         for sample in samples {

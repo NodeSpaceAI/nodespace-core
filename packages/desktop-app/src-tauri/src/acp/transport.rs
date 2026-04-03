@@ -60,6 +60,12 @@ pub struct StdioTransport {
     _stderr_handle: tokio::task::JoinHandle<()>,
 }
 
+impl std::fmt::Debug for StdioTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StdioTransport").finish_non_exhaustive()
+    }
+}
+
 impl StdioTransport {
     /// Spawn a new agent subprocess and start background I/O tasks.
     ///
