@@ -45,8 +45,14 @@ tower-http = { version = "0.6", features = ["cors"] }
 surrealdb = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
+<<<<<<< HEAD
 which = "7"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+=======
+sysinfo = "0.33"
+sha2 = "0.10"
+reqwest = { version = "0.12", features = ["stream"] }
+>>>>>>> 11614e9a (feat: GGUF model manager with download, verification, and lifecycle (closes #1000))
 
