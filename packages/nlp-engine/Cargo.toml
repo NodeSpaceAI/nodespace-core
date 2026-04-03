@@ -39,8 +39,9 @@ tempfile = "3.0"
 futures = "0.3"
 
 [features]
-default = ["embedding-service"]
+default = ["embedding-service", "chat-service"]
 embedding-service = ["llama-cpp-2"]
+chat-service = ["llama-cpp-2"]
 
 # GPU acceleration features
 cuda = ["llama-cpp-2/cuda"]

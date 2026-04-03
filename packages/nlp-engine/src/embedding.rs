@@ -26,7 +26,7 @@ const SEARCH_QUERY_PREFIX: &str = "search_query: ";
 use llama_cpp_2::context::params::LlamaContextParams;
 #[cfg(feature = "embedding-service")]
 use llama_cpp_2::context::LlamaContext;
-#[cfg(feature = "embedding-service")]
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
 use llama_cpp_2::llama_backend::LlamaBackend;
 #[cfg(feature = "embedding-service")]
 use llama_cpp_2::llama_batch::LlamaBatch;
@@ -43,9 +43,9 @@ use llama_cpp_2::model::{AddBos, LlamaModel};
 /// destruction when the C runtime state is already partially torn down.
 ///
 /// The llama.cpp backend can only be initialized once per process.
-/// The Mutex ensures thread-safe initialization and allows multiple EmbeddingService
-/// instances to share the same backend (important for tests running in parallel).
-#[cfg(feature = "embedding-service")]
+/// The Mutex ensures thread-safe initialization and allows multiple services
+/// (embedding, chat) to share the same backend.
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
 static LLAMA_BACKEND: Mutex<Option<LlamaBackend>> = Mutex::new(None);
 
 /// Global registry of active LlamaState instances for atexit cleanup.
@@ -64,15 +64,19 @@ static LLAMA_STATES: Mutex<Vec<Arc<Mutex<Option<LlamaState>>>>> = Mutex::new(Vec
 
 /// Register an `atexit` handler that releases GPU resources before C++ static
 /// destructors run. Called once when the first model is loaded.
-#[cfg(feature = "embedding-service")]
-fn register_atexit_handler() {
+///
+/// Shared between embedding and chat services since both load models
+/// into the same global llama.cpp backend.
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+pub(crate) fn register_atexit_handler() {
     use std::sync::atomic::{AtomicBool, Ordering};
     static REGISTERED: AtomicBool = AtomicBool::new(false);
     if REGISTERED.swap(true, Ordering::SeqCst) {
         return;
     }
     extern "C" fn cleanup() {
-        // Drop all model+context instances first (releases Metal residency sets)
+        // Drop embedding model+context instances first (releases Metal residency sets)
+        #[cfg(feature = "embedding-service")]
         {
             let states = LLAMA_STATES.lock().unwrap_or_else(|p| p.into_inner());
             for state_arc in states.iter() {
@@ -113,8 +117,10 @@ fn register_state_for_cleanup(state: &Arc<Mutex<Option<LlamaState>>>) {
 ///
 /// The returned `BackendGuard` must be held for the duration of backend usage
 /// (e.g., model loading, context creation).
-#[cfg(feature = "embedding-service")]
-fn get_or_init_backend() -> Result<BackendGuard> {
+///
+/// Shared between embedding and chat services.
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+pub(crate) fn get_or_init_backend() -> std::result::Result<BackendGuard, String> {
     use llama_cpp_2::LlamaCppError;
 
     let mut guard = LLAMA_BACKEND.lock().unwrap_or_else(|p| p.into_inner());
@@ -140,15 +146,12 @@ fn get_or_init_backend() -> Result<BackendGuard> {
                     *guard = Some(backend);
                     Ok(BackendGuard(guard))
                 }
-                Err(_) => Err(EmbeddingError::ModelLoadError(
+                Err(_) => Err(
                     "Backend initialization failed after multiple attempts".to_string(),
-                )),
+                ),
             }
         }
-        Err(e) => Err(EmbeddingError::ModelLoadError(format!(
-            "Backend init failed: {}",
-            e
-        ))),
+        Err(e) => Err(format!("Backend init failed: {}", e)),
     }
 }
 
@@ -156,10 +159,10 @@ fn get_or_init_backend() -> Result<BackendGuard> {
 ///
 /// Dereferences to `&LlamaBackend` for convenient use with llama.cpp APIs.
 /// The lock is released when the guard is dropped.
-#[cfg(feature = "embedding-service")]
-struct BackendGuard(std::sync::MutexGuard<'static, Option<LlamaBackend>>);
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
+pub(crate) struct BackendGuard(std::sync::MutexGuard<'static, Option<LlamaBackend>>);
 
-#[cfg(feature = "embedding-service")]
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
 impl std::ops::Deref for BackendGuard {
     type Target = LlamaBackend;
 
@@ -178,7 +181,7 @@ impl std::ops::Deref for BackendGuard {
 ///
 /// Must be called AFTER all `LlamaState` instances (models, contexts) are dropped.
 /// Safe to call multiple times (idempotent).
-#[cfg(feature = "embedding-service")]
+#[cfg(any(feature = "embedding-service", feature = "chat-service"))]
 pub fn release_llama_backend() {
     let mut guard = LLAMA_BACKEND.lock().unwrap_or_else(|p| p.into_inner());
     if guard.take().is_some() {
@@ -186,10 +189,10 @@ pub fn release_llama_backend() {
     }
 }
 
-/// Explicitly release the global llama backend (no-op when embedding-service feature is disabled).
-#[cfg(not(feature = "embedding-service"))]
+/// Explicitly release the global llama backend (no-op when features are disabled).
+#[cfg(not(any(feature = "embedding-service", feature = "chat-service")))]
 pub fn release_llama_backend() {
-    // No-op: no backend to release when embedding-service feature is disabled
+    // No-op: no backend to release when llama features are disabled
 }
 
 /// Wrapper to hold model and context together with proper lifetimes.
@@ -268,7 +271,7 @@ impl LlamaState {
                 .with_embeddings(true);
 
             // Get the global backend (holds Mutex lock for duration of context creation)
-            let backend = get_or_init_backend()?;
+            let backend = get_or_init_backend().map_err(EmbeddingError::ModelLoadError)?;
             let ctx = self.model.new_context(&backend, ctx_params).map_err(|e| {
                 EmbeddingError::InferenceError(format!("Context creation failed: {}", e))
             })?;
@@ -368,7 +371,7 @@ impl EmbeddingService {
 
             // Initialize llama.cpp backend (uses global singleton)
             // BackendGuard holds the Mutex lock for the duration of model loading
-            let backend = get_or_init_backend()?;
+            let backend = get_or_init_backend().map_err(EmbeddingError::ModelLoadError)?;
 
             // Load model with GPU offloading
             let model_params =

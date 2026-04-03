@@ -1,7 +1,12 @@
-/// NodeSpace NLP Engine - Unified Vector Embedding Service
+/// NodeSpace NLP Engine - Embedding and Chat Inference Services
 ///
-/// This crate provides a high-performance embedding service using llama.cpp
-/// with nomic-embed-vision for semantic search across NodeSpace knowledge graphs.
+/// This crate provides high-performance local LLM services using llama.cpp:
+///
+/// - **Embeddings**: Semantic search via nomic-embed-vision GGUF models
+/// - **Chat Inference**: Streaming text generation with tool-call parsing
+///
+/// Both services share a single llama.cpp backend and can coexist on the
+/// same GPU (validated with Metal on macOS).
 ///
 /// # Features
 ///
@@ -9,7 +14,8 @@
 /// - **Metal GPU Acceleration**: Native Metal support on macOS via llama.cpp
 /// - **Efficient Caching**: LRU cache with automatic eviction for <5ms cache hits
 /// - **Asymmetric Embeddings**: Separate prefixes for documents vs queries
-/// - **Vision Ready**: Foundation for future multimodal embedding support
+/// - **Streaming Chat**: Token-by-token generation with callback-based streaming
+/// - **Tool-Call Parsing**: Mistral raw GGUF `[TOOL_CALLS]` format parser
 ///
 /// # Example
 ///
@@ -33,11 +39,20 @@
 ///     Ok(())
 /// }
 /// ```
+pub mod chat;
 pub mod config;
 pub mod embedding;
 pub mod error;
 
-// Re-export main types
+// Re-export embedding types
 pub use config::EmbeddingConfig;
 pub use embedding::{release_llama_backend, EmbeddingService, EMBEDDING_DIMENSION};
 pub use error::{EmbeddingError, Result};
+
+// Re-export chat types
+pub use chat::error::ChatError;
+pub use chat::parser::{parse_tool_calls, ParseResult, ParsedToolCall, StreamingToolCallParser};
+pub use chat::types::{
+    ChatChunk, ChatConfig, ChatMessageInput, ChatUsage, LoadedModelInfo, ToolSpec,
+};
+pub use chat::ChatEngine;
