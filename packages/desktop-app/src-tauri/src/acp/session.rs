@@ -195,9 +195,7 @@ impl AcpSession {
             Err(e) => {
                 let reason = format!("transport spawn failed: {e}");
                 error!(session_id = %self.id, error = %e, "Failed to spawn agent transport");
-                self.state = AcpSessionState::Failed {
-                    reason: reason.clone(),
-                };
+                let _ = self.transition(AcpSessionState::Failed { reason });
                 return Err(SessionError::Transport(e));
             }
         };
@@ -220,7 +218,7 @@ impl AcpSession {
 
         if let Err(e) = self.transport_send(&init_msg).await {
             let reason = format!("failed to send initialize: {e}");
-            self.state = AcpSessionState::Failed { reason };
+            let _ = self.transition(AcpSessionState::Failed { reason });
             return Err(e);
         }
 
@@ -235,9 +233,9 @@ impl AcpSession {
                         "agent returned error during initialization: {:?}",
                         response.error
                     );
-                    self.state = AcpSessionState::Failed {
+                    let _ = self.transition(AcpSessionState::Failed {
                         reason: reason.clone(),
-                    };
+                    });
                     return Err(SessionError::Other(anyhow::anyhow!(reason)));
                 }
                 debug!(
@@ -247,13 +245,13 @@ impl AcpSession {
             }
             Ok(Err(e)) => {
                 let reason = format!("transport error during initialization: {e}");
-                self.state = AcpSessionState::Failed { reason };
+                let _ = self.transition(AcpSessionState::Failed { reason });
                 return Err(e);
             }
             Err(_elapsed) => {
                 let reason = format!("initialization timed out after {:?}", INIT_TIMEOUT);
                 warn!(session_id = %self.id, %reason);
-                self.state = AcpSessionState::Failed { reason };
+                let _ = self.transition(AcpSessionState::Failed { reason });
                 return Err(SessionError::InitTimeout(INIT_TIMEOUT));
             }
         }
@@ -275,7 +273,7 @@ impl AcpSession {
 
         if let Err(e) = self.transport_send(&session_new_msg).await {
             let reason = format!("failed to send session/new: {e}");
-            self.state = AcpSessionState::Failed { reason };
+            let _ = self.transition(AcpSessionState::Failed { reason });
             return Err(e);
         }
 
@@ -289,9 +287,9 @@ impl AcpSession {
                         "agent returned error during session/new: {:?}",
                         response.error
                     );
-                    self.state = AcpSessionState::Failed {
+                    let _ = self.transition(AcpSessionState::Failed {
                         reason: reason.clone(),
-                    };
+                    });
                     return Err(SessionError::Other(anyhow::anyhow!(reason)));
                 }
                 debug!(
@@ -301,13 +299,13 @@ impl AcpSession {
             }
             Ok(Err(e)) => {
                 let reason = format!("transport error during session/new: {e}");
-                self.state = AcpSessionState::Failed { reason };
+                let _ = self.transition(AcpSessionState::Failed { reason });
                 return Err(e);
             }
             Err(_elapsed) => {
                 let reason = format!("session/new timed out after {:?}", INIT_TIMEOUT);
                 warn!(session_id = %self.id, %reason);
-                self.state = AcpSessionState::Failed { reason };
+                let _ = self.transition(AcpSessionState::Failed { reason });
                 return Err(SessionError::InitTimeout(INIT_TIMEOUT));
             }
         }
@@ -367,13 +365,16 @@ impl AcpSession {
     }
 
     /// Mark the session as failed with a reason.
-    fn fail(&mut self, reason: String) {
+    ///
+    /// Routes through `transition()` to enforce the state machine: Failed is
+    /// only reachable from Initializing, Active, or Completing.
+    fn fail(&mut self, reason: String) -> Result<(), SessionError> {
         warn!(
             session_id = %self.id,
             %reason,
             "Session failed"
         );
-        self.state = AcpSessionState::Failed { reason };
+        self.transition(AcpSessionState::Failed { reason })
     }
 
     // -- Internal transport helpers --
@@ -411,9 +412,11 @@ impl AcpSession {
 
 /// Manages multiple ACP sessions, enforcing one session per agent type.
 ///
-/// Thread-safe via interior mutability (`Arc<Mutex<...>>`).
+/// Thread-safe via interior mutability. The outer `Mutex` protects the map
+/// itself; each session has its own `Arc<Mutex<AcpSession>>` so that I/O on
+/// one session does not block operations on others.
 pub struct AcpClientService {
-    sessions: Mutex<HashMap<String, AcpSession>>,
+    sessions: Mutex<HashMap<String, Arc<Mutex<AcpSession>>>>,
     registry: Arc<dyn AgentRegistry>,
 }
 
@@ -432,6 +435,10 @@ impl AcpClientService {
     /// runs the initialization handshake. Returns the session ID on success.
     ///
     /// Fails if a session already exists for this agent.
+    ///
+    /// To prevent TOCTOU races, a placeholder session is inserted into the
+    /// map *before* the slow `initialize()` call. If initialization fails
+    /// the placeholder is removed.
     pub async fn start_session(&self, agent_id: &str) -> Result<String, SessionError> {
         // Verify agent via registry
         let agent_info = self
@@ -444,15 +451,6 @@ impl AcpClientService {
             return Err(SessionError::AgentNotAvailable(agent_id.to_string()));
         }
 
-        // Check for duplicate session
-        {
-            let sessions = self.sessions.lock().await;
-            if sessions.contains_key(agent_id) {
-                return Err(SessionError::DuplicateSession(agent_id.to_string()));
-            }
-        }
-
-        // Create and initialize session
         let session_id = format!(
             "acp-{}-{}",
             agent_id,
@@ -463,13 +461,32 @@ impl AcpClientService {
                 .unwrap_or("0")
         );
 
-        let mut session = AcpSession::new(session_id.clone(), agent_info);
-        session.initialize().await?;
-
-        // Store session keyed by agent_id
-        {
+        // Reserve the slot while holding the lock -- prevents concurrent
+        // callers from passing the duplicate check during initialization.
+        let session_arc = {
             let mut sessions = self.sessions.lock().await;
-            sessions.insert(agent_id.to_string(), session);
+            if sessions.contains_key(agent_id) {
+                return Err(SessionError::DuplicateSession(agent_id.to_string()));
+            }
+
+            let session = AcpSession::new(session_id.clone(), agent_info);
+            let arc = Arc::new(Mutex::new(session));
+            sessions.insert(agent_id.to_string(), arc.clone());
+            arc
+        };
+
+        // Initialize outside the outer lock -- only the per-session lock is
+        // held, so other agents are not blocked.
+        let init_result = {
+            let mut session = session_arc.lock().await;
+            session.initialize().await
+        };
+
+        if let Err(e) = init_result {
+            // Remove the reserved slot on failure
+            let mut sessions = self.sessions.lock().await;
+            sessions.remove(agent_id);
+            return Err(e);
         }
 
         info!(session_id = %session_id, agent = %agent_id, "Session started");
@@ -482,43 +499,56 @@ impl AcpClientService {
         agent_id: &str,
         message: AcpMessage,
     ) -> Result<(), SessionError> {
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(agent_id)
-            .ok_or_else(|| SessionError::SessionNotFound(agent_id.to_string()))?;
+        let session_arc = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(agent_id)
+                .cloned()
+                .ok_or_else(|| SessionError::SessionNotFound(agent_id.to_string()))?
+        };
 
+        let mut session = session_arc.lock().await;
         session.send_message(message).await
     }
 
     /// Receive the next message from an agent's session.
     pub async fn receive_message(&self, agent_id: &str) -> Result<AcpMessage, SessionError> {
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(agent_id)
-            .ok_or_else(|| SessionError::SessionNotFound(agent_id.to_string()))?;
+        let session_arc = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(agent_id)
+                .cloned()
+                .ok_or_else(|| SessionError::SessionNotFound(agent_id.to_string()))?
+        };
 
+        let mut session = session_arc.lock().await;
         session.receive_message().await
     }
 
     /// End an agent's session gracefully.
     pub async fn end_session(&self, agent_id: &str) -> Result<(), SessionError> {
-        let mut session = {
+        let session_arc = {
             let mut sessions = self.sessions.lock().await;
             sessions
                 .remove(agent_id)
                 .ok_or_else(|| SessionError::SessionNotFound(agent_id.to_string()))?
         };
 
+        let mut session = session_arc.lock().await;
         session.end().await
     }
 
     /// Get the current state of an agent's session.
     pub async fn get_session_state(&self, agent_id: &str) -> Result<AcpSessionState, SessionError> {
-        let sessions = self.sessions.lock().await;
-        let session = sessions
-            .get(agent_id)
-            .ok_or_else(|| SessionError::SessionNotFound(agent_id.to_string()))?;
+        let session_arc = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(agent_id)
+                .cloned()
+                .ok_or_else(|| SessionError::SessionNotFound(agent_id.to_string()))?
+        };
 
+        let session = session_arc.lock().await;
         Ok(session.state().clone())
     }
 
@@ -528,13 +558,21 @@ impl AcpClientService {
     /// outside of a send/receive call) needs to mark the session as failed.
     /// The session is removed from the active sessions map after being marked.
     pub async fn fail_session(&self, agent_id: &str, reason: String) -> Result<(), SessionError> {
-        let mut sessions = self.sessions.lock().await;
-        let session = sessions
-            .get_mut(agent_id)
-            .ok_or_else(|| SessionError::SessionNotFound(agent_id.to_string()))?;
+        let session_arc = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(agent_id)
+                .cloned()
+                .ok_or_else(|| SessionError::SessionNotFound(agent_id.to_string()))?
+        };
 
-        session.fail(reason);
+        // Lock the individual session and attempt the transition
+        let mut session = session_arc.lock().await;
+        session.fail(reason)?;
+        drop(session);
+
         // Remove the failed session so a new one can be started
+        let mut sessions = self.sessions.lock().await;
         sessions.remove(agent_id);
         Ok(())
     }
@@ -865,14 +903,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_session_fail_marks_failed() {
+    async fn test_session_fail_marks_failed_from_active() {
         let info = test_agent_info("agent-f");
         let mut session = AcpSession::new("test-fail".to_string(), info);
-        session.fail("something went wrong".to_string());
+        session.transition(AcpSessionState::Initializing).unwrap();
+        session.transition(AcpSessionState::Active).unwrap();
+        let result = session.fail("something went wrong".to_string());
+        assert!(result.is_ok());
         assert!(matches!(
             session.state(),
             AcpSessionState::Failed { reason } if reason == "something went wrong"
         ));
+    }
+
+    #[test]
+    fn test_session_fail_rejects_idle() {
+        let info = test_agent_info("agent-f");
+        let mut session = AcpSession::new("test-fail-idle".to_string(), info);
+        // fail() from Idle is not a valid transition
+        let result = session.fail("should not work".to_string());
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            SessionError::InvalidTransition { .. }
+        ));
+        // State should remain Idle
+        assert_eq!(*session.state(), AcpSessionState::Idle);
     }
 
     // =========================================================================
