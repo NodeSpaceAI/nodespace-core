@@ -425,8 +425,16 @@ async fn main() -> anyhow::Result<()> {
     let nlp_engine_arc = Arc::new(nlp_engine);
     println!("✅ NLP engine initialized");
 
-    // Initialize embedding service for MCP semantic search
-    let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine_arc, store.clone()));
+    // Initialize embedding service (Issue #1018: behavior-driven via NodeAccessor)
+    let node_accessor: Arc<dyn nodespace_core::services::NodeAccessor> =
+        Arc::new(node_service.clone());
+    let behaviors = node_service.behaviors().clone();
+    let embedding_service = Arc::new(NodeEmbeddingService::new(
+        nlp_engine_arc,
+        store.clone(),
+        node_accessor,
+        behaviors,
+    ));
 
     // Initialize background embedding processor (event-driven, Issue #729)
     // Processes stale embeddings in the background - no polling, wakes on demand

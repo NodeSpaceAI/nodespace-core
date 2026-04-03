@@ -27,7 +27,7 @@ async fn test_schema_property_hydration() -> Result<(), Box<dyn std::error::Erro
     );
 
     println!("📝 Creating schema node with ID 'date'...");
-    let created = store.create_node(schema_node, None).await?;
+    let created = store.create_node(schema_node, None, None).await?;
     println!("✅ Schema node created: {:?}", created.id);
     println!(
         "    Properties on created node: {}",

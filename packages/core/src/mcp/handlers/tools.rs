@@ -974,6 +974,12 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                         "type": "boolean",
                         "description": "Include archived nodes in search results (default: false). By default, search only returns active nodes. Set to true to also include archived content.",
                         "default": false
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["knowledge", "conversations", "everything"],
+                        "description": "Search scope: 'knowledge' (text, header, code-block, schema, table — default), 'conversations' (ai-chat only), 'everything' (all embeddable types)",
+                        "default": "knowledge"
                     }
                 },
                 "required": ["query"]

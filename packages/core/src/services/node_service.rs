@@ -27,11 +27,12 @@
 use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::events::DomainEvent;
 use crate::db::{extract_record_key, StoreChange, StoreOperation, SurrealStore};
-use crate::models::embedding::is_embeddable_type;
 use crate::models::schema::SchemaRelationship;
 use crate::models::{Node, NodeFilter, NodeUpdate};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
+use crate::services::NodeAccessor;
+use async_trait::async_trait;
 use regex::Regex;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -942,6 +943,42 @@ impl NodeService {
     /// Useful for advanced operations that need direct database access
     pub fn store(&self) -> &Arc<SurrealStore> {
         &self.store
+    }
+
+    /// Get a reference to the behavior registry (Issue #1018)
+    pub fn behaviors(&self) -> &Arc<NodeBehaviorRegistry> {
+        &self.behaviors
+    }
+
+    /// Check if a node type is embeddable according to its behavior (Issue #1018)
+    ///
+    /// Uses `NodeBehavior::get_embeddable_content()` on a probe node to determine
+    /// if this node type can ever produce embeddable content. Types that unconditionally
+    /// return `None` (task, date, collection, etc.) are not embeddable.
+    ///
+    /// For types that are conditionally embeddable (based on content), this creates
+    /// a probe node with non-empty content. If the behavior still returns `None`,
+    /// the type is never embeddable.
+    fn is_embeddable_type(&self, node_type: &str) -> bool {
+        let behavior: Arc<dyn crate::behaviors::NodeBehavior> = self
+            .behaviors
+            .get(node_type)
+            .unwrap_or_else(|| Arc::new(crate::behaviors::CustomNodeBehavior::new(node_type)));
+        // Probe with non-empty content to see if the behavior can ever return Some
+        let probe = Node {
+            id: "probe".to_string(),
+            node_type: node_type.to_string(),
+            content: "probe content".to_string(),
+            version: 1,
+            properties: serde_json::json!({}),
+            mentions: vec![],
+            mentioned_in: vec![],
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+        behavior.get_embeddable_content(&probe).is_some()
     }
 
     /// Create a new NodeService with a client identifier
@@ -2062,7 +2099,7 @@ impl NodeService {
         } else {
             // Step 7b: Root node created - queue for embedding if embeddable type
             // (Issue #729 - root-aggregate model)
-            if is_embeddable_type(&node_type) {
+            if self.is_embeddable_type(&node_type) {
                 if let Err(e) = self.store.create_stale_embedding_marker(&created_id).await {
                     // Log warning but don't fail the creation - embedding will be regenerated later
                     tracing::warn!(
@@ -2942,11 +2979,17 @@ impl NodeService {
         // Fire-and-forget: don't block the update response on embedding queue operations
         if content_changed {
             let store = self.store.clone();
+            let behaviors = self.behaviors.clone();
             let node_id = id.to_string();
             let embedding_waker = self.embedding_waker.clone();
             tokio::spawn(async move {
-                Self::queue_root_for_embedding_async(&store, &node_id, embedding_waker.as_ref())
-                    .await;
+                Self::queue_root_for_embedding_async(
+                    &store,
+                    &behaviors,
+                    &node_id,
+                    embedding_waker.as_ref(),
+                )
+                .await;
             });
         }
 
@@ -3718,7 +3761,7 @@ impl NodeService {
         };
 
         // Only queue if root is an embeddable type
-        if !is_embeddable_type(&root_type) {
+        if !self.is_embeddable_type(&root_type) {
             tracing::debug!(
                 "Root {} is not embeddable (type: {}), skipping embedding queue",
                 root_id,
@@ -3780,6 +3823,7 @@ impl NodeService {
     /// without blocking the calling thread (e.g., during node updates).
     async fn queue_root_for_embedding_async(
         store: &Arc<SurrealStore>,
+        behaviors: &Arc<NodeBehaviorRegistry>,
         node_id: &str,
         embedding_waker: Option<&crate::services::EmbeddingWaker>,
     ) {
@@ -3819,8 +3863,24 @@ impl NodeService {
             }
         };
 
-        // Only queue if root is an embeddable type
-        if !is_embeddable_type(&root_type) {
+        // Only queue if root is an embeddable type (Issue #1018: behavior-driven)
+        let behavior: Arc<dyn crate::behaviors::NodeBehavior> = behaviors
+            .get(&root_type)
+            .unwrap_or_else(|| Arc::new(crate::behaviors::CustomNodeBehavior::new(&root_type)));
+        let probe = Node {
+            id: "probe".to_string(),
+            node_type: root_type.clone(),
+            content: "probe".to_string(),
+            version: 1,
+            properties: serde_json::json!({}),
+            mentions: vec![],
+            mentioned_in: vec![],
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+        if behavior.get_embeddable_content(&probe).is_none() {
             tracing::debug!(
                 "Root {} is not embeddable (type: {}), skipping embedding queue",
                 root_id,
@@ -5136,7 +5196,7 @@ impl NodeService {
         let root_ids: Vec<String> = nodes_normalized
             .iter()
             .filter_map(|(id, node_type, _, parent_id, _, _)| {
-                if parent_id.is_none() && is_embeddable_type(node_type) {
+                if parent_id.is_none() && self.is_embeddable_type(node_type) {
                     Some(id.clone())
                 } else {
                     None
@@ -6610,6 +6670,34 @@ fn build_node_tree_recursive(
     }
 
     json
+}
+
+/// Issue #1018: NodeAccessor implementation for NodeService
+///
+/// Delegates to existing NodeService methods, ensuring all business rules
+/// (mentions, migrations, etc.) apply when behaviors fetch related nodes.
+#[async_trait]
+impl NodeAccessor for NodeService {
+    async fn get_node(&self, id: &str) -> Result<Option<Node>, NodeServiceError> {
+        // Delegate to NodeService's existing get_node (includes mentions, migrations, etc.)
+        NodeService::get_node(self, id).await
+    }
+
+    async fn get_children(&self, parent_id: &str) -> Result<Vec<Node>, NodeServiceError> {
+        // Delegate to NodeService's existing get_children (edge-based, sorted by fractional order)
+        NodeService::get_children(self, parent_id).await
+    }
+
+    async fn get_nodes(&self, ids: &[&str]) -> Result<Vec<Node>, NodeServiceError> {
+        // Delegate to store's batch fetch, converting &str -> String for the store API
+        let id_strings: Vec<String> = ids.iter().map(|s| s.to_string()).collect();
+        let node_map = self
+            .store
+            .get_nodes_by_ids(&id_strings)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        Ok(node_map.into_values().collect())
+    }
 }
 
 #[cfg(test)]

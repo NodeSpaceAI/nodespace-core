@@ -1032,10 +1032,7 @@ mod tests {
             // The value should be a CEL String("in_progress")
             match result.get(&key) {
                 Some(Value::String(s)) => assert_eq!(s.as_ref(), "in_progress"),
-                other => panic!(
-                    "expected CEL String('in_progress'), got {:?}",
-                    other
-                ),
+                other => panic!("expected CEL String('in_progress'), got {:?}", other),
             }
         }
 

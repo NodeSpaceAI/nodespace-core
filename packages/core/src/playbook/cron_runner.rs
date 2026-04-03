@@ -457,7 +457,10 @@ mod tests {
             }
 
             // Both node IDs should be represented
-            let ids: Vec<&str> = received.iter().map(|w| w.trigger_node.id.as_str()).collect();
+            let ids: Vec<&str> = received
+                .iter()
+                .map(|w| w.trigger_node.id.as_str())
+                .collect();
             assert!(ids.contains(&"cr-t1"));
             assert!(ids.contains(&"cr-t2"));
         }

@@ -46,9 +46,13 @@ async fn create_unified_test_env() -> Result<(
     // Create NodeService first (it may set up schema)
     let node_service = NodeService::new(&mut store).await?;
 
-    // Create embedding service using the SAME store
+    // Create embedding service using the SAME store (Issue #1018: behavior-driven)
     let nlp_engine = create_test_nlp_engine();
-    let embedding_service = NodeEmbeddingService::new(nlp_engine, store.clone());
+    let node_accessor: Arc<dyn nodespace_core::services::NodeAccessor> =
+        Arc::new(node_service.clone());
+    let behaviors = node_service.behaviors().clone();
+    let embedding_service =
+        NodeEmbeddingService::new(nlp_engine, store.clone(), node_accessor, behaviors);
 
     Ok((embedding_service, node_service, store, temp_dir))
 }
@@ -69,9 +73,18 @@ async fn create_unified_test_env_with_config(
     // Create NodeService first (it may set up schema)
     let node_service = NodeService::new(&mut store).await?;
 
-    // Create embedding service with custom config using the SAME store
+    // Create embedding service with custom config using the SAME store (Issue #1018)
     let nlp_engine = create_test_nlp_engine();
-    let embedding_service = NodeEmbeddingService::with_config(nlp_engine, store.clone(), config);
+    let node_accessor: Arc<dyn nodespace_core::services::NodeAccessor> =
+        Arc::new(node_service.clone());
+    let behaviors = node_service.behaviors().clone();
+    let embedding_service = NodeEmbeddingService::with_config(
+        nlp_engine,
+        store.clone(),
+        node_accessor,
+        behaviors,
+        config,
+    );
 
     Ok((embedding_service, node_service, store, temp_dir))
 }
@@ -165,16 +178,21 @@ async fn test_find_root_id_for_deep_child() -> Result<()> {
     Ok(())
 }
 
+/// Issue #1018: Behavior-driven embeddability test (replaces should_embed_root)
 #[tokio::test]
-async fn test_should_embed_root_for_embeddable_types() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_unified_test_env().await?;
+async fn test_behavior_driven_embeddable_types() -> Result<()> {
+    use nodespace_core::behaviors::NodeBehaviorRegistry;
 
-    // Test embeddable types
-    let embeddable_types = vec!["text", "header", "code-block", "schema"];
+    let registry = NodeBehaviorRegistry::new();
+
+    // Types whose behaviors return Some from get_embeddable_content for non-empty content
+    // Issue #1018: table is now correctly embeddable (was excluded from EMBEDDABLE_NODE_TYPES)
+    let embeddable_types = vec!["text", "header", "code-block", "schema", "table"];
     for node_type in embeddable_types {
-        let node = Node::new(node_type.to_string(), "test".to_string(), json!({}));
+        let behavior = registry.get(node_type).expect("behavior should exist");
+        let node = Node::new(node_type.to_string(), "test content".to_string(), json!({}));
         assert!(
-            embedding_service.should_embed_root(&node),
+            behavior.get_embeddable_content(&node).is_some(),
             "{} should be embeddable",
             node_type
         );
@@ -182,16 +200,20 @@ async fn test_should_embed_root_for_embeddable_types() -> Result<()> {
     Ok(())
 }
 
+/// Issue #1018: Behavior-driven non-embeddability test (replaces should_embed_root)
 #[tokio::test]
-async fn test_should_embed_root_for_non_embeddable_types() -> Result<()> {
-    let (embedding_service, _node_service, _store, _temp_dir) = create_unified_test_env().await?;
+async fn test_behavior_driven_non_embeddable_types() -> Result<()> {
+    use nodespace_core::behaviors::NodeBehaviorRegistry;
 
-    // Test non-embeddable types
-    let non_embeddable_types = vec!["task", "date", "person", "ai-chat"];
+    let registry = NodeBehaviorRegistry::new();
+
+    // Types whose behaviors always return None from get_embeddable_content
+    let non_embeddable_types = vec!["task", "date", "collection", "query", "horizontal-line"];
     for node_type in non_embeddable_types {
-        let node = Node::new(node_type.to_string(), "test".to_string(), json!({}));
+        let behavior = registry.get(node_type).expect("behavior should exist");
+        let node = Node::new(node_type.to_string(), "test content".to_string(), json!({}));
         assert!(
-            !embedding_service.should_embed_root(&node),
+            behavior.get_embeddable_content(&node).is_none(),
             "{} should not be embeddable",
             node_type
         );
@@ -200,109 +222,80 @@ async fn test_should_embed_root_for_non_embeddable_types() -> Result<()> {
 }
 
 // =========================================================================
-// Content Aggregation Tests
+// Behavior-Driven Content Extraction Tests (Issue #1018)
 // =========================================================================
 
+/// Test: behavior.get_aggregated_content() collects children for text nodes
 #[tokio::test]
-async fn test_aggregate_subtree_content_single_node() -> Result<()> {
-    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+async fn test_behavior_aggregated_content_text_node() -> Result<()> {
+    use nodespace_core::behaviors::{NodeBehavior, TextNodeBehavior};
 
-    let root = create_root_node(&node_service, "text", "Root content").await?;
-
-    let aggregated = embedding_service
-        .aggregate_subtree_content(&root.id)
-        .await?;
-    assert_eq!(aggregated, "Root content");
-    Ok(())
-}
-
-#[tokio::test]
-async fn test_aggregate_subtree_content_with_children() -> Result<()> {
-    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let (_embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     // Create tree: root -> child1, child2
     let root = create_root_node(&node_service, "text", "Root").await?;
     let _child1 = create_child_node(&node_service, &root.id, "text", "Child 1").await?;
     let _child2 = create_child_node(&node_service, &root.id, "text", "Child 2").await?;
 
-    let aggregated = embedding_service
-        .aggregate_subtree_content(&root.id)
-        .await?;
+    let behavior = TextNodeBehavior;
+    let aggregated = behavior.get_aggregated_content(&root, &node_service).await;
 
-    // Content should be aggregated with double newlines
-    assert!(aggregated.contains("Root"));
-    assert!(aggregated.contains("Child 1"));
-    assert!(aggregated.contains("Child 2"));
-    assert!(aggregated.contains("\n\n"));
+    assert!(aggregated.is_some());
+    let content = aggregated.unwrap();
+    assert!(content.contains("Child 1"));
+    assert!(content.contains("Child 2"));
     Ok(())
 }
 
+/// Test: behavior.get_aggregated_content() skips empty children
 #[tokio::test]
-async fn test_aggregate_subtree_content_skips_empty() -> Result<()> {
-    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+async fn test_behavior_aggregated_content_skips_empty() -> Result<()> {
+    use nodespace_core::behaviors::{NodeBehavior, TextNodeBehavior};
+
+    let (_embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     let root = create_root_node(&node_service, "text", "Root").await?;
     let _empty_child = create_child_node(&node_service, &root.id, "text", "   ").await?;
     let _child = create_child_node(&node_service, &root.id, "text", "Child").await?;
 
-    let aggregated = embedding_service
-        .aggregate_subtree_content(&root.id)
-        .await?;
+    let behavior = TextNodeBehavior;
+    let aggregated = behavior.get_aggregated_content(&root, &node_service).await;
 
-    // Should skip empty/whitespace-only content
-    assert!(aggregated.contains("Root"));
-    assert!(aggregated.contains("Child"));
-    // Empty child content should be skipped
+    assert!(aggregated.is_some());
+    let content = aggregated.unwrap();
+    assert!(content.contains("Child"));
+    // Empty child's whitespace content should not contribute
+    assert!(!content.contains("   "));
     Ok(())
 }
 
+/// Test: non-embeddable task nodes don't produce embeddable content
 #[tokio::test]
-async fn test_aggregate_subtree_content_respects_max_descendants() -> Result<()> {
-    // Create a config with small max_descendants limit
-    let config = EmbeddingConfig {
-        max_descendants: 2,
-        max_retries: 3,
-        ..Default::default()
-    };
-    let (embedding_service, node_service, _store, _temp_dir) =
-        create_unified_test_env_with_config(config).await?;
+async fn test_behavior_task_not_embeddable() -> Result<()> {
+    use nodespace_core::behaviors::{NodeBehavior, TaskNodeBehavior};
 
-    // Create root with 5 children
-    let root = create_root_node(&node_service, "text", "Root").await?;
-    for i in 1..=5 {
-        create_child_node(&node_service, &root.id, "text", &format!("Child {}", i)).await?;
-    }
-
-    let aggregated = embedding_service
-        .aggregate_subtree_content(&root.id)
-        .await?;
-
-    // Should only include root + first 2 children
-    let parts: Vec<&str> = aggregated.split("\n\n").collect();
-    assert!(parts.len() <= 3, "Should respect max_descendants limit");
+    let node = Node::new(
+        "task".to_string(),
+        "Do something".to_string(),
+        json!({"task": {"status": "open"}}),
+    );
+    let behavior = TaskNodeBehavior;
+    assert!(behavior.get_embeddable_content(&node).is_none());
     Ok(())
 }
 
+/// Test: table nodes are embeddable (bug fix from Issue #1018)
 #[tokio::test]
-async fn test_aggregate_subtree_content_respects_max_size() -> Result<()> {
-    let config = EmbeddingConfig {
-        max_content_size: 50, // Very small limit
-        max_retries: 3,
-        ..Default::default()
-    };
-    let (embedding_service, node_service, _store, _temp_dir) =
-        create_unified_test_env_with_config(config).await?;
+async fn test_behavior_table_is_embeddable() -> Result<()> {
+    use nodespace_core::behaviors::{NodeBehavior, TableNodeBehavior};
 
-    // Create a root with long content
-    let long_content = "a".repeat(100);
-    let root = create_root_node(&node_service, "text", &long_content).await?;
-
-    let aggregated = embedding_service
-        .aggregate_subtree_content(&root.id)
-        .await?;
-
-    // Should be truncated to max_content_size
-    assert!(aggregated.len() <= 50);
+    let node = Node::new(
+        "table".to_string(),
+        "| Col1 | Col2 |\n|------|------|\n| A | B |".to_string(),
+        json!({}),
+    );
+    let behavior = TableNodeBehavior;
+    assert!(behavior.get_embeddable_content(&node).is_some());
     Ok(())
 }
 
@@ -1110,78 +1103,6 @@ async fn test_threshold_filters_by_composite_score_not_raw_similarity() -> Resul
 // Issue #936: Title inclusion in embeddings + title keyword boost tests
 // =========================================================================
 
-/// Test that document title is prepended to aggregated content (Issue #936)
-#[tokio::test]
-async fn test_aggregate_subtree_content_includes_title() -> Result<()> {
-    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
-
-    // Create a text node with an explicit title (simulates root node with indexed title)
-    let mut node = Node::new(
-        "text".to_string(),
-        "Body content here".to_string(),
-        json!({}),
-    );
-    node.title = Some("Frontend State & Persistence".to_string());
-    node_service.create_node(node.clone()).await?;
-
-    let aggregated = embedding_service
-        .aggregate_subtree_content(&node.id)
-        .await?;
-
-    // Title should be prepended before body content
-    assert!(
-        aggregated.starts_with("Frontend State & Persistence"),
-        "Aggregated content should start with title, got: {}",
-        aggregated
-    );
-    assert!(
-        aggregated.contains("Body content here"),
-        "Aggregated content should include body"
-    );
-    Ok(())
-}
-
-/// Test that title-less nodes produce the same aggregation as before (Issue #936 - no regression)
-#[tokio::test]
-async fn test_aggregate_subtree_content_no_title_unchanged() -> Result<()> {
-    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
-
-    // Node with no title (default for text nodes via create_node)
-    let root = create_root_node(&node_service, "text", "Root content").await?;
-
-    let aggregated = embedding_service
-        .aggregate_subtree_content(&root.id)
-        .await?;
-
-    // Without a title, aggregated content is just the body
-    assert_eq!(
-        aggregated, "Root content",
-        "Node without title should produce unchanged aggregation"
-    );
-    Ok(())
-}
-
-/// Test that empty/whitespace-only title is skipped in aggregation (Issue #936)
-#[tokio::test]
-async fn test_aggregate_subtree_content_skips_empty_title() -> Result<()> {
-    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
-
-    let mut node = Node::new("text".to_string(), "Body content".to_string(), json!({}));
-    node.title = Some("   ".to_string()); // whitespace only
-    node_service.create_node(node.clone()).await?;
-
-    let aggregated = embedding_service
-        .aggregate_subtree_content(&node.id)
-        .await?;
-
-    // Whitespace title should be skipped; aggregated content is just the body
-    assert_eq!(
-        aggregated, "Body content",
-        "Whitespace-only title should be skipped in aggregation"
-    );
-    Ok(())
-}
-
 /// Test that title keyword boost is applied when a query term matches the node title (Issue #936)
 ///
 /// Uses mock embeddings to test Rust-side scoring logic without an NLP engine.
@@ -1663,5 +1584,59 @@ async fn test_hybrid_conceptual_query_bm25_misses_knn_hits() -> Result<()> {
         "KNN should find doc via embedding similarity (tier 2 fallback)"
     );
 
+    Ok(())
+}
+
+// =========================================================================
+// Issue #1018: NodeAccessor Implementation Tests
+// =========================================================================
+
+/// Test: NodeAccessor implementation on NodeService works correctly (Issue #1018)
+#[tokio::test]
+async fn test_node_accessor_get_node() -> Result<()> {
+    use nodespace_core::services::NodeAccessor;
+
+    let (_embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let root = create_root_node(&node_service, "text", "Test content").await?;
+
+    // Test NodeAccessor::get_node (call through trait explicitly to verify the impl)
+    let accessor: &dyn NodeAccessor = &node_service;
+    let found = accessor.get_node(&root.id).await?;
+    assert!(found.is_some());
+    assert_eq!(found.unwrap().content, "Test content");
+
+    // Test NodeAccessor::get_node for missing node
+    let missing = accessor.get_node("nonexistent").await?;
+    assert!(missing.is_none());
+    Ok(())
+}
+
+/// Test: NodeAccessor::get_children returns children sorted by order (Issue #1018)
+#[tokio::test]
+async fn test_node_accessor_get_children() -> Result<()> {
+    use nodespace_core::services::NodeAccessor;
+
+    let (_embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let root = create_root_node(&node_service, "text", "Root").await?;
+    let _child1 = create_child_node(&node_service, &root.id, "text", "Child 1").await?;
+    let _child2 = create_child_node(&node_service, &root.id, "text", "Child 2").await?;
+
+    let children: Vec<Node> = NodeAccessor::get_children(&node_service, &root.id).await?;
+    assert_eq!(children.len(), 2);
+    Ok(())
+}
+
+/// Test: NodeAccessor::get_nodes batch fetch works (Issue #1018)
+#[tokio::test]
+async fn test_node_accessor_get_nodes_batch() -> Result<()> {
+    use nodespace_core::services::NodeAccessor;
+
+    let (_embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let root1 = create_root_node(&node_service, "text", "Node 1").await?;
+    let root2 = create_root_node(&node_service, "text", "Node 2").await?;
+
+    let ids: Vec<&str> = vec![root1.id.as_str(), root2.id.as_str()];
+    let nodes = node_service.get_nodes(&ids).await?;
+    assert_eq!(nodes.len(), 2);
     Ok(())
 }

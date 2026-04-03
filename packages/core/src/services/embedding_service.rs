@@ -1,4 +1,4 @@
-//! Root-Aggregate Embedding Service (Issue #729)
+//! Root-Aggregate Embedding Service (Issue #729, refactored in Issue #1018)
 //!
 //! ## Overview
 //!
@@ -8,11 +8,12 @@
 //! - Uses the dedicated `embedding` table (not node.embedding_vector)
 //! - Supports chunking for content > 512 tokens
 //!
-//! ## Embeddable Types
+//! ## Behavior-Driven Embeddability (Issue #1018)
 //!
-//! - `text`, `header`, `code-block`, `schema` - embeddable when roots
-//! - `task`, `date`, `person`, `ai-chat` - NOT embeddable
-//! - Child nodes are NEVER directly embedded (contribute to parent's embedding)
+//! Whether a node is embeddable is determined by its `NodeBehavior::get_embeddable_content()`.
+//! No hardcoded type list. Content extraction uses a two-phase approach:
+//! - Phase 1 (sync): `behavior.get_embeddable_content(node)` — the node's own content
+//! - Phase 2 (async): `behavior.get_aggregated_content(node, accessor)` — child aggregation
 //!
 //! ## Queue System
 //!
@@ -20,21 +21,12 @@
 //! - New root nodes get a stale marker created
 //! - Content changes mark existing embeddings as stale
 //! - Background processor re-embeds stale entries
-//!
-//! ## Content Aggregation
-//!
-//! When embedding a root node:
-//! 1. Fetch root + all descendants via `get_nodes_in_subtree()`
-//! 2. Aggregate content in hierarchical order
-//! 3. Chunk if > 512 tokens with ~100 token overlap
-//! 4. Generate embedding per chunk
-//! 5. Store in `embedding` table
 
+use crate::behaviors::{CustomNodeBehavior, NodeBehavior, NodeBehaviorRegistry};
 use crate::db::SurrealStore;
-use crate::models::{
-    is_embeddable_type, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding, Node,
-};
+use crate::models::{EmbeddingConfig, EmbeddingSearchResult, NewEmbedding, Node};
 use crate::services::error::NodeServiceError;
+use crate::services::{NodeAccessor, SearchScope};
 use nodespace_nlp_engine::EmbeddingService;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -60,31 +52,48 @@ pub const MAX_PARENT_CHAIN_DEPTH: usize = 100;
 /// the node is fetched — so the boost must be Rust-side, not SQL-side.
 pub const TITLE_BOOST: f64 = 0.1;
 
-/// Root-aggregate embedding service
+/// Root-aggregate embedding service (Issue #1018: behavior-driven)
 ///
 /// Manages semantic embeddings using the root-aggregate model where only
-/// root nodes of embeddable types get embedded, with their entire subtree
-/// content aggregated into the embedding.
+/// root nodes get embedded. Whether a node is embeddable is decided by its
+/// `NodeBehavior::get_embeddable_content()` — no hardcoded type list.
+///
+/// Content extraction uses a two-phase approach:
+/// - Phase 1 (sync): `behavior.get_embeddable_content(node)` — the node's own content
+/// - Phase 2 (async): `behavior.get_aggregated_content(node, accessor)` — child aggregation
 pub struct NodeEmbeddingService {
     /// NLP engine for generating embeddings
     nlp_engine: Arc<EmbeddingService>,
-    /// SurrealDB store for persisting embeddings
+    /// SurrealDB store for persisting embeddings and search queries
     store: Arc<SurrealStore>,
+    /// Read-only node accessor (backed by NodeService) for behavior-driven content extraction
+    node_accessor: Arc<dyn NodeAccessor>,
+    /// Behavior registry for looking up node type behaviors
+    behaviors: Arc<NodeBehaviorRegistry>,
     /// Configuration for embedding behavior
     config: EmbeddingConfig,
 }
 
 impl NodeEmbeddingService {
-    /// Create a new NodeEmbeddingService with SurrealDB integration
+    /// Create a new NodeEmbeddingService with behavior-driven content extraction (Issue #1018)
     ///
     /// # Arguments
     /// * `nlp_engine` - The NLP engine for generating embeddings
     /// * `store` - The SurrealDB store for persisting embeddings
-    pub fn new(nlp_engine: Arc<EmbeddingService>, store: Arc<SurrealStore>) -> Self {
-        tracing::info!("NodeEmbeddingService initialized with root-aggregate model");
+    /// * `node_accessor` - Read-only accessor (typically NodeService) for fetching nodes
+    /// * `behaviors` - Behavior registry for node type lookup
+    pub fn new(
+        nlp_engine: Arc<EmbeddingService>,
+        store: Arc<SurrealStore>,
+        node_accessor: Arc<dyn NodeAccessor>,
+        behaviors: Arc<NodeBehaviorRegistry>,
+    ) -> Self {
+        tracing::info!("NodeEmbeddingService initialized with behavior-driven model (Issue #1018)");
         Self {
             nlp_engine,
             store,
+            node_accessor,
+            behaviors,
             config: EmbeddingConfig::default(),
         }
     }
@@ -93,6 +102,8 @@ impl NodeEmbeddingService {
     pub fn with_config(
         nlp_engine: Arc<EmbeddingService>,
         store: Arc<SurrealStore>,
+        node_accessor: Arc<dyn NodeAccessor>,
+        behaviors: Arc<NodeBehaviorRegistry>,
         config: EmbeddingConfig,
     ) -> Self {
         tracing::info!(
@@ -102,6 +113,8 @@ impl NodeEmbeddingService {
         Self {
             nlp_engine,
             store,
+            node_accessor,
+            behaviors,
             config,
         }
     }
@@ -119,6 +132,13 @@ impl NodeEmbeddingService {
     /// Get reference to the embedding configuration
     pub fn config(&self) -> &EmbeddingConfig {
         &self.config
+    }
+
+    /// Get the behavior for a node type, falling back to CustomNodeBehavior
+    fn behavior_for(&self, node_type: &str) -> Arc<dyn NodeBehavior> {
+        self.behaviors
+            .get(node_type)
+            .unwrap_or_else(|| Arc::new(CustomNodeBehavior::new(node_type)))
     }
 
     // =========================================================================
@@ -161,90 +181,78 @@ impl NodeEmbeddingService {
         )))
     }
 
-    /// Check if a root node should be embedded based on its type
-    pub fn should_embed_root(&self, node: &Node) -> bool {
-        is_embeddable_type(&node.node_type)
-    }
-
     // =========================================================================
-    // Content Aggregation
+    // Behavior-Driven Content Extraction (Issue #1018)
     // =========================================================================
 
-    /// Aggregate content from a root node and all its descendants
+    /// Extract full embeddable content for a root node using its behavior.
     ///
-    /// Combines content from the entire subtree into a single text for embedding.
-    /// Content is ordered hierarchically (parent before children).
-    pub async fn aggregate_subtree_content(
+    /// Two-phase approach per ADR-029:
+    /// 1. `behavior.get_embeddable_content(node)` — sync, the node's own content
+    /// 2. `behavior.get_aggregated_content(node, accessor)` — async, child aggregation
+    ///
+    /// Also prepends the node title if present (Issue #936 title boost).
+    ///
+    /// Returns `None` if the behavior says this node is not embeddable.
+    async fn extract_content_for_embedding(
         &self,
-        root_id: &str,
-    ) -> Result<String, NodeServiceError> {
-        // Get root node
-        let root = self
-            .store
-            .get_node(root_id)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to get root node: {}", e)))?
-            .ok_or_else(|| NodeServiceError::node_not_found(root_id))?;
+        node: &Node,
+    ) -> Result<Option<String>, NodeServiceError> {
+        let behavior = self.behavior_for(&node.node_type);
 
-        // Get all descendants
-        let descendants = self
-            .store
-            .get_nodes_in_subtree(root_id)
-            .await
-            .map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to get descendants: {}", e))
-            })?;
-
-        // Check descendant limit
-        if descendants.len() > self.config.max_descendants {
-            tracing::warn!(
-                "Root {} has {} descendants, exceeding limit of {}. Truncating.",
-                root_id,
-                descendants.len(),
-                self.config.max_descendants
-            );
+        // Phase 1: node's own content (sync, no I/O)
+        let own_content = behavior.get_embeddable_content(node);
+        if own_content.is_none() {
+            return Ok(None);
         }
 
-        // Collect content parts
+        // Phase 2: aggregated content from children (async, optional)
+        let aggregated = behavior
+            .get_aggregated_content(node, self.node_accessor.as_ref())
+            .await;
+
+        // Build full content: title + own + aggregated
         let mut parts = Vec::new();
 
         // Prepend title so it is included in the embedding (Issue #936)
-        // This allows title-matching queries to score the document correctly.
-        if let Some(ref title) = root.title {
+        if let Some(ref title) = node.title {
             if !title.trim().is_empty() {
                 parts.push(title.clone());
             }
         }
 
-        // Add root content first
-        if !root.content.trim().is_empty() {
-            parts.push(root.content.clone());
-        }
-
-        // Add descendant content
-        let limit = self.config.max_descendants.min(descendants.len());
-        for node in descendants.into_iter().take(limit) {
-            if !node.content.trim().is_empty() {
-                parts.push(node.content);
+        if let Some(own) = own_content {
+            if !own.trim().is_empty() {
+                parts.push(own);
             }
         }
 
-        let aggregated = parts.join("\n\n");
-
-        // Check size limit
-        if aggregated.len() > self.config.max_content_size {
-            tracing::warn!(
-                "Aggregated content for {} exceeds max size ({} > {}). Truncating.",
-                root_id,
-                aggregated.len(),
-                self.config.max_content_size
-            );
-            // Find valid UTF-8 boundary to avoid splitting multi-byte chars
-            let truncate_idx = Self::find_char_boundary(&aggregated, self.config.max_content_size);
-            return Ok(aggregated[..truncate_idx].to_string());
+        if let Some(agg) = aggregated {
+            if !agg.trim().is_empty() {
+                parts.push(agg);
+            }
         }
 
-        Ok(aggregated)
+        if parts.is_empty() {
+            return Ok(None);
+        }
+
+        let mut full_content = parts.join("\n\n");
+
+        // Check size limit
+        if full_content.len() > self.config.max_content_size {
+            tracing::warn!(
+                "Content for {} exceeds max size ({} > {}). Truncating.",
+                node.id,
+                full_content.len(),
+                self.config.max_content_size
+            );
+            let truncate_idx =
+                Self::find_char_boundary(&full_content, self.config.max_content_size);
+            full_content = full_content[..truncate_idx].to_string();
+        }
+
+        Ok(Some(full_content))
     }
 
     /// Compute content hash for change detection
@@ -352,41 +360,34 @@ impl NodeEmbeddingService {
     /// Generate and store embeddings for a root node
     ///
     /// This is the main entry point for embedding a root node's content.
-    /// Aggregates content, chunks if necessary, generates embeddings,
-    /// and stores in the embedding table.
+    /// Uses behavior-driven content extraction (Issue #1018):
+    /// 1. `behavior.get_embeddable_content()` determines if node is embeddable
+    /// 2. `behavior.get_aggregated_content()` gathers child content
+    /// 3. Chunks, generates vectors, and stores in the embedding table
     pub async fn embed_root_node(&self, root_id: &str) -> Result<(), NodeServiceError> {
-        // Get root node and verify it exists
+        // Get root node via accessor (applies business rules: mentions, migrations)
         let root = self
-            .store
+            .node_accessor
             .get_node(root_id)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to get root: {}", e)))?
+            .await?
             .ok_or_else(|| NodeServiceError::node_not_found(root_id))?;
 
-        // Check if this type should be embedded
-        if !self.should_embed_root(&root) {
-            tracing::debug!(
-                "Skipping non-embeddable root: {} (type: {})",
-                root_id,
-                root.node_type
-            );
-            // Delete any existing embeddings for this node
-            self.store.delete_embeddings(root_id).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to delete embeddings: {}", e))
-            })?;
-            return Ok(());
-        }
-
-        // Aggregate content from subtree
-        let content = self.aggregate_subtree_content(root_id).await?;
-
-        if content.trim().is_empty() {
-            tracing::debug!("Skipping root with empty content: {}", root_id);
-            self.store.delete_embeddings(root_id).await.map_err(|e| {
-                NodeServiceError::query_failed(format!("Failed to delete embeddings: {}", e))
-            })?;
-            return Ok(());
-        }
+        // Behavior-driven content extraction (replaces should_embed_root + aggregate_subtree_content)
+        let content = match self.extract_content_for_embedding(&root).await? {
+            Some(c) => c,
+            None => {
+                tracing::debug!(
+                    "Skipping non-embeddable root: {} (type: {})",
+                    root_id,
+                    root.node_type
+                );
+                // Delete any existing embeddings for this node
+                self.store.delete_embeddings(root_id).await.map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to delete embeddings: {}", e))
+                })?;
+                return Ok(());
+            }
+        };
 
         // Compute content hash
         let content_hash = Self::compute_content_hash(&content);
@@ -535,17 +536,13 @@ impl NodeEmbeddingService {
     ///
     /// If the node is a root of an embeddable type, marks its embedding as stale.
     /// If the node is a child, finds its root and marks that as stale.
+    /// Embeddability is determined by `NodeBehavior::get_embeddable_content()` (Issue #1018).
     pub async fn queue_for_embedding(&self, node_id: &str) -> Result<(), NodeServiceError> {
         // Find the root of this node's tree
         let root_id = self.find_root_id(node_id).await?;
 
-        // Get the root node to check its type
-        let root = match self
-            .store
-            .get_node(&root_id)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to get root: {}", e)))?
-        {
+        // Get the root node to check its type via behavior
+        let root = match self.node_accessor.get_node(&root_id).await? {
             Some(node) => node,
             None => {
                 tracing::debug!("Root node {} not found, skipping embedding queue", root_id);
@@ -553,8 +550,9 @@ impl NodeEmbeddingService {
             }
         };
 
-        // Check if root type is embeddable
-        if !self.should_embed_root(&root) {
+        // Check if root type is embeddable via behavior (replaces is_embeddable_type)
+        let behavior = self.behavior_for(&root.node_type);
+        if behavior.get_embeddable_content(&root).is_none() {
             tracing::debug!(
                 "Root {} is not embeddable (type: {}), skipping queue",
                 root_id,
@@ -797,6 +795,62 @@ impl NodeEmbeddingService {
     /// Search and return full nodes
     ///
     /// Convenience method that fetches the full Node objects for search results.
+    /// Search with scope filtering (Issue #1018)
+    ///
+    /// Wraps `semantic_search` and applies post-result filtering based on the
+    /// `SearchScope`. The scope determines which node types are included in
+    /// results — callers declare intent rather than enumerating types.
+    ///
+    /// Defaults to `SearchScope::Knowledge` when no scope is provided.
+    pub async fn semantic_search_scoped(
+        &self,
+        query: &str,
+        limit: usize,
+        threshold: f32,
+        scope: &SearchScope,
+    ) -> Result<Vec<EmbeddingSearchResult>, NodeServiceError> {
+        // Fetch extra results to compensate for post-filtering
+        let overfetch = limit * 2;
+        let mut results = self.semantic_search(query, overfetch, threshold).await?;
+
+        // Apply scope filter
+        results.retain(|r| {
+            if let Some(ref node) = r.node {
+                Self::matches_scope(&node.node_type, scope)
+            } else {
+                // No node data — keep the result (we can't filter it)
+                true
+            }
+        });
+
+        results.truncate(limit);
+        Ok(results)
+    }
+
+    /// Check if a node type matches the given search scope
+    pub fn matches_scope(node_type: &str, scope: &SearchScope) -> bool {
+        match scope {
+            SearchScope::Knowledge => matches!(
+                node_type,
+                "text" | "header" | "code-block" | "schema" | "table"
+            ),
+            SearchScope::Conversations => node_type == "ai-chat",
+            SearchScope::Everything => true,
+            SearchScope::Custom {
+                include_types,
+                exclude_types,
+            } => {
+                if !include_types.is_empty() && !include_types.iter().any(|t| t == node_type) {
+                    return false;
+                }
+                if exclude_types.iter().any(|t| t == node_type) {
+                    return false;
+                }
+                true
+            }
+        }
+    }
+
     /// Returns nodes with their composite relevance scores (which account for
     /// both similarity and breadth of matching chunks).
     ///

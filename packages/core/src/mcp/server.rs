@@ -718,7 +718,14 @@ mod tests {
         let nlp_engine =
             Arc::new(nodespace_nlp_engine::EmbeddingService::new(Default::default()).unwrap());
 
-        let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
+        let node_accessor: Arc<dyn crate::services::NodeAccessor> = node_service.clone();
+        let behaviors = node_service.behaviors().clone();
+        let embedding_service = Arc::new(NodeEmbeddingService::new(
+            nlp_engine,
+            store.clone(),
+            node_accessor,
+            behaviors,
+        ));
 
         McpServices {
             node_service,

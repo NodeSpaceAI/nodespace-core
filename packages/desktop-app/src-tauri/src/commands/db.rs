@@ -5,7 +5,7 @@
 //! As of Issue #894, services are registered via AppServices container for hot-swappable DB.
 
 use crate::app_services::{AppServices, EmbeddingState};
-use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService};
+use nodespace_core::services::{EmbeddingProcessor, NodeAccessor, NodeEmbeddingService};
 use nodespace_core::{NodeService, SurrealStore};
 use nodespace_nlp_engine::{EmbeddingConfig, EmbeddingService};
 use std::path::{Path, PathBuf};
@@ -99,7 +99,18 @@ fn create_embedding_state(
         .map_err(|e| format!("Failed to load NLP model: {}", e))?;
 
     let nlp_engine_arc = Arc::new(nlp_engine);
-    let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine_arc, store.clone()));
+
+    // Issue #1018: NodeEmbeddingService uses NodeAccessor (backed by NodeService) for
+    // behavior-driven content extraction instead of SurrealStore directly.
+    let node_accessor: Arc<dyn NodeAccessor> = Arc::new(node_service.clone());
+    let behaviors = node_service.behaviors().clone();
+
+    let embedding_service = Arc::new(NodeEmbeddingService::new(
+        nlp_engine_arc,
+        store.clone(),
+        node_accessor,
+        behaviors,
+    ));
 
     let processor = EmbeddingProcessor::new(embedding_service.clone())
         .map_err(|e| format!("Failed to init embedding processor: {}", e))?;

@@ -164,7 +164,10 @@ pub async fn create_or_update_log_node(
         // Update properties within the namespace if present, otherwise flat.
         // Queried nodes have namespaced format: {"playbook_log": {...}}.
         let mut new_properties = log_node.properties.clone();
-        if let Some(ns) = new_properties.get_mut("playbook_log").and_then(|v| v.as_object_mut()) {
+        if let Some(ns) = new_properties
+            .get_mut("playbook_log")
+            .and_then(|v| v.as_object_mut())
+        {
             ns.insert("occurrences".to_string(), json!(current_occurrences + 1));
             ns.insert("last_seen".to_string(), json!(now));
             ns.insert("trigger_node_id".to_string(), json!(trigger_node_id));
@@ -244,7 +247,10 @@ mod tests {
     fn fingerprint_consistent_for_same_inputs() {
         let fp1 = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CycleLimit);
         let fp2 = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CycleLimit);
-        assert_eq!(fp1, fp2, "same inputs should produce identical fingerprints");
+        assert_eq!(
+            fp1, fp2,
+            "same inputs should produce identical fingerprints"
+        );
         // SHA-256 hex is 64 chars
         assert_eq!(fp1.len(), 64);
     }

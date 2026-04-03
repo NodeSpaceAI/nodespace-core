@@ -386,7 +386,7 @@ async fn test_untyped_relationship_in_cache_returns_for_any_target() -> Result<(
             ]
         }),
     );
-    store.create_node(schema_node, None).await?;
+    store.create_node(schema_node, None, None).await?;
 
     // Create a cache and populate it from the DB
     let cache = InboundRelationshipCache::new(store);

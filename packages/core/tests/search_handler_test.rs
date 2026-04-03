@@ -36,7 +36,14 @@ async fn create_test_services() -> Result<(
 
     let node_service = Arc::new(NodeService::new(&mut store).await?);
     let nlp_engine = create_test_nlp_engine();
-    let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
+    let node_accessor: Arc<dyn nodespace_core::services::NodeAccessor> = node_service.clone();
+    let behaviors = node_service.behaviors().clone();
+    let embedding_service = Arc::new(NodeEmbeddingService::new(
+        nlp_engine,
+        store.clone(),
+        node_accessor,
+        behaviors,
+    ));
 
     Ok((embedding_service, node_service, store, temp_dir))
 }
@@ -328,6 +335,7 @@ async fn test_search_embeddings_hnsw_query_executes() -> Result<()> {
                 "The quick brown fox jumps over the lazy dog".to_string(),
                 serde_json::json!({}),
             ),
+            None,
             None,
         )
         .await?;
