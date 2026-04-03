@@ -64,10 +64,7 @@ pub use time::{SystemTimeProvider, TimeProvider};
 // Export type-safe wrappers
 pub use collection_node::CollectionNode;
 pub use date_node::DateNode;
-pub use embedding::{
-    is_embeddable_type, ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding,
-    EMBEDDABLE_NODE_TYPES,
-};
+pub use embedding::{ChunkInfo, Embedding, EmbeddingConfig, EmbeddingSearchResult, NewEmbedding};
 pub use schema_node::SchemaNode;
 pub use task_node::{TaskNode, TaskNodeUpdate, TaskPriority, TaskStatus};
 pub use text_node::TextNode;

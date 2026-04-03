@@ -1009,7 +1009,7 @@ mod collection_service_tests {
             "unique-test".to_string(),
             serde_json::json!({}),
         );
-        let result = store.create_node(duplicate_node, None).await;
+        let result = store.create_node(duplicate_node, None, None).await;
         assert!(result.is_err(), "Creating duplicate collection should fail");
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -1036,7 +1036,7 @@ mod collection_service_tests {
             "ENGINEERING".to_string(),
             serde_json::json!({}),
         );
-        let result = store.create_node(uppercase_node, None).await;
+        let result = store.create_node(uppercase_node, None, None).await;
         assert!(
             result.is_err(),
             "Creating collection with same name (different case) should fail"

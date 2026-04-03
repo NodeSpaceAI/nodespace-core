@@ -280,14 +280,6 @@ impl Default for EmbeddingConfig {
     }
 }
 
-/// Node types that are embeddable when they are roots
-pub const EMBEDDABLE_NODE_TYPES: &[&str] = &["text", "header", "code-block", "schema"];
-
-/// Check if a node type is embeddable
-pub fn is_embeddable_type(node_type: &str) -> bool {
-    EMBEDDABLE_NODE_TYPES.contains(&node_type)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,20 +294,6 @@ mod tests {
         assert_eq!(config.max_descendants, 1000);
         assert_eq!(config.max_content_size, 10 * 1024 * 1024);
         assert_eq!(config.max_retries, 3);
-    }
-
-    #[test]
-    fn test_embeddable_types() {
-        assert!(is_embeddable_type("text"));
-        assert!(is_embeddable_type("header"));
-        assert!(is_embeddable_type("code-block"));
-        assert!(is_embeddable_type("schema"));
-
-        // Not embeddable
-        assert!(!is_embeddable_type("task"));
-        assert!(!is_embeddable_type("date"));
-        assert!(!is_embeddable_type("person"));
-        assert!(!is_embeddable_type("ai-chat"));
     }
 
     #[test]

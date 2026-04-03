@@ -11,6 +11,7 @@
 
 use crate::models::schema::SchemaField;
 use crate::models::{Node, SchemaNode, TaskNode, ValidationError as NodeValidationError};
+use crate::services::NodeAccessor;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
@@ -282,6 +283,26 @@ pub trait NodeBehavior: Send + Sync {
             Some(node.content.clone())
         }
     }
+
+    /// Phase 2: Optional async — aggregated content from related nodes (Issue #1018)
+    ///
+    /// Called by the embedding service after `get_embeddable_content()` returns `Some`.
+    /// Enables tree-walking types (text, header) to fetch children via `NodeAccessor`
+    /// and concatenate their contributions into the parent's embedding.
+    ///
+    /// Default returns `None` — most types don't need child aggregation.
+    ///
+    /// # Arguments
+    ///
+    /// * `node` - The root node being embedded
+    /// * `accessor` - Read-only node accessor for fetching related nodes
+    fn get_aggregated_content<'a>(
+        &'a self,
+        _node: &'a Node,
+        _accessor: &'a dyn NodeAccessor,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
 }
 
 /// Check if a string contains only whitespace (including Unicode whitespace)
@@ -313,6 +334,56 @@ fn is_empty_or_whitespace(content: &str) -> bool {
             || c == '\u{200D}' // Zero-width joiner
             || c == '\u{FEFF}' // Zero-width no-break space (BOM)
     })
+}
+
+/// Recursively collect content from a node's children for embedding aggregation.
+///
+/// Performs a breadth-first traversal via `NodeAccessor::get_children()`, collecting
+/// each child's `get_parent_contribution()` output. Limits depth to prevent
+/// runaway traversal on deeply nested trees.
+///
+/// Used by text and header behaviors for `get_aggregated_content()`.
+const MAX_AGGREGATION_DEPTH: usize = 20;
+
+async fn aggregate_children_content(
+    node: &Node,
+    accessor: &dyn NodeAccessor,
+    registry: &NodeBehaviorRegistry,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    let mut stack: Vec<(String, usize)> = vec![(node.id.clone(), 0)];
+
+    while let Some((parent_id, depth)) = stack.pop() {
+        if depth >= MAX_AGGREGATION_DEPTH {
+            continue;
+        }
+        let children = match accessor.get_children(&parent_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to get children for {}: {}", parent_id, e);
+                continue;
+            }
+        };
+        for child in children {
+            // Use behavior to get the contribution this child makes to its parent's embedding
+            let behavior: Arc<dyn NodeBehavior> = registry
+                .get(&child.node_type)
+                .unwrap_or_else(|| Arc::new(CustomNodeBehavior::new(&child.node_type)));
+            if let Some(contribution) = behavior.get_parent_contribution(&child) {
+                parts.push(contribution);
+            }
+            // Recurse into children if the child type can have children
+            if behavior.can_have_children() {
+                stack.push((child.id.clone(), depth + 1));
+            }
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
 }
 
 /// Built-in behavior for text nodes
@@ -379,6 +450,18 @@ impl NodeBehavior for TextNodeBehavior {
             "word_wrap": true
         })
     }
+
+    /// Text nodes aggregate children's content for embedding (Issue #1018)
+    fn get_aggregated_content<'a>(
+        &'a self,
+        node: &'a Node,
+        accessor: &'a dyn NodeAccessor,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
+        Box::pin(async move {
+            let registry = NodeBehaviorRegistry::new();
+            aggregate_children_content(node, accessor, &registry).await
+        })
+    }
 }
 
 /// Built-in behavior for header nodes
@@ -427,6 +510,18 @@ impl NodeBehavior for HeaderNodeBehavior {
         serde_json::json!({
             "headerLevel": 1,
             "markdown_enabled": true
+        })
+    }
+
+    /// Header nodes aggregate children's content for embedding (Issue #1018)
+    fn get_aggregated_content<'a>(
+        &'a self,
+        node: &'a Node,
+        accessor: &'a dyn NodeAccessor,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
+        Box::pin(async move {
+            let registry = NodeBehaviorRegistry::new();
+            aggregate_children_content(node, accessor, &registry).await
         })
     }
 }

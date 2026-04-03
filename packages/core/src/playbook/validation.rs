@@ -621,12 +621,9 @@ pub async fn check_schema_change_impact(
                 let action_loc = format!("action[{}]", i);
                 match action.action_type {
                     ActionType::CreateNode | ActionType::UpdateNode => {
-                        if let Some(nt) =
-                            action.params.get("node_type").and_then(|v| v.as_str())
-                        {
+                        if let Some(nt) = action.params.get("node_type").and_then(|v| v.as_str()) {
                             if nt == schema_node_type {
-                                broken_paths
-                                    .push(format!("{}.node_type={}", action_loc, nt));
+                                broken_paths.push(format!("{}.node_type={}", action_loc, nt));
                             }
                         }
                     }
@@ -637,23 +634,15 @@ pub async fn check_schema_change_impact(
                             .and_then(|v| v.as_str())
                         {
                             if rt == schema_node_type {
-                                broken_paths.push(format!(
-                                    "{}.relationship_type={}",
-                                    action_loc, rt
-                                ));
+                                broken_paths
+                                    .push(format!("{}.relationship_type={}", action_loc, rt));
                             }
                         }
                         // Also check target_type if it references the schema
-                        if let Some(tt) = action
-                            .params
-                            .get("target_type")
-                            .and_then(|v| v.as_str())
+                        if let Some(tt) = action.params.get("target_type").and_then(|v| v.as_str())
                         {
                             if tt == schema_node_type {
-                                broken_paths.push(format!(
-                                    "{}.target_type={}",
-                                    action_loc, tt
-                                ));
+                                broken_paths.push(format!("{}.target_type={}", action_loc, tt));
                             }
                         }
                     }
@@ -1373,9 +1362,7 @@ mod tests {
             )
             .await;
 
-            let affected = check_schema_change_impact("vi_task", &svc)
-                .await
-                .unwrap();
+            let affected = check_schema_change_impact("vi_task", &svc).await.unwrap();
             assert_eq!(affected.len(), 1);
             assert_eq!(affected[0].playbook_id, "pb-impact-1");
             assert!(
@@ -1451,9 +1438,7 @@ mod tests {
             )
             .await;
 
-            let affected = check_schema_change_impact("vi_epic", &svc)
-                .await
-                .unwrap();
+            let affected = check_schema_change_impact("vi_epic", &svc).await.unwrap();
             assert_eq!(affected.len(), 1);
             assert_eq!(affected[0].playbook_id, "pb-impact-3");
             assert!(
@@ -1487,11 +1472,7 @@ mod tests {
             (node_service, temp_dir)
         }
 
-        async fn create_schema(
-            node_service: &NodeService,
-            type_name: &str,
-            schema_version: u32,
-        ) {
+        async fn create_schema(node_service: &NodeService, type_name: &str, schema_version: u32) {
             let schema_node = Node::new_with_id(
                 type_name.to_string(),
                 "schema".to_string(),

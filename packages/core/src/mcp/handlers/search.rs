@@ -5,7 +5,9 @@
 
 use crate::mcp::types::MCPError;
 use crate::models::Node;
-use crate::services::{CollectionService, NodeEmbeddingService, NodeService, NodeServiceError};
+use crate::services::{
+    CollectionService, NodeEmbeddingService, NodeService, NodeServiceError, SearchScope,
+};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -129,6 +131,12 @@ pub struct SearchSemanticParams {
     /// Nodes with lifecycle_status = "deleted" are never included.
     #[serde(default)]
     pub include_archived: Option<bool>,
+
+    /// Search scope - controls which node types are included (Issue #1018)
+    /// Values: "knowledge" (default), "conversations", "everything"
+    /// Default: "knowledge" (text, header, code-block, schema, table)
+    #[serde(default)]
+    pub scope: Option<String>,
 }
 
 /// Search root nodes by semantic similarity
@@ -163,6 +171,19 @@ pub async fn handle_search_semantic(
     let limit = params.limit.unwrap_or(20);
     let include_markdown = params.include_markdown.unwrap_or(1).min(5); // Default 1, max 5
     let include_archived = params.include_archived.unwrap_or(false);
+
+    // Parse search scope (Issue #1018) — defaults to Knowledge
+    let scope = match params.scope.as_deref() {
+        Some("conversations") => SearchScope::Conversations,
+        Some("everything") => SearchScope::Everything,
+        Some("knowledge") | None => SearchScope::Knowledge,
+        Some(unknown) => {
+            return Err(MCPError::invalid_params(format!(
+                "Invalid scope '{}'. Valid values: knowledge, conversations, everything",
+                unknown
+            )));
+        }
+    };
 
     // Validate parameters
     if !(0.0..=1.0).contains(&threshold) {
@@ -271,12 +292,19 @@ pub async fn handle_search_semantic(
         HashSet::new()
     };
 
-    tracing::info!("Semantic search for: '{}'", params.query);
+    tracing::info!(
+        "Semantic search for: '{}' (scope: {:?})",
+        params.query,
+        scope
+    );
 
-    // When filtering by collection, excluding collections, or excluding archived nodes, fetch more results to compensate for post-filtering
-    // Note: We always filter out archived/deleted nodes unless include_archived is true, so we always have some post-filtering
-    let has_post_filters =
-        collection_member_ids.is_some() || !excluded_node_ids.is_empty() || !include_archived;
+    // When filtering by collection, excluding collections, excluding archived nodes,
+    // or applying scope, fetch more results to compensate for post-filtering
+    let scope_filters = !matches!(scope, SearchScope::Everything);
+    let has_post_filters = collection_member_ids.is_some()
+        || !excluded_node_ids.is_empty()
+        || !include_archived
+        || scope_filters;
     let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
     // Call the embedding service's semantic search
@@ -301,10 +329,15 @@ pub async fn handle_search_semantic(
             }
         })?;
 
-    // Apply filters: lifecycle status, collection members (if specified), exclude collection members
+    // Apply filters: scope, lifecycle status, collection members, exclusions (Issue #1018)
     let filtered_results: Vec<_> = results
         .into_iter()
         .filter(|(node, _)| {
+            // Filter by search scope (Issue #1018)
+            if !NodeEmbeddingService::matches_scope(&node.node_type, &scope) {
+                return false;
+            }
+
             // Filter by lifecycle status (Issue #755)
             // Always exclude "deleted" nodes, exclude "archived" unless include_archived=true
             let status = &node.lifecycle_status;
@@ -402,7 +435,8 @@ pub async fn handle_search_semantic(
         "threshold": threshold,
         "collection_id": collection_id,
         "include_markdown": include_markdown,
-        "include_archived": include_archived
+        "include_archived": include_archived,
+        "scope": format!("{:?}", scope)
     }))
 }
 

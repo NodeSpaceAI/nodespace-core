@@ -44,7 +44,14 @@ async fn create_test_env_with_embedding(
     // 115MB GGML model into GPU memory, causing memory explosion when many tests run in parallel)
     let nlp_engine = Arc::new(EmbeddingService::new(EmbeddingConfig::default())?);
 
-    let embedding_service = Arc::new(NodeEmbeddingService::new(nlp_engine, store.clone()));
+    let node_accessor: Arc<dyn nodespace_core::services::NodeAccessor> = node_service.clone();
+    let behaviors = node_service.behaviors().clone();
+    let embedding_service = Arc::new(NodeEmbeddingService::new(
+        nlp_engine,
+        store.clone(),
+        node_accessor,
+        behaviors,
+    ));
 
     Ok((node_service, Some(embedding_service), temp_dir))
 }

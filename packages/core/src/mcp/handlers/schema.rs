@@ -566,12 +566,10 @@ pub async fn handle_update_schema(
         .map_err(|e| MCPError::invalid_params(format!("Schema validation failed: {}", e)))?;
 
     // Issue #1012: Check if any active playbooks would be affected by this schema change
-    let affected = crate::playbook::validation::check_schema_change_impact(
-        &params.schema_id,
-        node_service,
-    )
-    .await
-    .map_err(|e| MCPError::internal_error(format!("Impact analysis failed: {}", e)))?;
+    let affected =
+        crate::playbook::validation::check_schema_change_impact(&params.schema_id, node_service)
+            .await
+            .map_err(|e| MCPError::internal_error(format!("Impact analysis failed: {}", e)))?;
 
     if !affected.is_empty() && !params.force {
         let names: Vec<String> = affected.iter().map(|a| a.to_string()).collect();
