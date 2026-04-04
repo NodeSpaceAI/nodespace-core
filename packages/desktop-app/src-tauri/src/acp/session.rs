@@ -208,7 +208,7 @@ impl AcpSession {
             jsonrpc: "2.0".to_string(),
             method: Some("initialize".to_string()),
             params: Some(serde_json::json!({
-                "protocolVersion": PROTOCOL_VERSION,
+                "protocolVersion": 1,
                 "capabilities": {}
             })),
             id: Some(serde_json::json!(1)),
