@@ -11319,5 +11319,91 @@ mod tests {
                 "Missing fields should produce empty strings, not errors"
             );
         }
+
+        // =====================================================================
+        // NodeAccessor Implementation Tests (Issue #1018)
+        // =====================================================================
+
+        #[tokio::test]
+        async fn test_node_accessor_get_node() {
+            let (service, _temp) = create_test_service().await;
+
+            let node = Node::new("text".to_string(), "Accessor test".to_string(), json!({}));
+            let node_id = node.id.clone();
+            service.create_node(node).await.unwrap();
+
+            // Use NodeAccessor trait method (not NodeService method directly)
+            let accessor: &dyn NodeAccessor = &service;
+            let retrieved = accessor.get_node(&node_id).await.unwrap();
+            assert!(retrieved.is_some(), "NodeAccessor::get_node should find existing node");
+            assert_eq!(retrieved.unwrap().content, "Accessor test");
+
+            // Unknown ID returns None
+            let missing = accessor.get_node("nonexistent-id").await.unwrap();
+            assert!(missing.is_none(), "NodeAccessor::get_node should return None for unknown ID");
+        }
+
+        #[tokio::test]
+        async fn test_node_accessor_get_children() {
+            let (service, _temp) = create_test_service().await;
+
+            let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
+            let parent_id = parent.id.clone();
+            service.create_node(parent).await.unwrap();
+
+            let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
+            let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
+            let child1_id = child1.id.clone();
+            let child2_id = child2.id.clone();
+            service.create_node(child1).await.unwrap();
+            service.create_node(child2).await.unwrap();
+            service
+                .move_node_unchecked(&child1_id, Some(&parent_id), None)
+                .await
+                .unwrap();
+            service
+                .move_node_unchecked(&child2_id, Some(&parent_id), Some(&child1_id))
+                .await
+                .unwrap();
+
+            let accessor: &dyn NodeAccessor = &service;
+            let children = accessor.get_children(&parent_id).await.unwrap();
+            assert_eq!(children.len(), 2, "NodeAccessor::get_children should return 2 children");
+
+            // Node with no children returns empty vec
+            let empty = accessor.get_children(&child1_id).await.unwrap();
+            assert!(empty.is_empty(), "NodeAccessor::get_children for leaf node should be empty");
+        }
+
+        #[tokio::test]
+        async fn test_node_accessor_get_nodes_batch() {
+            let (service, _temp) = create_test_service().await;
+
+            let n1 = Node::new("text".to_string(), "Batch 1".to_string(), json!({}));
+            let n2 = Node::new("text".to_string(), "Batch 2".to_string(), json!({}));
+            let n3 = Node::new("text".to_string(), "Batch 3".to_string(), json!({}));
+            let id1 = n1.id.clone();
+            let id2 = n2.id.clone();
+            let id3 = n3.id.clone();
+            service.create_node(n1).await.unwrap();
+            service.create_node(n2).await.unwrap();
+            service.create_node(n3).await.unwrap();
+
+            let accessor: &dyn NodeAccessor = &service;
+            let batch = accessor
+                .get_nodes(&[&id1, &id2, &id3, "nonexistent"])
+                .await
+                .unwrap();
+            assert_eq!(
+                batch.len(),
+                3,
+                "NodeAccessor::get_nodes should return only existing nodes"
+            );
+
+            let contents: HashSet<String> = batch.into_iter().map(|n| n.content).collect();
+            assert!(contents.contains("Batch 1"));
+            assert!(contents.contains("Batch 2"));
+            assert!(contents.contains("Batch 3"));
+        }
     }
 }
