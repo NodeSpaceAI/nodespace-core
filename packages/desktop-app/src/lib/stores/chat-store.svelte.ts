@@ -193,8 +193,15 @@ class ChatStore {
         this.acpAgentIdForSession = agentId;
         log.info('ACP session started', { sessionId: this.acpSessionId, agentId });
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : 'Failed to start ACP session';
-        log.error('ACP session start failed', { agentId, error: errorMsg });
+        let errorMsg = 'Failed to start ACP session';
+        if (err instanceof Error) {
+          errorMsg = err.message;
+        } else if (typeof err === 'object' && err !== null) {
+          errorMsg = JSON.stringify(err);
+        } else if (typeof err === 'string') {
+          errorMsg = err;
+        }
+        log.error('ACP session start failed', { agentId, error: errorMsg, fullError: err });
         this.error = `Failed to start ${agentStore.selectedAgent?.name ?? agentId}: ${errorMsg}`;
         return;
       }
