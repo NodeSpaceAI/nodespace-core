@@ -195,7 +195,7 @@ impl AcpSession {
         };
 
         // Spawn the transport
-        let transport = match StdioTransport::spawn(config).await {
+        let transport = match StdioTransport::spawn(config) {
             Ok(t) => t,
             Err(e) => {
                 let reason = format!("transport spawn failed: {e}");

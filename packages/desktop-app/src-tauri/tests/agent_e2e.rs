@@ -810,7 +810,7 @@ async fn acp_transport_echo_roundtrip() {
         working_dir: None,
     };
 
-    let transport = StdioTransport::spawn(config).await.unwrap();
+    let transport = StdioTransport::spawn(config).unwrap();
     assert!(transport.is_alive().await);
 
     // Send initialize request
@@ -864,7 +864,7 @@ async fn acp_transport_sequential_messages() {
         working_dir: None,
     };
 
-    let transport = StdioTransport::spawn(config).await.unwrap();
+    let transport = StdioTransport::spawn(config).unwrap();
 
     // Send 10 messages rapidly
     for i in 1..=10u64 {
@@ -976,7 +976,7 @@ async fn concurrent_local_and_acp_no_interference() {
                 env: HashMap::new(),
                 working_dir: None,
             };
-            let transport = StdioTransport::spawn(config).await.unwrap();
+            let transport = StdioTransport::spawn(config).unwrap();
             transport
                 .send(json_rpc_request(1, "test/concurrent"))
                 .await
@@ -1064,7 +1064,7 @@ async fn concurrent_multiple_local_sessions() {
 /// Multiple ACP transport connections running concurrently.
 #[tokio::test]
 async fn concurrent_multiple_acp_transports() {
-    let spawn_echo = || async {
+    let spawn_echo = || {
         let config = StdioTransportConfig {
             binary: "/bin/bash".to_string(),
             args: vec![
@@ -1074,12 +1074,12 @@ async fn concurrent_multiple_acp_transports() {
             env: HashMap::new(),
             working_dir: None,
         };
-        StdioTransport::spawn(config).await.unwrap()
+        StdioTransport::spawn(config).unwrap()
     };
 
-    let t1 = spawn_echo().await;
-    let t2 = spawn_echo().await;
-    let t3 = spawn_echo().await;
+    let t1 = spawn_echo();
+    let t2 = spawn_echo();
+    let t3 = spawn_echo();
 
     // Send messages to all three concurrently
     let (r1, r2, r3) = tokio::join!(
@@ -1251,7 +1251,7 @@ async fn error_transport_broken_pipe() {
         working_dir: None,
     };
 
-    let transport = StdioTransport::spawn(config).await.unwrap();
+    let transport = StdioTransport::spawn(config).unwrap();
 
     // Give the process a moment to exit
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1282,7 +1282,7 @@ async fn error_transport_send_after_shutdown() {
         working_dir: None,
     };
 
-    let transport = StdioTransport::spawn(config).await.unwrap();
+    let transport = StdioTransport::spawn(config).unwrap();
     transport.shutdown().await.unwrap();
 
     let result = transport.send(json_rpc_request(1, "test")).await;
@@ -1475,7 +1475,7 @@ async fn benchmark_acp_transport_roundtrip() {
         working_dir: None,
     };
 
-    let transport = StdioTransport::spawn(config).await.unwrap();
+    let transport = StdioTransport::spawn(config).unwrap();
 
     let count = 50u64;
     let start = std::time::Instant::now();
