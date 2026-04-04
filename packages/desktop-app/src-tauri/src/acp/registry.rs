@@ -197,6 +197,12 @@ pub struct SystemAgentRegistry {
     background_started: Arc<RwLock<bool>>,
 }
 
+impl Default for SystemAgentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SystemAgentRegistry {
     /// Create a new registry. No probes are run until `discover_agents()` is called.
     pub fn new() -> Self {

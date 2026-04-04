@@ -67,7 +67,7 @@ create_nodes_from_markdown, update_node, delete_node.
 fn estimate_tokens(text: &str) -> u32 {
     let char_count = text.len() as u32;
     // Ceiling division to be conservative with budget
-    (char_count + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN
+    char_count.div_ceil(CHARS_PER_TOKEN)
 }
 
 /// Truncate a string to at most `max_chars` characters, appending "..." if truncated.
@@ -526,7 +526,6 @@ impl ContextAssembler for GraphContextAssembler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_types::ContextAssembler;
 
     // =========================================================================
     // Token estimation tests

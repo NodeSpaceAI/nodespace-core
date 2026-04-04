@@ -1353,7 +1353,7 @@ mod tests {
     #[tokio::test]
     async fn max_iteration_limit_enforced_exactly() {
         let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_for_engine = Arc::clone(&call_count);
+        let _call_count_for_engine = Arc::clone(&call_count);
 
         // Build more than 5 rounds of tool-call responses so the engine
         // would happily keep going. The loop MUST stop at 5.

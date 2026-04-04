@@ -290,7 +290,7 @@ impl PlaybookEngine {
                 // Phase 7: Save-time validation (belt-and-suspenders — primary gate is in NodeService)
                 if let Err(errors) = crate::playbook::validation::validate_playbook(
                     &parsed_rules,
-                    &*self.node_service,
+                    &self.node_service,
                 )
                 .await
                 {
@@ -387,7 +387,7 @@ impl PlaybookEngine {
             if let Ok(parsed_rules) = parse_rules_for_validation(&node) {
                 if let Err(errors) = crate::playbook::validation::validate_playbook(
                     &parsed_rules,
-                    &*self.node_service,
+                    &self.node_service,
                 )
                 .await
                 {

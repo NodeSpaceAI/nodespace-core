@@ -8,7 +8,7 @@
 //! Issue #1000
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -20,6 +20,13 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_types::{
     ChatModelSpec, DownloadEvent, ModelError, ModelFamily, ModelInfo, ModelManager, ModelStatus,
 };
+
+// ---------------------------------------------------------------------------
+// Type aliases
+// ---------------------------------------------------------------------------
+
+/// Shared, thread-safe progress callback for download events.
+type ProgressCallback = Arc<RwLock<Option<Box<dyn Fn(DownloadEvent) + Send + Sync>>>>;
 
 // ---------------------------------------------------------------------------
 // Catalog constants
@@ -99,7 +106,7 @@ pub struct GgufModelManager {
     /// HTTP client for downloading models.
     http_client: reqwest::Client,
     /// Optional progress callback for download events.
-    on_progress: Arc<RwLock<Option<Box<dyn Fn(DownloadEvent) + Send + Sync>>>>,
+    on_progress: ProgressCallback,
     /// ID of the currently loaded model (at most one).
     loaded_model_id: Arc<RwLock<Option<String>>>,
 }
@@ -276,18 +283,18 @@ impl ModelManager for GgufModelManager {
         let on_progress = self.on_progress.clone();
 
         // Perform download in a spawned task
-        let download_result = perform_download(
-            http_client,
+        let download_result = perform_download(DownloadParams {
+            client: http_client,
             url,
-            partial_path.clone(),
-            final_path.clone(),
+            partial_path: partial_path.clone(),
+            final_path: final_path.clone(),
             total_size,
             expected_sha256,
-            model_id_owned.clone(),
+            model_id: model_id_owned.clone(),
             cancel_token,
-            statuses.clone(),
+            statuses: statuses.clone(),
             on_progress,
-        )
+        })
         .await;
 
         // Clean up active download tracking
@@ -444,8 +451,8 @@ impl ModelManager for GgufModelManager {
 // Download implementation
 // ---------------------------------------------------------------------------
 
-/// Perform the HTTP download with resume support, then verify SHA-256.
-async fn perform_download(
+/// Parameters for performing a model download.
+struct DownloadParams {
     client: reqwest::Client,
     url: String,
     partial_path: PathBuf,
@@ -455,8 +462,23 @@ async fn perform_download(
     model_id: String,
     cancel_token: CancellationToken,
     statuses: Arc<RwLock<HashMap<String, ModelStatus>>>,
-    on_progress: Arc<RwLock<Option<Box<dyn Fn(DownloadEvent) + Send + Sync>>>>,
-) -> Result<(), ModelError> {
+    on_progress: ProgressCallback,
+}
+
+/// Perform the HTTP download with resume support, then verify SHA-256.
+async fn perform_download(params: DownloadParams) -> Result<(), ModelError> {
+    let DownloadParams {
+        client,
+        url,
+        partial_path,
+        final_path,
+        total_size,
+        expected_sha256,
+        model_id,
+        cancel_token,
+        statuses,
+        on_progress,
+    } = params;
     use futures::StreamExt;
 
     // Determine resume offset from existing partial file
@@ -711,7 +733,7 @@ fn detect_system_ram() -> u64 {
 }
 
 /// Check that enough disk space is available before starting a download.
-fn check_disk_space(dir: &PathBuf, required_bytes: u64) -> Result<(), ModelError> {
+fn check_disk_space(dir: &Path, required_bytes: u64) -> Result<(), ModelError> {
     use sysinfo::Disks;
 
     let disks = Disks::new_with_refreshed_list();
@@ -1014,6 +1036,6 @@ mod tests {
     fn check_disk_space_passes_for_small_requirement() {
         let tmp = TempDir::new().unwrap();
         // Requesting 1 byte should always pass
-        check_disk_space(&tmp.path().to_path_buf(), 1).unwrap();
+        check_disk_space(tmp.path(), 1).unwrap();
     }
 }

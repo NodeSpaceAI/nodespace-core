@@ -1173,7 +1173,7 @@ mod tests {
     /// - ai-chat extracts messages, not node content
     #[tokio::test]
     async fn test_behavior_driven_embedding_decision() {
-        let accessor = Arc::new(MockNodeAccessor::new());
+        let _accessor = Arc::new(MockNodeAccessor::new());
         let behaviors = Arc::new(NodeBehaviorRegistry::new());
 
         // We cannot construct a full NodeEmbeddingService without a real NLP engine

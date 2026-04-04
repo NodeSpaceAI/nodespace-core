@@ -622,7 +622,10 @@ mod tests {
 
     #[test]
     fn test_chat_config_validation_error() {
-        let config = ChatConfig { n_ctx: 0, ..Default::default() };
+        let config = ChatConfig {
+            n_ctx: 0,
+            ..Default::default()
+        };
         let result = ChatEngine::new(config);
         assert!(result.is_err());
     }

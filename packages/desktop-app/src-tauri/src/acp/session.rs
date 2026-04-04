@@ -30,8 +30,6 @@ const INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Default timeout for waiting on a completion response from the agent.
 const COMPLETION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// ACP protocol version.
-
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------

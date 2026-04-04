@@ -86,7 +86,7 @@ pub async fn handle_get_workflow_state(
 
         for (cond_idx, condition) in rule.conditions.iter().enumerate() {
             let result = cel::evaluate_conditions(
-                &[condition.clone()],
+                std::slice::from_ref(condition),
                 &node,
                 &synthetic_event,
                 Some(&mut resolver),

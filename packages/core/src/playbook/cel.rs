@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn json_float_to_cel() {
-        assert_eq!(json_to_cel(&json!(3.14)), Value::Float(3.14));
+        assert_eq!(json_to_cel(&json!(3.15)), Value::Float(3.15));
     }
 
     #[test]

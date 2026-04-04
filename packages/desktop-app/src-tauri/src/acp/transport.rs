@@ -71,6 +71,8 @@ impl StdioTransport {
     ///
     /// Returns a connected `StdioTransport` or a `TransportError` if the
     /// process could not be spawned.
+    // Kept async for API consistency — callers .await this in async session init
+    #[allow(clippy::unused_async)]
     pub async fn spawn(config: StdioTransportConfig) -> Result<Self, TransportError> {
         info!(
             binary = %config.binary,
@@ -611,7 +613,7 @@ mod tests {
 
         let result = StdioTransport::spawn(config).await;
         assert!(result.is_err());
-        let err = result.err().expect("expected error");
+        let err = result.expect_err("expected error");
         assert!(
             matches!(err, TransportError::SendFailed(_)),
             "Expected SendFailed, got: {err:?}"

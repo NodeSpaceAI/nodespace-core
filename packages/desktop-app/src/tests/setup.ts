@@ -29,7 +29,8 @@ if (
 // Node.js 22+ ships a minimal built-in localStorage that lacks Storage API
 // methods (clear, getItem, setItem, removeItem, key, length). This shadows
 // happy-dom's proper implementation. Polyfill if the Web Storage API is missing.
-function createStoragePolyfill(): Storage {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createStoragePolyfill(): any {
   const store = new Map<string, string>();
   const storage = Object.create(null);
   Object.defineProperties(storage, {
@@ -40,13 +41,14 @@ function createStoragePolyfill(): Storage {
     key: { value: (index: number) => [...store.keys()][index] ?? null, writable: true, configurable: true },
     length: { get: () => store.size, configurable: true },
   });
-  return storage as Storage;
+  return storage;
 }
 
 // Apply storage polyfill to both globalThis and window (Node 25+ has
 // minimal built-in Storage objects that shadow happy-dom's)
 for (const storageKey of ['localStorage', 'sessionStorage'] as const) {
-  const current = (globalThis as Record<string, unknown>)[storageKey] as Storage | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const current = (globalThis as Record<string, unknown>)[storageKey] as any;
   if (current && typeof current.clear !== 'function') {
     const polyfill = createStoragePolyfill();
     Object.defineProperty(globalThis, storageKey, { value: polyfill, writable: true, configurable: true });

@@ -701,7 +701,7 @@ fn bench_graph_resolver(c: &mut Criterion) {
                     for _ in 0..iters {
                         let mut resolver = GraphResolver::new(Arc::clone(&svc_clone));
                         let start = std::time::Instant::now();
-                        black_box(resolver.resolve_path(&root, &[rel_name.clone()]));
+                        black_box(resolver.resolve_path(&root, std::slice::from_ref(&rel_name)));
                         total += start.elapsed();
                     }
                     total
