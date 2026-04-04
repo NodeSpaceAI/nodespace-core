@@ -1288,4 +1288,445 @@ mod tests {
 
         assert_eq!(result.response, "Here is your answer.");
     }
+
+    // -- Additional coverage tests ------------------------------------------
+
+    /// Mock engine that always fails on generate.
+    struct FailingEngine;
+
+    #[async_trait]
+    impl ChatInferenceEngine for FailingEngine {
+        async fn generate(
+            &self,
+            _request: InferenceRequest,
+            _on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+        ) -> Result<InferenceUsage, InferenceError> {
+            Err(InferenceError::Engine("model crashed".into()))
+        }
+
+        async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError> {
+            Ok(None)
+        }
+
+        async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
+            Ok((text.len() as f32 / 4.0).ceil() as u32)
+        }
+    }
+
+    /// When `run_turn` returns an error the session must still be in the
+    /// sessions map (the "take-mutate-return" pattern reinserts on error).
+    #[tokio::test]
+    async fn session_persistence_after_inference_error() {
+        let engine = Arc::new(FailingEngine);
+        let executor = Arc::new(MockToolExecutor::new());
+        let service = LocalAgentService::new(engine, executor);
+
+        let id = service.create_session(Some("test-model".into())).await;
+
+        // send_message should fail because FailingEngine errors
+        let result = service
+            .send_message(&id, "Hello", |_| {}, |_| {})
+            .await;
+
+        assert!(result.is_err(), "Expected inference error");
+
+        // Session must still exist in the map despite the error
+        let session = service.get_session(&id).await;
+        assert!(
+            session.is_some(),
+            "Session should persist after inference error"
+        );
+
+        // The user message should have been appended before the error
+        let session = session.unwrap();
+        assert!(
+            !session.messages.is_empty(),
+            "User message should be in session history"
+        );
+        assert_eq!(session.messages[0].role, Role::User);
+        assert_eq!(session.messages[0].content, "Hello");
+    }
+
+    /// When every turn produces tool calls the loop must stop after exactly
+    /// MAX_TOOL_ITERATIONS (5) and return without spinning forever.
+    #[tokio::test]
+    async fn max_iteration_limit_enforced_exactly() {
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_for_engine = Arc::clone(&call_count);
+
+        // Build more than 5 rounds of tool-call responses so the engine
+        // would happily keep going. The loop MUST stop at 5.
+        let mut responses: Vec<Vec<StreamingChunk>> = Vec::new();
+        for i in 0..8 {
+            responses.push(vec![
+                StreamingChunk::ToolCallStart {
+                    id: format!("tc_{i}"),
+                    name: "search_nodes".to_string(),
+                },
+                StreamingChunk::ToolCallArgs {
+                    id: format!("tc_{i}"),
+                    args_json: r#"{"query":"loop"}"#.to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                    },
+                },
+            ]);
+        }
+
+        /// Mock engine that counts how many times generate is called.
+        struct CountingEngine {
+            inner: MockEngine,
+            count: Arc<AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl ChatInferenceEngine for CountingEngine {
+            async fn generate(
+                &self,
+                request: InferenceRequest,
+                on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+            ) -> Result<InferenceUsage, InferenceError> {
+                self.count.fetch_add(1, Ordering::SeqCst);
+                self.inner.generate(request, on_chunk).await
+            }
+
+            async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError> {
+                self.inner.model_info().await
+            }
+
+            async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
+                self.inner.token_count(text).await
+            }
+        }
+
+        let engine = Arc::new(CountingEngine {
+            inner: MockEngine::new(responses),
+            count: Arc::clone(&call_count),
+        });
+        let executor = Arc::new(MockToolExecutor::new());
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "Keep searching forever",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        // Exactly 5 tool calls should have been made (one per iteration)
+        assert_eq!(result.tool_calls_made.len(), 5);
+
+        // Engine should have been called exactly 5 times (the loop constant)
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            MAX_TOOL_ITERATIONS,
+            "generate should be called exactly MAX_TOOL_ITERATIONS times"
+        );
+
+        // Usage should be summed from all 5 rounds
+        assert_eq!(result.usage.prompt_tokens, 50); // 10 * 5
+        assert_eq!(result.usage.completion_tokens, 25); // 5 * 5
+    }
+
+    /// Cancellation during tool execution should stop the loop promptly.
+    #[tokio::test]
+    async fn cancellation_during_tool_execution() {
+        // Engine returns a tool call in the first round
+        let engine = Arc::new(MockEngine::new(vec![
+            // Round 1: tool call
+            vec![
+                StreamingChunk::ToolCallStart {
+                    id: "tc_1".to_string(),
+                    name: "search_nodes".to_string(),
+                },
+                StreamingChunk::ToolCallArgs {
+                    id: "tc_1".to_string(),
+                    args_json: r#"{"query":"test"}"#.to_string(),
+                },
+                // Also request a second tool call in the same round
+                StreamingChunk::ToolCallStart {
+                    id: "tc_2".to_string(),
+                    name: "get_node".to_string(),
+                },
+                StreamingChunk::ToolCallArgs {
+                    id: "tc_2".to_string(),
+                    args_json: r#"{"id":"abc123"}"#.to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 20,
+                        completion_tokens: 10,
+                    },
+                },
+            ],
+        ]));
+
+        /// Executor that cancels the token after executing the first tool.
+        struct CancellingExecutor {
+            inner: MockToolExecutor,
+            cancel: CancellationToken,
+            call_count: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl AgentToolExecutor for CancellingExecutor {
+            async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+                self.inner.available_tools().await
+            }
+
+            async fn execute(
+                &self,
+                name: &str,
+                args: serde_json::Value,
+            ) -> Result<ToolResult, ToolError> {
+                let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+                let result = self.inner.execute(name, args).await;
+                // Cancel after the first tool execution
+                if count == 0 {
+                    self.cancel.cancel();
+                }
+                result
+            }
+        }
+
+        let cancel = CancellationToken::new();
+        let executor = Arc::new(CancellingExecutor {
+            inner: MockToolExecutor::new(),
+            cancel: cancel.clone(),
+            call_count: AtomicUsize::new(0),
+        });
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(&mut session, "Search", |_| {}, |_| {}, cancel)
+            .await;
+
+        // Should have been cancelled
+        assert!(result.is_err(), "Expected cancellation error");
+        match result.unwrap_err() {
+            InferenceError::Engine(msg) => assert_eq!(msg, "cancelled"),
+            other => panic!("Expected Engine(cancelled), got {:?}", other),
+        }
+    }
+
+    /// After summarization, the history token count should be below the budget.
+    #[tokio::test]
+    async fn history_summarization_reduces_token_count() {
+        let engine = Arc::new(MockEngine::new(vec![
+            // Summarization call — return a short summary
+            vec![
+                StreamingChunk::Token {
+                    text: "User asked about billing.".to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 50,
+                        completion_tokens: 10,
+                    },
+                },
+            ],
+            // Actual response
+            vec![
+                StreamingChunk::Token {
+                    text: "Here you go.".to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 30,
+                        completion_tokens: 5,
+                    },
+                },
+            ],
+        ]));
+        let executor = Arc::new(MockToolExecutor::new());
+        let agent_loop = LocalAgentLoop::new(Arc::clone(&engine), executor);
+
+        let mut session = new_session();
+
+        // Fill history with enough content to exceed HISTORY_TOKEN_BUDGET.
+        // ~4 chars/token, budget is 6000 tokens => need > 24000 chars.
+        for i in 0..30 {
+            let role = if i % 2 == 0 {
+                Role::User
+            } else {
+                Role::Assistant
+            };
+            session.messages.push(ChatMessage {
+                role,
+                content: format!("Msg {}: {}", i, "a".repeat(2000)),
+                tool_call_id: None,
+                name: None,
+            });
+        }
+
+        let _result = agent_loop
+            .run_turn(
+                &mut session,
+                "Summarize everything",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        // Calculate token count of post-summarization history
+        let mut total_text = String::new();
+        for msg in &session.messages {
+            total_text.push_str(&msg.content);
+            total_text.push(' ');
+        }
+        let token_count = engine.token_count(&total_text).await.unwrap();
+
+        assert!(
+            token_count <= HISTORY_TOKEN_BUDGET,
+            "After summarization, history tokens ({}) should be at or below budget ({})",
+            token_count,
+            HISTORY_TOKEN_BUDGET
+        );
+    }
+
+    /// Tool calls with empty or invalid JSON args should be handled gracefully
+    /// (defaulting to `{}` rather than panicking).
+    #[tokio::test]
+    async fn empty_tool_call_args_handled_gracefully() {
+        // Engine returns a tool call with empty args, then a final text response
+        let engine = Arc::new(MockEngine::new(vec![
+            // Round 1: tool call with empty args string
+            vec![
+                StreamingChunk::ToolCallStart {
+                    id: "tc_1".to_string(),
+                    name: "search_nodes".to_string(),
+                },
+                // No ToolCallArgs chunks at all — args_json will be ""
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                    },
+                },
+            ],
+            // Round 2: final text
+            vec![
+                StreamingChunk::Token {
+                    text: "Done with empty args.".to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 20,
+                        completion_tokens: 10,
+                    },
+                },
+            ],
+        ]));
+        let executor = Arc::new(MockToolExecutor::new());
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "Do something",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await;
+
+        // Should not panic — empty args_json falls back to json!({})
+        assert!(result.is_ok(), "Empty tool call args should not cause panic");
+        let result = result.unwrap();
+        assert_eq!(result.response, "Done with empty args.");
+        assert_eq!(result.tool_calls_made.len(), 1);
+        // Args should have been defaulted to empty object
+        assert_eq!(result.tool_calls_made[0].args, json!({}));
+    }
+
+    /// Two sessions can exist and operate independently without interference.
+    #[tokio::test]
+    async fn multiple_concurrent_sessions() {
+        // Engine produces different responses based on call order:
+        // calls 0,1 are for session A and session B respectively.
+        let engine = Arc::new(MockEngine::new(vec![
+            // Session A's response
+            vec![
+                StreamingChunk::Token {
+                    text: "Response for session A".to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                    },
+                },
+            ],
+            // Session B's response
+            vec![
+                StreamingChunk::Token {
+                    text: "Response for session B".to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 15,
+                        completion_tokens: 8,
+                    },
+                },
+            ],
+        ]));
+        let executor = Arc::new(MockToolExecutor::new());
+        let service = LocalAgentService::new(engine, executor);
+
+        // Create two independent sessions
+        let id_a = service.create_session(Some("model-a".into())).await;
+        let id_b = service.create_session(Some("model-b".into())).await;
+
+        assert_ne!(id_a, id_b, "Session IDs should be unique");
+
+        // Send a message to session A
+        let result_a = service
+            .send_message(&id_a, "Hello from A", |_| {}, |_| {})
+            .await
+            .unwrap();
+
+        // Send a message to session B
+        let result_b = service
+            .send_message(&id_b, "Hello from B", |_| {}, |_| {})
+            .await
+            .unwrap();
+
+        // Verify responses are independent
+        assert_eq!(result_a.response, "Response for session A");
+        assert_eq!(result_b.response, "Response for session B");
+
+        // Verify each session has its own history
+        let session_a = service.get_session(&id_a).await.unwrap();
+        let session_b = service.get_session(&id_b).await.unwrap();
+
+        assert_eq!(session_a.messages.len(), 2); // user + assistant
+        assert_eq!(session_b.messages.len(), 2); // user + assistant
+
+        assert_eq!(session_a.messages[0].content, "Hello from A");
+        assert_eq!(session_b.messages[0].content, "Hello from B");
+
+        assert_eq!(session_a.model_id, Some("model-a".to_string()));
+        assert_eq!(session_b.model_id, Some("model-b".to_string()));
+
+        // Ending session A should not affect session B
+        service.end_session(&id_a).await;
+        assert!(service.get_session(&id_a).await.is_none());
+        assert!(service.get_session(&id_b).await.is_some());
+
+        // Session B should still be functional
+        let sessions = service.get_sessions().await;
+        assert_eq!(sessions.len(), 1);
+    }
 }
