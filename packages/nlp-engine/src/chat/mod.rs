@@ -622,8 +622,7 @@ mod tests {
 
     #[test]
     fn test_chat_config_validation_error() {
-        let mut config = ChatConfig::default();
-        config.n_ctx = 0;
+        let config = ChatConfig { n_ctx: 0, ..Default::default() };
         let result = ChatEngine::new(config);
         assert!(result.is_err());
     }

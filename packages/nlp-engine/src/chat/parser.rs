@@ -15,7 +15,6 @@
 ///
 /// This module provides both a complete-text parser and a streaming parser that
 /// handles partial sentinels split across token boundaries.
-
 /// Sentinel markers in Mistral tool-call format.
 const TOOL_CALLS_SENTINEL: &str = "[TOOL_CALLS]";
 const ARGS_SENTINEL: &str = "[ARGS]";

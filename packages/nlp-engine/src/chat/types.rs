@@ -127,12 +127,10 @@ mod tests {
         let config = ChatConfig::default();
         assert!(config.validate().is_ok());
 
-        let mut bad = ChatConfig::default();
-        bad.n_ctx = 0;
+        let bad = ChatConfig { n_ctx: 0, ..Default::default() };
         assert!(bad.validate().is_err());
 
-        let mut bad2 = ChatConfig::default();
-        bad2.default_temperature = -1.0;
+        let bad2 = ChatConfig { default_temperature: -1.0, ..Default::default() };
         assert!(bad2.validate().is_err());
     }
 }
