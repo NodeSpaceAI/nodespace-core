@@ -44,18 +44,25 @@ struct CatalogEntry {
 }
 
 /// Hardcoded v1 agent catalog.
+///
+/// Note: Claude Code and Gemini CLI are invoked via their ACP adapters
+/// (npm packages), which wrap the CLI and speak the ACP protocol over stdio.
+/// The adapters are assumed to be installed globally via `npm install -g`.
 fn agent_catalog() -> Vec<CatalogEntry> {
     vec![
         CatalogEntry {
             id: "claude-code",
             name: "Claude Code",
-            binary_name: "claude",
-            args: &["--acp"],
+            // Use the official ACP adapter for Claude Code
+            // Install with: npm install -g @agentclientprotocol/claude-agent-acp
+            binary_name: "claude-agent-acp",
+            args: &[],
             auth_method: AcpAuthMethod::AgentManaged,
         },
         CatalogEntry {
             id: "gemini-cli",
             name: "Gemini CLI",
+            // Gemini CLI supports --acp directly
             binary_name: "gemini",
             args: &["--acp"],
             auth_method: AcpAuthMethod::AgentManaged,
@@ -344,8 +351,8 @@ mod tests {
         let catalog = agent_catalog();
         let entry = catalog.iter().find(|e| e.id == "claude-code").unwrap();
         assert_eq!(entry.name, "Claude Code");
-        assert_eq!(entry.binary_name, "claude");
-        assert_eq!(entry.args, &["--acp"]);
+        assert_eq!(entry.binary_name, "claude-agent-acp");
+        assert!(entry.args.is_empty());
         assert!(matches!(entry.auth_method, AcpAuthMethod::AgentManaged));
     }
 

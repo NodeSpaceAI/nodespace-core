@@ -10,9 +10,8 @@
 //! Issue #1008
 
 use crate::agent_types::{
-    events, AgentSession, AgentTurnResult, ChatInferenceEngine, AgentToolExecutor,
-    InferenceError, InferenceUsage, ChatModelSpec,
-    LocalAgentStatus, StreamingChunk,
+    events, AgentSession, AgentToolExecutor, AgentTurnResult, ChatInferenceEngine, ChatModelSpec,
+    InferenceError, InferenceUsage, LocalAgentStatus, StreamingChunk,
 };
 use crate::commands::nodes::CommandError;
 use crate::local_agent::agent_loop::LocalAgentService;
@@ -89,8 +88,10 @@ impl ManagedAgentState {
     /// Get a read reference to the inner service.
     pub async fn service(
         &self,
-    ) -> tokio::sync::RwLockReadGuard<'_, LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor>>
-    {
+    ) -> tokio::sync::RwLockReadGuard<
+        '_,
+        LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor>,
+    > {
         self.inner.read().await
     }
 }

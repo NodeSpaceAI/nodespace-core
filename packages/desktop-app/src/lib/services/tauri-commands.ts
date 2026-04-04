@@ -33,9 +33,6 @@ import type {
   ModelInfo,
 } from '$lib/types/agent-types';
 import { invoke } from '@tauri-apps/api/core';
-import { createLogger } from '$lib/utils/logger';
-
-const log = createLogger('TauriCommands');
 
 // Re-export types for convenience
 export type {

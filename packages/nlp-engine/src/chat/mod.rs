@@ -15,7 +15,6 @@
 /// A `tokio::sync::Mutex` serializes all inference requests so that only
 /// one generation runs at a time. This prevents Metal command-buffer
 /// collisions between concurrent requests.
-
 pub mod error;
 pub mod parser;
 pub mod types;
@@ -166,9 +165,8 @@ impl ChatEngine {
             let model_params =
                 LlamaModelParams::default().with_n_gpu_layers(self.config.n_gpu_layers);
 
-            let model = LlamaModel::load_from_file(&backend, path, &model_params).map_err(
-                |e| ChatError::ModelLoadError(format!("Failed to load model: {}", e)),
-            )?;
+            let model = LlamaModel::load_from_file(&backend, path, &model_params)
+                .map_err(|e| ChatError::ModelLoadError(format!("Failed to load model: {}", e)))?;
 
             tracing::info!(
                 "Chat model loaded: vocab_size={}, n_ctx_train={}",
@@ -234,7 +232,13 @@ impl ChatEngine {
 
             tokio::task::spawn_blocking(move || {
                 Self::generate_blocking(
-                    &state, messages, tools, temperature, max_tokens, config_n_ctx, &on_chunk,
+                    &state,
+                    messages,
+                    tools,
+                    temperature,
+                    max_tokens,
+                    config_n_ctx,
+                    &on_chunk,
                 )
             })
             .await
@@ -269,7 +273,11 @@ impl ChatEngine {
 
         // --- Apply chat template ---
         let prompt = Self::apply_chat_template(&llama.model, &messages, &tools)?;
-        tracing::debug!("Chat prompt ({} chars): {:?}", prompt.len(), &prompt[..prompt.len().min(200)]);
+        tracing::debug!(
+            "Chat prompt ({} chars): {:?}",
+            prompt.len(),
+            &prompt[..prompt.len().min(200)]
+        );
 
         // --- Tokenize ---
         let tokens = llama

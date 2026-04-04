@@ -6,7 +6,7 @@
   import type { Pane } from '$lib/stores/navigation.js';
   import { createLogger } from '$lib/utils/logger';
   import SettingsPane from '$lib/components/settings/settings-pane.svelte';
-  import ChatPanel from '$lib/components/chat/ChatPanel.svelte';
+  import ChatPanel from '$lib/components/chat/chat-panel.svelte';
 
   const log = createLogger('PaneContent');
 

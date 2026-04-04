@@ -69,7 +69,6 @@
 </script>
 
 {#if open}
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div
     class="onboarding-backdrop"
     onclick={handleBackdropClick}
@@ -77,6 +76,7 @@
     role="dialog"
     aria-modal="true"
     aria-label="AI Setup"
+    tabindex="-1"
   >
     <div class="onboarding-dialog">
       <button class="close-button" onclick={onClose} aria-label="Close dialog">

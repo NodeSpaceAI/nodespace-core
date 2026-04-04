@@ -294,7 +294,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     pending_calls.push((id.clone(), name.clone(), String::new()));
                 }
                 StreamingChunk::ToolCallArgs { id, args_json } => {
-                    if let Some(call) = pending_calls.iter_mut().rev().find(|(cid, _, _)| cid == id) {
+                    if let Some(call) = pending_calls.iter_mut().rev().find(|(cid, _, _)| cid == id)
+                    {
                         call.2.push_str(args_json);
                     }
                 }
@@ -432,7 +433,9 @@ pub struct LocalAgentService<E: ChatInferenceEngine + ?Sized, T: AgentToolExecut
     cancel_tokens: RwLock<HashMap<String, CancellationToken>>,
 }
 
-impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 'static> LocalAgentService<E, T> {
+impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 'static>
+    LocalAgentService<E, T>
+{
     pub fn new(engine: Arc<E>, tool_executor: Arc<T>) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
@@ -1324,9 +1327,7 @@ mod tests {
         let id = service.create_session(Some("test-model".into())).await;
 
         // send_message should fail because FailingEngine errors
-        let result = service
-            .send_message(&id, "Hello", |_| {}, |_| {})
-            .await;
+        let result = service.send_message(&id, "Hello", |_| {}, |_| {}).await;
 
         assert!(result.is_err(), "Expected inference error");
 
@@ -1643,7 +1644,10 @@ mod tests {
             .await;
 
         // Should not panic — empty args_json falls back to json!({})
-        assert!(result.is_ok(), "Empty tool call args should not cause panic");
+        assert!(
+            result.is_ok(),
+            "Empty tool call args should not cause panic"
+        );
         let result = result.unwrap();
         assert_eq!(result.response, "Done with empty args.");
         assert_eq!(result.tool_calls_made.len(), 1);

@@ -295,8 +295,7 @@ mod tests {
 
     #[test]
     fn test_tool_call_with_complex_args() {
-        let input =
-            r#"[TOOL_CALLS]create_node[ARGS]{"type":"task","title":"Buy groceries","priority":1,"tags":["food","errands"]}"#;
+        let input = r#"[TOOL_CALLS]create_node[ARGS]{"type":"task","title":"Buy groceries","priority":1,"tags":["food","errands"]}"#;
         let result = parse_tool_calls(input);
         match result {
             ParseResult::ToolCalls(calls) => {
@@ -421,7 +420,8 @@ mod tests {
 
     #[test]
     fn test_three_tool_calls() {
-        let input = r#"[TOOL_CALLS]a[ARGS]{"x":1}[TOOL_CALLS]b[ARGS]{"y":2}[TOOL_CALLS]c[ARGS]{"z":3}"#;
+        let input =
+            r#"[TOOL_CALLS]a[ARGS]{"x":1}[TOOL_CALLS]b[ARGS]{"y":2}[TOOL_CALLS]c[ARGS]{"z":3}"#;
         let result = parse_tool_calls(input);
         match result {
             ParseResult::ToolCalls(calls) => {

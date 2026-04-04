@@ -17,9 +17,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use nodespace_app_lib::agent_types::*;
 use nodespace_app_lib::acp::session::{AcpClientService, SessionError};
 use nodespace_app_lib::acp::transport::{StdioTransport, StdioTransportConfig};
+use nodespace_app_lib::agent_types::*;
 use nodespace_app_lib::local_agent::agent_loop::LocalAgentService;
 use nodespace_app_lib::local_agent::model_manager::GgufModelManager;
 
@@ -93,7 +93,6 @@ impl MockEngine {
             ],
         ])
     }
-
 }
 
 #[async_trait]
@@ -206,7 +205,6 @@ impl MockToolExecutor {
             results,
         }
     }
-
 }
 
 #[async_trait]
@@ -215,11 +213,7 @@ impl AgentToolExecutor for MockToolExecutor {
         Ok(self.tools.clone())
     }
 
-    async fn execute(
-        &self,
-        name: &str,
-        _args: serde_json::Value,
-    ) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, name: &str, _args: serde_json::Value) -> Result<ToolResult, ToolError> {
         let result = self
             .results
             .get(name)
@@ -649,7 +643,10 @@ async fn model_lifecycle_state_machine() {
 
     // Cannot load a model that is not downloaded
     let load_result = manager.load(model_id).await;
-    assert!(load_result.is_err(), "Loading undownloaded model should fail");
+    assert!(
+        load_result.is_err(),
+        "Loading undownloaded model should fail"
+    );
 
     // No model should be loaded initially
     let loaded = manager.loaded_model().await.unwrap();
@@ -729,7 +726,9 @@ async fn model_lifecycle_delete() {
 
     // Create a fake model file
     let model_path = manager.model_path(model_id).unwrap();
-    tokio::fs::write(&model_path, b"fake-model-data").await.unwrap();
+    tokio::fs::write(&model_path, b"fake-model-data")
+        .await
+        .unwrap();
 
     // Re-create manager to detect the file
     let manager = GgufModelManager::with_dir(temp_dir.path().to_path_buf()).unwrap();
@@ -756,7 +755,9 @@ async fn model_lifecycle_cannot_delete_loaded() {
     // Create manager and fake model file
     let manager = GgufModelManager::with_dir(temp_dir.path().to_path_buf()).unwrap();
     let model_path = manager.model_path(model_id).unwrap();
-    tokio::fs::write(&model_path, b"fake-model-data").await.unwrap();
+    tokio::fs::write(&model_path, b"fake-model-data")
+        .await
+        .unwrap();
 
     // Re-create to detect file, then load
     let manager = GgufModelManager::with_dir(temp_dir.path().to_path_buf()).unwrap();
@@ -764,7 +765,10 @@ async fn model_lifecycle_cannot_delete_loaded() {
 
     // Attempt delete while loaded
     let result = manager.delete(model_id).await;
-    assert!(result.is_err(), "Should not be able to delete a loaded model");
+    assert!(
+        result.is_err(),
+        "Should not be able to delete a loaded model"
+    );
 
     // File should still exist
     assert!(model_path.exists());
@@ -814,13 +818,10 @@ async fn acp_transport_echo_roundtrip() {
     transport.send(init_msg).await.unwrap();
 
     // Receive echoed response
-    let response = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        transport.receive(),
-    )
-    .await
-    .expect("receive timed out")
-    .expect("receive failed");
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+        .await
+        .expect("receive timed out")
+        .expect("receive failed");
 
     assert_eq!(response.jsonrpc, "2.0");
     assert_eq!(response.id, Some(json!(1)));
@@ -837,13 +838,10 @@ async fn acp_transport_echo_roundtrip() {
     };
     transport.send(prompt_msg).await.unwrap();
 
-    let response = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        transport.receive(),
-    )
-    .await
-    .expect("receive timed out")
-    .expect("receive failed");
+    let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+        .await
+        .expect("receive timed out")
+        .expect("receive failed");
 
     assert_eq!(response.id, Some(json!(2)));
     assert_eq!(response.method.as_deref(), Some("session/prompt"));
@@ -878,13 +876,10 @@ async fn acp_transport_sequential_messages() {
 
     // Receive all 10 in order
     for i in 1..=10u64 {
-        let response = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            transport.receive(),
-        )
-        .await
-        .expect("receive timed out")
-        .expect("receive failed");
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+            .await
+            .expect("receive timed out")
+            .expect("receive failed");
 
         assert_eq!(response.id, Some(json!(i)));
     }
@@ -982,14 +977,15 @@ async fn concurrent_local_and_acp_no_interference() {
                 working_dir: None,
             };
             let transport = StdioTransport::spawn(config).await.unwrap();
-            transport.send(json_rpc_request(1, "test/concurrent")).await.unwrap();
-            let response = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                transport.receive(),
-            )
-            .await
-            .expect("timed out")
-            .expect("receive failed");
+            transport
+                .send(json_rpc_request(1, "test/concurrent"))
+                .await
+                .unwrap();
+            let response =
+                tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+                    .await
+                    .expect("timed out")
+                    .expect("receive failed");
             transport.shutdown().await.unwrap();
             response
         }
@@ -1012,13 +1008,27 @@ async fn concurrent_multiple_local_sessions() {
     let engine = Arc::new(MockEngine::new(vec![
         // Session 1 response
         vec![
-            StreamingChunk::Token { text: "Response 1".to_string() },
-            StreamingChunk::Done { usage: InferenceUsage { prompt_tokens: 5, completion_tokens: 2 } },
+            StreamingChunk::Token {
+                text: "Response 1".to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage {
+                    prompt_tokens: 5,
+                    completion_tokens: 2,
+                },
+            },
         ],
         // Session 2 response
         vec![
-            StreamingChunk::Token { text: "Response 2".to_string() },
-            StreamingChunk::Done { usage: InferenceUsage { prompt_tokens: 5, completion_tokens: 2 } },
+            StreamingChunk::Token {
+                text: "Response 2".to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage {
+                    prompt_tokens: 5,
+                    completion_tokens: 2,
+                },
+            },
         ],
     ]));
     let executor = Arc::new(MockToolExecutor::new());
@@ -1250,12 +1260,9 @@ async fn error_transport_broken_pipe() {
     assert!(!transport.is_alive().await);
 
     // Receive should fail with ProcessExited
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        transport.receive(),
-    )
-    .await
-    .expect("timed out");
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), transport.receive())
+        .await
+        .expect("timed out");
 
     assert!(result.is_err());
 
@@ -1411,10 +1418,7 @@ async fn benchmark_tool_execution_overhead() {
         .unwrap();
     let elapsed = start.elapsed();
 
-    eprintln!(
-        "[BENCHMARK] Local agent turn with tool call: {:?}",
-        elapsed
-    );
+    eprintln!("[BENCHMARK] Local agent turn with tool call: {:?}", elapsed);
     eprintln!(
         "[BENCHMARK] Tool execution duration: {}ms",
         result.tool_calls_made[0].duration_ms
@@ -1480,13 +1484,10 @@ async fn benchmark_acp_transport_roundtrip() {
             .send(json_rpc_request(i, "bench/ping"))
             .await
             .unwrap();
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            transport.receive(),
-        )
-        .await
-        .expect("timed out")
-        .expect("receive failed");
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
+            .await
+            .expect("timed out")
+            .expect("receive failed");
     }
     let elapsed = start.elapsed();
 

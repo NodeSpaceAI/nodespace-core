@@ -46,18 +46,15 @@ pub async fn acp_start_session(
     // Emit initializing state
     let _ = app.emit(events::ACP_SESSION_STATE, &AcpSessionState::Initializing);
 
-    let session_id = service
-        .start_session(&agent_id)
-        .await
-        .map_err(|e| {
-            let _ = app.emit(
-                events::ACP_SESSION_STATE,
-                &AcpSessionState::Failed {
-                    reason: e.to_string(),
-                },
-            );
-            acp_error(format!("Failed to start session: {e}"))
-        })?;
+    let session_id = service.start_session(&agent_id).await.map_err(|e| {
+        let _ = app.emit(
+            events::ACP_SESSION_STATE,
+            &AcpSessionState::Failed {
+                reason: e.to_string(),
+            },
+        );
+        acp_error(format!("Failed to start session: {e}"))
+    })?;
 
     // Emit active state
     let _ = app.emit(events::ACP_SESSION_STATE, &AcpSessionState::Active);

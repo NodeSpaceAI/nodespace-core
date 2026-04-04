@@ -2,9 +2,9 @@
   import { onMount, tick } from 'svelte';
   import { chatStore } from '$lib/stores/chat-store.svelte';
   import { agentStore } from '$lib/stores/agent-store.svelte';
-  import ChatMessage from './ChatMessage.svelte';
-  import ChatInput from './ChatInput.svelte';
-  import AgentSelector from '$lib/components/agents/AgentSelector.svelte';
+  import ChatMessage from './chat-message.svelte';
+  import ChatInput from './chat-input.svelte';
+  import AgentSelector from '$lib/components/agents/agent-selector.svelte';
   import { createLogger } from '$lib/utils/logger';
 
   const log = createLogger('ChatPanel');
@@ -37,7 +37,7 @@
   // Auto-scroll when new messages arrive
   $effect(() => {
     // Access messages to create the dependency
-    const _len = messages.length;
+    void messages.length;
     scrollToBottom();
   });
 

@@ -1,6 +1,7 @@
 <script lang="ts">
+  /* global navigator */
   import type { DisplayMessage } from '$lib/stores/chat-store.svelte';
-  import ToolCallDisplay from './ToolCallDisplay.svelte';
+  import ToolCallDisplay from './tool-call-display.svelte';
 
   let { message }: { message: DisplayMessage } = $props();
 

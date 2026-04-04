@@ -12,8 +12,8 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
-  import ChatMessage from '$lib/components/chat/ChatMessage.svelte';
-  import ChatInput from '$lib/components/chat/ChatInput.svelte';
+  import ChatMessage from '$lib/components/chat/chat-message.svelte';
+  import ChatInput from '$lib/components/chat/chat-input.svelte';
   import { chatStore } from '$lib/stores/chat-store.svelte';
   import type { DisplayMessage } from '$lib/stores/chat-store.svelte';
   import type { ToolExecutionRecord } from '$lib/types/agent-types';

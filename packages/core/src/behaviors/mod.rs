@@ -3835,7 +3835,11 @@ mod tests {
         // text: primary knowledge content
         let text_node = Node::new("text".to_string(), "Some knowledge".to_string(), json!({}));
         assert!(
-            registry.get("text").unwrap().get_embeddable_content(&text_node).is_some(),
+            registry
+                .get("text")
+                .unwrap()
+                .get_embeddable_content(&text_node)
+                .is_some(),
             "text nodes with content should be embeddable"
         );
 
@@ -3846,7 +3850,11 @@ mod tests {
             json!({"headerLevel": 2}),
         );
         assert!(
-            registry.get("header").unwrap().get_embeddable_content(&header_node).is_some(),
+            registry
+                .get("header")
+                .unwrap()
+                .get_embeddable_content(&header_node)
+                .is_some(),
             "header nodes with content should be embeddable"
         );
 
@@ -3857,7 +3865,11 @@ mod tests {
             json!({"language": "rust"}),
         );
         assert!(
-            registry.get("code-block").unwrap().get_embeddable_content(&code_node).is_some(),
+            registry
+                .get("code-block")
+                .unwrap()
+                .get_embeddable_content(&code_node)
+                .is_some(),
             "code-block nodes with content should be embeddable"
         );
 
@@ -3868,7 +3880,11 @@ mod tests {
             json!({}),
         );
         assert!(
-            registry.get("quote-block").unwrap().get_embeddable_content(&quote_node).is_some(),
+            registry
+                .get("quote-block")
+                .unwrap()
+                .get_embeddable_content(&quote_node)
+                .is_some(),
             "quote-block nodes with content should be embeddable"
         );
 
@@ -3879,7 +3895,11 @@ mod tests {
             json!({}),
         );
         assert!(
-            registry.get("ordered-list").unwrap().get_embeddable_content(&list_node).is_some(),
+            registry
+                .get("ordered-list")
+                .unwrap()
+                .get_embeddable_content(&list_node)
+                .is_some(),
             "ordered-list nodes with content should be embeddable"
         );
 
@@ -3890,7 +3910,11 @@ mod tests {
             json!({}),
         );
         assert!(
-            registry.get("table").unwrap().get_embeddable_content(&table_node).is_some(),
+            registry
+                .get("table")
+                .unwrap()
+                .get_embeddable_content(&table_node)
+                .is_some(),
             "table nodes with content should be embeddable"
         );
 
@@ -3901,7 +3925,11 @@ mod tests {
             json!({"is_core": true, "fields": []}),
         );
         assert!(
-            registry.get("schema").unwrap().get_embeddable_content(&schema_node).is_some(),
+            registry
+                .get("schema")
+                .unwrap()
+                .get_embeddable_content(&schema_node)
+                .is_some(),
             "schema nodes with content should be embeddable"
         );
 
@@ -3916,8 +3944,14 @@ mod tests {
                 ]
             }),
         );
-        let chat_content = registry.get("ai-chat").unwrap().get_embeddable_content(&chat_node);
-        assert!(chat_content.is_some(), "ai-chat with messages should be embeddable");
+        let chat_content = registry
+            .get("ai-chat")
+            .unwrap()
+            .get_embeddable_content(&chat_node);
+        assert!(
+            chat_content.is_some(),
+            "ai-chat with messages should be embeddable"
+        );
         let chat_text = chat_content.unwrap();
         assert!(chat_text.contains("How do I implement webhooks?"));
         assert!(chat_text.contains("Here is an approach..."));
@@ -3931,7 +3965,11 @@ mod tests {
             json!({"task": {"status": "open"}}),
         );
         assert!(
-            registry.get("task").unwrap().get_embeddable_content(&task_node).is_none(),
+            registry
+                .get("task")
+                .unwrap()
+                .get_embeddable_content(&task_node)
+                .is_none(),
             "task nodes should NOT be embeddable"
         );
 
@@ -3943,14 +3981,22 @@ mod tests {
             json!({}),
         );
         assert!(
-            registry.get("date").unwrap().get_embeddable_content(&date_node).is_none(),
+            registry
+                .get("date")
+                .unwrap()
+                .get_embeddable_content(&date_node)
+                .is_none(),
             "date nodes should NOT be embeddable"
         );
 
         // horizontal-line: decorative, no semantic content
         let hr_node = Node::new("horizontal-line".to_string(), "---".to_string(), json!({}));
         assert!(
-            registry.get("horizontal-line").unwrap().get_embeddable_content(&hr_node).is_none(),
+            registry
+                .get("horizontal-line")
+                .unwrap()
+                .get_embeddable_content(&hr_node)
+                .is_none(),
             "horizontal-line nodes should NOT be embeddable"
         );
 
@@ -3961,7 +4007,11 @@ mod tests {
             json!({}),
         );
         assert!(
-            registry.get("query").unwrap().get_embeddable_content(&query_node).is_none(),
+            registry
+                .get("query")
+                .unwrap()
+                .get_embeddable_content(&query_node)
+                .is_none(),
             "query nodes should NOT be embeddable"
         );
 
@@ -3972,14 +4022,22 @@ mod tests {
             json!({}),
         );
         assert!(
-            registry.get("collection").unwrap().get_embeddable_content(&coll_node).is_none(),
+            registry
+                .get("collection")
+                .unwrap()
+                .get_embeddable_content(&coll_node)
+                .is_none(),
             "collection nodes should NOT be embeddable"
         );
 
         // --- Edge case: ai-chat with no messages returns None ---
         let empty_chat = Node::new("ai-chat".to_string(), "Empty".to_string(), json!({}));
         assert!(
-            registry.get("ai-chat").unwrap().get_embeddable_content(&empty_chat).is_none(),
+            registry
+                .get("ai-chat")
+                .unwrap()
+                .get_embeddable_content(&empty_chat)
+                .is_none(),
             "ai-chat without messages property should NOT be embeddable"
         );
     }

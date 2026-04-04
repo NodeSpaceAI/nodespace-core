@@ -24,7 +24,7 @@
   }
 </script>
 
-<div class="agent-selector" role="combobox" aria-expanded={isOpen} aria-haspopup="listbox">
+<div class="agent-selector" role="combobox" aria-expanded={isOpen} aria-haspopup="listbox" aria-controls="agent-dropdown">
   <button
     class="agent-selector-trigger"
     onclick={toggleDropdown}
@@ -45,7 +45,7 @@
   </button>
 
   {#if isOpen}
-    <div class="agent-dropdown" role="listbox">
+    <div class="agent-dropdown" id="agent-dropdown" role="listbox">
       {#each agents as agent (agent.id)}
         <button
           class="agent-option"

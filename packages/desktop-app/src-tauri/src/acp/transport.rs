@@ -730,13 +730,11 @@ mod tests {
         let recv_handle = tokio::spawn(async move {
             let mut received = Vec::new();
             for _ in 0..10 {
-                let msg = tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    receiver.receive(),
-                )
-                .await
-                .expect("receive timed out")
-                .expect("receive failed");
+                let msg =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), receiver.receive())
+                        .await
+                        .expect("receive timed out")
+                        .expect("receive failed");
                 received.push(msg);
             }
             received
@@ -781,7 +779,10 @@ mod tests {
         assert_eq!(response.id, Some(serde_json::json!(1)));
         assert_eq!(response.method.as_deref(), Some("test/large_payload"));
         // Verify the large payload survived the round-trip
-        let data = response.params.unwrap()["data"].as_str().unwrap().to_string();
+        let data = response.params.unwrap()["data"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert_eq!(data.len(), 15_000);
 
         transport.shutdown().await.unwrap();

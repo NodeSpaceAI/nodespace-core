@@ -61,9 +61,10 @@ pub async fn chat_model_download(
         }))
         .await;
 
-    manager.download(&model_id).await.map_err(|e| {
-        model_error(format!("Download failed for {model_id}: {e}"))
-    })
+    manager
+        .download(&model_id)
+        .await
+        .map_err(|e| model_error(format!("Download failed for {model_id}: {e}")))
 }
 
 /// Cancel an in-progress model download.

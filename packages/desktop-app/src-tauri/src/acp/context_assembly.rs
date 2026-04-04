@@ -17,7 +17,9 @@
 //!
 //! Issue #1005
 
-use crate::agent_types::{ContextAssembler, ContextError, ContextNode, ContextPacket, ContextRelationship};
+use crate::agent_types::{
+    ContextAssembler, ContextError, ContextNode, ContextPacket, ContextRelationship,
+};
 use crate::app_services::AppServices;
 use async_trait::async_trait;
 use nodespace_core::models::Node;
@@ -117,7 +119,12 @@ fn format_properties(properties: &serde_json::Value) -> Option<String> {
             // Namespace properties like {"task": {"status": "done"}}
             for (inner_key, inner_val) in inner_obj {
                 if !inner_val.is_null() {
-                    pairs.push(format!("{}.{}: {}", key, inner_key, format_json_value(inner_val)));
+                    pairs.push(format!(
+                        "{}.{}: {}",
+                        key,
+                        inner_key,
+                        format_json_value(inner_val)
+                    ));
                 }
             }
         } else {
@@ -171,10 +178,7 @@ impl GraphContextAssembler {
     }
 
     /// Fetch a node by ID, converting service errors to ContextError.
-    async fn fetch_node(
-        node_service: &NodeService,
-        node_id: &str,
-    ) -> Result<Node, ContextError> {
+    async fn fetch_node(node_service: &NodeService, node_id: &str) -> Result<Node, ContextError> {
         node_service
             .get_node(node_id)
             .await
@@ -216,11 +220,7 @@ impl GraphContextAssembler {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Semantic search failed for seed node '{}': {}",
-                        seed.id,
-                        e
-                    );
+                    tracing::warn!("Semantic search failed for seed node '{}': {}", seed.id, e);
                     // Continue with other seeds -- partial results are better than none
                 }
             }
@@ -260,11 +260,7 @@ impl GraphContextAssembler {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to get children for node '{}': {}",
-                        node.id,
-                        e
-                    );
+                    tracing::warn!("Failed to get children for node '{}': {}", node.id, e);
                 }
             }
 
@@ -449,8 +445,7 @@ impl ContextAssembler for GraphContextAssembler {
 
         // Handle empty input: return minimal context with system prompt
         if node_ids.is_empty() {
-            let system_prompt =
-                format!("{}\n{}", SYSTEM_PROMPT_HEADER, MCP_ACCESS_SECTION);
+            let system_prompt = format!("{}\n{}", SYSTEM_PROMPT_HEADER, MCP_ACCESS_SECTION);
             let token_count = estimate_tokens(&system_prompt);
             return Ok(ContextPacket {
                 system_prompt,
@@ -478,8 +473,7 @@ impl ContextAssembler for GraphContextAssembler {
 
         // If all seed nodes were not found, return minimal context
         if seed_nodes.is_empty() {
-            let system_prompt =
-                format!("{}\n{}", SYSTEM_PROMPT_HEADER, MCP_ACCESS_SECTION);
+            let system_prompt = format!("{}\n{}", SYSTEM_PROMPT_HEADER, MCP_ACCESS_SECTION);
             let token_count = estimate_tokens(&system_prompt);
             return Ok(ContextPacket {
                 system_prompt,
@@ -898,9 +892,9 @@ mod tests {
         // The ~4 chars/token heuristic targets within 10% of real tokenizers for
         // typical English markdown content.
         let samples = vec![
-            "Hello world",                                      // 11 chars
-            "This is a typical sentence with several words.",    // 46 chars
-            "# Heading\n\nSome **markdown** content here.\n",   // 42 chars
+            "Hello world",                                    // 11 chars
+            "This is a typical sentence with several words.", // 46 chars
+            "# Heading\n\nSome **markdown** content here.\n", // 42 chars
             "Mixed content with code: `fn main() {}` and lists:\n- item 1\n- item 2\n",
         ];
 
@@ -908,7 +902,8 @@ mod tests {
             let estimated = estimate_tokens(sample);
             let expected = (sample.len() as f64 / CHARS_PER_TOKEN as f64).ceil() as u32;
             assert_eq!(
-                estimated, expected,
+                estimated,
+                expected,
                 "Token estimation mismatch for '{}': got {}, expected {}",
                 &sample[..20.min(sample.len())],
                 estimated,
