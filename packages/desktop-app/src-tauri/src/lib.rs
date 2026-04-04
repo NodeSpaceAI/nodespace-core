@@ -342,6 +342,44 @@ pub fn run() {
             // Services are populated later via commands/db.rs::init_services()
             app.manage(app_services::AppServices::new());
 
+            // Register agent services as independent managed state (Issue #1008)
+            // These live OUTSIDE AppServices and survive database hot-swaps.
+            // They obtain NodeService/NodeEmbeddingService per-operation from AppServices.
+            {
+                use crate::acp::registry::SystemAgentRegistry;
+                use crate::acp::session::AcpClientService;
+                use crate::commands::local_agent::ManagedAgentState;
+                use crate::local_agent::model_manager::GgufModelManager;
+
+                // GGUF model manager for chat model lifecycle.
+                // Wrapped in Arc so it can be cloned for shutdown cleanup.
+                let model_manager: std::sync::Arc<GgufModelManager> =
+                    std::sync::Arc::new(GgufModelManager::new().unwrap_or_else(|e| {
+                        tracing::error!("Failed to initialize model manager: {e}");
+                        panic!("GgufModelManager initialization failed: {e}");
+                    }));
+                app.manage(model_manager);
+
+                // Local agent state: wraps LocalAgentService with a no-op engine
+                // initially. The real engine is injected when a model is loaded.
+                let app_services = app.state::<app_services::AppServices>().inner().clone();
+                app.manage(ManagedAgentState::new(app_services));
+
+                // Agent registry for discovering external ACP agents.
+                // Wrapped in Arc so it can be shared between Tauri state and AcpClientService.
+                let registry: std::sync::Arc<SystemAgentRegistry> =
+                    std::sync::Arc::new(SystemAgentRegistry::new());
+
+                // ACP client service for managing external agent sessions
+                let acp_service = AcpClientService::new(registry.clone());
+                app.manage(acp_service);
+
+                // Store the Arc<SystemAgentRegistry> as managed state for direct queries
+                app.manage(registry);
+
+                tracing::info!("Agent services registered as independent managed state");
+            }
+
             Ok(())
         })
         .on_menu_event(|app, event| {
@@ -448,6 +486,27 @@ pub fn run() {
             commands::settings::select_new_database,
             commands::settings::restart_app,
             commands::settings::reset_database_to_default,
+            // Local agent commands (Issue #1008)
+            commands::local_agent::local_agent_status,
+            commands::local_agent::local_agent_new_session,
+            commands::local_agent::local_agent_send,
+            commands::local_agent::local_agent_cancel,
+            commands::local_agent::local_agent_end_session,
+            commands::local_agent::local_agent_get_sessions,
+            // Chat model management commands (Issue #1008)
+            commands::chat_models::chat_model_list,
+            commands::chat_models::chat_model_recommended,
+            commands::chat_models::chat_model_download,
+            commands::chat_models::chat_model_cancel_download,
+            commands::chat_models::chat_model_delete,
+            commands::chat_models::chat_model_load,
+            commands::chat_models::chat_model_unload,
+            // ACP commands (Issue #1008)
+            commands::acp::acp_list_agents,
+            commands::acp::acp_start_session,
+            commands::acp::acp_send_message,
+            commands::acp::acp_end_session,
+            commands::acp::acp_refresh_agents,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -516,11 +575,33 @@ pub(crate) fn graceful_shutdown(app_handle: &tauri::AppHandle) {
 /// Release GPU resources (Metal context and backend) to prevent SIGABRT crash on exit.
 ///
 /// Now accesses embedding state through AppServices container.
+/// Also unloads any loaded chat model via GgufModelManager (Issue #1008).
 /// Runs on a dedicated thread because `graceful_shutdown()` may be called from
 /// within the Tokio runtime (Tauri run-event handler), where `block_on` would panic.
 pub(crate) fn release_gpu_resources(app_handle: &tauri::AppHandle) {
+    use crate::agent_types::ModelManager;
+    use crate::local_agent::model_manager::GgufModelManager;
+    use std::sync::Arc;
     use tauri::Manager;
 
+    // Step 1a: Unload chat model if loaded (Issue #1008)
+    if let Some(model_manager) = app_handle.try_state::<Arc<GgufModelManager>>() {
+        let manager = model_manager.inner().clone();
+        let handle = std::thread::spawn(move || {
+            tauri::async_runtime::block_on(async {
+                if let Err(e) = manager.unload().await {
+                    tracing::warn!("Failed to unload chat model during shutdown: {e}");
+                } else {
+                    tracing::info!("Chat model unloaded during shutdown");
+                }
+            });
+        });
+        if let Err(e) = handle.join() {
+            tracing::error!("Chat model unload thread panicked: {:?}", e);
+        }
+    }
+
+    // Step 1b: Release embedding GPU resources
     if let Some(services) = app_handle.try_state::<app_services::AppServices>() {
         let services_clone = services.inner().clone();
         // Spawn a dedicated thread to avoid "cannot block_on inside a runtime" panic.
