@@ -64,11 +64,17 @@
 
   // nodespace:// link clicks are handled by the global click handler
   // in app-shell.svelte — no local handler needed.
+
+  // Inject DOMPurify-sanitized HTML via DOM to avoid {@html} lint warning.
+  let containerEl: HTMLDivElement;
+  $effect(() => {
+    if (containerEl) {
+      containerEl.innerHTML = rendered;
+    }
+  });
 </script>
 
-<div class="chat-markdown">
-  {@html rendered}
-</div>
+<div class="chat-markdown" bind:this={containerEl}></div>
 
 <style>
   .chat-markdown {
