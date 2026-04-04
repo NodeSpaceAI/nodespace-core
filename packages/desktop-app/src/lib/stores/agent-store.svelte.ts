@@ -1,14 +1,25 @@
 /**
  * Agent Store - Manages ACP agent availability and selection using Svelte 5 runes.
  *
- * Provides mock agent data for development. Real Tauri integration
- * will be wired in #1008.
+ * Wired to real Tauri invocations for ACP agent discovery and refresh.
+ * Falls back to mock agent data when Tauri is not available (dev mode).
+ *
+ * Issue #1008: replaced mock-only implementation with real Tauri integration.
  */
 
 import { createLogger } from '$lib/utils/logger';
 import type { AcpAgentInfo } from '$lib/types/agent-types';
+import * as tauriCommands from '$lib/services/tauri-commands';
 
 const log = createLogger('AgentStore');
+
+/** Check if running in Tauri desktop environment. */
+function isTauri(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    ('__TAURI__' in window || '__TAURI_INTERNALS__' in window)
+  );
+}
 
 /** Mock ACP agents for development. */
 const MOCK_AGENTS: AcpAgentInfo[] = [
@@ -71,13 +82,17 @@ class AgentStore {
     }
   }
 
-  /** Refresh agent list from backend (mock). */
+  /** Refresh agent list from backend (real Tauri or mock fallback). */
   async refreshAgents(): Promise<void> {
     this.isLoading = true;
     try {
-      // Simulate network delay
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      this.agents = [...MOCK_AGENTS];
+      if (isTauri()) {
+        this.agents = await tauriCommands.acpRefreshAgents();
+      } else {
+        // Mock fallback: simulate network delay
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        this.agents = [...MOCK_AGENTS];
+      }
 
       // Auto-select first available agent if none selected
       if (!this.selectedAgentId) {
@@ -91,6 +106,12 @@ class AgentStore {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to refresh agents';
       log.error('Failed to refresh agents', { error: message });
+
+      // Fall back to mock on error
+      if (this.agents.length === 0) {
+        this.agents = [...MOCK_AGENTS];
+        log.info('Fell back to mock agents after error');
+      }
     } finally {
       this.isLoading = false;
     }

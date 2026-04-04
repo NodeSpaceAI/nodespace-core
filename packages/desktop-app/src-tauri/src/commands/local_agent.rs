@@ -1,0 +1,236 @@
+//! Tauri commands for the local agent (ReAct loop + session management).
+//!
+//! Bridges the Svelte frontend to [`LocalAgentService`] via Tauri IPC.
+//! Streaming output is forwarded to the frontend through Tauri event channels.
+//!
+//! The `ManagedAgentState` wrapper holds a `RwLock<Option<LocalAgentService>>`
+//! because the agent service can only be created once a chat model is loaded.
+//! Commands return a clear error if the service isn't initialized yet.
+//!
+//! Issue #1008
+
+use crate::agent_types::{
+    events, AgentSession, AgentTurnResult, ChatInferenceEngine, AgentToolExecutor,
+    InferenceError, InferenceUsage, ChatModelSpec,
+    LocalAgentStatus, StreamingChunk,
+};
+use crate::commands::nodes::CommandError;
+use crate::local_agent::agent_loop::LocalAgentService;
+use async_trait::async_trait;
+use serde::Serialize;
+use std::sync::Arc;
+use tauri::{AppHandle, Emitter, State};
+use tokio::sync::RwLock;
+
+// ---------------------------------------------------------------------------
+// Placeholder inference engine (returns "no model loaded")
+// ---------------------------------------------------------------------------
+
+/// Stub inference engine used when no chat model is loaded.
+///
+/// Every method returns [`InferenceError::NoModelLoaded`]. This allows
+/// the `LocalAgentService` to be constructed at startup without a real
+/// model. When a model is loaded via the model manager, the
+/// `ManagedAgentState` is re-initialized with a real engine.
+struct NoOpInferenceEngine;
+
+#[async_trait]
+impl ChatInferenceEngine for NoOpInferenceEngine {
+    async fn generate(
+        &self,
+        _request: crate::agent_types::InferenceRequest,
+        _on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+    ) -> Result<InferenceUsage, InferenceError> {
+        Err(InferenceError::NoModelLoaded)
+    }
+
+    async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError> {
+        Ok(None)
+    }
+
+    async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
+        // Rough estimate: 1 token ≈ 4 chars
+        Ok((text.len() as f32 / 4.0).ceil() as u32)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ManagedAgentState (Tauri managed state)
+// ---------------------------------------------------------------------------
+
+/// Tauri managed state for the local agent subsystem.
+///
+/// Holds the active `LocalAgentService` behind a `RwLock` so it can be
+/// replaced when a new model is loaded, or cleared when the model is unloaded.
+///
+/// The service uses trait objects (`dyn ChatInferenceEngine` and
+/// `dyn AgentToolExecutor`) to avoid propagating generics to the Tauri state.
+pub struct ManagedAgentState {
+    inner: RwLock<LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor>>,
+}
+
+impl ManagedAgentState {
+    /// Create with a no-op inference engine.
+    ///
+    /// The `app_services` parameter is used to construct the tool executor
+    /// so it can access NodeService and NodeEmbeddingService per-operation.
+    pub fn new(app_services: crate::app_services::AppServices) -> Self {
+        use crate::local_agent::tools::GraphToolExecutor;
+
+        let engine: Arc<dyn ChatInferenceEngine> = Arc::new(NoOpInferenceEngine);
+        let executor: Arc<dyn AgentToolExecutor> = Arc::new(GraphToolExecutor::new(app_services));
+        let service = LocalAgentService::new(engine, executor);
+
+        Self {
+            inner: RwLock::new(service),
+        }
+    }
+
+    /// Get a read reference to the inner service.
+    pub async fn service(
+        &self,
+    ) -> tokio::sync::RwLockReadGuard<'_, LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor>>
+    {
+        self.inner.read().await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helper
+// ---------------------------------------------------------------------------
+
+/// Helper to map arbitrary errors into [`CommandError`].
+fn agent_error(message: impl Into<String>) -> CommandError {
+    CommandError {
+        message: message.into(),
+        code: "AGENT_ERROR".to_string(),
+        details: None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Commands
+// ---------------------------------------------------------------------------
+
+/// Get the current status of the local agent.
+#[tauri::command]
+pub async fn local_agent_status(
+    state: State<'_, ManagedAgentState>,
+) -> Result<LocalAgentStatus, CommandError> {
+    let service = state.service().await;
+    let sessions = service.get_sessions().await;
+    if sessions.is_empty() {
+        return Ok(LocalAgentStatus::Idle);
+    }
+    // Return last session's status
+    Ok(sessions
+        .last()
+        .map(|(_, s)| s.clone())
+        .unwrap_or(LocalAgentStatus::Idle))
+}
+
+/// Create a new local agent conversation session.
+///
+/// Returns the session ID.
+#[tauri::command]
+pub async fn local_agent_new_session(
+    model_id: String,
+    state: State<'_, ManagedAgentState>,
+) -> Result<String, CommandError> {
+    let service = state.service().await;
+    let session_id = service.create_session(Some(model_id)).await;
+    tracing::info!(session_id = %session_id, "Local agent session created");
+    Ok(session_id)
+}
+
+/// Send a user message to a local agent session.
+///
+/// Streams [`StreamingChunk`] events on the `local-agent://chunk` channel,
+/// [`LocalAgentStatus`] updates on `local-agent://status`, and
+/// tool events on `local-agent://tool`.
+///
+/// Returns the final [`AgentTurnResult`] when the turn completes.
+#[tauri::command]
+pub async fn local_agent_send(
+    session_id: String,
+    message: String,
+    app: AppHandle,
+    state: State<'_, ManagedAgentState>,
+) -> Result<AgentTurnResult, CommandError> {
+    let app_status = app.clone();
+    let app_chunk = app.clone();
+    let app_tool = app.clone();
+
+    let on_status = move |status: LocalAgentStatus| {
+        let _ = app_status.emit(events::LOCAL_AGENT_STATUS, &status);
+    };
+
+    let on_chunk = move |chunk: StreamingChunk| {
+        let _ = app_chunk.emit(events::LOCAL_AGENT_CHUNK, &chunk);
+        // Forward tool call starts as dedicated tool events
+        if let StreamingChunk::ToolCallStart { ref id, ref name } = chunk {
+            #[derive(Serialize)]
+            struct ToolEvent {
+                id: String,
+                name: String,
+            }
+            let _ = app_tool.emit(
+                events::LOCAL_AGENT_TOOL,
+                &ToolEvent {
+                    id: id.clone(),
+                    name: name.clone(),
+                },
+            );
+        }
+    };
+
+    let service = state.service().await;
+    service
+        .send_message(&session_id, &message, on_status, on_chunk)
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            let _ = app.emit(events::LOCAL_AGENT_ERROR, &msg);
+            agent_error(msg)
+        })
+}
+
+/// Cancel an in-progress generation for the given session.
+#[tauri::command]
+pub async fn local_agent_cancel(
+    session_id: String,
+    state: State<'_, ManagedAgentState>,
+) -> Result<(), CommandError> {
+    let service = state.service().await;
+    service.cancel(&session_id).await;
+    tracing::info!(session_id = %session_id, "Local agent generation cancelled");
+    Ok(())
+}
+
+/// End and remove a session, freeing all resources.
+#[tauri::command]
+pub async fn local_agent_end_session(
+    session_id: String,
+    state: State<'_, ManagedAgentState>,
+) -> Result<(), CommandError> {
+    let service = state.service().await;
+    service.end_session(&session_id).await;
+    tracing::info!(session_id = %session_id, "Local agent session ended");
+    Ok(())
+}
+
+/// Get all active agent sessions.
+#[tauri::command]
+pub async fn local_agent_get_sessions(
+    state: State<'_, ManagedAgentState>,
+) -> Result<Vec<AgentSession>, CommandError> {
+    let service = state.service().await;
+    let session_pairs = service.get_sessions().await;
+    let mut sessions = Vec::with_capacity(session_pairs.len());
+    for (id, _) in &session_pairs {
+        if let Some(session) = service.get_session(id).await {
+            sessions.push(session);
+        }
+    }
+    Ok(sessions)
+}

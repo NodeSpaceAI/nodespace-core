@@ -45,12 +45,12 @@ const HISTORY_TOKEN_BUDGET: u32 = TOTAL_TOKEN_BUDGET - SYSTEM_PROMPT_BUDGET;
 /// Stateless: operates on a provided session and delegates to the injected
 /// inference engine and tool executor. The caller (`LocalAgentService`)
 /// manages session state and persistence.
-pub struct LocalAgentLoop<E: ChatInferenceEngine, T: AgentToolExecutor> {
+pub struct LocalAgentLoop<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> {
     engine: Arc<E>,
     tool_executor: Arc<T>,
 }
 
-impl<E: ChatInferenceEngine, T: AgentToolExecutor> LocalAgentLoop<E, T> {
+impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentLoop<E, T> {
     pub fn new(engine: Arc<E>, tool_executor: Arc<T>) -> Self {
         Self {
             engine,
@@ -425,14 +425,14 @@ impl<E: ChatInferenceEngine, T: AgentToolExecutor> LocalAgentLoop<E, T> {
 /// Manages active sessions and provides a high-level API for creating,
 /// resuming, and ending conversations. Delegates the actual ReAct loop
 /// to [`LocalAgentLoop`].
-pub struct LocalAgentService<E: ChatInferenceEngine, T: AgentToolExecutor> {
+pub struct LocalAgentService<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> {
     sessions: RwLock<HashMap<String, AgentSession>>,
     agent_loop: LocalAgentLoop<E, T>,
     /// Per-session cancellation tokens.
     cancel_tokens: RwLock<HashMap<String, CancellationToken>>,
 }
 
-impl<E: ChatInferenceEngine + 'static, T: AgentToolExecutor + 'static> LocalAgentService<E, T> {
+impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 'static> LocalAgentService<E, T> {
     pub fn new(engine: Arc<E>, tool_executor: Arc<T>) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
