@@ -900,6 +900,7 @@ impl NodeEmbeddingService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_chunk_content_single() {
@@ -1109,6 +1110,275 @@ mod tests {
         assert!(
             chunks[0].2.ends_with(". "),
             "First chunk should end at sentence boundary"
+        );
+    }
+
+    // =========================================================================
+    // Behavior-Driven Embedding Decision Tests (Issue #1018)
+    // =========================================================================
+
+    /// Mock NodeAccessor for testing extract_content_for_embedding without a database.
+    struct MockNodeAccessor {
+        nodes: std::collections::HashMap<String, Node>,
+        children: std::collections::HashMap<String, Vec<Node>>,
+    }
+
+    impl MockNodeAccessor {
+        fn new() -> Self {
+            Self {
+                nodes: std::collections::HashMap::new(),
+                children: std::collections::HashMap::new(),
+            }
+        }
+
+        fn add_node(&mut self, node: Node) {
+            self.nodes.insert(node.id.clone(), node);
+        }
+
+        fn set_children(&mut self, parent_id: &str, kids: Vec<Node>) {
+            self.children.insert(parent_id.to_string(), kids);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl NodeAccessor for MockNodeAccessor {
+        async fn get_node(
+            &self,
+            id: &str,
+        ) -> Result<Option<Node>, crate::services::error::NodeServiceError> {
+            Ok(self.nodes.get(id).cloned())
+        }
+
+        async fn get_children(
+            &self,
+            parent_id: &str,
+        ) -> Result<Vec<Node>, crate::services::error::NodeServiceError> {
+            Ok(self.children.get(parent_id).cloned().unwrap_or_default())
+        }
+
+        async fn get_nodes(
+            &self,
+            ids: &[&str],
+        ) -> Result<Vec<Node>, crate::services::error::NodeServiceError> {
+            Ok(ids.iter().filter_map(|id| self.nodes.get(*id).cloned()).collect())
+        }
+    }
+
+    /// Verify that extract_content_for_embedding respects behavior decisions:
+    /// - Embeddable types (text, header, code-block) return Some
+    /// - Non-embeddable types (task, date, collection) return None
+    /// - ai-chat extracts messages, not node content
+    #[tokio::test]
+    async fn test_behavior_driven_embedding_decision() {
+        let accessor = Arc::new(MockNodeAccessor::new());
+        let behaviors = Arc::new(NodeBehaviorRegistry::new());
+
+        // We cannot construct a full NodeEmbeddingService without a real NLP engine
+        // and SurrealStore, so we test the behavior dispatch logic directly by
+        // calling behavior.get_embeddable_content() through the registry,
+        // which is exactly what extract_content_for_embedding delegates to.
+
+        // --- Embeddable types ---
+
+        let text_node = Node::new("text".to_string(), "Knowledge content".to_string(), json!({}));
+        let text_behavior = behaviors.get("text").unwrap();
+        assert!(
+            text_behavior.get_embeddable_content(&text_node).is_some(),
+            "text should be embeddable via behavior"
+        );
+
+        let header_node = Node::new(
+            "header".to_string(),
+            "## Architecture Overview".to_string(),
+            json!({"headerLevel": 2}),
+        );
+        let header_behavior = behaviors.get("header").unwrap();
+        assert!(
+            header_behavior.get_embeddable_content(&header_node).is_some(),
+            "header should be embeddable via behavior"
+        );
+
+        let code_node = Node::new(
+            "code-block".to_string(),
+            "```python\nprint('hello')".to_string(),
+            json!({"language": "python"}),
+        );
+        let code_behavior = behaviors.get("code-block").unwrap();
+        assert!(
+            code_behavior.get_embeddable_content(&code_node).is_some(),
+            "code-block should be embeddable via behavior"
+        );
+
+        // --- Non-embeddable types ---
+
+        let task_node = Node::new(
+            "task".to_string(),
+            "Fix the bug".to_string(),
+            json!({"task": {"status": "open"}}),
+        );
+        let task_behavior = behaviors.get("task").unwrap();
+        assert!(
+            task_behavior.get_embeddable_content(&task_node).is_none(),
+            "task should NOT be embeddable — behavior returns None"
+        );
+
+        let date_node = Node::new_with_id(
+            "2025-03-01".to_string(),
+            "date".to_string(),
+            "2025-03-01".to_string(),
+            json!({}),
+        );
+        let date_behavior = behaviors.get("date").unwrap();
+        assert!(
+            date_behavior.get_embeddable_content(&date_node).is_none(),
+            "date should NOT be embeddable — behavior returns None"
+        );
+
+        let coll_node = Node::new(
+            "collection".to_string(),
+            "Engineering".to_string(),
+            json!({}),
+        );
+        let coll_behavior = behaviors.get("collection").unwrap();
+        assert!(
+            coll_behavior.get_embeddable_content(&coll_node).is_none(),
+            "collection should NOT be embeddable — behavior returns None"
+        );
+
+        // --- ai-chat: message-based extraction ---
+
+        let chat_node = Node::new(
+            "ai-chat".to_string(),
+            "Chat about testing".to_string(),
+            json!({
+                "messages": [
+                    {"role": "user", "content": "How do I write tests?"},
+                    {"role": "tool_call", "tool": "search", "result_summary": "3 results"},
+                    {"role": "assistant", "content": "Here is a testing guide."}
+                ]
+            }),
+        );
+        let chat_behavior = behaviors.get("ai-chat").unwrap();
+        let chat_content = chat_behavior.get_embeddable_content(&chat_node);
+        assert!(chat_content.is_some(), "ai-chat with messages should be embeddable");
+        let text = chat_content.unwrap();
+        assert!(text.contains("How do I write tests?"), "Should include user message");
+        assert!(text.contains("Here is a testing guide."), "Should include assistant message");
+        assert!(!text.contains("search"), "Should exclude tool_call messages");
+
+        // --- CustomNodeBehavior fallback ---
+
+        let custom_behavior = CustomNodeBehavior::new("invoice");
+        let custom_node = Node::new("invoice".to_string(), "INV-2025-001".to_string(), json!({}));
+        assert!(
+            custom_behavior.get_embeddable_content(&custom_node).is_some(),
+            "Custom types use default trait impl — embeddable if non-empty"
+        );
+
+        // Verify the behavior_for() fallback logic: unknown types get CustomNodeBehavior
+        assert!(
+            behaviors.get("nonexistent_type").is_none(),
+            "Registry should not have a behavior for unknown types"
+        );
+        // The embedding service uses behavior_for() which falls back to CustomNodeBehavior
+        let fallback = CustomNodeBehavior::new("nonexistent_type");
+        let unknown_node = Node::new(
+            "nonexistent_type".to_string(),
+            "Some content".to_string(),
+            json!({}),
+        );
+        assert!(
+            fallback.get_embeddable_content(&unknown_node).is_some(),
+            "Fallback CustomNodeBehavior should make unknown types embeddable if non-empty"
+        );
+    }
+
+    /// Verify the MockNodeAccessor works correctly (validates test infrastructure).
+    #[tokio::test]
+    async fn test_mock_node_accessor() {
+        let mut accessor = MockNodeAccessor::new();
+
+        let node = Node::new("text".to_string(), "Test content".to_string(), json!({}));
+        let node_id = node.id.clone();
+        accessor.add_node(node.clone());
+
+        let child1 = Node::new("text".to_string(), "Child 1".to_string(), json!({}));
+        let child2 = Node::new("text".to_string(), "Child 2".to_string(), json!({}));
+        accessor.set_children(&node_id, vec![child1.clone(), child2.clone()]);
+
+        // get_node
+        let retrieved = accessor.get_node(&node_id).await.unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().content, "Test content");
+
+        // get_node for unknown ID
+        let unknown = accessor.get_node("no-such-id").await.unwrap();
+        assert!(unknown.is_none());
+
+        // get_children
+        let children = accessor.get_children(&node_id).await.unwrap();
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0].content, "Child 1");
+        assert_eq!(children[1].content, "Child 2");
+
+        // get_children for node with no children
+        let empty_children = accessor.get_children("no-children").await.unwrap();
+        assert!(empty_children.is_empty());
+
+        // get_nodes (batch)
+        let id1 = child1.id.clone();
+        let id2 = child2.id.clone();
+        accessor.add_node(child1);
+        accessor.add_node(child2);
+        let batch = accessor.get_nodes(&[&id1, &id2, "nonexistent"]).await.unwrap();
+        assert_eq!(batch.len(), 2, "Should return only existing nodes");
+    }
+
+    /// Verify that text behavior's get_aggregated_content() collects children
+    /// via the NodeAccessor interface (the Phase 2 async aggregation).
+    #[tokio::test]
+    async fn test_text_behavior_aggregated_content_via_accessor() {
+        let mut accessor = MockNodeAccessor::new();
+
+        let parent = Node::new("text".to_string(), "Parent note".to_string(), json!({}));
+        let parent_id = parent.id.clone();
+        accessor.add_node(parent.clone());
+
+        let child_text = Node::new("text".to_string(), "Child paragraph".to_string(), json!({}));
+        let child_code = Node::new(
+            "code-block".to_string(),
+            "```rust\nlet x = 1;".to_string(),
+            json!({"language": "rust"}),
+        );
+        // Task child should NOT contribute (task behavior returns None)
+        let child_task = Node::new(
+            "task".to_string(),
+            "Buy milk".to_string(),
+            json!({"task": {"status": "open"}}),
+        );
+
+        accessor.set_children(&parent_id, vec![
+            child_text.clone(),
+            child_code.clone(),
+            child_task.clone(),
+        ]);
+
+        let behavior = crate::behaviors::TextNodeBehavior;
+        let aggregated = behavior.get_aggregated_content(&parent, &accessor).await;
+
+        assert!(aggregated.is_some(), "Should have aggregated content from children");
+        let text = aggregated.unwrap();
+        assert!(
+            text.contains("Child paragraph"),
+            "Should include text child contribution"
+        );
+        assert!(
+            text.contains("let x = 1"),
+            "Should include code-block child contribution"
+        );
+        assert!(
+            !text.contains("Buy milk"),
+            "Should NOT include task child (task returns None for parent contribution)"
         );
     }
 }

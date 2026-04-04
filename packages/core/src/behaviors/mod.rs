@@ -3819,4 +3819,187 @@ mod tests {
         assert!(behavior.is_some(), "ai-chat should be registered");
         assert_eq!(behavior.unwrap().type_name(), "ai-chat");
     }
+
+    // =========================================================================
+    // Comprehensive: Every behavior's get_embeddable_content() (Issue #1018)
+    // =========================================================================
+
+    /// Verify the embeddable content decision for every registered behavior type.
+    /// Types that return Some(...) are embedded as roots; types that return None are not.
+    #[test]
+    fn test_all_behaviors_embeddable_content_decision() {
+        let registry = NodeBehaviorRegistry::new();
+
+        // --- Types that SHOULD be embeddable (return Some for non-empty content) ---
+
+        // text: primary knowledge content
+        let text_node = Node::new("text".to_string(), "Some knowledge".to_string(), json!({}));
+        assert!(
+            registry.get("text").unwrap().get_embeddable_content(&text_node).is_some(),
+            "text nodes with content should be embeddable"
+        );
+
+        // header: section titles carry semantic value
+        let header_node = Node::new(
+            "header".to_string(),
+            "## Architecture".to_string(),
+            json!({"headerLevel": 2}),
+        );
+        assert!(
+            registry.get("header").unwrap().get_embeddable_content(&header_node).is_some(),
+            "header nodes with content should be embeddable"
+        );
+
+        // code-block: code snippets are searchable (uses default trait impl)
+        let code_node = Node::new(
+            "code-block".to_string(),
+            "```rust\nfn main() {}".to_string(),
+            json!({"language": "rust"}),
+        );
+        assert!(
+            registry.get("code-block").unwrap().get_embeddable_content(&code_node).is_some(),
+            "code-block nodes with content should be embeddable"
+        );
+
+        // quote-block: quoted text is searchable (uses default trait impl)
+        let quote_node = Node::new(
+            "quote-block".to_string(),
+            "> Important quote".to_string(),
+            json!({}),
+        );
+        assert!(
+            registry.get("quote-block").unwrap().get_embeddable_content(&quote_node).is_some(),
+            "quote-block nodes with content should be embeddable"
+        );
+
+        // ordered-list: list content is searchable (uses default trait impl)
+        let list_node = Node::new(
+            "ordered-list".to_string(),
+            "1. First step".to_string(),
+            json!({}),
+        );
+        assert!(
+            registry.get("ordered-list").unwrap().get_embeddable_content(&list_node).is_some(),
+            "ordered-list nodes with content should be embeddable"
+        );
+
+        // table: table data is searchable
+        let table_node = Node::new(
+            "table".to_string(),
+            "| A | B |\n| 1 | 2 |".to_string(),
+            json!({}),
+        );
+        assert!(
+            registry.get("table").unwrap().get_embeddable_content(&table_node).is_some(),
+            "table nodes with content should be embeddable"
+        );
+
+        // schema: schema name is content (uses default trait impl)
+        let schema_node = Node::new(
+            "schema".to_string(),
+            "task".to_string(),
+            json!({"is_core": true, "fields": []}),
+        );
+        assert!(
+            registry.get("schema").unwrap().get_embeddable_content(&schema_node).is_some(),
+            "schema nodes with content should be embeddable"
+        );
+
+        // ai-chat: extracts user/assistant messages from properties
+        let chat_node = Node::new(
+            "ai-chat".to_string(),
+            "Chat about webhooks".to_string(),
+            json!({
+                "messages": [
+                    {"role": "user", "content": "How do I implement webhooks?"},
+                    {"role": "assistant", "content": "Here is an approach..."}
+                ]
+            }),
+        );
+        let chat_content = registry.get("ai-chat").unwrap().get_embeddable_content(&chat_node);
+        assert!(chat_content.is_some(), "ai-chat with messages should be embeddable");
+        let chat_text = chat_content.unwrap();
+        assert!(chat_text.contains("How do I implement webhooks?"));
+        assert!(chat_text.contains("Here is an approach..."));
+
+        // --- Types that should NOT be embeddable (return None) ---
+
+        // task: action items, not semantic knowledge
+        let task_node = Node::new(
+            "task".to_string(),
+            "Buy groceries".to_string(),
+            json!({"task": {"status": "open"}}),
+        );
+        assert!(
+            registry.get("task").unwrap().get_embeddable_content(&task_node).is_none(),
+            "task nodes should NOT be embeddable"
+        );
+
+        // date: organizational containers
+        let date_node = Node::new_with_id(
+            "2025-06-15".to_string(),
+            "date".to_string(),
+            "2025-06-15".to_string(),
+            json!({}),
+        );
+        assert!(
+            registry.get("date").unwrap().get_embeddable_content(&date_node).is_none(),
+            "date nodes should NOT be embeddable"
+        );
+
+        // horizontal-line: decorative, no semantic content
+        let hr_node = Node::new("horizontal-line".to_string(), "---".to_string(), json!({}));
+        assert!(
+            registry.get("horizontal-line").unwrap().get_embeddable_content(&hr_node).is_none(),
+            "horizontal-line nodes should NOT be embeddable"
+        );
+
+        // query: operational/structural, not semantic
+        let query_node = Node::new(
+            "query".to_string(),
+            "Find open tasks".to_string(),
+            json!({}),
+        );
+        assert!(
+            registry.get("query").unwrap().get_embeddable_content(&query_node).is_none(),
+            "query nodes should NOT be embeddable"
+        );
+
+        // collection: organizational labels
+        let coll_node = Node::new(
+            "collection".to_string(),
+            "Engineering".to_string(),
+            json!({}),
+        );
+        assert!(
+            registry.get("collection").unwrap().get_embeddable_content(&coll_node).is_none(),
+            "collection nodes should NOT be embeddable"
+        );
+
+        // --- Edge case: ai-chat with no messages returns None ---
+        let empty_chat = Node::new("ai-chat".to_string(), "Empty".to_string(), json!({}));
+        assert!(
+            registry.get("ai-chat").unwrap().get_embeddable_content(&empty_chat).is_none(),
+            "ai-chat without messages property should NOT be embeddable"
+        );
+    }
+
+    /// Verify that CustomNodeBehavior (fallback for schema-defined types) uses the
+    /// default trait implementation for embeddable content (embeddable if non-empty).
+    #[test]
+    fn test_custom_behavior_uses_default_embeddability() {
+        let behavior = CustomNodeBehavior::new("invoice");
+
+        let node = Node::new("invoice".to_string(), "INV-001".to_string(), json!({}));
+        assert!(
+            behavior.get_embeddable_content(&node).is_some(),
+            "Custom type with content should be embeddable (default trait impl)"
+        );
+
+        let empty = Node::new("invoice".to_string(), "".to_string(), json!({}));
+        assert!(
+            behavior.get_embeddable_content(&empty).is_none(),
+            "Custom type with empty content should NOT be embeddable"
+        );
+    }
 }
