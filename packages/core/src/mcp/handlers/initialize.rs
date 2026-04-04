@@ -168,7 +168,9 @@ pub async fn handle_initialize(
             - member_of: Add ANY node to a collection. Example: create_relationship(source_id: 'doc-123', relationship_name: 'member_of', target_id: 'collection-456')\n\
             - has_child: Parent-child hierarchy within documents (prefer insert_child_at_index for creating nodes with hierarchy)\n\
             - mentions: Bidirectional links between nodes (auto-tracked when using nodespace:// URIs)\n\n\
-            CUSTOM RELATIONSHIPS: For schema-defined relationships (e.g., 'assigned_to', 'billed_to'), the relationship must be defined in the source node's schema. Use search_tools with category='relationships' for get_related_nodes and graph discovery tools.",
+            CUSTOM RELATIONSHIPS: For schema-defined relationships (e.g., 'assigned_to', 'billed_to'), the relationship must be defined in the source node's schema. Use search_tools with category='relationships' for get_related_nodes and graph discovery tools.\n\n\
+            DISPLAY FORMATTING: When presenting node data to users, use human-readable labels for enum/property values. Common mappings: status: open → Open, in_progress → In Progress, done → Done, cancelled → Cancelled. Priority: low → Low, medium → Medium, high → High, urgent → Urgent. Apply Title Case to all enum values (replace underscores with spaces).\n\n\
+            NODE REFERENCES: When referencing nodes in responses, include the bare nodespace:// URI from the node's `uri` field. Do NOT wrap in markdown links or backticks — the client auto-links bare URIs. Example: 'Review agreement nodespace://abc123 is done.' NOT '[nodespace://abc123](nodespace://abc123)' or '`nodespace://abc123`'.",
             node_types_str,
             collections_str
         )

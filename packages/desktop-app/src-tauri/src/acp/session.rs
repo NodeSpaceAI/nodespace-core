@@ -31,7 +31,6 @@ const INIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const COMPLETION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// ACP protocol version.
-const PROTOCOL_VERSION: &str = "1";
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -91,8 +90,10 @@ pub enum SessionError {
 /// The session owns the transport connection to the agent process and tracks
 /// metadata about the conversation (message count, timestamps).
 pub struct AcpSession {
-    /// Unique session identifier.
+    /// Unique session identifier (internal).
     id: String,
+    /// The session ID returned by the agent from `session/new`.
+    acp_session_id: Option<String>,
     /// Information about the agent this session communicates with.
     agent_info: AcpAgentInfo,
     /// The transport layer (stdin/stdout to the agent process).
@@ -110,12 +111,18 @@ impl AcpSession {
     fn new(id: String, agent_info: AcpAgentInfo) -> Self {
         Self {
             id,
+            acp_session_id: None,
             agent_info,
             transport: None,
             state: AcpSessionState::Idle,
             created_at: chrono::Utc::now(),
             message_count: 0,
         }
+    }
+
+    /// Return the agent-assigned session ID (from `session/new` response).
+    pub fn acp_session_id(&self) -> Option<&str> {
+        self.acp_session_id.as_deref()
     }
 
     /// Return the current session state.
@@ -203,13 +210,24 @@ impl AcpSession {
         self.transport = Some(transport);
         info!(session_id = %self.id, agent = %self.agent_info.id, "Agent transport spawned");
 
-        // Send `initialize` message
+        // ---------------------------------------------------------------
+        // Step 1: Send `initialize` handshake
+        // ---------------------------------------------------------------
+        let cwd = std::env::current_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
         let init_msg = AcpMessage {
             jsonrpc: "2.0".to_string(),
             method: Some("initialize".to_string()),
             params: Some(serde_json::json!({
                 "protocolVersion": 1,
-                "capabilities": {}
+                "clientCapabilities": {},
+                "clientInfo": {
+                    "name": "nodespace",
+                    "version": "0.1.0"
+                }
             })),
             id: Some(serde_json::json!(1)),
             result: None,
@@ -222,15 +240,14 @@ impl AcpSession {
             return Err(e);
         }
 
-        // Wait for `initialized` response with timeout
+        // Wait for `initialize` response
         let receive_result = tokio::time::timeout(INIT_TIMEOUT, self.transport_receive()).await;
 
         match receive_result {
             Ok(Ok(response)) => {
-                // Validate it looks like an initialized response
                 if response.error.is_some() {
                     let reason = format!(
-                        "agent returned error during initialization: {:?}",
+                        "agent returned error during initialize: {:?}",
                         response.error
                     );
                     let _ = self.transition(AcpSessionState::Failed {
@@ -240,31 +257,40 @@ impl AcpSession {
                 }
                 debug!(
                     session_id = %self.id,
-                    "Received initialized response"
+                    result = ?response.result,
+                    "Received initialize response"
                 );
             }
             Ok(Err(e)) => {
-                let reason = format!("transport error during initialization: {e}");
+                let reason = format!("transport error during initialize: {e}");
                 let _ = self.transition(AcpSessionState::Failed { reason });
                 return Err(e);
             }
             Err(_elapsed) => {
-                let reason = format!("initialization timed out after {:?}", INIT_TIMEOUT);
+                let reason = format!("initialize timed out after {:?}", INIT_TIMEOUT);
                 warn!(session_id = %self.id, %reason);
                 let _ = self.transition(AcpSessionState::Failed { reason });
                 return Err(SessionError::InitTimeout(INIT_TIMEOUT));
             }
         }
 
-        // Send `session/new` with MCP server config
+        // ---------------------------------------------------------------
+        // Step 2: Send `session/new` to create a conversation session
+        // ---------------------------------------------------------------
+        let mcp_port = nodespace_core::services::default_mcp_port();
         let session_new_msg = AcpMessage {
             jsonrpc: "2.0".to_string(),
             method: Some("session/new".to_string()),
             params: Some(serde_json::json!({
-                "mcpServers": [{
-                    "name": "nodespace",
-                    "url": "http://localhost:3100/mcp"
-                }]
+                "cwd": cwd,
+                "mcpServers": [
+                    {
+                        "type": "http",
+                        "name": "nodespace",
+                        "url": format!("http://localhost:{}/mcp", mcp_port),
+                        "headers": []
+                    }
+                ]
             })),
             id: Some(serde_json::json!(2)),
             result: None,
@@ -277,7 +303,7 @@ impl AcpSession {
             return Err(e);
         }
 
-        // Wait for session/new acknowledgement
+        // Wait for session/new response (contains sessionId)
         let session_result = tokio::time::timeout(INIT_TIMEOUT, self.transport_receive()).await;
 
         match session_result {
@@ -292,9 +318,17 @@ impl AcpSession {
                     });
                     return Err(SessionError::Other(anyhow::anyhow!(reason)));
                 }
+                // Extract the sessionId from the response
+                if let Some(ref result) = response.result {
+                    if let Some(sid) = result.get("sessionId").and_then(|v| v.as_str()) {
+                        self.acp_session_id = Some(sid.to_string());
+                        info!(session_id = %self.id, acp_session_id = %sid, "Got agent session ID");
+                    }
+                }
                 debug!(
                     session_id = %self.id,
-                    "Received session/new acknowledgement"
+                    result = ?response.result,
+                    "Received session/new response"
                 );
             }
             Ok(Err(e)) => {
@@ -536,6 +570,20 @@ impl AcpClientService {
 
         let mut session = session_arc.lock().await;
         session.end().await
+    }
+
+    /// Get the agent-assigned session ID for an agent's session.
+    pub async fn get_acp_session_id(&self, agent_id: &str) -> Result<Option<String>, SessionError> {
+        let session_arc = {
+            let sessions = self.sessions.lock().await;
+            sessions
+                .get(agent_id)
+                .cloned()
+                .ok_or_else(|| SessionError::SessionNotFound(agent_id.to_string()))?
+        };
+
+        let session = session_arc.lock().await;
+        Ok(session.acp_session_id().map(|s| s.to_string()))
     }
 
     /// Get the current state of an agent's session.

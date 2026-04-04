@@ -68,6 +68,16 @@ fn agent_catalog() -> Vec<CatalogEntry> {
             auth_method: AcpAuthMethod::AgentManaged,
         },
         CatalogEntry {
+            id: "codex",
+            name: "Codex",
+            // Codex ACP adapter from zed-industries/codex-acp
+            binary_name: "codex-acp",
+            args: &[],
+            auth_method: AcpAuthMethod::EnvApiKey {
+                var_name: "OPENAI_API_KEY".to_string(),
+            },
+        },
+        CatalogEntry {
             id: "mistral-vibe",
             name: "Mistral Vibe",
             binary_name: "vibe-acp",
@@ -323,9 +333,9 @@ mod tests {
     // -- Catalog construction ------------------------------------------------
 
     #[test]
-    fn catalog_has_three_agents() {
+    fn catalog_has_four_agents() {
         let catalog = agent_catalog();
-        assert_eq!(catalog.len(), 3);
+        assert_eq!(catalog.len(), 4);
     }
 
     #[test]
@@ -334,7 +344,7 @@ mod tests {
         let mut ids: Vec<&str> = catalog.iter().map(|e| e.id).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.len(), 4);
     }
 
     #[test]
@@ -343,6 +353,7 @@ mod tests {
         let ids: Vec<&str> = catalog.iter().map(|e| e.id).collect();
         assert!(ids.contains(&"claude-code"));
         assert!(ids.contains(&"gemini-cli"));
+        assert!(ids.contains(&"codex"));
         assert!(ids.contains(&"mistral-vibe"));
     }
 
@@ -459,7 +470,7 @@ mod tests {
     async fn registry_discover_returns_all_catalog_agents() {
         let registry = SystemAgentRegistry::new();
         let agents = registry.discover_agents().await.unwrap();
-        assert_eq!(agents.len(), 3);
+        assert_eq!(agents.len(), 4);
     }
 
     #[tokio::test]
@@ -504,7 +515,7 @@ mod tests {
         registry.refresh().await.unwrap();
         let agents = registry.discover_agents().await.unwrap();
 
-        assert_eq!(agents.len(), 3);
+        assert_eq!(agents.len(), 4);
     }
 
     #[tokio::test]

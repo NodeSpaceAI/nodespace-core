@@ -587,7 +587,7 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
         },
         {
             "name": "get_node",
-            "description": "Retrieve a single node by ID",
+            "description": "Retrieve a single node by ID. The result includes a `uri` field (e.g. nodespace://abc123). When referencing this node, include the bare URI (not in markdown links or backticks) — the client auto-links them.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -650,13 +650,22 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
         },
         {
             "name": "query_nodes",
-            "description": "Query nodes with filters",
+            "description": "Query nodes with filters. Each result includes a `uri` field (e.g. nodespace://abc123). When referencing nodes in your response, include the bare URI (not wrapped in markdown links or backticks) — the client auto-links them. Example: 'Review agreement nodespace://abc123 is done.'",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "filters": {
                         "type": "array",
-                        "description": "Array of filter conditions"
+                        "description": "Array of filter conditions. Each filter has {field, operator, value}. Supported: {field:'content', operator:'contains', value:'text'} and {field:'title', operator:'contains', value:'text'}. Other field/operator combinations are ignored. To filter by status or other properties, query all nodes of the type and filter results client-side.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "field": { "type": "string", "enum": ["content", "title"] },
+                                "operator": { "type": "string", "enum": ["contains"] },
+                                "value": { "type": "string" }
+                            },
+                            "required": ["field", "operator", "value"]
+                        }
                     },
                     "limit": {
                         "type": "number",

@@ -2,6 +2,7 @@
   /* global navigator */
   import type { DisplayMessage } from '$lib/stores/chat-store.svelte';
   import ToolCallDisplay from './tool-call-display.svelte';
+  import ChatMarkdown from './chat-markdown.svelte';
 
   let { message }: { message: DisplayMessage } = $props();
 
@@ -32,7 +33,13 @@
 >
   <div class="message-bubble">
     {#if message.content}
-      <div class="message-content">{message.content}</div>
+      <div class="message-content">
+        {#if isAssistant}
+          <ChatMarkdown content={message.content} />
+        {:else}
+          {message.content}
+        {/if}
+      </div>
     {/if}
 
     {#if message.toolExecutions.length > 0}
@@ -100,8 +107,11 @@
   }
 
   .message-content {
-    white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .user-message .message-content {
+    white-space: pre-wrap;
   }
 
   .tool-calls {

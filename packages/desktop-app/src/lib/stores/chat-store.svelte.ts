@@ -76,39 +76,42 @@ const MOCK_TOOL_CALLS: ToolExecutionRecord[] = [
  * The exact shape from Claude Code / Gemini CLI is not yet known.
  * Logs the raw result so the shape can be observed and refined later.
  */
-function extractAcpResponseText(result: unknown): string | null {
-  if (result === null || result === undefined) return null;
-  if (typeof result === 'string') return result;
-  if (typeof result === 'object') {
-    const r = result as Record<string, unknown>;
-    // Try common candidate fields in priority order
-    if (typeof r['content'] === 'string') return r['content'];
-    if (typeof r['text'] === 'string') return r['text'];
-    if (typeof r['message'] === 'string') return r['message'];
-    if (typeof r['response'] === 'string') return r['response'];
-    // Nested content array (common in Anthropic/OpenAI formats)
-    if (Array.isArray(r['content'])) {
-      const parts = r['content'] as unknown[];
-      const texts = parts
-        .map((p) => {
-          if (typeof p === 'string') return p;
-          if (typeof p === 'object' && p !== null) {
-            const part = p as Record<string, unknown>;
-            if (typeof part['text'] === 'string') return part['text'];
-          }
-          return null;
-        })
-        .filter((t): t is string => t !== null);
-      if (texts.length > 0) return texts.join('');
+/**
+ * Extract text from an ACP message.
+ *
+ * ACP agents stream `session/update` notifications:
+ *   { method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk",
+ *     content: { type: "text", text: "..." } } } }
+ *
+ * The final `session/prompt` response:
+ *   { result: { stopReason: "end_turn", usage: {...} } }
+ */
+function extractAcpText(msg: Record<string, unknown>): { text: string | null; done: boolean } {
+  // Streaming session/update notification
+  if (msg['method'] === 'session/update' && msg['params']) {
+    const params = msg['params'] as Record<string, unknown>;
+    const update = params['update'] as Record<string, unknown> | undefined;
+    if (update) {
+      const updateType = update['sessionUpdate'] as string;
+      if (updateType === 'agent_message_chunk') {
+        const content = update['content'] as Record<string, unknown> | undefined;
+        if (content && typeof content['text'] === 'string') {
+          return { text: content['text'], done: false };
+        }
+      }
     }
-    // Last resort: JSON stringify so it's at least visible
-    try {
-      return JSON.stringify(result);
-    } catch {
-      return '[unparseable result]';
+    return { text: null, done: false };
+  }
+
+  // Final session/prompt response (has result.stopReason)
+  if (msg['result']) {
+    const result = msg['result'] as Record<string, unknown>;
+    if (result['stopReason']) {
+      return { text: null, done: true };
     }
   }
-  return String(result);
+
+  return { text: null, done: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -222,26 +225,37 @@ class ChatStore {
     try {
       const { listen } = await import('@tauri-apps/api/event');
 
-      // Listen for the agent's response message
+      // Accumulate streamed text chunks from session/update notifications
+      let accumulatedText = '';
+
       const unlistenMessage = await listen<AcpMessage>(AGENT_EVENTS.ACP_AGENT_MESSAGE, (event) => {
-        const msg = event.payload;
+        const msg = event.payload as unknown as Record<string, unknown>;
         log.debug('ACP agent message received', { raw: msg });
 
-        if (msg.error) {
-          const errText = `Agent error: ${msg.error.message} (code ${msg.error.code})`;
-          log.error('ACP agent returned error', { error: msg.error });
+        // Handle error responses
+        const error = msg['error'] as Record<string, unknown> | undefined;
+        if (error) {
+          const errorString = JSON.stringify(error);
+          let errText = 'Agent error';
+          if (typeof error['message'] === 'string') {
+            errText = `Agent error: ${error['message']}`;
+            if (error['code']) errText += ` (code ${error['code']})`;
+          } else {
+            errText = `Agent error: ${errorString}`;
+          }
+          log.error('ACP agent returned error', { error, errorString, fullMessage: msg });
           this.error = errText;
           return;
         }
 
-        const text = extractAcpResponseText(msg.result);
+        const { text, done } = extractAcpText(msg);
         if (text !== null) {
-          assistantMessage.content = text;
+          accumulatedText += text;
+          assistantMessage.content = accumulatedText;
           this.messages = [...this.messages.slice(0, -1), { ...assistantMessage }];
-        } else {
-          log.warn('ACP result has no extractable text', { result: msg.result });
-          assistantMessage.content = '[No text in response]';
-          this.messages = [...this.messages.slice(0, -1), { ...assistantMessage }];
+        }
+        if (done) {
+          log.info('ACP turn completed');
         }
       });
       this.eventUnlisteners.push(unlistenMessage);
