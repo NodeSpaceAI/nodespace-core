@@ -40,6 +40,18 @@
     const _len = messages.length;
     scrollToBottom();
   });
+
+  // Reset chat when agent changes
+  let previousAgentId = $state<string | null>(agentStore.selectedAgentId ?? null);
+
+  $effect(() => {
+    const currentAgentId = agentStore.selectedAgentId;
+    if (previousAgentId !== null && currentAgentId !== previousAgentId) {
+      log.info('Agent changed, resetting chat session', { from: previousAgentId, to: currentAgentId });
+      chatStore.reset();
+    }
+    previousAgentId = currentAgentId ?? null;
+  });
 </script>
 
 <div class="chat-panel">

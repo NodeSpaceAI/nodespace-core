@@ -14,9 +14,12 @@ import type {
   LocalAgentStatus,
   ToolExecutionRecord,
   AgentTurnResult,
+  AcpMessage,
+  AcpSessionState,
 } from '$lib/types/agent-types';
-import { AGENT_EVENTS } from '$lib/types/agent-types';
+import { AGENT_EVENTS, isAcpSessionFailed } from '$lib/types/agent-types';
 import * as tauriCommands from '$lib/services/tauri-commands';
+import { agentStore } from '$lib/stores/agent-store.svelte';
 
 const log = createLogger('ChatStore');
 
@@ -65,6 +68,50 @@ const MOCK_TOOL_CALLS: ToolExecutionRecord[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// ACP Response Extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Best-effort extraction of text from an ACP result payload.
+ * The exact shape from Claude Code / Gemini CLI is not yet known.
+ * Logs the raw result so the shape can be observed and refined later.
+ */
+function extractAcpResponseText(result: unknown): string | null {
+  if (result === null || result === undefined) return null;
+  if (typeof result === 'string') return result;
+  if (typeof result === 'object') {
+    const r = result as Record<string, unknown>;
+    // Try common candidate fields in priority order
+    if (typeof r['content'] === 'string') return r['content'];
+    if (typeof r['text'] === 'string') return r['text'];
+    if (typeof r['message'] === 'string') return r['message'];
+    if (typeof r['response'] === 'string') return r['response'];
+    // Nested content array (common in Anthropic/OpenAI formats)
+    if (Array.isArray(r['content'])) {
+      const parts = r['content'] as unknown[];
+      const texts = parts
+        .map((p) => {
+          if (typeof p === 'string') return p;
+          if (typeof p === 'object' && p !== null) {
+            const part = p as Record<string, unknown>;
+            if (typeof part['text'] === 'string') return part['text'];
+          }
+          return null;
+        })
+        .filter((t): t is string => t !== null);
+      if (texts.length > 0) return texts.join('');
+    }
+    // Last resort: JSON stringify so it's at least visible
+    try {
+      return JSON.stringify(result);
+    } catch {
+      return '[unparseable result]';
+    }
+  }
+  return String(result);
+}
+
+// ---------------------------------------------------------------------------
 // ChatStore
 // ---------------------------------------------------------------------------
 
@@ -76,6 +123,14 @@ class ChatStore {
 
   private streamAbortController: AbortController | null = null;
   private eventUnlisteners: Array<() => void> = [];
+  private acpSessionId: string | null = null;
+  private acpAgentIdForSession: string | null = null;
+
+  /** Determine if the currently selected agent is an ACP agent (not local). */
+  private get isAcpAgent(): boolean {
+    const id = agentStore.selectedAgentId;
+    return id !== null && id !== 'local-agent';
+  }
 
   /** Send a user message and get a response (real or mock). */
   async sendMessage(content: string): Promise<void> {
@@ -103,14 +158,112 @@ class ChatStore {
     this.messages = [...this.messages, userMessage];
 
     if (isTauri()) {
-      await this.sendViaTauri(content.trim());
+      if (this.isAcpAgent) {
+        await this.sendViaTauriAcp(content.trim());
+      } else {
+        await this.sendViaTauriLocal(content.trim());
+      }
     } else {
       await this.sendViaMock(content.trim());
     }
   }
 
-  /** Send via real Tauri invocation with event-based streaming. */
-  private async sendViaTauri(content: string): Promise<void> {
+  /** Send via ACP agent (external subprocess via Tauri). */
+  private async sendViaTauriAcp(content: string): Promise<void> {
+    const agentId = agentStore.selectedAgentId!;
+
+    // Start ACP session if not already active for this agent
+    if (!this.acpSessionId || this.acpAgentIdForSession !== agentId) {
+      // Tear down any stale session for a different agent
+      if (this.acpSessionId) {
+        log.debug('Ending stale ACP session for agent switch', {
+          old: this.acpAgentIdForSession,
+          new: agentId,
+        });
+        tauriCommands.acpEndSession(this.acpSessionId).catch((err) => {
+          log.warn('Failed to end stale ACP session', { error: String(err) });
+        });
+        this.acpSessionId = null;
+        this.acpAgentIdForSession = null;
+      }
+
+      try {
+        log.info('Starting ACP session', { agentId });
+        this.acpSessionId = await tauriCommands.acpStartSession(agentId);
+        this.acpAgentIdForSession = agentId;
+        log.info('ACP session started', { sessionId: this.acpSessionId, agentId });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to start ACP session';
+        log.error('ACP session start failed', { agentId, error: errorMsg });
+        this.error = `Failed to start ${agentStore.selectedAgent?.name ?? agentId}: ${errorMsg}`;
+        return;
+      }
+    }
+
+    this.isStreaming = true;
+
+    // Add placeholder for the assistant response
+    const assistantMessage: DisplayMessage = {
+      id: generateId(),
+      role: 'assistant',
+      content: '',
+      toolExecutions: [],
+      timestamp: Date.now(),
+    };
+    this.messages = [...this.messages, assistantMessage];
+
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+
+      // Listen for the agent's response message
+      const unlistenMessage = await listen<AcpMessage>(AGENT_EVENTS.ACP_AGENT_MESSAGE, (event) => {
+        const msg = event.payload;
+        log.debug('ACP agent message received', { raw: msg });
+
+        if (msg.error) {
+          const errText = `Agent error: ${msg.error.message} (code ${msg.error.code})`;
+          log.error('ACP agent returned error', { error: msg.error });
+          this.error = errText;
+          return;
+        }
+
+        const text = extractAcpResponseText(msg.result);
+        if (text !== null) {
+          assistantMessage.content = text;
+          this.messages = [...this.messages.slice(0, -1), { ...assistantMessage }];
+        } else {
+          log.warn('ACP result has no extractable text', { result: msg.result });
+          assistantMessage.content = '[No text in response]';
+          this.messages = [...this.messages.slice(0, -1), { ...assistantMessage }];
+        }
+      });
+      this.eventUnlisteners.push(unlistenMessage);
+
+      // Listen for session state changes (for error reporting)
+      const unlistenState = await listen<AcpSessionState>(AGENT_EVENTS.ACP_SESSION_STATE, (event) => {
+        const state = event.payload;
+        log.debug('ACP session state', { state });
+        if (isAcpSessionFailed(state)) {
+          log.error('ACP session failed', { reason: state.reason });
+          this.error = `Agent session failed: ${state.reason}`;
+        }
+      });
+      this.eventUnlisteners.push(unlistenState);
+
+      // Fire and wait — response arrives via event above
+      await tauriCommands.acpSendMessage(this.acpSessionId!, content);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'ACP send failed';
+      log.error('ACP send error', { error: errorMsg });
+      this.error = errorMsg;
+    } finally {
+      this.cleanupEventListeners();
+      this.isStreaming = false;
+    }
+  }
+
+  /** Send via real Tauri invocation with event-based streaming (local agent). */
+  private async sendViaTauriLocal(content: string): Promise<void> {
     if (!this.currentSessionId) return;
 
     this.isStreaming = true;
@@ -183,7 +336,7 @@ class ChatStore {
   }
 
   /** Send via mock streaming (used in dev mode without Tauri). */
-  private async sendViaMock(content: string): Promise<void> {
+  private async sendViaMock(_content: string): Promise<void> {
     this.isStreaming = true;
     this.streamAbortController = new AbortController();
 
@@ -237,10 +390,15 @@ class ChatStore {
 
   /** Cancel the current streaming response. */
   cancelStreaming(): void {
-    if (isTauri() && this.currentSessionId) {
-      tauriCommands.localAgentCancel(this.currentSessionId).catch((err) => {
-        log.error('Failed to cancel agent generation', { error: String(err) });
-      });
+    if (isTauri()) {
+      if (this.isAcpAgent) {
+        // ACP has no cancel mid-response — just clean up listeners
+        log.debug('ACP cancel: cleaning up listeners');
+      } else if (this.currentSessionId) {
+        tauriCommands.localAgentCancel(this.currentSessionId).catch((err) => {
+          log.error('Failed to cancel agent generation', { error: String(err) });
+        });
+      }
     }
     if (this.streamAbortController) {
       this.streamAbortController.abort();
@@ -252,14 +410,26 @@ class ChatStore {
   async createSession(modelId?: string): Promise<string> {
     if (isTauri()) {
       try {
-        const sessionId = await tauriCommands.localAgentNewSession(
-          modelId ?? 'ministral-3b-q4km'
-        );
-        this.currentSessionId = sessionId;
-        this.messages = [];
-        this.error = null;
-        log.info('Created new Tauri chat session', { sessionId, modelId });
-        return sessionId;
+        if (this.isAcpAgent) {
+          // ACP path: session is lazy-started on first sendMessage
+          // Just reset conversation state here
+          const sessionId = `acp-pending-${Date.now()}`;
+          this.currentSessionId = sessionId;
+          this.messages = [];
+          this.error = null;
+          log.info('Prepared ACP chat session (lazy start)', { agentId: agentStore.selectedAgentId });
+          return sessionId;
+        } else {
+          // Local agent path (unchanged)
+          const sessionId = await tauriCommands.localAgentNewSession(
+            modelId ?? 'ministral-3b-q4km'
+          );
+          this.currentSessionId = sessionId;
+          this.messages = [];
+          this.error = null;
+          log.info('Created new Tauri chat session', { sessionId, modelId });
+          return sessionId;
+        }
       } catch (err) {
         log.error('Failed to create Tauri session, falling back to mock', {
           error: String(err),
@@ -287,10 +457,19 @@ class ChatStore {
   reset(): void {
     this.cancelStreaming();
 
-    if (isTauri() && this.currentSessionId) {
-      tauriCommands.localAgentEndSession(this.currentSessionId).catch((err) => {
-        log.error('Failed to end session during reset', { error: String(err) });
-      });
+    if (isTauri()) {
+      if (this.acpSessionId) {
+        tauriCommands.acpEndSession(this.acpSessionId).catch((err) => {
+          log.error('Failed to end ACP session during reset', { error: String(err) });
+        });
+        this.acpSessionId = null;
+        this.acpAgentIdForSession = null;
+      }
+      if (!this.isAcpAgent && this.currentSessionId) {
+        tauriCommands.localAgentEndSession(this.currentSessionId).catch((err) => {
+          log.error('Failed to end local session during reset', { error: String(err) });
+        });
+      }
     }
 
     this.messages = [];
