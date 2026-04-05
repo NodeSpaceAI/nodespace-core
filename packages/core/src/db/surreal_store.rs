@@ -4345,6 +4345,7 @@ impl SurrealStore {
                 UPDATE embedding SET
                     error_count = error_count + 1,
                     last_error = $error,
+                    -- SurrealDB evaluates error_count using its pre-update value here
                     stale = IF(error_count + 1 >= $max_retries, false, stale),
                     modified_at = time::now()
                 WHERE node = type::record('node', $node_id);
