@@ -28,10 +28,10 @@ use crate::local_agent::prompt_templates;
 const MAX_TOOL_ITERATIONS: usize = 2;
 
 /// Total token budget for the context window.
-const TOTAL_TOKEN_BUDGET: u32 = 8_000;
+const TOTAL_TOKEN_BUDGET: u32 = 32_000;
 
 /// Tokens reserved for the system prompt and tool definitions.
-const SYSTEM_PROMPT_BUDGET: u32 = 2_000;
+const SYSTEM_PROMPT_BUDGET: u32 = 4_000;
 
 /// Tokens available for conversation history.
 const HISTORY_TOKEN_BUDGET: u32 = TOTAL_TOKEN_BUDGET - SYSTEM_PROMPT_BUDGET;
