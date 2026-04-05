@@ -14,7 +14,7 @@ repository.workspace = true
 llama-cpp-2 = { version = ">=0.1.141", optional = true }
 
 # UTF-8 decoder for token_to_piece API (llama-cpp-2 >= 0.1.140)
-encoding_rs = "0.8"
+encoding_rs = { version = "0.8", optional = true }
 
 # Caching layer
 lru = "0.12"
@@ -44,7 +44,7 @@ futures = "0.3"
 [features]
 default = ["embedding-service", "chat-service"]
 embedding-service = ["llama-cpp-2"]
-chat-service = ["llama-cpp-2"]
+chat-service = ["llama-cpp-2", "encoding_rs"]
 
 # GPU acceleration features
 cuda = ["llama-cpp-2/cuda"]
