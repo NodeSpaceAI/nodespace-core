@@ -68,6 +68,7 @@ impl ChatInferenceEngine for LlamaChatInferenceEngine {
                     Role::Tool => "tool".to_string(),
                 },
                 content: m.content.clone(),
+                call_id: m.tool_call_id.clone(),
             })
             .collect();
 

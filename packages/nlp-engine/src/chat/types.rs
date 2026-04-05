@@ -53,6 +53,9 @@ pub struct ChatMessageInput {
     pub role: String,
     /// Text content of the message.
     pub content: String,
+    /// For tool-result messages: the call ID that produced this result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
 }
 
 /// Specification of a tool the model may invoke.

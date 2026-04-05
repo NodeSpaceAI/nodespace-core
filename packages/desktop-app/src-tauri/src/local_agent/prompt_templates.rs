@@ -56,12 +56,15 @@ pub fn summarization_prompt(older_messages: &str) -> String {
     )
 }
 
-/// Format a tool result into a human-readable string for the conversation history.
-pub fn format_tool_result(name: &str, result: &serde_json::Value, is_error: bool) -> String {
+/// Format a tool result as JSON for the conversation history.
+///
+/// The content is serialized as JSON so that the nlp-engine can parse it and
+/// wrap it in Mistral's `[TOOL_RESULTS]` tags during template application.
+pub fn format_tool_result(_name: &str, result: &serde_json::Value, is_error: bool) -> String {
     if is_error {
-        format!("Tool: {name}\nError: {result}")
+        serde_json::to_string(&serde_json::json!({"error": result})).unwrap_or_default()
     } else {
-        format!("Tool: {name}\nResult: {result}")
+        serde_json::to_string(result).unwrap_or_default()
     }
 }
 
@@ -130,14 +133,15 @@ mod tests {
     #[test]
     fn format_tool_result_success() {
         let result = format_tool_result("search_nodes", &json!({"count": 3}), false);
-        assert!(result.contains("Tool: search_nodes"));
-        assert!(result.contains("Result:"));
+        // Should be raw JSON, parseable by nlp-engine for [TOOL_RESULTS] wrapping
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["count"], 3);
     }
 
     #[test]
     fn format_tool_result_error() {
-        let result = format_tool_result("get_node", &json!({"error": "not found"}), true);
-        assert!(result.contains("Tool: get_node"));
-        assert!(result.contains("Error:"));
+        let result = format_tool_result("get_node", &json!("not found"), true);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["error"], "not found");
     }
 }

@@ -528,10 +528,26 @@ impl ChatEngine {
                     "{}\n\n[AVAILABLE_TOOLS]{}[/AVAILABLE_TOOLS]",
                     msg.content, tools_json
                 )
+            } else if msg.role == "tool" {
+                // Format tool results as structured JSON for the model's chat
+                // template. Mistral's Jinja template handles role="tool" messages
+                // and wraps them in [TOOL_RESULTS]...[/TOOL_RESULTS] tags.
+                // We provide the content as a JSON array of call results.
+                let call_id = msg.call_id.as_deref().unwrap_or("unknown");
+                // Try to parse content as JSON; if it fails, wrap as string
+                let content_value: serde_json::Value = serde_json::from_str(&msg.content)
+                    .unwrap_or_else(|_| serde_json::Value::String(msg.content.clone()));
+                serde_json::to_string(&serde_json::json!([{
+                    "call_id": call_id,
+                    "content": content_value,
+                }]))
+                .unwrap_or_else(|_| msg.content.clone())
             } else {
                 msg.content.clone()
             };
 
+            // Tool results are already formatted with [TOOL_RESULTS] tags,
+            // so we set the role to "tool" and let the template pass it through.
             let chat_msg = LlamaChatMessage::new(msg.role.clone(), content)
                 .map_err(|e| ChatError::TemplateError(format!("Invalid chat message: {}", e)))?;
             chat_messages.push(chat_msg);
