@@ -33,7 +33,7 @@ use llama_cpp_2::context::LlamaContext;
 #[cfg(feature = "chat-service")]
 use llama_cpp_2::model::params::LlamaModelParams;
 #[cfg(feature = "chat-service")]
-use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel, Special};
+use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
 #[cfg(feature = "chat-service")]
 use llama_cpp_2::sampling::LlamaSampler;
 
@@ -332,13 +332,14 @@ impl ChatEngine {
         // Detect the [TOOL_CALLS] control token by trying to find it in the vocab.
         // Ministral 2512 models use control token ID 9 for [TOOL_CALLS].
         // We detect it by ID so we can inject the sentinel text into the parser
-        // even though token_to_str(Special::Plaintext) would strip it.
+        // even though token_to_piece with special=false would strip it.
         let tool_calls_token_id = {
             let mut found = None;
+            let mut detect_decoder = encoding_rs::UTF_8.new_decoder();
             // The token is typically at a low ID. Check the model's special tokens.
             for id in 0..20i32 {
                 let token = llama_cpp_2::token::LlamaToken(id);
-                if let Ok(text) = model_ref.token_to_str(token, Special::Tokenize) {
+                if let Ok(text) = model_ref.token_to_piece(token, &mut detect_decoder, true, None) {
                     if text.contains("[TOOL_CALLS]") {
                         found = Some(token);
                         break;
@@ -349,6 +350,7 @@ impl ChatEngine {
         };
 
         let mut streaming_parser = StreamingToolCallParser::new();
+        let mut piece_decoder = encoding_rs::UTF_8.new_decoder();
         let mut completion_tokens: u32 = 0;
         let mut n_cur = tokens.len();
 
@@ -396,7 +398,7 @@ impl ChatEngine {
             }
 
             // Convert token to text
-            let piece = match model_ref.token_to_str(new_token, Special::Plaintext) {
+            let piece = match model_ref.token_to_piece(new_token, &mut piece_decoder, false, None) {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!("Failed to decode token {}: {}", new_token.0, e);
