@@ -6,10 +6,11 @@
 //!
 //! Issue #1008
 
-use crate::acp::registry::SystemAgentRegistry;
-use crate::acp::session::AcpClientService;
-use crate::agent_types::{
-    events, AcpAgentInfo, AcpError, AcpMessage, AcpSessionState, AgentRegistry,
+use crate::agent_events;
+use nodespace_agent::acp::registry::SystemAgentRegistry;
+use nodespace_agent::acp::session::AcpClientService;
+use nodespace_agent::agent_types::{
+    AcpAgentInfo, AcpError, AcpMessage, AcpSessionState, AgentRegistry,
 };
 use crate::commands::nodes::CommandError;
 use std::sync::Arc;
@@ -46,11 +47,11 @@ pub async fn acp_start_session(
     service: State<'_, AcpClientService>,
 ) -> Result<String, CommandError> {
     // Emit initializing state
-    let _ = app.emit(events::ACP_SESSION_STATE, &AcpSessionState::Initializing);
+    let _ = app.emit(agent_events::ACP_SESSION_STATE, &AcpSessionState::Initializing);
 
     let session_id = service.start_session(&agent_id).await.map_err(|e| {
         let _ = app.emit(
-            events::ACP_SESSION_STATE,
+            agent_events::ACP_SESSION_STATE,
             &AcpSessionState::Failed {
                 reason: e.to_string(),
             },
@@ -59,7 +60,7 @@ pub async fn acp_start_session(
     })?;
 
     // Emit active state
-    let _ = app.emit(events::ACP_SESSION_STATE, &AcpSessionState::Active);
+    let _ = app.emit(agent_events::ACP_SESSION_STATE, &AcpSessionState::Active);
 
     tracing::info!(session_id = %session_id, agent = %agent_id, "ACP session started");
     Ok(session_id)
@@ -203,12 +204,12 @@ pub async fn acp_send_message(
 
                 // Notification (method, no id) — streaming update, emit to frontend
                 if has_method && !has_id {
-                    let _ = app.emit(events::ACP_AGENT_MESSAGE, &response);
+                    let _ = app.emit(agent_events::ACP_AGENT_MESSAGE, &response);
                     continue;
                 }
 
                 // Response to our session/prompt request (id, no method) — emit to frontend
-                let _ = app.emit(events::ACP_AGENT_MESSAGE, &response);
+                let _ = app.emit(agent_events::ACP_AGENT_MESSAGE, &response);
 
                 let is_our_response = response
                     .id
@@ -232,7 +233,7 @@ pub async fn acp_send_message(
             Err(e) => {
                 tracing::error!(session_id = %session_id, error = %e, "Failed to receive agent response");
                 let _ = app.emit(
-                    events::ACP_SESSION_STATE,
+                    agent_events::ACP_SESSION_STATE,
                     &AcpSessionState::Failed {
                         reason: e.to_string(),
                     },
@@ -254,11 +255,11 @@ pub async fn acp_end_session(
 ) -> Result<(), CommandError> {
     let agent_id = extract_agent_id(&session_id);
 
-    let _ = app.emit(events::ACP_SESSION_STATE, &AcpSessionState::Completing);
+    let _ = app.emit(agent_events::ACP_SESSION_STATE, &AcpSessionState::Completing);
 
     service.end_session(&agent_id).await.map_err(|e| {
         let _ = app.emit(
-            events::ACP_SESSION_STATE,
+            agent_events::ACP_SESSION_STATE,
             &AcpSessionState::Failed {
                 reason: e.to_string(),
             },
@@ -266,7 +267,7 @@ pub async fn acp_end_session(
         acp_error(format!("Failed to end session: {e}"))
     })?;
 
-    let _ = app.emit(events::ACP_SESSION_STATE, &AcpSessionState::Completed);
+    let _ = app.emit(agent_events::ACP_SESSION_STATE, &AcpSessionState::Completed);
     tracing::info!(session_id = %session_id, "ACP session ended");
     Ok(())
 }

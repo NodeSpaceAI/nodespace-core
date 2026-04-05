@@ -20,7 +20,6 @@
 use crate::agent_types::{
     ContextAssembler, ContextError, ContextNode, ContextPacket, ContextRelationship,
 };
-use crate::app_services::AppServices;
 use async_trait::async_trait;
 use nodespace_core::models::Node;
 use nodespace_core::services::NodeEmbeddingService;
@@ -165,16 +164,24 @@ struct CollectedRelationship {
 
 /// Assembles context from the knowledge graph into structured prompts.
 ///
-/// Takes `Arc<AppServices>` to obtain `NodeService` and `NodeEmbeddingService`
-/// per-operation, surviving database hot-swaps.
+/// Service references are injected directly, decoupling this crate from
+/// Tauri-specific `AppServices`. The desktop-app layer is responsible for
+/// resolving services and constructing this assembler.
 pub struct GraphContextAssembler {
-    services: Arc<AppServices>,
+    node_service: Arc<NodeService>,
+    embedding_service: Option<Arc<NodeEmbeddingService>>,
 }
 
 impl GraphContextAssembler {
-    /// Create a new assembler backed by the given application services.
-    pub fn new(services: Arc<AppServices>) -> Self {
-        Self { services }
+    /// Create a new assembler with the given services.
+    pub fn new(
+        node_service: Arc<NodeService>,
+        embedding_service: Option<Arc<NodeEmbeddingService>>,
+    ) -> Self {
+        Self {
+            node_service,
+            embedding_service,
+        }
     }
 
     /// Fetch a node by ID, converting service errors to ContextError.
@@ -454,10 +461,7 @@ impl ContextAssembler for GraphContextAssembler {
             });
         }
 
-        // Obtain services (survives hot-swaps)
-        let node_service = self.services.node_service().await.map_err(|e| {
-            ContextError::Other(anyhow::anyhow!("Failed to get node service: {}", e.message))
-        })?;
+        let node_service = self.node_service.clone();
 
         // --- Step 1: Fetch seed nodes ---
         let mut seed_nodes: Vec<Node> = Vec::new();
@@ -486,11 +490,11 @@ impl ContextAssembler for GraphContextAssembler {
 
         // --- Step 2: Semantic expansion ---
         // Try to get embedding service; if unavailable, skip semantic expansion
-        let semantic_neighbors = match self.services.embedding_service().await {
-            Ok(embedding_service) => {
-                Self::find_semantic_neighbors(&embedding_service, &seed_nodes, &seed_ids).await
+        let semantic_neighbors = match &self.embedding_service {
+            Some(embedding_service) => {
+                Self::find_semantic_neighbors(embedding_service, &seed_nodes, &seed_ids).await
             }
-            Err(_) => {
+            None => {
                 tracing::info!("Embedding service unavailable, skipping semantic expansion");
                 Vec::new()
             }

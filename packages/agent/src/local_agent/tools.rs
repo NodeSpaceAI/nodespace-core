@@ -6,7 +6,6 @@
 //! returns a compact, token-efficient result suitable for an 8k-context local model.
 
 use crate::agent_types::{AgentToolExecutor, ToolDefinition, ToolError, ToolResult};
-use crate::app_services::AppServices;
 use async_trait::async_trait;
 use nodespace_core::models::{NodeFilter, NodeUpdate};
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
@@ -316,16 +315,40 @@ fn all_tool_definitions() -> Vec<ToolDefinition> {
 
 /// Executes graph operation tools against `NodeService` and `NodeEmbeddingService`.
 ///
-/// Service references are obtained per-operation from `AppServices` so they
-/// survive database hot-swaps without storing stale references.
+/// Service references are injected directly, decoupling this crate from
+/// Tauri-specific `AppServices`. The desktop-app layer is responsible for
+/// resolving services and constructing this executor.
 pub struct GraphToolExecutor {
-    app_services: AppServices,
+    /// Node service for graph operations. `None` if services aren't initialized yet.
+    pub node_service: Option<Arc<NodeService>>,
+    /// Embedding service for semantic search. `None` if unavailable.
+    pub embedding_service: Option<Arc<NodeEmbeddingService>>,
 }
 
 impl GraphToolExecutor {
-    /// Create a new executor backed by the given application services container.
-    pub fn new(app_services: AppServices) -> Self {
-        Self { app_services }
+    /// Create a new executor with the given services.
+    pub fn new(
+        node_service: Arc<NodeService>,
+        embedding_service: Option<Arc<NodeEmbeddingService>>,
+    ) -> Self {
+        Self {
+            node_service: Some(node_service),
+            embedding_service,
+        }
+    }
+
+    /// Create an executor with optional services.
+    ///
+    /// Use when services may not be initialized yet (e.g., at startup).
+    /// Operations that need missing services will return a clear error.
+    pub fn new_with_optional_services(
+        node_service: Option<Arc<NodeService>>,
+        embedding_service: Option<Arc<NodeEmbeddingService>>,
+    ) -> Self {
+        Self {
+            node_service,
+            embedding_service,
+        }
     }
 
     // -- Individual tool implementations --
@@ -339,7 +362,7 @@ impl GraphToolExecutor {
         let node_type = optional_str(&args, "node_type");
         let limit = optional_usize(&args, "limit", DEFAULT_SEARCH_LIMIT);
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
         let filter = NodeFilter {
             content_contains: Some(query),
@@ -369,7 +392,7 @@ impl GraphToolExecutor {
         let query = require_str(&args, "query", "search_semantic")?;
         let limit = optional_usize(&args, "limit", DEFAULT_SEMANTIC_LIMIT);
 
-        let emb = self.embedding_service().await?;
+        let emb = self.embedding_service()?;
 
         let results = emb
             .semantic_search(&query, limit, SEMANTIC_THRESHOLD)
@@ -407,7 +430,7 @@ impl GraphToolExecutor {
         let id = require_str(&args, "id", "get_node")?;
         let format = optional_str(&args, "format").unwrap_or_else(|| "json".to_string());
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
         if format == "markdown" {
             // Reuse the MCP handler's markdown export (single source of truth)
@@ -467,7 +490,7 @@ impl GraphToolExecutor {
         let properties = args.get("properties").cloned().unwrap_or(json!({}));
         let parent_id = optional_str(&args, "parent_id");
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
         // Use content as title + body combined
         let content = if body.is_empty() {
@@ -530,7 +553,7 @@ impl GraphToolExecutor {
             });
         }
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
         // Fetch the node first to get its current version
         let node = ns.get_node(&id).await.map_err(|e| {
@@ -568,7 +591,7 @@ impl GraphToolExecutor {
         let to_id = require_str(&args, "to_id", "create_relationship")?;
         let rel_type = require_str(&args, "relationship_type", "create_relationship")?;
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
         ns.create_relationship(&from_id, &rel_type, &to_id, json!({}))
             .await
@@ -607,7 +630,7 @@ impl GraphToolExecutor {
             }
         };
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
         let mut all_nodes: Vec<Value> = Vec::new();
         for dir in &directions {
@@ -634,21 +657,16 @@ impl GraphToolExecutor {
 
     // -- Service accessors --
 
-    async fn node_service(&self) -> Result<Arc<NodeService>, ToolError> {
-        self.app_services
-            .node_service()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Service unavailable: {}", e.message)))
+    fn node_service(&self) -> Result<Arc<NodeService>, ToolError> {
+        self.node_service
+            .clone()
+            .ok_or_else(|| ToolError::ExecutionFailed("Node service unavailable".to_string()))
     }
 
-    async fn embedding_service(&self) -> Result<Arc<NodeEmbeddingService>, ToolError> {
-        self.app_services
-            .embedding_state()
-            .await
-            .map(|(svc, _)| svc)
-            .map_err(|e| {
-                ToolError::ExecutionFailed(format!("Embedding service unavailable: {}", e.message))
-            })
+    fn embedding_service(&self) -> Result<Arc<NodeEmbeddingService>, ToolError> {
+        self.embedding_service
+            .clone()
+            .ok_or_else(|| ToolError::ExecutionFailed("Embedding service unavailable".to_string()))
     }
 }
 
@@ -683,6 +701,17 @@ impl AgentToolExecutor for GraphToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Create a `GraphToolExecutor` with no backing services.
+    ///
+    /// Suitable for tests that validate argument parsing and tool dispatch
+    /// without ever reaching a real database call.
+    fn test_executor() -> GraphToolExecutor {
+        GraphToolExecutor {
+            node_service: None,
+            embedding_service: None,
+        }
+    }
 
     // -- Helper: test truncation --
 
@@ -899,7 +928,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_unknown_tool_returns_error() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor.execute("nonexistent_tool", json!({})).await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -912,7 +941,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_nodes_missing_query() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor.execute("search_nodes", json!({})).await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -926,7 +955,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_node_missing_id() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor.execute("get_node", json!({})).await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -939,7 +968,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_node_missing_required() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         // Missing title
         let result = executor
             .execute("create_node", json!({"node_type": "text"}))
@@ -956,7 +985,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_node_missing_type() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor
             .execute("create_node", json!({"title": "Test"}))
             .await;
@@ -972,7 +1001,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_node_missing_id() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor
             .execute("update_node", json!({"title": "new"}))
             .await;
@@ -987,7 +1016,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_node_no_changes() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor
             .execute("update_node", json!({"id": "node-1"}))
             .await;
@@ -1003,7 +1032,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_relationship_missing_fields() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor
             .execute("create_relationship", json!({"from_id": "a"}))
             .await;
@@ -1018,7 +1047,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_related_nodes_missing_id() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor.execute("get_related_nodes", json!({})).await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -1031,7 +1060,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_related_nodes_invalid_direction() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor
             .execute(
                 "get_related_nodes",
@@ -1052,7 +1081,7 @@ mod tests {
 
     #[tokio::test]
     async fn available_tools_returns_all_seven() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let tools = executor.available_tools().await.unwrap();
         assert_eq!(tools.len(), 7);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();

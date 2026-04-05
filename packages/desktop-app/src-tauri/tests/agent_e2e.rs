@@ -17,11 +17,11 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use nodespace_app_lib::acp::session::{AcpClientService, SessionError};
-use nodespace_app_lib::acp::transport::{StdioTransport, StdioTransportConfig};
-use nodespace_app_lib::agent_types::*;
-use nodespace_app_lib::local_agent::agent_loop::LocalAgentService;
-use nodespace_app_lib::local_agent::model_manager::GgufModelManager;
+use nodespace_agent::acp::session::{AcpClientService, SessionError};
+use nodespace_agent::acp::transport::{StdioTransport, StdioTransportConfig};
+use nodespace_agent::agent_types::*;
+use nodespace_agent::local_agent::agent_loop::LocalAgentService;
+use nodespace_agent::local_agent::model_manager::GgufModelManager;
 
 // ===========================================================================
 // Mock implementations

@@ -789,17 +789,20 @@ bun run scripts/import-docs.ts
 ```
 nodespace-core/
 ├── packages/
-│   ├── desktop-app/              # Main Svelte + Tauri application
-│   │   ├── src/                  # Frontend source
+│   ├── desktop-app/              # Tauri desktop shell (thin command bindings)
+│   │   ├── src/                  # Frontend source (Svelte 5)
 │   │   ├── src-tauri/            # Tauri backend
 │   │   └── [configs]             # App-specific configurations
-│   ├── design-system/            # Design system package
-│   └── nlp-engine/               # NLP engine package
+│   ├── core/                     # Knowledge graph data layer (NodeService, ops/, MCP)
+│   ├── agent/                    # AI agent orchestration (ReAct loop, ACP client)
+│   ├── nlp-engine/               # LLM inference and embedding (llama.cpp)
+│   ├── dev-tools/                # Development utilities
+│   └── design-system/            # Design system package (Svelte)
 ├── scripts/                      # Build and GitHub utilities
 ├── CLAUDE.md                     # Agent guide (this file)
 ├── README.md                     # Project overview
 ├── package.json                  # Bun workspace root
-└── Cargo.toml                    # Rust workspace (if needed)
+└── Cargo.toml                    # Rust workspace
 ```
 
 ## Current Project Status
