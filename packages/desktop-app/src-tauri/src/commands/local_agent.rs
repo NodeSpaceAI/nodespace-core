@@ -3,19 +3,22 @@
 //! Bridges the Svelte frontend to [`LocalAgentService`] via Tauri IPC.
 //! Streaming output is forwarded to the frontend through Tauri event channels.
 //!
-//! The `ManagedAgentState` wrapper holds a `RwLock<Option<LocalAgentService>>`
-//! because the agent service can only be created once a chat model is loaded.
-//! Commands return a clear error if the service isn't initialized yet.
+//! The `ManagedAgentState` wrapper holds a `RwLock<LocalAgentService>`
+//! that starts with a `NoOpInferenceEngine`. When a model is loaded via
+//! `ensure_model_ready`, the engine is swapped to a real
+//! `LlamaChatInferenceEngine`.
 //!
 //! Issue #1008
 
 use crate::agent_types::{
     events, AgentSession, AgentToolExecutor, AgentTurnResult, ChatInferenceEngine, ChatModelSpec,
-    InferenceError, InferenceUsage, LocalAgentStatus, StreamingChunk,
+    InferenceError, InferenceUsage, LocalAgentStatus, ModelManager, ModelStatus, StreamingChunk,
 };
 use crate::commands::nodes::CommandError;
 use crate::local_agent::agent_loop::LocalAgentService;
+use crate::local_agent::model_manager::GgufModelManager;
 use async_trait::async_trait;
+use nodespace_nlp_engine::chat::ChatConfig;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
@@ -66,6 +69,7 @@ impl ChatInferenceEngine for NoOpInferenceEngine {
 /// `dyn AgentToolExecutor`) to avoid propagating generics to the Tauri state.
 pub struct ManagedAgentState {
     inner: RwLock<LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor>>,
+    app_services: crate::app_services::AppServices,
 }
 
 impl ManagedAgentState {
@@ -77,11 +81,13 @@ impl ManagedAgentState {
         use crate::local_agent::tools::GraphToolExecutor;
 
         let engine: Arc<dyn ChatInferenceEngine> = Arc::new(NoOpInferenceEngine);
-        let executor: Arc<dyn AgentToolExecutor> = Arc::new(GraphToolExecutor::new(app_services));
+        let executor: Arc<dyn AgentToolExecutor> =
+            Arc::new(GraphToolExecutor::new(app_services.clone()));
         let service = LocalAgentService::new(engine, executor);
 
         Self {
             inner: RwLock::new(service),
+            app_services,
         }
     }
 
@@ -93,6 +99,23 @@ impl ManagedAgentState {
         LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor>,
     > {
         self.inner.read().await
+    }
+
+    /// Replace the inference engine (called when a model is loaded).
+    ///
+    /// Creates a fresh `LocalAgentService` with the new engine and the
+    /// existing tool executor. Existing sessions are dropped.
+    pub async fn replace_engine(&self, engine: Arc<dyn ChatInferenceEngine>) {
+        use crate::local_agent::tools::GraphToolExecutor;
+
+        let executor: Arc<dyn AgentToolExecutor> =
+            Arc::new(GraphToolExecutor::new(self.app_services.clone()));
+        let service = LocalAgentService::new(engine, executor);
+
+        let mut guard = self.inner.write().await;
+        *guard = service;
+
+        tracing::info!("ManagedAgentState: inference engine replaced");
     }
 }
 
@@ -110,8 +133,142 @@ fn agent_error(message: impl Into<String>) -> CommandError {
 }
 
 // ---------------------------------------------------------------------------
+// Model status event payload
+// ---------------------------------------------------------------------------
+
+/// Payload for `model://status` events.
+#[derive(Debug, Clone, Serialize)]
+struct ModelStatusEvent {
+    model_id: String,
+    status: String,
+    message: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
+
+/// Ensure a model is downloaded, loaded, and the inference engine is ready.
+///
+/// This is the main entry point for the frontend to prepare the local agent.
+/// It handles the full lifecycle: download → load → engine swap.
+///
+/// Emits `model://status` events for each phase transition so the frontend
+/// can update the status bar.
+#[tauri::command]
+pub async fn ensure_model_ready(
+    model_id: String,
+    app: AppHandle,
+    manager: State<'_, Arc<GgufModelManager>>,
+    agent_state: State<'_, ManagedAgentState>,
+) -> Result<(), CommandError> {
+    // Check current model status
+    let models = manager
+        .list()
+        .await
+        .map_err(|e| agent_error(e.to_string()))?;
+    let model = models
+        .iter()
+        .find(|m| m.id == model_id)
+        .ok_or_else(|| agent_error(format!("Unknown model: {model_id}")))?;
+
+    match &model.status {
+        ModelStatus::Loaded => {
+            tracing::info!("Model '{}' already loaded", model_id);
+            return Ok(());
+        }
+        ModelStatus::Downloading { .. } | ModelStatus::Verifying => {
+            return Err(agent_error(format!(
+                "Model '{}' is currently being downloaded",
+                model_id
+            )));
+        }
+        ModelStatus::Error { message } => {
+            tracing::warn!(
+                "Model '{}' in error state: {}, retrying...",
+                model_id,
+                message
+            );
+            // Fall through to re-download
+        }
+        ModelStatus::NotDownloaded => {
+            // Need to download first
+            let _ = app.emit(
+                events::MODEL_STATUS,
+                &ModelStatusEvent {
+                    model_id: model_id.clone(),
+                    status: "downloading".to_string(),
+                    message: Some(format!("Downloading {}...", model_id)),
+                },
+            );
+
+            // Register progress callback
+            let app_progress = app.clone();
+            manager
+                .set_progress_callback(Box::new(move |evt| {
+                    let _ = app_progress.emit(events::MODEL_DOWNLOAD_PROGRESS, &evt);
+                }))
+                .await;
+
+            manager
+                .download(&model_id)
+                .await
+                .map_err(|e| agent_error(format!("Download failed: {e}")))?;
+
+            tracing::info!("Model '{}' downloaded successfully", model_id);
+        }
+        ModelStatus::Ready => {
+            // Already on disk, just need to load
+        }
+    }
+
+    // --- Load the model into the inference engine ---
+    let _ = app.emit(
+        events::MODEL_STATUS,
+        &ModelStatusEvent {
+            model_id: model_id.clone(),
+            status: "loading".to_string(),
+            message: Some(format!("Loading {}...", model_id)),
+        },
+    );
+
+    // Get the model file path
+    let model_path = manager
+        .model_path(&model_id)
+        .map_err(|e| agent_error(format!("Failed to resolve model path: {e}")))?;
+
+    let model_path_str = model_path.to_string_lossy().to_string();
+
+    // Mark as loaded in the model manager
+    manager
+        .load(&model_id)
+        .await
+        .map_err(|e| agent_error(format!("Failed to mark model as loaded: {e}")))?;
+
+    // Create the real inference engine (blocking: loads GGUF + compiles Metal kernels)
+    let engine = tokio::task::spawn_blocking(move || {
+        use crate::local_agent::inference::LlamaChatInferenceEngine;
+        LlamaChatInferenceEngine::load(&model_path_str, ChatConfig::default())
+    })
+    .await
+    .map_err(|e| agent_error(format!("Task join error: {e}")))?
+    .map_err(|e| agent_error(format!("Failed to load inference engine: {e}")))?;
+
+    // Swap the engine into the agent state
+    agent_state.replace_engine(Arc::new(engine)).await;
+
+    let _ = app.emit(
+        events::MODEL_STATUS,
+        &ModelStatusEvent {
+            model_id: model_id.clone(),
+            status: "ready".to_string(),
+            message: Some(format!("{} ready", model_id)),
+        },
+    );
+
+    tracing::info!("Model '{}' loaded and inference engine ready", model_id);
+    Ok(())
+}
 
 /// Get the current status of the local agent.
 #[tauri::command]

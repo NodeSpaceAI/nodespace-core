@@ -1,17 +1,32 @@
 /**
- * Agent Store - Manages ACP agent availability and selection using Svelte 5 runes.
+ * Agent Store - Manages agent availability and selection using Svelte 5 runes.
  *
- * Wired to real Tauri invocations for ACP agent discovery and refresh.
- * Falls back to mock agent data when Tauri is not available (dev mode).
+ * Merges two agent sources into a unified dropdown:
+ * 1. ACP agents (Claude Code, Gemini CLI, etc.) — external subprocesses
+ * 2. Local model agents (Ministral 3B/8B) — in-process llama.cpp inference
  *
- * Issue #1008: replaced mock-only implementation with real Tauri integration.
+ * Local model agents use IDs prefixed with "local:" (e.g., "local:ministral-3b-q4km").
+ * The chat-store uses this prefix to route messages to the correct backend.
  */
 
 import { createLogger } from '$lib/utils/logger';
-import type { AcpAgentInfo } from '$lib/types/agent-types';
+import type { AcpAgentInfo, ModelInfo } from '$lib/types/agent-types';
 import * as tauriCommands from '$lib/services/tauri-commands';
 
 const log = createLogger('AgentStore');
+
+/** Prefix for local model agent IDs. */
+export const LOCAL_AGENT_PREFIX = 'local:';
+
+/** Check if an agent ID refers to a local model agent. */
+export function isLocalAgent(agentId: string | null): boolean {
+  return agentId !== null && agentId.startsWith(LOCAL_AGENT_PREFIX);
+}
+
+/** Extract the model ID from a local agent ID (e.g., "local:ministral-3b-q4km" → "ministral-3b-q4km"). */
+export function localAgentModelId(agentId: string): string {
+  return agentId.replace(LOCAL_AGENT_PREFIX, '');
+}
 
 /** Check if running in Tauri desktop environment. */
 function isTauri(): boolean {
@@ -41,15 +56,20 @@ const MOCK_AGENTS: AcpAgentInfo[] = [
     available: false,
     version: '0.9.0',
   },
-  {
-    id: 'local-agent',
-    name: 'Local Agent (Ministral)',
-    binary: 'nodespace-agent',
+];
+
+/** Convert a ModelInfo to an AcpAgentInfo for unified display. */
+function modelToAgent(model: ModelInfo): AcpAgentInfo {
+  return {
+    id: `${LOCAL_AGENT_PREFIX}${model.id}`,
+    name: model.name,
+    binary: 'local',
     args: [],
     auth_method: { method: 'agent_managed' },
+    // Local models are always "available" — download happens on first use
     available: true,
-  },
-];
+  };
+}
 
 class AgentStore {
   agents = $state<AcpAgentInfo[]>([]);
@@ -87,11 +107,28 @@ class AgentStore {
     this.isLoading = true;
     try {
       if (isTauri()) {
-        this.agents = await tauriCommands.acpRefreshAgents();
+        // Fetch ACP agents and local models in parallel
+        const [acpAgents, models] = await Promise.all([
+          tauriCommands.acpRefreshAgents(),
+          tauriCommands.chatModelList(),
+        ]);
+
+        // Local models first, then ACP agents
+        const localAgents = models.map(modelToAgent);
+        this.agents = [...localAgents, ...acpAgents];
       } else {
         // Mock fallback: simulate network delay
         await new Promise((resolve) => setTimeout(resolve, 300));
-        this.agents = [...MOCK_AGENTS];
+        // Include a mock local agent
+        const mockLocal: AcpAgentInfo = {
+          id: `${LOCAL_AGENT_PREFIX}ministral-3b-q4km`,
+          name: 'Ministral 3B Instruct Q4_K_M',
+          binary: 'local',
+          args: [],
+          auth_method: { method: 'agent_managed' },
+          available: true,
+        };
+        this.agents = [mockLocal, ...MOCK_AGENTS];
       }
 
       // Auto-select first available agent if none selected
@@ -109,7 +146,15 @@ class AgentStore {
 
       // Fall back to mock on error
       if (this.agents.length === 0) {
-        this.agents = [...MOCK_AGENTS];
+        const mockLocal: AcpAgentInfo = {
+          id: `${LOCAL_AGENT_PREFIX}ministral-3b-q4km`,
+          name: 'Ministral 3B Instruct Q4_K_M',
+          binary: 'local',
+          args: [],
+          auth_method: { method: 'agent_managed' },
+          available: true,
+        };
+        this.agents = [mockLocal, ...MOCK_AGENTS];
         log.info('Fell back to mock agents after error');
       }
     } finally {

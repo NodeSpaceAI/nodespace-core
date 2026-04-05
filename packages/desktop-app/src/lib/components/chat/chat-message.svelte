@@ -1,7 +1,6 @@
 <script lang="ts">
   /* global navigator */
   import type { DisplayMessage } from '$lib/stores/chat-store.svelte';
-  import ToolCallDisplay from './tool-call-display.svelte';
   import ChatMarkdown from './chat-markdown.svelte';
 
   let { message }: { message: DisplayMessage } = $props();
@@ -42,13 +41,6 @@
       </div>
     {/if}
 
-    {#if message.toolExecutions.length > 0}
-      <div class="tool-calls">
-        {#each message.toolExecutions as toolExec (toolExec.tool_call_id)}
-          <ToolCallDisplay toolExecution={toolExec} />
-        {/each}
-      </div>
-    {/if}
 
     {#if isAssistant && showCopyButton}
       <button
@@ -112,10 +104,6 @@
 
   .user-message .message-content {
     white-space: pre-wrap;
-  }
-
-  .tool-calls {
-    margin-top: 0.5rem;
   }
 
   .copy-button {

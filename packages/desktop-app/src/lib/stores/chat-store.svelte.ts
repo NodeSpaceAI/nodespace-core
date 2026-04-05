@@ -19,7 +19,8 @@ import type {
 } from '$lib/types/agent-types';
 import { AGENT_EVENTS, isAcpSessionFailed } from '$lib/types/agent-types';
 import * as tauriCommands from '$lib/services/tauri-commands';
-import { agentStore } from '$lib/stores/agent-store.svelte';
+import { agentStore, isLocalAgent, localAgentModelId } from '$lib/stores/agent-store.svelte';
+import { statusBar } from '$lib/stores/status-bar';
 
 const log = createLogger('ChatStore');
 
@@ -128,11 +129,12 @@ class ChatStore {
   private eventUnlisteners: Array<() => void> = [];
   private acpSessionId: string | null = null;
   private acpAgentIdForSession: string | null = null;
+  private modelReadySessionCreated = false;
 
   /** Determine if the currently selected agent is an ACP agent (not local). */
   private get isAcpAgent(): boolean {
     const id = agentStore.selectedAgentId;
-    return id !== null && id !== 'local-agent';
+    return id !== null && !isLocalAgent(id);
   }
 
   /** Send a user message and get a response (real or mock). */
@@ -289,6 +291,107 @@ class ChatStore {
 
     this.isStreaming = true;
 
+    // Ensure the model is downloaded, loaded, and ready for inference.
+    // This handles the full lifecycle: download → load → engine swap.
+    const agentId = agentStore.selectedAgentId;
+    if (agentId && isLocalAgent(agentId)) {
+      const modelId = localAgentModelId(agentId);
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+
+        // Add a progress placeholder message in the chat area
+        const progressMessage: DisplayMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: 'Preparing model...',
+          toolExecutions: [],
+          timestamp: Date.now(),
+        };
+        this.messages = [...this.messages, progressMessage];
+
+        // Listen for download progress — update both chat message and status bar
+        interface DownloadProgress {
+          bytes_downloaded: number;
+          bytes_total: number;
+          speed_bps: number;
+        }
+        const unlistenDownload = await listen<DownloadProgress>(
+          AGENT_EVENTS.MODEL_DOWNLOAD_PROGRESS,
+          (event) => {
+            const { bytes_downloaded, bytes_total, speed_bps } = event.payload;
+            const pct = Math.round((bytes_downloaded / bytes_total) * 100);
+            const mbDown = (bytes_downloaded / 1_000_000).toFixed(0);
+            const mbTotal = (bytes_total / 1_000_000).toFixed(0);
+
+            // ETA calculation
+            let eta = '';
+            if (speed_bps > 0) {
+              const remainingBytes = bytes_total - bytes_downloaded;
+              const remainingSec = Math.ceil(remainingBytes / speed_bps);
+              if (remainingSec < 60) {
+                eta = ` — ~${remainingSec}s remaining`;
+              } else {
+                eta = ` — ~${Math.ceil(remainingSec / 60)} min remaining`;
+              }
+            }
+
+            progressMessage.content = `Downloading model for first use... ${mbDown}/${mbTotal} MB (${pct}%)${eta}`;
+            this.messages = [...this.messages.slice(0, -1), { ...progressMessage }];
+            statusBar.show(`Downloading model... ${mbDown}/${mbTotal} MB${eta}`, pct);
+          }
+        );
+
+        // Listen for model status changes (loading, ready)
+        interface ModelStatusEvent {
+          status: string;
+          message?: string;
+        }
+        const unlistenStatus = await listen<ModelStatusEvent>(
+          AGENT_EVENTS.MODEL_STATUS,
+          (event) => {
+            const { status } = event.payload;
+            if (status === 'loading') {
+              progressMessage.content = 'Loading model... this may take a moment on first use.';
+              this.messages = [...this.messages.slice(0, -1), { ...progressMessage }];
+              statusBar.show('Loading model...');
+            } else if (status === 'ready') {
+              statusBar.success('Model ready');
+            }
+          }
+        );
+
+        statusBar.show(`Preparing ${modelId}...`);
+        try {
+          await tauriCommands.ensureModelReady(modelId);
+        } finally {
+          unlistenDownload();
+          unlistenStatus();
+        }
+
+        // Remove the progress placeholder — real response will replace it
+        this.messages = this.messages.filter((m) => m.id !== progressMessage.id);
+
+        // On first load, engine swap drops old sessions — re-create once.
+        // On subsequent messages the model is already loaded so skip this.
+        if (!this.modelReadySessionCreated) {
+          const newSessionId = await tauriCommands.localAgentNewSession(modelId);
+          this.currentSessionId = newSessionId;
+          this.modelReadySessionCreated = true;
+          log.info('Session created after model ready', { sessionId: newSessionId });
+        }
+      } catch (err) {
+        // Tauri command errors may be strings, Error objects, or { message: string }
+        const msg = typeof err === 'string' ? err
+          : err instanceof Error ? err.message
+          : (err as Record<string, unknown>)?.message as string ?? JSON.stringify(err);
+        log.error('Model preparation failed', { modelId, error: msg, raw: err });
+        this.error = msg;
+        this.isStreaming = false;
+        statusBar.error(`Model error: ${msg}`);
+        return;
+      }
+    }
+
     // Prepare assistant message placeholder
     const assistantMessage: DisplayMessage = {
       id: generateId(),
@@ -441,9 +544,12 @@ class ChatStore {
           log.info('Prepared ACP chat session (lazy start)', { agentId: agentStore.selectedAgentId });
           return sessionId;
         } else {
-          // Local agent path (unchanged)
+          // Local agent path — extract model ID from selected agent
+          const selectedId = agentStore.selectedAgentId;
+          const resolvedModelId = modelId
+            ?? (selectedId && isLocalAgent(selectedId) ? localAgentModelId(selectedId) : 'ministral-3b-q4km');
           const sessionId = await tauriCommands.localAgentNewSession(
-            modelId ?? 'ministral-3b-q4km'
+            resolvedModelId
           );
           this.currentSessionId = sessionId;
           this.messages = [];
@@ -497,6 +603,7 @@ class ChatStore {
     this.isStreaming = false;
     this.currentSessionId = null;
     this.error = null;
+    this.modelReadySessionCreated = false;
   }
 
   /** Clean up Tauri event listeners. */

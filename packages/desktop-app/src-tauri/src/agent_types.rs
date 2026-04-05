@@ -728,6 +728,9 @@ pub mod events {
     /// Model download progress update.
     pub const MODEL_DOWNLOAD_PROGRESS: &str = "model://download-progress";
 
+    /// Model status change (loading, loaded, error).
+    pub const MODEL_STATUS: &str = "model://status";
+
     /// ACP session state transition.
     pub const ACP_SESSION_STATE: &str = "acp://session-state";
 

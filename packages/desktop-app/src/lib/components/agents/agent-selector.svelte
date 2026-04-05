@@ -1,12 +1,15 @@
 <script lang="ts">
   import { agentStore } from '$lib/stores/agent-store.svelte';
 
+  let { disabled = false }: { disabled?: boolean } = $props();
+
   let isOpen = $state(false);
 
   const agents = $derived(agentStore.agents);
   const selectedAgent = $derived(agentStore.selectedAgent);
 
   function toggleDropdown() {
+    if (disabled) return;
     isOpen = !isOpen;
   }
 
@@ -27,9 +30,11 @@
 <div class="agent-selector" role="combobox" aria-expanded={isOpen} aria-haspopup="listbox" aria-controls="agent-dropdown">
   <button
     class="agent-selector-trigger"
+    class:disabled
     onclick={toggleDropdown}
     onblur={handleBlur}
     aria-label="Select AI agent"
+    {disabled}
   >
     <span class="agent-selector-value">
       {#if selectedAgent}
@@ -89,8 +94,13 @@
     transition: border-color 0.15s;
   }
 
-  .agent-selector-trigger:hover {
+  .agent-selector-trigger:hover:not(.disabled) {
     border-color: hsl(var(--ring));
+  }
+
+  .agent-selector-trigger.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .agent-selector-value {

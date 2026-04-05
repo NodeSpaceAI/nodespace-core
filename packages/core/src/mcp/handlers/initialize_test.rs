@@ -321,7 +321,7 @@ async fn test_get_node_schema_structure() {
         .find(|t| t["name"] == "get_node")
         .expect("get_node schema not found");
 
-    assert_eq!(get_node["description"], "Retrieve a single node by ID");
+    assert_eq!(get_node["description"], "Retrieve a single node by ID. The result includes a `uri` field (e.g. nodespace://abc123). When referencing this node, include the bare URI (not in markdown links or backticks) — the client auto-links them.");
 
     let input_schema = &get_node["inputSchema"];
     let required = input_schema["required"].as_array().unwrap();

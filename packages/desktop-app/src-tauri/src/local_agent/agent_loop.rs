@@ -25,7 +25,7 @@ use crate::local_agent::prompt_templates;
 // ---------------------------------------------------------------------------
 
 /// Maximum number of tool-call iterations per turn.
-const MAX_TOOL_ITERATIONS: usize = 5;
+const MAX_TOOL_ITERATIONS: usize = 2;
 
 /// Total token budget for the context window.
 const TOTAL_TOKEN_BUDGET: u32 = 8_000;
@@ -251,8 +251,67 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 });
             }
 
-            // If this was the last allowed iteration, return what we have
+            // If this was the last allowed iteration, do one final inference
+            // WITHOUT tools so the model must produce a text response.
             if iteration == MAX_TOOL_ITERATIONS - 1 {
+                tracing::info!(
+                    "Agent loop: max iterations reached, running final inference without tools"
+                );
+                on_status(LocalAgentStatus::Thinking);
+
+                let mut messages = vec![ChatMessage {
+                    role: Role::System,
+                    content: system_content.clone(),
+                    tool_call_id: None,
+                    name: None,
+                }];
+                messages.extend(session.messages.clone());
+
+                let final_chunks: Arc<Mutex<Vec<StreamingChunk>>> =
+                    Arc::new(Mutex::new(Vec::new()));
+                let final_for_cb = Arc::clone(&final_chunks);
+                let on_chunk_final = Arc::clone(&on_chunk);
+
+                let final_callback: Box<dyn Fn(StreamingChunk) + Send> =
+                    Box::new(move |chunk: StreamingChunk| {
+                        on_chunk_final(chunk.clone());
+                        if let Ok(mut guard) = final_for_cb.try_lock() {
+                            guard.push(chunk);
+                        }
+                    });
+
+                let final_request = InferenceRequest {
+                    messages,
+                    tools: None, // No tools — force text response
+                    temperature: Some(0.1),
+                    max_tokens: Some(512),
+                };
+
+                if let Ok(usage) = self.engine.generate(final_request, final_callback).await {
+                    total_usage.prompt_tokens += usage.prompt_tokens;
+                    total_usage.completion_tokens += usage.completion_tokens;
+
+                    let chunks = final_chunks.lock().await;
+                    let (final_text, _) = Self::parse_chunks(&chunks);
+                    if !final_text.is_empty() {
+                        session.messages.push(ChatMessage {
+                            role: Role::Assistant,
+                            content: final_text.clone(),
+                            tool_call_id: None,
+                            name: None,
+                        });
+
+                        on_status(LocalAgentStatus::Idle);
+                        session.status = LocalAgentStatus::Idle;
+
+                        return Ok(AgentTurnResult {
+                            response: final_text,
+                            tool_calls_made: all_tool_executions,
+                            usage: total_usage,
+                        });
+                    }
+                }
+
                 on_status(LocalAgentStatus::Idle);
                 session.status = LocalAgentStatus::Idle;
 
@@ -936,13 +995,10 @@ mod tests {
             ]
         };
 
-        let engine = Arc::new(MockEngine::new(vec![
-            tool_round(),
-            tool_round(),
-            tool_round(),
-            tool_round(),
-            tool_round(),
-        ]));
+        // Provide more rounds than the limit; the loop must stop at MAX_TOOL_ITERATIONS.
+        // +1 extra for the final tool-less inference call.
+        let rounds: Vec<_> = (0..MAX_TOOL_ITERATIONS + 2).map(|_| tool_round()).collect();
+        let engine = Arc::new(MockEngine::new(rounds));
         let executor = Arc::new(MockToolExecutor::new());
         let agent_loop = LocalAgentLoop::new(engine, executor);
 
@@ -958,8 +1014,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Should have executed exactly 5 tool calls (the limit)
-        assert_eq!(result.tool_calls_made.len(), 5);
+        // Should have executed exactly MAX_TOOL_ITERATIONS tool calls (the limit)
+        assert_eq!(result.tool_calls_made.len(), MAX_TOOL_ITERATIONS);
         // All should be search_nodes
         for tc in &result.tool_calls_made {
             assert_eq!(tc.name, "search_nodes");
@@ -1349,14 +1405,15 @@ mod tests {
     }
 
     /// When every turn produces tool calls the loop must stop after exactly
-    /// MAX_TOOL_ITERATIONS (5) and return without spinning forever.
+    /// MAX_TOOL_ITERATIONS and return without spinning forever. After
+    /// reaching the limit, one final tool-less inference is run.
     #[tokio::test]
     async fn max_iteration_limit_enforced_exactly() {
         let call_count = Arc::new(AtomicUsize::new(0));
         let _call_count_for_engine = Arc::clone(&call_count);
 
-        // Build more than 5 rounds of tool-call responses so the engine
-        // would happily keep going. The loop MUST stop at 5.
+        // Build more rounds than MAX_TOOL_ITERATIONS of tool-call responses
+        // plus a final text response for the tool-less wrap-up call.
         let mut responses: Vec<Vec<StreamingChunk>> = Vec::new();
         for i in 0..8 {
             responses.push(vec![
@@ -1422,19 +1479,20 @@ mod tests {
             .await
             .unwrap();
 
-        // Exactly 5 tool calls should have been made (one per iteration)
-        assert_eq!(result.tool_calls_made.len(), 5);
+        // Tool calls made = MAX_TOOL_ITERATIONS (one per iteration)
+        assert_eq!(result.tool_calls_made.len(), MAX_TOOL_ITERATIONS);
 
-        // Engine should have been called exactly 5 times (the loop constant)
+        // Engine called MAX_TOOL_ITERATIONS times + 1 final tool-less call
         assert_eq!(
             call_count.load(Ordering::SeqCst),
-            MAX_TOOL_ITERATIONS,
-            "generate should be called exactly MAX_TOOL_ITERATIONS times"
+            MAX_TOOL_ITERATIONS + 1,
+            "generate should be called MAX_TOOL_ITERATIONS + 1 (final tool-less) times"
         );
 
-        // Usage should be summed from all 5 rounds
-        assert_eq!(result.usage.prompt_tokens, 50); // 10 * 5
-        assert_eq!(result.usage.completion_tokens, 25); // 5 * 5
+        // Usage summed from all rounds (including final tool-less call)
+        let total_rounds = MAX_TOOL_ITERATIONS + 1;
+        assert_eq!(result.usage.prompt_tokens, 10 * total_rounds as u32);
+        assert_eq!(result.usage.completion_tokens, 5 * total_rounds as u32);
     }
 
     /// Cancellation during tool execution should stop the loop promptly.

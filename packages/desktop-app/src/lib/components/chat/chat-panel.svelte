@@ -14,6 +14,7 @@
   const messages = $derived(chatStore.messages);
   const isStreaming = $derived(chatStore.isStreaming);
   const selectedAgent = $derived(agentStore.selectedAgent);
+  const hasMessages = $derived(messages.length > 0);
 
   onMount(() => {
     log.debug('ChatPanel mounted');
@@ -64,7 +65,7 @@
       {/if}
     </div>
     <div class="chat-header-right">
-      <AgentSelector />
+      <AgentSelector disabled={hasMessages} />
     </div>
   </div>
 

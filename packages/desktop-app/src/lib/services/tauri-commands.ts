@@ -349,6 +349,16 @@ export async function chatModelUnload(): Promise<void> {
   return invoke<void>('chat_model_unload');
 }
 
+/**
+ * Ensure a model is downloaded, loaded, and the inference engine is ready.
+ * Handles full lifecycle: download → load → engine swap.
+ * Emits model://status and model://download-progress events during the process.
+ */
+export async function ensureModelReady(modelId: string): Promise<void> {
+  if (!isTauri()) return;
+  return invoke<void>('ensure_model_ready', { modelId });
+}
+
 // ============================================================================
 // ACP Commands (Issue #1008)
 // ============================================================================
