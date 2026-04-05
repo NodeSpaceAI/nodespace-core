@@ -1304,9 +1304,9 @@ mod tests {
 
         let mut session = new_session();
 
-        // Add enough history to exceed the token budget.
-        // With ~4 chars/token estimate, we need > 6000*4 = 24000 chars of history.
-        // 20 messages * 2000 chars = 40000 chars = ~10000 tokens > 6000 budget.
+        // Add enough history to exceed TOTAL_TOKEN_BUDGET (32000 tokens).
+        // With ~4 chars/token estimate, we need > 32000*4 = 128000 chars.
+        // 20 messages * 7000 chars = 140000 chars = ~35000 tokens > 32000 budget.
         for i in 0..20 {
             let role = if i % 2 == 0 {
                 Role::User
@@ -1315,7 +1315,7 @@ mod tests {
             };
             session.messages.push(ChatMessage {
                 role,
-                content: format!("Message {} with extensive content: {}", i, "x".repeat(2000)),
+                content: format!("Message {} with extensive content: {}", i, "x".repeat(7000)),
                 tool_call_id: None,
                 name: None,
             });
