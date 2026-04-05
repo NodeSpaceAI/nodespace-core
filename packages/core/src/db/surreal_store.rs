@@ -3000,12 +3000,18 @@ impl SurrealStore {
         let query =
             "SELECT ->relationship[WHERE relationship_type = 'mentions']->node.id AS mentioned_ids FROM type::record('node', $node_id);";
 
-        let mut response = self
+        let mut response = match self
             .db
             .query(query)
             .bind(("node_id", node_id.to_string()))
             .await
-            .context("Failed to get outgoing mentions")?;
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                tracing::warn!("Failed to query outgoing mentions for {}: {}", node_id, e);
+                return Ok(Vec::new());
+            }
+        };
 
         #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct MentionResult {
@@ -3013,9 +3019,8 @@ impl SurrealStore {
         }
 
         // Graph traversal returns object with mentioned_ids array
-        let results: Vec<MentionResult> = response
-            .take(0)
-            .context("Failed to extract outgoing mentions from response")?;
+        // Use unwrap_or_default to gracefully handle deserialization failures
+        let results: Vec<MentionResult> = response.take(0).unwrap_or_default();
 
         // Extract UUIDs from RecordId keys (format: node:uuid -> uuid)
         let mentioned_ids: Vec<String> = results
@@ -4210,31 +4215,31 @@ impl SurrealStore {
     /// # Arguments
     /// * `limit` - Optional max number of results
     /// * `debounce_secs` - Minimum seconds since last modification (default: 30)
+    /// * `max_retries` - Skip nodes that have exceeded this many failed attempts
     pub async fn get_stale_embedding_root_ids(
         &self,
         limit: Option<i64>,
         debounce_secs: u64,
+        max_retries: u8,
     ) -> Result<Vec<String>> {
         // SurrealDB 3.x requires GROUP BY fields to appear in SELECT.
-        // We include `node` as string via `meta::tb(node) + ':' + meta::id(node)` to avoid
-        // RecordId deserialization issues, and alias it so the struct only needs node_id.
-        // Filter by modified_at to implement per-root debounce.
-        // SurrealDB 3.x: GROUP BY aggregates non-grouped fields into arrays.
-        // Use array::first() to get a single value from the aggregated meta::id(node) array.
-        // SurrealDB 3.x: GROUP BY groups on the exact field value. Since we GROUP BY node,
-        // the `node` field in the result IS the single RecordId (not aggregated).
-        // We extract the string ID from it using our extract_id_string helper.
+        // Filter by modified_at for per-root debounce, and error_count < max_retries
+        // to stop retrying nodes that have permanently failed.
         let sql = if limit.is_some() {
-            "SELECT node FROM embedding WHERE stale = true AND modified_at < time::now() - type::duration($debounce) GROUP BY node LIMIT $limit;"
+            "SELECT node FROM embedding WHERE stale = true AND error_count < $max_retries AND modified_at < time::now() - type::duration($debounce) GROUP BY node LIMIT $limit;"
         } else {
-            "SELECT node FROM embedding WHERE stale = true AND modified_at < time::now() - type::duration($debounce) GROUP BY node;"
+            "SELECT node FROM embedding WHERE stale = true AND error_count < $max_retries AND modified_at < time::now() - type::duration($debounce) GROUP BY node;"
         };
 
         // Format debounce as SurrealDB duration string (e.g., "30s")
         // Safety: debounce_secs is a u64 from config, not user input - validated at config layer
         let debounce_str = format!("{}s", debounce_secs);
 
-        let mut query_builder = self.db.query(sql).bind(("debounce", debounce_str));
+        let mut query_builder = self
+            .db
+            .query(sql)
+            .bind(("debounce", debounce_str))
+            .bind(("max_retries", max_retries as i64));
 
         if let Some(lim) = limit {
             query_builder = query_builder.bind(("limit", lim));
@@ -4263,20 +4268,25 @@ impl SurrealStore {
     ///
     /// Returns true if there are embeddings marked stale within the last `debounce_secs`.
     /// This is used to determine if a delayed wake should be scheduled.
-    pub async fn has_pending_stale_embeddings(&self, debounce_secs: u64) -> Result<bool> {
+    pub async fn has_pending_stale_embeddings(
+        &self,
+        debounce_secs: u64,
+        max_retries: u8,
+    ) -> Result<bool> {
         #[derive(Debug, Deserialize, surrealdb::types::SurrealValue)]
         struct CountResult {
             count: i64,
         }
 
-        // Count stale embeddings modified within the debounce window
+        // Count stale embeddings modified within the debounce window that haven't exceeded max retries
         // Safety: debounce_secs is a u64 from config, not user input - validated at config layer
         let debounce_str = format!("{}s", debounce_secs);
 
         let mut response = self
             .db
-            .query("SELECT count() AS count FROM embedding WHERE stale = true AND modified_at >= time::now() - type::duration($debounce) GROUP ALL;")
+            .query("SELECT count() AS count FROM embedding WHERE stale = true AND error_count < $max_retries AND modified_at >= time::now() - type::duration($debounce) GROUP ALL;")
             .bind(("debounce", debounce_str))
+            .bind(("max_retries", max_retries as i64))
             .await
             .context("Failed to check for pending stale embeddings")?;
 
@@ -4322,19 +4332,28 @@ impl SurrealStore {
     /// Record an embedding error
     ///
     /// Increments error count and stores the error message.
-    pub async fn record_embedding_error(&self, node_id: &str, error: &str) -> Result<()> {
+    /// Clears the stale flag when error_count reaches max_retries to stop retry loops.
+    pub async fn record_embedding_error(
+        &self,
+        node_id: &str,
+        error: &str,
+        max_retries: u8,
+    ) -> Result<()> {
         self.db
             .query(
                 r#"
                 UPDATE embedding SET
                     error_count = error_count + 1,
                     last_error = $error,
+                    -- SurrealDB evaluates error_count using its pre-update value here
+                    stale = IF(error_count + 1 >= $max_retries, false, stale),
                     modified_at = time::now()
                 WHERE node = type::record('node', $node_id);
                 "#,
             )
             .bind(("node_id", node_id.to_string()))
             .bind(("error", error.to_string()))
+            .bind(("max_retries", max_retries as i64))
             .await
             .context("Failed to record embedding error")?;
 
