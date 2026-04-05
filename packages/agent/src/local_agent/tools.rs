@@ -7,7 +7,9 @@
 
 use crate::agent_types::{AgentToolExecutor, ToolDefinition, ToolError, ToolResult};
 use async_trait::async_trait;
-use nodespace_core::models::{NodeFilter, NodeUpdate};
+use nodespace_core::ops::{
+    node_ops, rel_ops, search_ops, OpsError,
+};
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -39,18 +41,6 @@ fn truncate(s: &str, max_chars: usize) -> String {
         }
         format!("{}[truncated]", &s[..end])
     }
-}
-
-/// Format a node as a compact summary line.
-fn node_summary(node: &nodespace_core::models::Node) -> Value {
-    let snippet = truncate(&node.content, BODY_TRUNCATE_SUMMARY);
-    let title = node.title.as_deref().unwrap_or(&snippet);
-    json!({
-        "id": node.id,
-        "title": truncate(title, 100),
-        "type": node.node_type,
-        "snippet": snippet,
-    })
 }
 
 /// Format a node as a full result with properties and truncated body.
@@ -99,6 +89,11 @@ fn error_result(tool_call_id: &str, name: &str, message: &str) -> ToolResult {
         result: json!({ "error": message }),
         is_error: true,
     }
+}
+
+/// Convert an OpsError to a ToolError.
+fn ops_error_to_tool(e: OpsError, tool_name: &str) -> ToolError {
+    ToolError::ExecutionFailed(format!("{} failed: {}", tool_name, e))
 }
 
 /// Build a success `ToolResult`.
@@ -364,19 +359,45 @@ impl GraphToolExecutor {
 
         let ns = self.node_service()?;
 
-        let filter = NodeFilter {
-            content_contains: Some(query),
+        let input = node_ops::QueryNodesInput {
             node_type,
+            parent_id: None,
+            root_id: None,
             limit: Some(limit),
-            ..Default::default()
+            offset: None,
+            collection_id: None,
+            collection: None,
+            filters: Some(vec![node_ops::QueryFilterItem {
+                field: "content".to_string(),
+                operator: "contains".to_string(),
+                value: Value::String(query),
+            }]),
         };
 
-        let nodes = ns
-            .query_nodes(filter)
+        let output = node_ops::query_nodes(&ns, input)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("search_nodes failed: {}", e)))?;
+            .map_err(|e| ops_error_to_tool(e, "search_nodes"))?;
 
-        let summaries: Vec<Value> = nodes.iter().map(node_summary).collect();
+        // Truncate node data for token efficiency
+        let summaries: Vec<Value> = output
+            .nodes
+            .iter()
+            .map(|v| {
+                json!({
+                    "id": v.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "title": truncate(
+                        v.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        100
+                    ),
+                    "type": v.get("node_type").or(v.get("type")).and_then(|v| v.as_str()).unwrap_or(""),
+                    "snippet": truncate(
+                        v.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                        BODY_TRUNCATE_SUMMARY
+                    ),
+                })
+            })
+            .collect();
+
         Ok(ok_result(
             tool_call_id,
             "search_nodes",
@@ -392,26 +413,43 @@ impl GraphToolExecutor {
         let query = require_str(&args, "query", "search_semantic")?;
         let limit = optional_usize(&args, "limit", DEFAULT_SEMANTIC_LIMIT);
 
+        let ns = self.node_service()?;
         let emb = self.embedding_service()?;
 
-        let results = emb
-            .semantic_search(&query, limit, SEMANTIC_THRESHOLD)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("search_semantic failed: {}", e)))?;
+        let input = search_ops::SearchSemanticInput {
+            query: query.clone(),
+            threshold: Some(SEMANTIC_THRESHOLD),
+            limit: Some(limit),
+            collection_id: None,
+            collection: None,
+            exclude_collections: None,
+            include_markdown: None,
+            include_archived: None,
+            scope: None,
+        };
 
-        let items: Vec<Value> = results
+        let output = search_ops::search_semantic(&ns, &emb, input)
+            .await
+            .map_err(|e| ops_error_to_tool(e, "search_semantic"))?;
+
+        // Truncate for token efficiency
+        let items: Vec<Value> = output
+            .nodes
             .iter()
-            .map(|r| {
-                let mut item = json!({
-                    "id": r.node_id,
-                    "score": format!("{:.3}", r.score),
-                });
-                if let Some(node) = &r.node {
-                    item["title"] = json!(node.title.as_deref().unwrap_or(""));
-                    item["type"] = json!(&node.node_type);
-                    item["snippet"] = json!(truncate(&node.content, BODY_TRUNCATE_SUMMARY));
-                }
-                item
+            .map(|v| {
+                json!({
+                    "id": v.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "title": truncate(
+                        v.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        100
+                    ),
+                    "type": v.get("node_type").or(v.get("type")).and_then(|v| v.as_str()).unwrap_or(""),
+                    "score": v.get("score").and_then(|v| v.as_str()).unwrap_or(""),
+                    "snippet": truncate(
+                        v.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                        BODY_TRUNCATE_SUMMARY
+                    ),
+                })
             })
             .collect();
 
@@ -492,31 +530,29 @@ impl GraphToolExecutor {
 
         let ns = self.node_service()?;
 
-        // Use content as title + body combined
         let content = if body.is_empty() {
             title.clone()
         } else {
             format!("{}\n{}", title, body)
         };
 
-        let params = nodespace_core::services::CreateNodeParams {
-            id: None,
+        let input = node_ops::CreateNodeInput {
             node_type,
             content,
             parent_id,
-            insert_after_node_id: None,
             properties,
+            collection: None,
+            lifecycle_status: None,
         };
 
-        let node_id = ns
-            .create_node_with_parent(params)
+        let output = node_ops::create_node(&ns, input)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("create_node failed: {}", e)))?;
+            .map_err(|e| ops_error_to_tool(e, "create_node"))?;
 
         Ok(ok_result(
             tool_call_id,
             "create_node",
-            json!({ "id": node_id }),
+            json!({ "id": output.node_id }),
         ))
     }
 
@@ -530,8 +566,6 @@ impl GraphToolExecutor {
         let new_body = optional_str(&args, "body");
         let new_properties = args.get("properties").cloned();
 
-        // Build content update: combine title + body if either is provided.
-        // For simplicity, if only title or only body is given, we update content directly.
         let content_update = match (&new_title, &new_body) {
             (Some(t), Some(b)) => Some(format!("{}\n{}", t, b)),
             (Some(t), None) => Some(t.clone()),
@@ -539,14 +573,7 @@ impl GraphToolExecutor {
             (None, None) => None,
         };
 
-        let update = NodeUpdate {
-            content: content_update,
-            properties: new_properties,
-            title: new_title.map(Some),
-            ..Default::default()
-        };
-
-        if update.content.is_none() && update.properties.is_none() && update.title.is_none() {
+        if content_update.is_none() && new_properties.is_none() {
             return Err(ToolError::InvalidArguments {
                 tool: "update_node".into(),
                 reason: "At least one of 'title', 'body', or 'properties' must be provided".into(),
@@ -555,30 +582,25 @@ impl GraphToolExecutor {
 
         let ns = self.node_service()?;
 
-        // Fetch the node first to get its current version
-        let node = ns.get_node(&id).await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("update_node: failed to fetch node: {}", e))
-        })?;
-
-        let node = match node {
-            Some(n) => n,
-            None => {
-                return Ok(error_result(
-                    tool_call_id,
-                    "update_node",
-                    &format!("Node '{}' not found", id),
-                ));
-            }
+        let input = node_ops::UpdateNodeInput {
+            node_id: id.clone(),
+            version: None, // ops layer auto-fetches
+            node_type: None,
+            content: content_update,
+            properties: new_properties,
+            add_to_collection: None,
+            remove_from_collection: None,
+            lifecycle_status: None,
         };
 
-        ns.update_node(&id, node.version, update)
+        let output = node_ops::update_node(&ns, input)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("update_node failed: {}", e)))?;
+            .map_err(|e| ops_error_to_tool(e, "update_node"))?;
 
         Ok(ok_result(
             tool_call_id,
             "update_node",
-            json!({ "id": id, "updated": true }),
+            json!({ "id": output.node_id, "updated": true }),
         ))
     }
 
@@ -593,11 +615,16 @@ impl GraphToolExecutor {
 
         let ns = self.node_service()?;
 
-        ns.create_relationship(&from_id, &rel_type, &to_id, json!({}))
+        let input = rel_ops::CreateRelInput {
+            source_id: from_id.clone(),
+            relationship_name: rel_type.clone(),
+            target_id: to_id.clone(),
+            edge_data: None,
+        };
+
+        rel_ops::create_relationship(&ns, input)
             .await
-            .map_err(|e| {
-                ToolError::ExecutionFailed(format!("create_relationship failed: {}", e))
-            })?;
+            .map_err(|e| ops_error_to_tool(e, "create_relationship"))?;
 
         Ok(ok_result(
             tool_call_id,
@@ -616,8 +643,7 @@ impl GraphToolExecutor {
             optional_str(&args, "relationship_type").unwrap_or_else(|| "mentions".to_string());
         let direction = optional_str(&args, "direction").unwrap_or_else(|| "both".to_string());
 
-        // Validate direction before acquiring the service to ensure
-        // argument errors are reported correctly even without a database.
+        // Validate direction before acquiring the service
         let directions: Vec<&str> = match direction.as_str() {
             "out" => vec!["out"],
             "in" => vec!["in"],
@@ -634,14 +660,25 @@ impl GraphToolExecutor {
 
         let mut all_nodes: Vec<Value> = Vec::new();
         for dir in &directions {
-            let nodes = ns
-                .get_related_nodes(&id, &rel_type, dir)
+            let input = rel_ops::GetRelatedInput {
+                node_id: id.clone(),
+                relationship_name: rel_type.clone(),
+                direction: dir.to_string(),
+            };
+
+            let output = rel_ops::get_related_nodes(&ns, input)
                 .await
-                .map_err(|e| {
-                    ToolError::ExecutionFailed(format!("get_related_nodes failed: {}", e))
-                })?;
-            for node in &nodes {
-                let mut summary = node_summary(node);
+                .map_err(|e| ops_error_to_tool(e, "get_related_nodes"))?;
+
+            for node_val in &output.related_nodes {
+                let mut summary = json!({
+                    "id": node_val.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "title": truncate(
+                        node_val.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        100
+                    ),
+                    "type": node_val.get("node_type").or(node_val.get("type")).and_then(|v| v.as_str()).unwrap_or(""),
+                });
                 summary["direction"] = json!(dir);
                 summary["relationship_type"] = json!(&rel_type);
                 all_nodes.push(summary);
@@ -873,29 +910,6 @@ mod tests {
         let r = ok_result("id1", "test", json!({"key": "val"}));
         assert!(!r.is_error);
         assert_eq!(r.result["key"], "val");
-    }
-
-    // -- node_summary formatting --
-
-    #[test]
-    fn node_summary_format() {
-        let node = nodespace_core::models::Node {
-            id: "abc-123".into(),
-            node_type: "text".into(),
-            content: "Hello World".into(),
-            version: 1,
-            created_at: chrono::Utc::now(),
-            modified_at: chrono::Utc::now(),
-            properties: json!({}),
-            mentions: vec![],
-            mentioned_in: vec![],
-            title: Some("Hello World".into()),
-            lifecycle_status: "active".into(),
-        };
-        let summary = node_summary(&node);
-        assert_eq!(summary["id"], "abc-123");
-        assert_eq!(summary["type"], "text");
-        assert!(summary["title"].as_str().unwrap().contains("Hello"));
     }
 
     // -- node_full formatting --
