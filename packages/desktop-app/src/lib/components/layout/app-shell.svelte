@@ -433,12 +433,21 @@
       const modifierPressed = event.metaKey || event.ctrlKey;
       const shiftPressed = event.shiftKey;
 
+      // Find which pane the click originated from by traversing up the DOM
+      const sourcePaneElement = (event.target as HTMLElement).closest('[data-pane-id]');
+      const sourcePaneId = sourcePaneElement?.getAttribute('data-pane-id') ?? undefined;
+
+      // Detect if click originates from a chat tab
+      const currentTabState = get(tabState);
+      const activeTabId = sourcePaneId ? currentTabState.activeTabIds[sourcePaneId] : undefined;
+      const activeTab = activeTabId ? currentTabState.tabs.find((t) => t.id === activeTabId) : undefined;
+      const isFromChat = activeTab?.type === 'chat';
+
       // Determine navigation action:
-      // - Cmd+Shift+Click: Open in other pane (don't navigate current)
-      // - Cmd+Click: Open in new tab (same pane)
-      // - Click: Navigate in current tab
-      const openInOtherPane = modifierPressed && shiftPressed;
-      const openInNewTab = modifierPressed && !shiftPressed;
+      // Standard: Click = in-place, Cmd+Click = new tab, Cmd+Shift+Click = other pane
+      // Chat override: Click = new tab (preserve conversation), Cmd+Click = other pane
+      const openInOtherPane = isFromChat ? modifierPressed : (modifierPressed && shiftPressed);
+      const openInNewTab = isFromChat ? !modifierPressed : (modifierPressed && !shiftPressed);
 
       // Prevent default navigation for modifier key combinations
       if (modifierPressed) {
@@ -449,10 +458,6 @@
       (async () => {
         const { getNavigationService } = await import('$lib/services/navigation-service');
         const navService = getNavigationService();
-
-        // Find which pane the click originated from by traversing up the DOM
-        const sourcePaneElement = (event.target as HTMLElement).closest('[data-pane-id]');
-        const sourcePaneId = sourcePaneElement?.getAttribute('data-pane-id') ?? undefined;
 
         // Pre-resolve node target to provide user feedback before navigation.
         // Note: Navigation methods call resolveNodeTarget again internally, but the result
