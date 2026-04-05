@@ -115,7 +115,6 @@ class IconRegistry {
       hasRingEffect: false
     });
 
-
     // User nodes - for user-related content
     this.register('user', {
       component: CircleIcon,
