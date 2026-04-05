@@ -53,7 +53,6 @@
       document: 'Document',
       task: 'Task',
       'ai-chat': 'AI Chat',
-      ai_chat: 'AI Chat',
       user: 'User',
       entity: 'Entity',
       query: 'Query'

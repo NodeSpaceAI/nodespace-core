@@ -448,7 +448,7 @@ class DocumentNodeDecorator extends BaseNodeDecorator {
 
 class AINodeDecorator extends BaseNodeDecorator {
   constructor(nodeReferenceService: NodeReferenceService) {
-    super(nodeReferenceService, 'ai_chat');
+    super(nodeReferenceService, 'ai-chat');
   }
 
   public decorateReference(context: DecorationContext): ComponentDecoration {
@@ -550,7 +550,7 @@ export const NODE_TYPE_CONFIGS: Record<string, NodeTypeConfig> = {
     color: 'var(--node-document)',
     defaultDecoration: (context) => new DocumentNodeDecorator(null!).decorateReference(context)
   },
-  ai_chat: {
+  'ai-chat': {
     icon: '🤖',
     label: 'AI Chat',
     color: 'var(--node-ai-chat)',
@@ -598,7 +598,7 @@ export class NodeDecoratorFactory {
     this.decorators.set('user', defaultDecorator);
     this.decorators.set('date', defaultDecorator);
     this.decorators.set('document', defaultDecorator);
-    this.decorators.set('ai_chat', defaultDecorator);
+    this.decorators.set('ai-chat', defaultDecorator);
     this.decorators.set('entity', defaultDecorator);
     this.decorators.set('query', defaultDecorator);
   }

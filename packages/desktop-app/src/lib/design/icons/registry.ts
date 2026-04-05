@@ -115,14 +115,6 @@ class IconRegistry {
       hasRingEffect: false
     });
 
-    // AI Chat nodes (alternative naming convention)
-    this.register('ai_chat', {
-      component: AIIcon,
-      semanticClass: 'ai-icon',
-      colorVar: 'hsl(var(--node-ai-chat, 200 40% 45%))',
-      hasState: false,
-      hasRingEffect: false
-    });
 
     // User nodes - for user-related content
     this.register('user', {

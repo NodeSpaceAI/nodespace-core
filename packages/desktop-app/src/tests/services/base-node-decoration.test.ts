@@ -866,13 +866,13 @@ describe('AINodeDecorator', () => {
 
   it('should create decorator with correct type', () => {
     const decorator = new AINodeDecorator(mockService);
-    expect(decorator['decorationType']).toBe('ai_chat');
+    expect(decorator['decorationType']).toBe('ai-chat');
   });
 
   it('should extract AI model', () => {
     const decorator = new AINodeDecorator(mockService);
     const context = createContext({
-      nodeType: 'ai_chat',
+      nodeType: 'ai-chat',
       content: 'Chat conversation\nModel: GPT-4\nMessages: 10'
     });
     const result = decorator.decorateReference(context);
@@ -883,7 +883,7 @@ describe('AINodeDecorator', () => {
   it('should extract message count', () => {
     const decorator = new AINodeDecorator(mockService);
     const context = createContext({
-      nodeType: 'ai_chat',
+      nodeType: 'ai-chat',
       content: 'Chat history\nMessages: 42'
     });
     const result = decorator.decorateReference(context);
@@ -894,7 +894,7 @@ describe('AINodeDecorator', () => {
   it('should default to 0 messages if not found', () => {
     const decorator = new AINodeDecorator(mockService);
     const context = createContext({
-      nodeType: 'ai_chat',
+      nodeType: 'ai-chat',
       content: 'Chat without message count'
     });
     const result = decorator.decorateReference(context);
@@ -906,7 +906,7 @@ describe('AINodeDecorator', () => {
     const decorator = new AINodeDecorator(mockService);
     const testDate = '2024-03-15T10:30:00Z';
     const context = createContext({
-      nodeType: 'ai_chat',
+      nodeType: 'ai-chat',
       content: `Chat\nLast_activity: ${testDate}`
     });
     const result = decorator.decorateReference(context);
@@ -918,7 +918,7 @@ describe('AINodeDecorator', () => {
   it('should handle invalid last activity date', () => {
     const decorator = new AINodeDecorator(mockService);
     const context = createContext({
-      nodeType: 'ai_chat',
+      nodeType: 'ai-chat',
       content: 'Chat\nLast_activity: invalid date'
     });
     const result = decorator.decorateReference(context);
@@ -928,7 +928,7 @@ describe('AINodeDecorator', () => {
 
   it('should include AI-specific icons', () => {
     const decorator = new AINodeDecorator(mockService);
-    const context = createContext({ nodeType: 'ai_chat' });
+    const context = createContext({ nodeType: 'ai-chat' });
     const result = decorator.decorateReference(context);
 
     expect(result.props.aiIcon).toBe('🤖');
@@ -938,7 +938,7 @@ describe('AINodeDecorator', () => {
   it('should include metadata', () => {
     const decorator = new AINodeDecorator(mockService);
     const context = createContext({
-      nodeType: 'ai_chat',
+      nodeType: 'ai-chat',
       content: 'Model: GPT-4\nMessages: 10\nLast_activity: 2024-03-15T10:30:00Z'
     });
     const result = decorator.decorateReference(context);
@@ -953,7 +953,7 @@ describe('NODE_TYPE_CONFIGS', () => {
   it('should have configs for all supported node types', () => {
     const expectedTypes = [
       'default', 'text', 'task', 'user', 'date',
-      'document', 'ai_chat', 'entity', 'query'
+      'document', 'ai-chat', 'entity', 'query'
     ];
 
     expectedTypes.forEach(type => {
@@ -971,7 +971,7 @@ describe('NODE_TYPE_CONFIGS', () => {
     expect(NODE_TYPE_CONFIGS.user.icon).toBe('👤');
     expect(NODE_TYPE_CONFIGS.date.icon).toBe('📅');
     expect(NODE_TYPE_CONFIGS.document.icon).toBe('📄');
-    expect(NODE_TYPE_CONFIGS.ai_chat.icon).toBe('🤖');
+    expect(NODE_TYPE_CONFIGS['ai-chat'].icon).toBe('🤖');
     expect(NODE_TYPE_CONFIGS.entity.icon).toBe('🏷️');
     expect(NODE_TYPE_CONFIGS.query.icon).toBe('🔍');
   });
@@ -1047,7 +1047,7 @@ describe('NodeDecoratorFactory', () => {
     });
 
     it('should work for all node types', () => {
-      const types = ['text', 'task', 'user', 'date', 'document', 'ai_chat'];
+      const types = ['text', 'task', 'user', 'date', 'document', 'ai-chat'];
 
       types.forEach(type => {
         const context = createContext({ nodeType: type });
@@ -1182,7 +1182,7 @@ describe('Integration Tests', () => {
       content: '<img src=x onerror="alert(1)">'
     });
 
-    const types = ['text', 'task', 'user', 'date', 'document', 'ai_chat'];
+    const types = ['text', 'task', 'user', 'date', 'document', 'ai-chat'];
 
     types.forEach(type => {
       const context = { ...maliciousContext, nodeType: type };

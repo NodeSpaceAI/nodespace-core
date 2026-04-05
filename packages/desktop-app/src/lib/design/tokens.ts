@@ -19,7 +19,6 @@ export const nodeTypeColors = {
   document: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
   task: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
   'ai-chat': 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
-  ai_chat: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
   user: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
   entity: 'hsl(200 40% 45%)', // Blue-gray (Scheme 3)
   query: 'hsl(200 40% 45%)' // Blue-gray (Scheme 3)
