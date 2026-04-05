@@ -12,6 +12,8 @@
 <script lang="ts">
   import { marked, Renderer, type Tokens } from 'marked';
   import DOMPurify from 'dompurify';
+  import { mount, unmount } from 'svelte';
+  import NodeCardInline from './node-card-inline.svelte';
 
   let { content = '' }: { content: string } = $props();
 
@@ -21,11 +23,12 @@
     const href = token.href ?? '';
     const text = this.parser.parseInline(token.tokens);
 
-    // Detect nodespace:// URIs and render as node links
+    // Detect nodespace:// URIs and render as placeholders for rich node cards
     const nsMatch = href.match(/^nodespace:\/\/(.+)$/);
     if (nsMatch) {
       const nodeId = nsMatch[1];
-      return `<a href="${href}" class="ns-node-link" data-node-id="${nodeId}">${text}</a>`;
+      const safeText = text.replace(/"/g, '&quot;');
+      return `<span class="ns-node-card-placeholder" data-node-id="${nodeId}" data-display-text="${safeText}"></span>`;
     }
 
     return `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
@@ -52,9 +55,9 @@
         gfm: true,
       });
       if (typeof raw !== 'string') return md;
-      // Allow nodespace:// protocol in links and data attributes
+      // Allow nodespace:// protocol and data attributes for node card placeholders
       return DOMPurify.sanitize(raw, {
-        ADD_ATTR: ['data-node-id'],
+        ADD_ATTR: ['data-node-id', 'data-display-text'],
         ALLOW_UNKNOWN_PROTOCOLS: true,
       });
     } catch {
@@ -65,12 +68,46 @@
   // nodespace:// link clicks are handled by the global click handler
   // in app-shell.svelte — no local handler needed.
 
-  // Inject DOMPurify-sanitized HTML via DOM to avoid {@html} lint warning.
+  // Inject DOMPurify-sanitized HTML via DOM, then hydrate node card placeholders
   let containerEl: HTMLDivElement;
+  let mountedComponents: ReturnType<typeof mount>[] = [];
+  let lastContent = '';
+
   $effect(() => {
-    if (containerEl && containerEl.innerHTML !== rendered) {
-      containerEl.innerHTML = rendered;
+    if (!containerEl || content === lastContent) return;
+    lastContent = content;
+
+    // Clean up previously mounted components
+    for (const comp of mountedComponents) {
+      unmount(comp);
     }
+    mountedComponents = [];
+
+    containerEl.innerHTML = rendered;
+
+    // Hydrate node card placeholders with Svelte components
+    const placeholders = containerEl.querySelectorAll('.ns-node-card-placeholder');
+    for (const el of placeholders) {
+      const nodeId = el.getAttribute('data-node-id');
+      const displayText = el.getAttribute('data-display-text') || undefined;
+      if (nodeId) {
+        const comp = mount(NodeCardInline, {
+          target: el,
+          props: { nodeId, displayText }
+        });
+        mountedComponents.push(comp);
+      }
+    }
+  });
+
+  // Cleanup on component destroy
+  $effect(() => {
+    return () => {
+      for (const comp of mountedComponents) {
+        unmount(comp);
+      }
+      mountedComponents = [];
+    };
   });
 </script>
 
@@ -156,18 +193,8 @@
     text-decoration: underline;
   }
 
-  .chat-markdown :global(a.ns-node-link) {
-    color: hsl(var(--primary));
-    text-decoration: none;
-    background: hsl(var(--primary) / 0.1);
-    padding: 0.0625em 0.375em;
-    border-radius: 0.25rem;
-    font-weight: 500;
-    cursor: pointer;
-  }
-
-  .chat-markdown :global(a.ns-node-link:hover) {
-    background: hsl(var(--primary) / 0.2);
+  .chat-markdown :global(.ns-node-card-placeholder) {
+    display: inline;
   }
 
   .chat-markdown :global(hr) {
