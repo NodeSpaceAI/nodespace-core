@@ -160,7 +160,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             total_usage.prompt_tokens += usage.prompt_tokens;
             total_usage.completion_tokens += usage.completion_tokens;
 
-            // Parse collected chunks into text + tool calls
+            // Parse collected chunks into text + tool calls.
+            // Poison recovery is safe here: chunks are append-only, so partial
+            // data after a panic is acceptable (we just get fewer chunks).
             let chunks: Vec<StreamingChunk> = {
                 let guard = collected_chunks.lock().unwrap_or_else(|p| p.into_inner());
                 guard.clone()
@@ -293,6 +295,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     total_usage.prompt_tokens += usage.prompt_tokens;
                     total_usage.completion_tokens += usage.completion_tokens;
 
+                    // Poison recovery safe: append-only chunk collection (see above).
                     let chunks: Vec<StreamingChunk> = {
                         let guard = final_chunks.lock().unwrap_or_else(|p| p.into_inner());
                         guard.clone()
@@ -1418,7 +1421,6 @@ mod tests {
     #[tokio::test]
     async fn max_iteration_limit_enforced_exactly() {
         let call_count = Arc::new(AtomicUsize::new(0));
-        let _call_count_for_engine = Arc::clone(&call_count);
 
         // Build more rounds than MAX_TOOL_ITERATIONS of tool-call responses
         // plus a final text response for the tool-less wrap-up call.

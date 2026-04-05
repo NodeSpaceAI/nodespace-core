@@ -36,6 +36,16 @@ function isTauri(): boolean {
   );
 }
 
+/** Mock local agent for non-Tauri environments and error fallback. */
+const MOCK_LOCAL_AGENT: AcpAgentInfo = {
+  id: `${LOCAL_AGENT_PREFIX}ministral-3b-q4km`,
+  name: 'Ministral 3B Instruct Q4_K_M',
+  binary: 'local',
+  args: [],
+  auth_method: { method: 'agent_managed' },
+  available: true,
+};
+
 /** Mock ACP agents for development. */
 const MOCK_AGENTS: AcpAgentInfo[] = [
   {
@@ -119,16 +129,7 @@ class AgentStore {
       } else {
         // Mock fallback: simulate network delay
         await new Promise((resolve) => setTimeout(resolve, 300));
-        // Include a mock local agent
-        const mockLocal: AcpAgentInfo = {
-          id: `${LOCAL_AGENT_PREFIX}ministral-3b-q4km`,
-          name: 'Ministral 3B Instruct Q4_K_M',
-          binary: 'local',
-          args: [],
-          auth_method: { method: 'agent_managed' },
-          available: true,
-        };
-        this.agents = [mockLocal, ...MOCK_AGENTS];
+        this.agents = [MOCK_LOCAL_AGENT, ...MOCK_AGENTS];
       }
 
       // Auto-select first available agent if none selected
@@ -146,15 +147,7 @@ class AgentStore {
 
       // Fall back to mock on error
       if (this.agents.length === 0) {
-        const mockLocal: AcpAgentInfo = {
-          id: `${LOCAL_AGENT_PREFIX}ministral-3b-q4km`,
-          name: 'Ministral 3B Instruct Q4_K_M',
-          binary: 'local',
-          args: [],
-          auth_method: { method: 'agent_managed' },
-          available: true,
-        };
-        this.agents = [mockLocal, ...MOCK_AGENTS];
+        this.agents = [MOCK_LOCAL_AGENT, ...MOCK_AGENTS];
         log.info('Fell back to mock agents after error');
       }
     } finally {

@@ -41,7 +41,6 @@
       </div>
     {/if}
 
-
     {#if isAssistant && showCopyButton}
       <button
         class="copy-button"

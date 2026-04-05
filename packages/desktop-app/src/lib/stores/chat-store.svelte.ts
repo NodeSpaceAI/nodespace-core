@@ -73,11 +73,6 @@ const MOCK_TOOL_CALLS: ToolExecutionRecord[] = [
 // ---------------------------------------------------------------------------
 
 /**
- * Best-effort extraction of text from an ACP result payload.
- * The exact shape from Claude Code / Gemini CLI is not yet known.
- * Logs the raw result so the shape can be observed and refined later.
- */
-/**
  * Extract text from an ACP message.
  *
  * ACP agents stream `session/update` notifications:

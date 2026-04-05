@@ -68,7 +68,7 @@
   // Inject DOMPurify-sanitized HTML via DOM to avoid {@html} lint warning.
   let containerEl: HTMLDivElement;
   $effect(() => {
-    if (containerEl) {
+    if (containerEl && containerEl.innerHTML !== rendered) {
       containerEl.innerHTML = rendered;
     }
   });
