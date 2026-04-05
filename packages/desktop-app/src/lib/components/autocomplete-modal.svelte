@@ -120,7 +120,7 @@
     task: { icon: 'taskIncomplete' as IconName, label: 'Task' },
     user: { icon: 'circle' as IconName, label: 'User' },
     date: { icon: 'circle' as IconName, label: 'Date' },
-    ai_chat: { icon: 'aiSquare' as IconName, label: 'AI Chat' },
+    'ai-chat': { icon: 'aiSquare' as IconName, label: 'AI Chat' },
     entity: { icon: 'circle' as IconName, label: 'Entity' },
     query: { icon: 'circle' as IconName, label: 'Query' }
   } as const;

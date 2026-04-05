@@ -34,7 +34,7 @@
     user: '👤',
     date: '📅',
     document: '📄',
-    ai_chat: '🤖',
+    'ai-chat': '🤖',
     entity: '🏷️',
     query: '🔍'
   };
@@ -180,11 +180,11 @@
     border-color: hsl(var(--chart-4) / 0.5);
   }
 
-  .ns-noderef--ai_chat {
+  .ns-noderef--ai-chat {
     border-color: hsl(var(--chart-5) / 0.3);
   }
 
-  .ns-noderef--ai_chat:hover {
+  .ns-noderef--ai-chat:hover {
     background: hsl(var(--chart-5) / 0.1);
     border-color: hsl(var(--chart-5) / 0.5);
   }
