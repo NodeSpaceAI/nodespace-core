@@ -6,10 +6,9 @@
 //! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 
 use crate::mcp::types::MCPError;
-use crate::models::{
-    FilterOperator as ModelFilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter,
-};
-use crate::services::{CollectionService, NodeService, NodeServiceError};
+use crate::models::{Node, NodeUpdate};
+use crate::ops::OpsError;
+use crate::services::{NodeService, NodeServiceError};
 use chrono::NaiveDate;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -18,49 +17,29 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 /// Convert a Node to its strongly-typed JSON representation
-///
-/// Delegates to the canonical `models::node_to_typed_value` and maps errors to MCPError.
 fn node_to_typed_value(node: Node) -> Result<Value, MCPError> {
     crate::models::node_to_typed_value(node).map_err(MCPError::internal_error)
 }
 
-/// Convert a list of Nodes to their strongly-typed JSON representations
-fn nodes_to_typed_values(nodes: Vec<Node>) -> Result<Vec<Value>, MCPError> {
-    crate::models::nodes_to_typed_values(nodes).map_err(MCPError::internal_error)
+/// Convert OpsError to MCPError
+fn ops_error_to_mcp(err: OpsError) -> MCPError {
+    match err {
+        OpsError::NotFound { id } => MCPError::node_not_found(&id),
+        OpsError::VersionConflict {
+            node_id,
+            expected,
+            actual,
+            current_node,
+        } => MCPError::version_conflict(node_id, expected, actual, current_node),
+        OpsError::ValidationFailed(msg) => MCPError::validation_error(msg),
+        OpsError::InvalidParams(msg) => MCPError::invalid_params(msg),
+        OpsError::Internal(msg) => MCPError::internal_error(msg),
+    }
 }
 
-/// Convert NodeServiceError to MCPError with proper formatting
-///
-/// Special handling for VersionConflict errors to help client-side merge.
+/// Convert NodeServiceError to MCPError (used by handlers not yet migrated to ops)
 fn service_error_to_mcp(error: NodeServiceError) -> MCPError {
-    match error {
-        NodeServiceError::VersionConflict {
-            node_id,
-            expected_version,
-            actual_version,
-        } => MCPError::version_conflict(node_id, expected_version, actual_version, None),
-        NodeServiceError::NodeNotFound { id } => MCPError::node_not_found(&id),
-        NodeServiceError::ValidationFailed(e) => MCPError::validation_error(e.to_string()),
-        NodeServiceError::InvalidParent { parent_id } => {
-            MCPError::validation_error(format!("Invalid parent: {}", parent_id))
-        }
-        NodeServiceError::InvalidRoot { root_node_id } => {
-            MCPError::validation_error(format!("Invalid root: {}", root_node_id))
-        }
-        NodeServiceError::CircularReference { context } => {
-            MCPError::validation_error(format!("Circular reference: {}", context))
-        }
-        NodeServiceError::HierarchyViolation(msg) => {
-            MCPError::validation_error(format!("Hierarchy violation: {}", msg))
-        }
-        NodeServiceError::PlaybookValidationFailed { .. } => {
-            MCPError::invalid_params(error.to_string())
-        }
-        NodeServiceError::DatabaseError(e) => {
-            MCPError::internal_error(format!("Database error: {}", e))
-        }
-        _ => MCPError::internal_error(format!("Service error: {}", error)),
-    }
+    ops_error_to_mcp(OpsError::from(error))
 }
 
 /// Parameters for create_node method from MCP clients
@@ -267,72 +246,27 @@ pub async fn handle_create_node(
     let mcp_params: MCPCreateNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Create node via NodeService (enforces all business rules)
-    // Note: root_id is auto-derived from parent chain by backend
-    let parent_id = mcp_params.parent_id.clone();
-    let collection_path = mcp_params.collection.clone();
-    let node_id = node_service
-        .create_node_with_parent(crate::services::CreateNodeParams {
-            id: None, // MCP generates IDs server-side
-            node_type: mcp_params.node_type.clone(),
+    let result = crate::ops::node_ops::create_node(
+        node_service,
+        crate::ops::node_ops::CreateNodeInput {
+            node_type: mcp_params.node_type,
             content: mcp_params.content,
             parent_id: mcp_params.parent_id,
-            insert_after_node_id: None, // Insert at beginning (this endpoint doesn't expose positioning)
             properties: mcp_params.properties,
-        })
-        .await
-        .map_err(|e| MCPError::node_creation_failed(format!("Failed to create node: {}", e)))?;
-
-    // Add to collection if specified
-    let collection_id = if let Some(path) = &collection_path {
-        let collection_service = CollectionService::new(&node_service.store, node_service);
-        let resolved = collection_service
-            .add_to_collection_by_path(&node_id, path)
-            .await
-            .map_err(service_error_to_mcp)?;
-        Some(resolved.leaf_id().to_string())
-    } else {
-        None
-    };
-
-    // Issue #828, #770: Apply lifecycle_status if specified (default is "active")
-    // Update the node with lifecycle_status if non-default value provided
-    if let Some(lifecycle_status) = &mcp_params.lifecycle_status {
-        if lifecycle_status != "active" {
-            let current_node = node_service
-                .get_node(&node_id)
-                .await
-                .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
-                .ok_or_else(|| MCPError::internal_error("Created node not found".to_string()))?;
-
-            let update = NodeUpdate {
-                lifecycle_status: Some(lifecycle_status.clone()),
-                ..Default::default()
-            };
-
-            node_service
-                .update_node(&node_id, current_node.version, update)
-                .await
-                .map_err(service_error_to_mcp)?;
-        }
-    }
-
-    // Fetch the created node for response (includes version, timestamps, mentions, etc.)
-    let created_node = node_service
-        .get_node(&node_id)
-        .await
-        .map_err(|e| MCPError::internal_error(format!("Failed to fetch created node: {}", e)))?
-        .ok_or_else(|| MCPError::internal_error("Created node not found".to_string()))?;
-
-    let node_data = node_to_typed_value(created_node)?;
+            collection: mcp_params.collection,
+            lifecycle_status: mcp_params.lifecycle_status,
+        },
+    )
+    .await
+    .map_err(ops_error_to_mcp)?;
 
     Ok(json!({
-        "node_id": node_id,
-        "node_type": mcp_params.node_type,
-        "parent_id": parent_id,
-        "collection_id": collection_id,
+        "node_id": result.node_id,
+        "node_type": result.node_type,
+        "parent_id": result.parent_id,
+        "collection_id": result.collection_id,
         "success": true,
-        "node_data": node_data
+        "node_data": result.node_data
     }))
 }
 
@@ -350,15 +284,14 @@ pub async fn handle_get_node(
     let params: GetNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Fetch the node
-    let node = node_service
-        .get_node(&params.node_id)
-        .await
-        .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
-        .ok_or_else(|| MCPError::node_not_found(&params.node_id))?;
-
-    // Convert to strongly-typed JSON representation
-    node_to_typed_value(node)
+    crate::ops::node_ops::get_node(
+        node_service,
+        crate::ops::node_ops::GetNodeInput {
+            node_id: params.node_id,
+        },
+    )
+    .await
+    .map_err(ops_error_to_mcp)
 }
 
 /// Handle update_node MCP request
@@ -372,117 +305,29 @@ pub async fn handle_update_node(
     let params: UpdateNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Update node via NodeService (enforces Rule 5: content updates only, no hierarchy changes)
-    // NodeService.update_node validates against schema automatically
-    //
-    // MCP update_node intentionally restricts certain fields for data integrity:
-    // - parent_id: Use move_node operation for parent changes
-    // - root_id: Auto-calculated with parent changes
-    // - before_sibling_id: Use reorder_node operation for sibling changes
-    // - embedding_vector: Embeddings are auto-generated from content via background jobs
-    //
-    // Use MCP only for content/property updates. Use separate operations for structural changes.
-
-    // Build NodeUpdate from params
-    // Note: Embeddings are auto-generated via root-aggregate model (Issue #729)
-    // Issue #828, #770: lifecycle_status can be updated to archive/restore nodes
-    let update = NodeUpdate {
-        content: params.content,
-        node_type: params.node_type,
-        properties: params.properties,
-        title: None, // Title is managed by NodeService
-        lifecycle_status: params.lifecycle_status,
-    };
-
-    // If version not provided, fetch current version (convenient for AI agents)
-    // If version provided, use OCC for concurrent update protection
-    let version = match params.version {
-        Some(v) => v,
-        None => {
-            let node = node_service
-                .get_node(&params.node_id)
-                .await
-                .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
-                .ok_or_else(|| MCPError::node_not_found(&params.node_id))?;
-            node.version
-        }
-    };
-
-    let updated_node = match node_service
-        .update_node(&params.node_id, version, update)
-        .await
-    {
-        Ok(node) => node,
-        Err(NodeServiceError::VersionConflict {
-            node_id,
-            expected_version,
-            actual_version,
-        }) => {
-            // Fetch current node state to include in error response for client-side merge
-            let current_node = node_service
-                .get_node(&node_id)
-                .await
-                .ok()
-                .flatten()
-                .and_then(|n| serde_json::to_value(&n).ok());
-            return Err(MCPError::version_conflict(
-                node_id,
-                expected_version,
-                actual_version,
-                current_node,
-            ));
-        }
-        Err(e) => return Err(service_error_to_mcp(e)),
-    };
-
-    // Handle collection operations
-    let collection_service = CollectionService::new(&node_service.store, node_service);
-    let mut collection_added = None;
-    let mut collection_removed = None;
-
-    // Add to collection if specified
-    if let Some(path) = &params.add_to_collection {
-        let resolved = collection_service
-            .add_to_collection_by_path(&params.node_id, path)
-            .await
-            .map_err(service_error_to_mcp)?;
-        collection_added = Some(resolved.leaf_id().to_string());
-    }
-
-    // Remove from collection if specified
-    if let Some(collection_id) = &params.remove_from_collection {
-        collection_service
-            .remove_from_collection(&params.node_id, collection_id)
-            .await
-            .map_err(service_error_to_mcp)?;
-        collection_removed = Some(collection_id.clone());
-    }
-
-    // Re-fetch node to get latest state after collection membership change
-    let final_node = if params.add_to_collection.is_some()
-        || params.remove_from_collection.is_some()
-    {
-        node_service
-            .get_node(&params.node_id)
-            .await
-            .map_err(|e| MCPError::internal_error(format!("Failed to fetch updated node: {}", e)))?
-            .unwrap_or(updated_node)
-    } else {
-        updated_node
-    };
-
-    // Include full node data in response for:
-    // 1. SSE broadcasting (callback can extract node_data)
-    // 2. Client convenience (no need for separate fetch)
-    let node_data = node_to_typed_value(final_node)?;
+    let result = crate::ops::node_ops::update_node(
+        node_service,
+        crate::ops::node_ops::UpdateNodeInput {
+            node_id: params.node_id,
+            version: params.version,
+            node_type: params.node_type,
+            content: params.content,
+            properties: params.properties,
+            add_to_collection: params.add_to_collection,
+            remove_from_collection: params.remove_from_collection,
+            lifecycle_status: params.lifecycle_status,
+        },
+    )
+    .await
+    .map_err(ops_error_to_mcp)?;
 
     Ok(json!({
-        "node_id": params.node_id,
-        "version": node_data.get("version").and_then(|v| v.as_i64()).unwrap_or(0),
+        "node_id": result.node_id,
+        "version": result.version,
         "success": true,
-        "node_data": node_data,
-        "collection_added": collection_added,
-        "collection_removed": collection_removed
+        "node_data": result.node_data,
+        "collection_added": result.collection_added,
+        "collection_removed": result.collection_removed
     }))
 }
 
@@ -494,46 +339,21 @@ pub async fn handle_delete_node(
     let params: DeleteNodeParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // If version not provided, fetch current version (convenient for AI agents)
-    // If version provided, use OCC for concurrent deletion protection
-    let version = match params.version {
-        Some(v) => v,
-        None => {
-            let node = node_service
-                .get_node(&params.node_id)
-                .await
-                .map_err(|e| MCPError::internal_error(format!("Failed to get node: {}", e)))?
-                .ok_or_else(|| MCPError::node_not_found(&params.node_id))?;
-            node.version
-        }
-    };
-
-    // Delete node via NodeService
-    let result = node_service
-        .delete_node(&params.node_id, version)
-        .await
-        .map_err(service_error_to_mcp)?;
+    let result = crate::ops::node_ops::delete_node(
+        node_service,
+        crate::ops::node_ops::DeleteNodeInput {
+            node_id: params.node_id,
+            version: params.version,
+        },
+    )
+    .await
+    .map_err(ops_error_to_mcp)?;
 
     Ok(json!({
-        "node_id": params.node_id,
+        "node_id": result.node_id,
         "existed": result.existed,
         "success": true
     }))
-}
-
-/// Parse MCP filter operator string to model FilterOperator
-fn parse_mcp_filter_operator(op: &str) -> Result<ModelFilterOperator, MCPError> {
-    match op {
-        "equals" => Ok(ModelFilterOperator::Equals),
-        "not_equals" => Ok(ModelFilterOperator::NotEquals),
-        "contains" => Ok(ModelFilterOperator::Contains),
-        "starts_with" => Ok(ModelFilterOperator::StartsWith),
-        "ends_with" => Ok(ModelFilterOperator::EndsWith),
-        other => Err(MCPError::invalid_params(format!(
-            "Unsupported filter operator: '{}'. Supported operators: equals, not_equals, contains, starts_with, ends_with",
-            other
-        ))),
-    }
 }
 
 /// Handle query_nodes MCP request
@@ -544,147 +364,36 @@ pub async fn handle_query_nodes(
     let params: QueryNodesParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Resolve collection ID if path provided
-    let collection_id = if let Some(path) = &params.collection {
-        let collection_service = CollectionService::new(&node_service.store, node_service);
-        // Use resolve_path to find the collection (don't create if doesn't exist)
-        match collection_service.resolve_path(path).await {
-            Ok(resolved) => Some(resolved.leaf_id().to_string()),
-            Err(NodeServiceError::CollectionNotFound(_)) => {
-                // Collection doesn't exist, return empty result
-                return Ok(json!({
-                    "nodes": [],
-                    "count": 0,
-                    "collection_id": null
-                }));
-            }
-            Err(e) => return Err(service_error_to_mcp(e)),
-        }
-    } else {
-        params.collection_id.clone()
-    };
+    let filters = params.filters.map(|fs| {
+        fs.into_iter()
+            .map(|f| crate::ops::node_ops::QueryFilterItem {
+                field: f.field,
+                operator: f.operator,
+                value: f.value,
+            })
+            .collect()
+    });
 
-    // If filtering by collection, get member IDs first
-    let collection_member_ids: Option<std::collections::HashSet<String>> =
-        if let Some(coll_id) = &collection_id {
-            let collection_service = CollectionService::new(&node_service.store, node_service);
-            let members = collection_service
-                .get_collection_members(coll_id)
-                .await
-                .map_err(service_error_to_mcp)?;
-            // Extract IDs from nodes for membership filtering
-            Some(members.into_iter().map(|n| n.id).collect())
-        } else {
-            None
-        };
-
-    // Build NodeFilter using builder pattern
-    let mut filter = NodeFilter::new();
-
-    if let Some(node_type) = params.node_type {
-        filter = filter.with_node_type(node_type);
-    }
-
-    // Note: parent_id and root_id filters removed in graph-native refactor
-    // These parameters are kept in the MCP API for backward compatibility but ignored
-    // Clients should use graph queries to traverse relationships instead
-    if params.parent_id.is_some() {
-        tracing::warn!("parent_id filter ignored - use graph queries for relationship traversal");
-    }
-
-    // DEPRECATED: root_id filter is ignored in graph-native architecture
-    // Kept for backward compatibility but clients should use graph queries
-    if params.root_id.is_some() {
-        tracing::warn!(
-            "root_id filter is deprecated. Filter ignored - use graph queries for relationship traversal"
-        );
-    }
-
-    // Collection post-filtering happens in this handler (after DB query), so we
-    // over-fetch to compensate. Property filters are handled inside NodeService
-    // (which removes the limit for the DB query and re-applies it after filtering).
-    let effective_limit = if collection_member_ids.is_some() {
-        params.limit.map(|l| l * 3).unwrap_or(1000)
-    } else {
-        params.limit.unwrap_or(100)
-    };
-
-    filter = filter.with_limit(effective_limit);
-
-    if let Some(offset) = params.offset {
-        filter = filter.with_offset(offset);
-    }
-
-    if let Some(filters) = params.filters {
-        let mut seen_fields = std::collections::HashSet::new();
-        for f in filters {
-            if !seen_fields.insert(f.field.clone()) {
-                return Err(MCPError::invalid_params(format!(
-                    "Duplicate filter field '{}'. Each field may appear at most once.",
-                    f.field
-                )));
-            }
-            let value_str = match &f.value {
-                serde_json::Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            match (f.field.as_str(), f.operator.as_str()) {
-                ("content", "contains") => {
-                    filter = filter.with_content_contains(value_str);
-                }
-                ("title", "contains") => {
-                    filter = filter.with_title_contains(value_str);
-                }
-                ("content" | "title", op) => {
-                    return Err(MCPError::invalid_params(format!(
-                        "Field '{}' only supports 'contains' operator, got '{}'",
-                        f.field, op
-                    )));
-                }
-                (_field, op) => {
-                    let operator = parse_mcp_filter_operator(op)?;
-                    let path = format!("$.{}", f.field);
-                    let prop_filter = PropertyFilter::new(path, operator, f.value.clone())
-                        .map_err(|e| {
-                            MCPError::invalid_params(format!("Invalid property filter: {}", e))
-                        })?;
-                    filter = filter.with_property_filter(prop_filter);
-                }
-            }
-        }
-    }
-
-    filter = filter.with_order_by(OrderBy::CreatedDesc);
-
-    // Query nodes via NodeService
-    let nodes = node_service
-        .query_nodes(filter)
-        .await
-        .map_err(|e| MCPError::internal_error(format!("Failed to query nodes: {}", e)))?;
-
-    // Apply collection filter if specified
-    let filtered_nodes = if let Some(member_ids) = collection_member_ids {
-        let mut result: Vec<_> = nodes
-            .into_iter()
-            .filter(|n| member_ids.contains(&n.id))
-            .collect();
-        // Apply limit after filtering
-        if let Some(limit) = params.limit {
-            result.truncate(limit);
-        }
-        result
-    } else {
-        nodes
-    };
-
-    // Convert nodes to strongly-typed JSON representations
-    let count = filtered_nodes.len();
-    let typed_nodes = nodes_to_typed_values(filtered_nodes)?;
+    let result = crate::ops::node_ops::query_nodes(
+        node_service,
+        crate::ops::node_ops::QueryNodesInput {
+            node_type: params.node_type,
+            parent_id: params.parent_id,
+            root_id: params.root_id,
+            limit: params.limit,
+            offset: params.offset,
+            collection_id: params.collection_id,
+            collection: params.collection,
+            filters,
+        },
+    )
+    .await
+    .map_err(ops_error_to_mcp)?;
 
     Ok(json!({
-        "nodes": typed_nodes,
-        "count": count,
-        "collection_id": collection_id
+        "nodes": result.nodes,
+        "count": result.count,
+        "collection_id": result.collection_id
     }))
 }
 
@@ -1430,7 +1139,7 @@ pub async fn handle_get_node_collections(
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Get collection memberships via CollectionService
-    let collection_service = CollectionService::new(&node_service.store, node_service);
+    let collection_service = crate::services::CollectionService::new(node_service.store(), node_service);
     let collection_ids = collection_service
         .get_node_collections(&params.node_id)
         .await

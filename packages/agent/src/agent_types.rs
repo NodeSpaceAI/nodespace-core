@@ -520,6 +520,10 @@ pub struct AgentSession {
     pub created_at: DateTime<Utc>,
     /// Record of tool executions during this session.
     pub tool_executions: Vec<ToolExecutionRecord>,
+    /// Cached dynamic context string (workspace schemas, collections, playbooks).
+    /// Built once per session on first turn, then reused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_context: Option<String>,
 }
 
 /// Result of a complete agent turn (one round of generation + tool execution).

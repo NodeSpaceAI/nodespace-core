@@ -97,7 +97,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // System prompt only — tool definitions are injected by the model's
         // built-in chat template via [AVAILABLE_TOOLS] in apply_chat_template().
         // Do NOT duplicate tools here or the model gets confused.
-        let system_content = prompt_templates::system_prompt();
+        let dynamic_ctx = session
+            .dynamic_context
+            .as_deref()
+            .unwrap_or("");
+        let system_content = prompt_templates::system_prompt(dynamic_ctx);
 
         let mut all_tool_executions: Vec<ToolExecutionRecord> = Vec::new();
         let mut total_usage = InferenceUsage {
@@ -527,6 +531,7 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
             status: LocalAgentStatus::Idle,
             created_at: chrono::Utc::now(),
             tool_executions: Vec::new(),
+            dynamic_context: None,
         };
 
         let cancel = CancellationToken::new();
@@ -827,6 +832,7 @@ mod tests {
             status: LocalAgentStatus::Idle,
             created_at: chrono::Utc::now(),
             tool_executions: Vec::new(),
+            dynamic_context: None,
         }
     }
 

@@ -7,20 +7,39 @@ use crate::agent_types::ToolDefinition;
 
 /// Build the system prompt for the local agent.
 ///
-/// Describes the agent's role and available tool-calling conventions.
-pub fn system_prompt() -> String {
-    "You are a knowledge graph assistant for NodeSpace. You help users organize, \
-     search, and manage their knowledge.\n\n\
-     TOOL USAGE: Use tools to find information. After receiving tool results, \
-     ALWAYS respond in natural language — summarize, interpret, and answer \
-     the user's question. NEVER paste raw tool output as your response.\n\n\
-     NODE REFERENCES: When referencing nodes, use the bare nodespace:// URI \
-     (e.g. nodespace://abc-123). Do NOT wrap in markdown links or backticks.\n\n\
-     DISPLAY FORMATTING: Show enum values in Title Case \
-     (e.g. \"In Progress\" not \"in_progress\").\n\n\
-     Respond concisely. If the user's question can be answered directly, \
-     do so without calling tools."
-        .to_string()
+/// `dynamic_context` is a pre-formatted string describing the workspace's
+/// entity types, collections, and active playbooks (built by
+/// `context_ops::build_workspace_context` + `format_for_prompt`).
+pub fn system_prompt(dynamic_context: &str) -> String {
+    let ctx_block = if dynamic_context.is_empty() {
+        String::new()
+    } else {
+        format!("\n{dynamic_context}\n")
+    };
+
+    format!(
+        "You are NodeSpace's built-in assistant. You help users work with their \
+         knowledge graph — creating, finding, updating, and connecting nodes.\
+         {ctx_block}\n\
+         TOOL STRATEGY:\n\
+         - To find nodes by meaning/topic: use search_semantic (natural language query)\n\
+         - To find nodes by exact fields: use search_nodes (keyword + type filter)\n\
+         - To get full node details: use get_node with the ID from search results\n\
+         - To create: use create_node with the correct node_type and properties matching the schema fields above\n\
+         - To update: use update_node — only include fields you want to change\n\
+         - To connect nodes: use create_relationship with relationship names from the schemas above\n\n\
+         RESPONSE RULES:\n\
+         - After tool results: summarize in natural language. NEVER paste raw JSON as your response.\n\
+         - Reference nodes with bare URI: nodespace://abc-123 (no markdown links, no backticks)\n\
+         - Enum values in Title Case: \"In Progress\" not \"in_progress\"\n\
+         - When listing nodes: **Title** (nodespace://id) — brief description\n\
+         - When reporting search results: \"Found N nodes...\" then list top results\n\
+         - If tool returns empty results: say so clearly. Do NOT retry the same query.\n\
+         - Keep responses concise — under 3 sentences unless user asks for detail.\n\n\
+         TOOL CALL FORMAT:\n\
+         - Pass arguments flat. Do NOT nest under \"properties\" or \"arguments\".\n\
+         - Use the exact field names shown in the schema definitions above."
+    )
 }
 
 /// Format tool definitions into the text block appended to the system prompt.
@@ -74,10 +93,23 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn system_prompt_is_non_empty() {
-        let prompt = system_prompt();
-        assert!(!prompt.is_empty());
+    fn system_prompt_includes_context() {
+        let ctx = "ENTITY TYPES:\n- customer: Customer\n";
+        let prompt = system_prompt(ctx);
         assert!(prompt.contains("NodeSpace"));
+        assert!(prompt.contains("ENTITY TYPES:"));
+        assert!(prompt.contains("customer: Customer"));
+        assert!(prompt.contains("TOOL STRATEGY:"));
+        assert!(prompt.contains("RESPONSE RULES:"));
+    }
+
+    #[test]
+    fn system_prompt_empty_context() {
+        let prompt = system_prompt("");
+        assert!(prompt.contains("NodeSpace"));
+        assert!(prompt.contains("TOOL STRATEGY:"));
+        // No double newlines from empty context
+        assert!(!prompt.contains("\n\n\n\n"));
     }
 
     #[test]
@@ -133,7 +165,6 @@ mod tests {
     #[test]
     fn format_tool_result_success() {
         let result = format_tool_result("search_nodes", &json!({"count": 3}), false);
-        // Should be raw JSON, parseable by nlp-engine for [TOOL_RESULTS] wrapping
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(parsed["count"], 3);
     }
