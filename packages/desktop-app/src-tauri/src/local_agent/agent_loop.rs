@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_types::{
@@ -130,9 +130,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             on_status(LocalAgentStatus::Thinking);
             session.status = LocalAgentStatus::Thinking;
 
-            // Collect chunks to parse tool calls from the response
-            let collected_chunks: Arc<Mutex<Vec<StreamingChunk>>> =
-                Arc::new(Mutex::new(Vec::new()));
+            // Collect chunks to parse tool calls from the response.
+            // Uses std::sync::Mutex (not tokio) because the callback runs on
+            // a blocking thread inside spawn_blocking.
+            let collected_chunks: Arc<std::sync::Mutex<Vec<StreamingChunk>>> =
+                Arc::new(std::sync::Mutex::new(Vec::new()));
             let collected_for_cb = Arc::clone(&collected_chunks);
             let on_chunk_clone = Arc::clone(&on_chunk);
 
@@ -142,9 +144,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     // Forward to caller
                     on_chunk_clone(chunk.clone());
                     // Collect for parsing
-                    if let Ok(mut guard) = collected_for_cb.try_lock() {
+                    if let Ok(mut guard) = collected_for_cb.lock() {
                         guard.push(chunk);
-                    };
+                    }
                 });
 
             let request = InferenceRequest {
@@ -161,9 +163,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             total_usage.completion_tokens += usage.completion_tokens;
 
             // Parse collected chunks into text + tool calls
-            let chunks = collected_chunks.lock().await;
+            let chunks: Vec<StreamingChunk> = {
+                let guard = collected_chunks.lock().unwrap_or_else(|p| p.into_inner());
+                guard.clone()
+            };
             let (response_text, tool_calls) = Self::parse_chunks(&chunks);
-            drop(chunks);
 
             if tool_calls.is_empty() {
                 // No tool calls — final response
@@ -267,15 +271,15 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 }];
                 messages.extend(session.messages.clone());
 
-                let final_chunks: Arc<Mutex<Vec<StreamingChunk>>> =
-                    Arc::new(Mutex::new(Vec::new()));
+                let final_chunks: Arc<std::sync::Mutex<Vec<StreamingChunk>>> =
+                    Arc::new(std::sync::Mutex::new(Vec::new()));
                 let final_for_cb = Arc::clone(&final_chunks);
                 let on_chunk_final = Arc::clone(&on_chunk);
 
                 let final_callback: Box<dyn Fn(StreamingChunk) + Send> =
                     Box::new(move |chunk: StreamingChunk| {
                         on_chunk_final(chunk.clone());
-                        if let Ok(mut guard) = final_for_cb.try_lock() {
+                        if let Ok(mut guard) = final_for_cb.lock() {
                             guard.push(chunk);
                         }
                     });
@@ -291,7 +295,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     total_usage.prompt_tokens += usage.prompt_tokens;
                     total_usage.completion_tokens += usage.completion_tokens;
 
-                    let chunks = final_chunks.lock().await;
+                    let chunks: Vec<StreamingChunk> = {
+                        let guard = final_chunks.lock().unwrap_or_else(|p| p.into_inner());
+                        guard.clone()
+                    };
                     let (final_text, _) = Self::parse_chunks(&chunks);
                     if !final_text.is_empty() {
                         session.messages.push(ChatMessage {
@@ -440,19 +447,22 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             max_tokens: Some(512),
         };
 
-        let summary_chunks: Arc<Mutex<Vec<StreamingChunk>>> = Arc::new(Mutex::new(Vec::new()));
+        let summary_chunks: Arc<std::sync::Mutex<Vec<StreamingChunk>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let summary_for_cb = Arc::clone(&summary_chunks);
         let cb: Box<dyn Fn(StreamingChunk) + Send> = Box::new(move |chunk: StreamingChunk| {
-            if let Ok(mut guard) = summary_for_cb.try_lock() {
+            if let Ok(mut guard) = summary_for_cb.lock() {
                 guard.push(chunk);
             }
         });
 
         let _ = self.engine.generate(summary_request, cb).await?;
 
-        let chunks = summary_chunks.lock().await;
+        let chunks: Vec<StreamingChunk> = {
+            let guard = summary_chunks.lock().unwrap_or_else(|p| p.into_inner());
+            guard.clone()
+        };
         let (summary_text, _) = Self::parse_chunks(&chunks);
-        drop(chunks);
 
         let summary_content = if summary_text.is_empty() {
             // Fallback: just note that history was truncated
@@ -624,14 +634,14 @@ mod tests {
     struct MockEngine {
         /// Responses to return for sequential calls to `generate`.
         /// Each entry is a list of chunks to emit.
-        responses: Mutex<Vec<Vec<StreamingChunk>>>,
+        responses: tokio::sync::Mutex<Vec<Vec<StreamingChunk>>>,
         generate_count: AtomicUsize,
     }
 
     impl MockEngine {
         fn new(responses: Vec<Vec<StreamingChunk>>) -> Self {
             Self {
-                responses: Mutex::new(responses),
+                responses: tokio::sync::Mutex::new(responses),
                 generate_count: AtomicUsize::new(0),
             }
         }
