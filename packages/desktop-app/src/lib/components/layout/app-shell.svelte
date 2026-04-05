@@ -437,8 +437,8 @@
       // - Cmd+Shift+Click: Open in other pane (don't navigate current)
       // - Cmd+Click: Open in new tab (same pane)
       // - Click: Navigate in current tab
-      const openInOtherPane = modifierPressed && shiftPressed;
-      const openInNewTab = modifierPressed && !shiftPressed;
+      let openInOtherPane = modifierPressed && shiftPressed;
+      let openInNewTab = modifierPressed && !shiftPressed;
 
       // Prevent default navigation for modifier key combinations
       if (modifierPressed) {
@@ -453,6 +453,16 @@
         // Find which pane the click originated from by traversing up the DOM
         const sourcePaneElement = (event.target as HTMLElement).closest('[data-pane-id]');
         const sourcePaneId = sourcePaneElement?.getAttribute('data-pane-id') ?? undefined;
+
+        // Override navigation for chat tabs: preserve the conversation
+        // Regular click → new tab (same pane), Cmd+Click → new pane
+        const currentTabState = get(tabState);
+        const activeTabId = sourcePaneId ? currentTabState.activeTabIds[sourcePaneId] : undefined;
+        const activeTab = activeTabId ? currentTabState.tabs.find((t) => t.id === activeTabId) : undefined;
+        if (activeTab?.type === 'chat') {
+          openInNewTab = !modifierPressed;
+          openInOtherPane = modifierPressed;
+        }
 
         // Pre-resolve node target to provide user feedback before navigation.
         // Note: Navigation methods call resolveNodeTarget again internally, but the result
