@@ -138,3 +138,72 @@ export interface ColumnConfig {
 	sortable?: boolean;
 	format?: 'text' | 'date' | 'number' | 'enum';
 }
+
+/**
+ * A QueryDefinition is the subset of QueryNode fields that define the query
+ * itself — stored as node.properties on a query node.
+ *
+ * Extracted here so both components and services can import it without
+ * coupling to a specific .svelte file.
+ */
+export interface QueryDefinition {
+	targetType: string;
+	filters: QueryFilter[];
+	sorting?: SortConfig[];
+	limit?: number;
+}
+
+export const DEFAULT_QUERY: QueryDefinition = {
+	targetType: 'task',
+	filters: [],
+	limit: 50,
+};
+
+export const QUERY_TEMPLATE_EXAMPLES: Array<{ label: string; definition: QueryDefinition }> = [
+	{
+		label: 'All incomplete tasks',
+		definition: {
+			targetType: 'task',
+			filters: [
+				{
+					type: 'property',
+					operator: 'in',
+					property: 'status',
+					value: ['open', 'in_progress'],
+				},
+			],
+			limit: 50,
+		},
+	},
+	{
+		label: 'Recent text nodes with keyword',
+		definition: {
+			targetType: 'text',
+			filters: [
+				{
+					type: 'content',
+					operator: 'contains',
+					value: 'keyword',
+				},
+			],
+			sorting: [{ field: 'modifiedAt', direction: 'desc' }],
+			limit: 25,
+		},
+	},
+	{
+		label: 'Tasks by priority',
+		definition: {
+			targetType: 'task',
+			filters: [
+				{
+					type: 'property',
+					operator: 'equals',
+					property: 'priority',
+					value: 'high',
+				},
+			],
+			sorting: [{ field: 'dueDate', direction: 'asc' }],
+			limit: 50,
+		},
+	},
+];

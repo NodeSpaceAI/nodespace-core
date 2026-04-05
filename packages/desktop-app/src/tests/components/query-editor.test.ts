@@ -12,12 +12,13 @@
  * - Cancel callback is called when cancel is triggered
  * - Template examples are present in the template list
  *
- * Follows the project pattern of testing extracted logic directly
- * (not rendering Svelte components) using Happy-DOM.
+ * Types, constants, and templates are imported from $lib/types/query to
+ * avoid duplication between the component and the tests.
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import type { QueryFilter, SortConfig } from '$lib/types/query';
+import type { QueryFilter, SortConfig, QueryDefinition } from '$lib/types/query';
+import { DEFAULT_QUERY, QUERY_TEMPLATE_EXAMPLES } from '$lib/types/query';
 
 // Mock the logger
 vi.mock('$lib/utils/logger', () => ({
@@ -30,74 +31,8 @@ vi.mock('$lib/utils/logger', () => ({
 }));
 
 // =============================================================================
-// Types (mirror query-editor.svelte)
-// =============================================================================
-
-export interface QueryDefinition {
-  targetType: string;
-  filters: QueryFilter[];
-  sorting?: SortConfig[];
-  limit?: number;
-}
-
-// =============================================================================
 // Logic extracted from query-editor.svelte (testable without rendering)
 // =============================================================================
-
-const DEFAULT_QUERY: QueryDefinition = {
-  targetType: 'task',
-  filters: [],
-  limit: 50,
-};
-
-const TEMPLATE_EXAMPLES: Array<{ label: string; definition: QueryDefinition }> = [
-  {
-    label: 'All incomplete tasks',
-    definition: {
-      targetType: 'task',
-      filters: [
-        {
-          type: 'property',
-          operator: 'in',
-          property: 'status',
-          value: ['open', 'in_progress'],
-        },
-      ],
-      limit: 50,
-    },
-  },
-  {
-    label: 'Recent text nodes with keyword',
-    definition: {
-      targetType: 'text',
-      filters: [
-        {
-          type: 'content',
-          operator: 'contains',
-          value: 'keyword',
-        },
-      ],
-      sorting: [{ field: 'modifiedAt', direction: 'desc' }],
-      limit: 25,
-    },
-  },
-  {
-    label: 'Tasks by priority',
-    definition: {
-      targetType: 'task',
-      filters: [
-        {
-          type: 'property',
-          operator: 'equals',
-          property: 'priority',
-          value: 'high',
-        },
-      ],
-      sorting: [{ field: 'dueDate', direction: 'asc' }],
-      limit: 50,
-    },
-  },
-];
 
 /**
  * Parse and validate a JSON string into a QueryDefinition.
@@ -413,15 +348,15 @@ describe('QueryEditor Logic', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 8. Template examples
+  // 8. Template examples (imported from shared types)
   // ---------------------------------------------------------------------------
   describe('Template examples', () => {
     it('has three template examples', () => {
-      expect(TEMPLATE_EXAMPLES).toHaveLength(3);
+      expect(QUERY_TEMPLATE_EXAMPLES).toHaveLength(3);
     });
 
     it('includes an "All incomplete tasks" template', () => {
-      const template = TEMPLATE_EXAMPLES.find((t) => t.label === 'All incomplete tasks');
+      const template = QUERY_TEMPLATE_EXAMPLES.find((t) => t.label === 'All incomplete tasks');
       expect(template).toBeDefined();
       expect(template?.definition.targetType).toBe('task');
       expect(template?.definition.filters).toHaveLength(1);
@@ -430,7 +365,7 @@ describe('QueryEditor Logic', () => {
     });
 
     it('includes a "Recent text nodes with keyword" template', () => {
-      const template = TEMPLATE_EXAMPLES.find(
+      const template = QUERY_TEMPLATE_EXAMPLES.find(
         (t) => t.label === 'Recent text nodes with keyword'
       );
       expect(template).toBeDefined();
@@ -439,21 +374,21 @@ describe('QueryEditor Logic', () => {
     });
 
     it('includes a "Tasks by priority" template', () => {
-      const template = TEMPLATE_EXAMPLES.find((t) => t.label === 'Tasks by priority');
+      const template = QUERY_TEMPLATE_EXAMPLES.find((t) => t.label === 'Tasks by priority');
       expect(template).toBeDefined();
       expect(template?.definition.targetType).toBe('task');
       expect(template?.definition.filters[0].operator).toBe('equals');
     });
 
     it('all template definitions are valid QueryDefinitions', () => {
-      for (const { label, definition } of TEMPLATE_EXAMPLES) {
+      for (const { label, definition } of QUERY_TEMPLATE_EXAMPLES) {
         const result = parseQueryJson(JSON.stringify(definition));
         expect(result.ok, `Template "${label}" should be valid`).toBe(true);
       }
     });
 
     it('applying a template sets the json text to the template definition', () => {
-      const template = TEMPLATE_EXAMPLES[0];
+      const template = QUERY_TEMPLATE_EXAMPLES[0];
       // Mirrors applyTemplate() in the component
       const newText = JSON.stringify(template.definition, null, 2);
       const result = parseQueryJson(newText);

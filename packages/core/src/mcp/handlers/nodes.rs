@@ -600,11 +600,10 @@ pub async fn handle_query_nodes(
         );
     }
 
-    // When filtering by collection, we fetch more and filter in the MCP handler.
-    // Property filters are handled by NodeService (which over-fetches internally),
-    // so we pass the actual requested limit for those.
+    // Collection post-filtering happens in this handler (after DB query), so we
+    // over-fetch to compensate. Property filters are handled inside NodeService
+    // (which removes the limit for the DB query and re-applies it after filtering).
     let effective_limit = if collection_member_ids.is_some() {
-        // Fetch more to compensate for collection post-filtering
         params.limit.map(|l| l * 3).unwrap_or(1000)
     } else {
         params.limit.unwrap_or(100)
@@ -620,10 +619,10 @@ pub async fn handle_query_nodes(
         let mut seen_fields = std::collections::HashSet::new();
         for f in filters {
             if !seen_fields.insert(f.field.clone()) {
-                tracing::warn!(
-                    "query_nodes: duplicate filter field='{}', only the last value will be used",
+                return Err(MCPError::invalid_params(format!(
+                    "Duplicate filter field '{}'. Each field may appear at most once.",
                     f.field
-                );
+                )));
             }
             let value_str = match &f.value {
                 serde_json::Value::String(s) => s.clone(),

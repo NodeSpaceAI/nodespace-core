@@ -4,97 +4,44 @@
   Allows users to create or edit a query by writing JSON directly.
   Validates that targetType exists and filters is an array before saving.
   Includes collapsible template examples for common query patterns.
+  Optional preview shows estimated result count before saving.
 -->
 
 <script lang="ts">
-  import type { QueryFilter, SortConfig } from '$lib/types/query';
+  import type { QueryDefinition } from '$lib/types/query';
+  import { DEFAULT_QUERY, QUERY_TEMPLATE_EXAMPLES } from '$lib/types/query';
   import { createLogger } from '$lib/utils/logger';
 
   const log = createLogger('QueryEditor');
-
-  /**
-   * A QueryDefinition is the subset of QueryNode fields that define the query
-   * itself — stored as node.properties on a query node.
-   */
-  export interface QueryDefinition {
-    targetType: string;
-    filters: QueryFilter[];
-    sorting?: SortConfig[];
-    limit?: number;
-  }
-
-  const DEFAULT_QUERY: QueryDefinition = {
-    targetType: 'task',
-    filters: [],
-    limit: 50,
-  };
-
-  const TEMPLATE_EXAMPLES: Array<{ label: string; definition: QueryDefinition }> = [
-    {
-      label: 'All incomplete tasks',
-      definition: {
-        targetType: 'task',
-        filters: [
-          {
-            type: 'property',
-            operator: 'in',
-            property: 'status',
-            value: ['open', 'in_progress'],
-          },
-        ],
-        limit: 50,
-      },
-    },
-    {
-      label: 'Recent text nodes with keyword',
-      definition: {
-        targetType: 'text',
-        filters: [
-          {
-            type: 'content',
-            operator: 'contains',
-            value: 'keyword',
-          },
-        ],
-        sorting: [{ field: 'modifiedAt', direction: 'desc' }],
-        limit: 25,
-      },
-    },
-    {
-      label: 'Tasks by priority',
-      definition: {
-        targetType: 'task',
-        filters: [
-          {
-            type: 'property',
-            operator: 'equals',
-            property: 'priority',
-            value: 'high',
-          },
-        ],
-        sorting: [{ field: 'dueDate', direction: 'asc' }],
-        limit: 50,
-      },
-    },
-  ];
 
   let {
     query = null,
     onSave,
     onCancel,
+    onPreview,
   }: {
     query?: QueryDefinition | null;
     onSave: (_query: QueryDefinition) => void;
     onCancel?: () => void;
+    /** Optional callback to get preview count. Returns the number of matching nodes. */
+    onPreview?: (_query: QueryDefinition) => Promise<number>;
   } = $props();
 
-  // Initialized empty; $effect sets the real value on first run and on prop changes.
+  // We intentionally capture the prop value once at mount rather than reactively
+  // tracking it, so that parent re-derivations don't overwrite in-progress edits.
+  let initialized = false;
   let jsonText = $state('');
   let errorMessage = $state<string | null>(null);
+  let previewCount = $state<number | null>(null);
+  let previewLoading = $state(false);
 
-  // Sync textarea with the query prop (runs once on mount and on every prop change)
   $effect(() => {
-    jsonText = JSON.stringify(query ?? DEFAULT_QUERY, null, 2);
+    // Read `query` reactively but only apply it on the first run.
+    const q = query;
+    if (!initialized) {
+      jsonText = JSON.stringify(q ?? DEFAULT_QUERY, null, 2);
+      initialized = true;
+    }
   });
 
   function validateAndSave(): void {
@@ -129,7 +76,7 @@
 
     const definition: QueryDefinition = {
       targetType: candidate.targetType,
-      filters: candidate.filters as QueryFilter[],
+      filters: candidate.filters as QueryDefinition['filters'],
     };
 
     if (candidate.sorting !== undefined) {
@@ -137,7 +84,7 @@
         errorMessage = 'Optional field sorting must be an array.';
         return;
       }
-      definition.sorting = candidate.sorting as SortConfig[];
+      definition.sorting = candidate.sorting as QueryDefinition['sorting'];
     }
 
     if (candidate.limit !== undefined) {
@@ -160,6 +107,51 @@
   function applyTemplate(template: QueryDefinition): void {
     jsonText = JSON.stringify(template, null, 2);
     errorMessage = null;
+    previewCount = null;
+  }
+
+  async function handlePreview(): Promise<void> {
+    if (!onPreview) return;
+    errorMessage = null;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      errorMessage = `Invalid JSON: ${message}`;
+      return;
+    }
+
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      errorMessage = 'Query must be a JSON object.';
+      return;
+    }
+
+    const candidate = parsed as Record<string, unknown>;
+    if (!candidate.targetType || typeof candidate.targetType !== 'string' || !Array.isArray(candidate.filters)) {
+      errorMessage = 'Fix targetType and filters before previewing.';
+      return;
+    }
+
+    const definition: QueryDefinition = {
+      targetType: candidate.targetType,
+      filters: candidate.filters as QueryDefinition['filters'],
+      sorting: Array.isArray(candidate.sorting) ? candidate.sorting as QueryDefinition['sorting'] : undefined,
+      limit: typeof candidate.limit === 'number' ? candidate.limit : undefined,
+    };
+
+    previewLoading = true;
+    try {
+      previewCount = await onPreview(definition);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      log.warn('QueryEditor: preview failed', { error: message });
+      previewCount = null;
+      errorMessage = `Preview failed: ${message}`;
+    } finally {
+      previewLoading = false;
+    }
   }
 </script>
 
@@ -180,6 +172,17 @@
 
     <div class="editor-actions">
       <button class="btn-save" onclick={validateAndSave}>Save</button>
+      {#if onPreview}
+        <button class="btn-preview" onclick={handlePreview} disabled={previewLoading}>
+          {#if previewLoading}
+            Previewing...
+          {:else if previewCount !== null}
+            Preview ({previewCount} {previewCount === 1 ? 'result' : 'results'})
+          {:else}
+            Preview
+          {/if}
+        </button>
+      {/if}
       {#if onCancel}
         <button class="btn-cancel" onclick={handleCancel}>Cancel</button>
       {/if}
@@ -189,7 +192,7 @@
   <details class="templates">
     <summary class="templates-summary">Query template examples</summary>
     <div class="templates-list">
-      {#each TEMPLATE_EXAMPLES as template (template.label)}
+      {#each QUERY_TEMPLATE_EXAMPLES as template (template.label)}
         <div class="template-item">
           <span class="template-label">{template.label}</span>
           <button
@@ -278,6 +281,27 @@
 
   .btn-save:hover {
     opacity: 0.9;
+  }
+
+  .btn-preview {
+    padding: 0.4375rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    background: hsl(var(--secondary));
+    color: hsl(var(--secondary-foreground));
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.375rem;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+
+  .btn-preview:hover:not(:disabled) {
+    background: hsl(var(--muted));
+  }
+
+  .btn-preview:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 
   .btn-cancel {

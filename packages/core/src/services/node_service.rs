@@ -4632,9 +4632,11 @@ impl NodeService {
             );
         }
 
-        // When property filters are present, fetch all from DB and filter in memory
+        // When property filters are present, fetch all matching rows from DB and
+        // filter in memory. Safety cap prevents accidental OOM on large datasets.
+        const PROPERTY_FILTER_FETCH_CAP: usize = 10_000;
         let (db_limit, db_offset) = if filter.property_filters.is_some() {
-            (None, None)
+            (Some(PROPERTY_FILTER_FETCH_CAP), None)
         } else {
             (filter.limit, filter.offset)
         };
@@ -4720,7 +4722,17 @@ impl NodeService {
     /// Check if a single node matches a single property filter.
     fn node_matches_property_filter(node: &Node, filter: &PropertyFilter) -> bool {
         // Extract property path from JSONPath "$.field" or "$.field.subfield"
-        let path = filter.path.strip_prefix("$.").unwrap_or(&filter.path);
+        // PropertyFilter::new() validates the "$." prefix, so strip_prefix should always succeed.
+        let path = match filter.path.strip_prefix("$.") {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    "PropertyFilter path '{}' missing expected '$.' prefix — skipping filter",
+                    filter.path
+                );
+                return false;
+            }
+        };
         let segments: Vec<&str> = path.split('.').collect();
 
         // Resolve value from namespaced properties: properties[node_type][field...]

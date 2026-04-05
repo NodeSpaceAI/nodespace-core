@@ -21,7 +21,7 @@
   import { get } from 'svelte/store';
   import TableView from '$lib/components/query/table-view.svelte';
   import QueryEditor from '$lib/components/query/query-editor.svelte';
-  import type { QueryDefinition } from '$lib/components/query/query-editor.svelte';
+  import type { QueryDefinition } from '$lib/types/query';
   import type { SchemaNode, SchemaField } from '$lib/types/schema-node';
   import type { Node } from '$lib/types';
   import { createLogger } from '$lib/utils/logger';
@@ -55,6 +55,8 @@
   let isEditMode = $state(false);
   /** Raw node used for version tracking during property updates */
   let rawNode = $state<Node | null>(null);
+  /** Error message shown to user when save fails */
+  let saveError = $state<string | null>(null);
 
   // View state — persisted per query node via QueryPreferencesService
   let activeView = $state<QueryPreferences['lastView']>('table');
@@ -160,14 +162,15 @@
       log.warn('QueryNodeViewer: cannot save — raw node not loaded');
       return;
     }
+    saveError = null;
     try {
       const updated = await backendAdapter.updateNode(rawNode.id, rawNode.version, {
         properties: {
           ...rawNode.properties,
           targetType: definition.targetType,
           filters: definition.filters,
-          ...(definition.sorting !== undefined ? { sorting: definition.sorting } : {}),
-          ...(definition.limit !== undefined ? { limit: definition.limit } : {}),
+          sorting: definition.sorting,
+          limit: definition.limit,
         },
       });
       rawNode = updated;
@@ -178,7 +181,13 @@
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       log.error('QueryNodeViewer: failed to save query definition', { error: message });
+      saveError = `Failed to save query: ${message}`;
     }
+  }
+
+  async function handleQueryPreview(definition: QueryDefinition): Promise<number> {
+    const nodes = await backendAdapter.queryNodes({ nodeType: definition.targetType });
+    return nodes.length;
   }
 
   function handleQueryCancel(): void {
@@ -236,10 +245,14 @@
 
   {#if isEditMode}
     <div class="edit-mode-wrapper">
+      {#if saveError}
+        <p class="save-error" role="alert">{saveError}</p>
+      {/if}
       <QueryEditor
         query={currentQueryDefinition}
         onSave={handleQuerySave}
         onCancel={handleQueryCancel}
+        onPreview={handleQueryPreview}
       />
     </div>
   {/if}
@@ -365,6 +378,16 @@
   .edit-mode-wrapper {
     padding: 1rem 2rem;
     border-bottom: 1px solid hsl(var(--border));
+  }
+
+  .save-error {
+    margin: 0 0 0.75rem;
+    font-size: 0.8125rem;
+    color: hsl(var(--destructive));
+    padding: 0.5rem 0.75rem;
+    background: hsl(var(--destructive) / 0.1);
+    border: 1px solid hsl(var(--destructive) / 0.3);
+    border-radius: 0.375rem;
   }
 
   .view-tabs {
