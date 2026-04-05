@@ -454,7 +454,7 @@ pub async fn get_stale_root_count(services: State<'_, AppServices>) -> Result<us
     let service_with_client = node_service.with_client(TAURI_CLIENT_ID);
     let store = service_with_client.store();
     let stale_root_ids = store
-        .get_stale_embedding_root_ids(None, 0)
+        .get_stale_embedding_root_ids(None, 0, 3)
         .await
         .map_err(|e| {
             command_error_with_details(

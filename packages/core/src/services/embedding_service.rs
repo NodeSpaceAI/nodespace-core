@@ -470,6 +470,7 @@ impl NodeEmbeddingService {
             .get_stale_embedding_root_ids(
                 Some(batch_size as i64),
                 self.config.debounce_duration_secs,
+                self.config.max_retries,
             )
             .await
             .map_err(|e| {
@@ -494,7 +495,7 @@ impl NodeEmbeddingService {
                     // Record error but continue processing
                     if let Err(record_err) = self
                         .store
-                        .record_embedding_error(&root_id, &e.to_string())
+                        .record_embedding_error(&root_id, &e.to_string(), self.config.max_retries)
                         .await
                     {
                         tracing::error!("Failed to record error for {}: {}", root_id, record_err);
@@ -518,7 +519,10 @@ impl NodeEmbeddingService {
     /// after the debounce period expires.
     pub async fn has_pending_stale_embeddings(&self) -> Result<bool, NodeServiceError> {
         self.store
-            .has_pending_stale_embeddings(self.config.debounce_duration_secs)
+            .has_pending_stale_embeddings(
+                self.config.debounce_duration_secs,
+                self.config.max_retries,
+            )
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!(
