@@ -71,7 +71,7 @@ impl StdioTransport {
     ///
     /// Returns a connected `StdioTransport` or a `TransportError` if the
     /// process could not be spawned.
-    pub async fn spawn(config: StdioTransportConfig) -> Result<Self, TransportError> {
+    pub fn spawn(config: StdioTransportConfig) -> Result<Self, TransportError> {
         info!(
             binary = %config.binary,
             args = ?config.args,
@@ -448,14 +448,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_and_is_alive() {
-        let transport = StdioTransport::spawn(echo_config()).await.unwrap();
+        let transport = StdioTransport::spawn(echo_config()).unwrap();
         assert!(transport.is_alive().await);
         transport.shutdown().await.unwrap();
     }
 
     #[tokio::test]
     async fn test_send_receive_echo() {
-        let transport = StdioTransport::spawn(echo_config()).await.unwrap();
+        let transport = StdioTransport::spawn(echo_config()).unwrap();
 
         let msg = test_request(1, "test/echo");
         transport.send(msg.clone()).await.unwrap();
@@ -474,7 +474,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_messages() {
-        let transport = StdioTransport::spawn(echo_config()).await.unwrap();
+        let transport = StdioTransport::spawn(echo_config()).unwrap();
 
         for i in 1..=5 {
             let msg = test_request(i, &format!("test/msg_{i}"));
@@ -496,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_graceful_shutdown() {
-        let transport = StdioTransport::spawn(echo_config()).await.unwrap();
+        let transport = StdioTransport::spawn(echo_config()).unwrap();
         assert!(transport.is_alive().await);
 
         transport.shutdown().await.unwrap();
@@ -507,7 +507,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown_idempotent() {
-        let transport = StdioTransport::spawn(echo_config()).await.unwrap();
+        let transport = StdioTransport::spawn(echo_config()).unwrap();
         transport.shutdown().await.unwrap();
         // Second shutdown should not error.
         transport.shutdown().await.unwrap();
@@ -515,7 +515,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_after_shutdown_returns_not_connected() {
-        let transport = StdioTransport::spawn(echo_config()).await.unwrap();
+        let transport = StdioTransport::spawn(echo_config()).unwrap();
         transport.shutdown().await.unwrap();
 
         let result = transport.send(test_request(1, "test")).await;
@@ -529,7 +529,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_receive_after_shutdown_returns_not_connected() {
-        let transport = StdioTransport::spawn(echo_config()).await.unwrap();
+        let transport = StdioTransport::spawn(echo_config()).unwrap();
         transport.shutdown().await.unwrap();
 
         let result = transport.receive().await;
@@ -551,7 +551,7 @@ mod tests {
             working_dir: None,
         };
 
-        let transport = StdioTransport::spawn(config).await.unwrap();
+        let transport = StdioTransport::spawn(config).unwrap();
 
         // Give the process a moment to exit.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -583,7 +583,7 @@ mod tests {
             working_dir: None,
         };
 
-        let transport = StdioTransport::spawn(config).await.unwrap();
+        let transport = StdioTransport::spawn(config).unwrap();
 
         let msg = test_request(42, "test/stderr_check");
         transport.send(msg).await.unwrap();
@@ -609,9 +609,9 @@ mod tests {
             working_dir: None,
         };
 
-        let result = StdioTransport::spawn(config).await;
+        let result = StdioTransport::spawn(config);
         assert!(result.is_err());
-        let err = result.err().expect("expected error");
+        let err = result.expect_err("expected error");
         assert!(
             matches!(err, TransportError::SendFailed(_)),
             "Expected SendFailed, got: {err:?}"
@@ -634,7 +634,7 @@ mod tests {
             working_dir: None,
         };
 
-        let transport = StdioTransport::spawn(config).await.unwrap();
+        let transport = StdioTransport::spawn(config).unwrap();
 
         let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
             .await
@@ -663,7 +663,7 @@ mod tests {
             working_dir: None,
         };
 
-        let transport = StdioTransport::spawn(config).await.unwrap();
+        let transport = StdioTransport::spawn(config).unwrap();
 
         let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
             .await
@@ -691,7 +691,7 @@ mod tests {
             working_dir: None,
         };
 
-        let transport = StdioTransport::spawn(config).await.unwrap();
+        let transport = StdioTransport::spawn(config).unwrap();
 
         // Should skip the invalid line and return the valid message.
         let response = tokio::time::timeout(std::time::Duration::from_secs(5), transport.receive())
@@ -709,7 +709,7 @@ mod tests {
     async fn test_concurrent_send_receive() {
         // Verify that sending multiple messages while receiving works without deadlock.
         // Uses an echo agent so every send produces a corresponding receive.
-        let transport = Arc::new(StdioTransport::spawn(echo_config()).await.unwrap());
+        let transport = Arc::new(StdioTransport::spawn(echo_config()).unwrap());
 
         let sender = Arc::clone(&transport);
         let send_handle = tokio::spawn(async move {
@@ -730,13 +730,11 @@ mod tests {
         let recv_handle = tokio::spawn(async move {
             let mut received = Vec::new();
             for _ in 0..10 {
-                let msg = tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    receiver.receive(),
-                )
-                .await
-                .expect("receive timed out")
-                .expect("receive failed");
+                let msg =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), receiver.receive())
+                        .await
+                        .expect("receive timed out")
+                        .expect("receive failed");
                 received.push(msg);
             }
             received
@@ -757,7 +755,7 @@ mod tests {
     #[tokio::test]
     async fn test_large_message_handling() {
         // Verify that a message with a large params payload (>10KB) round-trips correctly.
-        let transport = StdioTransport::spawn(echo_config()).await.unwrap();
+        let transport = StdioTransport::spawn(echo_config()).unwrap();
 
         // Build a ~15KB payload string
         let large_value = "x".repeat(15_000);
@@ -781,7 +779,10 @@ mod tests {
         assert_eq!(response.id, Some(serde_json::json!(1)));
         assert_eq!(response.method.as_deref(), Some("test/large_payload"));
         // Verify the large payload survived the round-trip
-        let data = response.params.unwrap()["data"].as_str().unwrap().to_string();
+        let data = response.params.unwrap()["data"]
+            .as_str()
+            .unwrap()
+            .to_string();
         assert_eq!(data.len(), 15_000);
 
         transport.shutdown().await.unwrap();
@@ -790,7 +791,7 @@ mod tests {
     #[tokio::test]
     async fn test_rapid_sequential_sends() {
         // Send 25 messages rapidly and verify all are received in order.
-        let transport = StdioTransport::spawn(echo_config()).await.unwrap();
+        let transport = StdioTransport::spawn(echo_config()).unwrap();
         let count = 25u64;
 
         // Send all messages without waiting for responses
@@ -824,7 +825,7 @@ mod tests {
     #[tokio::test]
     async fn test_shutdown_idempotency_with_state_checks() {
         // Calling shutdown() multiple times should not panic, error, or corrupt state.
-        let transport = StdioTransport::spawn(echo_config()).await.unwrap();
+        let transport = StdioTransport::spawn(echo_config()).unwrap();
         assert!(transport.is_alive().await);
 
         // First shutdown

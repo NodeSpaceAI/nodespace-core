@@ -404,14 +404,19 @@ pub struct AcpMessage {
     /// JSON-RPC version string (always "2.0").
     pub jsonrpc: String,
     /// Method name for requests/notifications; absent for responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub method: Option<String>,
     /// Parameters for the method.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<serde_json::Value>,
     /// Request identifier; absent for notifications.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<serde_json::Value>,
     /// Result payload for successful responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
     /// Error payload for failed responses.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<AcpError>,
 }
 
@@ -722,6 +727,9 @@ pub mod events {
 
     /// Model download progress update.
     pub const MODEL_DOWNLOAD_PROGRESS: &str = "model://download-progress";
+
+    /// Model status change (loading, loaded, error).
+    pub const MODEL_STATUS: &str = "model://status";
 
     /// ACP session state transition.
     pub const ACP_SESSION_STATE: &str = "acp://session-state";

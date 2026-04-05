@@ -210,15 +210,21 @@ describe('Client ID Service', () => {
 
   describe('Edge Cases and Error Handling', () => {
     it('should handle sessionStorage quota exceeded', () => {
-      // Mock sessionStorage.setItem to throw quota exceeded error
-      const originalSetItem = window.sessionStorage.setItem.bind(window.sessionStorage);
-      const mockSetItem = vi.fn(() => {
-        throw new Error('QuotaExceededError');
-      });
-      Object.defineProperty(window.sessionStorage, 'setItem', {
-        value: mockSetItem,
+      // Replace the entire sessionStorage with a mock that throws on setItem.
+      // Node 25+'s built-in Storage uses internal slots that can't be spied on.
+      const original = window.sessionStorage;
+      const mockStorage = {
+        getItem: vi.fn(() => null),
+        setItem: vi.fn(() => { throw new Error('QuotaExceededError'); }),
+        removeItem: vi.fn(),
+        clear: vi.fn(),
+        key: vi.fn(() => null),
+        length: 0,
+      };
+      Object.defineProperty(window, 'sessionStorage', {
+        value: mockStorage,
         writable: true,
-        configurable: true
+        configurable: true,
       });
 
       resetClientId(); // Clear first
@@ -229,10 +235,10 @@ describe('Client ID Service', () => {
       }).toThrow();
 
       // Restore
-      Object.defineProperty(window.sessionStorage, 'setItem', {
-        value: originalSetItem,
+      Object.defineProperty(window, 'sessionStorage', {
+        value: original,
         writable: true,
-        configurable: true
+        configurable: true,
       });
     });
 

@@ -6,7 +6,7 @@
     import DisplaySettings from './sections/display-settings.svelte';
     import ImportSettings from './sections/import-settings.svelte';
     import DiagnosticsSettings from './sections/diagnostics-settings.svelte';
-    import ModelManager from './ModelManager.svelte';
+    import ModelManager from './model-manager.svelte';
 
     let activeCategory = $state('database');
 

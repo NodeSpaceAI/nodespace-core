@@ -237,8 +237,11 @@ pub fn run() {
     // Initialize tracing — respects RUST_LOG env var, defaults to info for nodespace_core
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("nodespace_core=info")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new(
+                    "nodespace_core=info,nodespace_app=info,nodespace_nlp_engine=info",
+                )
+            }),
         )
         .try_init()
         .ok();
@@ -493,6 +496,7 @@ pub fn run() {
             commands::local_agent::local_agent_cancel,
             commands::local_agent::local_agent_end_session,
             commands::local_agent::local_agent_get_sessions,
+            commands::local_agent::ensure_model_ready,
             // Chat model management commands (Issue #1008)
             commands::chat_models::chat_model_list,
             commands::chat_models::chat_model_recommended,

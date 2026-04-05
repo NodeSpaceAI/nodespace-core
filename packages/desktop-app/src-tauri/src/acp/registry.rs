@@ -44,21 +44,38 @@ struct CatalogEntry {
 }
 
 /// Hardcoded v1 agent catalog.
+///
+/// Note: Claude Code and Gemini CLI are invoked via their ACP adapters
+/// (npm packages), which wrap the CLI and speak the ACP protocol over stdio.
+/// The adapters are assumed to be installed globally via `npm install -g`.
 fn agent_catalog() -> Vec<CatalogEntry> {
     vec![
         CatalogEntry {
             id: "claude-code",
             name: "Claude Code",
-            binary_name: "claude",
-            args: &["--acp"],
+            // Use the official ACP adapter for Claude Code
+            // Install with: npm install -g @agentclientprotocol/claude-agent-acp
+            binary_name: "claude-agent-acp",
+            args: &[],
             auth_method: AcpAuthMethod::AgentManaged,
         },
         CatalogEntry {
             id: "gemini-cli",
             name: "Gemini CLI",
+            // Gemini CLI supports --acp directly
             binary_name: "gemini",
             args: &["--acp"],
             auth_method: AcpAuthMethod::AgentManaged,
+        },
+        CatalogEntry {
+            id: "codex",
+            name: "Codex",
+            // Codex ACP adapter from zed-industries/codex-acp
+            binary_name: "codex-acp",
+            args: &[],
+            auth_method: AcpAuthMethod::EnvApiKey {
+                var_name: "OPENAI_API_KEY".to_string(),
+            },
         },
         CatalogEntry {
             id: "mistral-vibe",
@@ -178,6 +195,12 @@ pub struct SystemAgentRegistry {
     cache: Arc<RwLock<Option<CachedDiscovery>>>,
     /// Set to `true` once the background refresh task has been spawned.
     background_started: Arc<RwLock<bool>>,
+}
+
+impl Default for SystemAgentRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SystemAgentRegistry {
@@ -316,9 +339,9 @@ mod tests {
     // -- Catalog construction ------------------------------------------------
 
     #[test]
-    fn catalog_has_three_agents() {
+    fn catalog_has_four_agents() {
         let catalog = agent_catalog();
-        assert_eq!(catalog.len(), 3);
+        assert_eq!(catalog.len(), 4);
     }
 
     #[test]
@@ -327,7 +350,7 @@ mod tests {
         let mut ids: Vec<&str> = catalog.iter().map(|e| e.id).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 3);
+        assert_eq!(ids.len(), 4);
     }
 
     #[test]
@@ -336,6 +359,7 @@ mod tests {
         let ids: Vec<&str> = catalog.iter().map(|e| e.id).collect();
         assert!(ids.contains(&"claude-code"));
         assert!(ids.contains(&"gemini-cli"));
+        assert!(ids.contains(&"codex"));
         assert!(ids.contains(&"mistral-vibe"));
     }
 
@@ -344,8 +368,8 @@ mod tests {
         let catalog = agent_catalog();
         let entry = catalog.iter().find(|e| e.id == "claude-code").unwrap();
         assert_eq!(entry.name, "Claude Code");
-        assert_eq!(entry.binary_name, "claude");
-        assert_eq!(entry.args, &["--acp"]);
+        assert_eq!(entry.binary_name, "claude-agent-acp");
+        assert!(entry.args.is_empty());
         assert!(matches!(entry.auth_method, AcpAuthMethod::AgentManaged));
     }
 
@@ -452,7 +476,7 @@ mod tests {
     async fn registry_discover_returns_all_catalog_agents() {
         let registry = SystemAgentRegistry::new();
         let agents = registry.discover_agents().await.unwrap();
-        assert_eq!(agents.len(), 3);
+        assert_eq!(agents.len(), 4);
     }
 
     #[tokio::test]
@@ -497,7 +521,7 @@ mod tests {
         registry.refresh().await.unwrap();
         let agents = registry.discover_agents().await.unwrap();
 
-        assert_eq!(agents.len(), 3);
+        assert_eq!(agents.len(), 4);
     }
 
     #[tokio::test]

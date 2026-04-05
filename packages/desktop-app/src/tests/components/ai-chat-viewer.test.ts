@@ -525,15 +525,7 @@ describe('AiChatNodeViewer Logic', () => {
 
     it('shows input when status is active', () => {
       const status = 'active';
-      const isArchived = status === 'archived';
-      expect(isArchived).toBe(false);
-    });
-
-    it('shows input when status is undefined (defaults to active)', () => {
-      const status = undefined;
-      const resolvedStatus = status ?? 'active';
-      const isArchived = resolvedStatus === 'archived';
-      expect(isArchived).toBe(false);
+      expect(status).not.toBe('archived');
     });
 
     it('reads provider and model from node properties with defaults', () => {

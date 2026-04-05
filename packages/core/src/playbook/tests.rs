@@ -4,7 +4,7 @@
 //!          schema drift detection, PropertyChanged dual lookup, and rule parsing.
 //! Phase 2: ExecutionWorkItem, trigger_node_id helper, queue/processor behavior.
 
-mod tests {
+mod playbook_tests {
     use crate::db::events::{DomainEvent, EventEnvelope, EventMetadata, PropertyChange};
     use crate::models::Node;
     use crate::playbook::lifecycle::*;
@@ -951,7 +951,7 @@ mod tests {
             node_type: "task".to_string(),
             property_key: None,
         };
-        assert_eq!(mgr.lookup_rules(&[key.clone()]).len(), 2);
+        assert_eq!(mgr.lookup_rules(std::slice::from_ref(&key)).len(), 2);
 
         mgr.deactivate_playbook("pb1");
         let remaining = mgr.lookup_rules(&[key]);
@@ -1324,14 +1324,20 @@ mod tests {
         use crate::db::events::PlaybookExecutionContext;
         use crate::playbook::logging::MAX_CHAIN_DEPTH;
 
+        // Verify the constant is what we expect so the boundary checks below are valid
+        assert_eq!(MAX_CHAIN_DEPTH, 10);
+
         // depth=0, no playbook_context → depth+1 = 1, within limit
-        assert!(0 + 1 <= MAX_CHAIN_DEPTH);
+        let depth: u8 = 0;
+        assert!(depth < MAX_CHAIN_DEPTH);
 
         // depth=9 → depth+1 = 10, exactly at limit
-        assert!(9 + 1 <= MAX_CHAIN_DEPTH);
+        let depth: u8 = 9;
+        assert!(depth < MAX_CHAIN_DEPTH);
 
         // depth=10 → depth+1 = 11, exceeds limit
-        assert!(10_u8 + 1 > MAX_CHAIN_DEPTH);
+        let depth: u8 = 10;
+        assert!(depth >= MAX_CHAIN_DEPTH);
 
         // Verify the context carries the right depth for testing
         let ctx = PlaybookExecutionContext {

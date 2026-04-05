@@ -15,7 +15,6 @@
 /// A `tokio::sync::Mutex` serializes all inference requests so that only
 /// one generation runs at a time. This prevents Metal command-buffer
 /// collisions between concurrent requests.
-
 pub mod error;
 pub mod parser;
 pub mod types;
@@ -166,9 +165,8 @@ impl ChatEngine {
             let model_params =
                 LlamaModelParams::default().with_n_gpu_layers(self.config.n_gpu_layers);
 
-            let model = LlamaModel::load_from_file(&backend, path, &model_params).map_err(
-                |e| ChatError::ModelLoadError(format!("Failed to load model: {}", e)),
-            )?;
+            let model = LlamaModel::load_from_file(&backend, path, &model_params)
+                .map_err(|e| ChatError::ModelLoadError(format!("Failed to load model: {}", e)))?;
 
             tracing::info!(
                 "Chat model loaded: vocab_size={}, n_ctx_train={}",
@@ -234,7 +232,13 @@ impl ChatEngine {
 
             tokio::task::spawn_blocking(move || {
                 Self::generate_blocking(
-                    &state, messages, tools, temperature, max_tokens, config_n_ctx, &on_chunk,
+                    &state,
+                    messages,
+                    tools,
+                    temperature,
+                    max_tokens,
+                    config_n_ctx,
+                    &on_chunk,
                 )
             })
             .await
@@ -269,7 +273,11 @@ impl ChatEngine {
 
         // --- Apply chat template ---
         let prompt = Self::apply_chat_template(&llama.model, &messages, &tools)?;
-        tracing::debug!("Chat prompt ({} chars): {:?}", prompt.len(), &prompt[..prompt.len().min(200)]);
+        tracing::debug!(
+            "Chat prompt ({} chars): {:?}",
+            prompt.len(),
+            &prompt[..prompt.len().min(200)]
+        );
 
         // --- Tokenize ---
         let tokens = llama
@@ -321,6 +329,25 @@ impl ChatEngine {
         let model_ref = &llama.model;
         let ctx = llama.context.as_mut().expect("context was just created");
 
+        // Detect the [TOOL_CALLS] control token by trying to find it in the vocab.
+        // Ministral 2512 models use control token ID 9 for [TOOL_CALLS].
+        // We detect it by ID so we can inject the sentinel text into the parser
+        // even though token_to_str(Special::Plaintext) would strip it.
+        let tool_calls_token_id = {
+            let mut found = None;
+            // The token is typically at a low ID. Check the model's special tokens.
+            for id in 0..20i32 {
+                let token = llama_cpp_2::token::LlamaToken(id);
+                if let Ok(text) = model_ref.token_to_str(token, Special::Tokenize) {
+                    if text.contains("[TOOL_CALLS]") {
+                        found = Some(token);
+                        break;
+                    }
+                }
+            }
+            found
+        };
+
         let mut streaming_parser = StreamingToolCallParser::new();
         let mut completion_tokens: u32 = 0;
         let mut n_cur = tokens.len();
@@ -346,16 +373,46 @@ impl ChatEngine {
                 break;
             }
 
+            completion_tokens += 1;
+
+            // If this is the [TOOL_CALLS] control token, inject the sentinel
+            // text so the streaming parser can detect tool call mode.
+            if tool_calls_token_id == Some(new_token) {
+                let event = streaming_parser.feed("[TOOL_CALLS]");
+                match event {
+                    parser::StreamEvent::Buffering => {}
+                    parser::StreamEvent::TextToken(text) => on_chunk(ChatChunk::Token(text)),
+                    _ => {}
+                }
+                // Prepare batch for next token
+                batch.clear();
+                batch
+                    .add(new_token, n_cur as i32, &[0], true)
+                    .map_err(|e| ChatError::InferenceError(format!("Batch add failed: {}", e)))?;
+                ctx.decode(&mut batch)
+                    .map_err(|e| ChatError::InferenceError(format!("Decode failed: {}", e)))?;
+                n_cur += 1;
+                continue;
+            }
+
             // Convert token to text
             let piece = match model_ref.token_to_str(new_token, Special::Plaintext) {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!("Failed to decode token {}: {}", new_token.0, e);
+                    // Still need to prepare batch for next token even on decode failure
+                    batch.clear();
+                    batch
+                        .add(new_token, n_cur as i32, &[0], true)
+                        .map_err(|e| {
+                            ChatError::InferenceError(format!("Batch add failed: {}", e))
+                        })?;
+                    ctx.decode(&mut batch)
+                        .map_err(|e| ChatError::InferenceError(format!("Decode failed: {}", e)))?;
+                    n_cur += 1;
                     continue;
                 }
             };
-
-            completion_tokens += 1;
 
             // Feed into streaming parser
             let event = streaming_parser.feed(&piece);
@@ -471,10 +528,26 @@ impl ChatEngine {
                     "{}\n\n[AVAILABLE_TOOLS]{}[/AVAILABLE_TOOLS]",
                     msg.content, tools_json
                 )
+            } else if msg.role == "tool" {
+                // Format tool results as structured JSON for the model's chat
+                // template. Mistral's Jinja template handles role="tool" messages
+                // and wraps them in [TOOL_RESULTS]...[/TOOL_RESULTS] tags.
+                // We provide the content as a JSON array of call results.
+                let call_id = msg.call_id.as_deref().unwrap_or("unknown");
+                // Try to parse content as JSON; if it fails, wrap as string
+                let content_value: serde_json::Value = serde_json::from_str(&msg.content)
+                    .unwrap_or_else(|_| serde_json::Value::String(msg.content.clone()));
+                serde_json::to_string(&serde_json::json!([{
+                    "call_id": call_id,
+                    "content": content_value,
+                }]))
+                .unwrap_or_else(|_| msg.content.clone())
             } else {
                 msg.content.clone()
             };
 
+            // Tool results are already formatted with [TOOL_RESULTS] tags,
+            // so we set the role to "tool" and let the template pass it through.
             let chat_msg = LlamaChatMessage::new(msg.role.clone(), content)
                 .map_err(|e| ChatError::TemplateError(format!("Invalid chat message: {}", e)))?;
             chat_messages.push(chat_msg);
@@ -614,8 +687,10 @@ mod tests {
 
     #[test]
     fn test_chat_config_validation_error() {
-        let mut config = ChatConfig::default();
-        config.n_ctx = 0;
+        let config = ChatConfig {
+            n_ctx: 0,
+            ..Default::default()
+        };
         let result = ChatEngine::new(config);
         assert!(result.is_err());
     }

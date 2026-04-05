@@ -414,6 +414,8 @@ export const AGENT_EVENTS = {
 	LOCAL_AGENT_ERROR: 'local-agent://error',
 	/** Model download progress update. */
 	MODEL_DOWNLOAD_PROGRESS: 'model://download-progress',
+	/** Model status change (downloading, loading, ready). */
+	MODEL_STATUS: 'model://status',
 	/** ACP session state transition. */
 	ACP_SESSION_STATE: 'acp://session-state',
 	/** Message received from an ACP agent. */

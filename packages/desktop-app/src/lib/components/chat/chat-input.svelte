@@ -4,7 +4,7 @@
     disabled = false,
     placeholder = 'Type a message...',
   }: {
-    onSend: (content: string) => void;
+    onSend: (_content: string) => void;
     disabled?: boolean;
     placeholder?: string;
   } = $props();

@@ -929,7 +929,7 @@ mod tests {
             node_service
                 .create_node(schema_node)
                 .await
-                .expect(&format!("Failed to create schema '{}'", type_name));
+                .unwrap_or_else(|_| panic!("Failed to create schema '{}'", type_name));
         }
 
         // Use custom type names (prefixed "vt_") to avoid collisions
@@ -1341,7 +1341,7 @@ mod tests {
             node_service
                 .create_node(node)
                 .await
-                .expect(&format!("Failed to create playbook '{}'", id));
+                .unwrap_or_else(|_| panic!("Failed to create playbook '{}'", id));
         }
 
         #[tokio::test]
@@ -1490,7 +1490,7 @@ mod tests {
             node_service
                 .create_node(schema_node)
                 .await
-                .expect(&format!("Failed to create schema '{}'", type_name));
+                .unwrap_or_else(|_| panic!("Failed to create schema '{}'", type_name));
         }
 
         #[tokio::test]

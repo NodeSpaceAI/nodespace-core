@@ -165,13 +165,18 @@ fn def_search_semantic() -> ToolDefinition {
 fn def_get_node() -> ToolDefinition {
     ToolDefinition {
         name: "get_node".into(),
-        description: "Get full content of a node by its ID".into(),
+        description: "Get a node by ID. Use format=markdown to include all descendants as a readable document.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
                 "id": {
                     "type": "string",
                     "description": "Node ID to retrieve"
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["json", "markdown"],
+                    "description": "Output format: json (default) returns node fields, markdown returns the node and all descendants as a readable document"
                 }
             },
             "required": ["id"]
@@ -400,20 +405,54 @@ impl GraphToolExecutor {
         args: Value,
     ) -> Result<ToolResult, ToolError> {
         let id = require_str(&args, "id", "get_node")?;
+        let format = optional_str(&args, "format").unwrap_or_else(|| "json".to_string());
 
         let ns = self.node_service().await?;
 
-        match ns.get_node(&id).await {
-            Ok(Some(node)) => Ok(ok_result(tool_call_id, "get_node", node_full(&node))),
-            Ok(None) => Ok(error_result(
-                tool_call_id,
-                "get_node",
-                &format!("Node '{}' not found", id),
-            )),
-            Err(e) => Err(ToolError::ExecutionFailed(format!(
-                "get_node failed: {}",
-                e
-            ))),
+        if format == "markdown" {
+            // Reuse the MCP handler's markdown export (single source of truth)
+            use nodespace_core::mcp::handlers::markdown::handle_get_markdown_from_node_id;
+
+            let params = json!({
+                "node_id": id,
+                "include_children": true,
+                "include_node_ids": false,
+            });
+            match handle_get_markdown_from_node_id(&ns, params).await {
+                Ok(result) => {
+                    let md = result
+                        .get("content")
+                        .and_then(|c| c.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|item| item.get("text"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("");
+                    let truncated = truncate(md, BODY_TRUNCATE_FULL);
+                    Ok(ok_result(
+                        tool_call_id,
+                        "get_node",
+                        json!({ "markdown": truncated }),
+                    ))
+                }
+                Err(e) => Ok(error_result(
+                    tool_call_id,
+                    "get_node",
+                    &format!("Failed to render markdown: {:?}", e),
+                )),
+            }
+        } else {
+            match ns.get_node(&id).await {
+                Ok(Some(node)) => Ok(ok_result(tool_call_id, "get_node", node_full(&node))),
+                Ok(None) => Ok(error_result(
+                    tool_call_id,
+                    "get_node",
+                    &format!("Node '{}' not found", id),
+                )),
+                Err(e) => Err(ToolError::ExecutionFailed(format!(
+                    "get_node failed: {}",
+                    e
+                ))),
+            }
         }
     }
 

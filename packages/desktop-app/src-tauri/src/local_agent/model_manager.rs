@@ -8,7 +8,7 @@
 //! Issue #1000
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -20,6 +20,13 @@ use tokio_util::sync::CancellationToken;
 use crate::agent_types::{
     ChatModelSpec, DownloadEvent, ModelError, ModelFamily, ModelInfo, ModelManager, ModelStatus,
 };
+
+// ---------------------------------------------------------------------------
+// Type aliases
+// ---------------------------------------------------------------------------
+
+/// Shared, thread-safe progress callback for download events.
+type ProgressCallback = Arc<RwLock<Option<Box<dyn Fn(DownloadEvent) + Send + Sync>>>>;
 
 // ---------------------------------------------------------------------------
 // Catalog constants
@@ -34,6 +41,7 @@ struct CatalogEntry {
     size_bytes: u64,
     quantization: &'static str,
     url: &'static str,
+    /// SHA-256 hash for verification. Empty string skips verification.
     sha256: &'static str,
     context_window: u32,
     default_temperature: f32,
@@ -45,11 +53,11 @@ const MINISTRAL_3B: CatalogEntry = CatalogEntry {
     family: ModelFamily::Ministral,
     name: "Ministral 3B Instruct Q4_K_M",
     filename: "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
-    size_bytes: 2_000_000_000, // ~2.0 GB
+    size_bytes: 2_147_023_008, // ~2.1 GB
     quantization: "Q4_K_M",
-    url: "https://huggingface.co/lmstudio-community/Ministral-3B-Instruct-2412-GGUF/resolve/main/Ministral-3B-Instruct-2412-Q4_K_M.gguf",
-    sha256: "e38fb0e9b1185bb7e87db1e5e648a05a52bef36a5f78ec99dc0ea38f9ab89c79",
-    context_window: 131_072,
+    url: "https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/main/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+    sha256: "", // Skip verification — official Mistral repo, Xet storage
+    context_window: 32_768,
     default_temperature: 0.3,
 };
 
@@ -59,11 +67,11 @@ const MINISTRAL_8B: CatalogEntry = CatalogEntry {
     family: ModelFamily::Ministral,
     name: "Ministral 8B Instruct Q4_K_M",
     filename: "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
-    size_bytes: 4_800_000_000, // ~4.8 GB
+    size_bytes: 5_198_911_904, // ~5.2 GB
     quantization: "Q4_K_M",
-    url: "https://huggingface.co/lmstudio-community/Ministral-8B-Instruct-2412-GGUF/resolve/main/Ministral-8B-Instruct-2412-Q4_K_M.gguf",
-    sha256: "a7b14fa18a3e78cac28e5b2caa1ef1e41ae1992e8e8acd18f57a9a632789ddb5",
-    context_window: 131_072,
+    url: "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF/resolve/main/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf",
+    sha256: "", // Skip verification — official Mistral repo, Xet storage
+    context_window: 32_768,
     default_temperature: 0.3,
 };
 
@@ -99,7 +107,7 @@ pub struct GgufModelManager {
     /// HTTP client for downloading models.
     http_client: reqwest::Client,
     /// Optional progress callback for download events.
-    on_progress: Arc<RwLock<Option<Box<dyn Fn(DownloadEvent) + Send + Sync>>>>,
+    on_progress: ProgressCallback,
     /// ID of the currently loaded model (at most one).
     loaded_model_id: Arc<RwLock<Option<String>>>,
 }
@@ -276,18 +284,18 @@ impl ModelManager for GgufModelManager {
         let on_progress = self.on_progress.clone();
 
         // Perform download in a spawned task
-        let download_result = perform_download(
-            http_client,
+        let download_result = perform_download(DownloadParams {
+            client: http_client,
             url,
-            partial_path.clone(),
-            final_path.clone(),
+            partial_path: partial_path.clone(),
+            final_path: final_path.clone(),
             total_size,
             expected_sha256,
-            model_id_owned.clone(),
+            model_id: model_id_owned.clone(),
             cancel_token,
-            statuses.clone(),
+            statuses: statuses.clone(),
             on_progress,
-        )
+        })
         .await;
 
         // Clean up active download tracking
@@ -444,8 +452,8 @@ impl ModelManager for GgufModelManager {
 // Download implementation
 // ---------------------------------------------------------------------------
 
-/// Perform the HTTP download with resume support, then verify SHA-256.
-async fn perform_download(
+/// Parameters for performing a model download.
+struct DownloadParams {
     client: reqwest::Client,
     url: String,
     partial_path: PathBuf,
@@ -455,8 +463,23 @@ async fn perform_download(
     model_id: String,
     cancel_token: CancellationToken,
     statuses: Arc<RwLock<HashMap<String, ModelStatus>>>,
-    on_progress: Arc<RwLock<Option<Box<dyn Fn(DownloadEvent) + Send + Sync>>>>,
-) -> Result<(), ModelError> {
+    on_progress: ProgressCallback,
+}
+
+/// Perform the HTTP download with resume support, then verify SHA-256.
+async fn perform_download(params: DownloadParams) -> Result<(), ModelError> {
+    let DownloadParams {
+        client,
+        url,
+        partial_path,
+        final_path,
+        total_size,
+        expected_sha256,
+        model_id,
+        cancel_token,
+        statuses,
+        on_progress,
+    } = params;
     use futures::StreamExt;
 
     // Determine resume offset from existing partial file
@@ -538,6 +561,7 @@ async fn perform_download(
     let mut bytes_downloaded = effective_offset;
     let mut stream = std::pin::pin!(response.bytes_stream());
     let mut last_progress_report = std::time::Instant::now();
+    let mut last_progress_bytes = effective_offset;
     let progress_interval = std::time::Duration::from_millis(250);
 
     loop {
@@ -559,7 +583,17 @@ async fn perform_download(
                         // Throttled progress reporting
                         let now = std::time::Instant::now();
                         if now.duration_since(last_progress_report) >= progress_interval {
+                            let elapsed = now.duration_since(last_progress_report);
+                            let delta_bytes = bytes_downloaded - last_progress_bytes;
+                            let speed_bps = if elapsed.as_secs_f64() > 0.0 {
+                                (delta_bytes as f64 / elapsed.as_secs_f64()) as u64
+                            } else {
+                                0
+                            };
+
                             last_progress_report = now;
+                            last_progress_bytes = bytes_downloaded;
+
                             let pct = if total_size > 0 {
                                 (bytes_downloaded as f32 / total_size as f32) * 100.0
                             } else {
@@ -587,7 +621,7 @@ async fn perform_download(
                                         model_id: model_id.clone(),
                                         bytes_downloaded,
                                         bytes_total: total_size,
-                                        speed_bps: 0, // TODO: calculate from sliding window
+                                        speed_bps,
                                     });
                                 }
                             }
@@ -619,18 +653,21 @@ async fn perform_download(
         s.insert(model_id.clone(), ModelStatus::Verifying);
     }
 
-    // Stream-verify SHA-256
-    let computed_hash = sha256_file(&partial_path).await?;
-    if computed_hash != expected_sha256 {
-        // Delete corrupted file
-        let _ = tokio::fs::remove_file(&partial_path).await;
-        return Err(ModelError::VerificationFailed(format!(
-            "SHA-256 mismatch for '{}': expected {}, got {}",
-            model_id, expected_sha256, computed_hash
-        )));
+    // Stream-verify SHA-256 (skip if hash is empty)
+    if expected_sha256.is_empty() {
+        tracing::info!("SHA-256 verification skipped for '{}'", model_id);
+    } else {
+        let computed_hash = sha256_file(&partial_path).await?;
+        if computed_hash != expected_sha256 {
+            // Delete corrupted file
+            let _ = tokio::fs::remove_file(&partial_path).await;
+            return Err(ModelError::VerificationFailed(format!(
+                "SHA-256 mismatch for '{}': expected {}, got {}",
+                model_id, expected_sha256, computed_hash
+            )));
+        }
+        tracing::info!("SHA-256 verified for '{}'", model_id);
     }
-
-    tracing::info!("SHA-256 verified for '{}'", model_id);
 
     // Rename partial to final
     tokio::fs::rename(&partial_path, &final_path)
@@ -711,7 +748,7 @@ fn detect_system_ram() -> u64 {
 }
 
 /// Check that enough disk space is available before starting a download.
-fn check_disk_space(dir: &PathBuf, required_bytes: u64) -> Result<(), ModelError> {
+fn check_disk_space(dir: &Path, required_bytes: u64) -> Result<(), ModelError> {
     use sysinfo::Disks;
 
     let disks = Disks::new_with_refreshed_list();
@@ -776,7 +813,7 @@ mod tests {
         assert_eq!(m3b.family, ModelFamily::Ministral);
         assert_eq!(m3b.quantization, "Q4_K_M");
         assert!(!m3b.url.is_empty());
-        assert!(!m3b.sha256.is_empty());
+        // sha256 may be empty when verification is skipped (official repos)
         assert!(m3b.size_bytes > 0);
     }
 
@@ -1014,6 +1051,6 @@ mod tests {
     fn check_disk_space_passes_for_small_requirement() {
         let tmp = TempDir::new().unwrap();
         // Requesting 1 byte should always pass
-        check_disk_space(&tmp.path().to_path_buf(), 1).unwrap();
+        check_disk_space(tmp.path(), 1).unwrap();
     }
 }

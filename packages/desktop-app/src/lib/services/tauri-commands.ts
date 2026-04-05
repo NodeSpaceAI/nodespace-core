@@ -33,9 +33,6 @@ import type {
   ModelInfo,
 } from '$lib/types/agent-types';
 import { invoke } from '@tauri-apps/api/core';
-import { createLogger } from '$lib/utils/logger';
-
-const log = createLogger('TauriCommands');
 
 // Re-export types for convenience
 export type {
@@ -350,6 +347,16 @@ export async function chatModelLoad(modelId: string): Promise<void> {
 export async function chatModelUnload(): Promise<void> {
   if (!isTauri()) return;
   return invoke<void>('chat_model_unload');
+}
+
+/**
+ * Ensure a model is downloaded, loaded, and the inference engine is ready.
+ * Handles full lifecycle: download → load → engine swap.
+ * Emits model://status and model://download-progress events during the process.
+ */
+export async function ensureModelReady(modelId: string): Promise<void> {
+  if (!isTauri()) return;
+  return invoke<void>('ensure_model_ready', { modelId });
 }
 
 // ============================================================================

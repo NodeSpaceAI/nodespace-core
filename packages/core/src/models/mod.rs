@@ -93,7 +93,8 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
     let mut node = node;
     flatten_properties_for_api(&mut node);
 
-    match node.node_type.as_str() {
+    let node_id = node.id.clone();
+    let mut value = match node.node_type.as_str() {
         "task" => {
             let task = TaskNode::from_node(node).map_err(|e| e.to_string())?;
             serde_json::to_value(task)
@@ -104,7 +105,17 @@ pub fn node_to_typed_value(node: Node) -> Result<serde_json::Value, String> {
         }
         _ => serde_json::to_value(node),
     }
-    .map_err(|e| format!("Failed to serialize node: {}", e))
+    .map_err(|e| format!("Failed to serialize node: {}", e))?;
+
+    // Add nodespace:// URI for rich rendering in clients
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "uri".to_string(),
+            serde_json::Value::String(format!("nodespace://{}", node_id)),
+        );
+    }
+
+    Ok(value)
 }
 
 /// Flatten namespaced properties for API response (Issue #838)

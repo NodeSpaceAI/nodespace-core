@@ -14,9 +14,13 @@ import type {
   LocalAgentStatus,
   ToolExecutionRecord,
   AgentTurnResult,
+  AcpMessage,
+  AcpSessionState,
 } from '$lib/types/agent-types';
-import { AGENT_EVENTS } from '$lib/types/agent-types';
+import { AGENT_EVENTS, isAcpSessionFailed } from '$lib/types/agent-types';
 import * as tauriCommands from '$lib/services/tauri-commands';
+import { agentStore, isLocalAgent, localAgentModelId } from '$lib/stores/agent-store.svelte';
+import { statusBar } from '$lib/stores/status-bar';
 
 const log = createLogger('ChatStore');
 
@@ -65,6 +69,48 @@ const MOCK_TOOL_CALLS: ToolExecutionRecord[] = [
 ];
 
 // ---------------------------------------------------------------------------
+// ACP Response Extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract text from an ACP message.
+ *
+ * ACP agents stream `session/update` notifications:
+ *   { method: "session/update", params: { update: { sessionUpdate: "agent_message_chunk",
+ *     content: { type: "text", text: "..." } } } }
+ *
+ * The final `session/prompt` response:
+ *   { result: { stopReason: "end_turn", usage: {...} } }
+ */
+function extractAcpText(msg: Record<string, unknown>): { text: string | null; done: boolean } {
+  // Streaming session/update notification
+  if (msg['method'] === 'session/update' && msg['params']) {
+    const params = msg['params'] as Record<string, unknown>;
+    const update = params['update'] as Record<string, unknown> | undefined;
+    if (update) {
+      const updateType = update['sessionUpdate'] as string;
+      if (updateType === 'agent_message_chunk') {
+        const content = update['content'] as Record<string, unknown> | undefined;
+        if (content && typeof content['text'] === 'string') {
+          return { text: content['text'], done: false };
+        }
+      }
+    }
+    return { text: null, done: false };
+  }
+
+  // Final session/prompt response (has result.stopReason)
+  if (msg['result']) {
+    const result = msg['result'] as Record<string, unknown>;
+    if (result['stopReason']) {
+      return { text: null, done: true };
+    }
+  }
+
+  return { text: null, done: false };
+}
+
+// ---------------------------------------------------------------------------
 // ChatStore
 // ---------------------------------------------------------------------------
 
@@ -76,6 +122,15 @@ class ChatStore {
 
   private streamAbortController: AbortController | null = null;
   private eventUnlisteners: Array<() => void> = [];
+  private acpSessionId: string | null = null;
+  private acpAgentIdForSession: string | null = null;
+  private modelReadySessionCreated = false;
+
+  /** Determine if the currently selected agent is an ACP agent (not local). */
+  private get isAcpAgent(): boolean {
+    const id = agentStore.selectedAgentId;
+    return id !== null && !isLocalAgent(id);
+  }
 
   /** Send a user message and get a response (real or mock). */
   async sendMessage(content: string): Promise<void> {
@@ -103,17 +158,234 @@ class ChatStore {
     this.messages = [...this.messages, userMessage];
 
     if (isTauri()) {
-      await this.sendViaTauri(content.trim());
+      if (this.isAcpAgent) {
+        await this.sendViaTauriAcp(content.trim());
+      } else {
+        await this.sendViaTauriLocal(content.trim());
+      }
     } else {
       await this.sendViaMock(content.trim());
     }
   }
 
-  /** Send via real Tauri invocation with event-based streaming. */
-  private async sendViaTauri(content: string): Promise<void> {
+  /** Send via ACP agent (external subprocess via Tauri). */
+  private async sendViaTauriAcp(content: string): Promise<void> {
+    const agentId = agentStore.selectedAgentId!;
+
+    // Start ACP session if not already active for this agent
+    if (!this.acpSessionId || this.acpAgentIdForSession !== agentId) {
+      // Tear down any stale session for a different agent
+      if (this.acpSessionId) {
+        log.debug('Ending stale ACP session for agent switch', {
+          old: this.acpAgentIdForSession,
+          new: agentId,
+        });
+        tauriCommands.acpEndSession(this.acpSessionId).catch((err) => {
+          log.warn('Failed to end stale ACP session', { error: String(err) });
+        });
+        this.acpSessionId = null;
+        this.acpAgentIdForSession = null;
+      }
+
+      try {
+        log.info('Starting ACP session', { agentId });
+        this.acpSessionId = await tauriCommands.acpStartSession(agentId);
+        this.acpAgentIdForSession = agentId;
+        log.info('ACP session started', { sessionId: this.acpSessionId, agentId });
+      } catch (err) {
+        let errorMsg = 'Failed to start ACP session';
+        if (err instanceof Error) {
+          errorMsg = err.message;
+        } else if (typeof err === 'object' && err !== null) {
+          errorMsg = JSON.stringify(err);
+        } else if (typeof err === 'string') {
+          errorMsg = err;
+        }
+        log.error('ACP session start failed', { agentId, error: errorMsg, fullError: err });
+        this.error = `Failed to start ${agentStore.selectedAgent?.name ?? agentId}: ${errorMsg}`;
+        return;
+      }
+    }
+
+    this.isStreaming = true;
+
+    // Add placeholder for the assistant response
+    const assistantMessage: DisplayMessage = {
+      id: generateId(),
+      role: 'assistant',
+      content: '',
+      toolExecutions: [],
+      timestamp: Date.now(),
+    };
+    this.messages = [...this.messages, assistantMessage];
+
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+
+      // Accumulate streamed text chunks from session/update notifications
+      let accumulatedText = '';
+
+      const unlistenMessage = await listen<AcpMessage>(AGENT_EVENTS.ACP_AGENT_MESSAGE, (event) => {
+        const msg = event.payload as unknown as Record<string, unknown>;
+        log.debug('ACP agent message received', { raw: msg });
+
+        // Handle error responses
+        const error = msg['error'] as Record<string, unknown> | undefined;
+        if (error) {
+          const errorString = JSON.stringify(error);
+          let errText = 'Agent error';
+          if (typeof error['message'] === 'string') {
+            errText = `Agent error: ${error['message']}`;
+            if (error['code']) errText += ` (code ${error['code']})`;
+          } else {
+            errText = `Agent error: ${errorString}`;
+          }
+          log.error('ACP agent returned error', { error, errorString, fullMessage: msg });
+          this.error = errText;
+          return;
+        }
+
+        const { text, done } = extractAcpText(msg);
+        if (text !== null) {
+          accumulatedText += text;
+          assistantMessage.content = accumulatedText;
+          this.messages = [...this.messages.slice(0, -1), { ...assistantMessage }];
+        }
+        if (done) {
+          log.info('ACP turn completed');
+        }
+      });
+      this.eventUnlisteners.push(unlistenMessage);
+
+      // Listen for session state changes (for error reporting)
+      const unlistenState = await listen<AcpSessionState>(AGENT_EVENTS.ACP_SESSION_STATE, (event) => {
+        const state = event.payload;
+        log.debug('ACP session state', { state });
+        if (isAcpSessionFailed(state)) {
+          log.error('ACP session failed', { reason: state.reason });
+          this.error = `Agent session failed: ${state.reason}`;
+        }
+      });
+      this.eventUnlisteners.push(unlistenState);
+
+      // Fire and wait — response arrives via event above
+      await tauriCommands.acpSendMessage(this.acpSessionId!, content);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'ACP send failed';
+      log.error('ACP send error', { error: errorMsg });
+      this.error = errorMsg;
+    } finally {
+      this.cleanupEventListeners();
+      this.isStreaming = false;
+    }
+  }
+
+  /** Send via real Tauri invocation with event-based streaming (local agent). */
+  private async sendViaTauriLocal(content: string): Promise<void> {
     if (!this.currentSessionId) return;
 
     this.isStreaming = true;
+
+    // Ensure the model is downloaded, loaded, and ready for inference.
+    // This handles the full lifecycle: download → load → engine swap.
+    const agentId = agentStore.selectedAgentId;
+    if (agentId && isLocalAgent(agentId)) {
+      const modelId = localAgentModelId(agentId);
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+
+        // Add a progress placeholder message in the chat area
+        const progressMessage: DisplayMessage = {
+          id: generateId(),
+          role: 'assistant',
+          content: 'Preparing model...',
+          toolExecutions: [],
+          timestamp: Date.now(),
+        };
+        this.messages = [...this.messages, progressMessage];
+
+        // Listen for download progress — update both chat message and status bar
+        interface DownloadProgress {
+          bytes_downloaded: number;
+          bytes_total: number;
+          speed_bps: number;
+        }
+        const unlistenDownload = await listen<DownloadProgress>(
+          AGENT_EVENTS.MODEL_DOWNLOAD_PROGRESS,
+          (event) => {
+            const { bytes_downloaded, bytes_total, speed_bps } = event.payload;
+            const pct = Math.round((bytes_downloaded / bytes_total) * 100);
+            const mbDown = (bytes_downloaded / 1_000_000).toFixed(0);
+            const mbTotal = (bytes_total / 1_000_000).toFixed(0);
+
+            // ETA calculation
+            let eta = '';
+            if (speed_bps > 0) {
+              const remainingBytes = bytes_total - bytes_downloaded;
+              const remainingSec = Math.ceil(remainingBytes / speed_bps);
+              if (remainingSec < 60) {
+                eta = ` — ~${remainingSec}s remaining`;
+              } else {
+                eta = ` — ~${Math.ceil(remainingSec / 60)} min remaining`;
+              }
+            }
+
+            progressMessage.content = `Downloading model for first use... ${mbDown}/${mbTotal} MB (${pct}%)${eta}`;
+            this.messages = [...this.messages.slice(0, -1), { ...progressMessage }];
+            statusBar.show(`Downloading model... ${mbDown}/${mbTotal} MB${eta}`, pct);
+          }
+        );
+
+        // Listen for model status changes (loading, ready)
+        interface ModelStatusEvent {
+          status: string;
+          message?: string;
+        }
+        const unlistenStatus = await listen<ModelStatusEvent>(
+          AGENT_EVENTS.MODEL_STATUS,
+          (event) => {
+            const { status } = event.payload;
+            if (status === 'loading') {
+              progressMessage.content = 'Loading model... this may take a moment on first use.';
+              this.messages = [...this.messages.slice(0, -1), { ...progressMessage }];
+              statusBar.show('Loading model...');
+            } else if (status === 'ready') {
+              statusBar.success('Model ready');
+            }
+          }
+        );
+
+        statusBar.show(`Preparing ${modelId}...`);
+        try {
+          await tauriCommands.ensureModelReady(modelId);
+        } finally {
+          unlistenDownload();
+          unlistenStatus();
+        }
+
+        // Remove the progress placeholder — real response will replace it
+        this.messages = this.messages.filter((m) => m.id !== progressMessage.id);
+
+        // On first load, engine swap drops old sessions — re-create once.
+        // On subsequent messages the model is already loaded so skip this.
+        if (!this.modelReadySessionCreated) {
+          const newSessionId = await tauriCommands.localAgentNewSession(modelId);
+          this.currentSessionId = newSessionId;
+          this.modelReadySessionCreated = true;
+          log.info('Session created after model ready', { sessionId: newSessionId });
+        }
+      } catch (err) {
+        // Tauri command errors may be strings, Error objects, or { message: string }
+        const msg = typeof err === 'string' ? err
+          : err instanceof Error ? err.message
+          : (err as Record<string, unknown>)?.message as string ?? JSON.stringify(err);
+        log.error('Model preparation failed', { modelId, error: msg, raw: err });
+        this.error = msg;
+        this.isStreaming = false;
+        statusBar.error(`Model error: ${msg}`);
+        return;
+      }
+    }
 
     // Prepare assistant message placeholder
     const assistantMessage: DisplayMessage = {
@@ -183,7 +455,7 @@ class ChatStore {
   }
 
   /** Send via mock streaming (used in dev mode without Tauri). */
-  private async sendViaMock(content: string): Promise<void> {
+  private async sendViaMock(_content: string): Promise<void> {
     this.isStreaming = true;
     this.streamAbortController = new AbortController();
 
@@ -237,10 +509,15 @@ class ChatStore {
 
   /** Cancel the current streaming response. */
   cancelStreaming(): void {
-    if (isTauri() && this.currentSessionId) {
-      tauriCommands.localAgentCancel(this.currentSessionId).catch((err) => {
-        log.error('Failed to cancel agent generation', { error: String(err) });
-      });
+    if (isTauri()) {
+      if (this.isAcpAgent) {
+        // ACP has no cancel mid-response — just clean up listeners
+        log.debug('ACP cancel: cleaning up listeners');
+      } else if (this.currentSessionId) {
+        tauriCommands.localAgentCancel(this.currentSessionId).catch((err) => {
+          log.error('Failed to cancel agent generation', { error: String(err) });
+        });
+      }
     }
     if (this.streamAbortController) {
       this.streamAbortController.abort();
@@ -252,14 +529,29 @@ class ChatStore {
   async createSession(modelId?: string): Promise<string> {
     if (isTauri()) {
       try {
-        const sessionId = await tauriCommands.localAgentNewSession(
-          modelId ?? 'ministral-3b-q4km'
-        );
-        this.currentSessionId = sessionId;
-        this.messages = [];
-        this.error = null;
-        log.info('Created new Tauri chat session', { sessionId, modelId });
-        return sessionId;
+        if (this.isAcpAgent) {
+          // ACP path: session is lazy-started on first sendMessage
+          // Just reset conversation state here
+          const sessionId = `acp-pending-${Date.now()}`;
+          this.currentSessionId = sessionId;
+          this.messages = [];
+          this.error = null;
+          log.info('Prepared ACP chat session (lazy start)', { agentId: agentStore.selectedAgentId });
+          return sessionId;
+        } else {
+          // Local agent path — extract model ID from selected agent
+          const selectedId = agentStore.selectedAgentId;
+          const resolvedModelId = modelId
+            ?? (selectedId && isLocalAgent(selectedId) ? localAgentModelId(selectedId) : 'ministral-3b-q4km');
+          const sessionId = await tauriCommands.localAgentNewSession(
+            resolvedModelId
+          );
+          this.currentSessionId = sessionId;
+          this.messages = [];
+          this.error = null;
+          log.info('Created new Tauri chat session', { sessionId, modelId });
+          return sessionId;
+        }
       } catch (err) {
         log.error('Failed to create Tauri session, falling back to mock', {
           error: String(err),
@@ -287,16 +579,26 @@ class ChatStore {
   reset(): void {
     this.cancelStreaming();
 
-    if (isTauri() && this.currentSessionId) {
-      tauriCommands.localAgentEndSession(this.currentSessionId).catch((err) => {
-        log.error('Failed to end session during reset', { error: String(err) });
-      });
+    if (isTauri()) {
+      if (this.acpSessionId) {
+        tauriCommands.acpEndSession(this.acpSessionId).catch((err) => {
+          log.error('Failed to end ACP session during reset', { error: String(err) });
+        });
+        this.acpSessionId = null;
+        this.acpAgentIdForSession = null;
+      }
+      if (!this.isAcpAgent && this.currentSessionId) {
+        tauriCommands.localAgentEndSession(this.currentSessionId).catch((err) => {
+          log.error('Failed to end local session during reset', { error: String(err) });
+        });
+      }
     }
 
     this.messages = [];
     this.isStreaming = false;
     this.currentSessionId = null;
     this.error = null;
+    this.modelReadySessionCreated = false;
   }
 
   /** Clean up Tauri event listeners. */

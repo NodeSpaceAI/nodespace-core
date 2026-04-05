@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_types::{
@@ -25,13 +25,13 @@ use crate::local_agent::prompt_templates;
 // ---------------------------------------------------------------------------
 
 /// Maximum number of tool-call iterations per turn.
-const MAX_TOOL_ITERATIONS: usize = 5;
+const MAX_TOOL_ITERATIONS: usize = 2;
 
 /// Total token budget for the context window.
-const TOTAL_TOKEN_BUDGET: u32 = 8_000;
+const TOTAL_TOKEN_BUDGET: u32 = 32_000;
 
 /// Tokens reserved for the system prompt and tool definitions.
-const SYSTEM_PROMPT_BUDGET: u32 = 2_000;
+const SYSTEM_PROMPT_BUDGET: u32 = 4_000;
 
 /// Tokens available for conversation history.
 const HISTORY_TOKEN_BUDGET: u32 = TOTAL_TOKEN_BUDGET - SYSTEM_PROMPT_BUDGET;
@@ -94,12 +94,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             .await
             .unwrap_or_default();
 
-        // Build system prompt with tool definitions
-        let system_content = format!(
-            "{}{}",
-            prompt_templates::system_prompt(),
-            prompt_templates::format_tool_definitions(&tools),
-        );
+        // System prompt only — tool definitions are injected by the model's
+        // built-in chat template via [AVAILABLE_TOOLS] in apply_chat_template().
+        // Do NOT duplicate tools here or the model gets confused.
+        let system_content = prompt_templates::system_prompt();
 
         let mut all_tool_executions: Vec<ToolExecutionRecord> = Vec::new();
         let mut total_usage = InferenceUsage {
@@ -130,9 +128,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             on_status(LocalAgentStatus::Thinking);
             session.status = LocalAgentStatus::Thinking;
 
-            // Collect chunks to parse tool calls from the response
-            let collected_chunks: Arc<Mutex<Vec<StreamingChunk>>> =
-                Arc::new(Mutex::new(Vec::new()));
+            // Collect chunks to parse tool calls from the response.
+            // Uses std::sync::Mutex (not tokio) because the callback runs on
+            // a blocking thread inside spawn_blocking.
+            let collected_chunks: Arc<std::sync::Mutex<Vec<StreamingChunk>>> =
+                Arc::new(std::sync::Mutex::new(Vec::new()));
             let collected_for_cb = Arc::clone(&collected_chunks);
             let on_chunk_clone = Arc::clone(&on_chunk);
 
@@ -142,16 +142,16 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     // Forward to caller
                     on_chunk_clone(chunk.clone());
                     // Collect for parsing
-                    if let Ok(mut guard) = collected_for_cb.try_lock() {
+                    if let Ok(mut guard) = collected_for_cb.lock() {
                         guard.push(chunk);
-                    };
+                    }
                 });
 
             let request = InferenceRequest {
                 messages,
                 tools: Some(tools.clone()),
                 temperature: Some(0.1),
-                max_tokens: Some(1024),
+                max_tokens: Some(4096),
             };
 
             // Run inference
@@ -160,10 +160,14 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             total_usage.prompt_tokens += usage.prompt_tokens;
             total_usage.completion_tokens += usage.completion_tokens;
 
-            // Parse collected chunks into text + tool calls
-            let chunks = collected_chunks.lock().await;
+            // Parse collected chunks into text + tool calls.
+            // Poison recovery is safe here: chunks are append-only, so partial
+            // data after a panic is acceptable (we just get fewer chunks).
+            let chunks: Vec<StreamingChunk> = {
+                let guard = collected_chunks.lock().unwrap_or_else(|p| p.into_inner());
+                guard.clone()
+            };
             let (response_text, tool_calls) = Self::parse_chunks(&chunks);
-            drop(chunks);
 
             if tool_calls.is_empty() {
                 // No tool calls — final response
@@ -251,8 +255,71 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 });
             }
 
-            // If this was the last allowed iteration, return what we have
+            // If this was the last allowed iteration, do one final inference
+            // WITHOUT tools so the model must produce a text response.
             if iteration == MAX_TOOL_ITERATIONS - 1 {
+                tracing::info!(
+                    "Agent loop: max iterations reached, running final inference without tools"
+                );
+                on_status(LocalAgentStatus::Thinking);
+
+                let mut messages = vec![ChatMessage {
+                    role: Role::System,
+                    content: system_content.clone(),
+                    tool_call_id: None,
+                    name: None,
+                }];
+                messages.extend(session.messages.clone());
+
+                let final_chunks: Arc<std::sync::Mutex<Vec<StreamingChunk>>> =
+                    Arc::new(std::sync::Mutex::new(Vec::new()));
+                let final_for_cb = Arc::clone(&final_chunks);
+                let on_chunk_final = Arc::clone(&on_chunk);
+
+                let final_callback: Box<dyn Fn(StreamingChunk) + Send> =
+                    Box::new(move |chunk: StreamingChunk| {
+                        on_chunk_final(chunk.clone());
+                        if let Ok(mut guard) = final_for_cb.lock() {
+                            guard.push(chunk);
+                        }
+                    });
+
+                let final_request = InferenceRequest {
+                    messages,
+                    tools: None, // No tools — force text response
+                    temperature: Some(0.1),
+                    max_tokens: Some(4096),
+                };
+
+                if let Ok(usage) = self.engine.generate(final_request, final_callback).await {
+                    total_usage.prompt_tokens += usage.prompt_tokens;
+                    total_usage.completion_tokens += usage.completion_tokens;
+
+                    // Poison recovery safe: append-only chunk collection (see above).
+                    let chunks: Vec<StreamingChunk> = {
+                        let guard = final_chunks.lock().unwrap_or_else(|p| p.into_inner());
+                        guard.clone()
+                    };
+                    let (final_text, _) = Self::parse_chunks(&chunks);
+                    if !final_text.is_empty() {
+                        session.messages.push(ChatMessage {
+                            role: Role::Assistant,
+                            content: final_text.clone(),
+                            tool_call_id: None,
+                            name: None,
+                        });
+
+                        on_status(LocalAgentStatus::Idle);
+                        session.status = LocalAgentStatus::Idle;
+
+                        return Ok(AgentTurnResult {
+                            response: final_text,
+                            tool_calls_made: all_tool_executions,
+                            usage: total_usage,
+                        });
+                    }
+                }
+
                 on_status(LocalAgentStatus::Idle);
                 session.status = LocalAgentStatus::Idle;
 
@@ -294,7 +361,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     pending_calls.push((id.clone(), name.clone(), String::new()));
                 }
                 StreamingChunk::ToolCallArgs { id, args_json } => {
-                    if let Some(call) = pending_calls.iter_mut().rev().find(|(cid, _, _)| cid == id) {
+                    if let Some(call) = pending_calls.iter_mut().rev().find(|(cid, _, _)| cid == id)
+                    {
                         call.2.push_str(args_json);
                     }
                 }
@@ -377,22 +445,25 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             }],
             tools: None,
             temperature: Some(0.1),
-            max_tokens: Some(512),
+            max_tokens: Some(4096),
         };
 
-        let summary_chunks: Arc<Mutex<Vec<StreamingChunk>>> = Arc::new(Mutex::new(Vec::new()));
+        let summary_chunks: Arc<std::sync::Mutex<Vec<StreamingChunk>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let summary_for_cb = Arc::clone(&summary_chunks);
         let cb: Box<dyn Fn(StreamingChunk) + Send> = Box::new(move |chunk: StreamingChunk| {
-            if let Ok(mut guard) = summary_for_cb.try_lock() {
+            if let Ok(mut guard) = summary_for_cb.lock() {
                 guard.push(chunk);
             }
         });
 
         let _ = self.engine.generate(summary_request, cb).await?;
 
-        let chunks = summary_chunks.lock().await;
+        let chunks: Vec<StreamingChunk> = {
+            let guard = summary_chunks.lock().unwrap_or_else(|p| p.into_inner());
+            guard.clone()
+        };
         let (summary_text, _) = Self::parse_chunks(&chunks);
-        drop(chunks);
 
         let summary_content = if summary_text.is_empty() {
             // Fallback: just note that history was truncated
@@ -432,7 +503,9 @@ pub struct LocalAgentService<E: ChatInferenceEngine + ?Sized, T: AgentToolExecut
     cancel_tokens: RwLock<HashMap<String, CancellationToken>>,
 }
 
-impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 'static> LocalAgentService<E, T> {
+impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 'static>
+    LocalAgentService<E, T>
+{
     pub fn new(engine: Arc<E>, tool_executor: Arc<T>) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
@@ -562,14 +635,14 @@ mod tests {
     struct MockEngine {
         /// Responses to return for sequential calls to `generate`.
         /// Each entry is a list of chunks to emit.
-        responses: Mutex<Vec<Vec<StreamingChunk>>>,
+        responses: tokio::sync::Mutex<Vec<Vec<StreamingChunk>>>,
         generate_count: AtomicUsize,
     }
 
     impl MockEngine {
         fn new(responses: Vec<Vec<StreamingChunk>>) -> Self {
             Self {
-                responses: Mutex::new(responses),
+                responses: tokio::sync::Mutex::new(responses),
                 generate_count: AtomicUsize::new(0),
             }
         }
@@ -933,13 +1006,10 @@ mod tests {
             ]
         };
 
-        let engine = Arc::new(MockEngine::new(vec![
-            tool_round(),
-            tool_round(),
-            tool_round(),
-            tool_round(),
-            tool_round(),
-        ]));
+        // Provide more rounds than the limit; the loop must stop at MAX_TOOL_ITERATIONS.
+        // +1 extra for the final tool-less inference call.
+        let rounds: Vec<_> = (0..MAX_TOOL_ITERATIONS + 2).map(|_| tool_round()).collect();
+        let engine = Arc::new(MockEngine::new(rounds));
         let executor = Arc::new(MockToolExecutor::new());
         let agent_loop = LocalAgentLoop::new(engine, executor);
 
@@ -955,8 +1025,8 @@ mod tests {
             .await
             .unwrap();
 
-        // Should have executed exactly 5 tool calls (the limit)
-        assert_eq!(result.tool_calls_made.len(), 5);
+        // Should have executed exactly MAX_TOOL_ITERATIONS tool calls (the limit)
+        assert_eq!(result.tool_calls_made.len(), MAX_TOOL_ITERATIONS);
         // All should be search_nodes
         for tc in &result.tool_calls_made {
             assert_eq!(tc.name, "search_nodes");
@@ -1237,9 +1307,9 @@ mod tests {
 
         let mut session = new_session();
 
-        // Add enough history to exceed the token budget.
-        // With ~4 chars/token estimate, we need > 6000*4 = 24000 chars of history.
-        // 20 messages * 2000 chars = 40000 chars = ~10000 tokens > 6000 budget.
+        // Add enough history to exceed TOTAL_TOKEN_BUDGET (32000 tokens).
+        // With ~4 chars/token estimate, we need > 32000*4 = 128000 chars.
+        // 20 messages * 7000 chars = 140000 chars = ~35000 tokens > 32000 budget.
         for i in 0..20 {
             let role = if i % 2 == 0 {
                 Role::User
@@ -1248,7 +1318,7 @@ mod tests {
             };
             session.messages.push(ChatMessage {
                 role,
-                content: format!("Message {} with extensive content: {}", i, "x".repeat(2000)),
+                content: format!("Message {} with extensive content: {}", i, "x".repeat(7000)),
                 tool_call_id: None,
                 name: None,
             });
@@ -1324,9 +1394,7 @@ mod tests {
         let id = service.create_session(Some("test-model".into())).await;
 
         // send_message should fail because FailingEngine errors
-        let result = service
-            .send_message(&id, "Hello", |_| {}, |_| {})
-            .await;
+        let result = service.send_message(&id, "Hello", |_| {}, |_| {}).await;
 
         assert!(result.is_err(), "Expected inference error");
 
@@ -1348,14 +1416,14 @@ mod tests {
     }
 
     /// When every turn produces tool calls the loop must stop after exactly
-    /// MAX_TOOL_ITERATIONS (5) and return without spinning forever.
+    /// MAX_TOOL_ITERATIONS and return without spinning forever. After
+    /// reaching the limit, one final tool-less inference is run.
     #[tokio::test]
     async fn max_iteration_limit_enforced_exactly() {
         let call_count = Arc::new(AtomicUsize::new(0));
-        let call_count_for_engine = Arc::clone(&call_count);
 
-        // Build more than 5 rounds of tool-call responses so the engine
-        // would happily keep going. The loop MUST stop at 5.
+        // Build more rounds than MAX_TOOL_ITERATIONS of tool-call responses
+        // plus a final text response for the tool-less wrap-up call.
         let mut responses: Vec<Vec<StreamingChunk>> = Vec::new();
         for i in 0..8 {
             responses.push(vec![
@@ -1421,19 +1489,20 @@ mod tests {
             .await
             .unwrap();
 
-        // Exactly 5 tool calls should have been made (one per iteration)
-        assert_eq!(result.tool_calls_made.len(), 5);
+        // Tool calls made = MAX_TOOL_ITERATIONS (one per iteration)
+        assert_eq!(result.tool_calls_made.len(), MAX_TOOL_ITERATIONS);
 
-        // Engine should have been called exactly 5 times (the loop constant)
+        // Engine called MAX_TOOL_ITERATIONS times + 1 final tool-less call
         assert_eq!(
             call_count.load(Ordering::SeqCst),
-            MAX_TOOL_ITERATIONS,
-            "generate should be called exactly MAX_TOOL_ITERATIONS times"
+            MAX_TOOL_ITERATIONS + 1,
+            "generate should be called MAX_TOOL_ITERATIONS + 1 (final tool-less) times"
         );
 
-        // Usage should be summed from all 5 rounds
-        assert_eq!(result.usage.prompt_tokens, 50); // 10 * 5
-        assert_eq!(result.usage.completion_tokens, 25); // 5 * 5
+        // Usage summed from all rounds (including final tool-less call)
+        let total_rounds = MAX_TOOL_ITERATIONS + 1;
+        assert_eq!(result.usage.prompt_tokens, 10 * total_rounds as u32);
+        assert_eq!(result.usage.completion_tokens, 5 * total_rounds as u32);
     }
 
     /// Cancellation during tool execution should stop the loop promptly.
@@ -1643,7 +1712,10 @@ mod tests {
             .await;
 
         // Should not panic — empty args_json falls back to json!({})
-        assert!(result.is_ok(), "Empty tool call args should not cause panic");
+        assert!(
+            result.is_ok(),
+            "Empty tool call args should not cause panic"
+        );
         let result = result.unwrap();
         assert_eq!(result.response, "Done with empty args.");
         assert_eq!(result.tool_calls_made.len(), 1);

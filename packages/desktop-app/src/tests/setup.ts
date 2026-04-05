@@ -26,6 +26,38 @@ if (
 // DOM globals are provided by happy-dom environment
 // No need to set up additional DOM globals - happy-dom handles this
 
+// Node.js 22+ ships a minimal built-in localStorage that lacks Storage API
+// methods (clear, getItem, setItem, removeItem, key, length). This shadows
+// happy-dom's proper implementation. Polyfill if the Web Storage API is missing.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function createStoragePolyfill(): any {
+  const store = new Map<string, string>();
+  const storage = Object.create(null);
+  Object.defineProperties(storage, {
+    getItem: { value: (key: string) => store.get(key) ?? null, writable: true, configurable: true },
+    setItem: { value: (key: string, value: string) => { store.set(key, String(value)); }, writable: true, configurable: true },
+    removeItem: { value: (key: string) => { store.delete(key); }, writable: true, configurable: true },
+    clear: { value: () => { store.clear(); }, writable: true, configurable: true },
+    key: { value: (index: number) => [...store.keys()][index] ?? null, writable: true, configurable: true },
+    length: { get: () => store.size, configurable: true },
+  });
+  return storage;
+}
+
+// Apply storage polyfill to both globalThis and window (Node 25+ has
+// minimal built-in Storage objects that shadow happy-dom's)
+for (const storageKey of ['localStorage', 'sessionStorage'] as const) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const current = (globalThis as Record<string, unknown>)[storageKey] as any;
+  if (current && typeof current.clear !== 'function') {
+    const polyfill = createStoragePolyfill();
+    Object.defineProperty(globalThis, storageKey, { value: polyfill, writable: true, configurable: true });
+    if (typeof window !== 'undefined') {
+      Object.defineProperty(window, storageKey, { value: polyfill, writable: true, configurable: true });
+    }
+  }
+}
+
 // Mock window.__TAURI__ as undefined to force HTTP adapter usage in tests
 // This ensures tests use the HTTP dev server instead of Tauri IPC
 if (typeof window !== 'undefined') {

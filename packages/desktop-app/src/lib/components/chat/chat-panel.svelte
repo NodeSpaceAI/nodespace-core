@@ -2,9 +2,9 @@
   import { onMount, tick } from 'svelte';
   import { chatStore } from '$lib/stores/chat-store.svelte';
   import { agentStore } from '$lib/stores/agent-store.svelte';
-  import ChatMessage from './ChatMessage.svelte';
-  import ChatInput from './ChatInput.svelte';
-  import AgentSelector from '$lib/components/agents/AgentSelector.svelte';
+  import ChatMessage from './chat-message.svelte';
+  import ChatInput from './chat-input.svelte';
+  import AgentSelector from '$lib/components/agents/agent-selector.svelte';
   import { createLogger } from '$lib/utils/logger';
 
   const log = createLogger('ChatPanel');
@@ -14,6 +14,7 @@
   const messages = $derived(chatStore.messages);
   const isStreaming = $derived(chatStore.isStreaming);
   const selectedAgent = $derived(agentStore.selectedAgent);
+  const hasMessages = $derived(messages.length > 0);
 
   onMount(() => {
     log.debug('ChatPanel mounted');
@@ -37,8 +38,20 @@
   // Auto-scroll when new messages arrive
   $effect(() => {
     // Access messages to create the dependency
-    const _len = messages.length;
+    void messages.length;
     scrollToBottom();
+  });
+
+  // Reset chat when agent changes
+  let previousAgentId = $state<string | null>(agentStore.selectedAgentId ?? null);
+
+  $effect(() => {
+    const currentAgentId = agentStore.selectedAgentId;
+    if (previousAgentId !== null && currentAgentId !== previousAgentId) {
+      log.info('Agent changed, resetting chat session', { from: previousAgentId, to: currentAgentId });
+      chatStore.reset();
+    }
+    previousAgentId = currentAgentId ?? null;
   });
 </script>
 
@@ -52,7 +65,7 @@
       {/if}
     </div>
     <div class="chat-header-right">
-      <AgentSelector />
+      <AgentSelector disabled={hasMessages} />
     </div>
   </div>
 

@@ -11335,12 +11335,18 @@ mod tests {
             // Use NodeAccessor trait method (not NodeService method directly)
             let accessor: &dyn NodeAccessor = &service;
             let retrieved = accessor.get_node(&node_id).await.unwrap();
-            assert!(retrieved.is_some(), "NodeAccessor::get_node should find existing node");
+            assert!(
+                retrieved.is_some(),
+                "NodeAccessor::get_node should find existing node"
+            );
             assert_eq!(retrieved.unwrap().content, "Accessor test");
 
             // Unknown ID returns None
             let missing = accessor.get_node("nonexistent-id").await.unwrap();
-            assert!(missing.is_none(), "NodeAccessor::get_node should return None for unknown ID");
+            assert!(
+                missing.is_none(),
+                "NodeAccessor::get_node should return None for unknown ID"
+            );
         }
 
         #[tokio::test]
@@ -11368,11 +11374,18 @@ mod tests {
 
             let accessor: &dyn NodeAccessor = &service;
             let children = accessor.get_children(&parent_id).await.unwrap();
-            assert_eq!(children.len(), 2, "NodeAccessor::get_children should return 2 children");
+            assert_eq!(
+                children.len(),
+                2,
+                "NodeAccessor::get_children should return 2 children"
+            );
 
             // Node with no children returns empty vec
             let empty = accessor.get_children(&child1_id).await.unwrap();
-            assert!(empty.is_empty(), "NodeAccessor::get_children for leaf node should be empty");
+            assert!(
+                empty.is_empty(),
+                "NodeAccessor::get_children for leaf node should be empty"
+            );
         }
 
         #[tokio::test]

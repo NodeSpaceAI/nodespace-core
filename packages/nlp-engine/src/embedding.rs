@@ -146,9 +146,7 @@ pub(crate) fn get_or_init_backend() -> std::result::Result<BackendGuard, String>
                     *guard = Some(backend);
                     Ok(BackendGuard(guard))
                 }
-                Err(_) => Err(
-                    "Backend initialization failed after multiple attempts".to_string(),
-                ),
+                Err(_) => Err("Backend initialization failed after multiple attempts".to_string()),
             }
         }
         Err(e) => Err(format!("Backend init failed: {}", e)),

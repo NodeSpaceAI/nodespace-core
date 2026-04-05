@@ -1160,7 +1160,10 @@ mod tests {
             &self,
             ids: &[&str],
         ) -> Result<Vec<Node>, crate::services::error::NodeServiceError> {
-            Ok(ids.iter().filter_map(|id| self.nodes.get(*id).cloned()).collect())
+            Ok(ids
+                .iter()
+                .filter_map(|id| self.nodes.get(*id).cloned())
+                .collect())
         }
     }
 
@@ -1170,7 +1173,7 @@ mod tests {
     /// - ai-chat extracts messages, not node content
     #[tokio::test]
     async fn test_behavior_driven_embedding_decision() {
-        let accessor = Arc::new(MockNodeAccessor::new());
+        let _accessor = Arc::new(MockNodeAccessor::new());
         let behaviors = Arc::new(NodeBehaviorRegistry::new());
 
         // We cannot construct a full NodeEmbeddingService without a real NLP engine
@@ -1180,7 +1183,11 @@ mod tests {
 
         // --- Embeddable types ---
 
-        let text_node = Node::new("text".to_string(), "Knowledge content".to_string(), json!({}));
+        let text_node = Node::new(
+            "text".to_string(),
+            "Knowledge content".to_string(),
+            json!({}),
+        );
         let text_behavior = behaviors.get("text").unwrap();
         assert!(
             text_behavior.get_embeddable_content(&text_node).is_some(),
@@ -1194,7 +1201,9 @@ mod tests {
         );
         let header_behavior = behaviors.get("header").unwrap();
         assert!(
-            header_behavior.get_embeddable_content(&header_node).is_some(),
+            header_behavior
+                .get_embeddable_content(&header_node)
+                .is_some(),
             "header should be embeddable via behavior"
         );
 
@@ -1260,18 +1269,32 @@ mod tests {
         );
         let chat_behavior = behaviors.get("ai-chat").unwrap();
         let chat_content = chat_behavior.get_embeddable_content(&chat_node);
-        assert!(chat_content.is_some(), "ai-chat with messages should be embeddable");
+        assert!(
+            chat_content.is_some(),
+            "ai-chat with messages should be embeddable"
+        );
         let text = chat_content.unwrap();
-        assert!(text.contains("How do I write tests?"), "Should include user message");
-        assert!(text.contains("Here is a testing guide."), "Should include assistant message");
-        assert!(!text.contains("search"), "Should exclude tool_call messages");
+        assert!(
+            text.contains("How do I write tests?"),
+            "Should include user message"
+        );
+        assert!(
+            text.contains("Here is a testing guide."),
+            "Should include assistant message"
+        );
+        assert!(
+            !text.contains("search"),
+            "Should exclude tool_call messages"
+        );
 
         // --- CustomNodeBehavior fallback ---
 
         let custom_behavior = CustomNodeBehavior::new("invoice");
         let custom_node = Node::new("invoice".to_string(), "INV-2025-001".to_string(), json!({}));
         assert!(
-            custom_behavior.get_embeddable_content(&custom_node).is_some(),
+            custom_behavior
+                .get_embeddable_content(&custom_node)
+                .is_some(),
             "Custom types use default trait impl — embeddable if non-empty"
         );
 
@@ -1330,7 +1353,10 @@ mod tests {
         let id2 = child2.id.clone();
         accessor.add_node(child1);
         accessor.add_node(child2);
-        let batch = accessor.get_nodes(&[&id1, &id2, "nonexistent"]).await.unwrap();
+        let batch = accessor
+            .get_nodes(&[&id1, &id2, "nonexistent"])
+            .await
+            .unwrap();
         assert_eq!(batch.len(), 2, "Should return only existing nodes");
     }
 
@@ -1357,16 +1383,18 @@ mod tests {
             json!({"task": {"status": "open"}}),
         );
 
-        accessor.set_children(&parent_id, vec![
-            child_text.clone(),
-            child_code.clone(),
-            child_task.clone(),
-        ]);
+        accessor.set_children(
+            &parent_id,
+            vec![child_text.clone(), child_code.clone(), child_task.clone()],
+        );
 
         let behavior = crate::behaviors::TextNodeBehavior;
         let aggregated = behavior.get_aggregated_content(&parent, &accessor).await;
 
-        assert!(aggregated.is_some(), "Should have aggregated content from children");
+        assert!(
+            aggregated.is_some(),
+            "Should have aggregated content from children"
+        );
         let text = aggregated.unwrap();
         assert!(
             text.contains("Child paragraph"),

@@ -23,7 +23,7 @@ pub struct ChatConfig {
 impl Default for ChatConfig {
     fn default() -> Self {
         Self {
-            n_ctx: 8192,
+            n_ctx: 32_768,
             default_temperature: 0.1,
             n_gpu_layers: 99,
             n_threads: std::thread::available_parallelism()
@@ -53,6 +53,9 @@ pub struct ChatMessageInput {
     pub role: String,
     /// Text content of the message.
     pub content: String,
+    /// For tool-result messages: the call ID that produced this result.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub call_id: Option<String>,
 }
 
 /// Specification of a tool the model may invoke.
@@ -116,7 +119,7 @@ mod tests {
     #[test]
     fn test_default_chat_config() {
         let config = ChatConfig::default();
-        assert_eq!(config.n_ctx, 8192);
+        assert_eq!(config.n_ctx, 32_768);
         assert!((config.default_temperature - 0.1).abs() < f32::EPSILON);
         assert_eq!(config.n_gpu_layers, 99);
         assert!(config.n_threads > 0);
@@ -127,12 +130,16 @@ mod tests {
         let config = ChatConfig::default();
         assert!(config.validate().is_ok());
 
-        let mut bad = ChatConfig::default();
-        bad.n_ctx = 0;
+        let bad = ChatConfig {
+            n_ctx: 0,
+            ..Default::default()
+        };
         assert!(bad.validate().is_err());
 
-        let mut bad2 = ChatConfig::default();
-        bad2.default_temperature = -1.0;
+        let bad2 = ChatConfig {
+            default_temperature: -1.0,
+            ..Default::default()
+        };
         assert!(bad2.validate().is_err());
     }
 }

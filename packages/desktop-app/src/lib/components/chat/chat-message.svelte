@@ -1,6 +1,7 @@
 <script lang="ts">
+  /* global navigator */
   import type { DisplayMessage } from '$lib/stores/chat-store.svelte';
-  import ToolCallDisplay from './ToolCallDisplay.svelte';
+  import ChatMarkdown from './chat-markdown.svelte';
 
   let { message }: { message: DisplayMessage } = $props();
 
@@ -31,14 +32,12 @@
 >
   <div class="message-bubble">
     {#if message.content}
-      <div class="message-content">{message.content}</div>
-    {/if}
-
-    {#if message.toolExecutions.length > 0}
-      <div class="tool-calls">
-        {#each message.toolExecutions as toolExec (toolExec.tool_call_id)}
-          <ToolCallDisplay toolExecution={toolExec} />
-        {/each}
+      <div class="message-content">
+        {#if isAssistant}
+          <ChatMarkdown content={message.content} />
+        {:else}
+          {message.content}
+        {/if}
       </div>
     {/if}
 
@@ -99,12 +98,11 @@
   }
 
   .message-content {
-    white-space: pre-wrap;
     word-break: break-word;
   }
 
-  .tool-calls {
-    margin-top: 0.5rem;
+  .user-message .message-content {
+    white-space: pre-wrap;
   }
 
   .copy-button {
