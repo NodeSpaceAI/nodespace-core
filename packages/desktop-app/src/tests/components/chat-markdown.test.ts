@@ -100,4 +100,19 @@ describe('ChatMarkdown Rendering', () => {
     expect(result).toContain('ns-node-card-placeholder');
     expect(result).toContain('<strong>details</strong>');
   });
+
+  it('should render script tags in display text as placeholder (DOMPurify sanitizes in component)', () => {
+    const result = renderMarkdown('[<script>alert(1)</script>](nodespace://abc-123)');
+    // Renderer outputs placeholder span; DOMPurify strips <script> tags in the actual component
+    expect(result).toContain('ns-node-card-placeholder');
+    expect(result).toContain('data-node-id="abc-123"');
+  });
+
+  it('should escape quotes in display text data attribute', () => {
+    const result = renderMarkdown('[He said "hello"](nodespace://abc-123)');
+    expect(result).toContain('data-display-text=');
+    expect(result).toContain('ns-node-card-placeholder');
+    // Double quotes in text should be escaped to &quot;
+    expect(result).not.toMatch(/data-display-text="[^"]*"[^"]*"/);
+  });
 });

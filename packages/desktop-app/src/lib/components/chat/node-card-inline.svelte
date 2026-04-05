@@ -7,9 +7,12 @@
 -->
 
 <script lang="ts">
+  import { createLogger } from '$lib/utils/logger';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { getNode } from '$lib/services/tauri-commands';
   import { TaskNodeHelpers, isTaskNode } from '$lib/types/task-node';
+
+  const log = createLogger('NodeCardInline');
 
   let { nodeId, displayText = '' }: { nodeId: string; displayText?: string } = $props();
 
@@ -35,8 +38,8 @@
         if (fetched) {
           sharedNodeStore.setNode(fetched, { type: 'database', reason: 'node-card-fetch' }, true);
         }
-      }).catch(() => {
-        // Silently fail — show fallback
+      }).catch((e) => {
+        log.warn(`Failed to fetch node ${nodeId}:`, e);
       });
     }
   });
