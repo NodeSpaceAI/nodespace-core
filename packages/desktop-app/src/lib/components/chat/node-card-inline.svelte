@@ -44,7 +44,7 @@
     }
   });
 
-  let title = $derived(node?.content?.slice(0, 80) || displayText || nodeId.slice(0, 8));
+  let title = $derived(node?.content?.split('\n')[0]?.slice(0, 120) || displayText || nodeId.slice(0, 8));
   let nodeType = $derived(node?.nodeType || 'unknown');
   let icon = $derived(nodeTypeIcons[nodeType] || '📄');
   let taskStatus = $derived(

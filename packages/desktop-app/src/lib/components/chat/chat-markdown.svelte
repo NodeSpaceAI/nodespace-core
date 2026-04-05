@@ -71,11 +71,14 @@
   // Inject DOMPurify-sanitized HTML via DOM, then hydrate node card placeholders
   let containerEl: HTMLDivElement;
   let mountedComponents: ReturnType<typeof mount>[] = [];
-  let lastContent = '';
 
+  // Single effect: render HTML + hydrate node card placeholders + cleanup on destroy
   $effect(() => {
-    if (!containerEl || content === lastContent) return;
-    lastContent = content;
+    if (!containerEl) return;
+
+    // Track content reactively so Svelte re-runs when it changes
+    const _content = content;
+    void _content;
 
     // Clean up previously mounted components
     for (const comp of mountedComponents) {
@@ -98,10 +101,8 @@
         mountedComponents.push(comp);
       }
     }
-  });
 
-  // Cleanup on component destroy
-  $effect(() => {
+    // Cleanup mounted components when effect re-runs or component is destroyed
     return () => {
       for (const comp of mountedComponents) {
         unmount(comp);
