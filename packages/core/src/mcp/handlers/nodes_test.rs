@@ -1806,3 +1806,226 @@ mod property_namespace_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod property_filter_tests {
+    use crate::db::SurrealStore;
+    use crate::mcp::handlers::nodes::handle_query_nodes;
+    use crate::services::CreateNodeParams;
+    use crate::NodeService;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn setup_test_service() -> Result<(Arc<NodeService>, TempDir), Box<dyn std::error::Error>>
+    {
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("test.db");
+
+        let mut store = Arc::new(SurrealStore::new(db_path).await?);
+        let node_service = Arc::new(NodeService::new(&mut store).await?);
+        Ok((node_service, temp_dir))
+    }
+
+    /// Helper to create a task node with namespaced properties
+    async fn create_task(
+        ns: &Arc<NodeService>,
+        content: &str,
+        status: &str,
+        priority: &str,
+    ) -> String {
+        ns.create_node_with_parent(CreateNodeParams {
+            id: None,
+            node_type: "task".to_string(),
+            content: content.to_string(),
+            parent_id: None,
+            insert_after_node_id: None,
+            properties: json!({ "task": { "status": status, "priority": priority } }),
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_query_nodes_property_filter_equals() {
+        let (ns, _dir) = setup_test_service().await.unwrap();
+        create_task(&ns, "Task A", "open", "high").await;
+        create_task(&ns, "Task B", "done", "low").await;
+        create_task(&ns, "Task C", "in_progress", "medium").await;
+
+        let result = handle_query_nodes(
+            &ns,
+            json!({
+                "node_type": "task",
+                "filters": [{ "field": "status", "operator": "equals", "value": "done" }]
+            }),
+        )
+        .await
+        .unwrap();
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0]["content"].as_str().unwrap(), "Task B");
+    }
+
+    #[tokio::test]
+    async fn test_query_nodes_property_filter_not_equals() {
+        let (ns, _dir) = setup_test_service().await.unwrap();
+        create_task(&ns, "Task A", "open", "high").await;
+        create_task(&ns, "Task B", "done", "low").await;
+        create_task(&ns, "Task C", "in_progress", "medium").await;
+
+        let result = handle_query_nodes(
+            &ns,
+            json!({
+                "node_type": "task",
+                "filters": [{ "field": "status", "operator": "not_equals", "value": "done" }]
+            }),
+        )
+        .await
+        .unwrap();
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_query_nodes_property_filter_contains() {
+        let (ns, _dir) = setup_test_service().await.unwrap();
+        create_task(&ns, "Task A", "open", "high").await;
+        create_task(&ns, "Task B", "in_progress", "low").await;
+
+        let result = handle_query_nodes(
+            &ns,
+            json!({
+                "node_type": "task",
+                "filters": [{ "field": "status", "operator": "contains", "value": "progress" }]
+            }),
+        )
+        .await
+        .unwrap();
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0]["content"].as_str().unwrap(), "Task B");
+    }
+
+    #[tokio::test]
+    async fn test_query_nodes_property_filter_starts_with() {
+        let (ns, _dir) = setup_test_service().await.unwrap();
+        create_task(&ns, "Task A", "open", "high").await;
+        create_task(&ns, "Task B", "in_progress", "low").await;
+
+        let result = handle_query_nodes(
+            &ns,
+            json!({
+                "node_type": "task",
+                "filters": [{ "field": "status", "operator": "starts_with", "value": "in_" }]
+            }),
+        )
+        .await
+        .unwrap();
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_query_nodes_property_filter_ends_with() {
+        let (ns, _dir) = setup_test_service().await.unwrap();
+        create_task(&ns, "Task A", "open", "high").await;
+        create_task(&ns, "Task B", "in_progress", "low").await;
+
+        let result = handle_query_nodes(
+            &ns,
+            json!({
+                "node_type": "task",
+                "filters": [{ "field": "status", "operator": "ends_with", "value": "progress" }]
+            }),
+        )
+        .await
+        .unwrap();
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_query_nodes_property_filter_unsupported_operator() {
+        let (ns, _dir) = setup_test_service().await.unwrap();
+
+        let result = handle_query_nodes(
+            &ns,
+            json!({
+                "node_type": "task",
+                "filters": [{ "field": "status", "operator": "regex", "value": ".*" }]
+            }),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.message.contains("Unsupported filter operator"),
+            "Expected error about unsupported operator, got: {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn test_query_nodes_content_field_equals_rejected() {
+        let (ns, _dir) = setup_test_service().await.unwrap();
+
+        let result = handle_query_nodes(
+            &ns,
+            json!({
+                "node_type": "task",
+                "filters": [{ "field": "content", "operator": "equals", "value": "test" }]
+            }),
+        )
+        .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_query_nodes_property_filter_with_limit() {
+        let (ns, _dir) = setup_test_service().await.unwrap();
+        for i in 0..5 {
+            create_task(&ns, &format!("Task {}", i), "open", "high").await;
+        }
+
+        let result = handle_query_nodes(
+            &ns,
+            json!({
+                "node_type": "task",
+                "filters": [{ "field": "status", "operator": "equals", "value": "open" }],
+                "limit": 2
+            }),
+        )
+        .await
+        .unwrap();
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_query_nodes_property_filter_missing_property() {
+        let (ns, _dir) = setup_test_service().await.unwrap();
+        create_task(&ns, "Task A", "open", "high").await;
+
+        let result = handle_query_nodes(
+            &ns,
+            json!({
+                "node_type": "task",
+                "filters": [{ "field": "nonexistent_field", "operator": "equals", "value": "anything" }]
+            }),
+        )
+        .await
+        .unwrap();
+
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 0);
+    }
+}

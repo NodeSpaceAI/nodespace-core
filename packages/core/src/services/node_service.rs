@@ -28,7 +28,7 @@ use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::events::DomainEvent;
 use crate::db::{extract_record_key, StoreChange, StoreOperation, SurrealStore};
 use crate::models::schema::SchemaRelationship;
-use crate::models::{Node, NodeFilter, NodeUpdate};
+use crate::models::{FilterOperator, Node, NodeFilter, NodeUpdate, PropertyFilter};
 use crate::services::error::NodeServiceError;
 use crate::services::migration_registry::MigrationRegistry;
 use crate::services::NodeAccessor;
@@ -4632,15 +4632,24 @@ impl NodeService {
             );
         }
 
+        // When property filters are present, fetch all matching rows from DB and
+        // filter in memory. Safety cap prevents accidental OOM on large datasets.
+        const PROPERTY_FILTER_FETCH_CAP: usize = 10_000;
+        let (db_limit, db_offset) = if filter.property_filters.is_some() {
+            (Some(PROPERTY_FILTER_FETCH_CAP), None)
+        } else {
+            (filter.limit, filter.offset)
+        };
+
         // Convert NodeFilter to NodeQuery
         let query = crate::models::NodeQuery {
             id: None,
-            node_type: filter.node_type,
-            content_contains: filter.content_contains,
-            title_contains: filter.title_contains,
+            node_type: filter.node_type.clone(),
+            content_contains: filter.content_contains.clone(),
+            title_contains: filter.title_contains.clone(),
             mentioned_by: None,
-            limit: filter.limit,
-            offset: filter.offset,
+            limit: db_limit,
+            offset: db_offset,
         };
 
         let nodes = self
@@ -4671,7 +4680,130 @@ impl NodeService {
             migrated_nodes.push(node);
         }
 
-        Ok(migrated_nodes)
+        // Apply property filters in-memory if present
+        let result_nodes = if let Some(ref property_filters) = filter.property_filters {
+            let mut filtered = Self::apply_property_filters(migrated_nodes, property_filters);
+            // Apply offset in memory
+            if let Some(offset) = filter.offset {
+                if offset < filtered.len() {
+                    filtered = filtered.split_off(offset);
+                } else {
+                    filtered.clear();
+                }
+            }
+            // Apply limit in memory
+            if let Some(limit) = filter.limit {
+                filtered.truncate(limit);
+            }
+            filtered
+        } else {
+            migrated_nodes
+        };
+
+        Ok(result_nodes)
+    }
+
+    /// Apply property filters in-memory to a list of nodes.
+    ///
+    /// Properties are stored in namespaced format: `{ "task": { "status": "open" } }`.
+    /// PropertyFilter paths use JSONPath: `"$.status"`.
+    /// This resolves the path against each node's type namespace.
+    fn apply_property_filters(nodes: Vec<Node>, filters: &[PropertyFilter]) -> Vec<Node> {
+        nodes
+            .into_iter()
+            .filter(|node| {
+                filters
+                    .iter()
+                    .all(|f| Self::node_matches_property_filter(node, f))
+            })
+            .collect()
+    }
+
+    /// Check if a single node matches a single property filter.
+    fn node_matches_property_filter(node: &Node, filter: &PropertyFilter) -> bool {
+        // Extract property path from JSONPath "$.field" or "$.field.subfield"
+        // PropertyFilter::new() validates the "$." prefix, so strip_prefix should always succeed.
+        let path = match filter.path.strip_prefix("$.") {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    "PropertyFilter path '{}' missing expected '$.' prefix — skipping filter",
+                    filter.path
+                );
+                return false;
+            }
+        };
+        let segments: Vec<&str> = path.split('.').collect();
+
+        // Resolve value from namespaced properties: properties[node_type][field...]
+        let mut current = node.properties.get(&node.node_type);
+        for segment in &segments {
+            current = current.and_then(|v| v.get(*segment));
+        }
+
+        let Some(actual_value) = current else {
+            return false; // Property not found = doesn't match
+        };
+
+        match &filter.operator {
+            FilterOperator::Equals => actual_value == &filter.value,
+            FilterOperator::NotEquals => actual_value != &filter.value,
+            FilterOperator::Contains => match (actual_value.as_str(), filter.value.as_str()) {
+                (Some(actual), Some(expected)) => {
+                    actual.to_lowercase().contains(&expected.to_lowercase())
+                }
+                _ => false,
+            },
+            FilterOperator::StartsWith => match (actual_value.as_str(), filter.value.as_str()) {
+                (Some(actual), Some(expected)) => {
+                    actual.to_lowercase().starts_with(&expected.to_lowercase())
+                }
+                _ => false,
+            },
+            FilterOperator::EndsWith => match (actual_value.as_str(), filter.value.as_str()) {
+                (Some(actual), Some(expected)) => {
+                    actual.to_lowercase().ends_with(&expected.to_lowercase())
+                }
+                _ => false,
+            },
+            FilterOperator::GreaterThan => {
+                Self::compare_property_values(actual_value, &filter.value)
+                    == Some(std::cmp::Ordering::Greater)
+            }
+            FilterOperator::GreaterThanOrEqual => {
+                matches!(
+                    Self::compare_property_values(actual_value, &filter.value),
+                    Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+                )
+            }
+            FilterOperator::LessThan => {
+                Self::compare_property_values(actual_value, &filter.value)
+                    == Some(std::cmp::Ordering::Less)
+            }
+            FilterOperator::LessThanOrEqual => {
+                matches!(
+                    Self::compare_property_values(actual_value, &filter.value),
+                    Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+                )
+            }
+        }
+    }
+
+    /// Compare two JSON values for ordering (used by GT/LT operators)
+    fn compare_property_values(
+        a: &serde_json::Value,
+        b: &serde_json::Value,
+    ) -> Option<std::cmp::Ordering> {
+        match (a, b) {
+            (serde_json::Value::Number(na), serde_json::Value::Number(nb)) => {
+                let fa = na.as_f64()?;
+                let fb = nb.as_f64()?;
+                fa.partial_cmp(&fb)
+            }
+            (serde_json::Value::String(sa), serde_json::Value::String(sb)) => Some(sa.cmp(sb)),
+            (serde_json::Value::Bool(ba), serde_json::Value::Bool(bb)) => Some(ba.cmp(bb)),
+            _ => None,
+        }
     }
 
     /// Query nodes with simple query parameters
