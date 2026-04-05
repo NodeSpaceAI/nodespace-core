@@ -6,7 +6,9 @@
 //! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 
 use crate::mcp::types::MCPError;
-use crate::models::{Node, NodeFilter, NodeUpdate, OrderBy};
+use crate::models::{
+    FilterOperator as ModelFilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter,
+};
 use crate::services::{CollectionService, NodeService, NodeServiceError};
 use chrono::NaiveDate;
 use serde::Deserialize;
@@ -519,6 +521,21 @@ pub async fn handle_delete_node(
     }))
 }
 
+/// Parse MCP filter operator string to model FilterOperator
+fn parse_mcp_filter_operator(op: &str) -> Result<ModelFilterOperator, MCPError> {
+    match op {
+        "equals" => Ok(ModelFilterOperator::Equals),
+        "not_equals" => Ok(ModelFilterOperator::NotEquals),
+        "contains" => Ok(ModelFilterOperator::Contains),
+        "starts_with" => Ok(ModelFilterOperator::StartsWith),
+        "ends_with" => Ok(ModelFilterOperator::EndsWith),
+        other => Err(MCPError::invalid_params(format!(
+            "Unsupported filter operator: '{}'. Supported operators: equals, not_equals, contains, starts_with, ends_with",
+            other
+        ))),
+    }
+}
+
 /// Handle query_nodes MCP request
 pub async fn handle_query_nodes(
     node_service: &Arc<NodeService>,
@@ -583,10 +600,11 @@ pub async fn handle_query_nodes(
         );
     }
 
-    // When filtering by collection, we fetch more and filter client-side
-    // (because collection membership is stored in edges, not NodeFilter)
+    // When filtering by collection, we fetch more and filter in the MCP handler.
+    // Property filters are handled by NodeService (which over-fetches internally),
+    // so we pass the actual requested limit for those.
     let effective_limit = if collection_member_ids.is_some() {
-        // Fetch more to compensate for post-filtering
+        // Fetch more to compensate for collection post-filtering
         params.limit.map(|l| l * 3).unwrap_or(1000)
     } else {
         params.limit.unwrap_or(100)
@@ -618,12 +636,20 @@ pub async fn handle_query_nodes(
                 ("title", "contains") => {
                     filter = filter.with_title_contains(value_str);
                 }
-                (field, op) => {
-                    tracing::warn!(
-                        "query_nodes: unsupported filter field='{}' operator='{}', ignored",
-                        field,
-                        op
-                    );
+                ("content" | "title", op) => {
+                    return Err(MCPError::invalid_params(format!(
+                        "Field '{}' only supports 'contains' operator, got '{}'",
+                        f.field, op
+                    )));
+                }
+                (_field, op) => {
+                    let operator = parse_mcp_filter_operator(op)?;
+                    let path = format!("$.{}", f.field);
+                    let prop_filter = PropertyFilter::new(path, operator, f.value.clone())
+                        .map_err(|e| {
+                            MCPError::invalid_params(format!("Invalid property filter: {}", e))
+                        })?;
+                    filter = filter.with_property_filter(prop_filter);
                 }
             }
         }

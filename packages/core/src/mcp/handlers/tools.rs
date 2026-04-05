@@ -656,13 +656,13 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                 "properties": {
                     "filters": {
                         "type": "array",
-                        "description": "Array of filter conditions. Each filter has {field, operator, value}. Supported: {field:'content', operator:'contains', value:'text'} and {field:'title', operator:'contains', value:'text'}. Other field/operator combinations are ignored. To filter by status or other properties, query all nodes of the type and filter results client-side.",
+                        "description": "Array of filter conditions. Each filter has {field, operator, value}. Built-in fields: 'content' and 'title' (only support 'contains' operator). Property fields: any other name (e.g. 'status', 'priority') filters against node properties using the specified operator. Property filters work best when 'node_type' is also set.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "field": { "type": "string", "enum": ["content", "title"] },
-                                "operator": { "type": "string", "enum": ["contains"] },
-                                "value": { "type": "string" }
+                                "field": { "type": "string", "description": "Field to filter on. Built-in: 'content', 'title'. Property: any other field name (e.g. 'status', 'priority')." },
+                                "operator": { "type": "string", "enum": ["contains", "equals", "not_equals", "starts_with", "ends_with"] },
+                                "value": { "description": "Value to compare against. String for text operators, any JSON type for equals/not_equals." }
                             },
                             "required": ["field", "operator", "value"]
                         }
