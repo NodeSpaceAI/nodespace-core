@@ -23,7 +23,7 @@ pub struct ChatConfig {
 impl Default for ChatConfig {
     fn default() -> Self {
         Self {
-            n_ctx: 131_072,
+            n_ctx: 32_768,
             default_temperature: 0.1,
             n_gpu_layers: 99,
             n_threads: std::thread::available_parallelism()
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn test_default_chat_config() {
         let config = ChatConfig::default();
-        assert_eq!(config.n_ctx, 131_072);
+        assert_eq!(config.n_ctx, 32_768);
         assert!((config.default_temperature - 0.1).abs() < f32::EPSILON);
         assert_eq!(config.n_gpu_layers, 99);
         assert!(config.n_threads > 0);

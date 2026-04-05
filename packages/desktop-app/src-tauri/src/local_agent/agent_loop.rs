@@ -94,12 +94,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             .await
             .unwrap_or_default();
 
-        // Build system prompt with tool definitions
-        let system_content = format!(
-            "{}{}",
-            prompt_templates::system_prompt(),
-            prompt_templates::format_tool_definitions(&tools),
-        );
+        // System prompt only — tool definitions are injected by the model's
+        // built-in chat template via [AVAILABLE_TOOLS] in apply_chat_template().
+        // Do NOT duplicate tools here or the model gets confused.
+        let system_content = prompt_templates::system_prompt();
 
         let mut all_tool_executions: Vec<ToolExecutionRecord> = Vec::new();
         let mut total_usage = InferenceUsage {
@@ -153,7 +151,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 messages,
                 tools: Some(tools.clone()),
                 temperature: Some(0.1),
-                max_tokens: Some(1024),
+                max_tokens: Some(4096),
             };
 
             // Run inference
@@ -288,7 +286,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     messages,
                     tools: None, // No tools — force text response
                     temperature: Some(0.1),
-                    max_tokens: Some(512),
+                    max_tokens: Some(4096),
                 };
 
                 if let Ok(usage) = self.engine.generate(final_request, final_callback).await {
@@ -444,7 +442,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             }],
             tools: None,
             temperature: Some(0.1),
-            max_tokens: Some(512),
+            max_tokens: Some(4096),
         };
 
         let summary_chunks: Arc<std::sync::Mutex<Vec<StreamingChunk>>> =
