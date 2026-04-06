@@ -233,7 +233,7 @@ pub fn run() {
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                 tracing_subscriber::EnvFilter::new(
-                    "nodespace_core=info,nodespace_app=info,nodespace_nlp_engine=info",
+                    "nodespace_core=info,nodespace_app=info,nodespace_nlp_engine=info,nodespace_agent=info",
                 )
             }),
         )

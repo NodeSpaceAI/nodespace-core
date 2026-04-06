@@ -274,7 +274,7 @@ impl PromptAssembler {
                 content: "RESPONSE RULES:\n\
                     - After tool results: summarize in natural language. NEVER paste raw JSON as your response.\n\
                     - Reference nodes with bare URI: nodespace://abc-123 (no markdown links, no backticks)\n\
-                    - Enum values in Title Case: \"In Progress\" not \"in_progress\"\n\
+                    - Enum values in tool calls: use exact schema values (\"done\", \"in_progress\"). In responses to user: use friendly labels (\"Done\", \"In Progress\").\n\
                     - When listing nodes: **Title** (nodespace://id) — brief description\n\
                     - When reporting search results: \"Found N nodes...\" then list top results\n\
                     - If tool returns empty results: say so clearly. Do NOT retry the same query.\n\

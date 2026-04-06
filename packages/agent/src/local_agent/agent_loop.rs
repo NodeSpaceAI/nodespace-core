@@ -103,6 +103,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // to accept a PromptAssembler instance.
         let system_content = prompt_templates::fallback_system_prompt(dynamic_ctx);
 
+        tracing::info!(
+            tools_count = tools.len(),
+            tool_names = %tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "),
+            system_prompt_len = system_content.len(),
+            "Agent turn: system prompt and tools prepared"
+        );
+
         let mut all_tool_executions: Vec<ToolExecutionRecord> = Vec::new();
         let mut total_usage = InferenceUsage {
             prompt_tokens: 0,
@@ -173,6 +180,14 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             };
             let (response_text, tool_calls) = Self::parse_chunks(&chunks);
 
+            tracing::info!(
+                iteration,
+                tool_calls = tool_calls.len(),
+                response_len = response_text.len(),
+                response_preview = %response_text.chars().take(200).collect::<String>(),
+                "Agent loop: inference round completed"
+            );
+
             if tool_calls.is_empty() {
                 // No tool calls — final response
                 on_status(LocalAgentStatus::Streaming);
@@ -234,6 +249,14 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     Ok(tr) => (tr.result, tr.is_error),
                     Err(e) => (serde_json::json!({"error": e.to_string()}), true),
                 };
+
+                tracing::info!(
+                    tool = %tc.function_name,
+                    is_error,
+                    duration_ms,
+                    result_preview = %result_value.to_string().chars().take(200).collect::<String>(),
+                    "Tool executed"
+                );
 
                 let record = ToolExecutionRecord {
                     tool_call_id: tc.id.clone(),
