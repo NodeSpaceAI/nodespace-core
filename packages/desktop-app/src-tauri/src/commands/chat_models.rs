@@ -6,9 +6,10 @@
 //!
 //! Issue #1008
 
-use crate::agent_types::{events, DownloadEvent, ModelInfo, ModelManager};
+use crate::agent_events;
 use crate::commands::nodes::CommandError;
-use crate::local_agent::model_manager::GgufModelManager;
+use nodespace_agent::agent_types::{DownloadEvent, ModelInfo, ModelManager};
+use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
@@ -57,7 +58,7 @@ pub async fn chat_model_download(
     let app_progress = app.clone();
     manager
         .set_progress_callback(Box::new(move |evt: DownloadEvent| {
-            let _ = app_progress.emit(events::MODEL_DOWNLOAD_PROGRESS, &evt);
+            let _ = app_progress.emit(agent_events::MODEL_DOWNLOAD_PROGRESS, &evt);
         }))
         .await;
 

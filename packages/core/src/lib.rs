@@ -23,6 +23,7 @@ pub mod behaviors;
 pub mod db;
 pub mod mcp;
 pub mod models;
+pub mod ops;
 pub mod playbook;
 pub mod services;
 pub mod utils;

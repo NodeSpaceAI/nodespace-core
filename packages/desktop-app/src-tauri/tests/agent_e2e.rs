@@ -17,11 +17,11 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use nodespace_app_lib::acp::session::{AcpClientService, SessionError};
-use nodespace_app_lib::acp::transport::{StdioTransport, StdioTransportConfig};
-use nodespace_app_lib::agent_types::*;
-use nodespace_app_lib::local_agent::agent_loop::LocalAgentService;
-use nodespace_app_lib::local_agent::model_manager::GgufModelManager;
+use nodespace_agent::acp::session::{AcpClientService, SessionError};
+use nodespace_agent::acp::transport::{StdioTransport, StdioTransportConfig};
+use nodespace_agent::agent_types::*;
+use nodespace_agent::local_agent::agent_loop::LocalAgentService;
+use nodespace_agent::local_agent::model_manager::GgufModelManager;
 
 // ===========================================================================
 // Mock implementations
@@ -1498,4 +1498,529 @@ async fn benchmark_acp_transport_roundtrip() {
     );
 
     transport.shutdown().await.unwrap();
+}
+
+// ===========================================================================
+// Pipeline integration tests — prompt, tools, normalizer (Issue #1040)
+//
+// These tests validate the agent pipeline plumbing: system prompt assembly,
+// tool dispatch, result handling, and response normalization. Tool selection
+// is driven by the mock engine (not the actual model), so these verify the
+// infrastructure, not model behavior.
+// ===========================================================================
+
+/// Mock engine that captures inference requests for assertion.
+struct CapturingMockEngine {
+    captured_requests: Mutex<Vec<InferenceRequest>>,
+    response_text: String,
+}
+
+impl CapturingMockEngine {
+    fn new(response_text: &str) -> Self {
+        Self {
+            captured_requests: Mutex::new(Vec::new()),
+            response_text: response_text.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl ChatInferenceEngine for CapturingMockEngine {
+    async fn generate(
+        &self,
+        request: InferenceRequest,
+        on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+    ) -> Result<InferenceUsage, InferenceError> {
+        self.captured_requests.lock().await.push(request);
+        on_chunk(StreamingChunk::Token {
+            text: self.response_text.clone(),
+        });
+        let usage = InferenceUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+        };
+        on_chunk(StreamingChunk::Done { usage });
+        Ok(usage)
+    }
+
+    async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError> {
+        Ok(Some(ChatModelSpec {
+            model_id: "test-capture".into(),
+            context_window: 32768,
+            default_temperature: 0.1,
+        }))
+    }
+
+    async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
+        Ok((text.len() as f32 / 4.0).ceil() as u32)
+    }
+}
+
+/// Verify system prompt includes dynamic context when set on session.
+#[tokio::test]
+async fn system_prompt_includes_dynamic_context() {
+    let engine = Arc::new(CapturingMockEngine::new("Here are your tasks."));
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
+    let service = LocalAgentService::new(engine.clone() as Arc<dyn ChatInferenceEngine>, executor);
+
+    let session_id = service.create_session(Some("test-model".into())).await;
+
+    // Set dynamic context (simulating what local_agent_new_session does)
+    service
+        .set_session_context(
+            &session_id,
+            "ENTITY TYPES:\n- customer: Customer — fields: company(text), status(enum: Active/Churned)".into(),
+        )
+        .await;
+
+    let _result = service
+        .send_message(&session_id, "find my tasks", |_| {}, |_| {})
+        .await
+        .unwrap();
+
+    // Verify the system prompt sent to the engine includes the dynamic context
+    let requests = engine.captured_requests.lock().await;
+    assert!(!requests.is_empty(), "Engine should have been called");
+
+    let system_msg = requests[0]
+        .messages
+        .iter()
+        .find(|m| m.role == Role::System)
+        .expect("Should have a system message");
+
+    assert!(
+        system_msg.content.contains("customer: Customer"),
+        "System prompt should include dynamic context. Got: {}",
+        &system_msg.content[..200.min(system_msg.content.len())]
+    );
+    assert!(
+        system_msg.content.contains("TOOL STRATEGY"),
+        "System prompt should include tool strategy section"
+    );
+}
+
+/// Verify response normalizer cleans up model output.
+#[tokio::test]
+async fn response_normalizer_fixes_uri_formatting() {
+    let engine = Arc::new(CapturingMockEngine::new(
+        "Found your task: [nodespace://abc-123](nodespace://abc-123) with status in_progress",
+    ));
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
+    let service = LocalAgentService::new(engine as Arc<dyn ChatInferenceEngine>, executor);
+
+    let session_id = service.create_session(None).await;
+    let result = service
+        .send_message(&session_id, "find tasks", |_| {}, |_| {})
+        .await
+        .unwrap();
+
+    // Normalizer should fix markdown-wrapped URI to bare URI
+    assert!(
+        !result.response.contains("[nodespace://"),
+        "Markdown-wrapped URI should be normalized. Got: {}",
+        result.response
+    );
+    assert!(
+        result.response.contains("nodespace://abc-123"),
+        "Bare URI should be preserved. Got: {}",
+        result.response
+    );
+    // Normalizer should fix snake_case status
+    assert!(
+        result.response.contains("In Progress"),
+        "snake_case status should be Title Case. Got: {}",
+        result.response
+    );
+}
+
+/// Verify tool calls receive correct tool definitions.
+#[tokio::test]
+async fn tool_definitions_included_in_inference_request() {
+    let engine = Arc::new(CapturingMockEngine::new("No tasks found."));
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
+    let service = LocalAgentService::new(engine.clone() as Arc<dyn ChatInferenceEngine>, executor);
+
+    let session_id = service.create_session(None).await;
+    let _result = service
+        .send_message(&session_id, "what tasks do I have?", |_| {}, |_| {})
+        .await
+        .unwrap();
+
+    let requests = engine.captured_requests.lock().await;
+    assert!(!requests.is_empty());
+
+    let tools = requests[0]
+        .tools
+        .as_ref()
+        .expect("Tools should be provided");
+    assert!(!tools.is_empty(), "At least one tool should be available");
+
+    // Verify tool names are present
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        tool_names.contains(&"search_nodes"),
+        "search_nodes tool should be available"
+    );
+    assert!(
+        tool_names.contains(&"get_node"),
+        "get_node tool should be available"
+    );
+}
+
+/// Verify tool call → result → text response round-trip with normalizer.
+#[tokio::test]
+async fn tool_call_round_trip_with_normalizer() {
+    // Mock: first call tool, then respond with unnormalized text
+    let engine = Arc::new(MockEngine::tool_then_text(
+        "search_nodes",
+        r#"{"query":"tasks"}"#,
+        "Found 2 results: `nodespace://e2e-node-1` and `nodespace://e2e-node-2` are in_progress",
+    ));
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
+    let service = LocalAgentService::new(engine as Arc<dyn ChatInferenceEngine>, executor);
+
+    let session_id = service.create_session(None).await;
+    let result = service
+        .send_message(&session_id, "find tasks", |_| {}, |_| {})
+        .await
+        .unwrap();
+
+    // Should have executed the search_nodes tool
+    assert_eq!(result.tool_calls_made.len(), 1);
+    assert_eq!(result.tool_calls_made[0].name, "search_nodes");
+
+    // Response should be normalized (backtick URIs → bare, snake_case → Title Case)
+    assert!(
+        !result.response.contains("`nodespace://"),
+        "Backtick-wrapped URIs should be normalized"
+    );
+    assert!(
+        result.response.contains("In Progress"),
+        "snake_case status should be Title Case"
+    );
+}
+
+/// Mock tool executor that records calls and returns realistic results per tool.
+///
+/// Tool schemas are intentionally defined inline (not imported from GraphToolExecutor)
+/// to decouple these tests from real service wiring. This tests the agent loop
+/// independently — if tool schemas drift, the compile-time types in GraphToolExecutor
+/// catch it; these mocks verify pipeline behavior.
+struct RecordingToolExecutor {
+    calls: Mutex<Vec<(String, serde_json::Value)>>,
+}
+
+impl RecordingToolExecutor {
+    fn new() -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    async fn recorded_calls(&self) -> Vec<(String, serde_json::Value)> {
+        self.calls.lock().await.clone()
+    }
+}
+
+#[async_trait]
+impl AgentToolExecutor for RecordingToolExecutor {
+    async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+        Ok(vec![
+            ToolDefinition {
+                name: "search_nodes".into(),
+                description: "Search for nodes by keyword or structured query".into(),
+                parameters_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "node_type": { "type": "string" },
+                        "limit": { "type": "integer" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "search_semantic".into(),
+                description: "Find nodes semantically related to a natural-language query".into(),
+                parameters_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "limit": { "type": "integer" }
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "get_node".into(),
+                description: "Get a node by ID".into(),
+                parameters_schema: json!({
+                    "type": "object",
+                    "properties": { "id": { "type": "string" } },
+                    "required": ["id"]
+                }),
+            },
+            ToolDefinition {
+                name: "create_node".into(),
+                description: "Create a new node".into(),
+                parameters_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "node_type": { "type": "string" },
+                        "properties": { "type": "object" }
+                    },
+                    "required": ["title", "node_type"]
+                }),
+            },
+        ])
+    }
+
+    async fn execute(&self, name: &str, args: serde_json::Value) -> Result<ToolResult, ToolError> {
+        self.calls
+            .lock()
+            .await
+            .push((name.to_string(), args.clone()));
+
+        let result = match name {
+            "search_nodes" => json!({
+                "count": 3,
+                "nodes": [
+                    {"id": "task-1", "title": "Fix login bug", "type": "task", "snippet": "Fix the login page crash on Safari", "properties": {"status": "in_progress", "priority": "high"}},
+                    {"id": "task-2", "title": "Update API docs", "type": "task", "snippet": "Document new endpoints", "properties": {"status": "open", "priority": "medium"}},
+                    {"id": "task-3", "title": "Review PR #42", "type": "task", "snippet": "Code review for auth refactor", "properties": {"status": "open", "priority": "low"}},
+                ]
+            }),
+            "search_semantic" => json!({
+                "count": 2,
+                "nodes": [
+                    {"id": "note-ml-1", "title": "ML Pipeline Architecture", "type": "text", "similarity": 0.87, "content": "Our machine learning pipeline uses..."},
+                    {"id": "note-ml-2", "title": "Model Training Notes", "type": "text", "similarity": 0.72, "content": "Key findings from the latest training run..."},
+                ]
+            }),
+            "get_node" => json!({
+                "id": args.get("id").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                "title": "Detailed Node",
+                "type": "text",
+                "body": "Full node content here"
+            }),
+            "create_node" => json!({
+                "id": "new-node-123"
+            }),
+            _ => json!({"error": format!("unknown tool: {}", name)}),
+        };
+
+        Ok(ToolResult {
+            tool_call_id: format!("call_{name}"),
+            name: name.to_string(),
+            result,
+            is_error: false,
+        })
+    }
+}
+
+/// Structured query: "what are my tasks?" should call search_nodes with task type,
+/// get realistic task results back, and produce a normalized response.
+#[tokio::test]
+async fn structured_query_tasks_uses_search_nodes() {
+    let executor = Arc::new(RecordingToolExecutor::new());
+    // Model calls search_nodes, then responds with task summary
+    let engine = Arc::new(MockEngine::tool_then_text(
+        "search_nodes",
+        r#"{"query":"tasks","node_type":"task"}"#,
+        "You have 3 tasks:\n- **Fix login bug** (nodespace://task-1) — in_progress, High priority\n- **Update API docs** (nodespace://task-2) — Open\n- **Review PR #42** (nodespace://task-3) — Open",
+    ));
+
+    let service = LocalAgentService::new(
+        engine as Arc<dyn ChatInferenceEngine>,
+        executor.clone() as Arc<dyn AgentToolExecutor>,
+    );
+
+    let session_id = service.create_session(Some("test".into())).await;
+    let result = service
+        .send_message(&session_id, "what are my tasks?", |_| {}, |_| {})
+        .await
+        .unwrap();
+
+    // Verify search_nodes was called
+    let calls = executor.recorded_calls().await;
+    assert_eq!(calls.len(), 1, "Should have made exactly 1 tool call");
+    assert_eq!(
+        calls[0].0, "search_nodes",
+        "Should have called search_nodes"
+    );
+
+    // Verify args included node_type filter
+    let args = &calls[0].1;
+    assert_eq!(
+        args.get("node_type").and_then(|v| v.as_str()),
+        Some("task"),
+        "Should filter by task node_type"
+    );
+
+    // Verify response includes task references and is normalized
+    assert!(result.response.contains("nodespace://task-1"));
+    assert!(result.response.contains("nodespace://task-2"));
+    // Normalizer should convert in_progress → In Progress
+    assert!(
+        result.response.contains("In Progress"),
+        "Status should be Title Case. Got: {}",
+        result.response
+    );
+}
+
+/// Semantic/RAG query: "anything about machine learning?" should call search_semantic,
+/// get relevance-scored results, and present them with scores.
+#[tokio::test]
+async fn semantic_query_uses_search_semantic() {
+    let executor = Arc::new(RecordingToolExecutor::new());
+    // Model calls search_semantic, then responds with semantic results
+    let engine = Arc::new(MockEngine::tool_then_text(
+        "search_semantic",
+        r#"{"query":"machine learning"}"#,
+        "Found 2 relevant notes:\n- **ML Pipeline Architecture** (nodespace://note-ml-1) — highly relevant\n- **Model Training Notes** (nodespace://note-ml-2) — related",
+    ));
+
+    let service = LocalAgentService::new(
+        engine as Arc<dyn ChatInferenceEngine>,
+        executor.clone() as Arc<dyn AgentToolExecutor>,
+    );
+
+    let session_id = service.create_session(Some("test".into())).await;
+    let result = service
+        .send_message(
+            &session_id,
+            "anything about machine learning?",
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    // Verify search_semantic was called (not search_nodes)
+    let calls = executor.recorded_calls().await;
+    assert_eq!(calls.len(), 1, "Should have made exactly 1 tool call");
+    assert_eq!(
+        calls[0].0, "search_semantic",
+        "Should have called search_semantic for natural language query"
+    );
+
+    // Verify query was passed through
+    let args = &calls[0].1;
+    assert_eq!(
+        args.get("query").and_then(|v| v.as_str()),
+        Some("machine learning"),
+        "Should pass the search query"
+    );
+
+    // Verify response references the found nodes
+    assert!(result.response.contains("nodespace://note-ml-1"));
+    assert!(result.response.contains("nodespace://note-ml-2"));
+}
+
+/// Multi-turn: structured search followed by semantic search in same session.
+#[tokio::test]
+async fn multi_turn_mixed_tool_calls() {
+    let executor = Arc::new(RecordingToolExecutor::new());
+
+    // Turn 1: search_nodes for tasks
+    // Turn 2: search_semantic for related content
+    let engine = Arc::new(MockEngine::new(vec![
+        // Turn 1, round 1: tool call search_nodes
+        vec![
+            StreamingChunk::ToolCallStart {
+                id: "tc1".to_string(),
+                name: "search_nodes".to_string(),
+            },
+            StreamingChunk::ToolCallArgs {
+                id: "tc1".to_string(),
+                args_json: r#"{"query":"tasks","node_type":"task"}"#.to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage {
+                    prompt_tokens: 20,
+                    completion_tokens: 10,
+                },
+            },
+        ],
+        // Turn 1, round 2: text response
+        vec![
+            StreamingChunk::Token {
+                text: "You have 3 tasks.".to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage {
+                    prompt_tokens: 30,
+                    completion_tokens: 5,
+                },
+            },
+        ],
+        // Turn 2, round 1: tool call search_semantic
+        vec![
+            StreamingChunk::ToolCallStart {
+                id: "tc2".to_string(),
+                name: "search_semantic".to_string(),
+            },
+            StreamingChunk::ToolCallArgs {
+                id: "tc2".to_string(),
+                args_json: r#"{"query":"machine learning research"}"#.to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage {
+                    prompt_tokens: 40,
+                    completion_tokens: 10,
+                },
+            },
+        ],
+        // Turn 2, round 2: text response
+        vec![
+            StreamingChunk::Token {
+                text: "Found 2 notes about ML.".to_string(),
+            },
+            StreamingChunk::Done {
+                usage: InferenceUsage {
+                    prompt_tokens: 50,
+                    completion_tokens: 5,
+                },
+            },
+        ],
+    ]));
+
+    let service = LocalAgentService::new(
+        engine as Arc<dyn ChatInferenceEngine>,
+        executor.clone() as Arc<dyn AgentToolExecutor>,
+    );
+
+    let session_id = service.create_session(Some("test".into())).await;
+
+    // Turn 1: structured task query
+    let result1 = service
+        .send_message(&session_id, "what are my tasks?", |_| {}, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(result1.tool_calls_made.len(), 1);
+    assert_eq!(result1.tool_calls_made[0].name, "search_nodes");
+
+    // Turn 2: semantic query in same session
+    let result2 = service
+        .send_message(
+            &session_id,
+            "find me anything about machine learning research",
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert_eq!(result2.tool_calls_made.len(), 1);
+    assert_eq!(result2.tool_calls_made[0].name, "search_semantic");
+
+    // Verify both tools were called across the session
+    let calls = executor.recorded_calls().await;
+    assert_eq!(
+        calls.len(),
+        2,
+        "Should have made 2 tool calls across 2 turns"
+    );
+    assert_eq!(calls[0].0, "search_nodes");
+    assert_eq!(calls[1].0, "search_semantic");
 }

@@ -1,12 +1,6 @@
-// Shared types, traits, and interface contracts for agent subsystems (Issue #998)
-pub mod agent_types;
-pub use agent_types::*;
-
-// ACP (Agent Communication Protocol) subsystem
-pub mod acp;
-
-// Local agent subsystem: model management, inference, tool execution
-pub mod local_agent;
+// Tauri event channel constants for the agent subsystem (kept in desktop-app
+// because they depend on Tauri, which is not a dependency of nodespace-agent).
+pub mod agent_events;
 
 // Tauri commands module (public for dev-server access)
 pub mod commands;
@@ -349,10 +343,10 @@ pub fn run() {
             // These live OUTSIDE AppServices and survive database hot-swaps.
             // They obtain NodeService/NodeEmbeddingService per-operation from AppServices.
             {
-                use crate::acp::registry::SystemAgentRegistry;
-                use crate::acp::session::AcpClientService;
+                use nodespace_agent::acp::registry::SystemAgentRegistry;
+                use nodespace_agent::acp::session::AcpClientService;
                 use crate::commands::local_agent::ManagedAgentState;
-                use crate::local_agent::model_manager::GgufModelManager;
+                use nodespace_agent::local_agent::model_manager::GgufModelManager;
 
                 // GGUF model manager for chat model lifecycle.
                 // Wrapped in Arc so it can be cloned for shutdown cleanup.
@@ -583,8 +577,8 @@ pub(crate) fn graceful_shutdown(app_handle: &tauri::AppHandle) {
 /// Runs on a dedicated thread because `graceful_shutdown()` may be called from
 /// within the Tokio runtime (Tauri run-event handler), where `block_on` would panic.
 pub(crate) fn release_gpu_resources(app_handle: &tauri::AppHandle) {
-    use crate::agent_types::ModelManager;
-    use crate::local_agent::model_manager::GgufModelManager;
+    use nodespace_agent::agent_types::ModelManager;
+    use nodespace_agent::local_agent::model_manager::GgufModelManager;
     use std::sync::Arc;
     use tauri::Manager;
 

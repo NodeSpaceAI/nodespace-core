@@ -19,6 +19,7 @@ use crate::agent_types::{
     ToolCallRaw, ToolExecutionRecord,
 };
 use crate::local_agent::prompt_templates;
+use crate::local_agent::response_processing::normalize_response;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -97,7 +98,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // System prompt only — tool definitions are injected by the model's
         // built-in chat template via [AVAILABLE_TOOLS] in apply_chat_template().
         // Do NOT duplicate tools here or the model gets confused.
-        let system_content = prompt_templates::system_prompt();
+        let dynamic_ctx = session.dynamic_context.as_deref().unwrap_or("");
+        let system_content = prompt_templates::system_prompt(dynamic_ctx);
 
         let mut all_tool_executions: Vec<ToolExecutionRecord> = Vec::new();
         let mut total_usage = InferenceUsage {
@@ -174,10 +176,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 on_status(LocalAgentStatus::Streaming);
                 session.status = LocalAgentStatus::Streaming;
 
+                let normalized = normalize_response(&response_text);
+
                 // Append assistant response to history
                 session.messages.push(ChatMessage {
                     role: Role::Assistant,
-                    content: response_text.clone(),
+                    content: normalized.clone(),
                     tool_call_id: None,
                     name: None,
                 });
@@ -186,7 +190,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 session.status = LocalAgentStatus::Idle;
 
                 return Ok(AgentTurnResult {
-                    response: response_text,
+                    response: normalized,
                     tool_calls_made: all_tool_executions,
                     usage: total_usage,
                 });
@@ -302,9 +306,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     };
                     let (final_text, _) = Self::parse_chunks(&chunks);
                     if !final_text.is_empty() {
+                        let normalized = normalize_response(&final_text);
                         session.messages.push(ChatMessage {
                             role: Role::Assistant,
-                            content: final_text.clone(),
+                            content: normalized.clone(),
                             tool_call_id: None,
                             name: None,
                         });
@@ -313,7 +318,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                         session.status = LocalAgentStatus::Idle;
 
                         return Ok(AgentTurnResult {
-                            response: final_text,
+                            response: normalized,
                             tool_calls_made: all_tool_executions,
                             usage: total_usage,
                         });
@@ -324,7 +329,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 session.status = LocalAgentStatus::Idle;
 
                 return Ok(AgentTurnResult {
-                    response: response_text,
+                    response: normalize_response(&response_text),
                     tool_calls_made: all_tool_executions,
                     usage: total_usage,
                 });
@@ -527,6 +532,7 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
             status: LocalAgentStatus::Idle,
             created_at: chrono::Utc::now(),
             tool_executions: Vec::new(),
+            dynamic_context: None,
         };
 
         let cancel = CancellationToken::new();
@@ -540,6 +546,17 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
             .insert(session_id.clone(), cancel);
 
         session_id
+    }
+
+    /// Set the dynamic workspace context for a session.
+    ///
+    /// Called after session creation once NodeService is available to
+    /// populate schemas, collections, and playbooks for the system prompt.
+    pub async fn set_session_context(&self, session_id: &str, context: String) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.dynamic_context = Some(context);
+        }
     }
 
     /// Send a user message and run the agent turn.
@@ -827,6 +844,7 @@ mod tests {
             status: LocalAgentStatus::Idle,
             created_at: chrono::Utc::now(),
             tool_executions: Vec::new(),
+            dynamic_context: None,
         }
     }
 

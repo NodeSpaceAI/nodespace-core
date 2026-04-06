@@ -4065,6 +4065,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "nodespace-agent"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "dirs 5.0.1",
+ "futures",
+ "libc",
+ "nodespace-core",
+ "nodespace-nlp-engine",
+ "regex",
+ "reqwest 0.12.22",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sysinfo 0.33.1",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+ "which",
+]
+
+[[package]]
 name = "nodespace-app"
 version = "0.1.5"
 dependencies = [
@@ -4075,15 +4102,12 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "futures",
- "libc",
+ "nodespace-agent",
  "nodespace-core",
  "nodespace-nlp-engine",
- "reqwest 0.12.22",
  "serde",
  "serde_json",
- "sha2",
  "surrealdb",
- "sysinfo 0.33.1",
  "tauri",
  "tauri-build",
  "tauri-plugin-decorum",
@@ -4098,7 +4122,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
- "which",
 ]
 
 [[package]]

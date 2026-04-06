@@ -6,9 +6,8 @@
 //! returns a compact, token-efficient result suitable for an 8k-context local model.
 
 use crate::agent_types::{AgentToolExecutor, ToolDefinition, ToolError, ToolResult};
-use crate::app_services::AppServices;
 use async_trait::async_trait;
-use nodespace_core::models::{NodeFilter, NodeUpdate};
+use nodespace_core::ops::{node_ops, rel_ops, search_ops, OpsError};
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -40,30 +39,6 @@ fn truncate(s: &str, max_chars: usize) -> String {
         }
         format!("{}[truncated]", &s[..end])
     }
-}
-
-/// Format a node as a compact summary line.
-fn node_summary(node: &nodespace_core::models::Node) -> Value {
-    let snippet = truncate(&node.content, BODY_TRUNCATE_SUMMARY);
-    let title = node.title.as_deref().unwrap_or(&snippet);
-    json!({
-        "id": node.id,
-        "title": truncate(title, 100),
-        "type": node.node_type,
-        "snippet": snippet,
-    })
-}
-
-/// Format a node as a full result with properties and truncated body.
-fn node_full(node: &nodespace_core::models::Node) -> Value {
-    json!({
-        "id": node.id,
-        "type": node.node_type,
-        "title": node.title,
-        "body": truncate(&node.content, BODY_TRUNCATE_FULL),
-        "properties": node.properties,
-        "version": node.version,
-    })
 }
 
 /// Extract a required string field from JSON args.
@@ -100,6 +75,11 @@ fn error_result(tool_call_id: &str, name: &str, message: &str) -> ToolResult {
         result: json!({ "error": message }),
         is_error: true,
     }
+}
+
+/// Convert an OpsError to a ToolError.
+fn ops_error_to_tool(e: OpsError, tool_name: &str) -> ToolError {
+    ToolError::ExecutionFailed(format!("{} failed: {}", tool_name, e))
 }
 
 /// Build a success `ToolResult`.
@@ -316,16 +296,40 @@ fn all_tool_definitions() -> Vec<ToolDefinition> {
 
 /// Executes graph operation tools against `NodeService` and `NodeEmbeddingService`.
 ///
-/// Service references are obtained per-operation from `AppServices` so they
-/// survive database hot-swaps without storing stale references.
+/// Service references are injected directly, decoupling this crate from
+/// Tauri-specific `AppServices`. The desktop-app layer is responsible for
+/// resolving services and constructing this executor.
 pub struct GraphToolExecutor {
-    app_services: AppServices,
+    /// Node service for graph operations. `None` if services aren't initialized yet.
+    pub node_service: Option<Arc<NodeService>>,
+    /// Embedding service for semantic search. `None` if unavailable.
+    pub embedding_service: Option<Arc<NodeEmbeddingService>>,
 }
 
 impl GraphToolExecutor {
-    /// Create a new executor backed by the given application services container.
-    pub fn new(app_services: AppServices) -> Self {
-        Self { app_services }
+    /// Create a new executor with the given services.
+    pub fn new(
+        node_service: Arc<NodeService>,
+        embedding_service: Option<Arc<NodeEmbeddingService>>,
+    ) -> Self {
+        Self {
+            node_service: Some(node_service),
+            embedding_service,
+        }
+    }
+
+    /// Create an executor with optional services.
+    ///
+    /// Use when services may not be initialized yet (e.g., at startup).
+    /// Operations that need missing services will return a clear error.
+    pub fn new_with_optional_services(
+        node_service: Option<Arc<NodeService>>,
+        embedding_service: Option<Arc<NodeEmbeddingService>>,
+    ) -> Self {
+        Self {
+            node_service,
+            embedding_service,
+        }
     }
 
     // -- Individual tool implementations --
@@ -339,21 +343,47 @@ impl GraphToolExecutor {
         let node_type = optional_str(&args, "node_type");
         let limit = optional_usize(&args, "limit", DEFAULT_SEARCH_LIMIT);
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
-        let filter = NodeFilter {
-            content_contains: Some(query),
+        let input = node_ops::QueryNodesInput {
             node_type,
+            parent_id: None,
+            root_id: None,
             limit: Some(limit),
-            ..Default::default()
+            offset: None,
+            collection_id: None,
+            collection: None,
+            filters: Some(vec![node_ops::QueryFilterItem {
+                field: "content".to_string(),
+                operator: "contains".to_string(),
+                value: Value::String(query),
+            }]),
         };
 
-        let nodes = ns
-            .query_nodes(filter)
+        let output = node_ops::query_nodes(&ns, input)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("search_nodes failed: {}", e)))?;
+            .map_err(|e| ops_error_to_tool(e, "search_nodes"))?;
 
-        let summaries: Vec<Value> = nodes.iter().map(node_summary).collect();
+        // Truncate node data for token efficiency
+        let summaries: Vec<Value> = output
+            .nodes
+            .iter()
+            .map(|v| {
+                json!({
+                    "id": v.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "title": truncate(
+                        v.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        100
+                    ),
+                    "type": v.get("node_type").or(v.get("type")).and_then(|v| v.as_str()).unwrap_or(""),
+                    "snippet": truncate(
+                        v.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                        BODY_TRUNCATE_SUMMARY
+                    ),
+                })
+            })
+            .collect();
+
         Ok(ok_result(
             tool_call_id,
             "search_nodes",
@@ -369,26 +399,43 @@ impl GraphToolExecutor {
         let query = require_str(&args, "query", "search_semantic")?;
         let limit = optional_usize(&args, "limit", DEFAULT_SEMANTIC_LIMIT);
 
-        let emb = self.embedding_service().await?;
+        let ns = self.node_service()?;
+        let emb = self.embedding_service()?;
 
-        let results = emb
-            .semantic_search(&query, limit, SEMANTIC_THRESHOLD)
+        let input = search_ops::SearchSemanticInput {
+            query: query.clone(),
+            threshold: Some(SEMANTIC_THRESHOLD),
+            limit: Some(limit),
+            collection_id: None,
+            collection: None,
+            exclude_collections: None,
+            include_markdown: None,
+            include_archived: None,
+            scope: None,
+        };
+
+        let output = search_ops::search_semantic(&ns, &emb, input)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("search_semantic failed: {}", e)))?;
+            .map_err(|e| ops_error_to_tool(e, "search_semantic"))?;
 
-        let items: Vec<Value> = results
+        // Truncate for token efficiency
+        let items: Vec<Value> = output
+            .nodes
             .iter()
-            .map(|r| {
-                let mut item = json!({
-                    "id": r.node_id,
-                    "score": format!("{:.3}", r.score),
-                });
-                if let Some(node) = &r.node {
-                    item["title"] = json!(node.title.as_deref().unwrap_or(""));
-                    item["type"] = json!(&node.node_type);
-                    item["snippet"] = json!(truncate(&node.content, BODY_TRUNCATE_SUMMARY));
-                }
-                item
+            .map(|v| {
+                json!({
+                    "id": v.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "title": truncate(
+                        v.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        100
+                    ),
+                    "type": v.get("node_type").or(v.get("type")).and_then(|v| v.as_str()).unwrap_or(""),
+                    "score": v.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    "snippet": truncate(
+                        v.get("content").and_then(|v| v.as_str()).unwrap_or(""),
+                        BODY_TRUNCATE_SUMMARY
+                    ),
+                })
             })
             .collect();
 
@@ -407,7 +454,7 @@ impl GraphToolExecutor {
         let id = require_str(&args, "id", "get_node")?;
         let format = optional_str(&args, "format").unwrap_or_else(|| "json".to_string());
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
         if format == "markdown" {
             // Reuse the MCP handler's markdown export (single source of truth)
@@ -441,17 +488,15 @@ impl GraphToolExecutor {
                 )),
             }
         } else {
-            match ns.get_node(&id).await {
-                Ok(Some(node)) => Ok(ok_result(tool_call_id, "get_node", node_full(&node))),
-                Ok(None) => Ok(error_result(
+            let input = node_ops::GetNodeInput { node_id: id.clone() };
+            match node_ops::get_node(&ns, input).await {
+                Ok(node_data) => Ok(ok_result(tool_call_id, "get_node", node_data)),
+                Err(OpsError::NotFound { .. }) => Ok(error_result(
                     tool_call_id,
                     "get_node",
                     &format!("Node '{}' not found", id),
                 )),
-                Err(e) => Err(ToolError::ExecutionFailed(format!(
-                    "get_node failed: {}",
-                    e
-                ))),
+                Err(e) => Err(ops_error_to_tool(e, "get_node")),
             }
         }
     }
@@ -467,33 +512,31 @@ impl GraphToolExecutor {
         let properties = args.get("properties").cloned().unwrap_or(json!({}));
         let parent_id = optional_str(&args, "parent_id");
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
-        // Use content as title + body combined
         let content = if body.is_empty() {
             title.clone()
         } else {
             format!("{}\n{}", title, body)
         };
 
-        let params = nodespace_core::services::CreateNodeParams {
-            id: None,
+        let input = node_ops::CreateNodeInput {
             node_type,
             content,
             parent_id,
-            insert_after_node_id: None,
             properties,
+            collection: None,
+            lifecycle_status: None,
         };
 
-        let node_id = ns
-            .create_node_with_parent(params)
+        let output = node_ops::create_node(&ns, input)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("create_node failed: {}", e)))?;
+            .map_err(|e| ops_error_to_tool(e, "create_node"))?;
 
         Ok(ok_result(
             tool_call_id,
             "create_node",
-            json!({ "id": node_id }),
+            json!({ "id": output.node_id }),
         ))
     }
 
@@ -507,8 +550,6 @@ impl GraphToolExecutor {
         let new_body = optional_str(&args, "body");
         let new_properties = args.get("properties").cloned();
 
-        // Build content update: combine title + body if either is provided.
-        // For simplicity, if only title or only body is given, we update content directly.
         let content_update = match (&new_title, &new_body) {
             (Some(t), Some(b)) => Some(format!("{}\n{}", t, b)),
             (Some(t), None) => Some(t.clone()),
@@ -516,46 +557,34 @@ impl GraphToolExecutor {
             (None, None) => None,
         };
 
-        let update = NodeUpdate {
-            content: content_update,
-            properties: new_properties,
-            title: new_title.map(Some),
-            ..Default::default()
-        };
-
-        if update.content.is_none() && update.properties.is_none() && update.title.is_none() {
+        if content_update.is_none() && new_properties.is_none() {
             return Err(ToolError::InvalidArguments {
                 tool: "update_node".into(),
                 reason: "At least one of 'title', 'body', or 'properties' must be provided".into(),
             });
         }
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
-        // Fetch the node first to get its current version
-        let node = ns.get_node(&id).await.map_err(|e| {
-            ToolError::ExecutionFailed(format!("update_node: failed to fetch node: {}", e))
-        })?;
-
-        let node = match node {
-            Some(n) => n,
-            None => {
-                return Ok(error_result(
-                    tool_call_id,
-                    "update_node",
-                    &format!("Node '{}' not found", id),
-                ));
-            }
+        let input = node_ops::UpdateNodeInput {
+            node_id: id.clone(),
+            version: None, // ops layer auto-fetches
+            node_type: None,
+            content: content_update,
+            properties: new_properties,
+            add_to_collection: None,
+            remove_from_collection: None,
+            lifecycle_status: None,
         };
 
-        ns.update_node(&id, node.version, update)
+        let output = node_ops::update_node(&ns, input)
             .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("update_node failed: {}", e)))?;
+            .map_err(|e| ops_error_to_tool(e, "update_node"))?;
 
         Ok(ok_result(
             tool_call_id,
             "update_node",
-            json!({ "id": id, "updated": true }),
+            json!({ "id": output.node_id, "updated": true }),
         ))
     }
 
@@ -568,13 +597,18 @@ impl GraphToolExecutor {
         let to_id = require_str(&args, "to_id", "create_relationship")?;
         let rel_type = require_str(&args, "relationship_type", "create_relationship")?;
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
-        ns.create_relationship(&from_id, &rel_type, &to_id, json!({}))
+        let input = rel_ops::CreateRelInput {
+            source_id: from_id.clone(),
+            relationship_name: rel_type.clone(),
+            target_id: to_id.clone(),
+            edge_data: None,
+        };
+
+        rel_ops::create_relationship(&ns, input)
             .await
-            .map_err(|e| {
-                ToolError::ExecutionFailed(format!("create_relationship failed: {}", e))
-            })?;
+            .map_err(|e| ops_error_to_tool(e, "create_relationship"))?;
 
         Ok(ok_result(
             tool_call_id,
@@ -593,8 +627,7 @@ impl GraphToolExecutor {
             optional_str(&args, "relationship_type").unwrap_or_else(|| "mentions".to_string());
         let direction = optional_str(&args, "direction").unwrap_or_else(|| "both".to_string());
 
-        // Validate direction before acquiring the service to ensure
-        // argument errors are reported correctly even without a database.
+        // Validate direction before acquiring the service
         let directions: Vec<&str> = match direction.as_str() {
             "out" => vec!["out"],
             "in" => vec!["in"],
@@ -607,18 +640,29 @@ impl GraphToolExecutor {
             }
         };
 
-        let ns = self.node_service().await?;
+        let ns = self.node_service()?;
 
         let mut all_nodes: Vec<Value> = Vec::new();
         for dir in &directions {
-            let nodes = ns
-                .get_related_nodes(&id, &rel_type, dir)
+            let input = rel_ops::GetRelatedInput {
+                node_id: id.clone(),
+                relationship_name: rel_type.clone(),
+                direction: dir.to_string(),
+            };
+
+            let output = rel_ops::get_related_nodes(&ns, input)
                 .await
-                .map_err(|e| {
-                    ToolError::ExecutionFailed(format!("get_related_nodes failed: {}", e))
-                })?;
-            for node in &nodes {
-                let mut summary = node_summary(node);
+                .map_err(|e| ops_error_to_tool(e, "get_related_nodes"))?;
+
+            for node_val in &output.related_nodes {
+                let mut summary = json!({
+                    "id": node_val.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "title": truncate(
+                        node_val.get("title").and_then(|v| v.as_str()).unwrap_or(""),
+                        100
+                    ),
+                    "type": node_val.get("node_type").or(node_val.get("type")).and_then(|v| v.as_str()).unwrap_or(""),
+                });
                 summary["direction"] = json!(dir);
                 summary["relationship_type"] = json!(&rel_type);
                 all_nodes.push(summary);
@@ -634,21 +678,16 @@ impl GraphToolExecutor {
 
     // -- Service accessors --
 
-    async fn node_service(&self) -> Result<Arc<NodeService>, ToolError> {
-        self.app_services
-            .node_service()
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("Service unavailable: {}", e.message)))
+    fn node_service(&self) -> Result<Arc<NodeService>, ToolError> {
+        self.node_service
+            .clone()
+            .ok_or_else(|| ToolError::ExecutionFailed("Node service unavailable".to_string()))
     }
 
-    async fn embedding_service(&self) -> Result<Arc<NodeEmbeddingService>, ToolError> {
-        self.app_services
-            .embedding_state()
-            .await
-            .map(|(svc, _)| svc)
-            .map_err(|e| {
-                ToolError::ExecutionFailed(format!("Embedding service unavailable: {}", e.message))
-            })
+    fn embedding_service(&self) -> Result<Arc<NodeEmbeddingService>, ToolError> {
+        self.embedding_service
+            .clone()
+            .ok_or_else(|| ToolError::ExecutionFailed("Embedding service unavailable".to_string()))
     }
 }
 
@@ -683,6 +722,17 @@ impl AgentToolExecutor for GraphToolExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Create a `GraphToolExecutor` with no backing services.
+    ///
+    /// Suitable for tests that validate argument parsing and tool dispatch
+    /// without ever reaching a real database call.
+    fn test_executor() -> GraphToolExecutor {
+        GraphToolExecutor {
+            node_service: None,
+            embedding_service: None,
+        }
+    }
 
     // -- Helper: test truncation --
 
@@ -846,60 +896,11 @@ mod tests {
         assert_eq!(r.result["key"], "val");
     }
 
-    // -- node_summary formatting --
-
-    #[test]
-    fn node_summary_format() {
-        let node = nodespace_core::models::Node {
-            id: "abc-123".into(),
-            node_type: "text".into(),
-            content: "Hello World".into(),
-            version: 1,
-            created_at: chrono::Utc::now(),
-            modified_at: chrono::Utc::now(),
-            properties: json!({}),
-            mentions: vec![],
-            mentioned_in: vec![],
-            title: Some("Hello World".into()),
-            lifecycle_status: "active".into(),
-        };
-        let summary = node_summary(&node);
-        assert_eq!(summary["id"], "abc-123");
-        assert_eq!(summary["type"], "text");
-        assert!(summary["title"].as_str().unwrap().contains("Hello"));
-    }
-
-    // -- node_full formatting --
-
-    #[test]
-    fn node_full_truncates_long_body() {
-        let long_content = "x".repeat(3000);
-        let node = nodespace_core::models::Node {
-            id: "node-1".into(),
-            node_type: "text".into(),
-            content: long_content,
-            version: 3,
-            created_at: chrono::Utc::now(),
-            modified_at: chrono::Utc::now(),
-            properties: json!({"status": "active"}),
-            mentions: vec![],
-            mentioned_in: vec![],
-            title: None,
-            lifecycle_status: "active".into(),
-        };
-        let full = node_full(&node);
-        let body = full["body"].as_str().unwrap();
-        assert!(body.ends_with("[truncated]"));
-        assert!(body.len() <= BODY_TRUNCATE_FULL + "[truncated]".len());
-        assert_eq!(full["version"], 3);
-        assert_eq!(full["properties"]["status"], "active");
-    }
-
     // -- AgentToolExecutor trait: unknown tool --
 
     #[tokio::test]
     async fn execute_unknown_tool_returns_error() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor.execute("nonexistent_tool", json!({})).await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -912,7 +913,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_nodes_missing_query() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor.execute("search_nodes", json!({})).await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -926,7 +927,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_node_missing_id() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor.execute("get_node", json!({})).await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -939,7 +940,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_node_missing_required() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         // Missing title
         let result = executor
             .execute("create_node", json!({"node_type": "text"}))
@@ -956,7 +957,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_node_missing_type() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor
             .execute("create_node", json!({"title": "Test"}))
             .await;
@@ -972,7 +973,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_node_missing_id() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor
             .execute("update_node", json!({"title": "new"}))
             .await;
@@ -987,7 +988,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_node_no_changes() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor
             .execute("update_node", json!({"id": "node-1"}))
             .await;
@@ -1003,7 +1004,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_relationship_missing_fields() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor
             .execute("create_relationship", json!({"from_id": "a"}))
             .await;
@@ -1018,7 +1019,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_related_nodes_missing_id() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor.execute("get_related_nodes", json!({})).await;
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -1031,7 +1032,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_related_nodes_invalid_direction() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let result = executor
             .execute(
                 "get_related_nodes",
@@ -1052,7 +1053,7 @@ mod tests {
 
     #[tokio::test]
     async fn available_tools_returns_all_seven() {
-        let executor = GraphToolExecutor::new(AppServices::new());
+        let executor = test_executor();
         let tools = executor.available_tools().await.unwrap();
         assert_eq!(tools.len(), 7);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();

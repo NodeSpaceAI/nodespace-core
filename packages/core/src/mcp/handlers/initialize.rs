@@ -9,7 +9,8 @@
 //! of exposed tools and types.
 
 use crate::mcp::types::MCPError;
-use crate::services::{CollectionService, NodeEmbeddingService, NodeService};
+use crate::ops::context_ops;
+use crate::services::{NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -87,32 +88,27 @@ pub async fn handle_initialize(
         tracing::info!("MCP server starting without embeddings — semantic search disabled");
     }
 
-    // Fetch all available schemas to build dynamic instructions
-    // Note: If schemas haven't been initialized yet (fresh database), fall back to
-    // built-in type list. This handles the bootstrap case where MCP server starts
-    // before schema initialization completes.
-    let schemas = node_service.get_all_schemas().await.unwrap_or_default();
-
-    // Fetch all available collection names for AI agent awareness
-    // This enables agents to use collection-based filtering in search_semantic
-    // Issue #813: CollectionService now requires NodeService for event emission
-    let collection_service = CollectionService::new(node_service.store(), node_service);
-    let collections = collection_service
-        .get_all_collection_names()
+    // Fetch workspace context (schemas, collections, playbooks) via ops layer
+    let ws_ctx = context_ops::build_workspace_context(node_service)
         .await
-        .unwrap_or_default();
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to build workspace context: {}", e);
+            context_ops::WorkspaceContext {
+                entity_types: vec![],
+                collections: vec![],
+                active_playbooks: vec![],
+            }
+        });
 
-    let node_types_str = if schemas.is_empty() {
+    let node_types_str = if ws_ctx.entity_types.is_empty() {
         // Fallback: Built-in types (before schema initialization)
         "text (paragraphs), header (# headings), task (with status property), date (YYYY-MM-DD containers), code-block (```code```), quote-block (> quotes), ordered-list (1. items)".to_string()
     } else {
-        // Dynamic: Build from actual schemas in database
-        let node_types: Vec<String> = schemas
+        let node_types: Vec<String> = ws_ctx
+            .entity_types
             .iter()
-            .map(|schema| {
-                let type_id = &schema.id; // Schema ID is the type name (e.g., "task", "text")
-                                          // Add brief description for built-in types
-                let desc = match type_id.as_str() {
+            .map(|et| {
+                let desc = match et.type_id.as_str() {
                     "text" => "paragraphs",
                     "header" => "# headings",
                     "task" => "with status property",
@@ -120,15 +116,15 @@ pub async fn handle_initialize(
                     "code-block" => "```code```",
                     "quote-block" => "> quotes",
                     "ordered-list" => "1. items",
-                    _ => "custom type", // User-defined schemas
+                    _ => "custom type",
                 };
-                format!("{} ({})", type_id, desc)
+                format!("{} ({})", et.type_id, desc)
             })
             .collect();
         node_types.join(", ")
     };
 
-    // Build collections string for instructions
+    let collections = &ws_ctx.collections;
     let collections_str = if collections.is_empty() {
         "(none yet)".to_string()
     } else {

@@ -1,11 +1,12 @@
 //! Shared types, traits, and interface contracts for agent subsystems.
 //!
 //! This module defines the foundational type definitions, trait interfaces,
-//! message formats, and Tauri event constants that all agent-related subsystems
-//! code against. It produces no runtime behavior -- only type definitions,
-//! trait declarations, and module scaffolding.
+//! and message formats that all agent-related subsystems code against. It
+//! produces no runtime behavior -- only type definitions, trait declarations,
+//! and module scaffolding.
 //!
-//! Issue #998: prerequisite that unblocks all parallel agent implementation streams.
+//! Tauri event channel constants live in the desktop-app crate (they depend
+//! on Tauri, which is not a dependency of this crate).
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -291,8 +292,7 @@ pub enum AcpAuthMethod {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelFamily {
-    /// Ministral — Mistral AI's small model series (Ministral 3B, Ministral 8B).
-    /// Named after the specific product line, not the parent company.
+    /// Ministral -- Mistral AI's small model series (Ministral 3B, Ministral 8B).
     Ministral,
 }
 
@@ -520,6 +520,10 @@ pub struct AgentSession {
     pub created_at: DateTime<Utc>,
     /// Record of tool executions during this session.
     pub tool_executions: Vec<ToolExecutionRecord>,
+    /// Cached dynamic context string (workspace schemas, collections, playbooks).
+    /// Built once per session on first turn, then reused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dynamic_context: Option<String>,
 }
 
 /// Result of a complete agent turn (one round of generation + tool execution).
@@ -585,14 +589,6 @@ pub struct ContextRelationship {
 #[async_trait]
 pub trait ChatInferenceEngine: Send + Sync {
     /// Run streaming inference on the given request.
-    ///
-    /// Chunks are delivered incrementally via `on_chunk`. The callback receives
-    /// each [`StreamingChunk`] as it becomes available (tokens, tool call
-    /// fragments, errors). When inference completes, the method returns
-    /// aggregate [`InferenceUsage`] statistics.
-    ///
-    /// This callback-based design avoids buffering the entire response and
-    /// lets callers forward chunks to the frontend in real time.
     async fn generate(
         &self,
         request: InferenceRequest,
@@ -600,13 +596,9 @@ pub trait ChatInferenceEngine: Send + Sync {
     ) -> Result<InferenceUsage, InferenceError>;
 
     /// Return metadata about the currently loaded model.
-    ///
-    /// Returns `None` if no model is loaded.
     async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError>;
 
     /// Estimate the token count for the given text.
-    ///
-    /// This is used for context window management and budget tracking.
     async fn token_count(&self, text: &str) -> Result<u32, InferenceError>;
 }
 
@@ -617,9 +609,6 @@ pub trait ModelManager: Send + Sync {
     async fn list(&self) -> Result<Vec<ModelInfo>, ModelError>;
 
     /// Begin downloading a model by its identifier.
-    ///
-    /// Progress is reported via [`DownloadEvent`] emitted on the
-    /// [`events::MODEL_DOWNLOAD_PROGRESS`] Tauri event channel.
     async fn download(&self, model_id: &str) -> Result<(), ModelError>;
 
     /// Cancel an in-progress download.
@@ -662,8 +651,6 @@ pub trait AcpTransport: Send + Sync {
     async fn send(&self, message: AcpMessage) -> Result<(), TransportError>;
 
     /// Receive the next JSON-RPC message from the agent.
-    ///
-    /// Blocks until a message is available or the transport is shut down.
     async fn receive(&self) -> Result<AcpMessage, TransportError>;
 
     /// Check whether the agent process is still alive.
@@ -693,47 +680,9 @@ pub trait AgentRegistry: Send + Sync {
 #[async_trait]
 pub trait ContextAssembler: Send + Sync {
     /// Assemble a context packet for the given node IDs within the token budget.
-    ///
-    /// The assembler selects the most relevant content from the knowledge graph
-    /// (including semantic neighbors and relationships) that fits within
-    /// `token_budget` tokens.
     async fn assemble(
         &self,
         node_ids: Vec<String>,
         token_budget: u32,
     ) -> Result<ContextPacket, ContextError>;
-}
-
-// ---------------------------------------------------------------------------
-// Tauri event channel constants
-// ---------------------------------------------------------------------------
-
-/// Constants for Tauri event channel names used by the agent subsystem.
-///
-/// Both the Rust backend and TypeScript frontend must use identical strings
-/// when emitting / listening for events across the Tauri bridge.
-pub mod events {
-    /// Streaming inference chunk from the local agent.
-    pub const LOCAL_AGENT_CHUNK: &str = "local-agent://chunk";
-
-    /// Tool execution event from the local agent.
-    pub const LOCAL_AGENT_TOOL: &str = "local-agent://tool";
-
-    /// Local agent status change (idle, thinking, streaming, etc.).
-    pub const LOCAL_AGENT_STATUS: &str = "local-agent://status";
-
-    /// Local agent error event.
-    pub const LOCAL_AGENT_ERROR: &str = "local-agent://error";
-
-    /// Model download progress update.
-    pub const MODEL_DOWNLOAD_PROGRESS: &str = "model://download-progress";
-
-    /// Model status change (loading, loaded, error).
-    pub const MODEL_STATUS: &str = "model://status";
-
-    /// ACP session state transition.
-    pub const ACP_SESSION_STATE: &str = "acp://session-state";
-
-    /// Message received from an ACP agent.
-    pub const ACP_AGENT_MESSAGE: &str = "acp://agent-message";
 }

@@ -10,14 +10,15 @@
 //!
 //! Issue #1008
 
-use crate::agent_types::{
-    events, AgentSession, AgentToolExecutor, AgentTurnResult, ChatInferenceEngine, ChatModelSpec,
+use crate::agent_events;
+use crate::commands::nodes::CommandError;
+use async_trait::async_trait;
+use nodespace_agent::agent_types::{
+    AgentSession, AgentToolExecutor, AgentTurnResult, ChatInferenceEngine, ChatModelSpec,
     InferenceError, InferenceUsage, LocalAgentStatus, ModelManager, ModelStatus, StreamingChunk,
 };
-use crate::commands::nodes::CommandError;
-use crate::local_agent::agent_loop::LocalAgentService;
-use crate::local_agent::model_manager::GgufModelManager;
-use async_trait::async_trait;
+use nodespace_agent::local_agent::agent_loop::LocalAgentService;
+use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use nodespace_nlp_engine::chat::ChatConfig;
 use serde::Serialize;
 use std::sync::Arc;
@@ -40,7 +41,7 @@ struct NoOpInferenceEngine;
 impl ChatInferenceEngine for NoOpInferenceEngine {
     async fn generate(
         &self,
-        _request: crate::agent_types::InferenceRequest,
+        _request: nodespace_agent::agent_types::InferenceRequest,
         _on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
     ) -> Result<InferenceUsage, InferenceError> {
         Err(InferenceError::NoModelLoaded)
@@ -75,14 +76,19 @@ pub struct ManagedAgentState {
 impl ManagedAgentState {
     /// Create with a no-op inference engine.
     ///
-    /// The `app_services` parameter is used to construct the tool executor
-    /// so it can access NodeService and NodeEmbeddingService per-operation.
+    /// The `app_services` parameter is used to resolve NodeService and
+    /// NodeEmbeddingService when constructing the tool executor. At startup,
+    /// services may not be initialized yet, so the executor starts without them.
     pub fn new(app_services: crate::app_services::AppServices) -> Self {
-        use crate::local_agent::tools::GraphToolExecutor;
+        use nodespace_agent::local_agent::tools::GraphToolExecutor;
 
         let engine: Arc<dyn ChatInferenceEngine> = Arc::new(NoOpInferenceEngine);
-        let executor: Arc<dyn AgentToolExecutor> =
-            Arc::new(GraphToolExecutor::new(app_services.clone()));
+        // At startup, services aren't initialized yet. The executor handles
+        // None gracefully (returns "service unavailable" errors).
+        let executor: Arc<dyn AgentToolExecutor> = Arc::new(GraphToolExecutor {
+            node_service: None,
+            embedding_service: None,
+        });
         let service = LocalAgentService::new(engine, executor);
 
         Self {
@@ -103,13 +109,19 @@ impl ManagedAgentState {
 
     /// Replace the inference engine (called when a model is loaded).
     ///
-    /// Creates a fresh `LocalAgentService` with the new engine and the
-    /// existing tool executor. Existing sessions are dropped.
+    /// Creates a fresh `LocalAgentService` with the new engine and a tool
+    /// executor backed by the current services from AppServices.
+    /// Existing sessions are dropped.
     pub async fn replace_engine(&self, engine: Arc<dyn ChatInferenceEngine>) {
-        use crate::local_agent::tools::GraphToolExecutor;
+        use nodespace_agent::local_agent::tools::GraphToolExecutor;
 
-        let executor: Arc<dyn AgentToolExecutor> =
-            Arc::new(GraphToolExecutor::new(self.app_services.clone()));
+        // Resolve services from AppServices (should be initialized by now).
+        let node_service = self.app_services.node_service().await.ok();
+        let embedding_service = self.app_services.embedding_service().await.ok();
+
+        let executor: Arc<dyn AgentToolExecutor> = Arc::new(
+            GraphToolExecutor::new_with_optional_services(node_service, embedding_service),
+        );
         let service = LocalAgentService::new(engine, executor);
 
         let mut guard = self.inner.write().await;
@@ -194,7 +206,7 @@ pub async fn ensure_model_ready(
         ModelStatus::NotDownloaded => {
             // Need to download first
             let _ = app.emit(
-                events::MODEL_STATUS,
+                agent_events::MODEL_STATUS,
                 &ModelStatusEvent {
                     model_id: model_id.clone(),
                     status: "downloading".to_string(),
@@ -206,7 +218,7 @@ pub async fn ensure_model_ready(
             let app_progress = app.clone();
             manager
                 .set_progress_callback(Box::new(move |evt| {
-                    let _ = app_progress.emit(events::MODEL_DOWNLOAD_PROGRESS, &evt);
+                    let _ = app_progress.emit(agent_events::MODEL_DOWNLOAD_PROGRESS, &evt);
                 }))
                 .await;
 
@@ -224,7 +236,7 @@ pub async fn ensure_model_ready(
 
     // --- Load the model into the inference engine ---
     let _ = app.emit(
-        events::MODEL_STATUS,
+        agent_events::MODEL_STATUS,
         &ModelStatusEvent {
             model_id: model_id.clone(),
             status: "loading".to_string(),
@@ -247,7 +259,7 @@ pub async fn ensure_model_ready(
 
     // Create the real inference engine (blocking: loads GGUF + compiles Metal kernels)
     let engine = tokio::task::spawn_blocking(move || {
-        use crate::local_agent::inference::LlamaChatInferenceEngine;
+        use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
         LlamaChatInferenceEngine::load(&model_path_str, ChatConfig::default())
     })
     .await
@@ -258,7 +270,7 @@ pub async fn ensure_model_ready(
     agent_state.replace_engine(Arc::new(engine)).await;
 
     let _ = app.emit(
-        events::MODEL_STATUS,
+        agent_events::MODEL_STATUS,
         &ModelStatusEvent {
             model_id: model_id.clone(),
             status: "ready".to_string(),
@@ -289,7 +301,8 @@ pub async fn local_agent_status(
 
 /// Create a new local agent conversation session.
 ///
-/// Returns the session ID.
+/// Returns the session ID. Populates the session's dynamic context with
+/// the current workspace schemas, collections, and active playbooks.
 #[tauri::command]
 pub async fn local_agent_new_session(
     model_id: String,
@@ -297,6 +310,16 @@ pub async fn local_agent_new_session(
 ) -> Result<String, CommandError> {
     let service = state.service().await;
     let session_id = service.create_session(Some(model_id)).await;
+
+    // Build workspace context for the local agent prompt
+    if let Ok(ns) = state.app_services.node_service().await {
+        let context = nodespace_core::ops::context_ops::build_workspace_context(&ns)
+            .await
+            .unwrap_or_default();
+        let context_str = context.format_for_prompt(1500);
+        service.set_session_context(&session_id, context_str).await;
+    }
+
     tracing::info!(session_id = %session_id, "Local agent session created");
     Ok(session_id)
 }
@@ -320,11 +343,11 @@ pub async fn local_agent_send(
     let app_tool = app.clone();
 
     let on_status = move |status: LocalAgentStatus| {
-        let _ = app_status.emit(events::LOCAL_AGENT_STATUS, &status);
+        let _ = app_status.emit(agent_events::LOCAL_AGENT_STATUS, &status);
     };
 
     let on_chunk = move |chunk: StreamingChunk| {
-        let _ = app_chunk.emit(events::LOCAL_AGENT_CHUNK, &chunk);
+        let _ = app_chunk.emit(agent_events::LOCAL_AGENT_CHUNK, &chunk);
         // Forward tool call starts as dedicated tool events
         if let StreamingChunk::ToolCallStart { ref id, ref name } = chunk {
             #[derive(Serialize)]
@@ -333,7 +356,7 @@ pub async fn local_agent_send(
                 name: String,
             }
             let _ = app_tool.emit(
-                events::LOCAL_AGENT_TOOL,
+                agent_events::LOCAL_AGENT_TOOL,
                 &ToolEvent {
                     id: id.clone(),
                     name: name.clone(),
@@ -348,7 +371,7 @@ pub async fn local_agent_send(
         .await
         .map_err(|e| {
             let msg = e.to_string();
-            let _ = app.emit(events::LOCAL_AGENT_ERROR, &msg);
+            let _ = app.emit(agent_events::LOCAL_AGENT_ERROR, &msg);
             agent_error(msg)
         })
 }

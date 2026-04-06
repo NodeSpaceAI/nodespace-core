@@ -1,0 +1,35 @@
+[package]
+name = "nodespace-agent"
+version = "0.1.0"
+description = "Agent subsystem: local inference, ACP transport, tool execution"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nodespace-core = { workspace = true }
+nodespace-nlp-engine = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tokio-util = "0.7"
+tracing = "0.1"
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { version = "0.12", features = ["stream"] }
+sha2 = "0.10"
+uuid = { workspace = true }
+futures = "0.3"
+regex = "1"
+dirs = "5.0"
+sysinfo = "0.33"
+which = "7"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = "3"
