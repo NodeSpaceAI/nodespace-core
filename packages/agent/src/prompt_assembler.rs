@@ -181,6 +181,40 @@ impl PromptAssembler {
         }
     }
 
+    /// Assemble prompt with an active skill context injected.
+    ///
+    /// When a skill is active:
+    /// 1. Base prompt + graph overrides (same as regular assembly)
+    /// 2. Skill header with name and description
+    /// 3. Tool whitelist applied to tool schemas
+    pub async fn assemble_with_skill(
+        &self,
+        dynamic_context: &str,
+        template_ctx: &TemplateContext,
+        tools: Vec<ToolDefinition>,
+        skill: &Node,
+    ) -> AssembledPrompt {
+        // Regular assembly first
+        let mut assembled = self.assemble(dynamic_context, template_ctx, tools).await;
+
+        // Add skill context
+        let skill_name = &skill.content;
+        let skill_desc = skill
+            .properties
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let skill_section = format!(
+            "\n\nACTIVE SKILL: {}\n{}\n\
+             Focus on this skill's capabilities. Use only the tools provided.",
+            skill_name, skill_desc
+        );
+
+        assembled.system_prompt.push_str(&skill_section);
+        assembled
+    }
+
     /// Get seed prompt nodes that should be created on first run.
     ///
     /// These migrate the content from `prompt_templates.rs` into graph nodes

@@ -1679,6 +1679,131 @@ impl NodeBehavior for PromptNodeBehavior {
     }
 }
 
+/// Built-in behavior for skill nodes (ADR-030 Phase 3)
+///
+/// Skills define what the agent can do and how. They contain:
+/// - A description (drives semantic search for skill discovery)
+/// - A tool whitelist (which tools this skill can use)
+/// - Max iterations for the ReAct loop
+/// - Child prompt nodes containing guidance and examples
+///
+/// Content holds the skill name (e.g., "Research & Search").
+/// The `description` property drives embedding for discovery.
+pub struct SkillNodeBehavior;
+
+impl NodeBehavior for SkillNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "skill"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Content (skill name) should not be empty
+        if node.content.trim().is_empty() {
+            return Err(NodeValidationError::MissingField(
+                "Skill name (content) cannot be empty".to_string(),
+            ));
+        }
+
+        // Validate description is a string if present
+        if let Some(desc) = node.properties.get("description") {
+            if !desc.is_string() && !desc.is_null() {
+                return Err(NodeValidationError::InvalidProperties(
+                    "description must be a string".to_string(),
+                ));
+            }
+        }
+
+        // Validate tool_whitelist is an array of strings if present
+        if let Some(whitelist) = node.properties.get("tool_whitelist") {
+            if let Some(arr) = whitelist.as_array() {
+                for item in arr {
+                    if !item.is_string() {
+                        return Err(NodeValidationError::InvalidProperties(
+                            "tool_whitelist items must be strings".to_string(),
+                        ));
+                    }
+                }
+            } else if !whitelist.is_null() {
+                return Err(NodeValidationError::InvalidProperties(
+                    "tool_whitelist must be an array".to_string(),
+                ));
+            }
+        }
+
+        // Validate max_iterations is a positive integer if present
+        if let Some(max_iter) = node.properties.get("max_iterations") {
+            if let Some(n) = max_iter.as_i64() {
+                if n < 1 {
+                    return Err(NodeValidationError::InvalidProperties(
+                        "max_iterations must be positive".to_string(),
+                    ));
+                }
+            } else if !max_iter.is_null() {
+                return Err(NodeValidationError::InvalidProperties(
+                    "max_iterations must be an integer".to_string(),
+                ));
+            }
+        }
+
+        // Validate output_format if present
+        if let Some(fmt) = node.properties.get("output_format") {
+            if let Some(s) = fmt.as_str() {
+                match s {
+                    "text" | "json" | "markdown" => {}
+                    _ => {
+                        return Err(NodeValidationError::InvalidProperties(format!(
+                            "Invalid output_format '{}': must be text, json, or markdown",
+                            s
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        true // Skills contain child prompt nodes with guidance
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "description": "",
+            "tool_whitelist": [],
+            "max_iterations": 2,
+            "output_format": "text"
+        })
+    }
+
+    /// The description property drives embedding for skill discovery
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        let desc = node
+            .properties
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let name = &node.content;
+
+        if desc.is_empty() && name.trim().is_empty() {
+            None
+        } else if desc.is_empty() {
+            Some(name.clone())
+        } else {
+            Some(format!("{}\n\n{}", name, desc))
+        }
+    }
+
+    /// Skills don't contribute to parent embeddings
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
+    }
+}
+
 /// Fallback behavior for schema-defined custom types
 ///
 /// This behavior is used for node types that have a schema definition but no
@@ -1859,6 +1984,7 @@ impl NodeBehaviorRegistry {
         registry.register(Arc::new(TableNodeBehavior));
         registry.register(Arc::new(AiChatNodeBehavior));
         registry.register(Arc::new(PromptNodeBehavior));
+        registry.register(Arc::new(SkillNodeBehavior));
 
         registry
     }
@@ -2555,7 +2681,8 @@ mod tests {
         assert!(types.contains(&"table".to_string()));
         assert!(types.contains(&"ai-chat".to_string()));
         assert!(types.contains(&"prompt".to_string()));
-        assert_eq!(types.len(), 14);
+        assert!(types.contains(&"skill".to_string()));
+        assert_eq!(types.len(), 15);
     }
 
     #[test]
