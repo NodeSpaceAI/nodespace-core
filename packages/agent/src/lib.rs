@@ -11,5 +11,8 @@ pub use agent_types::*;
 // Local agent subsystem: model management, inference, tool execution
 pub mod local_agent;
 
+// Prompt assembly: hardcoded base + graph-stored overrides
+pub mod prompt_assembler;
+
 // ACP (Agent Communication Protocol) subsystem
 pub mod acp;

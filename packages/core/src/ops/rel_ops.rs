@@ -84,11 +84,7 @@ pub async fn delete_relationship(
     input: DeleteRelInput,
 ) -> Result<(), OpsError> {
     node_service
-        .delete_relationship(
-            &input.source_id,
-            &input.relationship_name,
-            &input.target_id,
-        )
+        .delete_relationship(&input.source_id, &input.relationship_name, &input.target_id)
         .await
         .map_err(|e| OpsError::Internal(format!("Failed to delete relationship: {}", e)))?;
 

@@ -3,9 +3,7 @@
 //! Typed orchestration for node CRUD. Extracted from MCP handlers so both
 //! MCP and local agent tools share the same logic.
 
-use crate::models::{
-    FilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter,
-};
+use crate::models::{FilterOperator, Node, NodeFilter, NodeUpdate, OrderBy, PropertyFilter};
 use crate::ops::OpsError;
 use crate::services::{CollectionService, NodeService};
 use serde::Deserialize;
@@ -344,9 +342,7 @@ pub async fn delete_node(
         }
     };
 
-    let result = node_service
-        .delete_node(&input.node_id, version)
-        .await?;
+    let result = node_service.delete_node(&input.node_id, version).await?;
 
     Ok(DeleteNodeOutput {
         node_id: input.node_id,
@@ -397,7 +393,9 @@ pub async fn query_nodes(
         tracing::warn!("parent_id filter ignored - use graph queries for relationship traversal");
     }
     if input.root_id.is_some() {
-        tracing::warn!("root_id filter is deprecated - use graph queries for relationship traversal");
+        tracing::warn!(
+            "root_id filter is deprecated - use graph queries for relationship traversal"
+        );
     }
 
     // Over-fetch when collection filtering
@@ -442,8 +440,8 @@ pub async fn query_nodes(
                 (_field, op) => {
                     let operator = parse_filter_operator(op)?;
                     let path = format!("$.{}", f.field);
-                    let prop_filter =
-                        PropertyFilter::new(path, operator, f.value.clone()).map_err(|e| {
+                    let prop_filter = PropertyFilter::new(path, operator, f.value.clone())
+                        .map_err(|e| {
                             OpsError::InvalidParams(format!("Invalid property filter: {}", e))
                         })?;
                     filter = filter.with_property_filter(prop_filter);
@@ -490,11 +488,26 @@ mod tests {
 
     #[test]
     fn test_parse_filter_operator_valid() {
-        assert!(matches!(parse_filter_operator("equals"), Ok(FilterOperator::Equals)));
-        assert!(matches!(parse_filter_operator("not_equals"), Ok(FilterOperator::NotEquals)));
-        assert!(matches!(parse_filter_operator("contains"), Ok(FilterOperator::Contains)));
-        assert!(matches!(parse_filter_operator("starts_with"), Ok(FilterOperator::StartsWith)));
-        assert!(matches!(parse_filter_operator("ends_with"), Ok(FilterOperator::EndsWith)));
+        assert!(matches!(
+            parse_filter_operator("equals"),
+            Ok(FilterOperator::Equals)
+        ));
+        assert!(matches!(
+            parse_filter_operator("not_equals"),
+            Ok(FilterOperator::NotEquals)
+        ));
+        assert!(matches!(
+            parse_filter_operator("contains"),
+            Ok(FilterOperator::Contains)
+        ));
+        assert!(matches!(
+            parse_filter_operator("starts_with"),
+            Ok(FilterOperator::StartsWith)
+        ));
+        assert!(matches!(
+            parse_filter_operator("ends_with"),
+            Ok(FilterOperator::EndsWith)
+        ));
     }
 
     #[test]

@@ -1578,6 +1578,100 @@ impl NodeBehavior for AiChatNodeBehavior {
     }
 }
 
+/// Behavior for prompt nodes (AI agent prompt templates)
+///
+/// Prompt nodes store reusable prompt templates that the PromptAssembler
+/// combines into system prompts for AI conversations. They support plain text
+/// and Minijinja template syntaxes, with priority-based ordering for assembly.
+///
+/// # Validation Rules
+///
+/// - `template_syntax` must be "plain" or "minijinja"
+/// - `source` must be "built-in", "user-modified", or "user-created"
+/// - `priority` must be an integer
+///
+/// # Embedding
+///
+/// Prompt content is embedded for semantic search discovery but does not
+/// contribute to parent node embeddings.
+pub struct PromptNodeBehavior;
+
+impl NodeBehavior for PromptNodeBehavior {
+    fn type_name(&self) -> &'static str {
+        "prompt"
+    }
+
+    fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Validate template_syntax if present
+        if let Some(syntax) = node.properties.get("template_syntax") {
+            if let Some(s) = syntax.as_str() {
+                match s {
+                    "plain" | "minijinja" => {}
+                    _ => {
+                        return Err(NodeValidationError::InvalidProperties(format!(
+                            "Invalid template_syntax '{}': must be plain or minijinja",
+                            s
+                        )));
+                    }
+                }
+            }
+        }
+        // Validate source if present
+        if let Some(source) = node.properties.get("source") {
+            if let Some(s) = source.as_str() {
+                match s {
+                    "built-in" | "user-modified" | "user-created" => {}
+                    _ => {
+                        return Err(NodeValidationError::InvalidProperties(format!(
+                            "Invalid source '{}': must be built-in, user-modified, or user-created",
+                            s
+                        )));
+                    }
+                }
+            }
+        }
+        // Validate priority is integer if present
+        if let Some(priority) = node.properties.get("priority") {
+            if !priority.is_i64() && !priority.is_u64() {
+                return Err(NodeValidationError::InvalidProperties(
+                    "priority must be an integer".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn can_have_children(&self) -> bool {
+        false // Prompt nodes are leaf content
+    }
+
+    fn supports_markdown(&self) -> bool {
+        false // Prompt content may contain template syntax, not rendered as markdown
+    }
+
+    fn default_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "priority": 100,
+            "template_syntax": "plain",
+            "source": "user-created"
+        })
+    }
+
+    /// Prompt content gets embedded for semantic search discovery
+    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
+        if node.content.trim().is_empty() {
+            None
+        } else {
+            Some(node.content.clone())
+        }
+    }
+
+    /// Prompts don't contribute to parent embeddings
+    fn get_parent_contribution(&self, _node: &Node) -> Option<String> {
+        None
+    }
+}
+
 /// Fallback behavior for schema-defined custom types
 ///
 /// This behavior is used for node types that have a schema definition but no
@@ -1757,6 +1851,7 @@ impl NodeBehaviorRegistry {
         registry.register(Arc::new(HorizontalLineNodeBehavior));
         registry.register(Arc::new(TableNodeBehavior));
         registry.register(Arc::new(AiChatNodeBehavior));
+        registry.register(Arc::new(PromptNodeBehavior));
 
         registry
     }
@@ -2452,7 +2547,8 @@ mod tests {
         assert!(types.contains(&"horizontal-line".to_string()));
         assert!(types.contains(&"table".to_string()));
         assert!(types.contains(&"ai-chat".to_string()));
-        assert_eq!(types.len(), 13);
+        assert!(types.contains(&"prompt".to_string()));
+        assert_eq!(types.len(), 14);
     }
 
     #[test]
