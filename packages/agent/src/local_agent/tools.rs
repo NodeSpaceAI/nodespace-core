@@ -719,81 +719,24 @@ impl GraphToolExecutor {
             }
         };
 
-        // Semantic search for skill nodes
-        let results = emb
-            .semantic_search(&query, limit * 2, SEMANTIC_THRESHOLD)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("find_skills search failed: {}", e)))?;
+        use nodespace_core::ops::skill_ops;
+        let output = skill_ops::find_skills(
+            emb,
+            skill_ops::FindSkillsInput {
+                query: query.clone(),
+                limit: Some(limit),
+            },
+        )
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(format!("find_skills failed: {}", e)))?;
 
-        // Filter to skill nodes only
-        let skill_results: Vec<_> = results
-            .into_iter()
-            .filter(|r| {
-                r.node
-                    .as_ref()
-                    .map(|n| n.node_type == "skill")
-                    .unwrap_or(false)
-            })
-            .take(limit)
-            .collect();
-
-        // Format results with confidence-based detail levels
-        let mut skills = Vec::new();
-        for result in &skill_results {
-            if let Some(ref node) = result.node {
-                let confidence = result.max_similarity;
-                let description = node
-                    .properties
-                    .get("description")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let tool_whitelist = node
-                    .properties
-                    .get("tool_whitelist")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
-                    .unwrap_or_default();
-
-                if confidence > 0.8 {
-                    // High confidence: full skill with tool whitelist
-                    skills.push(json!({
-                        "id": node.id,
-                        "name": node.content,
-                        "description": description,
-                        "confidence": format!("{:.2}", confidence),
-                        "tools": tool_whitelist,
-                        "recommendation": "Use this skill's tools for your task"
-                    }));
-                } else if confidence > 0.6 {
-                    // Medium confidence: description only
-                    skills.push(json!({
-                        "id": node.id,
-                        "name": node.content,
-                        "description": description,
-                        "confidence": format!("{:.2}", confidence),
-                        "recommendation": "May be relevant - review before adopting"
-                    }));
-                }
-                // Below 0.6: skip
-            }
-        }
-
-        // Log telemetry
-        tracing::info!(
-            query = %query,
-            results_found = skill_results.len(),
-            skills_returned = skills.len(),
-            top_score = skill_results.first().map(|r| r.max_similarity).unwrap_or(0.0),
-            "find_skills tool executed"
-        );
-
-        if skills.is_empty() {
+        if output.skills.is_empty() {
             Ok(ok_result(
                 tool_call_id,
                 "find_skills",
                 json!({
                     "message": "No matching skills found. Proceed with general capabilities.",
-                    "query": query
+                    "query": output.query
                 }),
             ))
         } else {
@@ -801,9 +744,9 @@ impl GraphToolExecutor {
                 tool_call_id,
                 "find_skills",
                 json!({
-                    "count": skills.len(),
-                    "skills": skills,
-                    "query": query
+                    "count": output.skills.len(),
+                    "skills": output.skills,
+                    "query": output.query
                 }),
             ))
         }
