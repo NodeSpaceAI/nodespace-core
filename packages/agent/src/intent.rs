@@ -138,14 +138,24 @@ pub fn extract_intent(message: &str) -> ExtractedIntent {
     }
 }
 
-/// Strip conversational filler from a message.
+/// Strip conversational filler from the start of a message.
+///
+/// Loops until stable: removing one filler may reveal another.
 fn strip_filler(message: &str) -> String {
     let mut result = message.to_string();
-    for filler in FILLER_PATTERNS {
-        // Strip filler at the start of the message
-        while result.trim_start().starts_with(filler) {
-            let trimmed = result.trim_start();
-            result = trimmed[filler.len()..].to_string();
+    loop {
+        let before = result.clone();
+        for filler in FILLER_PATTERNS {
+            if filler.is_empty() {
+                continue;
+            }
+            while result.trim_start().starts_with(filler) {
+                let trimmed = result.trim_start();
+                result = trimmed[filler.len()..].to_string();
+            }
+        }
+        if result == before {
+            break;
         }
     }
     // Collapse multiple spaces

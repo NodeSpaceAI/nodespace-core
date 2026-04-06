@@ -14,6 +14,12 @@ use nodespace_core::services::NodeEmbeddingService;
 use crate::agent_types::ToolDefinition;
 use crate::intent::{self, ExtractedIntent};
 
+/// High confidence threshold: full skill details returned.
+pub const SKILL_HIGH_CONFIDENCE: f64 = 0.8;
+
+/// Medium confidence threshold: description only returned.
+pub const SKILL_MEDIUM_CONFIDENCE: f64 = 0.6;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -45,7 +51,7 @@ pub struct SkillPipelineConfig {
 impl Default for SkillPipelineConfig {
     fn default() -> Self {
         Self {
-            confidence_threshold: 0.8,
+            confidence_threshold: SKILL_HIGH_CONFIDENCE,
             search_limit: 3,
         }
     }
@@ -68,9 +74,7 @@ pub struct SkillPipeline {
 }
 
 impl SkillPipeline {
-    pub fn new(
-        embedding_service: Option<Arc<NodeEmbeddingService>>,
-    ) -> Self {
+    pub fn new(embedding_service: Option<Arc<NodeEmbeddingService>>) -> Self {
         Self {
             embedding_service,
             config: SkillPipelineConfig::default(),
@@ -379,7 +383,8 @@ mod tests {
     fn scope_tools_filters_correctly() {
         use serde_json::json;
 
-        let all_tools = [
+        let pipeline = SkillPipeline::new(None);
+        let all_tools = vec![
             ToolDefinition {
                 name: "search_semantic".into(),
                 description: "Search".into(),
@@ -420,32 +425,60 @@ mod tests {
             max_iterations: 2,
         };
 
-        // Test the filtering logic directly (scope_tools requires a SkillPipeline instance)
-        let scoped: Vec<_> = all_tools
-            .iter()
-            .filter(|t| skill_match.tool_whitelist.contains(&t.name))
-            .cloned()
-            .collect();
-
+        let scoped = pipeline.scope_tools(&all_tools, &skill_match);
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].name, "search_semantic");
     }
 
     #[test]
     fn scope_tools_empty_whitelist_returns_all() {
-        let whitelist: Vec<String> = vec![];
-        let all_tools = ["a", "b", "c"];
+        use serde_json::json;
 
-        // Empty whitelist means no filtering - all tools returned
-        if whitelist.is_empty() {
-            assert_eq!(all_tools.len(), 3);
-        }
+        let pipeline = SkillPipeline::new(None);
+        let all_tools = vec![
+            ToolDefinition {
+                name: "a".into(),
+                description: "".into(),
+                parameters_schema: json!({}),
+            },
+            ToolDefinition {
+                name: "b".into(),
+                description: "".into(),
+                parameters_schema: json!({}),
+            },
+        ];
+
+        let skill_match = SkillMatch {
+            skill: Node {
+                id: "test".to_string(),
+                node_type: "skill".to_string(),
+                content: "Empty".to_string(),
+                properties: serde_json::json!({}),
+                created_at: chrono::Utc::now(),
+                modified_at: chrono::Utc::now(),
+                version: 1,
+                lifecycle_status: "active".to_string(),
+                title: None,
+                mentions: Vec::new(),
+                mentioned_in: Vec::new(),
+            },
+            confidence: 0.9,
+            intent: ExtractedIntent {
+                query: "test".to_string(),
+                from_pattern: false,
+            },
+            tool_whitelist: vec![], // Empty whitelist = no filtering
+            max_iterations: 2,
+        };
+
+        let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+        assert_eq!(scoped.len(), 2, "Empty whitelist should return all tools");
     }
 
     #[test]
     fn default_config_values() {
         let config = SkillPipelineConfig::default();
-        assert!((config.confidence_threshold - 0.8).abs() < f64::EPSILON);
+        assert!((config.confidence_threshold - SKILL_HIGH_CONFIDENCE).abs() < f64::EPSILON);
         assert_eq!(config.search_limit, 3);
     }
 }

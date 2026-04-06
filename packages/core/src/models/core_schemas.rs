@@ -1077,6 +1077,23 @@ mod tests {
     }
 
     #[test]
+    fn test_skill_schema_has_fields() {
+        let schemas = get_core_schemas();
+        let skill = schemas.iter().find(|s| s.id == "skill").unwrap();
+
+        assert_eq!(skill.fields.len(), 4);
+        assert!(skill.get_field("description").is_some());
+        assert!(skill.get_field("tool_whitelist").is_some());
+        assert!(skill.get_field("max_iterations").is_some());
+        assert!(skill.get_field("output_format").is_some());
+
+        // Verify tool_whitelist is an array of strings
+        let whitelist = skill.get_field("tool_whitelist").unwrap();
+        assert_eq!(whitelist.field_type, "array");
+        assert_eq!(whitelist.item_type.as_deref(), Some("string"));
+    }
+
+    #[test]
     fn test_schemas_convert_to_node() {
         let schemas = get_core_schemas();
         for schema in schemas {
