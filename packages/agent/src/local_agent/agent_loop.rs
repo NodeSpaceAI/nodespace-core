@@ -99,7 +99,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // built-in chat template via [AVAILABLE_TOOLS] in apply_chat_template().
         // Do NOT duplicate tools here or the model gets confused.
         let dynamic_ctx = session.dynamic_context.as_deref().unwrap_or("");
-        let system_content = prompt_templates::system_prompt(dynamic_ctx);
+        // TODO: Replace with PromptAssembler::assemble() when agent loop is wired
+        // to accept a PromptAssembler instance.
+        let system_content = prompt_templates::fallback_system_prompt(dynamic_ctx);
 
         let mut all_tool_executions: Vec<ToolExecutionRecord> = Vec::new();
         let mut total_usage = InferenceUsage {

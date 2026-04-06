@@ -1,16 +1,25 @@
 //! Prompt templates for the local agent.
 //!
-//! Contains the system prompt, tool-definition formatter, and history
+//! Contains the fallback system prompt, tool-definition formatter, and history
 //! summarization prompt used by the ReAct loop.
+//!
+//! Note: The primary prompt assembly path uses `PromptAssembler` which reads
+//! prompt content exclusively from graph nodes. The `fallback_system_prompt()`
+//! here is only for use when `PromptAssembler` is not available (e.g., the
+//! agent loop has not yet been wired to accept a `PromptAssembler` instance).
 
 use crate::agent_types::ToolDefinition;
 
-/// Build the system prompt for the local agent.
+/// Fallback system prompt for the local agent.
+///
+/// Only used when `PromptAssembler` is not available (e.g., the agent loop
+/// has not yet been wired to accept a `PromptAssembler` instance). The
+/// primary prompt path reads all content from graph nodes via `PromptAssembler`.
 ///
 /// `dynamic_context` is a pre-formatted string describing the workspace's
 /// entity types, collections, and active playbooks (built by
 /// `context_ops::build_workspace_context` + `format_for_prompt`).
-pub fn system_prompt(dynamic_context: &str) -> String {
+pub fn fallback_system_prompt(dynamic_context: &str) -> String {
     let ctx_block = if dynamic_context.is_empty() {
         String::new()
     } else {
@@ -93,9 +102,9 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn system_prompt_includes_context() {
+    fn fallback_system_prompt_includes_context() {
         let ctx = "ENTITY TYPES:\n- customer: Customer\n";
-        let prompt = system_prompt(ctx);
+        let prompt = fallback_system_prompt(ctx);
         assert!(prompt.contains("NodeSpace"));
         assert!(prompt.contains("ENTITY TYPES:"));
         assert!(prompt.contains("customer: Customer"));
@@ -104,8 +113,8 @@ mod tests {
     }
 
     #[test]
-    fn system_prompt_empty_context() {
-        let prompt = system_prompt("");
+    fn fallback_system_prompt_empty_context() {
+        let prompt = fallback_system_prompt("");
         assert!(prompt.contains("NodeSpace"));
         assert!(prompt.contains("TOOL STRATEGY:"));
         // No double newlines from empty context
