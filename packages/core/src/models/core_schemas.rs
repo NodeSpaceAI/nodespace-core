@@ -873,6 +873,97 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             title_template: None,
             properties_header_summary_template: None,
         },
+        // Skill schema for agent skill definitions (ADR-030)
+        SchemaNode {
+            id: "skill".to_string(),
+            content: "Skill".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            schema_version: 1,
+            description: "Agent skill with tool whitelisting and guidance".to_string(),
+            fields: vec![
+                SchemaField {
+                    name: "description".to_string(),
+                    field_type: "string".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true,
+                    required: Some(true),
+                    extensible: None,
+                    default: None,
+                    description: Some(
+                        "What this skill does (drives semantic search discovery)".to_string(),
+                    ),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "tool_whitelist".to_string(),
+                    field_type: "array".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(true),
+                    extensible: None,
+                    default: Some(serde_json::json!([])),
+                    description: Some("Tools available when this skill is active".to_string()),
+                    item_type: Some("string".to_string()),
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "max_iterations".to_string(),
+                    field_type: "number".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!(2)),
+                    description: Some("Maximum ReAct loop iterations for this skill".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "output_format".to_string(),
+                    field_type: "enum".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(vec![
+                        EnumValue {
+                            value: "text".to_string(),
+                            label: "Plain Text".to_string(),
+                        },
+                        EnumValue {
+                            value: "json".to_string(),
+                            label: "JSON".to_string(),
+                        },
+                        EnumValue {
+                            value: "markdown".to_string(),
+                            label: "Markdown".to_string(),
+                        },
+                    ]),
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!("text")),
+                    description: Some("Preferred output format for responses".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+            ],
+            relationships: vec![],
+            title_template: None,
+            properties_header_summary_template: None,
+        },
     ]
 }
 
@@ -883,7 +974,7 @@ mod tests {
     #[test]
     fn test_get_core_schemas_returns_all() {
         let schemas = get_core_schemas();
-        assert_eq!(schemas.len(), 14);
+        assert_eq!(schemas.len(), 15);
     }
 
     #[test]
