@@ -488,7 +488,9 @@ impl GraphToolExecutor {
                 )),
             }
         } else {
-            let input = node_ops::GetNodeInput { node_id: id.clone() };
+            let input = node_ops::GetNodeInput {
+                node_id: id.clone(),
+            };
             match node_ops::get_node(&ns, input).await {
                 Ok(node_data) => Ok(ok_result(tool_call_id, "get_node", node_data)),
                 Err(OpsError::NotFound { .. }) => Ok(error_result(

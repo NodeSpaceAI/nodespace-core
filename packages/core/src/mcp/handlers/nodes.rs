@@ -1139,7 +1139,8 @@ pub async fn handle_get_node_collections(
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
     // Get collection memberships via CollectionService
-    let collection_service = crate::services::CollectionService::new(node_service.store(), node_service);
+    let collection_service =
+        crate::services::CollectionService::new(node_service.store(), node_service);
     let collection_ids = collection_service
         .get_node_collections(&params.node_id)
         .await

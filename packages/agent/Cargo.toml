@@ -23,6 +23,7 @@ sha2 = "0.10"
 uuid = { workspace = true }
 futures = "0.3"
 regex = "1"
+minijinja = "2"
 dirs = "5.0"
 sysinfo = "0.33"
 which = "7"

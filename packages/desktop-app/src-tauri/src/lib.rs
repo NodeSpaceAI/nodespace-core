@@ -343,9 +343,9 @@ pub fn run() {
             // These live OUTSIDE AppServices and survive database hot-swaps.
             // They obtain NodeService/NodeEmbeddingService per-operation from AppServices.
             {
+                use crate::commands::local_agent::ManagedAgentState;
                 use nodespace_agent::acp::registry::SystemAgentRegistry;
                 use nodespace_agent::acp::session::AcpClientService;
-                use crate::commands::local_agent::ManagedAgentState;
                 use nodespace_agent::local_agent::model_manager::GgufModelManager;
 
                 // GGUF model manager for chat model lifecycle.

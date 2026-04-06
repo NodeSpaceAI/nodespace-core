@@ -7,12 +7,12 @@
 //! Issue #1008
 
 use crate::agent_events;
+use crate::commands::nodes::CommandError;
 use nodespace_agent::acp::registry::SystemAgentRegistry;
 use nodespace_agent::acp::session::AcpClientService;
 use nodespace_agent::agent_types::{
     AcpAgentInfo, AcpError, AcpMessage, AcpSessionState, AgentRegistry,
 };
-use crate::commands::nodes::CommandError;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
@@ -47,7 +47,10 @@ pub async fn acp_start_session(
     service: State<'_, AcpClientService>,
 ) -> Result<String, CommandError> {
     // Emit initializing state
-    let _ = app.emit(agent_events::ACP_SESSION_STATE, &AcpSessionState::Initializing);
+    let _ = app.emit(
+        agent_events::ACP_SESSION_STATE,
+        &AcpSessionState::Initializing,
+    );
 
     let session_id = service.start_session(&agent_id).await.map_err(|e| {
         let _ = app.emit(
@@ -255,7 +258,10 @@ pub async fn acp_end_session(
 ) -> Result<(), CommandError> {
     let agent_id = extract_agent_id(&session_id);
 
-    let _ = app.emit(agent_events::ACP_SESSION_STATE, &AcpSessionState::Completing);
+    let _ = app.emit(
+        agent_events::ACP_SESSION_STATE,
+        &AcpSessionState::Completing,
+    );
 
     service.end_session(&agent_id).await.map_err(|e| {
         let _ = app.emit(

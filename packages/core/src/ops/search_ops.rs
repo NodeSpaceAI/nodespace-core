@@ -106,7 +106,14 @@ fn build_markdown_recursive(
     if let Some(child_ids) = adjacency_list.get(&node.id) {
         for child_id in child_ids {
             if let Some(child) = node_map.get(child_id) {
-                build_markdown_recursive(child, node_map, adjacency_list, output, depth + 1, max_depth);
+                build_markdown_recursive(
+                    child,
+                    node_map,
+                    adjacency_list,
+                    output,
+                    depth + 1,
+                    max_depth,
+                );
             }
         }
     }
@@ -215,37 +222,30 @@ pub async fn search_semantic(
         };
 
     // Resolve excluded collections
-    let excluded_node_ids: HashSet<String> =
-        if let Some(exclude_paths) = &input.exclude_collections {
-            let collection_service =
-                CollectionService::new(embedding_service.store(), node_service);
-            let mut excluded = HashSet::new();
-            for path in exclude_paths {
-                match collection_service.resolve_path(path).await {
-                    Ok(resolved) => {
-                        let coll_id = resolved.leaf_id().to_string();
-                        if let Ok(members) =
-                            collection_service.get_collection_members(&coll_id).await
-                        {
-                            excluded.extend(members.into_iter().map(|n| n.id));
-                        }
-                    }
-                    Err(NodeServiceError::CollectionNotFound(_)) => {
-                        tracing::debug!("Excluded collection '{}' not found, skipping", path);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to resolve excluded collection '{}': {}",
-                            path,
-                            e
-                        );
+    let excluded_node_ids: HashSet<String> = if let Some(exclude_paths) = &input.exclude_collections
+    {
+        let collection_service = CollectionService::new(embedding_service.store(), node_service);
+        let mut excluded = HashSet::new();
+        for path in exclude_paths {
+            match collection_service.resolve_path(path).await {
+                Ok(resolved) => {
+                    let coll_id = resolved.leaf_id().to_string();
+                    if let Ok(members) = collection_service.get_collection_members(&coll_id).await {
+                        excluded.extend(members.into_iter().map(|n| n.id));
                     }
                 }
+                Err(NodeServiceError::CollectionNotFound(_)) => {
+                    tracing::debug!("Excluded collection '{}' not found, skipping", path);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to resolve excluded collection '{}': {}", path, e);
+                }
             }
-            excluded
-        } else {
-            HashSet::new()
-        };
+        }
+        excluded
+    } else {
+        HashSet::new()
+    };
 
     tracing::info!(
         "Semantic search for: '{}' (scope: {:?})",

@@ -529,6 +529,7 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
         "ordered-list",
         "collection",
         "schema",
+        "prompt",
     ];
     let mut node_types: Vec<String> = core_types
         .iter()

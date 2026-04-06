@@ -790,6 +790,89 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             title_template: None,
             properties_header_summary_template: None,
         },
+        // Prompt schema for AI agent prompts (ADR-030)
+        SchemaNode {
+            id: "prompt".to_string(),
+            content: "Prompt".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            schema_version: 1,
+            description: "AI agent prompt template".to_string(),
+            fields: vec![
+                SchemaField {
+                    name: "priority".to_string(),
+                    field_type: "number".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true,
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!(100)),
+                    description: Some("Assembly ordering priority (lower = earlier)".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "template_syntax".to_string(),
+                    field_type: "enum".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(vec![
+                        EnumValue {
+                            value: "plain".to_string(),
+                            label: "Plain Text".to_string(),
+                        },
+                        EnumValue {
+                            value: "minijinja".to_string(),
+                            label: "Minijinja Template".to_string(),
+                        },
+                    ]),
+                    user_values: None,
+                    indexed: false,
+                    required: Some(false),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!("plain")),
+                    description: Some("Template rendering syntax".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+                SchemaField {
+                    name: "source".to_string(),
+                    field_type: "enum".to_string(),
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: Some(vec![
+                        EnumValue {
+                            value: "built-in".to_string(),
+                            label: "Built-in".to_string(),
+                        },
+                        EnumValue {
+                            value: "user-modified".to_string(),
+                            label: "User Modified".to_string(),
+                        },
+                        EnumValue {
+                            value: "user-created".to_string(),
+                            label: "User Created".to_string(),
+                        },
+                    ]),
+                    user_values: None,
+                    indexed: true,
+                    required: Some(false),
+                    extensible: Some(false),
+                    default: Some(serde_json::json!("user-created")),
+                    description: Some("Prompt origin for upgrade safety".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                },
+            ],
+            relationships: vec![],
+            title_template: None,
+            properties_header_summary_template: None,
+        },
     ]
 }
 
@@ -800,7 +883,7 @@ mod tests {
     #[test]
     fn test_get_core_schemas_returns_all() {
         let schemas = get_core_schemas();
-        assert_eq!(schemas.len(), 13);
+        assert_eq!(schemas.len(), 14);
     }
 
     #[test]
@@ -889,6 +972,17 @@ mod tests {
         assert!(item_fields.iter().any(|f| f.name == "status"));
         assert!(item_fields.iter().any(|f| f.name == "result_summary"));
         assert!(item_fields.iter().any(|f| f.name == "duration_ms"));
+    }
+
+    #[test]
+    fn test_prompt_schema_has_fields() {
+        let schemas = get_core_schemas();
+        let prompt = schemas.iter().find(|s| s.id == "prompt").unwrap();
+
+        assert_eq!(prompt.fields.len(), 3);
+        assert!(prompt.get_field("priority").is_some());
+        assert!(prompt.get_field("template_syntax").is_some());
+        assert!(prompt.get_field("source").is_some());
     }
 
     #[test]
