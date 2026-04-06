@@ -1602,6 +1602,13 @@ impl NodeBehavior for PromptNodeBehavior {
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // Prompt content should not be empty
+        if node.content.trim().is_empty() {
+            return Err(NodeValidationError::InvalidProperties(
+                "Prompt content cannot be empty".to_string(),
+            ));
+        }
+
         // Validate template_syntax if present
         if let Some(syntax) = node.properties.get("template_syntax") {
             if let Some(s) = syntax.as_str() {
