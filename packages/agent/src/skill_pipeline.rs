@@ -202,7 +202,6 @@ impl SkillPipeline {
     pub fn seed_skill_nodes() -> Vec<SeedSkill> {
         vec![
             SeedSkill {
-                id: "skill-research-search".to_string(),
                 name: "Research & Search".to_string(),
                 description: "Search and explore the knowledge graph to find relevant information, discover connections, and answer questions about stored knowledge.".to_string(),
                 tool_whitelist: vec![
@@ -214,7 +213,6 @@ impl SkillPipeline {
                 output_format: "text".to_string(),
             },
             SeedSkill {
-                id: "skill-node-creation".to_string(),
                 name: "Node Creation".to_string(),
                 description: "Create new content nodes in the knowledge graph with proper types, properties, and metadata.".to_string(),
                 tool_whitelist: vec![
@@ -225,7 +223,6 @@ impl SkillPipeline {
                 output_format: "text".to_string(),
             },
             SeedSkill {
-                id: "skill-graph-editing".to_string(),
                 name: "Graph Editing".to_string(),
                 description: "Modify existing nodes in the knowledge graph - update content, properties, titles, and metadata.".to_string(),
                 tool_whitelist: vec![
@@ -236,7 +233,6 @@ impl SkillPipeline {
                 output_format: "text".to_string(),
             },
             SeedSkill {
-                id: "skill-relationship-management".to_string(),
                 name: "Relationship Management".to_string(),
                 description: "Create connections between nodes, explore relationships, and traverse the knowledge graph.".to_string(),
                 tool_whitelist: vec![
@@ -267,7 +263,6 @@ fn extract_tool_whitelist(node: &Node) -> Vec<String> {
 /// Descriptor for a seed skill node to be created on first run.
 #[derive(Debug, Clone)]
 pub struct SeedSkill {
-    pub id: String,
     pub name: String,
     pub description: String,
     pub tool_whitelist: Vec<String>,
@@ -278,24 +273,18 @@ pub struct SeedSkill {
 impl SeedSkill {
     /// Convert to a Node for creation via NodeService.
     pub fn to_node(&self) -> Node {
-        Node {
-            id: self.id.clone(),
-            node_type: "skill".to_string(),
-            content: self.name.clone(),
-            properties: serde_json::json!({
+        let mut node = Node::new(
+            "skill".to_string(),
+            self.name.clone(),
+            serde_json::json!({
                 "description": self.description,
                 "tool_whitelist": self.tool_whitelist,
                 "max_iterations": self.max_iterations,
                 "output_format": self.output_format,
             }),
-            created_at: chrono::Utc::now(),
-            modified_at: chrono::Utc::now(),
-            version: 1,
-            lifecycle_status: "active".to_string(),
-            title: Some(self.name.clone()),
-            mentions: Vec::new(),
-            mentioned_in: Vec::new(),
-        }
+        );
+        node.title = Some(self.name.clone());
+        node
     }
 }
 
@@ -309,7 +298,6 @@ mod tests {
         assert_eq!(seeds.len(), 4, "Should have 4 seed skills");
 
         for seed in &seeds {
-            assert!(!seed.id.is_empty());
             assert!(!seed.name.is_empty());
             assert!(!seed.description.is_empty());
             assert!(!seed.tool_whitelist.is_empty(), "Skills must have tools");
@@ -318,19 +306,14 @@ mod tests {
     }
 
     #[test]
-    fn seed_skill_ids_are_unique() {
-        let seeds = SkillPipeline::seed_skill_nodes();
-        let ids: Vec<&str> = seeds.iter().map(|s| s.id.as_str()).collect();
-        let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
-        assert_eq!(ids.len(), unique.len());
-    }
-
-    #[test]
     fn seed_skill_to_node_conversion() {
         let seeds = SkillPipeline::seed_skill_nodes();
         for seed in &seeds {
             let node = seed.to_node();
             assert_eq!(node.node_type, "skill");
+            // Node::new() generates a UUID (36 chars with hyphens)
+            assert_eq!(node.id.len(), 36, "Node ID should be a UUID");
+            assert_eq!(node.id.chars().filter(|c| *c == '-').count(), 4);
             assert_eq!(node.content, seed.name);
             assert!(node.title.is_some());
             assert_eq!(node.title.as_deref().unwrap(), seed.name);

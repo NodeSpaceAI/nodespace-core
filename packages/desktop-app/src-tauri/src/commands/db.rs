@@ -52,6 +52,24 @@ pub(crate) async fn create_service_bundle(
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
     tracing::info!("NodeService initialized");
 
+    // Seed agent prompt and skill nodes on first run (non-fatal)
+    {
+        use nodespace_agent::prompt_assembler::PromptAssembler;
+        use nodespace_agent::skill_pipeline::SkillPipeline;
+
+        let mut seed_nodes = Vec::new();
+        for seed in PromptAssembler::seed_prompt_nodes() {
+            seed_nodes.push(seed.to_node());
+        }
+        for seed in SkillPipeline::seed_skill_nodes() {
+            seed_nodes.push(seed.to_node());
+        }
+
+        if let Err(e) = node_service.seed_nodes_if_needed(seed_nodes).await {
+            tracing::warn!(error = %e, "Failed to seed agent nodes (non-fatal)");
+        }
+    }
+
     // Tiered NLP init: failure here is non-fatal
     tracing::info!("Initializing NLP engine (model: {:?})...", model_path);
     let embedding_state = match create_embedding_state(&store, &mut node_service, &model_path) {

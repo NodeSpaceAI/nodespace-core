@@ -8,6 +8,7 @@ pub mod context_ops;
 pub mod node_ops;
 pub mod rel_ops;
 pub mod search_ops;
+pub mod skill_ops;
 
 use crate::services::NodeServiceError;
 

@@ -277,6 +277,27 @@ fn def_get_related_nodes() -> ToolDefinition {
     }
 }
 
+fn def_find_skills() -> ToolDefinition {
+    ToolDefinition {
+        name: "find_skills".into(),
+        description: "Search for agent skills by describing what you need to accomplish. Returns skill descriptions with available tools and guidance.".into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "What you need to accomplish"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum skills to return (default 3)"
+                }
+            },
+            "required": ["query"]
+        }),
+    }
+}
+
 /// All tool definitions for the graph executor.
 fn all_tool_definitions() -> Vec<ToolDefinition> {
     vec![
@@ -287,6 +308,7 @@ fn all_tool_definitions() -> Vec<ToolDefinition> {
         def_update_node(),
         def_create_relationship(),
         def_get_related_nodes(),
+        def_find_skills(),
     ]
 }
 
@@ -678,6 +700,58 @@ impl GraphToolExecutor {
         ))
     }
 
+    async fn exec_find_skills(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let query = require_str(&args, "query", "find_skills")?;
+        let limit = optional_usize(&args, "limit", 3);
+
+        let emb = match &self.embedding_service {
+            Some(svc) => svc,
+            None => {
+                return Ok(error_result(
+                    tool_call_id,
+                    "find_skills",
+                    "Skill search unavailable: embedding service not loaded",
+                ))
+            }
+        };
+
+        use nodespace_core::ops::skill_ops;
+        let output = skill_ops::find_skills(
+            emb,
+            skill_ops::FindSkillsInput {
+                query: query.clone(),
+                limit: Some(limit),
+            },
+        )
+        .await
+        .map_err(|e| ToolError::ExecutionFailed(format!("find_skills failed: {}", e)))?;
+
+        if output.skills.is_empty() {
+            Ok(ok_result(
+                tool_call_id,
+                "find_skills",
+                json!({
+                    "message": "No matching skills found. Proceed with general capabilities.",
+                    "query": output.query
+                }),
+            ))
+        } else {
+            Ok(ok_result(
+                tool_call_id,
+                "find_skills",
+                json!({
+                    "count": output.skills.len(),
+                    "skills": output.skills,
+                    "query": output.query
+                }),
+            ))
+        }
+    }
+
     // -- Service accessors --
 
     fn node_service(&self) -> Result<Arc<NodeService>, ToolError> {
@@ -712,6 +786,7 @@ impl AgentToolExecutor for GraphToolExecutor {
             "update_node" => self.exec_update_node(&tool_call_id, args).await,
             "create_relationship" => self.exec_create_relationship(&tool_call_id, args).await,
             "get_related_nodes" => self.exec_get_related_nodes(&tool_call_id, args).await,
+            "find_skills" => self.exec_find_skills(&tool_call_id, args).await,
             _ => Err(ToolError::UnknownTool(name.to_string())),
         }
     }
@@ -822,7 +897,7 @@ mod tests {
 
     #[test]
     fn definitions_count() {
-        assert_eq!(all_tool_definitions().len(), 7);
+        assert_eq!(all_tool_definitions().len(), 8);
     }
 
     #[test]
@@ -1033,6 +1108,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn find_skills_missing_query() {
+        let executor = test_executor();
+        let result = executor.execute("find_skills", json!({})).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ToolError::InvalidArguments { tool, reason } => {
+                assert_eq!(tool, "find_skills");
+                assert!(reason.contains("query"));
+            }
+            other => panic!("Expected InvalidArguments, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn find_skills_no_embedding_service_returns_error_result() {
+        let executor = test_executor();
+        let result = executor
+            .execute("find_skills", json!({"query": "manage tasks"}))
+            .await;
+        // Should succeed (Ok) but with is_error=true since no embedding service
+        let tool_result = result.unwrap();
+        assert!(tool_result.is_error);
+        assert!(tool_result.result["error"]
+            .as_str()
+            .unwrap()
+            .contains("embedding service"));
+    }
+
+    #[test]
+    fn find_skills_schema_requires_query() {
+        let def = def_find_skills();
+        let required = def.parameters_schema["required"]
+            .as_array()
+            .expect("required must be array");
+        assert!(required.contains(&json!("query")));
+    }
+
+    #[tokio::test]
     async fn get_related_nodes_invalid_direction() {
         let executor = test_executor();
         let result = executor
@@ -1054,10 +1167,10 @@ mod tests {
     // -- Available tools --
 
     #[tokio::test]
-    async fn available_tools_returns_all_seven() {
+    async fn available_tools_returns_all_eight() {
         let executor = test_executor();
         let tools = executor.available_tools().await.unwrap();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 8);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"search_nodes"));
         assert!(names.contains(&"search_semantic"));
@@ -1066,5 +1179,6 @@ mod tests {
         assert!(names.contains(&"update_node"));
         assert!(names.contains(&"create_relationship"));
         assert!(names.contains(&"get_related_nodes"));
+        assert!(names.contains(&"find_skills"));
     }
 }

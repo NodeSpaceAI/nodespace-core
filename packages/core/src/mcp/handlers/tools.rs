@@ -15,7 +15,7 @@
 //! As of Issue #676, all handlers use NodeService directly instead of NodeOperations.
 //! As of Issue #690, SchemaService was removed - schema nodes use generic CRUD.
 
-use crate::mcp::handlers::{markdown, nodes, playbook, relationships, schema, search};
+use crate::mcp::handlers::{markdown, nodes, playbook, relationships, schema, search, skills};
 use crate::mcp::types::MCPError;
 use crate::services::{NodeEmbeddingService, NodeService};
 use serde::{Deserialize, Serialize};
@@ -145,7 +145,7 @@ fn get_tool_category(tool_name: &str) -> ToolCategory {
         | "add_schema_relationship"
         | "remove_schema_relationship" => ToolCategory::Relationships,
 
-        "search_tools" => ToolCategory::Discovery,
+        "search_tools" | "find_skills" => ToolCategory::Discovery,
 
         _ => ToolCategory::Query, // Default fallback
     }
@@ -413,6 +413,16 @@ pub async fn handle_tools_call(
             }
             None => Err(MCPError::internal_error(
                 "Semantic search unavailable: embedding model failed to load. Node CRUD tools are still available.".to_string(),
+            )),
+        },
+
+        // Skill discovery (Issue #1051)
+        "find_skills" => match embedding_service {
+            Some(emb_svc) => {
+                skills::handle_find_skills(node_service, emb_svc, arguments).await
+            }
+            None => Err(MCPError::internal_error(
+                "Skill search unavailable: embedding model failed to load.".to_string(),
             )),
         },
 
@@ -1382,6 +1392,24 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                     }
                 },
                 "required": ["node_id"]
+            }
+        },
+        {
+            "name": "find_skills",
+            "description": "Search for agent skills by describing what you need to accomplish. Returns skill descriptions with available tools and guidance.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "What you need to accomplish"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum skills to return (default 3)"
+                    }
+                },
+                "required": ["query"]
             }
         }
     ])

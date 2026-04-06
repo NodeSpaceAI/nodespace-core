@@ -938,6 +938,62 @@ impl NodeService {
         Ok(())
     }
 
+    /// Seed initial nodes if they don't already exist.
+    ///
+    /// Checks for existing built-in nodes by querying for `source == "built-in"`
+    /// in properties for each node type. If built-in nodes already exist for a
+    /// given type, all seeds of that type are skipped.
+    ///
+    /// # Arguments
+    /// * `nodes` - Nodes to seed. All nodes of a given type are skipped if any
+    ///   built-in node of that type already exists.
+    pub async fn seed_nodes_if_needed(
+        &self,
+        nodes: Vec<crate::models::Node>,
+    ) -> Result<(), NodeServiceError> {
+        if nodes.is_empty() {
+            return Ok(());
+        }
+
+        // Collect unique node types from seeds
+        let seed_types: std::collections::HashSet<String> =
+            nodes.iter().map(|n| n.node_type.clone()).collect();
+
+        // Check which types already have built-in nodes
+        let mut seeded_types: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for node_type in &seed_types {
+            let filter = crate::models::NodeFilter {
+                node_type: Some(node_type.clone()),
+                ..Default::default()
+            };
+            let existing = self.query_nodes(filter).await?;
+            let has_builtin = existing
+                .iter()
+                .any(|n| n.properties.get("source").and_then(|v| v.as_str()) == Some("built-in"));
+            if has_builtin {
+                seeded_types.insert(node_type.clone());
+            }
+        }
+
+        let mut created = 0u32;
+        let mut skipped = 0u32;
+
+        for node in nodes {
+            if seeded_types.contains(&node.node_type) {
+                skipped += 1;
+                continue;
+            }
+            self.create_node(node).await?;
+            created += 1;
+        }
+
+        if created > 0 {
+            tracing::info!(created, skipped, "Agent nodes seeded");
+        }
+
+        Ok(())
+    }
+
     /// Get access to the underlying SurrealStore
     ///
     /// Useful for advanced operations that need direct database access
