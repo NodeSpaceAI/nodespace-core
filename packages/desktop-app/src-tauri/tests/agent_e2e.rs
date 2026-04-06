@@ -1499,3 +1499,198 @@ async fn benchmark_acp_transport_roundtrip() {
 
     transport.shutdown().await.unwrap();
 }
+
+// ===========================================================================
+// Prompt & tool quality tests (Issue #1040)
+// ===========================================================================
+
+/// Mock engine that captures inference requests for assertion.
+struct CapturingMockEngine {
+    captured_requests: Mutex<Vec<InferenceRequest>>,
+    response_text: String,
+}
+
+impl CapturingMockEngine {
+    fn new(response_text: &str) -> Self {
+        Self {
+            captured_requests: Mutex::new(Vec::new()),
+            response_text: response_text.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl ChatInferenceEngine for CapturingMockEngine {
+    async fn generate(
+        &self,
+        request: InferenceRequest,
+        on_chunk: Box<dyn Fn(StreamingChunk) + Send>,
+    ) -> Result<InferenceUsage, InferenceError> {
+        self.captured_requests.lock().await.push(request);
+        on_chunk(StreamingChunk::Token {
+            text: self.response_text.clone(),
+        });
+        let usage = InferenceUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+        };
+        on_chunk(StreamingChunk::Done { usage });
+        Ok(usage)
+    }
+
+    async fn model_info(&self) -> Result<Option<ChatModelSpec>, InferenceError> {
+        Ok(Some(ChatModelSpec {
+            model_id: "test-capture".into(),
+            context_window: 32768,
+            default_temperature: 0.1,
+        }))
+    }
+
+    async fn token_count(&self, text: &str) -> Result<u32, InferenceError> {
+        Ok((text.len() as f32 / 4.0).ceil() as u32)
+    }
+}
+
+/// Verify system prompt includes dynamic context when set on session.
+#[tokio::test]
+async fn system_prompt_includes_dynamic_context() {
+    let engine = Arc::new(CapturingMockEngine::new("Here are your tasks."));
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
+    let service = LocalAgentService::new(engine.clone() as Arc<dyn ChatInferenceEngine>, executor);
+
+    let session_id = service.create_session(Some("test-model".into())).await;
+
+    // Set dynamic context (simulating what local_agent_new_session does)
+    service
+        .set_session_context(
+            &session_id,
+            "ENTITY TYPES:\n- customer: Customer — fields: company(text), status(enum: Active/Churned)".into(),
+        )
+        .await;
+
+    let _result = service
+        .send_message(&session_id, "find my tasks", |_| {}, |_| {})
+        .await
+        .unwrap();
+
+    // Verify the system prompt sent to the engine includes the dynamic context
+    let requests = engine.captured_requests.lock().await;
+    assert!(!requests.is_empty(), "Engine should have been called");
+
+    let system_msg = requests[0]
+        .messages
+        .iter()
+        .find(|m| m.role == Role::System)
+        .expect("Should have a system message");
+
+    assert!(
+        system_msg.content.contains("customer: Customer"),
+        "System prompt should include dynamic context. Got: {}",
+        &system_msg.content[..200.min(system_msg.content.len())]
+    );
+    assert!(
+        system_msg.content.contains("TOOL STRATEGY"),
+        "System prompt should include tool strategy section"
+    );
+}
+
+/// Verify response normalizer cleans up model output.
+#[tokio::test]
+async fn response_normalizer_fixes_uri_formatting() {
+    let engine = Arc::new(CapturingMockEngine::new(
+        "Found your task: [nodespace://abc-123](nodespace://abc-123) with status in_progress",
+    ));
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
+    let service = LocalAgentService::new(engine as Arc<dyn ChatInferenceEngine>, executor);
+
+    let session_id = service.create_session(None).await;
+    let result = service
+        .send_message(&session_id, "find tasks", |_| {}, |_| {})
+        .await
+        .unwrap();
+
+    // Normalizer should fix markdown-wrapped URI to bare URI
+    assert!(
+        !result.response.contains("[nodespace://"),
+        "Markdown-wrapped URI should be normalized. Got: {}",
+        result.response
+    );
+    assert!(
+        result.response.contains("nodespace://abc-123"),
+        "Bare URI should be preserved. Got: {}",
+        result.response
+    );
+    // Normalizer should fix snake_case status
+    assert!(
+        result.response.contains("In Progress"),
+        "snake_case status should be Title Case. Got: {}",
+        result.response
+    );
+}
+
+/// Verify tool calls receive correct tool definitions.
+#[tokio::test]
+async fn tool_definitions_included_in_inference_request() {
+    let engine = Arc::new(CapturingMockEngine::new("No tasks found."));
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
+    let service = LocalAgentService::new(engine.clone() as Arc<dyn ChatInferenceEngine>, executor);
+
+    let session_id = service.create_session(None).await;
+    let _result = service
+        .send_message(&session_id, "what tasks do I have?", |_| {}, |_| {})
+        .await
+        .unwrap();
+
+    let requests = engine.captured_requests.lock().await;
+    assert!(!requests.is_empty());
+
+    let tools = requests[0].tools.as_ref().expect("Tools should be provided");
+    assert!(
+        !tools.is_empty(),
+        "At least one tool should be available"
+    );
+
+    // Verify tool names are present
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    assert!(
+        tool_names.contains(&"search_nodes"),
+        "search_nodes tool should be available"
+    );
+    assert!(
+        tool_names.contains(&"get_node"),
+        "get_node tool should be available"
+    );
+}
+
+/// Verify tool call → result → text response round-trip with normalizer.
+#[tokio::test]
+async fn tool_call_round_trip_with_normalizer() {
+    // Mock: first call tool, then respond with unnormalized text
+    let engine = Arc::new(MockEngine::tool_then_text(
+        "search_nodes",
+        r#"{"query":"tasks"}"#,
+        "Found 2 results: `nodespace://e2e-node-1` and `nodespace://e2e-node-2` are in_progress",
+    ));
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
+    let service = LocalAgentService::new(engine as Arc<dyn ChatInferenceEngine>, executor);
+
+    let session_id = service.create_session(None).await;
+    let result = service
+        .send_message(&session_id, "find tasks", |_| {}, |_| {})
+        .await
+        .unwrap();
+
+    // Should have executed the search_nodes tool
+    assert_eq!(result.tool_calls_made.len(), 1);
+    assert_eq!(result.tool_calls_made[0].name, "search_nodes");
+
+    // Response should be normalized (backtick URIs → bare, snake_case → Title Case)
+    assert!(
+        !result.response.contains("`nodespace://"),
+        "Backtick-wrapped URIs should be normalized"
+    );
+    assert!(
+        result.response.contains("In Progress"),
+        "snake_case status should be Title Case"
+    );
+}
