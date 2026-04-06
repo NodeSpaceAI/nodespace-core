@@ -12,13 +12,13 @@
 
 use crate::agent_events;
 use crate::commands::nodes::CommandError;
+use async_trait::async_trait;
 use nodespace_agent::agent_types::{
     AgentSession, AgentToolExecutor, AgentTurnResult, ChatInferenceEngine, ChatModelSpec,
     InferenceError, InferenceUsage, LocalAgentStatus, ModelManager, ModelStatus, StreamingChunk,
 };
 use nodespace_agent::local_agent::agent_loop::LocalAgentService;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
-use async_trait::async_trait;
 use nodespace_nlp_engine::chat::ChatConfig;
 use serde::Serialize;
 use std::sync::Arc;
@@ -119,11 +119,9 @@ impl ManagedAgentState {
         let node_service = self.app_services.node_service().await.ok();
         let embedding_service = self.app_services.embedding_service().await.ok();
 
-        let executor: Arc<dyn AgentToolExecutor> =
-            Arc::new(GraphToolExecutor::new_with_optional_services(
-                node_service,
-                embedding_service,
-            ));
+        let executor: Arc<dyn AgentToolExecutor> = Arc::new(
+            GraphToolExecutor::new_with_optional_services(node_service, embedding_service),
+        );
         let service = LocalAgentService::new(engine, executor);
 
         let mut guard = self.inner.write().await;
@@ -303,7 +301,8 @@ pub async fn local_agent_status(
 
 /// Create a new local agent conversation session.
 ///
-/// Returns the session ID.
+/// Returns the session ID. Populates the session's dynamic context with
+/// the current workspace schemas, collections, and active playbooks.
 #[tauri::command]
 pub async fn local_agent_new_session(
     model_id: String,
@@ -311,6 +310,16 @@ pub async fn local_agent_new_session(
 ) -> Result<String, CommandError> {
     let service = state.service().await;
     let session_id = service.create_session(Some(model_id)).await;
+
+    // Build workspace context for the local agent prompt
+    if let Ok(ns) = state.app_services.node_service().await {
+        let context = nodespace_core::ops::context_ops::build_workspace_context(&ns)
+            .await
+            .unwrap_or_default();
+        let context_str = context.format_for_prompt(1500);
+        service.set_session_context(&session_id, context_str).await;
+    }
+
     tracing::info!(session_id = %session_id, "Local agent session created");
     Ok(session_id)
 }

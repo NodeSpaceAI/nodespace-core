@@ -548,6 +548,17 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
         session_id
     }
 
+    /// Set the dynamic workspace context for a session.
+    ///
+    /// Called after session creation once NodeService is available to
+    /// populate schemas, collections, and playbooks for the system prompt.
+    pub async fn set_session_context(&self, session_id: &str, context: String) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.dynamic_context = Some(context);
+        }
+    }
+
     /// Send a user message and run the agent turn.
     ///
     /// Returns the agent's response after potentially multiple rounds

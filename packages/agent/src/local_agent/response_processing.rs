@@ -1,4 +1,15 @@
 use regex::Regex;
+use std::sync::OnceLock;
+
+fn markdown_uri_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\[([^\]]+)\]\((nodespace://[^)]+)\)").unwrap())
+}
+
+fn backtick_uri_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"`(nodespace://[^`]+)`").unwrap())
+}
 
 /// Normalize LLM response text for consistent formatting.
 ///
@@ -22,7 +33,7 @@ pub fn normalize_response(text: &str) -> String {
 /// - `[nodespace://abc-123](nodespace://abc-123)` -> `nodespace://abc-123`
 /// - `[Node Title](nodespace://abc-123)` -> `**Node Title** (nodespace://abc-123)`
 fn fix_markdown_link_uris(text: &str) -> String {
-    let re = Regex::new(r"\[([^\]]+)\]\((nodespace://[^)]+)\)").unwrap();
+    let re = markdown_uri_re();
     re.replace_all(text, |caps: &regex::Captures| {
         let link_text = &caps[1];
         let uri = &caps[2];
@@ -41,7 +52,7 @@ fn fix_markdown_link_uris(text: &str) -> String {
 ///
 /// `` `nodespace://abc-123` `` -> `nodespace://abc-123`
 fn fix_backtick_wrapped_uris(text: &str) -> String {
-    let re = Regex::new(r"`(nodespace://[^`]+)`").unwrap();
+    let re = backtick_uri_re();
     re.replace_all(text, "$1").into_owned()
 }
 

@@ -14,6 +14,7 @@ use super::OpsError;
 // ---------------------------------------------------------------------------
 
 /// Assembled workspace context from the database.
+#[derive(Default)]
 pub struct WorkspaceContext {
     pub entity_types: Vec<EntityTypeInfo>,
     pub collections: Vec<String>,
@@ -112,10 +113,7 @@ pub async fn build_workspace_context(
                 .iter()
                 .map(|r| RelInfo {
                     name: r.name.clone(),
-                    target_type: r
-                        .target_type
-                        .clone()
-                        .unwrap_or_else(|| "any".to_string()),
+                    target_type: r.target_type.clone().unwrap_or_else(|| "any".to_string()),
                 })
                 .collect();
 
@@ -308,11 +306,7 @@ mod tests {
                         FieldInfo {
                             name: "priority".into(),
                             field_type: "enum".into(),
-                            enum_values: Some(vec![
-                                "Low".into(),
-                                "Medium".into(),
-                                "High".into(),
-                            ]),
+                            enum_values: Some(vec!["Low".into(), "Medium".into(), "High".into()]),
                         },
                     ],
                     relationships: vec![],

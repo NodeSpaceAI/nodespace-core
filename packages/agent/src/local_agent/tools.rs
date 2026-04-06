@@ -7,9 +7,7 @@
 
 use crate::agent_types::{AgentToolExecutor, ToolDefinition, ToolError, ToolResult};
 use async_trait::async_trait;
-use nodespace_core::ops::{
-    node_ops, rel_ops, search_ops, OpsError,
-};
+use nodespace_core::ops::{node_ops, rel_ops, search_ops, OpsError};
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -41,18 +39,6 @@ fn truncate(s: &str, max_chars: usize) -> String {
         }
         format!("{}[truncated]", &s[..end])
     }
-}
-
-/// Format a node as a full result with properties and truncated body.
-fn node_full(node: &nodespace_core::models::Node) -> Value {
-    json!({
-        "id": node.id,
-        "type": node.node_type,
-        "title": node.title,
-        "body": truncate(&node.content, BODY_TRUNCATE_FULL),
-        "properties": node.properties,
-        "version": node.version,
-    })
 }
 
 /// Extract a required string field from JSON args.
@@ -444,7 +430,7 @@ impl GraphToolExecutor {
                         100
                     ),
                     "type": v.get("node_type").or(v.get("type")).and_then(|v| v.as_str()).unwrap_or(""),
-                    "score": v.get("score").and_then(|v| v.as_str()).unwrap_or(""),
+                    "score": v.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0),
                     "snippet": truncate(
                         v.get("content").and_then(|v| v.as_str()).unwrap_or(""),
                         BODY_TRUNCATE_SUMMARY
@@ -502,17 +488,15 @@ impl GraphToolExecutor {
                 )),
             }
         } else {
-            match ns.get_node(&id).await {
-                Ok(Some(node)) => Ok(ok_result(tool_call_id, "get_node", node_full(&node))),
-                Ok(None) => Ok(error_result(
+            let input = node_ops::GetNodeInput { node_id: id.clone() };
+            match node_ops::get_node(&ns, input).await {
+                Ok(node_data) => Ok(ok_result(tool_call_id, "get_node", node_data)),
+                Err(OpsError::NotFound { .. }) => Ok(error_result(
                     tool_call_id,
                     "get_node",
                     &format!("Node '{}' not found", id),
                 )),
-                Err(e) => Err(ToolError::ExecutionFailed(format!(
-                    "get_node failed: {}",
-                    e
-                ))),
+                Err(e) => Err(ops_error_to_tool(e, "get_node")),
             }
         }
     }
@@ -910,32 +894,6 @@ mod tests {
         let r = ok_result("id1", "test", json!({"key": "val"}));
         assert!(!r.is_error);
         assert_eq!(r.result["key"], "val");
-    }
-
-    // -- node_full formatting --
-
-    #[test]
-    fn node_full_truncates_long_body() {
-        let long_content = "x".repeat(3000);
-        let node = nodespace_core::models::Node {
-            id: "node-1".into(),
-            node_type: "text".into(),
-            content: long_content,
-            version: 3,
-            created_at: chrono::Utc::now(),
-            modified_at: chrono::Utc::now(),
-            properties: json!({"status": "active"}),
-            mentions: vec![],
-            mentioned_in: vec![],
-            title: None,
-            lifecycle_status: "active".into(),
-        };
-        let full = node_full(&node);
-        let body = full["body"].as_str().unwrap();
-        assert!(body.ends_with("[truncated]"));
-        assert!(body.len() <= BODY_TRUNCATE_FULL + "[truncated]".len());
-        assert_eq!(full["version"], 3);
-        assert_eq!(full["properties"]["status"], "active");
     }
 
     // -- AgentToolExecutor trait: unknown tool --
