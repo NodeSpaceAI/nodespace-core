@@ -1501,7 +1501,12 @@ async fn benchmark_acp_transport_roundtrip() {
 }
 
 // ===========================================================================
-// Prompt & tool quality tests (Issue #1040)
+// Pipeline integration tests — prompt, tools, normalizer (Issue #1040)
+//
+// These tests validate the agent pipeline plumbing: system prompt assembly,
+// tool dispatch, result handling, and response normalization. Tool selection
+// is driven by the mock engine (not the actual model), so these verify the
+// infrastructure, not model behavior.
 // ===========================================================================
 
 /// Mock engine that captures inference requests for assertion.
@@ -1696,6 +1701,11 @@ async fn tool_call_round_trip_with_normalizer() {
 }
 
 /// Mock tool executor that records calls and returns realistic results per tool.
+///
+/// Tool schemas are intentionally defined inline (not imported from GraphToolExecutor)
+/// to decouple these tests from real service wiring. This tests the agent loop
+/// independently — if tool schemas drift, the compile-time types in GraphToolExecutor
+/// catch it; these mocks verify pipeline behavior.
 struct RecordingToolExecutor {
     calls: Mutex<Vec<(String, serde_json::Value)>>,
 }
@@ -1767,7 +1777,10 @@ impl AgentToolExecutor for RecordingToolExecutor {
     }
 
     async fn execute(&self, name: &str, args: serde_json::Value) -> Result<ToolResult, ToolError> {
-        self.calls.lock().await.push((name.to_string(), args.clone()));
+        self.calls
+            .lock()
+            .await
+            .push((name.to_string(), args.clone()));
 
         let result = match name {
             "search_nodes" => json!({
@@ -1832,7 +1845,10 @@ async fn structured_query_tasks_uses_search_nodes() {
     // Verify search_nodes was called
     let calls = executor.recorded_calls().await;
     assert_eq!(calls.len(), 1, "Should have made exactly 1 tool call");
-    assert_eq!(calls[0].0, "search_nodes", "Should have called search_nodes");
+    assert_eq!(
+        calls[0].0, "search_nodes",
+        "Should have called search_nodes"
+    );
 
     // Verify args included node_type filter
     let args = &calls[0].1;
@@ -1921,7 +1937,10 @@ async fn multi_turn_mixed_tool_calls() {
                 args_json: r#"{"query":"tasks","node_type":"task"}"#.to_string(),
             },
             StreamingChunk::Done {
-                usage: InferenceUsage { prompt_tokens: 20, completion_tokens: 10 },
+                usage: InferenceUsage {
+                    prompt_tokens: 20,
+                    completion_tokens: 10,
+                },
             },
         ],
         // Turn 1, round 2: text response
@@ -1930,7 +1949,10 @@ async fn multi_turn_mixed_tool_calls() {
                 text: "You have 3 tasks.".to_string(),
             },
             StreamingChunk::Done {
-                usage: InferenceUsage { prompt_tokens: 30, completion_tokens: 5 },
+                usage: InferenceUsage {
+                    prompt_tokens: 30,
+                    completion_tokens: 5,
+                },
             },
         ],
         // Turn 2, round 1: tool call search_semantic
@@ -1944,7 +1966,10 @@ async fn multi_turn_mixed_tool_calls() {
                 args_json: r#"{"query":"machine learning research"}"#.to_string(),
             },
             StreamingChunk::Done {
-                usage: InferenceUsage { prompt_tokens: 40, completion_tokens: 10 },
+                usage: InferenceUsage {
+                    prompt_tokens: 40,
+                    completion_tokens: 10,
+                },
             },
         ],
         // Turn 2, round 2: text response
@@ -1953,7 +1978,10 @@ async fn multi_turn_mixed_tool_calls() {
                 text: "Found 2 notes about ML.".to_string(),
             },
             StreamingChunk::Done {
-                usage: InferenceUsage { prompt_tokens: 50, completion_tokens: 5 },
+                usage: InferenceUsage {
+                    prompt_tokens: 50,
+                    completion_tokens: 5,
+                },
             },
         ],
     ]));
@@ -1988,7 +2016,11 @@ async fn multi_turn_mixed_tool_calls() {
 
     // Verify both tools were called across the session
     let calls = executor.recorded_calls().await;
-    assert_eq!(calls.len(), 2, "Should have made 2 tool calls across 2 turns");
+    assert_eq!(
+        calls.len(),
+        2,
+        "Should have made 2 tool calls across 2 turns"
+    );
     assert_eq!(calls[0].0, "search_nodes");
     assert_eq!(calls[1].0, "search_semantic");
 }
