@@ -13,4 +13,5 @@ pub mod playbook;
 pub mod relationships;
 pub mod schema;
 pub mod search;
+pub mod skills;
 pub mod tools;
