@@ -301,7 +301,7 @@ fn def_find_skills() -> ToolDefinition {
 fn def_create_schema() -> ToolDefinition {
     ToolDefinition {
         name: "create_schema".into(),
-        description: "Create a new entity type (schema) with custom fields. Use this when the user wants to define a new type like Project, Customer, Invoice. The schema ID is auto-generated as lowercase kebab-case (e.g., 'Customer Profile' becomes 'customer-profile'). After creation, use this ID as node_type when creating instances.".into(),
+        description: "Create a new entity type (schema) with custom fields and relationships. The schema ID is auto-generated as lowercase kebab-case (e.g., 'Customer Profile' becomes 'customer-profile'). After creation, use this ID as node_type when creating instances. IMPORTANT: If a field maps to an existing node type (e.g., 'tasks' maps to 'task'), define it as a relationship instead of an array field.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -315,7 +315,7 @@ fn def_create_schema() -> ToolDefinition {
                 },
                 "fields": {
                     "type": "array",
-                    "description": "Array of field definitions",
+                    "description": "Array of field definitions. Only use for scalar properties (text, number, date, enum, boolean). Do NOT use for references to other node types — use relationships instead.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -326,7 +326,7 @@ fn def_create_schema() -> ToolDefinition {
                             "description": { "type": "string", "description": "Field description" },
                             "coreValues": {
                                 "type": "array",
-                                "description": "For enum fields: array of {value, label} pairs",
+                                "description": "For enum fields: array of {value, label} pairs. Use lowercase values (e.g., 'active' not 'Active').",
                                 "items": {
                                     "type": "object",
                                     "properties": {
@@ -337,6 +337,19 @@ fn def_create_schema() -> ToolDefinition {
                             }
                         },
                         "required": ["name", "type"]
+                    }
+                },
+                "relationships": {
+                    "type": "array",
+                    "description": "Relationships to other node types. Use instead of array fields when referencing existing types (e.g., project has_task task).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "Relationship name (e.g., 'has_task', 'assigned_to', 'belongs_to')" },
+                            "target": { "type": "string", "description": "Target node type ID (e.g., 'task', 'text', 'project')" },
+                            "description": { "type": "string", "description": "What this relationship represents" }
+                        },
+                        "required": ["name", "target"]
                     }
                 }
             },
