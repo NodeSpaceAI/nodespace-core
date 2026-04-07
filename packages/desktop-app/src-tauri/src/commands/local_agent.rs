@@ -413,6 +413,10 @@ pub async fn local_agent_new_session(
 
 /// Send a user message to a local agent session.
 ///
+/// Before inference, refreshes the workspace context (entity types, collections,
+/// playbooks) to ensure the AI knows about any schemas added mid-session.
+/// This enables dynamic schema discovery without restarting the session.
+///
 /// Streams [`StreamingChunk`] events on the `local-agent://chunk` channel,
 /// [`LocalAgentStatus`] updates on `local-agent://status`, and
 /// tool events on `local-agent://tool`.
@@ -425,6 +429,16 @@ pub async fn local_agent_send(
     app: AppHandle,
     state: State<'_, ManagedAgentState>,
 ) -> Result<AgentTurnResult, CommandError> {
+    // Refresh workspace context per turn to capture any newly-added schemas
+    if let Ok(ns) = state.app_services.node_service().await {
+        let context = nodespace_core::ops::context_ops::build_workspace_context(&ns)
+            .await
+            .unwrap_or_default();
+        let context_str = context.format_for_prompt(1500);
+        let service = state.service().await;
+        service.set_session_context(&session_id, context_str).await;
+    }
+
     let app_status = app.clone();
     let app_chunk = app.clone();
     let app_tool = app.clone();

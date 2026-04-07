@@ -125,6 +125,30 @@ mod tests {
     }
 
     #[test]
+    fn fallback_system_prompt_per_turn_refresh() {
+        // Simulate dynamic context being refreshed per turn
+        let workspace_context_1 =
+            "ENTITY TYPES:\n- task: Task (core) -- fields: status(enum: open/done)\n";
+        let prompt_1 = fallback_system_prompt(workspace_context_1);
+
+        assert!(prompt_1.contains("NodeSpace"));
+        assert!(prompt_1.contains("ENTITY TYPES:"));
+        assert!(prompt_1.contains("task: Task"));
+        assert!(prompt_1.contains("status(enum: open/done)"));
+
+        // Simulate a new schema added and context refreshed
+        let workspace_context_2 = "ENTITY TYPES:\n\
+            - task: Task (core) -- fields: status(enum: open/done)\n\
+            - customer: Customer -- fields: name(text), email(text)\n";
+        let prompt_2 = fallback_system_prompt(workspace_context_2);
+
+        // Should include both old and new types
+        assert!(prompt_2.contains("task: Task"));
+        assert!(prompt_2.contains("customer: Customer"));
+        assert!(prompt_2.contains("email(text)"));
+    }
+
+    #[test]
     fn format_tool_definitions_empty() {
         assert!(format_tool_definitions(&[]).is_empty());
     }
