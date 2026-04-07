@@ -97,8 +97,8 @@ impl PromptAssembler {
         for node in &prompt_nodes {
             use crate::props::get_prop_str;
 
-            let syntax = get_prop_str(&node.properties, "prompt", "template_syntax")
-                .unwrap_or("plain");
+            let syntax =
+                get_prop_str(&node.properties, "prompt", "template_syntax").unwrap_or("plain");
 
             let rendered = if syntax == "minijinja" {
                 Self::render_template(&node.content, template_ctx)
@@ -108,8 +108,8 @@ impl PromptAssembler {
 
             // Wrap non-built-in content with boundary markers for safety.
             // Sanitize closing tags to prevent boundary escape.
-            let source = get_prop_str(&node.properties, "prompt", "source")
-                .unwrap_or("user-created");
+            let source =
+                get_prop_str(&node.properties, "prompt", "source").unwrap_or("user-created");
 
             if source != "built-in" {
                 let sanitized = rendered.replace("</user-content>", "&lt;/user-content&gt;");

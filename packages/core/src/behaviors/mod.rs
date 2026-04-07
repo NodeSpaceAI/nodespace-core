@@ -19,7 +19,11 @@ use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 
 /// Get a string property, checking both flat and namespaced locations.
-fn get_namespaced_prop_str<'a>(properties: &'a Value, namespace: &str, key: &str) -> Option<&'a str> {
+fn get_namespaced_prop_str<'a>(
+    properties: &'a Value,
+    namespace: &str,
+    key: &str,
+) -> Option<&'a str> {
     properties
         .get(key)
         .or_else(|| properties.get(namespace).and_then(|ns| ns.get(key)))
@@ -1791,8 +1795,7 @@ impl NodeBehavior for SkillNodeBehavior {
 
     /// The description property drives embedding for skill discovery
     fn get_embeddable_content(&self, node: &Node) -> Option<String> {
-        let desc = get_namespaced_prop_str(&node.properties, "skill", "description")
-            .unwrap_or("");
+        let desc = get_namespaced_prop_str(&node.properties, "skill", "description").unwrap_or("");
         let name = &node.content;
 
         if desc.is_empty() && name.trim().is_empty() {
