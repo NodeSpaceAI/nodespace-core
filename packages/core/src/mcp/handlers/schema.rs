@@ -1009,9 +1009,21 @@ fn normalize_and_namespace_fields(inferred_fields: Vec<InferredField>) -> Vec<Sc
         .collect()
 }
 
-/// Normalize schema ID to snake_case
+/// Normalize schema ID to kebab-case (e.g., "Customer Profile" → "customer-profile").
+///
+/// Schema IDs use kebab-case to match existing core type conventions
+/// (e.g., "code-block", "quote-block", "ordered-list").
 fn normalize_schema_id(entity_name: &str) -> String {
-    normalize_field_name(entity_name)
+    entity_name
+        .to_lowercase()
+        .replace([' ', '_'], "-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .collect::<String>()
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 #[cfg(test)]
@@ -1146,7 +1158,9 @@ mod tests {
     #[test]
     fn test_normalize_schema_id() {
         assert_eq!(normalize_schema_id("Invoice"), "invoice");
-        assert_eq!(normalize_schema_id("Customer Profile"), "customer_profile");
+        assert_eq!(normalize_schema_id("Customer Profile"), "customer-profile");
+        assert_eq!(normalize_schema_id("code_block"), "code-block");
+        assert_eq!(normalize_schema_id("Project"), "project");
     }
 
     #[test]
@@ -1290,7 +1304,7 @@ mod tests {
     fn test_integration_schema_id_generation() {
         let entity_name = "Customer Invoice";
         let schema_id = normalize_schema_id(entity_name);
-        assert_eq!(schema_id, "customer_invoice");
+        assert_eq!(schema_id, "customer-invoice");
     }
 
     #[test]

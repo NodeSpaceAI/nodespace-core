@@ -301,7 +301,7 @@ fn def_find_skills() -> ToolDefinition {
 fn def_create_schema() -> ToolDefinition {
     ToolDefinition {
         name: "create_schema".into(),
-        description: "Create a new entity type (schema) with custom fields. Use this when the user wants to define a new type like Project, Customer, Invoice. The schema ID is auto-generated as lowercase with underscores (e.g., 'Customer Profile' becomes 'customer_profile'). After creation, use this ID as node_type when creating instances.".into(),
+        description: "Create a new entity type (schema) with custom fields. Use this when the user wants to define a new type like Project, Customer, Invoice. The schema ID is auto-generated as lowercase kebab-case (e.g., 'Customer Profile' becomes 'customer-profile'). After creation, use this ID as node_type when creating instances.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
