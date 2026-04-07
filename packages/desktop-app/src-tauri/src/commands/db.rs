@@ -61,12 +61,62 @@ pub(crate) async fn create_service_bundle(
         for seed in PromptAssembler::seed_prompt_nodes() {
             seed_nodes.push(seed.to_node());
         }
-        for seed in SkillPipeline::seed_skill_nodes() {
+
+        // Collect skill nodes (guidance children are created separately below)
+        let skill_seeds = SkillPipeline::seed_skill_nodes();
+        for seed in &skill_seeds {
             seed_nodes.push(seed.to_node());
         }
 
         if let Err(e) = node_service.seed_nodes_if_needed(seed_nodes).await {
             tracing::warn!(error = %e, "Failed to seed agent nodes (non-fatal)");
+        }
+
+        // Create guidance prompt children for skills that have them.
+        // This runs after seed_nodes_if_needed so the parent skills exist.
+        // We check if any skill guidance already exists to stay idempotent.
+        for seed in &skill_seeds {
+            if seed.guidance_prompts.is_empty() {
+                continue;
+            }
+            // Find the skill node we just created by querying for it
+            let query = nodespace_core::models::NodeQuery {
+                node_type: Some("skill".to_string()),
+                content_contains: Some(seed.name.clone()),
+                ..Default::default()
+            };
+            let skill_nodes = node_service
+                .query_nodes_simple(query)
+                .await
+                .unwrap_or_default();
+            if let Some(skill_node) = skill_nodes.first() {
+                // Check if children already exist
+                let children = node_service
+                    .get_children(&skill_node.id)
+                    .await
+                    .unwrap_or_default();
+                if children.is_empty() {
+                    for guidance in &seed.guidance_prompts {
+                        let child = guidance.to_node();
+                        let params = nodespace_core::services::CreateNodeParams {
+                            id: Some(child.id.clone()),
+                            node_type: child.node_type.clone(),
+                            content: child.content.clone(),
+                            properties: child.properties.clone(),
+                            parent_id: Some(skill_node.id.clone()),
+                            insert_after_node_id: None,
+                        };
+                        if let Err(e) = node_service.create_node_with_parent(params).await {
+                            tracing::warn!(
+                                error = %e,
+                                skill = %seed.name,
+                                guidance = %guidance.title,
+                                "Failed to create guidance prompt for skill"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 

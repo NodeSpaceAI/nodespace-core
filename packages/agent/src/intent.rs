@@ -43,6 +43,20 @@ static INTENT_PATTERNS: &[(&[&str], &str)] = &[
         ],
         "search",
     ),
+    // Schema/type creation (before general creation to match first)
+    (
+        &[
+            "new type",
+            "new schema",
+            "new entity type",
+            "define a type",
+            "create a type",
+            "create a schema",
+            "define fields",
+            "define a schema",
+        ],
+        "create schema",
+    ),
     // Creation
     (
         &["create", "make", "add a new", "new node", "add a"],
@@ -299,6 +313,37 @@ mod tests {
     fn add_a_matches_create() {
         let result = extract_intent("Add a new task for the weekly review");
         assert_eq!(result.query, "create");
+        assert!(result.from_pattern);
+    }
+
+    // --- Schema creation intent ---
+
+    #[test]
+    fn create_new_type_matches_schema() {
+        let result =
+            extract_intent("Create a new type 'Project' and define fields for tracking projects");
+        assert_eq!(result.query, "create schema");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn define_schema_matches_schema() {
+        let result = extract_intent("Define a schema for customer records");
+        assert_eq!(result.query, "create schema");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn new_entity_type_matches_schema() {
+        let result = extract_intent("I need a new entity type for invoices");
+        assert_eq!(result.query, "create schema");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn define_fields_matches_schema() {
+        let result = extract_intent("Define fields for the employee type");
+        assert_eq!(result.query, "create schema");
         assert!(result.from_pattern);
     }
 }

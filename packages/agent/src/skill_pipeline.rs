@@ -211,6 +211,7 @@ impl SkillPipeline {
                 ],
                 max_iterations: 2,
                 output_format: "text".to_string(),
+                guidance_prompts: vec![],
             },
             SeedSkill {
                 name: "Node Creation".to_string(),
@@ -221,6 +222,44 @@ impl SkillPipeline {
                 ],
                 max_iterations: 2,
                 output_format: "text".to_string(),
+                guidance_prompts: vec![],
+            },
+            SeedSkill {
+                name: "Schema Creation".to_string(),
+                description: "Define new entity types (schemas) with custom fields, enums, and relationships. Use when user wants to create a new type like Project, Customer, Invoice, etc.".to_string(),
+                tool_whitelist: vec![
+                    "create_node".to_string(),
+                    "get_node".to_string(),
+                ],
+                max_iterations: 2,
+                output_format: "text".to_string(),
+                guidance_prompts: vec![
+                    SeedGuidancePrompt {
+                        title: "Schema Creation Guide".to_string(),
+                        content: "To create a new schema (entity type), use create_node with node_type=\"schema\".\n\
+                            The content field is the display name (e.g., \"Project\", \"Customer\").\n\
+                            Fields are defined in properties.fields as an array.\n\n\
+                            REQUIRED STRUCTURE:\n\
+                            {\n\
+                              \"node_type\": \"schema\",\n\
+                              \"title\": \"Customer\",\n\
+                              \"body\": \"Customer\",\n\
+                              \"properties\": {\n\
+                                \"description\": \"Track customer information\",\n\
+                                \"fields\": [\n\
+                                  {\"name\": \"email\", \"field_type\": \"text\", \"required\": true, \"indexed\": true, \"description\": \"Contact email\"},\n\
+                                  {\"name\": \"status\", \"field_type\": \"enum\", \"required\": true, \"indexed\": true, \"core_values\": [{\"value\": \"active\", \"label\": \"Active\"}, {\"value\": \"inactive\", \"label\": \"Inactive\"}]},\n\
+                                  {\"name\": \"revenue\", \"field_type\": \"number\", \"required\": false, \"description\": \"Annual revenue\"},\n\
+                                  {\"name\": \"notes\", \"field_type\": \"text\", \"required\": false}\n\
+                                ]\n\
+                              }\n\
+                            }\n\n\
+                            FIELD TYPES: text, number, date, enum, array, object, boolean\n\
+                            ENUM FIELDS must include core_values array with {value, label} pairs.\n\
+                            Always set indexed=true for fields users will filter/search on.".to_string(),
+                        priority: 1,
+                    },
+                ],
             },
             SeedSkill {
                 name: "Graph Editing".to_string(),
@@ -231,6 +270,7 @@ impl SkillPipeline {
                 ],
                 max_iterations: 2,
                 output_format: "text".to_string(),
+                guidance_prompts: vec![],
             },
             SeedSkill {
                 name: "Relationship Management".to_string(),
@@ -242,6 +282,7 @@ impl SkillPipeline {
                 ],
                 max_iterations: 2,
                 output_format: "text".to_string(),
+                guidance_prompts: vec![],
             },
         ]
     }
@@ -268,6 +309,33 @@ pub struct SeedSkill {
     pub tool_whitelist: Vec<String>,
     pub max_iterations: usize,
     pub output_format: String,
+    /// Child prompt nodes containing guidance, few-shot examples, etc.
+    pub guidance_prompts: Vec<SeedGuidancePrompt>,
+}
+
+/// A child prompt node that provides guidance for a skill.
+#[derive(Debug, Clone)]
+pub struct SeedGuidancePrompt {
+    pub title: String,
+    pub content: String,
+    pub priority: i64,
+}
+
+impl SeedGuidancePrompt {
+    /// Convert to a Node for creation via NodeService.
+    pub fn to_node(&self) -> Node {
+        let mut node = Node::new(
+            "prompt".to_string(),
+            self.content.clone(),
+            serde_json::json!({
+                "priority": self.priority,
+                "template_syntax": "plain",
+                "source": "built-in",
+            }),
+        );
+        node.title = Some(self.title.clone());
+        node
+    }
 }
 
 impl SeedSkill {
@@ -286,6 +354,26 @@ impl SeedSkill {
         node.title = Some(self.name.clone());
         node
     }
+
+    /// Convert guidance prompts to child Nodes.
+    pub fn guidance_nodes(&self) -> Vec<Node> {
+        self.guidance_prompts
+            .iter()
+            .map(|g| {
+                let mut node = Node::new(
+                    "prompt".to_string(),
+                    g.content.clone(),
+                    serde_json::json!({
+                        "priority": g.priority,
+                        "template_syntax": "plain",
+                        "source": "built-in",
+                    }),
+                );
+                node.title = Some(g.title.clone());
+                node
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -295,13 +383,37 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = SkillPipeline::seed_skill_nodes();
-        assert_eq!(seeds.len(), 4, "Should have 4 seed skills");
+        assert_eq!(seeds.len(), 5, "Should have 5 seed skills");
 
         for seed in &seeds {
             assert!(!seed.name.is_empty());
             assert!(!seed.description.is_empty());
             assert!(!seed.tool_whitelist.is_empty(), "Skills must have tools");
             assert!(seed.max_iterations > 0);
+        }
+    }
+
+    #[test]
+    fn schema_creation_skill_has_guidance() {
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let schema_skill = seeds
+            .iter()
+            .find(|s| s.name == "Schema Creation")
+            .expect("Schema Creation skill should exist");
+
+        assert!(!schema_skill.guidance_prompts.is_empty());
+        let guidance = &schema_skill.guidance_prompts[0];
+        assert!(guidance.content.contains("fields"));
+        assert!(guidance.content.contains("field_type"));
+        assert!(guidance.content.contains("enum"));
+        assert!(guidance.content.contains("core_values"));
+
+        // Guidance converts to valid prompt nodes
+        let nodes = schema_skill.guidance_nodes();
+        assert_eq!(nodes.len(), schema_skill.guidance_prompts.len());
+        for node in &nodes {
+            assert_eq!(node.node_type, "prompt");
+            assert_eq!(node.properties["source"].as_str().unwrap(), "built-in");
         }
     }
 
