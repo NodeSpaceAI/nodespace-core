@@ -66,35 +66,35 @@ pub async fn find_skills(
     let mut skills = Vec::new();
 
     for (node, confidence) in &skill_results {
-            let description = node
-                .properties
-                .get("description")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let tool_whitelist = node
-                .properties
-                .get("tool_whitelist")
-                .cloned()
-                .unwrap_or(json!([]));
+        let description = node
+            .properties
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let tool_whitelist = node
+            .properties
+            .get("tool_whitelist")
+            .cloned()
+            .unwrap_or(json!([]));
 
-            if *confidence > SKILL_HIGH_CONFIDENCE {
-                skills.push(json!({
-                    "id": node.id,
-                    "name": node.content,
-                    "description": description,
-                    "confidence": format!("{:.2}", confidence),
-                    "tools": tool_whitelist,
-                    "recommendation": "Use this skill's tools for your task"
-                }));
-            } else if *confidence > SKILL_MEDIUM_CONFIDENCE {
-                skills.push(json!({
-                    "id": node.id,
-                    "name": node.content,
-                    "description": description,
-                    "confidence": format!("{:.2}", confidence),
-                    "recommendation": "May be relevant - review before adopting"
-                }));
-            }
+        if *confidence > SKILL_HIGH_CONFIDENCE {
+            skills.push(json!({
+                "id": node.id,
+                "name": node.content,
+                "description": description,
+                "confidence": format!("{:.2}", confidence),
+                "tools": tool_whitelist,
+                "recommendation": "Use this skill's tools for your task"
+            }));
+        } else if *confidence > SKILL_MEDIUM_CONFIDENCE {
+            skills.push(json!({
+                "id": node.id,
+                "name": node.content,
+                "description": description,
+                "confidence": format!("{:.2}", confidence),
+                "recommendation": "May be relevant - review before adopting"
+            }));
+        }
     }
 
     tracing::info!(

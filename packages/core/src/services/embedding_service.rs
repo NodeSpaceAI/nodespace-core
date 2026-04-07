@@ -876,6 +876,16 @@ impl NodeEmbeddingService {
 
         // Over-fetch when service-layer filters are active so that after filtering
         // we still return up to `limit` results.
+        //
+        // NOTE(perf): Callers (e.g. the MCP handler) may also inflate the limit they
+        // pass here by 3× when their own post-filters are active (collection/scope).
+        // This means the total DB fetch can be up to limit * 9 when both service-layer
+        // and handler-layer filters are simultaneously active. This is acceptable at
+        // typical limits (20–100), but callers should be aware of the compounding.
+        //
+        // TODO(perf): DB-level node_type filtering requires storing node_type in the
+        // embedding table and adding it to the vector index WHERE clause. Until that
+        // schema change is made, filtering is applied here as a Rust post-filter.
         let has_filters = filters
             .map(|f: &SearchNodeFilters| !f.is_empty())
             .unwrap_or(false);
