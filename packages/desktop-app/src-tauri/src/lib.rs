@@ -346,15 +346,19 @@ pub fn run() {
                 use crate::commands::local_agent::ManagedAgentState;
                 use nodespace_agent::acp::registry::SystemAgentRegistry;
                 use nodespace_agent::acp::session::AcpClientService;
+                use nodespace_agent::local_agent::composite_model_manager::CompositeModelManager;
                 use nodespace_agent::local_agent::model_manager::GgufModelManager;
+                use nodespace_agent::local_agent::ollama_model_manager::OllamaModelManager;
 
-                // GGUF model manager for chat model lifecycle.
-                // Wrapped in Arc so it can be cloned for shutdown cleanup.
-                let model_manager: std::sync::Arc<GgufModelManager> =
-                    std::sync::Arc::new(GgufModelManager::new().unwrap_or_else(|e| {
-                        tracing::error!("Failed to initialize model manager: {e}");
-                        panic!("GgufModelManager initialization failed: {e}");
-                    }));
+                // Composite model manager: routes between built-in GGUF models
+                // and Ollama-served models based on the "ollama:" prefix convention.
+                let gguf = std::sync::Arc::new(GgufModelManager::new().unwrap_or_else(|e| {
+                    tracing::error!("Failed to initialize GGUF model manager: {e}");
+                    panic!("GgufModelManager initialization failed: {e}");
+                }));
+                let ollama = std::sync::Arc::new(OllamaModelManager::new());
+                let model_manager: std::sync::Arc<CompositeModelManager> =
+                    std::sync::Arc::new(CompositeModelManager::new(gguf, ollama));
                 app.manage(model_manager);
 
                 // Local agent state: wraps LocalAgentService with a no-op engine
@@ -499,6 +503,7 @@ pub fn run() {
             commands::chat_models::chat_model_delete,
             commands::chat_models::chat_model_load,
             commands::chat_models::chat_model_unload,
+            commands::chat_models::ollama_available,
             // ACP commands (Issue #1008)
             commands::acp::acp_list_agents,
             commands::acp::acp_start_session,
@@ -574,7 +579,7 @@ pub(crate) fn graceful_shutdown(app_handle: &tauri::AppHandle) {
 ///
 /// Proper cleanup sequence to avoid use-after-free Metal crashes:
 /// 1. Reset ManagedAgentState engine to NoOp (drops ChatEngine Arc)
-/// 2. Unload chat model in GgufModelManager
+/// 2. Unload chat model via CompositeModelManager (GGUF or Ollama)
 /// 3. Release embedding GPU resources
 /// 4. Release global llama backend
 ///
@@ -583,7 +588,7 @@ pub(crate) fn graceful_shutdown(app_handle: &tauri::AppHandle) {
 pub(crate) fn release_gpu_resources(app_handle: &tauri::AppHandle) {
     use crate::commands::local_agent::ManagedAgentState;
     use nodespace_agent::agent_types::ModelManager;
-    use nodespace_agent::local_agent::model_manager::GgufModelManager;
+    use nodespace_agent::local_agent::composite_model_manager::CompositeModelManager;
     use std::sync::Arc;
     use tauri::Manager;
 
@@ -598,8 +603,8 @@ pub(crate) fn release_gpu_resources(app_handle: &tauri::AppHandle) {
         tracing::info!("Shutdown: inference engine reset");
     }
 
-    // Step 2a: Unload chat model if loaded
-    if let Some(model_manager) = app_handle.try_state::<Arc<GgufModelManager>>() {
+    // Step 2a: Unload chat model if loaded (Issues #1008, #1058)
+    if let Some(model_manager) = app_handle.try_state::<Arc<CompositeModelManager>>() {
         tracing::debug!("Shutdown: unloading chat model");
         let manager = model_manager.inner().clone();
         let handle = std::thread::spawn(move || {

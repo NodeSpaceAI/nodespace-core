@@ -298,10 +298,10 @@ pub async fn ensure_model_ready(
                 },
             );
 
-            // Register progress callback
+            // Register progress callback for GGUF download
             let app_progress = app.clone();
             manager
-                .set_progress_callback(Box::new(move |evt| {
+                .set_gguf_progress_callback(Box::new(move |evt| {
                     let _ = app_progress.emit(agent_events::MODEL_DOWNLOAD_PROGRESS, &evt);
                 }))
                 .await;
@@ -328,8 +328,9 @@ pub async fn ensure_model_ready(
         },
     );
 
-    // Get the model file path
+    // Get the model file path (GGUF path — Ollama models are handled above)
     let model_path = manager
+        .gguf_manager()
         .model_path(&model_id)
         .map_err(|e| agent_error(format!("Failed to resolve model path: {e}")))?;
 
