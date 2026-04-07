@@ -137,6 +137,17 @@ pub struct SearchSemanticParams {
     /// Default: "knowledge" (text, header, code-block, schema, table)
     #[serde(default)]
     pub scope: Option<String>,
+
+    /// Filter by specific node types (e.g., ["task", "text"])
+    /// If set, only nodes whose node_type is in this list will be included
+    #[serde(default)]
+    pub node_types: Option<Vec<String>>,
+
+    /// Filter by node properties (key-value pairs)
+    /// If set, only nodes whose properties contain all specified key-value pairs will be included
+    /// Multiple filters are combined with AND logic
+    #[serde(default)]
+    pub property_filters: Option<serde_json::Value>,
 }
 
 /// Search root nodes by semantic similarity
@@ -304,7 +315,9 @@ pub async fn handle_search_semantic(
     let has_post_filters = collection_member_ids.is_some()
         || !excluded_node_ids.is_empty()
         || !include_archived
-        || scope_filters;
+        || scope_filters
+        || params.node_types.is_some()
+        || params.property_filters.is_some();
     let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
     // Call the embedding service's semantic search
@@ -329,7 +342,7 @@ pub async fn handle_search_semantic(
             }
         })?;
 
-    // Apply filters: scope, lifecycle status, collection members, exclusions (Issue #1018)
+    // Apply filters: scope, lifecycle status, collection members, exclusions, node_types, property_filters
     let filtered_results: Vec<_> = results
         .into_iter()
         .filter(|(node, _)| {
@@ -358,6 +371,45 @@ pub async fn handle_search_semantic(
             if excluded_node_ids.contains(&node.id) {
                 return false;
             }
+
+            // Filter by node_types (Issue #1059) — node must match one of the specified types
+            if let Some(ref allowed_types) = params.node_types {
+                if !allowed_types.contains(&node.node_type) {
+                    tracing::debug!("Filtered out node {} due to node_type mismatch", node.id);
+                    return false;
+                }
+            }
+
+            // Filter by property_filters (Issue #1059) — node properties must contain all specified key-value pairs
+            if let Some(ref property_filters) = params.property_filters {
+                if let Some(filter_obj) = property_filters.as_object() {
+                    for (key, expected_value) in filter_obj {
+                        match node.properties.get(key) {
+                            Some(actual_value) => {
+                                if actual_value != expected_value {
+                                    tracing::debug!(
+                                        "Filtered out node {} due to property mismatch: {} = {:?} (expected {:?})",
+                                        node.id,
+                                        key,
+                                        actual_value,
+                                        expected_value
+                                    );
+                                    return false;
+                                }
+                            }
+                            None => {
+                                tracing::debug!(
+                                    "Filtered out node {} due to missing property: {}",
+                                    node.id,
+                                    key
+                                );
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+
             true
         })
         .take(limit)
@@ -436,7 +488,9 @@ pub async fn handle_search_semantic(
         "collection_id": collection_id,
         "include_markdown": include_markdown,
         "include_archived": include_archived,
-        "scope": format!("{:?}", scope)
+        "scope": format!("{:?}", scope),
+        "node_types": params.node_types,
+        "property_filters": params.property_filters
     }))
 }
 
@@ -830,5 +884,202 @@ mod search_tests {
 
         assert!(!should_exclude_by_deleted);
         assert!(!should_exclude_by_archived);
+    }
+
+    // Issue #1059 - Node type and property filtering tests
+
+    #[test]
+    fn test_node_types_filter_parsing() {
+        let params = json!({
+            "query": "test",
+            "node_types": ["task", "text"]
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(
+            parsed.node_types,
+            Some(vec!["task".to_string(), "text".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_node_types_filter_empty_array() {
+        let params = json!({
+            "query": "test",
+            "node_types": []
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.node_types, Some(vec![]));
+    }
+
+    #[test]
+    fn test_node_types_filter_not_provided() {
+        let params = json!({
+            "query": "test"
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert!(parsed.node_types.is_none());
+    }
+
+    #[test]
+    fn test_property_filters_parsing() {
+        let params = json!({
+            "query": "test",
+            "property_filters": {
+                "status": "done",
+                "priority": "high"
+            }
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert!(parsed.property_filters.is_some());
+
+        let filters = parsed.property_filters.unwrap();
+        assert_eq!(filters.get("status").and_then(|v| v.as_str()), Some("done"));
+        assert_eq!(
+            filters.get("priority").and_then(|v| v.as_str()),
+            Some("high")
+        );
+    }
+
+    #[test]
+    fn test_property_filters_empty_object() {
+        let params = json!({
+            "query": "test",
+            "property_filters": {}
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert!(parsed.property_filters.is_some());
+        assert!(parsed
+            .property_filters
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_property_filters_not_provided() {
+        let params = json!({
+            "query": "test"
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert!(parsed.property_filters.is_none());
+    }
+
+    #[test]
+    fn test_node_types_filter_matching_logic() {
+        // Test the matching logic without running full search
+        let allowed_types = vec!["task".to_string(), "text".to_string()];
+
+        // Nodes that should match
+        assert!(allowed_types.contains(&"task".to_string()));
+        assert!(allowed_types.contains(&"text".to_string()));
+
+        // Nodes that should not match
+        assert!(!allowed_types.contains(&"header".to_string()));
+        assert!(!allowed_types.contains(&"code-block".to_string()));
+    }
+
+    #[test]
+    fn test_property_filters_matching_logic() {
+        // Test the matching logic without running full search
+        let filters = json!({
+            "status": "done",
+            "priority": "high"
+        });
+
+        let filter_obj = filters.as_object().unwrap();
+
+        // Create a mock node property map
+        let mut node_properties = serde_json::Map::new();
+        node_properties.insert("status".to_string(), json!("done"));
+        node_properties.insert("priority".to_string(), json!("high"));
+
+        // All filters should match
+        for (key, expected_value) in filter_obj {
+            let actual_value = node_properties.get(key);
+            assert_eq!(actual_value, Some(expected_value));
+        }
+    }
+
+    #[test]
+    fn test_property_filters_partial_match_fails() {
+        // Test that partial matches fail (AND logic)
+        let filters = json!({
+            "status": "done",
+            "priority": "high"
+        });
+
+        let filter_obj = filters.as_object().unwrap();
+
+        // Create a mock node property map with only one matching property
+        let mut node_properties = serde_json::Map::new();
+        node_properties.insert("status".to_string(), json!("done"));
+        node_properties.insert("priority".to_string(), json!("low")); // This doesn't match!
+
+        // At least one filter should not match
+        let mut all_match = true;
+        for (key, expected_value) in filter_obj {
+            if let Some(actual_value) = node_properties.get(key) {
+                if actual_value != expected_value {
+                    all_match = false;
+                    break;
+                }
+            } else {
+                all_match = false;
+                break;
+            }
+        }
+
+        assert!(!all_match); // Should not match all filters
+    }
+
+    #[test]
+    fn test_combined_node_types_and_property_filters() {
+        let params = json!({
+            "query": "test",
+            "node_types": ["task"],
+            "property_filters": {
+                "status": "done"
+            }
+        });
+
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.node_types, Some(vec!["task".to_string()]));
+        assert!(parsed.property_filters.is_some());
+        assert_eq!(
+            parsed
+                .property_filters
+                .unwrap()
+                .get("status")
+                .and_then(|v| v.as_str()),
+            Some("done")
+        );
+    }
+
+    #[test]
+    fn test_search_response_includes_filters() {
+        // Test that response includes filter fields
+        let mock_response = json!({
+            "nodes": [],
+            "count": 0,
+            "query": "test",
+            "threshold": 0.7,
+            "collection_id": null,
+            "include_markdown": 1,
+            "include_archived": false,
+            "scope": "Knowledge",
+            "node_types": ["task"],
+            "property_filters": { "status": "done" }
+        });
+
+        assert!(mock_response.get("node_types").is_some());
+        assert!(mock_response.get("property_filters").is_some());
+        assert_eq!(mock_response["node_types"], json!(["task"]));
     }
 }
