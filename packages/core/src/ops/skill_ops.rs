@@ -6,7 +6,7 @@
 //!
 //! Issue #1051, ADR-030 Phase 4.
 
-use crate::services::NodeEmbeddingService;
+use crate::services::{NodeEmbeddingService, SearchNodeFilters};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -51,29 +51,21 @@ pub async fn find_skills(
 ) -> Result<FindSkillsOutput, OpsError> {
     let limit = input.limit.unwrap_or(3).min(MAX_SKILL_LIMIT);
 
-    // Over-fetch and filter to skill nodes
-    let results = embedding_service
-        .semantic_search(&input.query, limit * 3, SKILL_SEARCH_THRESHOLD)
+    // Use service-layer filtering to restrict results to skill nodes (Issue #1059).
+    // This avoids over-fetching all node types and post-filtering in ops code.
+    let filters = SearchNodeFilters {
+        node_types: Some(vec!["skill".to_string()]),
+        property_filters: None,
+    };
+
+    let skill_results = embedding_service
+        .semantic_search_nodes(&input.query, limit, SKILL_SEARCH_THRESHOLD, Some(&filters))
         .await
         .map_err(|e| OpsError::Internal(format!("Skill search failed: {}", e)))?;
-
-    let skill_results: Vec<_> = results
-        .into_iter()
-        .filter(|r| {
-            r.node
-                .as_ref()
-                .map(|n| n.node_type == "skill")
-                .unwrap_or(false)
-        })
-        .take(limit)
-        .collect();
-
     let total_results = skill_results.len();
     let mut skills = Vec::new();
 
-    for result in &skill_results {
-        if let Some(ref node) = result.node {
-            let confidence = result.max_similarity;
+    for (node, confidence) in &skill_results {
             let description = node
                 .properties
                 .get("description")
@@ -85,7 +77,7 @@ pub async fn find_skills(
                 .cloned()
                 .unwrap_or(json!([]));
 
-            if confidence > SKILL_HIGH_CONFIDENCE {
+            if *confidence > SKILL_HIGH_CONFIDENCE {
                 skills.push(json!({
                     "id": node.id,
                     "name": node.content,
@@ -94,7 +86,7 @@ pub async fn find_skills(
                     "tools": tool_whitelist,
                     "recommendation": "Use this skill's tools for your task"
                 }));
-            } else if confidence > SKILL_MEDIUM_CONFIDENCE {
+            } else if *confidence > SKILL_MEDIUM_CONFIDENCE {
                 skills.push(json!({
                     "id": node.id,
                     "name": node.content,
@@ -103,14 +95,13 @@ pub async fn find_skills(
                     "recommendation": "May be relevant - review before adopting"
                 }));
             }
-        }
     }
 
     tracing::info!(
         query = %input.query,
         results_found = total_results,
         skills_returned = skills.len(),
-        top_score = skill_results.first().map(|r| r.max_similarity).unwrap_or(0.0),
+        top_score = skill_results.first().map(|(_, s)| *s).unwrap_or(0.0),
         "find_skills executed"
     );
 
