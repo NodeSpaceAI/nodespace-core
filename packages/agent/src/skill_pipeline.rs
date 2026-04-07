@@ -164,9 +164,10 @@ impl SkillPipeline {
         // Step 4: Build SkillMatch from the top result
         let skill_node = top.node.clone()?;
         let tool_whitelist = extract_tool_whitelist(&skill_node);
-        let max_iterations = crate::props::get_prop(&skill_node.properties, "skill", "max_iterations")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2) as usize;
+        let max_iterations =
+            crate::props::get_prop(&skill_node.properties, "skill", "max_iterations")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(2) as usize;
 
         Some(SkillMatch {
             skill: skill_node,

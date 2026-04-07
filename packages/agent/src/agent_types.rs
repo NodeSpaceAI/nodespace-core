@@ -294,6 +294,19 @@ pub enum AcpAuthMethod {
 pub enum ModelFamily {
     /// Ministral -- Mistral AI's small model series (Ministral 3B, Ministral 8B).
     Ministral,
+    /// Model served via Ollama (family determined by Ollama).
+    Ollama,
+}
+
+/// Backend used to serve a language model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelBackend {
+    /// Local GGUF model loaded via llama.cpp.
+    #[default]
+    Gguf,
+    /// Model served by a local Ollama daemon.
+    Ollama,
 }
 
 // ---------------------------------------------------------------------------
@@ -464,15 +477,18 @@ pub struct ModelInfo {
     /// Human-readable model name.
     pub name: String,
     /// Filename of the model weights on disk.
-    pub filename: String,
+    pub filename: Option<String>,
     /// Size of the model file in bytes.
     pub size_bytes: u64,
     /// Quantization format (e.g. "Q4_K_M").
     pub quantization: String,
     /// URL to download the model weights.
-    pub url: String,
+    pub url: Option<String>,
     /// Expected SHA-256 hash of the model file.
-    pub sha256: String,
+    pub sha256: Option<String>,
+    /// Backend used to serve this model.
+    #[serde(default)]
+    pub backend: ModelBackend,
     /// Current download / load status.
     pub status: ModelStatus,
 }

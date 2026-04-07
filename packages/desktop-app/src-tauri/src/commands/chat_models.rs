@@ -1,15 +1,16 @@
-//! Tauri commands for GGUF chat model management.
+//! Tauri commands for chat model management.
 //!
-//! Bridges the Svelte frontend to [`GgufModelManager`] via Tauri IPC.
+//! Bridges the Svelte frontend to [`CompositeModelManager`] via Tauri IPC.
 //! Download progress is forwarded through the `model://download-progress`
-//! Tauri event channel.
+//! Tauri event channel. When Ollama is running, both built-in GGUF models
+//! and `ollama:`-prefixed Ollama models appear in the unified model list.
 //!
-//! Issue #1008
+//! Issue #1058
 
 use crate::agent_events;
 use crate::commands::nodes::CommandError;
 use nodespace_agent::agent_types::{DownloadEvent, ModelInfo, ModelManager};
-use nodespace_agent::local_agent::model_manager::GgufModelManager;
+use nodespace_agent::local_agent::composite_model_manager::CompositeModelManager;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
@@ -22,10 +23,13 @@ fn model_error(message: impl Into<String>) -> CommandError {
     }
 }
 
-/// List all models in the local catalog with their current status.
+/// List all models in the catalog with their current status.
+///
+/// Returns built-in GGUF models plus `ollama:`-prefixed models when the
+/// Ollama daemon is running.
 #[tauri::command]
 pub async fn chat_model_list(
-    manager: State<'_, Arc<GgufModelManager>>,
+    manager: State<'_, Arc<CompositeModelManager>>,
 ) -> Result<Vec<ModelInfo>, CommandError> {
     manager
         .list()
@@ -36,7 +40,7 @@ pub async fn chat_model_list(
 /// Get the recommended model based on system RAM.
 #[tauri::command]
 pub async fn chat_model_recommended(
-    manager: State<'_, Arc<GgufModelManager>>,
+    manager: State<'_, Arc<CompositeModelManager>>,
 ) -> Result<String, CommandError> {
     manager
         .recommended_model()
@@ -52,13 +56,20 @@ pub async fn chat_model_recommended(
 pub async fn chat_model_download(
     model_id: String,
     app: AppHandle,
-    manager: State<'_, Arc<GgufModelManager>>,
+    manager: State<'_, Arc<CompositeModelManager>>,
 ) -> Result<(), CommandError> {
-    // Register progress callback that emits Tauri events
-    let app_progress = app.clone();
+    // Register progress callbacks for both backends
+    let app_gguf = app.clone();
     manager
-        .set_progress_callback(Box::new(move |evt: DownloadEvent| {
-            let _ = app_progress.emit(agent_events::MODEL_DOWNLOAD_PROGRESS, &evt);
+        .set_gguf_progress_callback(Box::new(move |evt: DownloadEvent| {
+            let _ = app_gguf.emit(agent_events::MODEL_DOWNLOAD_PROGRESS, &evt);
+        }))
+        .await;
+
+    let app_ollama = app.clone();
+    manager
+        .set_ollama_progress_callback(Box::new(move |evt: DownloadEvent| {
+            let _ = app_ollama.emit(agent_events::MODEL_DOWNLOAD_PROGRESS, &evt);
         }))
         .await;
 
@@ -72,7 +83,7 @@ pub async fn chat_model_download(
 #[tauri::command]
 pub async fn chat_model_cancel_download(
     model_id: String,
-    manager: State<'_, Arc<GgufModelManager>>,
+    manager: State<'_, Arc<CompositeModelManager>>,
 ) -> Result<(), CommandError> {
     manager
         .cancel_download(&model_id)
@@ -84,7 +95,7 @@ pub async fn chat_model_cancel_download(
 #[tauri::command]
 pub async fn chat_model_delete(
     model_id: String,
-    manager: State<'_, Arc<GgufModelManager>>,
+    manager: State<'_, Arc<CompositeModelManager>>,
 ) -> Result<(), CommandError> {
     manager
         .delete(&model_id)
@@ -96,7 +107,7 @@ pub async fn chat_model_delete(
 #[tauri::command]
 pub async fn chat_model_load(
     model_id: String,
-    manager: State<'_, Arc<GgufModelManager>>,
+    manager: State<'_, Arc<CompositeModelManager>>,
 ) -> Result<(), CommandError> {
     manager
         .load(&model_id)
@@ -107,10 +118,18 @@ pub async fn chat_model_load(
 /// Unload the currently loaded model, freeing resources.
 #[tauri::command]
 pub async fn chat_model_unload(
-    manager: State<'_, Arc<GgufModelManager>>,
+    manager: State<'_, Arc<CompositeModelManager>>,
 ) -> Result<(), CommandError> {
     manager
         .unload()
         .await
         .map_err(|e| model_error(format!("Failed to unload model: {e}")))
+}
+
+/// Check whether the Ollama daemon is running and reachable.
+#[tauri::command]
+pub async fn ollama_available(
+    manager: State<'_, Arc<CompositeModelManager>>,
+) -> Result<bool, CommandError> {
+    Ok(manager.ollama_available().await)
 }

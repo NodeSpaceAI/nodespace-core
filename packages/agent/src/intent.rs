@@ -48,15 +48,21 @@ static INTENT_PATTERNS: &[(&[&str], &str)] = &[
         &[
             "new type",
             "new node type",
+            "a new node type",
             "new schema",
             "new entity type",
             "define a type",
             "create a type",
             "create a schema",
+            "create a new type",
+            "create a new node type",
+            "create a new schema",
             "define fields",
             "define a schema",
             "node type",
             "with fields",
+            "entity type",
+            "schema for",
         ],
         "create schema",
     ),
@@ -325,6 +331,30 @@ mod tests {
     fn create_new_type_matches_schema() {
         let result =
             extract_intent("Create a new type 'Project' and define fields for tracking projects");
+        assert_eq!(result.query, "create schema");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn create_new_node_type_with_colon_matches_schema() {
+        // Regression: "Create a new node type: 'Project'" was matching "create" instead of schema
+        let result = extract_intent(
+            "Create a new node type: 'Project' and use fields that are typical of what we want to track on a project",
+        );
+        assert_eq!(result.query, "create schema");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn entity_type_matches_schema() {
+        let result = extract_intent("I need a new entity type for invoices");
+        assert_eq!(result.query, "create schema");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn schema_for_matches_schema() {
+        let result = extract_intent("Create a schema for tracking customer orders");
         assert_eq!(result.query, "create schema");
         assert!(result.from_pattern);
     }

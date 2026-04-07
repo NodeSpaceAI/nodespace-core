@@ -1,6 +1,9 @@
 pub mod agent_loop;
+pub mod composite_model_manager;
 pub mod inference;
 pub mod model_manager;
+pub mod ollama_inference;
+pub mod ollama_model_manager;
 pub mod prompt_templates;
 pub mod response_processing;
 pub mod tools;

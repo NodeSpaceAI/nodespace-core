@@ -18,7 +18,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_types::{
-    ChatModelSpec, DownloadEvent, ModelError, ModelFamily, ModelInfo, ModelManager, ModelStatus,
+    ChatModelSpec, DownloadEvent, ModelBackend, ModelError, ModelFamily, ModelInfo, ModelManager,
+    ModelStatus,
 };
 
 // ---------------------------------------------------------------------------
@@ -212,11 +213,12 @@ impl ModelManager for GgufModelManager {
                 id: entry.id.to_string(),
                 family: entry.family,
                 name: entry.name.to_string(),
-                filename: entry.filename.to_string(),
+                filename: Some(entry.filename.to_string()),
                 size_bytes: entry.size_bytes,
                 quantization: entry.quantization.to_string(),
-                url: entry.url.to_string(),
-                sha256: entry.sha256.to_string(),
+                url: Some(entry.url.to_string()),
+                sha256: Some(entry.sha256.to_string()),
+                backend: ModelBackend::Gguf,
                 status,
             });
         }
@@ -812,7 +814,7 @@ mod tests {
         let m3b = models.iter().find(|m| m.id == "ministral-3b-q4km").unwrap();
         assert_eq!(m3b.family, ModelFamily::Ministral);
         assert_eq!(m3b.quantization, "Q4_K_M");
-        assert!(!m3b.url.is_empty());
+        assert!(m3b.url.as_ref().is_some_and(|u| !u.is_empty()));
         // sha256 may be empty when verification is skipped (official repos)
         assert!(m3b.size_bytes > 0);
     }
