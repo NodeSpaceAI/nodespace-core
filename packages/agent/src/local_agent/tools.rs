@@ -320,11 +320,11 @@ fn def_create_schema() -> ToolDefinition {
                         "type": "object",
                         "properties": {
                             "name": { "type": "string", "description": "Field name (e.g., 'status', 'email')" },
-                            "field_type": { "type": "string", "description": "Field type: text, number, date, enum, array, object, boolean" },
+                            "type": { "type": "string", "description": "Field type: text, number, date, enum, array, object, boolean" },
                             "required": { "type": "boolean", "description": "Whether this field is required" },
                             "indexed": { "type": "boolean", "description": "Whether to index for search/filter" },
                             "description": { "type": "string", "description": "Field description" },
-                            "core_values": {
+                            "coreValues": {
                                 "type": "array",
                                 "description": "For enum fields: array of {value, label} pairs",
                                 "items": {
@@ -336,7 +336,7 @@ fn def_create_schema() -> ToolDefinition {
                                 }
                             }
                         },
-                        "required": ["name", "field_type"]
+                        "required": ["name", "type"]
                     }
                 }
             },
