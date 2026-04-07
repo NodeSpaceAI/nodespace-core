@@ -6,7 +6,8 @@
 use crate::mcp::types::MCPError;
 use crate::models::Node;
 use crate::services::{
-    CollectionService, NodeEmbeddingService, NodeService, NodeServiceError, SearchScope,
+    CollectionService, NodeEmbeddingService, NodeService, NodeServiceError, SearchNodeFilters,
+    SearchScope,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -309,20 +310,35 @@ pub async fn handle_search_semantic(
         scope
     );
 
-    // When filtering by collection, excluding collections, excluding archived nodes,
-    // or applying scope, fetch more results to compensate for post-filtering
+    // Build service-layer filters (Issue #1059): delegating to the service ensures
+    // node_type / property filtering happens before results reach the handler.
+    let search_filters = if params.node_types.is_some() || params.property_filters.is_some() {
+        Some(SearchNodeFilters {
+            node_types: params.node_types.clone(),
+            property_filters: params.property_filters.clone(),
+        })
+    } else {
+        None
+    };
+
+    // When filtering by collection, excluding archived nodes, or applying scope,
+    // fetch more results to compensate for post-filtering.
+    // node_types / property_filters over-fetching is handled inside semantic_search_nodes.
     let scope_filters = !matches!(scope, SearchScope::Everything);
     let has_post_filters = collection_member_ids.is_some()
         || !excluded_node_ids.is_empty()
         || !include_archived
-        || scope_filters
-        || params.node_types.is_some()
-        || params.property_filters.is_some();
+        || scope_filters;
     let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
-    // Call the embedding service's semantic search
+    // Call the embedding service with service-layer filters (Issue #1059).
     let results = embedding_service
-        .semantic_search_nodes(&params.query, effective_limit, threshold)
+        .semantic_search_nodes(
+            &params.query,
+            effective_limit,
+            threshold,
+            search_filters.as_ref(),
+        )
         .await
         .map_err(|e| {
             let err_msg = e.to_string();
@@ -342,7 +358,8 @@ pub async fn handle_search_semantic(
             }
         })?;
 
-    // Apply filters: scope, lifecycle status, collection members, exclusions, node_types, property_filters
+    // Apply remaining post-filters: scope, lifecycle status, collection membership, exclusions.
+    // node_types and property_filters are already applied at the service layer above.
     let filtered_results: Vec<_> = results
         .into_iter()
         .filter(|(node, _)| {
@@ -370,44 +387,6 @@ pub async fn handle_search_semantic(
             // Exclude nodes in excluded collections
             if excluded_node_ids.contains(&node.id) {
                 return false;
-            }
-
-            // Filter by node_types (Issue #1059) — node must match one of the specified types
-            if let Some(ref allowed_types) = params.node_types {
-                if !allowed_types.contains(&node.node_type) {
-                    tracing::debug!("Filtered out node {} due to node_type mismatch", node.id);
-                    return false;
-                }
-            }
-
-            // Filter by property_filters (Issue #1059) — node properties must contain all specified key-value pairs
-            if let Some(ref property_filters) = params.property_filters {
-                if let Some(filter_obj) = property_filters.as_object() {
-                    for (key, expected_value) in filter_obj {
-                        match node.properties.get(key) {
-                            Some(actual_value) => {
-                                if actual_value != expected_value {
-                                    tracing::debug!(
-                                        "Filtered out node {} due to property mismatch: {} = {:?} (expected {:?})",
-                                        node.id,
-                                        key,
-                                        actual_value,
-                                        expected_value
-                                    );
-                                    return false;
-                                }
-                            }
-                            None => {
-                                tracing::debug!(
-                                    "Filtered out node {} due to missing property: {}",
-                                    node.id,
-                                    key
-                                );
-                                return false;
-                            }
-                        }
-                    }
-                }
             }
 
             true

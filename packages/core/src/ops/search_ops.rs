@@ -262,7 +262,7 @@ pub async fn search_semantic(
     let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
     let results = embedding_service
-        .semantic_search_nodes(&input.query, effective_limit, threshold)
+        .semantic_search_nodes(&input.query, effective_limit, threshold, None)
         .await
         .map_err(|e| {
             let err_msg = e.to_string();
