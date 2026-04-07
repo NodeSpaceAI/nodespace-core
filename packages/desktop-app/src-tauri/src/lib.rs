@@ -572,25 +572,42 @@ pub(crate) fn graceful_shutdown(app_handle: &tauri::AppHandle) {
 
 /// Release GPU resources (Metal context and backend) to prevent SIGABRT crash on exit.
 ///
-/// Now accesses embedding state through AppServices container.
-/// Also unloads any loaded chat model via GgufModelManager (Issue #1008).
+/// Proper cleanup sequence to avoid use-after-free Metal crashes:
+/// 1. Reset ManagedAgentState engine to NoOp (drops ChatEngine Arc)
+/// 2. Unload chat model in GgufModelManager
+/// 3. Release embedding GPU resources
+/// 4. Release global llama backend
+///
 /// Runs on a dedicated thread because `graceful_shutdown()` may be called from
 /// within the Tokio runtime (Tauri run-event handler), where `block_on` would panic.
 pub(crate) fn release_gpu_resources(app_handle: &tauri::AppHandle) {
+    use crate::commands::local_agent::ManagedAgentState;
     use nodespace_agent::agent_types::ModelManager;
     use nodespace_agent::local_agent::model_manager::GgufModelManager;
     use std::sync::Arc;
     use tauri::Manager;
 
-    // Step 1a: Unload chat model if loaded (Issue #1008)
+    tracing::debug!("Shutdown: starting GPU resource release sequence");
+
+    // Step 1: Reset ManagedAgentState engine to NoOp
+    // This drops any Arc references to ChatEngine before we tear down the backend.
+    // MUST happen before release_llama_backend() (Step 3).
+    if let Some(agent_state) = app_handle.try_state::<ManagedAgentState>() {
+        tracing::info!("Shutdown: resetting inference engine to NoOp");
+        agent_state.reset_engine_sync();
+        tracing::info!("Shutdown: inference engine reset");
+    }
+
+    // Step 2a: Unload chat model if loaded
     if let Some(model_manager) = app_handle.try_state::<Arc<GgufModelManager>>() {
+        tracing::debug!("Shutdown: unloading chat model");
         let manager = model_manager.inner().clone();
         let handle = std::thread::spawn(move || {
             tauri::async_runtime::block_on(async {
                 if let Err(e) = manager.unload().await {
                     tracing::warn!("Failed to unload chat model during shutdown: {e}");
                 } else {
-                    tracing::info!("Chat model unloaded during shutdown");
+                    tracing::info!("Shutdown: chat model unloaded");
                 }
             });
         });
@@ -599,8 +616,9 @@ pub(crate) fn release_gpu_resources(app_handle: &tauri::AppHandle) {
         }
     }
 
-    // Step 1b: Release embedding GPU resources
+    // Step 2b: Release embedding GPU resources
     if let Some(services) = app_handle.try_state::<app_services::AppServices>() {
+        tracing::debug!("Shutdown: releasing embedding GPU resources");
         let services_clone = services.inner().clone();
         // Spawn a dedicated thread to avoid "cannot block_on inside a runtime" panic.
         // The Tauri run-event handler runs on a Tokio runtime thread, so we need
@@ -616,7 +634,9 @@ pub(crate) fn release_gpu_resources(app_handle: &tauri::AppHandle) {
         }
     }
 
-    // Step 2: Release the global llama backend itself
-    // Must happen AFTER all models/contexts are dropped (step 1)
+    // Step 3: Release the global llama backend itself
+    // Must happen AFTER all models/contexts are dropped (steps 1-2)
+    tracing::info!("Shutdown: releasing llama backend");
     nodespace_nlp_engine::release_llama_backend();
+    tracing::info!("Shutdown: GPU resource release complete");
 }

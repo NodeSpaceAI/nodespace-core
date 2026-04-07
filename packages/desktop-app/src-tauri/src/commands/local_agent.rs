@@ -137,6 +137,40 @@ impl ManagedAgentState {
 
         tracing::info!("ManagedAgentState: inference engine replaced");
     }
+
+    /// Reset the inference engine to NoOp (called during graceful shutdown).
+    ///
+    /// Replaces the real inference engine with a NoOpInferenceEngine,
+    /// causing any Arc references to the ChatEngine to be dropped.
+    /// This must be called BEFORE `release_llama_backend()` to ensure
+    /// proper cleanup order and avoid use-after-free crashes in Metal.
+    pub async fn reset_to_noop_engine(&self) {
+        use nodespace_agent::local_agent::tools::GraphToolExecutor;
+
+        let engine: Arc<dyn ChatInferenceEngine> = Arc::new(NoOpInferenceEngine);
+        let executor: Arc<dyn AgentToolExecutor> = Arc::new(GraphToolExecutor {
+            node_service: None,
+            embedding_service: None,
+        });
+        let service = LocalAgentService::new(engine, executor, None);
+
+        let mut guard = self.inner.write().await;
+        *guard = service;
+
+        tracing::debug!("ManagedAgentState: inference engine reset to NoOp");
+    }
+
+    /// Reset the inference engine to NoOp (for use in sync shutdown context).
+    ///
+    /// This is called from graceful_shutdown() on a dedicated thread. It
+    /// runs the async reset_to_noop_engine() via block_on.
+    ///
+    /// Must be called BEFORE releasing GPU resources to ensure proper cleanup
+    /// order and avoid use-after-free crashes in Metal.
+    pub fn reset_engine_sync(&self) {
+        let rt = tauri::async_runtime::handle();
+        rt.block_on(self.reset_to_noop_engine());
+    }
 }
 
 // ---------------------------------------------------------------------------

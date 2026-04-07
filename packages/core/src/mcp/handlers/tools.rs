@@ -17,6 +17,7 @@
 
 use crate::mcp::handlers::{markdown, nodes, playbook, relationships, schema, search, skills};
 use crate::mcp::types::MCPError;
+use crate::models::SchemaNode;
 use crate::services::{NodeEmbeddingService, NodeService};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -187,17 +188,14 @@ pub async fn handle_search_tools(
     let params: SearchToolsParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Fetch user-defined schema IDs to include in tool schemas
-    let schema_ids: Vec<String> = node_service
+    // Fetch all schemas to include in tool descriptions
+    let schemas = node_service
         .get_all_schemas()
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| s.id)
-        .collect();
+        .unwrap_or_default();
 
     // Get all tool schemas
-    let all_tools = get_tool_schemas(&schema_ids);
+    let all_tools = get_tool_schemas(&schemas);
     let tools_array = all_tools
         .as_array()
         .ok_or_else(|| MCPError::internal_error("Tool schemas not an array".to_string()))?;
@@ -282,17 +280,14 @@ pub async fn handle_tools_list(
     node_service: &Arc<NodeService>,
     _params: Value,
 ) -> Result<Value, MCPError> {
-    // Fetch user-defined schema IDs to include in tool schemas
-    let schema_ids: Vec<String> = node_service
+    // Fetch all schemas to include in tool descriptions
+    let schemas = node_service
         .get_all_schemas()
         .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|s| s.id)
-        .collect();
+        .unwrap_or_default();
 
     // Get all tool schemas
-    let all_tools = get_tool_schemas(&schema_ids);
+    let all_tools = get_tool_schemas(&schemas);
     let tools_array = all_tools
         .as_array()
         .ok_or_else(|| MCPError::internal_error("Tool schemas not an array".to_string()))?;
@@ -559,14 +554,14 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
     json!([
         {
             "name": "create_node",
-            "description": "Create a new node in NodeSpace",
+            "description": tool_desc,
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "node_type": {
                         "type": "string",
                         "enum": node_type_enum,
-                        "description": "Type of node to create"
+                        "description": node_type_desc
                     },
                     "content": {
                         "type": "string",
