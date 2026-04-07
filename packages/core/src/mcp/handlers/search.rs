@@ -952,8 +952,9 @@ mod search_tests {
 
     #[test]
     fn test_node_types_filter_matching_logic() {
-        // Test the matching logic without running full search
-        let allowed_types = vec!["task".to_string(), "text".to_string()];
+        // Test that parsing node_types params produces the expected list.
+        // Filter matching logic is delegated to SearchNodeFilters::matches() in services/mod.rs.
+        let allowed_types = ["task".to_string(), "text".to_string()];
 
         // Nodes that should match
         assert!(allowed_types.contains(&"task".to_string()));
