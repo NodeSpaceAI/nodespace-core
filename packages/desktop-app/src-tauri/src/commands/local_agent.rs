@@ -248,8 +248,10 @@ pub async fn ensure_model_ready(
             .await
             .map_err(|e| agent_error(format!("Failed to load Ollama model: {e}")))?;
 
-        // Create the Ollama inference engine (non-blocking — just an HTTP client)
-        let engine = OllamaInferenceEngine::new(ollama_name.clone());
+        // Create the Ollama inference engine using the same base URL as the model manager,
+        // so any configured Ollama URL is respected for both listing and inference.
+        let ollama_base_url = manager.ollama_manager().base_url().to_string();
+        let engine = OllamaInferenceEngine::with_base_url(ollama_name.clone(), ollama_base_url);
         agent_state.replace_engine(Arc::new(engine)).await;
 
         let _ = app.emit(

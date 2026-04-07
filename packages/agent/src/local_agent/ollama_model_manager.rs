@@ -81,6 +81,11 @@ impl OllamaModelManager {
         Self::with_base_url("http://127.0.0.1:11434".to_string())
     }
 
+    /// Return the configured base URL for this manager.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
     /// Create a new Ollama model manager with a custom base URL.
     ///
     /// Useful for testing or connecting to non-default Ollama instances.
@@ -240,8 +245,9 @@ impl ModelManager for OllamaModelManager {
     }
 
     async fn cancel_download(&self, model_id: &str) -> Result<(), ModelError> {
-        warn!(
-            "ollama: cancel_download not supported for model '{}'",
+        // Ollama does not expose a cancel endpoint for in-progress pulls.
+        tracing::debug!(
+            "ollama: cancel_download is a no-op for model '{}' (Ollama API limitation)",
             model_id
         );
         Ok(())
@@ -306,9 +312,12 @@ impl ModelManager for OllamaModelManager {
     }
 
     async fn unload(&self) -> Result<(), ModelError> {
-        let loaded = self.loaded_model_id.read().await;
+        // Clone the model ID out before any await points — holding a tokio RwLock
+        // read guard across awaits and then acquiring the write lock below would deadlock.
+        let model_id = self.loaded_model_id.read().await.clone();
+        // read guard is dropped here
 
-        if let Some(model_id) = loaded.as_ref() {
+        if let Some(model_id) = model_id {
             let url = format!("{}/api/generate", self.base_url);
 
             let body = serde_json::json!({
@@ -334,7 +343,6 @@ impl ModelManager for OllamaModelManager {
         }
 
         // Always clear, even if no model was loaded or request failed
-        drop(loaded);
         *self.loaded_model_id.write().await = None;
 
         Ok(())

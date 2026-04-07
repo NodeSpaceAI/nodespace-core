@@ -89,14 +89,14 @@ impl ModelManager for CompositeModelManager {
         // Get GGUF models first
         let mut models = self.gguf.list().await?;
 
-        // Add Ollama models if the daemon is available
-        if self.ollama.is_available().await {
-            let ollama_models = self.ollama.list().await?;
-            for mut model in ollama_models {
-                // Prepend "ollama:" prefix to Ollama model IDs
-                model.id = Self::add_ollama_prefix(&model.id);
-                models.push(model);
-            }
+        // OllamaModelManager::list() already returns Ok(vec![]) when the daemon is
+        // unreachable, so no is_available() pre-check needed — that would double the
+        // latency on every call with an extra /api/tags round-trip.
+        let ollama_models = self.ollama.list().await?;
+        for mut model in ollama_models {
+            // Prepend "ollama:" prefix to Ollama model IDs
+            model.id = Self::add_ollama_prefix(&model.id);
+            models.push(model);
         }
 
         Ok(models)
@@ -144,14 +144,11 @@ impl ModelManager for CompositeModelManager {
         // Unload from GGUF first
         let gguf_result = self.gguf.unload().await;
 
-        // Then unload from Ollama (only if available)
-        let ollama_result = if self.ollama.is_available().await {
-            self.ollama.unload().await
-        } else {
-            Ok(())
-        };
+        // OllamaModelManager::unload() is safe to call unconditionally — it no-ops
+        // when nothing is loaded, so no is_available() guard needed here.
+        let ollama_result = self.ollama.unload().await;
 
-        // Return the first error if both fail, otherwise Ok
+        // Return the first error if either fails, otherwise Ok
         gguf_result.and(ollama_result)
     }
 

@@ -256,9 +256,15 @@ impl ChatInferenceEngine for OllamaInferenceEngine {
                         default_temperature: 0.7,
                     }))
                 }
-                Err(_) => Ok(None),
+                Err(e) => {
+                    tracing::warn!(
+                        "ollama: failed to parse /api/show response for '{}': {e}",
+                        self.model_name
+                    );
+                    Ok(None)
+                }
             },
-            Err(_) => Ok(None),
+            Err(_) => Ok(None), // daemon unreachable — model_info is optional
         }
     }
 
@@ -283,12 +289,10 @@ mod tests {
     #[test]
     fn test_token_count_estimate() {
         let engine = OllamaInferenceEngine::new("llama3.2:3b".to_string());
-        let text = "hello world";
+        let text = "hello world"; // len=11, 11/4=2 by integer division
         let count = futures::executor::block_on(engine.token_count(text))
             .expect("token_count should succeed");
-        let expected = (text.len() / 4) as u32;
-        assert_eq!(count, expected);
-        assert!(count > 0);
+        assert_eq!(count, 2, "token_count should be text.len()/4 = {}", text.len() / 4);
     }
 
     #[test]

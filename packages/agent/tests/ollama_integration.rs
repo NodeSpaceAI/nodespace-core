@@ -5,7 +5,7 @@
 //! printed message. Run with `cargo test -p nodespace-agent --test ollama_integration`.
 
 use nodespace_agent::agent_types::{
-    ChatMessage, ChatInferenceEngine, InferenceRequest, ModelManager, Role, StreamingChunk,
+    ChatInferenceEngine, ChatMessage, InferenceRequest, ModelManager, Role, StreamingChunk,
     ToolDefinition,
 };
 use nodespace_agent::local_agent::composite_model_manager::CompositeModelManager;
@@ -42,7 +42,10 @@ async fn test_ollama_is_available() {
         return;
     }
     let manager = OllamaModelManager::new();
-    assert!(manager.is_available().await, "is_available() should return true");
+    assert!(
+        manager.is_available().await,
+        "is_available() should return true"
+    );
 }
 
 #[tokio::test]
@@ -108,8 +111,14 @@ async fn test_ollama_recommended_model() {
         return;
     }
     let manager = OllamaModelManager::new();
-    let rec = manager.recommended_model().await.expect("recommended_model()");
-    assert!(!rec.is_empty(), "recommended_model() should return non-empty string");
+    let rec = manager
+        .recommended_model()
+        .await
+        .expect("recommended_model()");
+    assert!(
+        !rec.is_empty(),
+        "recommended_model() should return non-empty string"
+    );
     eprintln!("Recommended Ollama model: {rec}");
 }
 
@@ -147,15 +156,21 @@ async fn test_ollama_inference_generate() {
     let chunks_clone = chunks.clone();
 
     let usage = engine
-        .generate(request, Box::new(move |chunk| {
-            chunks_clone.lock().unwrap().push(chunk);
-        }))
+        .generate(
+            request,
+            Box::new(move |chunk| {
+                chunks_clone.lock().unwrap().push(chunk);
+            }),
+        )
         .await
         .expect("generate() should succeed");
 
     let collected = chunks.lock().unwrap();
     eprintln!("Chunks received: {}", collected.len());
-    eprintln!("Usage: {} prompt + {} completion tokens", usage.prompt_tokens, usage.completion_tokens);
+    eprintln!(
+        "Usage: {} prompt + {} completion tokens",
+        usage.prompt_tokens, usage.completion_tokens
+    );
 
     // Should have received at least one token chunk
     let has_token = collected
@@ -206,9 +221,12 @@ async fn test_ollama_inference_with_tools() {
     let chunks_clone = chunks.clone();
 
     let _usage = engine
-        .generate(request, Box::new(move |chunk| {
-            chunks_clone.lock().unwrap().push(chunk);
-        }))
+        .generate(
+            request,
+            Box::new(move |chunk| {
+                chunks_clone.lock().unwrap().push(chunk);
+            }),
+        )
         .await
         .expect("generate() with tools should succeed");
 
@@ -216,11 +234,16 @@ async fn test_ollama_inference_with_tools() {
     eprintln!("Tool test chunks received: {}", collected.len());
 
     // Model may or may not call the tool — both are valid responses.
-    // Just verify we got some output without error.
+    // Not all models support tool calling; some return no chunks in that case.
+    // Verify only that no Error chunks were emitted.
     let has_error = collected
         .iter()
         .any(|c| matches!(c, StreamingChunk::Error { .. }));
     assert!(!has_error, "Should not receive Error chunks");
+    eprintln!(
+        "Tool call chunks: {} (model may not support tool calling)",
+        collected.len()
+    );
 }
 
 #[tokio::test]
@@ -235,7 +258,10 @@ async fn test_ollama_model_info() {
     };
 
     let engine = OllamaInferenceEngine::new(model_name.clone());
-    let info = engine.model_info().await.expect("model_info() should not error");
+    let info = engine
+        .model_info()
+        .await
+        .expect("model_info() should not error");
 
     eprintln!("model_info() for {model_name}: {:?}", info);
     // model_info returns None if /api/show fails — that's acceptable
