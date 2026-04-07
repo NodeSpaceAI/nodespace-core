@@ -31,12 +31,15 @@ pub fn fallback_system_prompt(dynamic_context: &str) -> String {
          knowledge graph — creating, finding, updating, and connecting nodes.\
          {ctx_block}\n\
          TOOL STRATEGY:\n\
+         - ALWAYS search first before updating or getting a node. NEVER use placeholder IDs like \"abc-123\".\n\
          - To find nodes by meaning/topic: use search_semantic (natural language query)\n\
          - To find nodes by exact fields: use search_nodes (keyword + type filter)\n\
          - To get full node details: use get_node with the ID from search results\n\
-         - To create: use create_node with the correct node_type and properties matching the schema fields above\n\
-         - To update: use update_node — only include fields you want to change\n\
-         - To connect nodes: use create_relationship with relationship names from the schemas above\n\n\
+         - To update a task status: search for the task first, then use update_task_status with the real ID\n\
+         - To create a new entity type: use create_schema (not create_node)\n\
+         - To create an instance of an existing type: use create_node with node_type matching the schema ID\n\
+         - To connect nodes: use create_relationship with relationship names from the schemas above\n\
+         - Tool call arguments must be valid JSON. Do NOT include comments (#) in JSON.\n\n\
          RESPONSE RULES:\n\
          - After tool results: summarize in natural language. NEVER paste raw JSON as your response.\n\
          - Reference nodes with bare URI: nodespace://abc-123 (no markdown links, no backticks)\n\

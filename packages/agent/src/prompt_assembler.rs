@@ -169,11 +169,7 @@ impl PromptAssembler {
                 nodes.sort_by_key(|n| {
                     n.properties
                         .get("priority")
-                        .or_else(|| {
-                            n.properties
-                                .get("prompt")
-                                .and_then(|ns| ns.get("priority"))
-                        })
+                        .or_else(|| n.properties.get("prompt").and_then(|ns| ns.get("priority")))
                         .and_then(|v| v.as_i64())
                         .unwrap_or(100)
                 });
@@ -267,12 +263,15 @@ impl PromptAssembler {
             },
             SeedPrompt {
                 content: "TOOL STRATEGY:\n\
+                    - ALWAYS search first before updating or getting a node. NEVER use placeholder IDs like \"abc-123\".\n\
                     - To find nodes by meaning/topic: use search_semantic (natural language query)\n\
                     - To find nodes by exact fields: use search_nodes (keyword + type filter)\n\
                     - To get full node details: use get_node with the ID from search results\n\
-                    - To create: use create_node with the correct node_type and properties matching the schema fields above\n\
-                    - To update: use update_node — only include fields you want to change\n\
-                    - To connect nodes: use create_relationship with relationship names from the schemas above"
+                    - To update a task status: search for the task first, then use update_task_status with the real ID\n\
+                    - To create a new entity type: use create_schema (not create_node)\n\
+                    - To create an instance of an existing type: use create_node with node_type matching the schema ID\n\
+                    - To connect nodes: use create_relationship with relationship names from the schemas above\n\
+                    - Tool call arguments must be valid JSON. Do NOT include comments (#) in JSON."
                     .to_string(),
                 priority: 50,
                 template_syntax: "plain".to_string(),
