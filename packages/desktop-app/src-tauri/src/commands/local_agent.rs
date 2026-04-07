@@ -18,7 +18,7 @@ use nodespace_agent::agent_types::{
     InferenceError, InferenceUsage, LocalAgentStatus, ModelManager, ModelStatus, StreamingChunk,
 };
 use nodespace_agent::local_agent::agent_loop::LocalAgentService;
-use nodespace_agent::local_agent::model_manager::GgufModelManager;
+use nodespace_agent::local_agent::composite_model_manager::CompositeModelManager;
 use nodespace_nlp_engine::chat::ChatConfig;
 use serde::Serialize;
 use std::sync::Arc;
@@ -213,7 +213,7 @@ struct ModelStatusEvent {
 pub async fn ensure_model_ready(
     model_id: String,
     app: AppHandle,
-    manager: State<'_, Arc<GgufModelManager>>,
+    manager: State<'_, Arc<CompositeModelManager>>,
     agent_state: State<'_, ManagedAgentState>,
 ) -> Result<(), CommandError> {
     // Check current model status
@@ -225,6 +225,48 @@ pub async fn ensure_model_ready(
         .iter()
         .find(|m| m.id == model_id)
         .ok_or_else(|| agent_error(format!("Unknown model: {model_id}")))?;
+
+    // --- Ollama fast path ---
+    if CompositeModelManager::is_ollama(&model_id) {
+        use nodespace_agent::local_agent::ollama_inference::OllamaInferenceEngine;
+
+        let ollama_name = CompositeModelManager::strip_ollama_prefix(&model_id).to_string();
+
+        // Emit loading status
+        let _ = app.emit(
+            agent_events::MODEL_STATUS,
+            &ModelStatusEvent {
+                model_id: model_id.clone(),
+                status: "loading".to_string(),
+                message: Some(format!("Connecting to Ollama model {}...", ollama_name)),
+            },
+        );
+
+        // Warm-load the model in Ollama (keeps it resident in memory)
+        manager
+            .load(&model_id)
+            .await
+            .map_err(|e| agent_error(format!("Failed to load Ollama model: {e}")))?;
+
+        // Create the Ollama inference engine (non-blocking — just an HTTP client)
+        let engine = OllamaInferenceEngine::new(ollama_name.clone());
+        agent_state.replace_engine(Arc::new(engine)).await;
+
+        let _ = app.emit(
+            agent_events::MODEL_STATUS,
+            &ModelStatusEvent {
+                model_id: model_id.clone(),
+                status: "ready".to_string(),
+                message: Some(format!("Ollama model {} ready", ollama_name)),
+            },
+        );
+
+        tracing::info!(
+            "Ollama model '{}' loaded and inference engine ready",
+            ollama_name
+        );
+        return Ok(());
+    }
 
     match &model.status {
         ModelStatus::Loaded => {
