@@ -301,7 +301,7 @@ fn def_find_skills() -> ToolDefinition {
 fn def_create_schema() -> ToolDefinition {
     ToolDefinition {
         name: "create_schema".into(),
-        description: "Create a new entity type (schema) with custom fields and relationships. The schema ID is auto-generated as lowercase kebab-case (e.g., 'Customer Profile' becomes 'customer-profile'). After creation, use this ID as node_type when creating instances. IMPORTANT: If a field maps to an existing node type (e.g., 'tasks' maps to 'task'), define it as a relationship instead of an array field.".into(),
+        description: "Create a new entity type (schema) with custom fields and relationships. The schema ID is auto-generated as lowercase kebab-case (e.g., 'Customer Profile' becomes 'customer-profile'). After creation, use this ID as node_type when creating instances. IMPORTANT: Do NOT include a 'name' or 'title' field — every node already has a content/title. Only define type-specific fields. If a field maps to an existing node type (e.g., 'tasks' maps to 'task'), define it as a relationship instead of an array field.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
