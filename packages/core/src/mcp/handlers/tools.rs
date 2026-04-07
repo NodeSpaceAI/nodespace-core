@@ -521,8 +521,8 @@ pub async fn handle_tools_call(
 ///
 /// Consider auto-generating schemas from Rust types with proc macros,
 /// while preserving ability to override descriptions (see Issue #312).
-fn get_tool_schemas(schema_ids: &[String]) -> Value {
-    // Build the node_type enum: core types + "schema" + all user-defined schema IDs
+fn get_tool_schemas(schemas: &[SchemaNode]) -> Value {
+    // Build the node_type enum: core types + all user-defined schema IDs
     let mut seen: HashSet<&str> = HashSet::new();
     let core_types: &[&str] = &[
         "text",
@@ -544,12 +544,44 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
             t.to_string()
         })
         .collect();
-    for id in schema_ids {
-        if seen.insert(id.as_str()) {
-            node_types.push(id.clone());
+    for schema in schemas {
+        if seen.insert(schema.id.as_str()) {
+            node_types.push(schema.id.clone());
         }
     }
     let node_type_enum = json!(node_types);
+
+    // Build dynamic descriptions that include user-defined schema names when present
+    let user_schemas: Vec<&SchemaNode> = schemas.iter().filter(|s| !s.is_core).collect();
+
+    let tool_desc = if user_schemas.is_empty() {
+        "Create a new node in NodeSpace".to_string()
+    } else {
+        let names: Vec<String> = user_schemas
+            .iter()
+            .map(|s| {
+                if s.description.is_empty() {
+                    s.id.clone()
+                } else {
+                    format!("{} ({})", s.id, s.description)
+                }
+            })
+            .collect();
+        format!(
+            "Create a new node in NodeSpace. User-defined schemas available: {}",
+            names.join(", ")
+        )
+    };
+
+    let node_type_desc = if user_schemas.is_empty() {
+        "Type of node to create".to_string()
+    } else {
+        let ids: Vec<&str> = user_schemas.iter().map(|s| s.id.as_str()).collect();
+        format!(
+            "Type of node to create. Core types: text, header, task, date, etc. User-defined schemas: {}",
+            ids.join(", ")
+        )
+    };
 
     json!([
         {
