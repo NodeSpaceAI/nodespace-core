@@ -521,7 +521,59 @@ pub async fn handle_tools_call(
 ///
 /// Consider auto-generating schemas from Rust types with proc macros,
 /// while preserving ability to override descriptions (see Issue #312).
-fn get_tool_schemas(schema_ids: &[String]) -> Value {
+fn build_create_node_description(
+    node_types: &[String],
+    schema_descriptions: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut desc = String::from("Create a new node in NodeSpace. Available types: ");
+    let mut type_parts = Vec::new();
+    for node_type in node_types {
+        if let Some(schema_desc) = schema_descriptions.get(node_type) {
+            if !schema_desc.is_empty() {
+                type_parts.push(format!("{} ({})", node_type, schema_desc));
+            } else {
+                type_parts.push(node_type.clone());
+            }
+        } else {
+            type_parts.push(node_type.clone());
+        }
+    }
+    desc.push_str(&type_parts.join(", "));
+    const MAX_LENGTH: usize = 500;
+    if desc.len() > MAX_LENGTH {
+        desc.truncate(MAX_LENGTH - 3);
+        desc.push_str("...");
+    }
+    desc
+}
+
+fn build_node_type_description(
+    node_types: &[String],
+    schema_descriptions: &std::collections::HashMap<String, String>,
+) -> String {
+    let mut desc = String::from("Type of node to create: ");
+    let mut type_parts = Vec::new();
+    for node_type in node_types {
+        if let Some(schema_desc) = schema_descriptions.get(node_type) {
+            if !schema_desc.is_empty() {
+                type_parts.push(format!("{} ({})", node_type, schema_desc));
+            } else {
+                type_parts.push(node_type.clone());
+            }
+        } else {
+            type_parts.push(node_type.clone());
+        }
+    }
+    desc.push_str(&type_parts.join(", "));
+    const MAX_LENGTH: usize = 300;
+    if desc.len() > MAX_LENGTH {
+        desc.truncate(MAX_LENGTH - 3);
+        desc.push_str("...");
+    }
+    desc
+}
+
+fn get_tool_schemas(schemas: &[SchemaNode]) -> Value {
     // Build the node_type enum: core types + "schema" + all user-defined schema IDs
     let mut seen: HashSet<&str> = HashSet::new();
     let core_types: &[&str] = &[
@@ -544,12 +596,20 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
             t.to_string()
         })
         .collect();
-    for id in schema_ids {
-        if seen.insert(id.as_str()) {
-            node_types.push(id.clone());
+
+    // Extract schema IDs and descriptions for dynamic descriptions
+    let mut schema_descriptions: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for schema in schemas {
+        if seen.insert(schema.id.as_str()) {
+            node_types.push(schema.id.clone());
+            schema_descriptions.insert(schema.id.clone(), schema.description.clone());
         }
     }
     let node_type_enum = json!(node_types);
+
+    // Build dynamic descriptions
+    let tool_desc = build_create_node_description(&node_types, &schema_descriptions);
+    let node_type_desc = build_node_type_description(&node_types, &schema_descriptions);
 
     json!([
         {
