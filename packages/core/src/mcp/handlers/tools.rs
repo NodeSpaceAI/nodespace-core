@@ -1001,6 +1001,15 @@ fn get_tool_schemas(schema_ids: &[String]) -> Value {
                         "enum": ["knowledge", "conversations", "everything"],
                         "description": "Search scope: 'knowledge' (text, header, code-block, schema, table — default), 'conversations' (ai-chat only), 'everything' (all embeddable types)",
                         "default": "knowledge"
+                    },
+                    "node_types": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Filter by specific node types (e.g., ['task', 'text']). If set, only nodes matching one of the specified types will be included."
+                    },
+                    "property_filters": {
+                        "type": "object",
+                        "description": "Filter by node properties using key-value pairs. Only nodes whose properties contain all specified key-value pairs (AND logic) will be included. Example: {'status': 'done', 'priority': 'high'}"
                     }
                 },
                 "required": ["query"]
