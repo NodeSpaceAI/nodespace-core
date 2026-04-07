@@ -7,6 +7,7 @@
 
 use crate::agent_types::{AgentToolExecutor, ToolDefinition, ToolError, ToolResult};
 use async_trait::async_trait;
+use nodespace_core::mcp::handlers::schema::handle_create_schema;
 use nodespace_core::ops::{node_ops, rel_ops, search_ops, OpsError};
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
@@ -355,7 +356,7 @@ fn def_create_schema() -> ToolDefinition {
                     }
                 }
             },
-            "required": ["name", "fields"]
+            "required": ["name"]
         }),
     }
 }
@@ -888,8 +889,6 @@ impl GraphToolExecutor {
 
         // Delegate to the MCP schema handler which handles ID normalization
         // (e.g., "Project" → "project"), field namespacing, and validation.
-        use nodespace_core::mcp::handlers::schema::handle_create_schema;
-
         let result = handle_create_schema(&ns, args)
             .await
             .map_err(|e| ToolError::ExecutionFailed(format!("create_schema failed: {:?}", e)))?;
@@ -904,6 +903,20 @@ impl GraphToolExecutor {
     ) -> Result<ToolResult, ToolError> {
         let id = require_str(&args, "id", "update_task_status")?;
         let status = require_str(&args, "status", "update_task_status")?;
+
+        // Validate status is a known enum value
+        match status.as_str() {
+            "open" | "in_progress" | "done" | "cancelled" => {}
+            _ => {
+                return Err(ToolError::InvalidArguments {
+                    tool: "update_task_status".into(),
+                    reason: format!(
+                        "Invalid status '{}'. Must be one of: open, in_progress, done, cancelled",
+                        status
+                    ),
+                });
+            }
+        }
 
         let ns = self.node_service()?;
 

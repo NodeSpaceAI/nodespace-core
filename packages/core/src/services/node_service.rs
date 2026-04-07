@@ -940,13 +940,13 @@ impl NodeService {
 
     /// Seed initial nodes if they don't already exist.
     ///
-    /// Checks for existing built-in nodes by querying for `source == "built-in"`
-    /// in properties for each node type. If built-in nodes already exist for a
-    /// given type, all seeds of that type are skipped.
+    /// Checks whether any nodes of each seed type already exist. If any node
+    /// of a given type is present, all seeds of that type are skipped.
+    /// Uses `create_node_with_parent` to ensure embedding markers are created.
     ///
     /// # Arguments
     /// * `nodes` - Nodes to seed. All nodes of a given type are skipped if any
-    ///   built-in node of that type already exists.
+    ///   node of that type already exists in the database.
     pub async fn seed_nodes_if_needed(
         &self,
         nodes: Vec<crate::models::Node>,

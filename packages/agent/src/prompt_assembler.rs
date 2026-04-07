@@ -95,13 +95,9 @@ impl PromptAssembler {
         let mut sections = Vec::new();
 
         for node in &prompt_nodes {
-            // Properties may be flat or namespaced under "prompt"
-            let prompt_ns = node.properties.get("prompt");
-            let syntax = node
-                .properties
-                .get("template_syntax")
-                .or_else(|| prompt_ns.and_then(|ns| ns.get("template_syntax")))
-                .and_then(|v| v.as_str())
+            use crate::props::get_prop_str;
+
+            let syntax = get_prop_str(&node.properties, "prompt", "template_syntax")
                 .unwrap_or("plain");
 
             let rendered = if syntax == "minijinja" {
@@ -112,11 +108,7 @@ impl PromptAssembler {
 
             // Wrap non-built-in content with boundary markers for safety.
             // Sanitize closing tags to prevent boundary escape.
-            let source = node
-                .properties
-                .get("source")
-                .or_else(|| prompt_ns.and_then(|ns| ns.get("source")))
-                .and_then(|v| v.as_str())
+            let source = get_prop_str(&node.properties, "prompt", "source")
                 .unwrap_or("user-created");
 
             if source != "built-in" {
@@ -167,9 +159,7 @@ impl PromptAssembler {
                     .collect();
                 // Sort by priority ascending (lower priority = earlier in assembly)
                 nodes.sort_by_key(|n| {
-                    n.properties
-                        .get("priority")
-                        .or_else(|| n.properties.get("prompt").and_then(|ns| ns.get("priority")))
+                    crate::props::get_prop(&n.properties, "prompt", "priority")
                         .and_then(|v| v.as_i64())
                         .unwrap_or(100)
                 });

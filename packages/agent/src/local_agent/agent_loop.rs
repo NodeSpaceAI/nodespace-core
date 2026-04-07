@@ -120,19 +120,9 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // Build system prompt with skill context
                 let base = prompt_templates::fallback_system_prompt(dynamic_ctx);
                 let skill_name = &skill_match.skill.content;
-                let skill_desc = skill_match
-                    .skill
-                    .properties
-                    .get("description")
-                    .or_else(|| {
-                        skill_match
-                            .skill
-                            .properties
-                            .get("skill")
-                            .and_then(|ns| ns.get("description"))
-                    })
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let skill_desc =
+                    crate::props::get_prop_str(&skill_match.skill.properties, "skill", "description")
+                        .unwrap_or("");
 
                 let system = format!(
                     "{}\n\nACTIVE SKILL: {}\n{}\nFocus on this skill's capabilities. Use only the tools provided.",

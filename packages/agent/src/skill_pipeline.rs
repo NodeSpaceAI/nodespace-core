@@ -164,15 +164,7 @@ impl SkillPipeline {
         // Step 4: Build SkillMatch from the top result
         let skill_node = top.node.clone()?;
         let tool_whitelist = extract_tool_whitelist(&skill_node);
-        let max_iterations = skill_node
-            .properties
-            .get("max_iterations")
-            .or_else(|| {
-                skill_node
-                    .properties
-                    .get("skill")
-                    .and_then(|ns| ns.get("max_iterations"))
-            })
+        let max_iterations = crate::props::get_prop(&skill_node.properties, "skill", "max_iterations")
             .and_then(|v| v.as_u64())
             .unwrap_or(2) as usize;
 
@@ -271,21 +263,8 @@ impl SkillPipeline {
 }
 
 /// Extract tool_whitelist from a skill node's properties.
-///
-/// Checks both flat (`properties.tool_whitelist`) and namespaced
-/// (`properties.skill.tool_whitelist`) locations since `create_node_with_parent`
-/// may namespace properties under the node type key.
 fn extract_tool_whitelist(node: &Node) -> Vec<String> {
-    let whitelist = node
-        .properties
-        .get("tool_whitelist")
-        .or_else(|| {
-            node.properties
-                .get("skill")
-                .and_then(|ns| ns.get("tool_whitelist"))
-        });
-
-    whitelist
+    crate::props::get_prop(&node.properties, "skill", "tool_whitelist")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
@@ -396,7 +375,9 @@ mod tests {
             .expect("Schema Creation skill should exist");
 
         assert!(
-            schema_skill.tool_whitelist.contains(&"create_schema".to_string()),
+            schema_skill
+                .tool_whitelist
+                .contains(&"create_schema".to_string()),
             "Schema Creation skill should whitelist create_schema"
         );
     }
@@ -410,7 +391,9 @@ mod tests {
             .expect("Graph Editing skill should exist");
 
         assert!(
-            editing_skill.tool_whitelist.contains(&"update_task_status".to_string()),
+            editing_skill
+                .tool_whitelist
+                .contains(&"update_task_status".to_string()),
             "Graph Editing skill should whitelist update_task_status"
         );
     }

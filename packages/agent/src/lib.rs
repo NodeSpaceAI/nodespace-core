@@ -20,5 +20,8 @@ pub mod intent;
 // Pre-turn skill discovery pipeline: intent → semantic search → threshold
 pub mod skill_pipeline;
 
+// Property access helpers for namespaced node properties
+pub mod props;
+
 // ACP (Agent Communication Protocol) subsystem
 pub mod acp;

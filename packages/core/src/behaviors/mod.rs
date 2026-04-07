@@ -12,10 +12,19 @@
 use crate::models::schema::SchemaField;
 use crate::models::{Node, SchemaNode, TaskNode, ValidationError as NodeValidationError};
 use crate::services::NodeAccessor;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use thiserror::Error;
+
+/// Get a string property, checking both flat and namespaced locations.
+fn get_namespaced_prop_str<'a>(properties: &'a Value, namespace: &str, key: &str) -> Option<&'a str> {
+    properties
+        .get(key)
+        .or_else(|| properties.get(namespace).and_then(|ns| ns.get(key)))
+        .and_then(|v| v.as_str())
+}
 
 /// Lazy-initialized regex for date validation (compiled once)
 static DATE_PATTERN: OnceLock<regex::Regex> = OnceLock::new();
@@ -1782,15 +1791,7 @@ impl NodeBehavior for SkillNodeBehavior {
 
     /// The description property drives embedding for skill discovery
     fn get_embeddable_content(&self, node: &Node) -> Option<String> {
-        let desc = node
-            .properties
-            .get("description")
-            .or_else(|| {
-                node.properties
-                    .get("skill")
-                    .and_then(|ns| ns.get("description"))
-            })
-            .and_then(|v| v.as_str())
+        let desc = get_namespaced_prop_str(&node.properties, "skill", "description")
             .unwrap_or("");
         let name = &node.content;
 
