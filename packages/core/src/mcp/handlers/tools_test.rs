@@ -3,7 +3,28 @@
 //! Tests tools/list and tools/call methods for MCP spec compliance.
 
 use super::*;
+use crate::models::SchemaNode;
+use chrono::Utc;
 use serde_json::json;
+
+/// Create a minimal user-defined SchemaNode for testing.
+fn test_schema(id: &str) -> SchemaNode {
+    let now = Utc::now();
+    SchemaNode {
+        id: id.to_string(),
+        content: id.to_string(),
+        version: 1,
+        created_at: now,
+        modified_at: now,
+        is_core: false,
+        schema_version: 1,
+        description: String::new(),
+        fields: vec![],
+        relationships: vec![],
+        title_template: None,
+        properties_header_summary_template: None,
+    }
+}
 
 #[test]
 fn test_tool_schemas_include_core_and_schema_type() {
@@ -31,26 +52,7 @@ fn test_tool_schemas_include_core_and_schema_type() {
 
 #[test]
 fn test_tool_schemas_include_custom_schema_ids() {
-    use crate::models::SchemaNode;
-    use chrono::Utc;
-    let now = Utc::now();
-    let custom_schemas: Vec<SchemaNode> = vec!["customer", "invoice"]
-        .into_iter()
-        .map(|id| SchemaNode {
-            id: id.to_string(),
-            content: id.to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            is_core: false,
-            schema_version: 1,
-            description: String::new(),
-            fields: vec![],
-            relationships: vec![],
-            title_template: None,
-            properties_header_summary_template: None,
-        })
-        .collect();
+    let custom_schemas = vec![test_schema("customer"), test_schema("invoice")];
     let schemas = get_tool_schemas(&custom_schemas);
     let tools = schemas.as_array().unwrap();
 
@@ -67,28 +69,9 @@ fn test_tool_schemas_include_custom_schema_ids() {
 
 #[test]
 fn test_tool_schemas_no_duplicate_types() {
-    use crate::models::SchemaNode;
-    use chrono::Utc;
-    let now = Utc::now();
-    // schema and text are in the core list; passing them again via custom schemas should not duplicate
-    let custom_schemas: Vec<SchemaNode> = vec!["schema", "text"]
-        .into_iter()
-        .map(|id| SchemaNode {
-            id: id.to_string(),
-            content: id.to_string(),
-            version: 1,
-            created_at: now,
-            modified_at: now,
-            is_core: false,
-            schema_version: 1,
-            description: String::new(),
-            fields: vec![],
-            relationships: vec![],
-            title_template: None,
-            properties_header_summary_template: None,
-        })
-        .collect();
-    let schemas = get_tool_schemas(&custom_schemas);
+    // schema is in core list; passing it again via user schemas should not duplicate
+    let schema_nodes = vec![test_schema("schema"), test_schema("text")];
+    let schemas = get_tool_schemas(&schema_nodes);
     let tools = schemas.as_array().unwrap();
 
     let create_node = tools.iter().find(|t| t["name"] == "create_node").unwrap();

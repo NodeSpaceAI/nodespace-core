@@ -8,10 +8,90 @@
 use crate::agent_types::{AgentToolExecutor, ToolDefinition, ToolError, ToolResult};
 use async_trait::async_trait;
 use nodespace_core::mcp::handlers::schema::handle_create_schema;
+use nodespace_core::mcp::params::{SearchNodesParams, SearchSemanticParams};
 use nodespace_core::ops::{node_ops, rel_ops, search_ops, OpsError};
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
+
+// ---------------------------------------------------------------------------
+// Agent-specific parameter structs
+//
+// These complement the shared MCP params (re-exported via nodespace_core::mcp::params)
+// for tools whose wire format differs from the MCP handler conventions
+// (e.g., agent uses "title"+"body" while MCP uses "content").
+// ---------------------------------------------------------------------------
+
+/// Parameters for the agent's create_node tool (title+body model)
+#[derive(Debug, Deserialize)]
+struct AgentCreateNodeParams {
+    pub title: String,
+    pub node_type: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub properties: Option<Value>,
+}
+
+/// Parameters for the agent's update_node tool (title+body model)
+#[derive(Debug, Deserialize)]
+struct AgentUpdateNodeParams {
+    #[serde(alias = "node_id")]
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub properties: Option<Value>,
+}
+
+/// Parameters for the agent's get_node tool (includes optional format field)
+#[derive(Debug, Deserialize)]
+struct AgentGetNodeParams {
+    #[serde(alias = "node_id")]
+    pub id: String,
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+/// Parameters for the create_relationship tool
+#[derive(Debug, Deserialize)]
+struct CreateRelationshipParams {
+    pub from_id: String,
+    pub to_id: String,
+    pub relationship_type: String,
+}
+
+/// Parameters for the get_related_nodes tool
+#[derive(Debug, Deserialize)]
+struct GetRelatedNodesParams {
+    #[serde(alias = "node_id")]
+    pub id: String,
+    #[serde(default)]
+    pub relationship_type: Option<String>,
+    #[serde(default)]
+    pub direction: Option<String>,
+}
+
+/// Parameters for the find_skills tool
+#[derive(Debug, Deserialize)]
+struct FindSkillsParams {
+    pub query: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Parameters for the update_task_status tool
+#[derive(Debug, Deserialize)]
+struct UpdateTaskStatusParams {
+    #[serde(alias = "node_id")]
+    pub id: String,
+    pub status: String,
+}
 
 /// Maximum characters for node body in full node results.
 const BODY_TRUNCATE_FULL: usize = 2000;
@@ -40,32 +120,6 @@ fn truncate(s: &str, max_chars: usize) -> String {
         }
         format!("{}[truncated]", &s[..end])
     }
-}
-
-/// Extract a required string field from JSON args.
-fn require_str(args: &Value, field: &str, tool_name: &str) -> Result<String, ToolError> {
-    args.get(field)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| ToolError::InvalidArguments {
-            tool: tool_name.to_string(),
-            reason: format!("'{}' is required and must be a string", field),
-        })
-}
-
-/// Extract an optional string field from JSON args.
-fn optional_str(args: &Value, field: &str) -> Option<String> {
-    args.get(field)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-/// Extract an optional integer field, with a default.
-fn optional_usize(args: &Value, field: &str, default: usize) -> usize {
-    args.get(field)
-        .and_then(|v| v.as_u64())
-        .map(|n| n as usize)
-        .unwrap_or(default)
 }
 
 /// Build an error `ToolResult` from a string message.
@@ -449,9 +503,14 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let query = require_str(&args, "query", "search_nodes")?;
-        let node_type = optional_str(&args, "node_type");
-        let limit = optional_usize(&args, "limit", DEFAULT_SEARCH_LIMIT);
+        let params: SearchNodesParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "search_nodes".to_string(),
+                reason: e.to_string(),
+            })?;
+        let query = params.query;
+        let node_type = params.node_type;
+        let limit = params.limit.unwrap_or(DEFAULT_SEARCH_LIMIT);
 
         let ns = self.node_service()?;
 
@@ -506,8 +565,13 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let query = require_str(&args, "query", "search_semantic")?;
-        let limit = optional_usize(&args, "limit", DEFAULT_SEMANTIC_LIMIT);
+        let params: SearchSemanticParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "search_semantic".to_string(),
+                reason: e.to_string(),
+            })?;
+        let query = params.query;
+        let limit = params.limit.unwrap_or(DEFAULT_SEMANTIC_LIMIT);
 
         let ns = self.node_service()?;
         let emb = self.embedding_service()?;
@@ -561,8 +625,13 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let id = require_str(&args, "id", "get_node")?;
-        let format = optional_str(&args, "format").unwrap_or_else(|| "json".to_string());
+        let params: AgentGetNodeParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "get_node".to_string(),
+                reason: e.to_string(),
+            })?;
+        let id = params.id;
+        let format = params.format.unwrap_or_else(|| "json".to_string());
 
         let ns = self.node_service()?;
 
@@ -618,42 +687,48 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let title = require_str(&args, "title", "create_node")?;
-        let node_type = require_str(&args, "node_type", "create_node")?;
-        let body = optional_str(&args, "body").unwrap_or_default();
-        let parent_id = optional_str(&args, "parent_id");
+        // Collect any flat (unknown) keys before consuming args into params.
+        // This lets the model pass {"title": "X", "node_type": "task", "status": "open"}
+        // and have "status" automatically promoted into properties.
+        let flat_extras: serde_json::Map<String, Value> = {
+            const KNOWN: &[&str] = &["title", "node_type", "body", "properties", "parent_id"];
+            args.as_object()
+                .map(|obj| {
+                    obj.iter()
+                        .filter(|(k, _)| !KNOWN.contains(&k.as_str()))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
 
-        // Collect properties: merge explicit "properties" object with any
-        // unknown top-level keys. This lets the model pass flat args like
-        // {"title": "X", "node_type": "task", "status": "open"}.
-        let known_keys = ["title", "node_type", "body", "properties", "parent_id"];
-        let mut props = args
-            .get("properties")
+        let params: AgentCreateNodeParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "create_node".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        // Merge explicit properties with flat extras
+        let mut props = params
+            .properties
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default();
-
-        if let Some(obj) = args.as_object() {
-            for (key, value) in obj {
-                if !known_keys.contains(&key.as_str()) {
-                    props.insert(key.clone(), value.clone());
-                }
-            }
-        }
-
+        props.extend(flat_extras);
         let properties = Value::Object(props);
 
         let ns = self.node_service()?;
 
+        let body = params.body.unwrap_or_default();
         let content = if body.is_empty() {
-            title.clone()
+            params.title.clone()
         } else {
-            format!("{}\n{}", title, body)
+            format!("{}\n{}", params.title, body)
         };
 
         let input = node_ops::CreateNodeInput {
-            node_type,
+            node_type: params.node_type,
             content,
-            parent_id,
+            parent_id: params.parent_id,
             properties,
             collection: None,
             lifecycle_status: None,
@@ -675,34 +750,40 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let id = require_str(&args, "id", "update_node")?;
-        let new_title = optional_str(&args, "title");
-        let new_body = optional_str(&args, "body");
-
-        // Collect properties: merge explicit "properties" object with any
-        // unknown top-level keys. This lets the model pass flat args like
-        // {"id": "...", "status": "done"} without wrapping in "properties".
-        let known_keys = ["id", "title", "body", "properties"];
-        let mut properties = args
-            .get("properties")
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default();
-
-        if let Some(obj) = args.as_object() {
-            for (key, value) in obj {
-                if !known_keys.contains(&key.as_str()) {
-                    properties.insert(key.clone(), value.clone());
-                }
-            }
-        }
-
-        let new_properties = if properties.is_empty() {
-            None
-        } else {
-            Some(Value::Object(properties))
+        // Collect any flat (unknown) keys before consuming args into params.
+        // This lets the model pass {"id": "...", "status": "done"} without
+        // wrapping "status" in a "properties" object.
+        let flat_extras: serde_json::Map<String, Value> = {
+            const KNOWN: &[&str] = &["id", "node_id", "title", "body", "properties"];
+            args.as_object()
+                .map(|obj| {
+                    obj.iter()
+                        .filter(|(k, _)| !KNOWN.contains(&k.as_str()))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect()
+                })
+                .unwrap_or_default()
         };
 
-        let content_update = match (&new_title, &new_body) {
+        let params: AgentUpdateNodeParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "update_node".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        // Merge explicit properties with flat extras
+        let mut props = params
+            .properties
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        props.extend(flat_extras);
+        let new_properties = if props.is_empty() {
+            None
+        } else {
+            Some(Value::Object(props))
+        };
+
+        let content_update = match (&params.title, &params.body) {
             (Some(t), Some(b)) => Some(format!("{}\n{}", t, b)),
             (Some(t), None) => Some(t.clone()),
             (None, Some(b)) => Some(b.clone()),
@@ -719,7 +800,7 @@ impl GraphToolExecutor {
         let ns = self.node_service()?;
 
         let input = node_ops::UpdateNodeInput {
-            node_id: id.clone(),
+            node_id: params.id.clone(),
             version: None, // ops layer auto-fetches
             node_type: None,
             content: content_update,
@@ -745,16 +826,18 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let from_id = require_str(&args, "from_id", "create_relationship")?;
-        let to_id = require_str(&args, "to_id", "create_relationship")?;
-        let rel_type = require_str(&args, "relationship_type", "create_relationship")?;
+        let params: CreateRelationshipParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "create_relationship".to_string(),
+                reason: e.to_string(),
+            })?;
 
         let ns = self.node_service()?;
 
         let input = rel_ops::CreateRelInput {
-            source_id: from_id.clone(),
-            relationship_name: rel_type.clone(),
-            target_id: to_id.clone(),
+            source_id: params.from_id.clone(),
+            relationship_name: params.relationship_type.clone(),
+            target_id: params.to_id.clone(),
             edge_data: None,
         };
 
@@ -765,7 +848,7 @@ impl GraphToolExecutor {
         Ok(ok_result(
             tool_call_id,
             "create_relationship",
-            json!({ "from_id": from_id, "to_id": to_id, "type": rel_type, "created": true }),
+            json!({ "from_id": params.from_id, "to_id": params.to_id, "type": params.relationship_type, "created": true }),
         ))
     }
 
@@ -774,10 +857,15 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let id = require_str(&args, "id", "get_related_nodes")?;
-        let rel_type =
-            optional_str(&args, "relationship_type").unwrap_or_else(|| "mentions".to_string());
-        let direction = optional_str(&args, "direction").unwrap_or_else(|| "both".to_string());
+        let params: GetRelatedNodesParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "get_related_nodes".to_string(),
+                reason: e.to_string(),
+            })?;
+        let rel_type = params
+            .relationship_type
+            .unwrap_or_else(|| "mentions".to_string());
+        let direction = params.direction.unwrap_or_else(|| "both".to_string());
 
         // Validate direction before acquiring the service
         let directions: Vec<&str> = match direction.as_str() {
@@ -797,7 +885,7 @@ impl GraphToolExecutor {
         let mut all_nodes: Vec<Value> = Vec::new();
         for dir in &directions {
             let input = rel_ops::GetRelatedInput {
-                node_id: id.clone(),
+                node_id: params.id.clone(),
                 relationship_name: rel_type.clone(),
                 direction: dir.to_string(),
             };
@@ -833,8 +921,12 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let query = require_str(&args, "query", "find_skills")?;
-        let limit = optional_usize(&args, "limit", 3);
+        let params: FindSkillsParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "find_skills".to_string(),
+                reason: e.to_string(),
+            })?;
+        let limit = params.limit.unwrap_or(3);
 
         let emb = match &self.embedding_service {
             Some(svc) => svc,
@@ -851,7 +943,7 @@ impl GraphToolExecutor {
         let output = skill_ops::find_skills(
             emb,
             skill_ops::FindSkillsInput {
-                query: query.clone(),
+                query: params.query.clone(),
                 limit: Some(limit),
             },
         )
@@ -901,18 +993,21 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let id = require_str(&args, "id", "update_task_status")?;
-        let status = require_str(&args, "status", "update_task_status")?;
+        let params: UpdateTaskStatusParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "update_task_status".to_string(),
+                reason: e.to_string(),
+            })?;
 
         // Validate status is a known enum value
-        match status.as_str() {
+        match params.status.as_str() {
             "open" | "in_progress" | "done" | "cancelled" => {}
             _ => {
                 return Err(ToolError::InvalidArguments {
                     tool: "update_task_status".into(),
                     reason: format!(
                         "Invalid status '{}'. Must be one of: open, in_progress, done, cancelled",
-                        status
+                        params.status
                     ),
                 });
             }
@@ -921,11 +1016,11 @@ impl GraphToolExecutor {
         let ns = self.node_service()?;
 
         let input = node_ops::UpdateNodeInput {
-            node_id: id.clone(),
+            node_id: params.id.clone(),
             version: None,
             node_type: None,
             content: None,
-            properties: Some(json!({ "status": status })),
+            properties: Some(json!({ "status": params.status })),
             add_to_collection: None,
             remove_from_collection: None,
             lifecycle_status: None,
@@ -938,7 +1033,7 @@ impl GraphToolExecutor {
         Ok(ok_result(
             tool_call_id,
             "update_task_status",
-            json!({ "id": output.node_id, "status": status, "updated": true }),
+            json!({ "id": output.node_id, "status": params.status, "updated": true }),
         ))
     }
 
@@ -1033,48 +1128,46 @@ mod tests {
         // Should not panic
     }
 
-    // -- Helper: require_str validation --
+    // -- Serde param parsing --
 
     #[test]
-    fn require_str_present() {
+    fn search_nodes_params_parses_required_field() {
         let args = json!({ "query": "hello" });
-        let result = require_str(&args, "query", "test_tool");
-        assert_eq!(result.unwrap(), "hello");
+        let params: SearchNodesParams = serde_json::from_value(args).unwrap();
+        assert_eq!(params.query, "hello");
     }
 
     #[test]
-    fn require_str_missing() {
+    fn search_nodes_params_missing_query_fails() {
         let args = json!({});
-        let result = require_str(&args, "query", "test_tool");
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ToolError::InvalidArguments { tool, reason } => {
-                assert_eq!(tool, "test_tool");
-                assert!(reason.contains("query"));
-            }
-            _ => panic!("Expected InvalidArguments"),
-        }
-    }
-
-    #[test]
-    fn require_str_wrong_type() {
-        let args = json!({ "query": 42 });
-        let result = require_str(&args, "query", "test_tool");
+        let result: Result<SearchNodesParams, _> = serde_json::from_value(args);
         assert!(result.is_err());
     }
 
-    // -- Helper: optional_usize --
-
     #[test]
-    fn optional_usize_present() {
-        let args = json!({ "limit": 20 });
-        assert_eq!(optional_usize(&args, "limit", 10), 20);
+    fn search_nodes_params_optional_limit() {
+        let args = json!({ "query": "test", "limit": 20 });
+        let params: SearchNodesParams = serde_json::from_value(args).unwrap();
+        assert_eq!(params.limit, Some(20));
+
+        let args_no_limit = json!({ "query": "test" });
+        let params2: SearchNodesParams = serde_json::from_value(args_no_limit).unwrap();
+        assert_eq!(params2.limit, None);
     }
 
     #[test]
-    fn optional_usize_missing_uses_default() {
-        let args = json!({});
-        assert_eq!(optional_usize(&args, "limit", 10), 10);
+    fn agent_get_node_params_accepts_id_alias() {
+        let args = json!({ "id": "node-123" });
+        let params: AgentGetNodeParams = serde_json::from_value(args).unwrap();
+        assert_eq!(params.id, "node-123");
+    }
+
+    #[test]
+    fn agent_update_node_params_accepts_id_alias() {
+        let args = json!({ "id": "node-456", "title": "New title" });
+        let params: AgentUpdateNodeParams = serde_json::from_value(args).unwrap();
+        assert_eq!(params.id, "node-456");
+        assert_eq!(params.title, Some("New title".to_string()));
     }
 
     // -- Tool definitions --

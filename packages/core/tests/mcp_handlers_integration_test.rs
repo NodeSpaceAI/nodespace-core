@@ -3440,7 +3440,7 @@ async fn test_handle_query_nodes_filters_no_match_returns_empty() {
 }
 
 #[tokio::test]
-async fn test_handle_query_nodes_filters_unsupported_operator_ignored() {
+async fn test_handle_query_nodes_filters_unsupported_operator_for_title_field() {
     let (node_service, _temp_dir) = create_test_env().await.unwrap();
 
     handle_create_node(
@@ -3450,7 +3450,8 @@ async fn test_handle_query_nodes_filters_unsupported_operator_ignored() {
     .await
     .unwrap();
 
-    // Unsupported operator should not error — just warn and be ignored
+    // The "title" and "content" fields only support "contains" — other operators
+    // (e.g. "equals") return a clear error to prevent silent incorrect filtering.
     let result = nodespace_core::mcp::handlers::nodes::handle_query_nodes(
         &node_service,
         json!({
@@ -3459,8 +3460,8 @@ async fn test_handle_query_nodes_filters_unsupported_operator_ignored() {
     )
     .await;
     assert!(
-        result.is_ok(),
-        "unsupported operator should not return an error"
+        result.is_err(),
+        "title field with 'equals' operator should return an error (only 'contains' is supported)"
     );
 }
 

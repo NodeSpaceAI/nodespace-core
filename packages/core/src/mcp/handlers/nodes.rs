@@ -70,12 +70,14 @@ pub struct MCPCreateNodeParams {
 /// Parameters for get_node method
 #[derive(Debug, Deserialize)]
 pub struct GetNodeParams {
+    #[serde(alias = "id")]
     pub node_id: String,
 }
 
 /// Parameters for update_node method
 #[derive(Debug, Deserialize)]
 pub struct UpdateNodeParams {
+    #[serde(alias = "id")]
     pub node_id: String,
     /// Expected version for optimistic concurrency control (optional for MCP)
     /// If provided, enables OCC to prevent race conditions.
@@ -104,6 +106,7 @@ pub struct UpdateNodeParams {
 /// Parameters for delete_node method
 #[derive(Debug, Deserialize)]
 pub struct DeleteNodeParams {
+    #[serde(alias = "id")]
     pub node_id: String,
     /// Expected version for optimistic concurrency control (optional).
     /// If not provided, current version is fetched automatically (convenient for AI agents).

@@ -90,6 +90,22 @@ fn build_markdown_recursive(
     }
 }
 
+/// Parameters for search_nodes (keyword/text search) method
+#[derive(Debug, Deserialize)]
+pub struct SearchNodesParams {
+    /// Text query to search for in node content
+    pub query: String,
+
+    /// Filter by node type (e.g., "task", "text")
+    #[serde(default)]
+    pub node_type: Option<String>,
+
+    /// Maximum number of results
+    /// Default: 10
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
 /// Parameters for search_semantic method
 #[derive(Debug, Deserialize)]
 pub struct SearchSemanticParams {
