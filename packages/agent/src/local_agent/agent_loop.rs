@@ -49,13 +49,19 @@ const HISTORY_TOKEN_BUDGET: u32 = TOTAL_TOKEN_BUDGET - SYSTEM_PROMPT_BUDGET;
 pub struct LocalAgentLoop<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> {
     engine: Arc<E>,
     tool_executor: Arc<T>,
+    skill_pipeline: Option<Arc<crate::skill_pipeline::SkillPipeline>>,
 }
 
 impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentLoop<E, T> {
-    pub fn new(engine: Arc<E>, tool_executor: Arc<T>) -> Self {
+    pub fn new(
+        engine: Arc<E>,
+        tool_executor: Arc<T>,
+        skill_pipeline: Option<Arc<crate::skill_pipeline::SkillPipeline>>,
+    ) -> Self {
         Self {
             engine,
             tool_executor,
+            skill_pipeline,
         }
     }
 
@@ -89,19 +95,58 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         });
 
         // Get available tools
-        let tools = self
+        let all_tools = self
             .tool_executor
             .available_tools()
             .await
             .unwrap_or_default();
 
-        // System prompt only — tool definitions are injected by the model's
-        // built-in chat template via [AVAILABLE_TOOLS] in apply_chat_template().
-        // Do NOT duplicate tools here or the model gets confused.
+        // Run push-based skill pipeline (pre-turn intent detection).
+        // If a skill matches above the confidence threshold, inject the skill's
+        // context into the prompt and scope tools to only the skill's whitelist.
         let dynamic_ctx = session.dynamic_context.as_deref().unwrap_or("");
-        // TODO: Replace with PromptAssembler::assemble() when agent loop is wired
-        // to accept a PromptAssembler instance.
-        let system_content = prompt_templates::fallback_system_prompt(dynamic_ctx);
+        let (system_content, tools) = if let Some(ref pipeline) = self.skill_pipeline {
+            if let Some(skill_match) = pipeline.find_skill(user_message).await {
+                tracing::info!(
+                    skill = %skill_match.skill.content,
+                    confidence = skill_match.confidence,
+                    intent = %skill_match.intent.query,
+                    "Skill matched via push pipeline"
+                );
+
+                // Scope tools to skill's whitelist
+                let scoped_tools = pipeline.scope_tools(&all_tools, &skill_match);
+
+                // Build system prompt with skill context
+                let base = prompt_templates::fallback_system_prompt(dynamic_ctx);
+                let skill_name = &skill_match.skill.content;
+                let skill_desc = skill_match
+                    .skill
+                    .properties
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let system = format!(
+                    "{}\n\nACTIVE SKILL: {}\n{}\nFocus on this skill's capabilities. Use only the tools provided.",
+                    base, skill_name, skill_desc
+                );
+
+                (system, scoped_tools)
+            } else {
+                // No skill matched — use base prompt with all tools
+                (
+                    prompt_templates::fallback_system_prompt(dynamic_ctx),
+                    all_tools,
+                )
+            }
+        } else {
+            // No pipeline configured — use base prompt with all tools
+            (
+                prompt_templates::fallback_system_prompt(dynamic_ctx),
+                all_tools,
+            )
+        };
 
         tracing::info!(
             tools_count = tools.len(),
@@ -536,10 +581,14 @@ pub struct LocalAgentService<E: ChatInferenceEngine + ?Sized, T: AgentToolExecut
 impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 'static>
     LocalAgentService<E, T>
 {
-    pub fn new(engine: Arc<E>, tool_executor: Arc<T>) -> Self {
+    pub fn new(
+        engine: Arc<E>,
+        tool_executor: Arc<T>,
+        skill_pipeline: Option<Arc<crate::skill_pipeline::SkillPipeline>>,
+    ) -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
-            agent_loop: LocalAgentLoop::new(engine, tool_executor),
+            agent_loop: LocalAgentLoop::new(engine, tool_executor, skill_pipeline),
             cancel_tokens: RwLock::new(HashMap::new()),
         }
     }
@@ -879,7 +928,7 @@ mod tests {
     async fn single_turn_no_tools() {
         let engine = Arc::new(MockEngine::single_text("Hello! How can I help?"));
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
         let statuses: Arc<std::sync::Mutex<Vec<LocalAgentStatus>>> =
@@ -923,7 +972,7 @@ mod tests {
             "Found 2 nodes about billing.",
         ));
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
         let result = agent_loop
@@ -1001,7 +1050,7 @@ mod tests {
             ],
         ]));
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
         let result = agent_loop
@@ -1054,7 +1103,7 @@ mod tests {
         let rounds: Vec<_> = (0..MAX_TOOL_ITERATIONS + 2).map(|_| tool_round()).collect();
         let engine = Arc::new(MockEngine::new(rounds));
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
         let result = agent_loop
@@ -1080,7 +1129,7 @@ mod tests {
     async fn cancellation_stops_generation() {
         let engine = Arc::new(MockEngine::single_text("Should not complete"));
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
         let cancel = CancellationToken::new();
@@ -1158,7 +1207,7 @@ mod tests {
     async fn service_create_and_list_sessions() {
         let engine = Arc::new(MockEngine::single_text("Hello"));
         let executor = Arc::new(MockToolExecutor::new());
-        let service = LocalAgentService::new(engine, executor);
+        let service = LocalAgentService::new(engine, executor, None);
 
         let id1 = service.create_session(Some("model-a".into())).await;
         let id2 = service.create_session(None).await;
@@ -1177,7 +1226,7 @@ mod tests {
     async fn service_end_session() {
         let engine = Arc::new(MockEngine::single_text("Hello"));
         let executor = Arc::new(MockToolExecutor::new());
-        let service = LocalAgentService::new(engine, executor);
+        let service = LocalAgentService::new(engine, executor, None);
 
         let id = service.create_session(None).await;
         assert!(service.get_session(&id).await.is_some());
@@ -1191,7 +1240,7 @@ mod tests {
     async fn service_send_message() {
         let engine = Arc::new(MockEngine::single_text("I can help with that!"));
         let executor = Arc::new(MockToolExecutor::new());
-        let service = LocalAgentService::new(engine, executor);
+        let service = LocalAgentService::new(engine, executor, None);
 
         let id = service.create_session(None).await;
         let result = service
@@ -1210,7 +1259,7 @@ mod tests {
     async fn service_send_message_unknown_session() {
         let engine = Arc::new(MockEngine::single_text("Hello"));
         let executor = Arc::new(MockToolExecutor::new());
-        let service = LocalAgentService::new(engine, executor);
+        let service = LocalAgentService::new(engine, executor, None);
 
         let result = service
             .send_message("nonexistent", "Hello", |_| {}, |_| {})
@@ -1223,7 +1272,7 @@ mod tests {
     async fn service_cancel_session() {
         let engine = Arc::new(MockEngine::single_text("Hello"));
         let executor = Arc::new(MockToolExecutor::new());
-        let service = LocalAgentService::new(engine, executor);
+        let service = LocalAgentService::new(engine, executor, None);
 
         let id = service.create_session(None).await;
 
@@ -1239,7 +1288,7 @@ mod tests {
     async fn status_transitions_single_turn() {
         let engine = Arc::new(MockEngine::single_text("Response"));
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
         let statuses: Arc<std::sync::Mutex<Vec<String>>> =
@@ -1281,7 +1330,7 @@ mod tests {
             "Done",
         ));
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
         let statuses: Arc<std::sync::Mutex<Vec<String>>> =
@@ -1346,7 +1395,7 @@ mod tests {
             ],
         ]));
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
 
@@ -1432,7 +1481,7 @@ mod tests {
     async fn session_persistence_after_inference_error() {
         let engine = Arc::new(FailingEngine);
         let executor = Arc::new(MockToolExecutor::new());
-        let service = LocalAgentService::new(engine, executor);
+        let service = LocalAgentService::new(engine, executor, None);
 
         let id = service.create_session(Some("test-model".into())).await;
 
@@ -1518,7 +1567,7 @@ mod tests {
             count: Arc::clone(&call_count),
         });
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
         let result = agent_loop
@@ -1615,7 +1664,7 @@ mod tests {
             cancel: cancel.clone(),
             call_count: AtomicUsize::new(0),
         });
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
         let result = agent_loop
@@ -1660,7 +1709,7 @@ mod tests {
             ],
         ]));
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(Arc::clone(&engine), executor);
+        let agent_loop = LocalAgentLoop::new(Arc::clone(&engine), executor, None);
 
         let mut session = new_session();
 
@@ -1741,7 +1790,7 @@ mod tests {
             ],
         ]));
         let executor = Arc::new(MockToolExecutor::new());
-        let agent_loop = LocalAgentLoop::new(engine, executor);
+        let agent_loop = LocalAgentLoop::new(engine, executor, None);
 
         let mut session = new_session();
         let result = agent_loop
@@ -1798,7 +1847,7 @@ mod tests {
             ],
         ]));
         let executor = Arc::new(MockToolExecutor::new());
-        let service = LocalAgentService::new(engine, executor);
+        let service = LocalAgentService::new(engine, executor, None);
 
         // Create two independent sessions
         let id_a = service.create_session(Some("model-a".into())).await;

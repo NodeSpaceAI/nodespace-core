@@ -89,7 +89,7 @@ impl ManagedAgentState {
             node_service: None,
             embedding_service: None,
         });
-        let service = LocalAgentService::new(engine, executor);
+        let service = LocalAgentService::new(engine, executor, None);
 
         Self {
             inner: RwLock::new(service),
@@ -120,9 +120,17 @@ impl ManagedAgentState {
         let embedding_service = self.app_services.embedding_service().await.ok();
 
         let executor: Arc<dyn AgentToolExecutor> = Arc::new(
-            GraphToolExecutor::new_with_optional_services(node_service, embedding_service),
+            GraphToolExecutor::new_with_optional_services(node_service, embedding_service.clone()),
         );
-        let service = LocalAgentService::new(engine, executor);
+
+        // Create skill pipeline with embedding service for intent-driven skill injection
+        let skill_pipeline = embedding_service.map(|emb| {
+            Arc::new(nodespace_agent::skill_pipeline::SkillPipeline::new(Some(
+                emb,
+            )))
+        });
+
+        let service = LocalAgentService::new(engine, executor, skill_pipeline);
 
         let mut guard = self.inner.write().await;
         *guard = service;

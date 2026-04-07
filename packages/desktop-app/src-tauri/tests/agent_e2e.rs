@@ -322,7 +322,7 @@ async fn local_agent_simple_conversation_roundtrip() {
         "NodeSpace is a knowledge management system.",
     ));
     let executor = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine, executor);
+    let service = LocalAgentService::new(engine, executor, None);
 
     // Create session
     let session_id = service.create_session(Some("test-model".into())).await;
@@ -358,7 +358,7 @@ async fn local_agent_conversation_with_tool_call() {
         "Found 2 nodes about architecture.",
     ));
     let executor = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine, executor);
+    let service = LocalAgentService::new(engine, executor, None);
 
     let session_id = service.create_session(Some("test-model".into())).await;
 
@@ -466,7 +466,7 @@ async fn local_agent_multi_step_tool_chain() {
         ],
     ]));
     let executor = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine, executor);
+    let service = LocalAgentService::new(engine, executor, None);
 
     let session_id = service.create_session(None).await;
     let result = service
@@ -520,7 +520,7 @@ async fn local_agent_multi_turn_history_persistence() {
         ],
     ]));
     let executor = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine, executor);
+    let service = LocalAgentService::new(engine, executor, None);
 
     let session_id = service.create_session(None).await;
 
@@ -557,7 +557,7 @@ async fn local_agent_multi_turn_history_persistence() {
 async fn local_agent_session_lifecycle() {
     let engine = Arc::new(MockEngine::single_text("Hello!"));
     let executor = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine, executor);
+    let service = LocalAgentService::new(engine, executor, None);
 
     // Create multiple sessions
     let id1 = service.create_session(Some("model-a".into())).await;
@@ -957,7 +957,7 @@ async fn concurrent_local_and_acp_no_interference() {
         async move {
             let engine = Arc::new(MockEngine::single_text("Concurrent local response."));
             let executor = Arc::new(MockToolExecutor::new());
-            let service = LocalAgentService::new(engine, executor);
+            let service = LocalAgentService::new(engine, executor, None);
             let sid = service.create_session(None).await;
             service
                 .send_message(&sid, "Concurrent test", |_| {}, |_| {})
@@ -1032,7 +1032,7 @@ async fn concurrent_multiple_local_sessions() {
         ],
     ]));
     let executor = Arc::new(MockToolExecutor::new());
-    let service = Arc::new(LocalAgentService::new(engine, executor));
+    let service = Arc::new(LocalAgentService::new(engine, executor, None));
 
     let id1 = service.create_session(None).await;
     let id2 = service.create_session(None).await;
@@ -1126,7 +1126,7 @@ async fn concurrent_multiple_acp_transports() {
 async fn error_send_to_nonexistent_session() {
     let engine = Arc::new(MockEngine::single_text("unused"));
     let executor = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine, executor);
+    let service = LocalAgentService::new(engine, executor, None);
 
     let result = service
         .send_message("nonexistent-session-id", "Hello", |_| {}, |_| {})
@@ -1149,7 +1149,7 @@ async fn error_send_to_nonexistent_session() {
 async fn error_no_model_loaded() {
     let engine = Arc::new(NoModelEngine);
     let executor = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine, executor);
+    let service = LocalAgentService::new(engine, executor, None);
 
     let session_id = service.create_session(None).await;
     let result = service
@@ -1295,7 +1295,7 @@ async fn error_transport_send_after_shutdown() {
 async fn error_cancellation_mid_turn() {
     let engine = Arc::new(MockEngine::single_text("Should not complete"));
     let executor = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine, executor);
+    let service = LocalAgentService::new(engine, executor, None);
 
     let session_id = service.create_session(None).await;
 
@@ -1373,7 +1373,7 @@ async fn error_acp_fail_session() {
 async fn benchmark_local_agent_turn_latency() {
     let engine = Arc::new(MockEngine::single_text("Quick response"));
     let executor = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine, executor);
+    let service = LocalAgentService::new(engine, executor, None);
 
     let session_id = service.create_session(None).await;
 
@@ -1407,7 +1407,7 @@ async fn benchmark_tool_execution_overhead() {
         "Done.",
     ));
     let executor = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine, executor);
+    let service = LocalAgentService::new(engine, executor, None);
 
     let session_id = service.create_session(None).await;
 
@@ -1561,7 +1561,11 @@ impl ChatInferenceEngine for CapturingMockEngine {
 async fn system_prompt_includes_dynamic_context() {
     let engine = Arc::new(CapturingMockEngine::new("Here are your tasks."));
     let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine.clone() as Arc<dyn ChatInferenceEngine>, executor);
+    let service = LocalAgentService::new(
+        engine.clone() as Arc<dyn ChatInferenceEngine>,
+        executor,
+        None,
+    );
 
     let session_id = service.create_session(Some("test-model".into())).await;
 
@@ -1606,7 +1610,7 @@ async fn response_normalizer_fixes_uri_formatting() {
         "Found your task: [nodespace://abc-123](nodespace://abc-123) with status in_progress",
     ));
     let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine as Arc<dyn ChatInferenceEngine>, executor);
+    let service = LocalAgentService::new(engine as Arc<dyn ChatInferenceEngine>, executor, None);
 
     let session_id = service.create_session(None).await;
     let result = service
@@ -1638,7 +1642,11 @@ async fn response_normalizer_fixes_uri_formatting() {
 async fn tool_definitions_included_in_inference_request() {
     let engine = Arc::new(CapturingMockEngine::new("No tasks found."));
     let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine.clone() as Arc<dyn ChatInferenceEngine>, executor);
+    let service = LocalAgentService::new(
+        engine.clone() as Arc<dyn ChatInferenceEngine>,
+        executor,
+        None,
+    );
 
     let session_id = service.create_session(None).await;
     let _result = service
@@ -1677,7 +1685,7 @@ async fn tool_call_round_trip_with_normalizer() {
         "Found 2 results: `nodespace://e2e-node-1` and `nodespace://e2e-node-2` are in_progress",
     ));
     let executor: Arc<dyn AgentToolExecutor> = Arc::new(MockToolExecutor::new());
-    let service = LocalAgentService::new(engine as Arc<dyn ChatInferenceEngine>, executor);
+    let service = LocalAgentService::new(engine as Arc<dyn ChatInferenceEngine>, executor, None);
 
     let session_id = service.create_session(None).await;
     let result = service
@@ -1834,6 +1842,7 @@ async fn structured_query_tasks_uses_search_nodes() {
     let service = LocalAgentService::new(
         engine as Arc<dyn ChatInferenceEngine>,
         executor.clone() as Arc<dyn AgentToolExecutor>,
+        None,
     );
 
     let session_id = service.create_session(Some("test".into())).await;
@@ -1884,6 +1893,7 @@ async fn semantic_query_uses_search_semantic() {
     let service = LocalAgentService::new(
         engine as Arc<dyn ChatInferenceEngine>,
         executor.clone() as Arc<dyn AgentToolExecutor>,
+        None,
     );
 
     let session_id = service.create_session(Some("test".into())).await;
@@ -1989,6 +1999,7 @@ async fn multi_turn_mixed_tool_calls() {
     let service = LocalAgentService::new(
         engine as Arc<dyn ChatInferenceEngine>,
         executor.clone() as Arc<dyn AgentToolExecutor>,
+        None,
     );
 
     let session_id = service.create_session(Some("test".into())).await;
