@@ -301,7 +301,7 @@ fn def_find_skills() -> ToolDefinition {
 fn def_create_schema() -> ToolDefinition {
     ToolDefinition {
         name: "create_schema".into(),
-        description: "Create a new entity type (schema) with custom fields. Use this when the user wants to define a new type like Project, Customer, Invoice.".into(),
+        description: "Create a new entity type (schema) with custom fields. Use this when the user wants to define a new type like Project, Customer, Invoice. The schema ID is auto-generated as lowercase with underscores (e.g., 'Customer Profile' becomes 'customer_profile'). After creation, use this ID as node_type when creating instances.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -348,7 +348,8 @@ fn def_create_schema() -> ToolDefinition {
 fn def_update_task_status() -> ToolDefinition {
     ToolDefinition {
         name: "update_task_status".into(),
-        description: "Update a task's status. Valid statuses: open, in_progress, done, cancelled.".into(),
+        description: "Update a task's status. Valid statuses: open, in_progress, done, cancelled."
+            .into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -868,35 +869,17 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let name = require_str(&args, "name", "create_schema")?;
-        let description = optional_str(&args, "description").unwrap_or_default();
-        let fields = args.get("fields").cloned().unwrap_or(json!([]));
-
         let ns = self.node_service()?;
 
-        let properties = json!({
-            "description": description,
-            "fields": fields,
-        });
+        // Delegate to the MCP schema handler which handles ID normalization
+        // (e.g., "Project" → "project"), field namespacing, and validation.
+        use nodespace_core::mcp::handlers::schema::handle_create_schema;
 
-        let input = node_ops::CreateNodeInput {
-            node_type: "schema".to_string(),
-            content: name.clone(),
-            parent_id: None,
-            properties,
-            collection: None,
-            lifecycle_status: None,
-        };
-
-        let output = node_ops::create_node(&ns, input)
+        let result = handle_create_schema(&ns, args)
             .await
-            .map_err(|e| ops_error_to_tool(e, "create_schema"))?;
+            .map_err(|e| ToolError::ExecutionFailed(format!("create_schema failed: {:?}", e)))?;
 
-        Ok(ok_result(
-            tool_call_id,
-            "create_schema",
-            json!({ "id": output.node_id, "name": name, "created": true }),
-        ))
+        Ok(ok_result(tool_call_id, "create_schema", result))
     }
 
     async fn exec_update_task_status(
