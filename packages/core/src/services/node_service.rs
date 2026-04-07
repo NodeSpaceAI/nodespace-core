@@ -959,7 +959,7 @@ impl NodeService {
         let seed_types: std::collections::HashSet<String> =
             nodes.iter().map(|n| n.node_type.clone()).collect();
 
-        // Check which types already have built-in nodes
+        // Check which types already have nodes (if any exist, skip seeding that type)
         let mut seeded_types: std::collections::HashSet<String> = std::collections::HashSet::new();
         for node_type in &seed_types {
             let filter = crate::models::NodeFilter {
@@ -967,10 +967,7 @@ impl NodeService {
                 ..Default::default()
             };
             let existing = self.query_nodes(filter).await?;
-            let has_builtin = existing
-                .iter()
-                .any(|n| n.properties.get("source").and_then(|v| v.as_str()) == Some("built-in"));
-            if has_builtin {
+            if !existing.is_empty() {
                 seeded_types.insert(node_type.clone());
             }
         }
@@ -983,7 +980,15 @@ impl NodeService {
                 skipped += 1;
                 continue;
             }
-            self.create_node(node).await?;
+            self.create_node_with_parent(CreateNodeParams {
+                id: Some(node.id),
+                node_type: node.node_type,
+                content: node.content,
+                properties: node.properties,
+                parent_id: None,
+                insert_after_node_id: None,
+            })
+            .await?;
             created += 1;
         }
 

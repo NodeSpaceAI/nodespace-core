@@ -298,6 +298,75 @@ fn def_find_skills() -> ToolDefinition {
     }
 }
 
+fn def_create_schema() -> ToolDefinition {
+    ToolDefinition {
+        name: "create_schema".into(),
+        description: "Create a new entity type (schema) with custom fields. Use this when the user wants to define a new type like Project, Customer, Invoice.".into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Display name for the entity type (e.g., 'Project', 'Customer')"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Brief description of what this entity type represents"
+                },
+                "fields": {
+                    "type": "array",
+                    "description": "Array of field definitions",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string", "description": "Field name (e.g., 'status', 'email')" },
+                            "field_type": { "type": "string", "description": "Field type: text, number, date, enum, array, object, boolean" },
+                            "required": { "type": "boolean", "description": "Whether this field is required" },
+                            "indexed": { "type": "boolean", "description": "Whether to index for search/filter" },
+                            "description": { "type": "string", "description": "Field description" },
+                            "core_values": {
+                                "type": "array",
+                                "description": "For enum fields: array of {value, label} pairs",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "value": { "type": "string" },
+                                        "label": { "type": "string" }
+                                    }
+                                }
+                            }
+                        },
+                        "required": ["name", "field_type"]
+                    }
+                }
+            },
+            "required": ["name", "fields"]
+        }),
+    }
+}
+
+fn def_update_task_status() -> ToolDefinition {
+    ToolDefinition {
+        name: "update_task_status".into(),
+        description: "Update a task's status. Valid statuses: open, in_progress, done, cancelled.".into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Task node ID to update"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "in_progress", "done", "cancelled"],
+                    "description": "New status value"
+                }
+            },
+            "required": ["id", "status"]
+        }),
+    }
+}
+
 /// All tool definitions for the graph executor.
 fn all_tool_definitions() -> Vec<ToolDefinition> {
     vec![
@@ -306,6 +375,8 @@ fn all_tool_definitions() -> Vec<ToolDefinition> {
         def_get_node(),
         def_create_node(),
         def_update_node(),
+        def_create_schema(),
+        def_update_task_status(),
         def_create_relationship(),
         def_get_related_nodes(),
         def_find_skills(),
@@ -533,8 +604,26 @@ impl GraphToolExecutor {
         let title = require_str(&args, "title", "create_node")?;
         let node_type = require_str(&args, "node_type", "create_node")?;
         let body = optional_str(&args, "body").unwrap_or_default();
-        let properties = args.get("properties").cloned().unwrap_or(json!({}));
         let parent_id = optional_str(&args, "parent_id");
+
+        // Collect properties: merge explicit "properties" object with any
+        // unknown top-level keys. This lets the model pass flat args like
+        // {"title": "X", "node_type": "task", "status": "open"}.
+        let known_keys = ["title", "node_type", "body", "properties", "parent_id"];
+        let mut props = args
+            .get("properties")
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+
+        if let Some(obj) = args.as_object() {
+            for (key, value) in obj {
+                if !known_keys.contains(&key.as_str()) {
+                    props.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        let properties = Value::Object(props);
 
         let ns = self.node_service()?;
 
@@ -572,7 +661,29 @@ impl GraphToolExecutor {
         let id = require_str(&args, "id", "update_node")?;
         let new_title = optional_str(&args, "title");
         let new_body = optional_str(&args, "body");
-        let new_properties = args.get("properties").cloned();
+
+        // Collect properties: merge explicit "properties" object with any
+        // unknown top-level keys. This lets the model pass flat args like
+        // {"id": "...", "status": "done"} without wrapping in "properties".
+        let known_keys = ["id", "title", "body", "properties"];
+        let mut properties = args
+            .get("properties")
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+
+        if let Some(obj) = args.as_object() {
+            for (key, value) in obj {
+                if !known_keys.contains(&key.as_str()) {
+                    properties.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        let new_properties = if properties.is_empty() {
+            None
+        } else {
+            Some(Value::Object(properties))
+        };
 
         let content_update = match (&new_title, &new_body) {
             (Some(t), Some(b)) => Some(format!("{}\n{}", t, b)),
@@ -752,6 +863,74 @@ impl GraphToolExecutor {
         }
     }
 
+    async fn exec_create_schema(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let name = require_str(&args, "name", "create_schema")?;
+        let description = optional_str(&args, "description").unwrap_or_default();
+        let fields = args.get("fields").cloned().unwrap_or(json!([]));
+
+        let ns = self.node_service()?;
+
+        let properties = json!({
+            "description": description,
+            "fields": fields,
+        });
+
+        let input = node_ops::CreateNodeInput {
+            node_type: "schema".to_string(),
+            content: name.clone(),
+            parent_id: None,
+            properties,
+            collection: None,
+            lifecycle_status: None,
+        };
+
+        let output = node_ops::create_node(&ns, input)
+            .await
+            .map_err(|e| ops_error_to_tool(e, "create_schema"))?;
+
+        Ok(ok_result(
+            tool_call_id,
+            "create_schema",
+            json!({ "id": output.node_id, "name": name, "created": true }),
+        ))
+    }
+
+    async fn exec_update_task_status(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let id = require_str(&args, "id", "update_task_status")?;
+        let status = require_str(&args, "status", "update_task_status")?;
+
+        let ns = self.node_service()?;
+
+        let input = node_ops::UpdateNodeInput {
+            node_id: id.clone(),
+            version: None,
+            node_type: None,
+            content: None,
+            properties: Some(json!({ "status": status })),
+            add_to_collection: None,
+            remove_from_collection: None,
+            lifecycle_status: None,
+        };
+
+        let output = node_ops::update_node(&ns, input)
+            .await
+            .map_err(|e| ops_error_to_tool(e, "update_task_status"))?;
+
+        Ok(ok_result(
+            tool_call_id,
+            "update_task_status",
+            json!({ "id": output.node_id, "status": status, "updated": true }),
+        ))
+    }
+
     // -- Service accessors --
 
     fn node_service(&self) -> Result<Arc<NodeService>, ToolError> {
@@ -784,6 +963,8 @@ impl AgentToolExecutor for GraphToolExecutor {
             "get_node" => self.exec_get_node(&tool_call_id, args).await,
             "create_node" => self.exec_create_node(&tool_call_id, args).await,
             "update_node" => self.exec_update_node(&tool_call_id, args).await,
+            "create_schema" => self.exec_create_schema(&tool_call_id, args).await,
+            "update_task_status" => self.exec_update_task_status(&tool_call_id, args).await,
             "create_relationship" => self.exec_create_relationship(&tool_call_id, args).await,
             "get_related_nodes" => self.exec_get_related_nodes(&tool_call_id, args).await,
             "find_skills" => self.exec_find_skills(&tool_call_id, args).await,
@@ -897,7 +1078,7 @@ mod tests {
 
     #[test]
     fn definitions_count() {
-        assert_eq!(all_tool_definitions().len(), 8);
+        assert_eq!(all_tool_definitions().len(), 10);
     }
 
     #[test]
@@ -1167,10 +1348,10 @@ mod tests {
     // -- Available tools --
 
     #[tokio::test]
-    async fn available_tools_returns_all_eight() {
+    async fn available_tools_returns_all() {
         let executor = test_executor();
         let tools = executor.available_tools().await.unwrap();
-        assert_eq!(tools.len(), 8);
+        assert_eq!(tools.len(), 10);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"search_nodes"));
         assert!(names.contains(&"search_semantic"));
@@ -1180,5 +1361,7 @@ mod tests {
         assert!(names.contains(&"create_relationship"));
         assert!(names.contains(&"get_related_nodes"));
         assert!(names.contains(&"find_skills"));
+        assert!(names.contains(&"create_schema"));
+        assert!(names.contains(&"update_task_status"));
     }
 }

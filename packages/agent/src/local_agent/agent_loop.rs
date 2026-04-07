@@ -124,6 +124,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     .skill
                     .properties
                     .get("description")
+                    .or_else(|| {
+                        skill_match
+                            .skill
+                            .properties
+                            .get("skill")
+                            .and_then(|ns| ns.get("description"))
+                    })
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
 

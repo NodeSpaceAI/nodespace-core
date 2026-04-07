@@ -95,9 +95,12 @@ impl PromptAssembler {
         let mut sections = Vec::new();
 
         for node in &prompt_nodes {
+            // Properties may be flat or namespaced under "prompt"
+            let prompt_ns = node.properties.get("prompt");
             let syntax = node
                 .properties
                 .get("template_syntax")
+                .or_else(|| prompt_ns.and_then(|ns| ns.get("template_syntax")))
                 .and_then(|v| v.as_str())
                 .unwrap_or("plain");
 
@@ -112,6 +115,7 @@ impl PromptAssembler {
             let source = node
                 .properties
                 .get("source")
+                .or_else(|| prompt_ns.and_then(|ns| ns.get("source")))
                 .and_then(|v| v.as_str())
                 .unwrap_or("user-created");
 
@@ -165,6 +169,11 @@ impl PromptAssembler {
                 nodes.sort_by_key(|n| {
                     n.properties
                         .get("priority")
+                        .or_else(|| {
+                            n.properties
+                                .get("prompt")
+                                .and_then(|ns| ns.get("priority"))
+                        })
                         .and_then(|v| v.as_i64())
                         .unwrap_or(100)
                 });

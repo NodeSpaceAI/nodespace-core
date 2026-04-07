@@ -1785,6 +1785,11 @@ impl NodeBehavior for SkillNodeBehavior {
         let desc = node
             .properties
             .get("description")
+            .or_else(|| {
+                node.properties
+                    .get("skill")
+                    .and_then(|ns| ns.get("description"))
+            })
             .and_then(|v| v.as_str())
             .unwrap_or("");
         let name = &node.content;

@@ -167,6 +167,12 @@ impl SkillPipeline {
         let max_iterations = skill_node
             .properties
             .get("max_iterations")
+            .or_else(|| {
+                skill_node
+                    .properties
+                    .get("skill")
+                    .and_then(|ns| ns.get("max_iterations"))
+            })
             .and_then(|v| v.as_u64())
             .unwrap_or(2) as usize;
 
@@ -215,7 +221,7 @@ impl SkillPipeline {
             },
             SeedSkill {
                 name: "Node Creation".to_string(),
-                description: "Create new content nodes in the knowledge graph with proper types, properties, and metadata.".to_string(),
+                description: "Create new instances of existing node types — add a task, text note, or an entry for a custom type. Use when user wants to add a new record or item.".to_string(),
                 tool_whitelist: vec![
                     "create_node".to_string(),
                     "get_node".to_string(),
@@ -226,47 +232,23 @@ impl SkillPipeline {
             },
             SeedSkill {
                 name: "Schema Creation".to_string(),
-                description: "Define new entity types (schemas) with custom fields, enums, and relationships. Use when user wants to create a new type like Project, Customer, Invoice, etc.".to_string(),
+                description: "Define a new entity type or schema with custom fields, enums, and relationships. Use when user says 'new type', 'node type', 'define fields', 'create schema', or wants to design a new kind of entity like Project, Customer, or Invoice.".to_string(),
                 tool_whitelist: vec![
-                    "create_node".to_string(),
+                    "create_schema".to_string(),
                     "get_node".to_string(),
                 ],
                 max_iterations: 2,
                 output_format: "text".to_string(),
-                guidance_prompts: vec![
-                    SeedGuidancePrompt {
-                        title: "Schema Creation Guide".to_string(),
-                        content: "To create a new schema (entity type), use create_node with node_type=\"schema\".\n\
-                            The content field is the display name (e.g., \"Project\", \"Customer\").\n\
-                            Fields are defined in properties.fields as an array.\n\n\
-                            REQUIRED STRUCTURE:\n\
-                            {\n\
-                              \"node_type\": \"schema\",\n\
-                              \"title\": \"Customer\",\n\
-                              \"body\": \"Customer\",\n\
-                              \"properties\": {\n\
-                                \"description\": \"Track customer information\",\n\
-                                \"fields\": [\n\
-                                  {\"name\": \"email\", \"field_type\": \"text\", \"required\": true, \"indexed\": true, \"description\": \"Contact email\"},\n\
-                                  {\"name\": \"status\", \"field_type\": \"enum\", \"required\": true, \"indexed\": true, \"core_values\": [{\"value\": \"active\", \"label\": \"Active\"}, {\"value\": \"inactive\", \"label\": \"Inactive\"}]},\n\
-                                  {\"name\": \"revenue\", \"field_type\": \"number\", \"required\": false, \"description\": \"Annual revenue\"},\n\
-                                  {\"name\": \"notes\", \"field_type\": \"text\", \"required\": false}\n\
-                                ]\n\
-                              }\n\
-                            }\n\n\
-                            FIELD TYPES: text, number, date, enum, array, object, boolean\n\
-                            ENUM FIELDS must include core_values array with {value, label} pairs.\n\
-                            Always set indexed=true for fields users will filter/search on.".to_string(),
-                        priority: 1,
-                    },
-                ],
+                guidance_prompts: vec![],
             },
             SeedSkill {
                 name: "Graph Editing".to_string(),
-                description: "Modify existing nodes in the knowledge graph - update content, properties, titles, and metadata.".to_string(),
+                description: "Modify existing nodes in the knowledge graph - update content, properties, titles, and metadata. For tasks, use update_task_status to change status.".to_string(),
                 tool_whitelist: vec![
                     "update_node".to_string(),
+                    "update_task_status".to_string(),
                     "get_node".to_string(),
+                    "search_nodes".to_string(),
                 ],
                 max_iterations: 2,
                 output_format: "text".to_string(),
@@ -289,9 +271,21 @@ impl SkillPipeline {
 }
 
 /// Extract tool_whitelist from a skill node's properties.
+///
+/// Checks both flat (`properties.tool_whitelist`) and namespaced
+/// (`properties.skill.tool_whitelist`) locations since `create_node_with_parent`
+/// may namespace properties under the node type key.
 fn extract_tool_whitelist(node: &Node) -> Vec<String> {
-    node.properties
+    let whitelist = node
+        .properties
         .get("tool_whitelist")
+        .or_else(|| {
+            node.properties
+                .get("skill")
+                .and_then(|ns| ns.get("tool_whitelist"))
+        });
+
+    whitelist
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
@@ -394,27 +388,31 @@ mod tests {
     }
 
     #[test]
-    fn schema_creation_skill_has_guidance() {
+    fn schema_creation_skill_uses_dedicated_tool() {
         let seeds = SkillPipeline::seed_skill_nodes();
         let schema_skill = seeds
             .iter()
             .find(|s| s.name == "Schema Creation")
             .expect("Schema Creation skill should exist");
 
-        assert!(!schema_skill.guidance_prompts.is_empty());
-        let guidance = &schema_skill.guidance_prompts[0];
-        assert!(guidance.content.contains("fields"));
-        assert!(guidance.content.contains("field_type"));
-        assert!(guidance.content.contains("enum"));
-        assert!(guidance.content.contains("core_values"));
+        assert!(
+            schema_skill.tool_whitelist.contains(&"create_schema".to_string()),
+            "Schema Creation skill should whitelist create_schema"
+        );
+    }
 
-        // Guidance converts to valid prompt nodes
-        let nodes = schema_skill.guidance_nodes();
-        assert_eq!(nodes.len(), schema_skill.guidance_prompts.len());
-        for node in &nodes {
-            assert_eq!(node.node_type, "prompt");
-            assert_eq!(node.properties["source"].as_str().unwrap(), "built-in");
-        }
+    #[test]
+    fn graph_editing_skill_includes_task_tool() {
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let editing_skill = seeds
+            .iter()
+            .find(|s| s.name == "Graph Editing")
+            .expect("Graph Editing skill should exist");
+
+        assert!(
+            editing_skill.tool_whitelist.contains(&"update_task_status".to_string()),
+            "Graph Editing skill should whitelist update_task_status"
+        );
     }
 
     #[test]

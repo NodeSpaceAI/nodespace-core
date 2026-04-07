@@ -47,6 +47,7 @@ static INTENT_PATTERNS: &[(&[&str], &str)] = &[
     (
         &[
             "new type",
+            "new node type",
             "new schema",
             "new entity type",
             "define a type",
@@ -54,6 +55,8 @@ static INTENT_PATTERNS: &[(&[&str], &str)] = &[
             "create a schema",
             "define fields",
             "define a schema",
+            "node type",
+            "with fields",
         ],
         "create schema",
     ),
