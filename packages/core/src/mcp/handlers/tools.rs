@@ -17,6 +17,7 @@
 
 use crate::mcp::handlers::{markdown, nodes, playbook, relationships, schema, search, skills};
 use crate::mcp::types::MCPError;
+use crate::models::SchemaNode;
 use crate::services::{NodeEmbeddingService, NodeService};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
