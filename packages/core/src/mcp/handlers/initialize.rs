@@ -14,6 +14,39 @@ use crate::services::{NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+/// Build workspace context string for injection into system prompts.
+///
+/// Fetches available schemas, collections, and playbooks and formats them
+/// as a compact string suitable for inclusion in AI agent system prompts.
+/// Respects a token budget by truncating if necessary.
+///
+/// # Arguments
+///
+/// * `node_service` - NodeService for querying available schemas
+/// * `max_chars` - Maximum character budget for the output (e.g., 1000 for token efficiency)
+///
+/// # Returns
+///
+/// A formatted string suitable for injection into a system prompt, or empty string
+/// if no context is available or on error.
+pub async fn build_workspace_context_for_prompt(
+    node_service: &Arc<NodeService>,
+    max_chars: usize,
+) -> String {
+    let ws_ctx = context_ops::build_workspace_context(node_service)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("Failed to build workspace context for prompt: {}", e);
+            context_ops::WorkspaceContext {
+                entity_types: vec![],
+                collections: vec![],
+                active_playbooks: vec![],
+            }
+        });
+
+    ws_ctx.format_for_prompt(max_chars)
+}
+
 /// Handle MCP initialize request
 ///
 /// This is the FIRST method called when a client connects.
