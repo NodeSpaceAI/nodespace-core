@@ -345,11 +345,13 @@ fn def_create_schema() -> ToolDefinition {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": { "type": "string", "description": "Relationship name (e.g., 'has_task', 'assigned_to', 'belongs_to')" },
-                            "target": { "type": "string", "description": "Target node type ID (e.g., 'task', 'text', 'project')" },
+                            "name": { "type": "string", "description": "Relationship name (e.g., 'has_task', 'assigned_to', 'depends_on')" },
+                            "targetType": { "type": "string", "description": "Target node type ID (e.g., 'task', 'text', 'project')" },
+                            "direction": { "type": "string", "enum": ["out", "in"], "description": "Direction: 'out' (this→target, default) or 'in' (target→this)" },
+                            "cardinality": { "type": "string", "enum": ["one", "many"], "description": "Cardinality: 'one' or 'many' (default)" },
                             "description": { "type": "string", "description": "What this relationship represents" }
                         },
-                        "required": ["name", "target"]
+                        "required": ["name", "targetType", "direction", "cardinality"]
                     }
                 }
             },
