@@ -26,7 +26,7 @@ use crate::behaviors::{CustomNodeBehavior, NodeBehavior, NodeBehaviorRegistry};
 use crate::db::SurrealStore;
 use crate::models::{EmbeddingConfig, EmbeddingSearchResult, NewEmbedding, Node};
 use crate::services::error::NodeServiceError;
-use crate::services::{NodeAccessor, SearchScope};
+use crate::services::{NodeAccessor, SearchNodeFilters, SearchScope};
 use nodespace_nlp_engine::EmbeddingService;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -860,27 +860,66 @@ impl NodeEmbeddingService {
     ///
     /// PERFORMANCE: Node data is now fetched inline with the search query using
     /// SurrealDB's FETCH clause, eliminating N+1 query overhead.
+    ///
+    /// Accepts an optional [`SearchNodeFilters`] to restrict results by node type
+    /// and/or property values (Issue #1059). When filters are active, the fetch
+    /// is inflated by 3× to compensate for post-filter attrition, then truncated
+    /// to `limit`. Passing `None` preserves the original unfiltered behavior.
     pub async fn semantic_search_nodes(
         &self,
         query: &str,
         limit: usize,
         threshold: f32,
+        filters: Option<&SearchNodeFilters>,
     ) -> Result<Vec<(Node, f64)>, NodeServiceError> {
         let total_start = std::time::Instant::now();
 
-        let results = self.semantic_search(query, limit, threshold).await?;
+        // Over-fetch when service-layer filters are active so that after filtering
+        // we still return up to `limit` results.
+        //
+        // NOTE(perf): Callers (e.g. the MCP handler) may also inflate the limit they
+        // pass here by 3× when their own post-filters are active (collection/scope).
+        // This means the total DB fetch can be up to limit * 9 when both service-layer
+        // and handler-layer filters are simultaneously active. This is acceptable at
+        // typical limits (20–100), but callers should be aware of the compounding.
+        //
+        // TODO(perf): DB-level node_type filtering requires storing node_type in the
+        // embedding table and adding it to the vector index WHERE clause. Until that
+        // schema change is made, filtering is applied here as a Rust post-filter.
+        let has_filters = filters
+            .map(|f: &SearchNodeFilters| !f.is_empty())
+            .unwrap_or(false);
+        let fetch_limit = if has_filters { limit * 3 } else { limit };
 
-        // Nodes are now included in search results via FETCH - no separate queries needed
+        let results = self.semantic_search(query, fetch_limit, threshold).await?;
+
+        // Nodes are included via FETCH — no separate queries needed.
+        // Apply SearchNodeFilters when present, then truncate to requested limit.
         let nodes_with_scores: Vec<(Node, f64)> = results
             .into_iter()
             .filter_map(|result| result.node.map(|node| (node, result.score)))
+            .filter(|(node, _)| {
+                if let Some(f) = filters {
+                    if !f.matches(&node.node_type, &node.properties) {
+                        tracing::debug!(
+                            "semantic_search_nodes: filtered out node {} (type={})",
+                            node.id,
+                            node.node_type
+                        );
+                        return false;
+                    }
+                }
+                true
+            })
+            .take(limit)
             .collect();
 
         let total_time = total_start.elapsed();
         tracing::debug!(
-            "SEMANTIC SEARCH NODES: total={:?} | nodes={} (inline fetch)",
+            "SEMANTIC SEARCH NODES: total={:?} | nodes={} (inline fetch, filters={})",
             total_time,
-            nodes_with_scores.len()
+            nodes_with_scores.len(),
+            has_filters
         );
 
         Ok(nodes_with_scores)
