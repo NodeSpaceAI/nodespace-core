@@ -292,7 +292,12 @@ mod tests {
         let text = "hello world"; // len=11, 11/4=2 by integer division
         let count = futures::executor::block_on(engine.token_count(text))
             .expect("token_count should succeed");
-        assert_eq!(count, 2, "token_count should be text.len()/4 = {}", text.len() / 4);
+        assert_eq!(
+            count,
+            2,
+            "token_count should be text.len()/4 = {}",
+            text.len() / 4
+        );
     }
 
     #[test]

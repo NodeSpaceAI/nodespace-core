@@ -2055,55 +2055,54 @@ async fn multi_turn_mixed_tool_calls() {
 ///
 /// Skipped if the model file doesn't exist (CI-safe).
 #[tokio::test]
-#[ignore]  // Only run locally with models downloaded
+#[ignore] // Only run locally with models downloaded
 async fn test_real_inference_loads_and_runs() {
     use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
     use nodespace_nlp_engine::chat::ChatConfig;
     use std::path::PathBuf;
 
     // Check if model exists (skip if not)
-    let model_path = PathBuf::from(
-        std::env::var("HOME").unwrap_or_else(|_| "/root".to_string())
-    )
-    .join(".nodespace/models/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf");
+    let model_path = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/root".to_string()))
+        .join(".nodespace/models/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf");
 
     if !model_path.exists() {
-        eprintln!("⏭️  Skipping real inference test: model not found at {:?}", model_path);
+        eprintln!(
+            "Skipping real inference test: model not found at {:?}",
+            model_path
+        );
         return;
     }
 
-    // Create inference engine with the real model
+    // LlamaChatInferenceEngine::load takes model path separately from ChatConfig.
     let config = ChatConfig {
-        model_path: model_path.to_string_lossy().to_string(),
         n_ctx: 4096,
         ..Default::default()
     };
 
-    let engine = LlamaChatInferenceEngine::new(config)
+    let engine = LlamaChatInferenceEngine::load(&model_path.to_string_lossy(), config)
         .expect("Failed to initialize Llama inference engine with Ministral-3");
 
     // Verify model info is available
-    let model_info = engine
-        .model_info()
-        .await
-        .expect("Failed to get model info");
+    let model_info = engine.model_info().await.expect("Failed to get model info");
     assert!(
         model_info.is_some(),
         "Model should report its information after loading"
     );
-    println!("✅ Loaded model: {:?}", model_info);
+    println!("Loaded model: {:?}", model_info);
 
-    // Create a mock executor that records tool calls
-    let executor = MockExecutor::new();
+    // Create a mock executor for tool dispatch
+    let executor = MockToolExecutor::new();
 
     let service = LocalAgentService::new(
         Arc::new(engine) as Arc<dyn ChatInferenceEngine>,
-        Arc::new(executor.clone()) as Arc<dyn AgentToolExecutor>,
+        Arc::new(executor) as Arc<dyn AgentToolExecutor>,
         None,
     );
 
     // Create session
-    let session_id = service.create_session(Some("real_inference_test".into())).await;
+    let session_id = service
+        .create_session(Some("real_inference_test".into()))
+        .await;
 
     // Send a simple message to validate inference works
     let result = service
@@ -2118,13 +2117,13 @@ async fn test_real_inference_loads_and_runs() {
 
     // Verify we got a response (either text or tool calls)
     assert!(
-        !result.final_response.is_empty() || !result.tool_calls_made.is_empty(),
+        !result.response.is_empty() || !result.tool_calls_made.is_empty(),
         "Should receive either a text response or tool calls"
     );
 
     println!(
-        "✅ Real inference test passed: model responded with {} characters or {} tool calls",
-        result.final_response.len(),
+        "Real inference test passed: model responded with {} characters or {} tool calls",
+        result.response.len(),
         result.tool_calls_made.len()
     );
 

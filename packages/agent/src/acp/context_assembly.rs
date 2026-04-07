@@ -215,7 +215,7 @@ impl GraphContextAssembler {
             }
 
             match embedding_service
-                .semantic_search_nodes(query, NEIGHBORS_PER_SEED, SEMANTIC_THRESHOLD)
+                .semantic_search_nodes(query, NEIGHBORS_PER_SEED, SEMANTIC_THRESHOLD, None)
                 .await
             {
                 Ok(results) => {
