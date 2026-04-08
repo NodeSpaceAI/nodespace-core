@@ -354,9 +354,10 @@ export async function chatModelUnload(): Promise<void> {
  * Handles full lifecycle: download → load → engine swap.
  * Emits model://status and model://download-progress events during the process.
  */
-export async function ensureModelReady(modelId: string): Promise<void> {
-  if (!isTauri()) return;
-  return invoke<void>('ensure_model_ready', { modelId });
+/** Returns true if the engine was (re-)installed and sessions were dropped. */
+export async function ensureModelReady(modelId: string): Promise<boolean> {
+  if (!isTauri()) return false;
+  return invoke<boolean>('ensure_model_ready', { modelId });
 }
 
 // ============================================================================

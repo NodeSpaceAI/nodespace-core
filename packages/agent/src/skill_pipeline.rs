@@ -237,17 +237,41 @@ impl SkillPipeline {
                         title: "Schema Creation Guidance".to_string(),
                         content: r#"When creating a schema:
 
-FIELDS: Only define type-specific fields. Do NOT add a 'name', 'title', or 'description' field — every node already has content/title built in. Good fields: status (enum), due_date (date), priority (enum), budget (number), owner (text).
+FIELDS: Only define type-specific fields. Do NOT add a 'name' or 'title' field — every node already has a built-in content/title field. EXCEPTION: if you use a 'name' placeholder in title_template (e.g. "{name} ({status})"), you MUST define 'name' as a text field so title generation works. A 'description' field is acceptable when it adds value beyond the title. Good fields: status (enum), due_date (date), priority (enum), budget (number), owner (text).
 
 ENUMS: Use lowercase values with readable labels, e.g. {"value": "in_progress", "label": "In Progress"}.
 
-RELATIONSHIPS: Use relationships (not array fields) when a field references another node type. Example: a Project has_task task (many), assigned_to text (one).
+RELATIONSHIPS: Use relationships (not fields) when a field references another node type. The targetType MUST be an existing schema ID from the ENTITY TYPES list in the system prompt — do NOT invent types that aren't listed. If the target type doesn't exist yet, omit the relationship entirely. Examples:
+- Invoice billed_to customer (one): {"name": "billed_to", "targetType": "customer", "direction": "out", "cardinality": "one"}
+- Project has_task task (many): {"name": "has_task", "targetType": "task", "direction": "out", "cardinality": "many"}
 
 TITLE TEMPLATE: Set title_template when a node's identity comes from its fields rather than free-form content. Use {field_name} placeholders. Examples:
 - Customer: "{first_name} {last_name}"
-- Invoice: "Invoice #{invoice_number} — {client_name}"
+- Invoice: "Invoice #{invoice_number}"
 - Project: "{name} ({status})"
 Omit title_template if the content/title field alone identifies the node.
+
+EXAMPLE — Invoice schema (references existing 'customer' type):
+{
+  "name": "Invoice",
+  "description": "A billing invoice linked to a customer",
+  "title_template": "Invoice #{invoice_number}",
+  "fields": [
+    {"name": "invoice_number", "type": "text", "required": true},
+    {"name": "issue_date", "type": "date", "required": true},
+    {"name": "due_date", "type": "date"},
+    {"name": "amount", "type": "number", "required": true},
+    {"name": "status", "type": "enum", "required": true, "coreValues": [
+      {"value": "draft", "label": "Draft"},
+      {"value": "sent", "label": "Sent"},
+      {"value": "paid", "label": "Paid"},
+      {"value": "overdue", "label": "Overdue"}
+    ]}
+  ],
+  "relationships": [
+    {"name": "billed_to", "targetType": "customer", "direction": "out", "cardinality": "one"}
+  ]
+}
 
 EXAMPLE — Project schema:
 {

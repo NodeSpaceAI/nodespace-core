@@ -38,6 +38,10 @@ struct OllamaChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<OllamaTool>>,
     stream: bool,
+    /// Disable chain-of-thought thinking for thinking models (e.g. gemma4).
+    /// Thinking tokens count against num_predict and cause long delays on
+    /// tool-calling requests without adding value for structured outputs.
+    think: bool,
     options: OllamaOptions,
 }
 
@@ -142,6 +146,7 @@ impl ChatInferenceEngine for OllamaInferenceEngine {
             messages,
             tools,
             stream: true,
+            think: false,
             options: OllamaOptions {
                 temperature: request.temperature,
                 num_predict: request.max_tokens,
@@ -149,6 +154,30 @@ impl ChatInferenceEngine for OllamaInferenceEngine {
         };
 
         let url = format!("{}/api/chat", self.base_url);
+
+        // Log the full request payload at DEBUG level so we can inspect exactly
+        // what is sent to Ollama (model, messages, tools, options).
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            if let Ok(json) = serde_json::to_string_pretty(&ollama_request) {
+                tracing::debug!(model = %self.model_name, payload = %json, "Ollama request");
+            }
+        }
+        // Always log message count + system prompt length at INFO to make it
+        // easy to see the prompt size in production logs without full verbosity.
+        let system_len = ollama_request
+            .messages
+            .first()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.len())
+            .unwrap_or(0);
+        tracing::info!(
+            model = %self.model_name,
+            message_count = ollama_request.messages.len(),
+            system_prompt_bytes = system_len,
+            tool_count = ollama_request.tools.as_ref().map(|t| t.len()).unwrap_or(0),
+            "Sending request to Ollama"
+        );
+
         let response = self
             .http_client
             .post(&url)
@@ -223,9 +252,7 @@ impl ChatInferenceEngine for OllamaInferenceEngine {
                                 prompt_tokens: chunk_data.prompt_eval_count,
                                 completion_tokens: chunk_data.eval_count,
                             };
-                            on_chunk(StreamingChunk::Done {
-                                usage: final_usage,
-                            });
+                            on_chunk(StreamingChunk::Done { usage: final_usage });
                         }
                     }
                     Err(e) => tracing::warn!("Failed to parse Ollama chunk: {e}"),

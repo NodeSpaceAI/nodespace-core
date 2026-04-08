@@ -20,6 +20,7 @@ use crate::agent_types::{
 };
 use crate::local_agent::prompt_templates;
 use crate::local_agent::response_processing::normalize_response;
+use crate::prompt_assembler::{PromptAssembler, TemplateContext};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,6 +51,7 @@ pub struct LocalAgentLoop<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor 
     engine: Arc<E>,
     tool_executor: Arc<T>,
     skill_pipeline: Option<Arc<crate::skill_pipeline::SkillPipeline>>,
+    prompt_assembler: Option<Arc<PromptAssembler>>,
 }
 
 impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentLoop<E, T> {
@@ -62,7 +64,13 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             engine,
             tool_executor,
             skill_pipeline,
+            prompt_assembler: None,
         }
+    }
+
+    pub fn with_prompt_assembler(mut self, assembler: Arc<PromptAssembler>) -> Self {
+        self.prompt_assembler = Some(assembler);
+        self
     }
 
     /// Execute one full agent turn: inference + tool loop.
@@ -105,6 +113,26 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // If a skill matches above the confidence threshold, inject the skill's
         // context into the prompt and scope tools to only the skill's whitelist.
         let dynamic_ctx = session.dynamic_context.as_deref().unwrap_or("");
+
+        // Helper: build the base system prompt either from PromptAssembler (graph nodes)
+        // or from the fallback hardcoded template when the assembler isn't available.
+        let model_name = session.model_id.as_deref().unwrap_or("unknown");
+        let template_ctx = TemplateContext {
+            current_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+            model_name: model_name.to_string(),
+            workspace_context: dynamic_ctx.to_string(),
+        };
+
+        // Build base prompt (async path for assembler, sync fallback otherwise)
+        let base_prompt = if let Some(ref assembler) = self.prompt_assembler {
+            assembler
+                .assemble(&template_ctx, all_tools.clone())
+                .await
+                .system_prompt
+        } else {
+            prompt_templates::fallback_system_prompt(dynamic_ctx)
+        };
+
         let (system_content, tools) = if let Some(ref pipeline) = self.skill_pipeline {
             if let Some(skill_match) = pipeline.find_skill(user_message).await {
                 tracing::info!(
@@ -117,8 +145,6 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 // Scope tools to skill's whitelist
                 let scoped_tools = pipeline.scope_tools(&all_tools, &skill_match);
 
-                // Build system prompt with skill context
-                let base = prompt_templates::fallback_system_prompt(dynamic_ctx);
                 let skill_name = &skill_match.skill.content;
                 let skill_desc = crate::props::get_prop_str(
                     &skill_match.skill.properties,
@@ -129,23 +155,15 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
                 let system = format!(
                     "{}\n\nACTIVE SKILL: {}\n{}\nFocus on this skill's capabilities. Use only the tools provided.",
-                    base, skill_name, skill_desc
+                    base_prompt, skill_name, skill_desc
                 );
 
                 (system, scoped_tools)
             } else {
-                // No skill matched — use base prompt with all tools
-                (
-                    prompt_templates::fallback_system_prompt(dynamic_ctx),
-                    all_tools,
-                )
+                (base_prompt, all_tools)
             }
         } else {
-            // No pipeline configured — use base prompt with all tools
-            (
-                prompt_templates::fallback_system_prompt(dynamic_ctx),
-                all_tools,
-            )
+            (base_prompt, all_tools)
         };
 
         tracing::info!(
@@ -207,7 +225,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 messages,
                 tools: Some(tools.clone()),
                 temperature: Some(0.1),
-                max_tokens: Some(4096),
+                max_tokens: Some(16384),
             };
 
             // Run inference
@@ -240,10 +258,19 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
                 let normalized = normalize_response(&response_text);
 
+                // If the model produced no text after tool calls, synthesize a
+                // brief confirmation so the UI always shows something meaningful.
+                let final_response = if normalized.is_empty() && !all_tool_executions.is_empty() {
+                    let tool_name = &all_tool_executions.last().unwrap().name;
+                    format!("Done — {} completed successfully.", tool_name)
+                } else {
+                    normalized
+                };
+
                 // Append assistant response to history
                 session.messages.push(ChatMessage {
                     role: Role::Assistant,
-                    content: normalized.clone(),
+                    content: final_response.clone(),
                     tool_call_id: None,
                     name: None,
                 });
@@ -252,7 +279,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 session.status = LocalAgentStatus::Idle;
 
                 return Ok(AgentTurnResult {
-                    response: normalized,
+                    response: final_response,
                     tool_calls_made: all_tool_executions,
                     usage: total_usage,
                 });
@@ -362,7 +389,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     messages,
                     tools: None, // No tools — force text response
                     temperature: Some(0.1),
-                    max_tokens: Some(4096),
+                    max_tokens: Some(16384),
                 };
 
                 if let Ok(usage) = self.engine.generate(final_request, final_callback).await {
@@ -586,9 +613,22 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
         tool_executor: Arc<T>,
         skill_pipeline: Option<Arc<crate::skill_pipeline::SkillPipeline>>,
     ) -> Self {
+        Self::new_with_assembler(engine, tool_executor, skill_pipeline, None)
+    }
+
+    pub fn new_with_assembler(
+        engine: Arc<E>,
+        tool_executor: Arc<T>,
+        skill_pipeline: Option<Arc<crate::skill_pipeline::SkillPipeline>>,
+        prompt_assembler: Option<Arc<PromptAssembler>>,
+    ) -> Self {
+        let mut agent_loop = LocalAgentLoop::new(engine, tool_executor, skill_pipeline);
+        if let Some(assembler) = prompt_assembler {
+            agent_loop = agent_loop.with_prompt_assembler(assembler);
+        }
         Self {
             sessions: RwLock::new(HashMap::new()),
-            agent_loop: LocalAgentLoop::new(engine, tool_executor, skill_pipeline),
+            agent_loop,
             cancel_tokens: RwLock::new(HashMap::new()),
         }
     }
