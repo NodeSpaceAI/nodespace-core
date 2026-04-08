@@ -226,6 +226,19 @@ pub async fn ensure_model_ready(
         .find(|m| m.id == model_id)
         .ok_or_else(|| agent_error(format!("Unknown model: {model_id}")))?;
 
+    // If the requested model is already loaded, skip engine replacement to
+    // preserve active sessions.
+    let already_loaded = manager
+        .loaded_model()
+        .await
+        .ok()
+        .flatten()
+        .map(|id| id == model_id)
+        .unwrap_or(false);
+    if already_loaded {
+        return Ok(());
+    }
+
     // --- Ollama fast path ---
     if CompositeModelManager::is_ollama(&model_id) {
         use nodespace_agent::local_agent::ollama_inference::OllamaInferenceEngine;

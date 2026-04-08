@@ -223,6 +223,9 @@ impl ChatInferenceEngine for OllamaInferenceEngine {
                                 prompt_tokens: chunk_data.prompt_eval_count,
                                 completion_tokens: chunk_data.eval_count,
                             };
+                            on_chunk(StreamingChunk::Done {
+                                usage: final_usage,
+                            });
                         }
                     }
                     Err(e) => tracing::warn!("Failed to parse Ollama chunk: {e}"),
