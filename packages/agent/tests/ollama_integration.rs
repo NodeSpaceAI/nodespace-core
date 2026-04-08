@@ -4,6 +4,7 @@
 //! Each test gracefully skips if Ollama is not running — no failures, just a
 //! printed message. Run with `cargo test -p nodespace-agent --test ollama_integration`.
 
+use async_trait::async_trait;
 use nodespace_agent::agent_types::{
     AgentToolExecutor, ChatInferenceEngine, ChatMessage, InferenceRequest, ModelManager, Role,
     StreamingChunk, ToolDefinition, ToolError, ToolResult,
@@ -14,7 +15,6 @@ use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use nodespace_agent::local_agent::ollama_inference::OllamaInferenceEngine;
 use nodespace_agent::local_agent::ollama_model_manager::OllamaModelManager;
-use async_trait::async_trait;
 use nodespace_nlp_engine::chat::ChatConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -431,7 +431,8 @@ impl StubToolExecutor {
             },
             ToolDefinition {
                 name: "update_task_status".to_string(),
-                description: "Update a task's status. Valid values: open, in_progress, done".to_string(),
+                description: "Update a task's status. Valid values: open, in_progress, done"
+                    .to_string(),
                 parameters_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -477,11 +478,7 @@ impl AgentToolExecutor for StubToolExecutor {
         Ok(self.tools.clone())
     }
 
-    async fn execute(
-        &self,
-        name: &str,
-        _args: serde_json::Value,
-    ) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, name: &str, _args: serde_json::Value) -> Result<ToolResult, ToolError> {
         let result = self
             .results
             .get(name)
@@ -545,12 +542,16 @@ async fn test_pipeline_task_status_update() {
     .await;
 
     assert!(
-        tools.iter().any(|t| t == "update_task_status" || t == "update_node"),
+        tools
+            .iter()
+            .any(|t| t == "update_task_status" || t == "update_node"),
         "Expected update_task_status or update_node to be called, got: {tools:?}"
     );
     // Should have searched before updating
     assert!(
-        tools.iter().any(|t| t == "search_nodes" || t == "search_semantic" || t == "get_node"),
+        tools
+            .iter()
+            .any(|t| t == "search_nodes" || t == "search_semantic" || t == "get_node"),
         "Expected a search before update, got: {tools:?}"
     );
 }
@@ -613,7 +614,7 @@ async fn test_pipeline_multi_turn_session_persistence() {
     let tools2 = run_turn_get_tools(
         &service,
         &session_id,
-        "Now create a 'Project' node type with the fields we'd normally track",
+        "Now create a 'Project' node type with the fields we'd normally track in a project",
     )
     .await;
     assert!(
