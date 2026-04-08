@@ -5,13 +5,18 @@
 //! printed message. Run with `cargo test -p nodespace-agent --test ollama_integration`.
 
 use nodespace_agent::agent_types::{
-    ChatInferenceEngine, ChatMessage, InferenceRequest, ModelManager, Role, StreamingChunk,
-    ToolDefinition,
+    AgentToolExecutor, ChatInferenceEngine, ChatMessage, InferenceRequest, ModelManager, Role,
+    StreamingChunk, ToolDefinition, ToolError, ToolResult,
 };
+use nodespace_agent::local_agent::agent_loop::LocalAgentService;
 use nodespace_agent::local_agent::composite_model_manager::CompositeModelManager;
+use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use nodespace_agent::local_agent::ollama_inference::OllamaInferenceEngine;
 use nodespace_agent::local_agent::ollama_model_manager::OllamaModelManager;
+use async_trait::async_trait;
+use nodespace_nlp_engine::chat::ChatConfig;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Returns true if Ollama is reachable at localhost:11434.
@@ -269,4 +274,350 @@ async fn test_ollama_model_info() {
         assert_eq!(spec.model_id, model_name);
         assert!(spec.context_window > 0);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: resolve a real inference engine (Ollama → ministral-3b → skip)
+//
+// Returns None and prints a skip message if neither backend is available.
+// The macro_name parameter is used only for the skip message.
+// ---------------------------------------------------------------------------
+
+/// Resolve a real inference engine for pipeline tests.
+///
+/// Priority:
+/// 1. First available Ollama model (fast, no file required)
+/// 2. Local ministral-3b GGUF (requires the file to be downloaded)
+/// 3. Returns None — caller should skip the test
+async fn resolve_engine(test_name: &str) -> Option<Arc<dyn ChatInferenceEngine>> {
+    // 1. Try Ollama
+    if ollama_running().await {
+        if let Some(model_name) = first_ollama_model().await {
+            eprintln!("[{test_name}] Using Ollama model: {model_name}");
+            return Some(Arc::new(OllamaInferenceEngine::new(model_name)));
+        }
+    }
+
+    // 2. Try local ministral-3b GGUF
+    let gguf = match GgufModelManager::new() {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("SKIP [{test_name}]: GgufModelManager::new() failed: {e}");
+            return None;
+        }
+    };
+    let model_path = match gguf.model_path("ministral-3b-q4km") {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("SKIP [{test_name}]: ministral-3b-q4km not in catalog: {e}");
+            return None;
+        }
+    };
+    if !model_path.exists() {
+        eprintln!(
+            "SKIP [{test_name}]: No inference backend available \
+             (Ollama not running, ministral-3b not downloaded at {})",
+            model_path.display()
+        );
+        return None;
+    }
+    let path_str = model_path.to_string_lossy().to_string();
+    eprintln!("[{test_name}] Using local GGUF: {path_str}");
+    match tokio::task::spawn_blocking(move || {
+        LlamaChatInferenceEngine::load(&path_str, ChatConfig::default())
+    })
+    .await
+    .expect("spawn_blocking")
+    {
+        Ok(engine) => Some(Arc::new(engine) as Arc<dyn ChatInferenceEngine>),
+        Err(e) => {
+            eprintln!("SKIP [{test_name}]: Failed to load ministral-3b: {e}");
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal tool executor for pipeline tests — returns realistic stub results
+// ---------------------------------------------------------------------------
+
+struct StubToolExecutor {
+    tools: Vec<ToolDefinition>,
+    results: HashMap<String, serde_json::Value>,
+}
+
+impl StubToolExecutor {
+    fn new() -> Self {
+        let mut results = HashMap::new();
+        results.insert(
+            "search_nodes".to_string(),
+            serde_json::json!({
+                "count": 1,
+                "nodes": [{"id": "task-abc123", "title": "Some thing to do", "type": "task",
+                            "snippet": "Some thing to do", "status": "open"}]
+            }),
+        );
+        results.insert(
+            "search_semantic".to_string(),
+            serde_json::json!({
+                "count": 1,
+                "nodes": [{"id": "task-abc123", "title": "Some thing to do", "type": "task"}]
+            }),
+        );
+        results.insert(
+            "get_node".to_string(),
+            serde_json::json!({"id": "task-abc123", "title": "Some thing to do",
+                               "type": "task", "status": "open"}),
+        );
+        results.insert(
+            "update_node".to_string(),
+            serde_json::json!({"id": "task-abc123", "updated": true}),
+        );
+        results.insert(
+            "update_task_status".to_string(),
+            serde_json::json!({"id": "task-abc123", "status": "in_progress", "updated": true}),
+        );
+        results.insert(
+            "create_schema".to_string(),
+            serde_json::json!({"id": "schema-proj1", "name": "Project", "created": true}),
+        );
+        results.insert(
+            "create_node".to_string(),
+            serde_json::json!({"id": "node-new1", "created": true}),
+        );
+
+        let tools = vec![
+            ToolDefinition {
+                name: "search_nodes".to_string(),
+                description: "Search nodes by keyword and type filter".to_string(),
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "node_type": {"type": "string"}
+                    },
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "search_semantic".to_string(),
+                description: "Search nodes by semantic meaning".to_string(),
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }),
+            },
+            ToolDefinition {
+                name: "get_node".to_string(),
+                description: "Get a node by ID".to_string(),
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}},
+                    "required": ["id"]
+                }),
+            },
+            ToolDefinition {
+                name: "update_node".to_string(),
+                description: "Update a node's fields".to_string(),
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "fields": {"type": "object"}
+                    },
+                    "required": ["id"]
+                }),
+            },
+            ToolDefinition {
+                name: "update_task_status".to_string(),
+                description: "Update a task's status. Valid values: open, in_progress, done".to_string(),
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "status": {"type": "string", "enum": ["open", "in_progress", "done"]}
+                    },
+                    "required": ["id", "status"]
+                }),
+            },
+            ToolDefinition {
+                name: "create_schema".to_string(),
+                description: "Create a new node type (schema) with fields".to_string(),
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "fields": {"type": "array"}
+                    },
+                    "required": ["name"]
+                }),
+            },
+            ToolDefinition {
+                name: "create_node".to_string(),
+                description: "Create a new node".to_string(),
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "node_type": {"type": "string"},
+                        "content": {"type": "string"}
+                    },
+                    "required": ["node_type"]
+                }),
+            },
+        ];
+
+        Self { tools, results }
+    }
+}
+
+#[async_trait]
+impl AgentToolExecutor for StubToolExecutor {
+    async fn available_tools(&self) -> Result<Vec<ToolDefinition>, ToolError> {
+        Ok(self.tools.clone())
+    }
+
+    async fn execute(
+        &self,
+        name: &str,
+        _args: serde_json::Value,
+    ) -> Result<ToolResult, ToolError> {
+        let result = self
+            .results
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({"error": "unknown tool"}));
+        let is_error = !self.results.contains_key(name);
+        Ok(ToolResult {
+            tool_call_id: format!("call_{name}"),
+            name: name.to_string(),
+            result,
+            is_error,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline scenario tests — real model, full intent→tool flow
+// ---------------------------------------------------------------------------
+
+/// Helper: run one agent turn and return the tool names that were called.
+async fn run_turn_get_tools(
+    service: &LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor>,
+    session_id: &str,
+    message: &str,
+) -> Vec<String> {
+    let result = service
+        .send_message(session_id, message, |_| {}, |_| {})
+        .await
+        .expect("send_message should succeed");
+    eprintln!(
+        "  response: {}",
+        &result.response.chars().take(120).collect::<String>()
+    );
+    let tools: Vec<String> = result
+        .tool_calls_made
+        .iter()
+        .map(|t| t.name.clone())
+        .collect();
+    eprintln!("  tools called: {:?}", tools);
+    tools
+}
+
+/// Scenario: "Update the 'Some thing to do' task to in_progress"
+///
+/// The model should search for the task then call update_task_status.
+#[tokio::test]
+async fn test_pipeline_task_status_update() {
+    let Some(engine) = resolve_engine("test_pipeline_task_status_update").await else {
+        return;
+    };
+
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(StubToolExecutor::new());
+    let service = LocalAgentService::new(engine, executor, None);
+    let session_id = service.create_session(None).await;
+
+    let tools = run_turn_get_tools(
+        &service,
+        &session_id,
+        "Update the 'Some thing to do' task to in_progress",
+    )
+    .await;
+
+    assert!(
+        tools.iter().any(|t| t == "update_task_status" || t == "update_node"),
+        "Expected update_task_status or update_node to be called, got: {tools:?}"
+    );
+    // Should have searched before updating
+    assert!(
+        tools.iter().any(|t| t == "search_nodes" || t == "search_semantic" || t == "get_node"),
+        "Expected a search before update, got: {tools:?}"
+    );
+}
+
+/// Scenario: "Create a 'Project' node type with fields we'd normally track on a project"
+///
+/// The model should call create_schema with a name and fields.
+#[tokio::test]
+async fn test_pipeline_schema_creation() {
+    let Some(engine) = resolve_engine("test_pipeline_schema_creation").await else {
+        return;
+    };
+
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(StubToolExecutor::new());
+    let service = LocalAgentService::new(engine, executor, None);
+    let session_id = service.create_session(None).await;
+
+    let tools = run_turn_get_tools(
+        &service,
+        &session_id,
+        "Create a 'Project' node type with fields we'd normally track on a project",
+    )
+    .await;
+
+    assert!(
+        tools.iter().any(|t| t == "create_schema"),
+        "Expected create_schema to be called, got: {tools:?}"
+    );
+}
+
+/// Scenario: multi-turn — two messages in the same session, each using tools.
+///
+/// This validates that the session survives across turns and conversation
+/// history is preserved (the second message can reference the first).
+#[tokio::test]
+async fn test_pipeline_multi_turn_session_persistence() {
+    let Some(engine) = resolve_engine("test_pipeline_multi_turn_session_persistence").await else {
+        return;
+    };
+
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(StubToolExecutor::new());
+    let service = LocalAgentService::new(engine, executor, None);
+    let session_id = service.create_session(None).await;
+
+    // Turn 1: task update
+    eprintln!("--- Turn 1 ---");
+    let tools1 = run_turn_get_tools(
+        &service,
+        &session_id,
+        "Update the 'Some thing to do' task to in_progress",
+    )
+    .await;
+    assert!(
+        !tools1.is_empty(),
+        "Turn 1 should have called at least one tool"
+    );
+
+    // Turn 2: schema creation — session must still be alive
+    eprintln!("--- Turn 2 ---");
+    let tools2 = run_turn_get_tools(
+        &service,
+        &session_id,
+        "Now create a 'Project' node type with the fields we'd normally track",
+    )
+    .await;
+    assert!(
+        tools2.iter().any(|t| t == "create_schema"),
+        "Turn 2 expected create_schema, got: {tools2:?}"
+    );
 }
