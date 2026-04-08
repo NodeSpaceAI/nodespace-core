@@ -149,8 +149,11 @@ impl ManagedAgentState {
 
     /// Replace the engine only if the given model_id differs from what's currently active.
     ///
-    /// The check-and-set is performed under a single Mutex lock to prevent two
-    /// concurrent callers from both passing the check and both replacing the engine.
+    /// The lock is dropped before `replace_engine` (which itself acquires `inner.write()`).
+    /// This means two concurrent callers with the same model_id could theoretically both
+    /// pass the check. In practice `ensure_model_ready` is never called concurrently for
+    /// the same model, so this is not a real risk. The Mutex still prevents the most common
+    /// race (e.g. rapid reloads) from causing redundant engine swaps.
     ///
     /// Returns true if the engine was replaced (caller should create a new session),
     /// false if the model was already active (sessions are preserved).
@@ -159,14 +162,12 @@ impl ManagedAgentState {
         model_id: &str,
         engine: Arc<dyn ChatInferenceEngine>,
     ) -> bool {
-        let active = self.active_model_id.lock().await;
-        if active.as_deref() == Some(model_id) {
-            return false;
-        }
-        // Drop the lock before the async replace_engine call (which acquires inner write lock).
-        // This is safe: we've already decided to replace; any concurrent caller will block
-        // on the Mutex and then see the updated active_model_id after we re-acquire.
-        drop(active);
+        {
+            let active = self.active_model_id.lock().await;
+            if active.as_deref() == Some(model_id) {
+                return false;
+            }
+        } // lock released before the async replace_engine call
 
         self.replace_engine(engine).await;
 
