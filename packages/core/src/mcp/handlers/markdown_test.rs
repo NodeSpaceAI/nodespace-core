@@ -3017,3 +3017,142 @@ Some text here.
         assert_eq!(section_one_children[0].node_type, "text");
     }
 }
+
+#[cfg(test)]
+mod template_tests {
+    use crate::mcp::handlers::markdown::{merge_properties, prepare_nodes_from_template};
+    use serde_json::json;
+
+    #[test]
+    fn prepare_template_skill_with_no_children() {
+        let md = "# Research & Search";
+        let root_props = json!({
+            "description": "Search the graph",
+            "tool_whitelist": ["search_semantic"],
+            "max_iterations": 2,
+        });
+        let (root, children) =
+            prepare_nodes_from_template(md, "skill", &root_props, "prompt", &json!({})).unwrap();
+
+        assert_eq!(root.node_type, "skill");
+        assert_eq!(root.content, "Research & Search");
+        assert_eq!(root.parent_id, None);
+        assert_eq!(
+            root.properties["description"].as_str().unwrap(),
+            "Search the graph"
+        );
+        assert_eq!(
+            root.properties["tool_whitelist"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(children.is_empty(), "No children for single-line markdown");
+    }
+
+    #[test]
+    fn prepare_template_skill_with_guidance_children() {
+        let md = "# Schema Creation\n\nThis is guidance text.\n\nAnother guidance section.";
+        let root_props = json!({
+            "description": "Create schemas",
+            "tool_whitelist": ["create_schema"],
+        });
+        let child_props = json!({
+            "source": "built-in",
+            "template_syntax": "plain",
+        });
+        let (root, children) =
+            prepare_nodes_from_template(md, "skill", &root_props, "prompt", &child_props).unwrap();
+
+        assert_eq!(root.node_type, "skill");
+        assert_eq!(root.content, "Schema Creation");
+        assert!(!children.is_empty(), "Should have child nodes from body");
+
+        for child in &children {
+            assert_eq!(child.node_type, "prompt");
+            assert_eq!(
+                child.properties["source"].as_str().unwrap(),
+                "built-in"
+            );
+            assert_eq!(
+                child.properties["template_syntax"].as_str().unwrap(),
+                "plain"
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_template_empty_markdown_returns_error() {
+        let result =
+            prepare_nodes_from_template("", "skill", &json!({}), "prompt", &json!({}));
+        assert!(result.is_err(), "Empty markdown should return error");
+    }
+
+    #[test]
+    fn prepare_template_whitespace_only_returns_error() {
+        let result = prepare_nodes_from_template(
+            "   \n\n   ",
+            "skill",
+            &json!({}),
+            "prompt",
+            &json!({}),
+        );
+        assert!(result.is_err(), "Whitespace-only markdown should return error");
+    }
+
+    #[test]
+    fn merge_properties_combines_base_and_overrides() {
+        let base = json!({"a": 1, "b": 2});
+        let overrides = json!({"b": 99, "c": 3});
+        let merged = merge_properties(&base, &overrides);
+        assert_eq!(merged["a"].as_i64().unwrap(), 1);
+        assert_eq!(merged["b"].as_i64().unwrap(), 99, "Override should win");
+        assert_eq!(merged["c"].as_i64().unwrap(), 3);
+    }
+
+    #[test]
+    fn merge_properties_empty_base_returns_overrides() {
+        let base = json!({});
+        let overrides = json!({"x": "hello"});
+        let merged = merge_properties(&base, &overrides);
+        assert_eq!(merged["x"].as_str().unwrap(), "hello");
+    }
+
+    #[test]
+    fn merge_properties_empty_overrides_returns_base() {
+        let base = json!({"y": 42});
+        let overrides = json!({});
+        let merged = merge_properties(&base, &overrides);
+        assert_eq!(merged["y"].as_i64().unwrap(), 42);
+    }
+
+    #[test]
+    fn prepare_template_root_has_correct_properties_merged() {
+        let md = "# My Skill";
+        let root_props = json!({
+            "description": "Does things",
+            "priority": 5,
+        });
+        let (root, _) =
+            prepare_nodes_from_template(md, "skill", &root_props, "prompt", &json!({})).unwrap();
+        assert_eq!(root.properties["description"].as_str().unwrap(), "Does things");
+        assert_eq!(root.properties["priority"].as_i64().unwrap(), 5);
+    }
+
+    #[test]
+    fn prepare_template_child_properties_override_parsed_defaults() {
+        let md = "# Skill\n\nGuidance text";
+        let child_props = json!({
+            "source": "built-in",
+            "priority": 10,
+        });
+        let (_, children) =
+            prepare_nodes_from_template(md, "skill", &json!({}), "prompt", &child_props).unwrap();
+        assert!(!children.is_empty());
+        for child in &children {
+            assert_eq!(child.properties["source"].as_str().unwrap(), "built-in");
+            assert_eq!(child.properties["priority"].as_i64().unwrap(), 10);
+        }
+    }
+}

@@ -736,6 +736,107 @@ pub fn prepare_nodes_from_markdown(
     Ok(prepared_nodes)
 }
 
+/// Prepare nodes from markdown content with overridden node types and merged properties.
+///
+/// This function is the unified seeding path for skills and prompts. It parses
+/// markdown content using the same logic as `prepare_nodes_from_markdown`, then:
+///
+/// 1. Overrides the root node's `node_type` with `root_node_type`
+/// 2. Merges `root_properties` into the root node's properties (overriding parsed values)
+/// 3. Overrides every child node's `node_type` with `child_node_type`
+/// 4. Merges `child_properties` into every child node's properties
+///
+/// The root node's content becomes its `title` when converted to a `Node`.
+///
+/// # Arguments
+///
+/// * `markdown_content` - Full markdown string. First non-empty line becomes the root node.
+/// * `root_node_type` - Node type to assign to the root node (e.g. `"skill"`)
+/// * `root_properties` - JSON object merged into root node properties
+/// * `child_node_type` - Node type to assign to all child nodes (e.g. `"prompt"`)
+/// * `child_properties` - JSON object merged into all child node properties
+///
+/// # Returns
+///
+/// A tuple `(root, children)` where `root` is the root `PreparedNode` and `children`
+/// contains all descendant nodes with pre-assigned IDs and parent references.
+///
+/// Returns `MCPError` if the markdown is empty or cannot be parsed into a root node.
+pub fn prepare_nodes_from_template(
+    markdown_content: &str,
+    root_node_type: &str,
+    root_properties: &serde_json::Value,
+    child_node_type: &str,
+    child_properties: &serde_json::Value,
+) -> Result<(PreparedNode, Vec<PreparedNode>), MCPError> {
+    // Extract the first non-empty line as the root title
+    let lines: Vec<&str> = markdown_content.lines().collect();
+    let first_line_idx = lines
+        .iter()
+        .position(|line| !line.trim().is_empty())
+        .ok_or_else(|| MCPError::invalid_params("markdown_content is empty".to_string()))?;
+
+    let root_title = lines[first_line_idx].trim().to_string();
+    // Strip heading markers if present (e.g. "# Skill Name" → "Skill Name")
+    let root_content = if let Some(stripped) = root_title.strip_prefix('#') {
+        stripped.trim().to_string()
+    } else {
+        root_title
+    };
+
+    // Build the root node directly (no recursive markdown parsing for the root title)
+    let root_id = uuid::Uuid::new_v4().to_string();
+    let merged_root_props = merge_properties(&serde_json::json!({}), root_properties);
+    let root_node = PreparedNode::new(
+        root_id.clone(),
+        root_node_type,
+        root_content,
+        None, // root has no parent
+        1.0,
+        merged_root_props,
+    );
+
+    // Parse the remaining content as children using the standard markdown parser
+    let remaining = lines[first_line_idx + 1..].join("\n");
+    let raw_children = if remaining.trim().is_empty() {
+        Vec::new()
+    } else {
+        prepare_nodes_from_markdown(&remaining, Some(root_id))?
+    };
+
+    // Override child node types and merge child properties
+    let children = raw_children
+        .into_iter()
+        .map(|mut child| {
+            child.node_type = child_node_type.to_string();
+            child.properties = merge_properties(&child.properties, child_properties);
+            child
+        })
+        .collect();
+
+    Ok((root_node, children))
+}
+
+/// Merge two JSON objects: `base` is overridden by `overrides`.
+///
+/// Both values must be objects. Returns the merged object. If either is not an
+/// object, `overrides` wins entirely (falls back to `overrides.clone()`).
+pub(crate) fn merge_properties(
+    base: &serde_json::Value,
+    overrides: &serde_json::Value,
+) -> serde_json::Value {
+    match (base.as_object(), overrides.as_object()) {
+        (Some(base_map), Some(override_map)) => {
+            let mut merged = base_map.clone();
+            for (k, v) in override_map {
+                merged.insert(k.clone(), v.clone());
+            }
+            serde_json::Value::Object(merged)
+        }
+        _ => overrides.clone(),
+    }
+}
+
 /// Parameters for create_nodes_from_markdown method
 #[derive(Debug, Deserialize)]
 pub struct CreateNodesFromMarkdownParams {

@@ -62,10 +62,16 @@ pub(crate) async fn create_service_bundle(
             seed_nodes.push(seed.to_node());
         }
 
-        // Collect skill nodes (guidance children are created separately below)
+        // Collect skill nodes; guidance children are tracked separately below.
         let skill_seeds = SkillPipeline::seed_skill_nodes();
+        let mut skill_guidance: Vec<(String, Vec<nodespace_core::models::Node>)> = Vec::new();
         for seed in &skill_seeds {
-            seed_nodes.push(seed.to_node());
+            let (skill_node, children) = seed.to_nodes();
+            let skill_name = skill_node.content.clone();
+            seed_nodes.push(skill_node);
+            if !children.is_empty() {
+                skill_guidance.push((skill_name, children));
+            }
         }
 
         if let Err(e) = node_service.seed_nodes_if_needed(seed_nodes).await {
@@ -75,14 +81,10 @@ pub(crate) async fn create_service_bundle(
         // Create guidance prompt children for skills that have them.
         // This runs after seed_nodes_if_needed so the parent skills exist.
         // We check if any skill guidance already exists to stay idempotent.
-        for seed in &skill_seeds {
-            if seed.guidance_prompts.is_empty() {
-                continue;
-            }
-            // Find the skill node we just created by querying for it
+        for (skill_name, guidance_nodes) in skill_guidance {
             let query = nodespace_core::models::NodeQuery {
                 node_type: Some("skill".to_string()),
-                content_contains: Some(seed.name.clone()),
+                content_contains: Some(skill_name.clone()),
                 ..Default::default()
             };
             let skill_nodes = node_service
@@ -96,8 +98,7 @@ pub(crate) async fn create_service_bundle(
                     .await
                     .unwrap_or_default();
                 if children.is_empty() {
-                    for guidance in &seed.guidance_prompts {
-                        let child = guidance.to_node();
+                    for child in guidance_nodes {
                         let params = nodespace_core::services::CreateNodeParams {
                             id: Some(child.id.clone()),
                             node_type: child.node_type.clone(),
@@ -109,8 +110,7 @@ pub(crate) async fn create_service_bundle(
                         if let Err(e) = node_service.create_node_with_parent(params).await {
                             tracing::warn!(
                                 error = %e,
-                                skill = %seed.name,
-                                guidance = %guidance.title,
+                                skill = %skill_name,
                                 "Failed to create guidance prompt for skill"
                             );
                         }
