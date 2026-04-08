@@ -45,12 +45,23 @@ impl SkillUpdater {
 
     /// Subscribe to domain events and start the update loop.
     ///
-    /// Spawns a background task that runs until the broadcast channel closes or
-    /// `shutdown_rx` fires `true`.
+    /// Runs an initial sync before entering the event loop so that schemas
+    /// present at startup are reflected in the description without waiting for
+    /// a schema mutation event.
+    ///
+    /// Runs until the broadcast channel closes or `shutdown_rx` fires `true`.
     pub async fn start(self: Arc<Self>, mut shutdown_rx: tokio::sync::watch::Receiver<bool>) {
         let mut rx: broadcast::Receiver<EventEnvelope> = self.node_service.subscribe_to_events();
 
+        // Subscribe BEFORE the initial sync to avoid a TOCTOU gap where a
+        // schema event arrives between the sync and the first rx.recv().
         info!("SkillUpdater subscribed to domain events");
+
+        // Proactive startup sync: schemas that existed before this task started
+        // would otherwise be ignored until the next schema mutation.
+        if let Err(e) = self.update_node_creation_skill().await {
+            warn!("SkillUpdater: startup sync failed: {}", e);
+        }
 
         loop {
             tokio::select! {
@@ -104,16 +115,24 @@ impl SkillUpdater {
     /// Rebuild the "Node Creation" skill description and persist it.
     async fn update_node_creation_skill(&self) -> anyhow::Result<()> {
         // 1. Fetch all schemas to get the current custom type list.
-        let schemas = self
-            .node_service
-            .get_all_schemas()
-            .await
-            .unwrap_or_default();
+        let schemas = match self.node_service.get_all_schemas().await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    "SkillUpdater: failed to fetch schemas, skipping update: {}",
+                    e
+                );
+                return Ok(());
+            }
+        };
 
+        // Use display name (content) for the description so the embedding model
+        // sees human-readable type names like "Invoice" instead of machine keys
+        // like "invoice". This improves semantic match quality.
         let custom_types: Vec<String> = schemas
             .iter()
             .filter(|s| !s.is_core)
-            .map(|s| s.id.clone())
+            .map(|s| s.content.clone())
             .collect();
 
         // 2. Build the updated description.

@@ -165,9 +165,73 @@ mod skill_updater_tests {
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
+        // Both schemas must appear, not just one
         assert!(
-            desc.contains("invoice") || desc.contains("customer"),
-            "Description should mention custom schemas after creation, got: {:?}",
+            desc.contains("invoice") && desc.contains("customer"),
+            "Description should mention both custom schemas after creation, got: {:?}",
+            desc
+        );
+
+        let _ = shutdown_tx.send(true);
+        let _ = timeout(Duration::from_millis(500), updater_task).await;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_skill_updater_removes_deleted_schema_from_description() -> Result<()> {
+        let (service, _temp_dir) = create_test_service().await?;
+
+        seed_node_creation_skill(&service).await?;
+
+        // Create two schemas first
+        create_schema_node(&service, "invoice").await?;
+        create_schema_node(&service, "customer").await?;
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let updater = Arc::new(SkillUpdater::new(Arc::clone(&service)));
+        let updater_task = {
+            let updater = Arc::clone(&updater);
+            tokio::spawn(async move { updater.start(shutdown_rx).await })
+        };
+
+        // Let startup sync run and verify both schemas appear
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Delete the invoice schema
+        service.delete_node("invoice", 1).await.ok();
+
+        // Allow time for the SkillUpdater to react
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        let skill_nodes = service
+            .query_nodes_simple(nodespace_core::models::NodeQuery {
+                node_type: Some("skill".to_string()),
+                content_contains: Some("Node Creation".to_string()),
+                ..Default::default()
+            })
+            .await?;
+
+        let skill = skill_nodes
+            .into_iter()
+            .find(|n| n.content == "Node Creation")
+            .expect("Node Creation skill should exist");
+
+        let desc = skill
+            .properties
+            .get("description")
+            .or_else(|| {
+                skill
+                    .properties
+                    .get("skill")
+                    .and_then(|s| s.get("description"))
+            })
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        assert!(
+            !desc.contains("invoice"),
+            "Description should NOT contain deleted schema 'invoice', got: {:?}",
             desc
         );
 

@@ -143,7 +143,8 @@ pub fn initialize_playbook_engine(
 pub fn initialize_skill_updater(
     node_service: std::sync::Arc<nodespace_core::NodeService>,
     cancel_token: tokio_util::sync::CancellationToken,
-) {
+) -> anyhow::Result<()> {
+    use futures::FutureExt;
     use nodespace_core::ops::skill_updater::SkillUpdater;
 
     tracing::info!("🔧 Initializing skill updater...");
@@ -159,9 +160,16 @@ pub fn initialize_skill_updater(
     let updater = std::sync::Arc::new(SkillUpdater::new(node_service));
 
     tauri::async_runtime::spawn(async move {
-        updater.start(shutdown_rx).await;
-        tracing::info!("✅ Skill updater exited");
+        let result = std::panic::AssertUnwindSafe(updater.start(shutdown_rx))
+            .catch_unwind()
+            .await;
+        match result {
+            Ok(_) => tracing::info!("✅ Skill updater exited normally"),
+            Err(panic_info) => tracing::error!("💥 Skill updater panicked: {:?}", panic_info),
+        }
     });
+
+    Ok(())
 }
 
 /// Initialize MCP server with shared services
