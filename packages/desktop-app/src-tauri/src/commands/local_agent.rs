@@ -162,13 +162,16 @@ impl ManagedAgentState {
 
     /// Reset the inference engine to NoOp (for use in sync shutdown context).
     ///
-    /// This is called from graceful_shutdown() on a dedicated thread. It
-    /// runs the async reset_to_noop_engine() via block_on.
+    /// Creates a fresh single-threaded runtime to avoid the "cannot block_on
+    /// inside a runtime" panic when called from within a Tokio runtime thread.
     ///
     /// Must be called BEFORE releasing GPU resources to ensure proper cleanup
     /// order and avoid use-after-free crashes in Metal.
     pub fn reset_engine_sync(&self) {
-        let rt = tauri::async_runtime::handle();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build shutdown runtime");
         rt.block_on(self.reset_to_noop_engine());
     }
 }
