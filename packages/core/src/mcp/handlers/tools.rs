@@ -1066,10 +1066,25 @@ fn get_tool_schemas(schemas: &[SchemaNode]) -> Value {
                 }
             }
         },
-        // Schema creation tool
+        // Schema creation tool (description is dynamic: includes existing type IDs for relationship targetType)
         {
             "name": "create_schema",
-            "description": "Create a custom schema with fields and relationships. Fields can be provided explicitly or inferred from a natural language description. Relationships define edges to other node types.",
+            "description": format!(
+                "Create a custom entity type with typed fields and relationships. \
+                The schema ID is auto-generated as lowercase kebab-case from the name. \
+                FIELDS: Do NOT add a 'name' or 'title' field — every node already has a built-in content/title. \
+                Exception: if title_template uses a {{name}} placeholder, define 'name' as a text field. \
+                Only define type-specific fields. \
+                ENUMS: define coreValues as {{\"value\": \"snake_case\", \"label\": \"Human Readable\"}} pairs. \
+                RELATIONSHIPS: use instead of array fields when referencing other node types. \
+                targetType must be an existing type ID. Currently available types: {}.",
+                node_type_enum.as_array()
+                    .map(|arr| arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "))
+                    .unwrap_or_else(|| "(none)".to_string())
+            ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1083,27 +1098,38 @@ fn get_tool_schemas(schemas: &[SchemaNode]) -> Value {
                     },
                     "fields": {
                         "type": "array",
-                        "description": "Optional explicit field definitions. Takes precedence over description parsing.",
+                        "description": "Explicit field definitions. Use for scalar properties only (text, number, date, enum, boolean). Do NOT use for references to other node types — use relationships instead.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": {"type": "string"},
+                                "name": {"type": "string", "description": "Field name (e.g., 'status', 'amount')"},
                                 "type": {"type": "string", "enum": ["string", "number", "boolean", "date", "enum", "array", "object"]},
                                 "required": {"type": "boolean"},
                                 "indexed": {"type": "boolean"},
-                                "description": {"type": "string"}
+                                "description": {"type": "string"},
+                                "coreValues": {
+                                    "type": "array",
+                                    "description": "For enum fields: {value, label} pairs. Use lowercase snake_case values, e.g. {\"value\": \"in_progress\", \"label\": \"In Progress\"}.",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "value": {"type": "string"},
+                                            "label": {"type": "string"}
+                                        }
+                                    }
+                                }
                             },
                             "required": ["name", "type"]
                         }
                     },
                     "relationships": {
                         "type": "array",
-                        "description": "Optional relationship definitions to other schemas",
+                        "description": "Relationship definitions to other node types. Use instead of array fields when referencing existing types.",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": {"type": "string", "description": "Relationship name (e.g., 'billed_to', 'assigned_to')"},
-                                "targetType": {"type": "string", "description": "Target schema ID (e.g., 'customer', 'person')"},
+                                "name": {"type": "string", "description": "Relationship name (e.g., 'billed_to', 'has_task', 'assigned_to')"},
+                                "targetType": {"type": "string", "description": "Target schema ID — MUST be an existing type from the available types list. Do NOT invent types that don't exist yet."},
                                 "direction": {"type": "string", "enum": ["out", "in"], "default": "out"},
                                 "cardinality": {"type": "string", "enum": ["one", "many"], "default": "one"},
                                 "required": {"type": "boolean", "default": false},
@@ -1142,7 +1168,7 @@ fn get_tool_schemas(schemas: &[SchemaNode]) -> Value {
                     },
                     "title_template": {
                         "type": "string",
-                        "description": "Optional template for computing the node display title from field values. Syntax: plain text with {field_name} tokens — each token must exactly match a field name defined in 'fields'. Examples: '{first_name} {last_name}' (customer), 'INV-{invoice_number}' (invoice), '{company} — {role}' (contact). Tokens referencing undefined fields are rejected with a validation error. When set, the inline node view shows the computed title as read-only; fill in properties to populate it."
+                        "description": "Template for computing the node display title from field values. Use {field_name} tokens — each token must match a field defined in 'fields'. Examples: '{first_name} {last_name}', 'INV-{invoice_number}', '{name} ({status})'. If you use '{name}', you must define 'name' as a text field."
                     }
                 },
                 "required": ["name"]

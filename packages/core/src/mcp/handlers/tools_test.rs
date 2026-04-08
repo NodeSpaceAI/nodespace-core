@@ -68,6 +68,29 @@ fn test_tool_schemas_include_custom_schema_ids() {
 }
 
 #[test]
+fn test_create_schema_description_includes_type_list() {
+    let custom_schemas = vec![test_schema("customer"), test_schema("invoice")];
+    let schemas = get_tool_schemas(&custom_schemas);
+    let tools = schemas.as_array().unwrap();
+
+    let create_schema = tools.iter().find(|t| t["name"] == "create_schema").unwrap();
+    let description = create_schema["description"].as_str().unwrap();
+
+    assert!(
+        description.contains("customer"),
+        "create_schema description should include custom type 'customer', got: {description}"
+    );
+    assert!(
+        description.contains("invoice"),
+        "create_schema description should include custom type 'invoice', got: {description}"
+    );
+    assert!(
+        description.contains("Currently available types:"),
+        "create_schema description should contain 'Currently available types:' prefix"
+    );
+}
+
+#[test]
 fn test_tool_schemas_no_duplicate_types() {
     // schema is in core list; passing it again via user schemas should not duplicate
     let schema_nodes = vec![test_schema("schema"), test_schema("text")];

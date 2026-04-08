@@ -58,6 +58,17 @@ async fn test_initialize_success() {
     assert_eq!(result["capabilities"]["tools"]["listChanged"], false);
     assert!(result["capabilities"]["resources"].is_object());
     assert!(result["capabilities"]["prompts"].is_object());
+
+    // Verify instruction sections added in this PR are present
+    let instructions = result["instructions"].as_str().unwrap();
+    assert!(
+        instructions.contains("SCHEMA CREATION RULES"),
+        "instructions must contain SCHEMA CREATION RULES section"
+    );
+    assert!(
+        instructions.contains("SEARCH FIRST"),
+        "instructions must contain SEARCH FIRST guidance"
+    );
 }
 
 #[tokio::test]
