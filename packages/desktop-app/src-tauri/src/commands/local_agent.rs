@@ -72,7 +72,8 @@ pub struct ManagedAgentState {
     inner: RwLock<LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor>>,
     app_services: crate::app_services::AppServices,
     /// Model ID currently installed in the inference engine (None = NoOp).
-    active_model_id: tokio::sync::RwLock<Option<String>>,
+    /// Uses Mutex (not RwLock) so check-and-set in replace_engine_if_changed is atomic.
+    active_model_id: tokio::sync::Mutex<Option<String>>,
 }
 
 impl ManagedAgentState {
@@ -96,7 +97,7 @@ impl ManagedAgentState {
         Self {
             inner: RwLock::new(service),
             app_services,
-            active_model_id: tokio::sync::RwLock::new(None),
+            active_model_id: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -123,7 +124,7 @@ impl ManagedAgentState {
         let embedding_service = self.app_services.embedding_service().await.ok();
 
         let executor: Arc<dyn AgentToolExecutor> = Arc::new(
-            GraphToolExecutor::new_with_optional_services(node_service, embedding_service.clone()),
+            GraphToolExecutor::new_with_optional_services(node_service.clone(), embedding_service.clone()),
         );
 
         // Create skill pipeline with embedding service for intent-driven skill injection
@@ -135,43 +136,47 @@ impl ManagedAgentState {
 
         // Create prompt assembler backed by NodeService so prompt content
         // comes from graph-stored prompt nodes rather than hardcoded templates.
-        let prompt_assembler = self
-            .app_services
-            .node_service()
-            .await
-            .ok()
+        let prompt_assembler = node_service
             .map(|ns| Arc::new(nodespace_agent::prompt_assembler::PromptAssembler::new(ns)));
 
         let service = LocalAgentService::new_with_assembler(engine, executor, skill_pipeline, prompt_assembler);
 
         let mut guard = self.inner.write().await;
         *guard = service;
-        drop(guard);
 
         tracing::info!("ManagedAgentState: inference engine replaced");
     }
 
     /// Replace the engine only if the given model_id differs from what's currently active.
-    /// Returns true if the engine was replaced, false if it was already active.
+    ///
+    /// The check-and-set is performed under a single Mutex lock to prevent two
+    /// concurrent callers from both passing the check and both replacing the engine.
+    ///
+    /// Returns true if the engine was replaced (caller should create a new session),
+    /// false if the model was already active (sessions are preserved).
     pub async fn replace_engine_if_changed(
         &self,
         model_id: &str,
         engine: Arc<dyn ChatInferenceEngine>,
     ) -> bool {
-        {
-            let active = self.active_model_id.read().await;
-            if active.as_deref() == Some(model_id) {
-                return false;
-            }
+        let active = self.active_model_id.lock().await;
+        if active.as_deref() == Some(model_id) {
+            return false;
         }
+        // Drop the lock before the async replace_engine call (which acquires inner write lock).
+        // This is safe: we've already decided to replace; any concurrent caller will block
+        // on the Mutex and then see the updated active_model_id after we re-acquire.
+        drop(active);
+
         self.replace_engine(engine).await;
-        *self.active_model_id.write().await = Some(model_id.to_string());
+
+        *self.active_model_id.lock().await = Some(model_id.to_string());
         true
     }
 
     /// Clear the active model ID (called on reset/unload).
     pub async fn clear_active_model(&self) {
-        *self.active_model_id.write().await = None;
+        *self.active_model_id.lock().await = None;
     }
 
     /// Reset the inference engine to NoOp (called during graceful shutdown).
@@ -192,6 +197,11 @@ impl ManagedAgentState {
 
         let mut guard = self.inner.write().await;
         *guard = service;
+        drop(guard);
+
+        // Clear active model so the next ensure_model_ready always re-installs
+        // the real engine rather than skipping it as "already active".
+        self.clear_active_model().await;
 
         tracing::debug!("ManagedAgentState: inference engine reset to NoOp");
     }

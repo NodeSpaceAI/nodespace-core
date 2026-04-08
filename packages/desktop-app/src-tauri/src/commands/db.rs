@@ -131,7 +131,9 @@ pub(crate) async fn create_service_bundle(
                     .await
                     .unwrap_or_default();
                 for guidance in &seed.guidance_prompts {
-                    let existing = children.iter().find(|c| c.content == guidance.title);
+                    let existing = children
+                        .iter()
+                        .find(|c| c.title.as_deref() == Some(&guidance.title));
                     if let Some(existing_node) = existing {
                         // Update content if it changed
                         if existing_node.content != guidance.content {
