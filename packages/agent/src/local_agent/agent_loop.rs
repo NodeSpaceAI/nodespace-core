@@ -133,17 +133,21 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             prompt_templates::fallback_system_prompt(dynamic_ctx)
         };
 
-        let (system_content, tools) = if let Some(ref pipeline) = self.skill_pipeline {
+        let (system_content, tools, effective_max_iterations) = if let Some(ref pipeline) =
+            self.skill_pipeline
+        {
             if let Some(skill_match) = pipeline.find_skill(user_message).await {
                 tracing::info!(
                     skill = %skill_match.skill.content,
                     confidence = skill_match.confidence,
                     intent = %skill_match.intent.query,
+                    max_iterations = skill_match.max_iterations,
                     "Skill matched via push pipeline"
                 );
 
                 // Scope tools to skill's whitelist
                 let scoped_tools = pipeline.scope_tools(&all_tools, &skill_match);
+                let skill_max_iter = skill_match.max_iterations;
 
                 let skill_name = &skill_match.skill.content;
                 let skill_desc = crate::props::get_prop_str(
@@ -154,16 +158,16 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 .unwrap_or("");
 
                 let system = format!(
-                    "{}\n\nACTIVE SKILL: {}\n{}\nFocus on this skill's capabilities. Use only the tools provided.",
-                    base_prompt, skill_name, skill_desc
-                );
+                        "{}\n\nACTIVE SKILL: {}\n{}\nFocus on this skill's capabilities. Use only the tools provided.",
+                        base_prompt, skill_name, skill_desc
+                    );
 
-                (system, scoped_tools)
+                (system, scoped_tools, skill_max_iter)
             } else {
-                (base_prompt, all_tools)
+                (base_prompt, all_tools, MAX_TOOL_ITERATIONS)
             }
         } else {
-            (base_prompt, all_tools)
+            (base_prompt, all_tools, MAX_TOOL_ITERATIONS)
         };
 
         tracing::info!(
@@ -179,8 +183,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             completion_tokens: 0,
         };
 
-        // ReAct loop: iterate up to MAX_TOOL_ITERATIONS
-        for iteration in 0..MAX_TOOL_ITERATIONS {
+        // ReAct loop: iterate up to effective_max_iterations (skill-specific or global fallback)
+        for iteration in 0..effective_max_iterations {
             if cancel.is_cancelled() {
                 return Err(InferenceError::Engine("cancelled".into()));
             }
@@ -358,7 +362,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
             // If this was the last allowed iteration, do one final inference
             // WITHOUT tools so the model must produce a text response.
-            if iteration == MAX_TOOL_ITERATIONS - 1 {
+            if iteration == effective_max_iterations - 1 {
                 tracing::info!(
                     "Agent loop: max iterations reached, running final inference without tools"
                 );

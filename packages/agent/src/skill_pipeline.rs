@@ -222,7 +222,7 @@ RESULT STRUCTURE: Each result contains:
 - title: document title
 - score: similarity score (0-1, higher = more relevant)
 - snippet: short content preview
-- markdown: full document content (only present for top result)
+- markdown: full document content (present for top N results based on include_markdown, default 1)
 
 USE MARKDOWN DIRECTLY: If the top result has a non-empty 'markdown' field, that is the complete document. Summarize or answer from it immediately — do NOT call get_node or search_nodes again.
 

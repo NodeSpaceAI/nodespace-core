@@ -100,7 +100,6 @@ struct DeleteNodeParams {
     pub id: String,
 }
 
-
 /// Maximum characters for node body in full node results.
 const BODY_TRUNCATE_FULL: usize = 2000;
 
@@ -187,7 +186,7 @@ fn def_search_nodes() -> ToolDefinition {
 fn def_search_semantic() -> ToolDefinition {
     ToolDefinition {
         name: "search_semantic".into(),
-        description: "Find nodes semantically related to a natural-language query. By default returns IDs and snippets only. Set include_markdown=1 to get full content for the top result, saving a separate get_node call.".into(),
+        description: "Find nodes semantically related to a natural-language query. By default returns full content for the top result (include_markdown=1). Increase include_markdown to get full content for more results, or set to 0 for IDs and snippets only.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -201,7 +200,7 @@ fn def_search_semantic() -> ToolDefinition {
                 },
                 "include_markdown": {
                     "type": "integer",
-                    "description": "Number of top results to include full markdown content for (0-5, default 0). Set to 1 to get full content for the top result without a separate get_node call."
+                    "description": "Number of top results to include full markdown content for (0-5, default 1). Set to 0 for IDs and snippets only, or increase to get full content for multiple results."
                 },
                 "collection": {
                     "type": "string",
