@@ -208,9 +208,30 @@ impl SkillPipeline {
                     "search_nodes".to_string(),
                     "get_node".to_string(),
                 ],
-                max_iterations: 2,
+                max_iterations: 4,
                 output_format: "text".to_string(),
-                guidance_prompts: vec![],
+                guidance_prompts: vec![
+                    SeedGuidancePrompt {
+                        title: "Research & Search Guidance".to_string(),
+                        content: r#"When answering questions about stored knowledge:
+
+SEARCH FIRST: Always call search_semantic with a natural language query. Results are ordered by relevance — the first result is the best match.
+
+RESULT STRUCTURE: Each result contains:
+- id: node ID (use this for follow-up get_node calls)
+- title: document title
+- score: similarity score (0-1, higher = more relevant)
+- snippet: short content preview
+- markdown: full document content (present for top N results based on include_markdown, default 1)
+
+USE MARKDOWN DIRECTLY: If the top result has a non-empty 'markdown' field, that is the complete document. Summarize or answer from it immediately — do NOT call get_node or search_nodes again.
+
+FETCH ADDITIONAL CONTENT: Only call get_node with format=markdown if you need full content for a lower-ranked result that did not include markdown.
+
+MULTIPLE DOCUMENTS: If the user asks about multiple topics, call search_semantic once per topic rather than searching broadly and fetching each result individually."#.to_string(),
+                        priority: 1,
+                    },
+                ],
             },
             SeedSkill {
                 name: "Node Creation".to_string(),
@@ -219,7 +240,7 @@ impl SkillPipeline {
                     "create_node".to_string(),
                     "get_node".to_string(),
                 ],
-                max_iterations: 2,
+                max_iterations: 3,
                 output_format: "text".to_string(),
                 guidance_prompts: vec![],
             },
@@ -230,7 +251,7 @@ impl SkillPipeline {
                     "create_schema".to_string(),
                     "get_node".to_string(),
                 ],
-                max_iterations: 2,
+                max_iterations: 3,
                 output_format: "text".to_string(),
                 guidance_prompts: vec![
                     SeedGuidancePrompt {
@@ -307,7 +328,7 @@ EXAMPLE — Project schema:
                     "get_node".to_string(),
                     "search_nodes".to_string(),
                 ],
-                max_iterations: 2,
+                max_iterations: 3,
                 output_format: "text".to_string(),
                 guidance_prompts: vec![],
             },
@@ -319,7 +340,7 @@ EXAMPLE — Project schema:
                     "get_related_nodes".to_string(),
                     "get_node".to_string(),
                 ],
-                max_iterations: 2,
+                max_iterations: 3,
                 output_format: "text".to_string(),
                 guidance_prompts: vec![],
             },
@@ -330,7 +351,7 @@ EXAMPLE — Project schema:
                     "delete_node".to_string(),
                     "get_node".to_string(),
                 ],
-                max_iterations: 2,
+                max_iterations: 3,
                 output_format: "text".to_string(),
                 guidance_prompts: vec![],
             },
@@ -351,7 +372,7 @@ EXAMPLE — Project schema:
                     "create_relationship".to_string(),
                     "get_node".to_string(),
                 ],
-                max_iterations: 2,
+                max_iterations: 3,
                 output_format: "text".to_string(),
                 guidance_prompts: vec![],
             },

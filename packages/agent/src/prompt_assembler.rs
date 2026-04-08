@@ -255,8 +255,10 @@ impl PromptAssembler {
                 content: "TOOL STRATEGY:\n\
                     - ALWAYS search first before updating or getting a node. NEVER use placeholder IDs like \"abc-123\".\n\
                     - To find nodes by meaning/topic: use search_semantic (natural language query)\n\
+                    - search_semantic results are ordered by relevance — the first result is the best match. Each result has: id, title, score (0-1 similarity), snippet (short preview), and optionally markdown (full content).\n\
+                    - search_semantic includes full markdown content for the top result by default. If the top result has a non-empty 'markdown' field, that IS the full document — use it directly to answer. Do NOT call get_node or search_nodes afterward.\n\
+                    - Only call get_node if you need full content for a result that did NOT include markdown (e.g. results 2-5). Use get_node with format=markdown and the ID.\n\
                     - To find nodes by exact fields: use search_nodes (keyword + type filter)\n\
-                    - To get full node details: use get_node with the ID from search results\n\
                     - To update a task status: search for the task first, then use update_task_status with the real ID\n\
                     - To create a new entity type: use create_schema (not create_node)\n\
                     - To create an instance of an existing type: use create_node with node_type matching the schema ID\n\
