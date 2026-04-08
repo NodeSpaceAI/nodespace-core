@@ -232,7 +232,47 @@ impl SkillPipeline {
                 ],
                 max_iterations: 2,
                 output_format: "text".to_string(),
-                guidance_prompts: vec![],
+                guidance_prompts: vec![
+                    SeedGuidancePrompt {
+                        title: "Schema Creation Guidance".to_string(),
+                        content: r#"When creating a schema:
+
+FIELDS: Only define type-specific fields. Do NOT add a 'name', 'title', or 'description' field — every node already has content/title built in. Good fields: status (enum), due_date (date), priority (enum), budget (number), owner (text).
+
+ENUMS: Use lowercase values with readable labels, e.g. {"value": "in_progress", "label": "In Progress"}.
+
+RELATIONSHIPS: Use relationships (not array fields) when a field references another node type. Example: a Project has_task task (many), assigned_to text (one).
+
+TITLE TEMPLATE: Set title_template when a node's identity comes from its fields rather than free-form content. Use {field_name} placeholders. Examples:
+- Customer: "{first_name} {last_name}"
+- Invoice: "Invoice #{invoice_number} — {client_name}"
+- Project: "{name} ({status})"
+Omit title_template if the content/title field alone identifies the node.
+
+EXAMPLE — Project schema:
+{
+  "name": "Project",
+  "description": "A tracked project with status and timeline",
+  "title_template": "{name} ({status})",
+  "fields": [
+    {"name": "status", "type": "enum", "required": true, "coreValues": [
+      {"value": "planning", "label": "Planning"},
+      {"value": "active", "label": "Active"},
+      {"value": "on_hold", "label": "On Hold"},
+      {"value": "completed", "label": "Completed"}
+    ]},
+    {"name": "start_date", "type": "date"},
+    {"name": "due_date", "type": "date"},
+    {"name": "budget", "type": "number"},
+    {"name": "owner", "type": "text"}
+  ],
+  "relationships": [
+    {"name": "has_task", "targetType": "task", "direction": "out", "cardinality": "many"}
+  ]
+}"#.to_string(),
+                        priority: 1,
+                    },
+                ],
             },
             SeedSkill {
                 name: "Graph Editing".to_string(),

@@ -394,6 +394,10 @@ fn def_create_schema() -> ToolDefinition {
                         "required": ["name", "type"]
                     }
                 },
+                "title_template": {
+                    "type": "string",
+                    "description": "Template for auto-generating node titles from field values. Use {field_name} placeholders, e.g. '{name} ({status})' or '{first_name} {last_name}'. Only include fields that meaningfully identify the node. Omit if the content/title field alone is sufficient."
+                },
                 "relationships": {
                     "type": "array",
                     "description": "Relationships to other node types. Use instead of array fields when referencing existing types (e.g., project has_task task).",
