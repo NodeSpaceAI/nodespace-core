@@ -356,7 +356,7 @@ fn def_find_skills() -> ToolDefinition {
 fn def_create_schema() -> ToolDefinition {
     ToolDefinition {
         name: "create_schema".into(),
-        description: "Create a new entity type (schema) with custom fields and relationships. The schema ID is auto-generated as lowercase kebab-case (e.g., 'Customer Profile' becomes 'customer-profile'). After creation, use this ID as node_type when creating instances. IMPORTANT: Do NOT include a 'name' or 'title' field — every node already has a content/title. Only define type-specific fields. If a field maps to an existing node type (e.g., 'tasks' maps to 'task'), define it as a relationship instead of an array field.".into(),
+        description: "Create a new entity type (schema) with custom fields and relationships. The schema ID is auto-generated as lowercase kebab-case (e.g., 'Customer Profile' becomes 'customer-profile'). After creation, use this ID as node_type when creating instances. IMPORTANT: Do NOT include a 'name' or 'title' field — every node already has a content/title. EXCEPTION: if title_template uses a 'name' placeholder (e.g. '{name} ({status})'), you MUST define 'name' as a text field. Only define type-specific fields. If a field maps to an existing node type (e.g., 'tasks' maps to 'task'), define it as a relationship instead of an array field.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -396,7 +396,7 @@ fn def_create_schema() -> ToolDefinition {
                 },
                 "title_template": {
                     "type": "string",
-                    "description": "Template for auto-generating node titles from field values. Use {field_name} placeholders, e.g. '{name} ({status})' or '{first_name} {last_name}'. Only include fields that meaningfully identify the node. Omit if the content/title field alone is sufficient."
+                    "description": "Template for auto-generating node titles from field values. Use {field_name} placeholders, e.g. '{name} ({status})' or '{first_name} {last_name}'. IMPORTANT: every field referenced here MUST be defined in the fields array (e.g. if you use '{name}', add a 'name' text field). Only include fields that meaningfully identify the node. Omit if the content/title field alone is sufficient."
                 },
                 "relationships": {
                     "type": "array",
@@ -405,7 +405,7 @@ fn def_create_schema() -> ToolDefinition {
                         "type": "object",
                         "properties": {
                             "name": { "type": "string", "description": "Relationship name (e.g., 'has_task', 'assigned_to', 'depends_on')" },
-                            "targetType": { "type": "string", "description": "Target node type ID (e.g., 'task', 'text', 'project')" },
+                            "targetType": { "type": "string", "description": "Target node type ID — MUST be an existing type from the ENTITY TYPES list (e.g., 'task', 'project', 'customer'). Do NOT invent types that don't exist yet." },
                             "direction": { "type": "string", "enum": ["out", "in"], "description": "Direction: 'out' (this→target, default) or 'in' (target→this)" },
                             "cardinality": { "type": "string", "enum": ["one", "many"], "description": "Cardinality: 'one' or 'many' (default)" },
                             "description": { "type": "string", "description": "What this relationship represents" }

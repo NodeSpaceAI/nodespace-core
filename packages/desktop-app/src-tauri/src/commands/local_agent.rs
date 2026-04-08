@@ -71,6 +71,8 @@ impl ChatInferenceEngine for NoOpInferenceEngine {
 pub struct ManagedAgentState {
     inner: RwLock<LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor>>,
     app_services: crate::app_services::AppServices,
+    /// Model ID currently installed in the inference engine (None = NoOp).
+    active_model_id: tokio::sync::RwLock<Option<String>>,
 }
 
 impl ManagedAgentState {
@@ -94,6 +96,7 @@ impl ManagedAgentState {
         Self {
             inner: RwLock::new(service),
             app_services,
+            active_model_id: tokio::sync::RwLock::new(None),
         }
     }
 
@@ -130,12 +133,45 @@ impl ManagedAgentState {
             )))
         });
 
-        let service = LocalAgentService::new(engine, executor, skill_pipeline);
+        // Create prompt assembler backed by NodeService so prompt content
+        // comes from graph-stored prompt nodes rather than hardcoded templates.
+        let prompt_assembler = self
+            .app_services
+            .node_service()
+            .await
+            .ok()
+            .map(|ns| Arc::new(nodespace_agent::prompt_assembler::PromptAssembler::new(ns)));
+
+        let service = LocalAgentService::new_with_assembler(engine, executor, skill_pipeline, prompt_assembler);
 
         let mut guard = self.inner.write().await;
         *guard = service;
+        drop(guard);
 
         tracing::info!("ManagedAgentState: inference engine replaced");
+    }
+
+    /// Replace the engine only if the given model_id differs from what's currently active.
+    /// Returns true if the engine was replaced, false if it was already active.
+    pub async fn replace_engine_if_changed(
+        &self,
+        model_id: &str,
+        engine: Arc<dyn ChatInferenceEngine>,
+    ) -> bool {
+        {
+            let active = self.active_model_id.read().await;
+            if active.as_deref() == Some(model_id) {
+                return false;
+            }
+        }
+        self.replace_engine(engine).await;
+        *self.active_model_id.write().await = Some(model_id.to_string());
+        true
+    }
+
+    /// Clear the active model ID (called on reset/unload).
+    pub async fn clear_active_model(&self) {
+        *self.active_model_id.write().await = None;
     }
 
     /// Reset the inference engine to NoOp (called during graceful shutdown).
@@ -213,12 +249,17 @@ struct ModelStatusEvent {
 /// Emits `model://status` events for each phase transition so the frontend
 /// can update the status bar.
 #[tauri::command]
+/// Returns `true` if the inference engine was (re-)installed, meaning existing
+/// sessions were dropped and the caller must create a new session.
+/// Returns `false` if the model was already loaded and the engine is unchanged.
 pub async fn ensure_model_ready(
     model_id: String,
     app: AppHandle,
     manager: State<'_, Arc<CompositeModelManager>>,
     agent_state: State<'_, ManagedAgentState>,
-) -> Result<(), CommandError> {
+) -> Result<bool, CommandError> {
+    tracing::info!(model_id = %model_id, "ensure_model_ready called");
+
     // Check current model status
     let models = manager
         .list()
@@ -238,8 +279,12 @@ pub async fn ensure_model_ready(
         .flatten()
         .map(|id| id == model_id)
         .unwrap_or(false);
-    if already_loaded {
-        return Ok(());
+    tracing::info!(model_id = %model_id, already_loaded, "ensure_model_ready: checking if already loaded");
+    // For Ollama models, "already loaded" only means the model is warm in Ollama's memory.
+    // The ManagedAgentState engine may still be NoOp after an app restart — always
+    // (re-)install the OllamaInferenceEngine so the agent can actually call it.
+    if already_loaded && !CompositeModelManager::is_ollama(&model_id) {
+        return Ok(false); // engine unchanged
     }
 
     // --- Ollama fast path ---
@@ -268,7 +313,9 @@ pub async fn ensure_model_ready(
         // so any configured Ollama URL is respected for both listing and inference.
         let ollama_base_url = manager.ollama_manager().base_url().to_string();
         let engine = OllamaInferenceEngine::with_base_url(ollama_name.clone(), ollama_base_url);
-        agent_state.replace_engine(Arc::new(engine)).await;
+        let swapped = agent_state
+            .replace_engine_if_changed(&model_id, Arc::new(engine))
+            .await;
 
         let _ = app.emit(
             agent_events::MODEL_STATUS,
@@ -280,16 +327,17 @@ pub async fn ensure_model_ready(
         );
 
         tracing::info!(
-            "Ollama model '{}' loaded and inference engine ready",
-            ollama_name
+            model = %ollama_name,
+            engine_swapped = swapped,
+            "Ollama model loaded and inference engine ready"
         );
-        return Ok(());
+        return Ok(swapped); // true only if engine was replaced (sessions dropped)
     }
 
     match &model.status {
         ModelStatus::Loaded => {
             tracing::info!("Model '{}' already loaded", model_id);
-            return Ok(());
+            return Ok(false); // engine unchanged
         }
         ModelStatus::Downloading { .. } | ModelStatus::Verifying => {
             return Err(agent_error(format!(
@@ -382,7 +430,7 @@ pub async fn ensure_model_ready(
     );
 
     tracing::info!("Model '{}' loaded and inference engine ready", model_id);
-    Ok(())
+    Ok(true) // engine installed, sessions dropped
 }
 
 /// Get the current status of the local agent.

@@ -356,8 +356,9 @@ class ChatStore {
         );
 
         statusBar.show(`Preparing ${modelId}...`);
+        let engineSwapped = false;
         try {
-          await tauriCommands.ensureModelReady(modelId);
+          engineSwapped = await tauriCommands.ensureModelReady(modelId);
         } finally {
           unlistenDownload();
           unlistenStatus();
@@ -366,13 +367,13 @@ class ChatStore {
         // Remove the progress placeholder — real response will replace it
         this.messages = this.messages.filter((m) => m.id !== progressMessage.id);
 
-        // On first load, engine swap drops old sessions — re-create once.
-        // On subsequent messages the model is already loaded so skip this.
-        if (!this.modelReadySessionCreated) {
+        // Create a new session if the engine was (re-)installed (which drops all
+        // existing sessions) or if we don't have one yet.
+        if (engineSwapped || !this.modelReadySessionCreated) {
           const newSessionId = await tauriCommands.localAgentNewSession(modelId);
           this.currentSessionId = newSessionId;
           this.modelReadySessionCreated = true;
-          log.info('Session created after model ready', { sessionId: newSessionId });
+          log.info('Session created after model ready', { sessionId: newSessionId, engineSwapped });
         }
       } catch (err) {
         // Tauri command errors may be strings, Error objects, or { message: string }

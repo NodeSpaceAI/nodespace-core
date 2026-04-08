@@ -270,6 +270,9 @@ impl PromptAssembler {
             },
             SeedPrompt {
                 content: "RESPONSE RULES:\n\
+                    - When the user's intent is clear, call the tool immediately — do NOT describe your plan first.\n\
+                    - Do NOT narrate what you are about to do (\"I'll now create...\", \"Let me search...\", \"Next I will...\").\n\
+                    - Do NOT show intermediate reasoning or self-corrections before a tool call.\n\
                     - After tool results: summarize in natural language. NEVER paste raw JSON as your response.\n\
                     - Reference nodes with bare URI: nodespace://abc-123 (no markdown links, no backticks)\n\
                     - Enum values in tool calls: use exact schema values (\"done\", \"in_progress\"). In responses to user: use friendly labels (\"Done\", \"In Progress\").\n\
