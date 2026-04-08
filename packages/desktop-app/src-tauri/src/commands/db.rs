@@ -303,6 +303,9 @@ async fn init_services(app: &AppHandle, config: &crate::config::AppConfig) -> Re
         // Don't fail database init if playbook engine fails — it's non-critical
     }
 
+    // Initialize skill updater (Issue #1061) — keeps Node Creation skill description current
+    crate::initialize_skill_updater(bundle.node_service.clone(), session_token.clone());
+
     tracing::info!("Service initialization complete");
     Ok(())
 }

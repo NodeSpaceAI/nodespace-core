@@ -136,6 +136,34 @@ pub fn initialize_playbook_engine(
     Ok(())
 }
 
+/// Initialize the skill updater background task (Issue #1061).
+///
+/// Subscribes to domain events and updates the "Node Creation" skill description
+/// when schemas are created or deleted, so semantic skill discovery stays current.
+pub fn initialize_skill_updater(
+    node_service: std::sync::Arc<nodespace_core::NodeService>,
+    cancel_token: tokio_util::sync::CancellationToken,
+) {
+    use nodespace_core::ops::skill_updater::SkillUpdater;
+
+    tracing::info!("🔧 Initializing skill updater...");
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    let cancel_for_bridge = cancel_token.clone();
+    tauri::async_runtime::spawn(async move {
+        cancel_for_bridge.cancelled().await;
+        let _ = shutdown_tx.send(true);
+    });
+
+    let updater = std::sync::Arc::new(SkillUpdater::new(node_service));
+
+    tauri::async_runtime::spawn(async move {
+        updater.start(shutdown_rx).await;
+        tracing::info!("✅ Skill updater exited");
+    });
+}
+
 /// Initialize MCP server with shared services
 ///
 /// Takes Arc<NodeService> and Arc<NodeEmbeddingService> directly rather than
