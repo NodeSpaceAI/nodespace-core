@@ -71,6 +71,9 @@ impl ChatInferenceEngine for NoOpInferenceEngine {
 pub struct ManagedAgentState {
     inner: RwLock<LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor>>,
     app_services: crate::app_services::AppServices,
+    /// Model ID currently installed in the inference engine (None = NoOp).
+    /// Uses Mutex (not RwLock) so check-and-set in replace_engine_if_changed is atomic.
+    active_model_id: tokio::sync::Mutex<Option<String>>,
 }
 
 impl ManagedAgentState {
@@ -94,6 +97,7 @@ impl ManagedAgentState {
         Self {
             inner: RwLock::new(service),
             app_services,
+            active_model_id: tokio::sync::Mutex::new(None),
         }
     }
 
@@ -120,7 +124,7 @@ impl ManagedAgentState {
         let embedding_service = self.app_services.embedding_service().await.ok();
 
         let executor: Arc<dyn AgentToolExecutor> = Arc::new(
-            GraphToolExecutor::new_with_optional_services(node_service, embedding_service.clone()),
+            GraphToolExecutor::new_with_optional_services(node_service.clone(), embedding_service.clone()),
         );
 
         // Create skill pipeline with embedding service for intent-driven skill injection
@@ -130,12 +134,50 @@ impl ManagedAgentState {
             )))
         });
 
-        let service = LocalAgentService::new(engine, executor, skill_pipeline);
+        // Create prompt assembler backed by NodeService so prompt content
+        // comes from graph-stored prompt nodes rather than hardcoded templates.
+        let prompt_assembler = node_service
+            .map(|ns| Arc::new(nodespace_agent::prompt_assembler::PromptAssembler::new(ns)));
+
+        let service = LocalAgentService::new_with_assembler(engine, executor, skill_pipeline, prompt_assembler);
 
         let mut guard = self.inner.write().await;
         *guard = service;
 
         tracing::info!("ManagedAgentState: inference engine replaced");
+    }
+
+    /// Replace the engine only if the given model_id differs from what's currently active.
+    ///
+    /// The lock is dropped before `replace_engine` (which itself acquires `inner.write()`).
+    /// This means two concurrent callers with the same model_id could theoretically both
+    /// pass the check. In practice `ensure_model_ready` is never called concurrently for
+    /// the same model, so this is not a real risk. The Mutex still prevents the most common
+    /// race (e.g. rapid reloads) from causing redundant engine swaps.
+    ///
+    /// Returns true if the engine was replaced (caller should create a new session),
+    /// false if the model was already active (sessions are preserved).
+    pub async fn replace_engine_if_changed(
+        &self,
+        model_id: &str,
+        engine: Arc<dyn ChatInferenceEngine>,
+    ) -> bool {
+        {
+            let active = self.active_model_id.lock().await;
+            if active.as_deref() == Some(model_id) {
+                return false;
+            }
+        } // lock released before the async replace_engine call
+
+        self.replace_engine(engine).await;
+
+        *self.active_model_id.lock().await = Some(model_id.to_string());
+        true
+    }
+
+    /// Clear the active model ID (called on reset/unload).
+    pub async fn clear_active_model(&self) {
+        *self.active_model_id.lock().await = None;
     }
 
     /// Reset the inference engine to NoOp (called during graceful shutdown).
@@ -156,19 +198,27 @@ impl ManagedAgentState {
 
         let mut guard = self.inner.write().await;
         *guard = service;
+        drop(guard);
+
+        // Clear active model so the next ensure_model_ready always re-installs
+        // the real engine rather than skipping it as "already active".
+        self.clear_active_model().await;
 
         tracing::debug!("ManagedAgentState: inference engine reset to NoOp");
     }
 
     /// Reset the inference engine to NoOp (for use in sync shutdown context).
     ///
-    /// This is called from graceful_shutdown() on a dedicated thread. It
-    /// runs the async reset_to_noop_engine() via block_on.
+    /// Creates a fresh single-threaded runtime to avoid the "cannot block_on
+    /// inside a runtime" panic when called from within a Tokio runtime thread.
     ///
     /// Must be called BEFORE releasing GPU resources to ensure proper cleanup
     /// order and avoid use-after-free crashes in Metal.
     pub fn reset_engine_sync(&self) {
-        let rt = tauri::async_runtime::handle();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build shutdown runtime");
         rt.block_on(self.reset_to_noop_engine());
     }
 }
@@ -210,12 +260,17 @@ struct ModelStatusEvent {
 /// Emits `model://status` events for each phase transition so the frontend
 /// can update the status bar.
 #[tauri::command]
+/// Returns `true` if the inference engine was (re-)installed, meaning existing
+/// sessions were dropped and the caller must create a new session.
+/// Returns `false` if the model was already loaded and the engine is unchanged.
 pub async fn ensure_model_ready(
     model_id: String,
     app: AppHandle,
     manager: State<'_, Arc<CompositeModelManager>>,
     agent_state: State<'_, ManagedAgentState>,
-) -> Result<(), CommandError> {
+) -> Result<bool, CommandError> {
+    tracing::info!(model_id = %model_id, "ensure_model_ready called");
+
     // Check current model status
     let models = manager
         .list()
@@ -225,6 +280,23 @@ pub async fn ensure_model_ready(
         .iter()
         .find(|m| m.id == model_id)
         .ok_or_else(|| agent_error(format!("Unknown model: {model_id}")))?;
+
+    // If the requested model is already loaded, skip engine replacement to
+    // preserve active sessions.
+    let already_loaded = manager
+        .loaded_model()
+        .await
+        .ok()
+        .flatten()
+        .map(|id| id == model_id)
+        .unwrap_or(false);
+    tracing::info!(model_id = %model_id, already_loaded, "ensure_model_ready: checking if already loaded");
+    // For Ollama models, "already loaded" only means the model is warm in Ollama's memory.
+    // The ManagedAgentState engine may still be NoOp after an app restart — always
+    // (re-)install the OllamaInferenceEngine so the agent can actually call it.
+    if already_loaded && !CompositeModelManager::is_ollama(&model_id) {
+        return Ok(false); // engine unchanged
+    }
 
     // --- Ollama fast path ---
     if CompositeModelManager::is_ollama(&model_id) {
@@ -252,7 +324,9 @@ pub async fn ensure_model_ready(
         // so any configured Ollama URL is respected for both listing and inference.
         let ollama_base_url = manager.ollama_manager().base_url().to_string();
         let engine = OllamaInferenceEngine::with_base_url(ollama_name.clone(), ollama_base_url);
-        agent_state.replace_engine(Arc::new(engine)).await;
+        let swapped = agent_state
+            .replace_engine_if_changed(&model_id, Arc::new(engine))
+            .await;
 
         let _ = app.emit(
             agent_events::MODEL_STATUS,
@@ -264,16 +338,17 @@ pub async fn ensure_model_ready(
         );
 
         tracing::info!(
-            "Ollama model '{}' loaded and inference engine ready",
-            ollama_name
+            model = %ollama_name,
+            engine_swapped = swapped,
+            "Ollama model loaded and inference engine ready"
         );
-        return Ok(());
+        return Ok(swapped); // true only if engine was replaced (sessions dropped)
     }
 
     match &model.status {
         ModelStatus::Loaded => {
             tracing::info!("Model '{}' already loaded", model_id);
-            return Ok(());
+            return Ok(false); // engine unchanged
         }
         ModelStatus::Downloading { .. } | ModelStatus::Verifying => {
             return Err(agent_error(format!(
@@ -366,7 +441,7 @@ pub async fn ensure_model_ready(
     );
 
     tracing::info!("Model '{}' loaded and inference engine ready", model_id);
-    Ok(())
+    Ok(true) // engine installed, sessions dropped
 }
 
 /// Get the current status of the local agent.

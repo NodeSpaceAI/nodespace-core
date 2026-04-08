@@ -57,8 +57,10 @@ pub(crate) async fn create_service_bundle(
         use nodespace_agent::prompt_assembler::PromptAssembler;
         use nodespace_agent::skill_pipeline::SkillPipeline;
 
+        let prompt_seeds = PromptAssembler::seed_prompt_nodes();
+
         let mut seed_nodes = Vec::new();
-        for seed in PromptAssembler::seed_prompt_nodes() {
+        for seed in &prompt_seeds {
             seed_nodes.push(seed.to_node());
         }
 
@@ -70,6 +72,40 @@ pub(crate) async fn create_service_bundle(
 
         if let Err(e) = node_service.seed_nodes_if_needed(seed_nodes).await {
             tracing::warn!(error = %e, "Failed to seed agent nodes (non-fatal)");
+        }
+
+        // Update existing prompt nodes if their built-in content changed.
+        // seed_nodes_if_needed skips types that already exist, so we diff-check here.
+        // We query all prompt nodes once and match by title to avoid N queries.
+        let all_prompt_nodes = node_service
+            .query_nodes_simple(nodespace_core::models::NodeQuery {
+                node_type: Some("prompt".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap_or_default();
+
+        for seed in &prompt_seeds {
+            if let Some(existing) = all_prompt_nodes.iter().find(|n| {
+                n.title.as_deref() == Some(&seed.title)
+                    && n.properties
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s == "built-in")
+                        .unwrap_or(false)
+            }) {
+                if existing.content != seed.content {
+                    let update = nodespace_core::models::NodeUpdate {
+                        content: Some(seed.content.clone()),
+                        ..Default::default()
+                    };
+                    if let Err(e) = node_service.update_node_unchecked(&existing.id, update).await {
+                        tracing::warn!(error = %e, title = %seed.title, "Failed to update prompt node");
+                    } else {
+                        tracing::info!(title = %seed.title, "Updated built-in prompt node content");
+                    }
+                }
+            }
         }
 
         // Create guidance prompt children for skills that have them.
@@ -90,13 +126,31 @@ pub(crate) async fn create_service_bundle(
                 .await
                 .unwrap_or_default();
             if let Some(skill_node) = skill_nodes.first() {
-                // Check if children already exist
                 let children = node_service
                     .get_children(&skill_node.id)
                     .await
                     .unwrap_or_default();
-                if children.is_empty() {
-                    for guidance in &seed.guidance_prompts {
+                for guidance in &seed.guidance_prompts {
+                    let existing = children
+                        .iter()
+                        .find(|c| c.title.as_deref() == Some(&guidance.title));
+                    if let Some(existing_node) = existing {
+                        // Update content if it changed
+                        if existing_node.content != guidance.content {
+                            let update = nodespace_core::models::NodeUpdate {
+                                content: Some(guidance.content.clone()),
+                                ..Default::default()
+                            };
+                            if let Err(e) = node_service.update_node_unchecked(&existing_node.id, update).await {
+                                tracing::warn!(
+                                    error = %e,
+                                    skill = %seed.name,
+                                    guidance = %guidance.title,
+                                    "Failed to update guidance prompt for skill"
+                                );
+                            }
+                        }
+                    } else {
                         let child = guidance.to_node();
                         let params = nodespace_core::services::CreateNodeParams {
                             id: Some(child.id.clone()),
