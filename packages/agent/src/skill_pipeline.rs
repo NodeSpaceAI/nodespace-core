@@ -323,6 +323,38 @@ EXAMPLE — Project schema:
                 output_format: "text".to_string(),
                 guidance_prompts: vec![],
             },
+            SeedSkill {
+                name: "Node Deletion".to_string(),
+                description: "Delete nodes from the knowledge graph. Use when user wants to remove, delete, or trash a node or record.".to_string(),
+                tool_whitelist: vec![
+                    "delete_node".to_string(),
+                    "get_node".to_string(),
+                ],
+                max_iterations: 2,
+                output_format: "text".to_string(),
+                guidance_prompts: vec![],
+            },
+            SeedSkill {
+                name: "Bulk Import".to_string(),
+                description: "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.".to_string(),
+                tool_whitelist: vec![
+                    "create_nodes_from_markdown".to_string(),
+                ],
+                max_iterations: 2,
+                output_format: "text".to_string(),
+                guidance_prompts: vec![],
+            },
+            SeedSkill {
+                name: "Organization".to_string(),
+                description: "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.".to_string(),
+                tool_whitelist: vec![
+                    "create_relationship".to_string(),
+                    "get_node".to_string(),
+                ],
+                max_iterations: 2,
+                output_format: "text".to_string(),
+                guidance_prompts: vec![],
+            },
         ]
     }
 }
@@ -421,7 +453,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = SkillPipeline::seed_skill_nodes();
-        assert_eq!(seeds.len(), 5, "Should have 5 seed skills");
+        assert_eq!(seeds.len(), 8, "Should have 8 seed skills");
 
         for seed in &seeds {
             assert!(!seed.name.is_empty());
@@ -621,5 +653,253 @@ mod tests {
         let config = SkillPipelineConfig::default();
         assert!((config.confidence_threshold - SKILL_HIGH_CONFIDENCE).abs() < f64::EPSILON);
         assert_eq!(config.search_limit, 3);
+    }
+
+    // --- Skill whitelist tests for all 8 skills ---
+
+    #[test]
+    fn research_search_skill_whitelist() {
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let skill = seeds
+            .iter()
+            .find(|s| s.name == "Research & Search")
+            .expect("Research & Search skill should exist");
+        assert!(
+            skill
+                .tool_whitelist
+                .contains(&"search_semantic".to_string())
+                || skill.tool_whitelist.contains(&"search_nodes".to_string()),
+            "Research & Search should whitelist search_semantic or search_nodes"
+        );
+    }
+
+    #[test]
+    fn node_creation_skill_whitelist() {
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let skill = seeds
+            .iter()
+            .find(|s| s.name == "Node Creation")
+            .expect("Node Creation skill should exist");
+        assert!(
+            skill.tool_whitelist.contains(&"create_node".to_string()),
+            "Node Creation should whitelist create_node"
+        );
+    }
+
+    #[test]
+    fn schema_creation_skill_whitelist() {
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let skill = seeds
+            .iter()
+            .find(|s| s.name == "Schema Creation")
+            .expect("Schema Creation skill should exist");
+        assert!(
+            skill.tool_whitelist.contains(&"create_schema".to_string()),
+            "Schema Creation should whitelist create_schema"
+        );
+    }
+
+    #[test]
+    fn graph_editing_skill_whitelist() {
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let skill = seeds
+            .iter()
+            .find(|s| s.name == "Graph Editing")
+            .expect("Graph Editing skill should exist");
+        assert!(
+            skill.tool_whitelist.contains(&"update_node".to_string()),
+            "Graph Editing should whitelist update_node"
+        );
+    }
+
+    #[test]
+    fn relationship_management_skill_whitelist() {
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let skill = seeds
+            .iter()
+            .find(|s| s.name == "Relationship Management")
+            .expect("Relationship Management skill should exist");
+        assert!(
+            skill
+                .tool_whitelist
+                .contains(&"create_relationship".to_string()),
+            "Relationship Management should whitelist create_relationship"
+        );
+    }
+
+    #[test]
+    fn node_deletion_skill_exists_and_whitelist() {
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let skill = seeds
+            .iter()
+            .find(|s| s.name == "Node Deletion")
+            .expect("Node Deletion skill should exist");
+        assert!(
+            skill.tool_whitelist.contains(&"delete_node".to_string()),
+            "Node Deletion should whitelist delete_node"
+        );
+    }
+
+    #[test]
+    fn bulk_import_skill_exists_and_whitelist() {
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let skill = seeds
+            .iter()
+            .find(|s| s.name == "Bulk Import")
+            .expect("Bulk Import skill should exist");
+        assert!(
+            skill
+                .tool_whitelist
+                .contains(&"create_nodes_from_markdown".to_string()),
+            "Bulk Import should whitelist create_nodes_from_markdown"
+        );
+    }
+
+    #[test]
+    fn organization_skill_exists_and_whitelist() {
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let skill = seeds
+            .iter()
+            .find(|s| s.name == "Organization")
+            .expect("Organization skill should exist");
+        assert!(
+            skill
+                .tool_whitelist
+                .contains(&"create_relationship".to_string()),
+            "Organization should whitelist create_relationship"
+        );
+    }
+
+    #[test]
+    fn scope_tools_for_node_deletion_skill() {
+        use serde_json::json;
+
+        let pipeline = SkillPipeline::new(None);
+        let all_tools = vec![
+            ToolDefinition {
+                name: "delete_node".into(),
+                description: "Delete a node".into(),
+                parameters_schema: json!({}),
+            },
+            ToolDefinition {
+                name: "get_node".into(),
+                description: "Get a node".into(),
+                parameters_schema: json!({}),
+            },
+            ToolDefinition {
+                name: "create_node".into(),
+                description: "Create a node".into(),
+                parameters_schema: json!({}),
+            },
+            ToolDefinition {
+                name: "search_nodes".into(),
+                description: "Search nodes".into(),
+                parameters_schema: json!({}),
+            },
+        ];
+
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let deletion_skill = seeds.iter().find(|s| s.name == "Node Deletion").unwrap();
+
+        let skill_match = SkillMatch {
+            skill: deletion_skill.to_node(),
+            confidence: 0.9,
+            intent: ExtractedIntent {
+                query: "delete".to_string(),
+                from_pattern: true,
+            },
+            tool_whitelist: deletion_skill.tool_whitelist.clone(),
+            max_iterations: deletion_skill.max_iterations,
+        };
+
+        let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+        assert_eq!(scoped.len(), 2, "Node Deletion should scope to 2 tools");
+        let names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"delete_node"));
+        assert!(names.contains(&"get_node"));
+        assert!(!names.contains(&"create_node"));
+        assert!(!names.contains(&"search_nodes"));
+    }
+
+    #[test]
+    fn scope_tools_for_bulk_import_skill() {
+        use serde_json::json;
+
+        let pipeline = SkillPipeline::new(None);
+        let all_tools = vec![
+            ToolDefinition {
+                name: "create_nodes_from_markdown".into(),
+                description: "Bulk import".into(),
+                parameters_schema: json!({}),
+            },
+            ToolDefinition {
+                name: "create_node".into(),
+                description: "Create a node".into(),
+                parameters_schema: json!({}),
+            },
+        ];
+
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let import_skill = seeds.iter().find(|s| s.name == "Bulk Import").unwrap();
+
+        let skill_match = SkillMatch {
+            skill: import_skill.to_node(),
+            confidence: 0.9,
+            intent: ExtractedIntent {
+                query: "import".to_string(),
+                from_pattern: true,
+            },
+            tool_whitelist: import_skill.tool_whitelist.clone(),
+            max_iterations: import_skill.max_iterations,
+        };
+
+        let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+        assert_eq!(scoped.len(), 1, "Bulk Import should scope to 1 tool");
+        assert_eq!(scoped[0].name, "create_nodes_from_markdown");
+    }
+
+    #[test]
+    fn scope_tools_for_organization_skill() {
+        use serde_json::json;
+
+        let pipeline = SkillPipeline::new(None);
+        let all_tools = vec![
+            ToolDefinition {
+                name: "create_relationship".into(),
+                description: "Create relationship".into(),
+                parameters_schema: json!({}),
+            },
+            ToolDefinition {
+                name: "get_node".into(),
+                description: "Get a node".into(),
+                parameters_schema: json!({}),
+            },
+            ToolDefinition {
+                name: "delete_node".into(),
+                description: "Delete a node".into(),
+                parameters_schema: json!({}),
+            },
+        ];
+
+        let seeds = SkillPipeline::seed_skill_nodes();
+        let org_skill = seeds.iter().find(|s| s.name == "Organization").unwrap();
+
+        let skill_match = SkillMatch {
+            skill: org_skill.to_node(),
+            confidence: 0.9,
+            intent: ExtractedIntent {
+                query: "organize".to_string(),
+                from_pattern: true,
+            },
+            tool_whitelist: org_skill.tool_whitelist.clone(),
+            max_iterations: org_skill.max_iterations,
+        };
+
+        let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+        assert_eq!(scoped.len(), 2, "Organization should scope to 2 tools");
+        let names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"create_relationship"));
+        assert!(names.contains(&"get_node"));
+        assert!(!names.contains(&"delete_node"));
     }
 }

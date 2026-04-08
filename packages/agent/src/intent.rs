@@ -66,6 +66,11 @@ static INTENT_PATTERNS: &[(&[&str], &str)] = &[
         ],
         "create schema",
     ),
+    // Import / bulk creation (before general creation to match first)
+    (
+        &["create nodes from", "bulk create", "bulk import", "import"],
+        "import",
+    ),
     // Creation
     (
         &["create", "make", "add a new", "new node", "add a"],
@@ -73,7 +78,9 @@ static INTENT_PATTERNS: &[(&[&str], &str)] = &[
     ),
     // Updates
     (
-        &["update", "change", "modify", "edit", "rename", "set"],
+        &[
+            "update", "change", "modify", "edit", "rename", "set", "mark",
+        ],
         "update",
     ),
     // Relationships / connections
@@ -87,7 +94,14 @@ static INTENT_PATTERNS: &[(&[&str], &str)] = &[
     (&["delete", "remove", "trash", "archive"], "delete"),
     // Organization
     (
-        &["organize", "categorize", "sort", "group", "tag"],
+        &[
+            "organize",
+            "categorize",
+            "sort",
+            "group",
+            "tag",
+            "add to collection",
+        ],
         "organize",
     ),
 ];
@@ -294,6 +308,91 @@ mod tests {
         let result = extract_intent("What are the quarterly results?");
         assert!(!result.from_pattern);
         assert!(result.query.contains("quarterly results"));
+    }
+
+    // --- Import intent ---
+
+    #[test]
+    fn extract_import_intent() {
+        let result = extract_intent("Import this document into NodeSpace");
+        assert_eq!(result.query, "import");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn extract_bulk_import_intent() {
+        let result = extract_intent("Bulk import these records");
+        assert_eq!(result.query, "import");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn extract_create_nodes_from_intent() {
+        let result = extract_intent("Create nodes from this markdown document");
+        assert_eq!(result.query, "import");
+        assert!(result.from_pattern);
+    }
+
+    // --- Skill pipeline intent coverage (all 8 skills) ---
+
+    #[test]
+    fn skill_research_search_intent() {
+        let result = extract_intent("What do I know about machine learning?");
+        assert_eq!(result.query, "search");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn skill_node_creation_intent() {
+        let result = extract_intent("Create a new task: Do laundry");
+        assert_eq!(result.query, "create");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn skill_schema_creation_intent() {
+        let result = extract_intent("Create a new type Project with fields for tracking");
+        assert_eq!(result.query, "create schema");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn skill_graph_editing_intent() {
+        let result = extract_intent("Mark task X as done");
+        assert_eq!(result.query, "update");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn skill_relationship_management_intent() {
+        let result = extract_intent("Connect invoice to customer");
+        assert_eq!(result.query, "relate");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn skill_node_deletion_intent() {
+        let result = extract_intent("Delete the old meeting notes");
+        assert_eq!(result.query, "delete");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn skill_bulk_import_intent() {
+        let result = extract_intent("Import this document into my knowledge base");
+        assert_eq!(result.query, "import");
+        assert!(result.from_pattern);
+    }
+
+    #[test]
+    fn skill_organization_intent() {
+        let result = extract_intent("Add to collection X");
+        assert_eq!(result.query, "organize");
+        assert!(result.from_pattern);
+
+        let result2 = extract_intent("Organize my notes into categories");
+        assert_eq!(result2.query, "organize");
+        assert!(result2.from_pattern);
     }
 
     // --- Edge cases ---

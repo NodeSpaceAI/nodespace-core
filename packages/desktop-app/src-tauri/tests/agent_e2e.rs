@@ -2141,3 +2141,560 @@ async fn test_real_inference_loads_and_runs() {
     // But this is complex to set up in unit tests and is better validated
     // through integration tests with a full database stack.
 }
+
+// ===========================================================================
+// Category 8: Skill Pipeline Mock E2E Tests (Issue #1057)
+// ===========================================================================
+
+/// Helper: create a MockToolExecutor with all 8 skill-related tools.
+fn skill_test_executor() -> MockToolExecutor {
+    use std::collections::HashMap;
+    let mut results = HashMap::new();
+    results.insert(
+        "search_nodes".to_string(),
+        json!({"count": 1, "nodes": [{"id": "node-1", "title": "Test Node", "type": "text"}]}),
+    );
+    results.insert(
+        "search_semantic".to_string(),
+        json!({"count": 1, "results": [{"id": "node-1", "title": "Test Node", "score": 0.9}]}),
+    );
+    results.insert(
+        "get_node".to_string(),
+        json!({"id": "node-1", "title": "Test Node", "body": "Content here"}),
+    );
+    results.insert("create_node".to_string(), json!({"id": "new-node-123"}));
+    results.insert(
+        "update_node".to_string(),
+        json!({"id": "node-1", "updated": true}),
+    );
+    results.insert(
+        "create_schema".to_string(),
+        json!({"id": "project", "name": "Project"}),
+    );
+    results.insert(
+        "update_task_status".to_string(),
+        json!({"id": "node-1", "status": "done", "updated": true}),
+    );
+    results.insert(
+        "create_relationship".to_string(),
+        json!({"from_id": "node-1", "to_id": "node-2", "type": "relates_to", "created": true}),
+    );
+    results.insert(
+        "get_related_nodes".to_string(),
+        json!({"count": 1, "nodes": [{"id": "node-2", "title": "Related", "type": "text"}]}),
+    );
+    results.insert(
+        "delete_node".to_string(),
+        json!({"node_id": "node-1", "deleted": true}),
+    );
+    results.insert(
+        "create_nodes_from_markdown".to_string(),
+        json!({"nodes": [{"id": "imported-1", "title": "Imported Node"}]}),
+    );
+
+    let tools = vec![
+        ToolDefinition {
+            name: "search_nodes".into(),
+            description: "Search nodes".into(),
+            parameters_schema: json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
+        },
+        ToolDefinition {
+            name: "search_semantic".into(),
+            description: "Semantic search".into(),
+            parameters_schema: json!({"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}),
+        },
+        ToolDefinition {
+            name: "get_node".into(),
+            description: "Get a node".into(),
+            parameters_schema: json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+        },
+        ToolDefinition {
+            name: "create_node".into(),
+            description: "Create a node".into(),
+            parameters_schema: json!({"type": "object", "properties": {"title": {"type": "string"}, "node_type": {"type": "string"}}, "required": ["title", "node_type"]}),
+        },
+        ToolDefinition {
+            name: "update_node".into(),
+            description: "Update a node".into(),
+            parameters_schema: json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+        },
+        ToolDefinition {
+            name: "create_schema".into(),
+            description: "Create a schema".into(),
+            parameters_schema: json!({"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]}),
+        },
+        ToolDefinition {
+            name: "update_task_status".into(),
+            description: "Update task status".into(),
+            parameters_schema: json!({"type": "object", "properties": {"id": {"type": "string"}, "status": {"type": "string"}}, "required": ["id", "status"]}),
+        },
+        ToolDefinition {
+            name: "create_relationship".into(),
+            description: "Create relationship".into(),
+            parameters_schema: json!({"type": "object", "properties": {"from_id": {"type": "string"}, "to_id": {"type": "string"}, "relationship_type": {"type": "string"}}, "required": ["from_id", "to_id", "relationship_type"]}),
+        },
+        ToolDefinition {
+            name: "get_related_nodes".into(),
+            description: "Get related nodes".into(),
+            parameters_schema: json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+        },
+        ToolDefinition {
+            name: "delete_node".into(),
+            description: "Delete a node".into(),
+            parameters_schema: json!({"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}),
+        },
+        ToolDefinition {
+            name: "create_nodes_from_markdown".into(),
+            description: "Import markdown as nodes".into(),
+            parameters_schema: json!({"type": "object", "properties": {"markdown": {"type": "string"}}, "required": ["markdown"]}),
+        },
+    ];
+
+    MockToolExecutor { tools, results }
+}
+
+/// Skill pipeline: Research & Search skill scopes to only search tools via MockEngine.
+#[tokio::test]
+async fn skill_pipeline_research_search_scoping() {
+    use nodespace_agent::intent::ExtractedIntent;
+    use nodespace_agent::skill_pipeline::{SkillMatch, SkillPipeline};
+
+    let pipeline = Arc::new(SkillPipeline::new(None));
+
+    let seeds = SkillPipeline::seed_skill_nodes();
+    let skill = seeds
+        .iter()
+        .find(|s| s.name == "Research & Search")
+        .unwrap();
+
+    let executor = Arc::new(skill_test_executor());
+    let all_tools = executor.available_tools().await.unwrap();
+
+    let skill_match = SkillMatch {
+        skill: skill.to_node(),
+        confidence: 0.9,
+        intent: ExtractedIntent {
+            query: "search".to_string(),
+            from_pattern: true,
+        },
+        tool_whitelist: skill.tool_whitelist.clone(),
+        max_iterations: skill.max_iterations,
+    };
+
+    let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+    let scoped_names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+
+    assert!(
+        scoped_names.contains(&"search_semantic") || scoped_names.contains(&"search_nodes"),
+        "Research skill should include search tools"
+    );
+    assert!(
+        !scoped_names.contains(&"delete_node"),
+        "Research skill should NOT include delete_node"
+    );
+    assert!(
+        !scoped_names.contains(&"create_node"),
+        "Research skill should NOT include create_node"
+    );
+}
+
+/// Skill pipeline: Node Creation skill scopes to create_node tool via MockEngine.
+#[tokio::test]
+async fn skill_pipeline_node_creation_scoping() {
+    use nodespace_agent::intent::ExtractedIntent;
+    use nodespace_agent::skill_pipeline::{SkillMatch, SkillPipeline};
+
+    let pipeline = Arc::new(SkillPipeline::new(None));
+    let seeds = SkillPipeline::seed_skill_nodes();
+    let skill = seeds.iter().find(|s| s.name == "Node Creation").unwrap();
+
+    let executor = Arc::new(skill_test_executor());
+    let all_tools = executor.available_tools().await.unwrap();
+
+    let skill_match = SkillMatch {
+        skill: skill.to_node(),
+        confidence: 0.9,
+        intent: ExtractedIntent {
+            query: "create".to_string(),
+            from_pattern: true,
+        },
+        tool_whitelist: skill.tool_whitelist.clone(),
+        max_iterations: skill.max_iterations,
+    };
+
+    let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+    let scoped_names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+
+    assert!(
+        scoped_names.contains(&"create_node"),
+        "Node Creation should include create_node"
+    );
+    assert!(
+        !scoped_names.contains(&"delete_node"),
+        "Node Creation should NOT include delete_node"
+    );
+    assert!(
+        !scoped_names.contains(&"search_semantic"),
+        "Node Creation should NOT include search_semantic"
+    );
+}
+
+/// Skill pipeline: Schema Creation skill scopes to create_schema tool.
+#[tokio::test]
+async fn skill_pipeline_schema_creation_scoping() {
+    use nodespace_agent::intent::ExtractedIntent;
+    use nodespace_agent::skill_pipeline::{SkillMatch, SkillPipeline};
+
+    let pipeline = Arc::new(SkillPipeline::new(None));
+    let seeds = SkillPipeline::seed_skill_nodes();
+    let skill = seeds.iter().find(|s| s.name == "Schema Creation").unwrap();
+
+    let executor = Arc::new(skill_test_executor());
+    let all_tools = executor.available_tools().await.unwrap();
+
+    let skill_match = SkillMatch {
+        skill: skill.to_node(),
+        confidence: 0.9,
+        intent: ExtractedIntent {
+            query: "create schema".to_string(),
+            from_pattern: true,
+        },
+        tool_whitelist: skill.tool_whitelist.clone(),
+        max_iterations: skill.max_iterations,
+    };
+
+    let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+    let scoped_names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+
+    assert!(
+        scoped_names.contains(&"create_schema"),
+        "Schema Creation should include create_schema"
+    );
+    assert!(
+        !scoped_names.contains(&"create_node"),
+        "Schema Creation should NOT include create_node"
+    );
+}
+
+/// Skill pipeline: Graph Editing skill scopes to update tools.
+#[tokio::test]
+async fn skill_pipeline_graph_editing_scoping() {
+    use nodespace_agent::intent::ExtractedIntent;
+    use nodespace_agent::skill_pipeline::{SkillMatch, SkillPipeline};
+
+    let pipeline = Arc::new(SkillPipeline::new(None));
+    let seeds = SkillPipeline::seed_skill_nodes();
+    let skill = seeds.iter().find(|s| s.name == "Graph Editing").unwrap();
+
+    let executor = Arc::new(skill_test_executor());
+    let all_tools = executor.available_tools().await.unwrap();
+
+    let skill_match = SkillMatch {
+        skill: skill.to_node(),
+        confidence: 0.9,
+        intent: ExtractedIntent {
+            query: "update".to_string(),
+            from_pattern: true,
+        },
+        tool_whitelist: skill.tool_whitelist.clone(),
+        max_iterations: skill.max_iterations,
+    };
+
+    let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+    let scoped_names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+
+    assert!(
+        scoped_names.contains(&"update_node"),
+        "Graph Editing should include update_node"
+    );
+    assert!(
+        scoped_names.contains(&"update_task_status"),
+        "Graph Editing should include update_task_status"
+    );
+    assert!(
+        !scoped_names.contains(&"create_schema"),
+        "Graph Editing should NOT include create_schema"
+    );
+}
+
+/// Skill pipeline: Relationship Management skill scopes to relationship tools.
+#[tokio::test]
+async fn skill_pipeline_relationship_management_scoping() {
+    use nodespace_agent::intent::ExtractedIntent;
+    use nodespace_agent::skill_pipeline::{SkillMatch, SkillPipeline};
+
+    let pipeline = Arc::new(SkillPipeline::new(None));
+    let seeds = SkillPipeline::seed_skill_nodes();
+    let skill = seeds
+        .iter()
+        .find(|s| s.name == "Relationship Management")
+        .unwrap();
+
+    let executor = Arc::new(skill_test_executor());
+    let all_tools = executor.available_tools().await.unwrap();
+
+    let skill_match = SkillMatch {
+        skill: skill.to_node(),
+        confidence: 0.9,
+        intent: ExtractedIntent {
+            query: "relate".to_string(),
+            from_pattern: true,
+        },
+        tool_whitelist: skill.tool_whitelist.clone(),
+        max_iterations: skill.max_iterations,
+    };
+
+    let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+    let scoped_names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+
+    assert!(
+        scoped_names.contains(&"create_relationship"),
+        "Relationship Mgmt should include create_relationship"
+    );
+    assert!(
+        scoped_names.contains(&"get_related_nodes"),
+        "Relationship Mgmt should include get_related_nodes"
+    );
+    assert!(
+        !scoped_names.contains(&"delete_node"),
+        "Relationship Mgmt should NOT include delete_node"
+    );
+}
+
+/// Skill pipeline: Node Deletion skill scopes to delete_node only.
+#[tokio::test]
+async fn skill_pipeline_node_deletion_scoping() {
+    use nodespace_agent::intent::ExtractedIntent;
+    use nodespace_agent::skill_pipeline::{SkillMatch, SkillPipeline};
+
+    let pipeline = Arc::new(SkillPipeline::new(None));
+    let seeds = SkillPipeline::seed_skill_nodes();
+    let skill = seeds.iter().find(|s| s.name == "Node Deletion").unwrap();
+
+    let executor = Arc::new(skill_test_executor());
+    let all_tools = executor.available_tools().await.unwrap();
+
+    let skill_match = SkillMatch {
+        skill: skill.to_node(),
+        confidence: 0.9,
+        intent: ExtractedIntent {
+            query: "delete".to_string(),
+            from_pattern: true,
+        },
+        tool_whitelist: skill.tool_whitelist.clone(),
+        max_iterations: skill.max_iterations,
+    };
+
+    let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+    let scoped_names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+
+    assert!(
+        scoped_names.contains(&"delete_node"),
+        "Node Deletion should include delete_node"
+    );
+    assert!(
+        scoped_names.contains(&"get_node"),
+        "Node Deletion should include get_node"
+    );
+    assert!(
+        !scoped_names.contains(&"create_node"),
+        "Node Deletion should NOT include create_node"
+    );
+    assert!(
+        !scoped_names.contains(&"update_node"),
+        "Node Deletion should NOT include update_node"
+    );
+
+    // Verify exactly 2 tools scoped
+    assert_eq!(
+        scoped.len(),
+        2,
+        "Node Deletion should scope to exactly 2 tools (delete_node + get_node)"
+    );
+}
+
+/// Skill pipeline: Bulk Import skill scopes to create_nodes_from_markdown only.
+#[tokio::test]
+async fn skill_pipeline_bulk_import_scoping() {
+    use nodespace_agent::intent::ExtractedIntent;
+    use nodespace_agent::skill_pipeline::{SkillMatch, SkillPipeline};
+
+    let pipeline = Arc::new(SkillPipeline::new(None));
+    let seeds = SkillPipeline::seed_skill_nodes();
+    let skill = seeds.iter().find(|s| s.name == "Bulk Import").unwrap();
+
+    let executor = Arc::new(skill_test_executor());
+    let all_tools = executor.available_tools().await.unwrap();
+
+    let skill_match = SkillMatch {
+        skill: skill.to_node(),
+        confidence: 0.9,
+        intent: ExtractedIntent {
+            query: "import".to_string(),
+            from_pattern: true,
+        },
+        tool_whitelist: skill.tool_whitelist.clone(),
+        max_iterations: skill.max_iterations,
+    };
+
+    let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+    let scoped_names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+
+    assert!(
+        scoped_names.contains(&"create_nodes_from_markdown"),
+        "Bulk Import should include create_nodes_from_markdown"
+    );
+    assert!(
+        !scoped_names.contains(&"create_node"),
+        "Bulk Import should NOT include create_node"
+    );
+
+    // Verify exactly 1 tool scoped
+    assert_eq!(
+        scoped.len(),
+        1,
+        "Bulk Import should scope to exactly 1 tool"
+    );
+}
+
+/// Skill pipeline: Organization skill scopes to create_relationship + get_node.
+#[tokio::test]
+async fn skill_pipeline_organization_scoping() {
+    use nodespace_agent::intent::ExtractedIntent;
+    use nodespace_agent::skill_pipeline::{SkillMatch, SkillPipeline};
+
+    let pipeline = Arc::new(SkillPipeline::new(None));
+    let seeds = SkillPipeline::seed_skill_nodes();
+    let skill = seeds.iter().find(|s| s.name == "Organization").unwrap();
+
+    let executor = Arc::new(skill_test_executor());
+    let all_tools = executor.available_tools().await.unwrap();
+
+    let skill_match = SkillMatch {
+        skill: skill.to_node(),
+        confidence: 0.9,
+        intent: ExtractedIntent {
+            query: "organize".to_string(),
+            from_pattern: true,
+        },
+        tool_whitelist: skill.tool_whitelist.clone(),
+        max_iterations: skill.max_iterations,
+    };
+
+    let scoped = pipeline.scope_tools(&all_tools, &skill_match);
+    let scoped_names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+
+    assert!(
+        scoped_names.contains(&"create_relationship"),
+        "Organization should include create_relationship"
+    );
+    assert!(
+        scoped_names.contains(&"get_node"),
+        "Organization should include get_node"
+    );
+    assert!(
+        !scoped_names.contains(&"delete_node"),
+        "Organization should NOT include delete_node"
+    );
+    assert!(
+        !scoped_names.contains(&"create_nodes_from_markdown"),
+        "Organization should NOT include create_nodes_from_markdown"
+    );
+
+    // Verify exactly 2 tools scoped
+    assert_eq!(
+        scoped.len(),
+        2,
+        "Organization should scope to exactly 2 tools"
+    );
+}
+
+/// Full pipeline: Node Deletion MockEngine → tool call → delete_node result.
+#[tokio::test]
+async fn skill_pipeline_node_deletion_full_pipeline() {
+    let engine = Arc::new(MockEngine::tool_then_text(
+        "delete_node",
+        r#"{"id":"old-meeting-node-123"}"#,
+        "Successfully deleted the old meeting notes.",
+    ));
+    let executor = Arc::new(skill_test_executor());
+    let service = LocalAgentService::new(engine, executor, None);
+
+    let session_id = service.create_session(None).await;
+    let result = service
+        .send_message(
+            &session_id,
+            "Delete the old meeting notes node",
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !result.response.is_empty() || !result.tool_calls_made.is_empty(),
+        "Should get a response or tool call"
+    );
+    assert_eq!(result.tool_calls_made.len(), 1);
+    assert_eq!(result.tool_calls_made[0].name, "delete_node");
+}
+
+/// Full pipeline: Bulk Import MockEngine → tool call → create_nodes_from_markdown result.
+#[tokio::test]
+async fn skill_pipeline_bulk_import_full_pipeline() {
+    let engine = Arc::new(MockEngine::tool_then_text(
+        "create_nodes_from_markdown",
+        "{\"markdown\":\"# My Document\\n\\nSome content here.\"}",
+        "Successfully imported the document as nodes.",
+    ));
+    let executor = Arc::new(skill_test_executor());
+    let service = LocalAgentService::new(engine, executor, None);
+
+    let session_id = service.create_session(None).await;
+    let result = service
+        .send_message(
+            &session_id,
+            "Import this markdown document into my knowledge base",
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !result.response.is_empty() || !result.tool_calls_made.is_empty(),
+        "Should get a response or tool call"
+    );
+    assert_eq!(result.tool_calls_made.len(), 1);
+    assert_eq!(result.tool_calls_made[0].name, "create_nodes_from_markdown");
+}
+
+/// Full pipeline: Organization MockEngine → tool call → create_relationship result.
+#[tokio::test]
+async fn skill_pipeline_organization_full_pipeline() {
+    let engine = Arc::new(MockEngine::tool_then_text(
+        "create_relationship",
+        r#"{"from_id":"node-1","to_id":"collection-1","relationship_type":"member_of"}"#,
+        "Added the node to the collection.",
+    ));
+    let executor = Arc::new(skill_test_executor());
+    let service = LocalAgentService::new(engine, executor, None);
+
+    let session_id = service.create_session(None).await;
+    let result = service
+        .send_message(
+            &session_id,
+            "Organize this node into the Projects collection",
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !result.response.is_empty() || !result.tool_calls_made.is_empty(),
+        "Should get a response or tool call"
+    );
+    assert_eq!(result.tool_calls_made.len(), 1);
+    assert_eq!(result.tool_calls_made[0].name, "create_relationship");
+}
