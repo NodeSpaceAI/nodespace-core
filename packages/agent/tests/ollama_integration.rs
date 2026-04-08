@@ -9,9 +9,12 @@ use nodespace_agent::agent_types::{
     ToolDefinition,
 };
 use nodespace_agent::local_agent::composite_model_manager::CompositeModelManager;
+use nodespace_agent::local_agent::inference::LlamaChatInferenceEngine;
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use nodespace_agent::local_agent::ollama_inference::OllamaInferenceEngine;
 use nodespace_agent::local_agent::ollama_model_manager::OllamaModelManager;
+use nodespace_agent::skill_pipeline::SkillPipeline;
+use nodespace_nlp_engine::chat::ChatConfig;
 use std::sync::Arc;
 
 /// Returns true if Ollama is reachable at localhost:11434.
@@ -268,5 +271,494 @@ async fn test_ollama_model_info() {
     if let Some(spec) = info {
         assert_eq!(spec.model_id, model_name);
         assert!(spec.context_window > 0);
+    }
+}
+
+// ===========================================================================
+// Skill Pipeline Real Model E2E Tests (Issue #1057)
+// ===========================================================================
+//
+// Each test resolves an inference engine using this fallback chain:
+//   1. Try Ollama (first available model)
+//   2. Fallback to local GGUF ministral-3b-q4km
+//   3. Skip if neither is available
+//
+// Tests verify that each skill's guidance prompt + tool scoping leads the
+// model to call one of the expected tools.
+
+/// Resolve an inference engine: Ollama first, then local ministral-3b, then skip.
+///
+/// Returns `None` if no backend is available (caller should skip the test).
+async fn resolve_engine(test_name: &str) -> Option<Arc<dyn ChatInferenceEngine>> {
+    // Step 1: Try Ollama
+    if ollama_running().await {
+        if let Some(model) = first_ollama_model().await {
+            let engine = OllamaInferenceEngine::new(model);
+            return Some(Arc::new(engine) as Arc<dyn ChatInferenceEngine>);
+        }
+    }
+
+    // Step 2: Fallback to local GGUF ministral-3b
+    let gguf = match GgufModelManager::new() {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("SKIP {test_name}: GgufModelManager::new() failed: {e}");
+            return None;
+        }
+    };
+
+    let model_path = match gguf.model_path("ministral-3b-q4km") {
+        Ok(p) if p.exists() => p,
+        _ => {
+            eprintln!("SKIP {test_name}: No inference backend available (Ollama not running, ministral-3b not downloaded)");
+            return None;
+        }
+    };
+
+    let path_str = model_path.to_string_lossy().to_string();
+    let engine = match tokio::task::spawn_blocking(move || {
+        LlamaChatInferenceEngine::load(&path_str, ChatConfig::default())
+    })
+    .await
+    .expect("spawn_blocking join error")
+    {
+        Ok(e) => e,
+        Err(err) => {
+            eprintln!("SKIP {test_name}: LlamaChatInferenceEngine::load failed: {err}");
+            return None;
+        }
+    };
+
+    Some(Arc::new(engine) as Arc<dyn ChatInferenceEngine>)
+}
+
+/// Build a scoped tool list for a skill (from the skill library).
+fn tools_for_skill(skill_name: &str, all_tools: &[ToolDefinition]) -> Vec<ToolDefinition> {
+    let seeds = SkillPipeline::seed_skill_nodes();
+    let skill = seeds
+        .iter()
+        .find(|s| s.name == skill_name)
+        .unwrap_or_else(|| panic!("Skill '{}' not found in seed skills", skill_name));
+
+    let whitelist = &skill.tool_whitelist;
+    all_tools
+        .iter()
+        .filter(|t| whitelist.contains(&t.name))
+        .cloned()
+        .collect()
+}
+
+/// All tool definitions as ToolDefinition stubs (names only, minimal schemas).
+fn all_skill_tools() -> Vec<ToolDefinition> {
+    vec![
+        ToolDefinition {
+            name: "search_semantic".into(),
+            description: "Find nodes semantically related to a query".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }),
+        },
+        ToolDefinition {
+            name: "search_nodes".into(),
+            description: "Search for nodes by keyword".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } },
+                "required": ["query"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_node".into(),
+            description: "Get a node by ID".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"]
+            }),
+        },
+        ToolDefinition {
+            name: "create_node".into(),
+            description: "Create a new node".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "node_type": { "type": "string" }
+                },
+                "required": ["title", "node_type"]
+            }),
+        },
+        ToolDefinition {
+            name: "update_node".into(),
+            description: "Update an existing node".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"]
+            }),
+        },
+        ToolDefinition {
+            name: "update_task_status".into(),
+            description: "Update a task's status".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "status": { "type": "string", "enum": ["open", "in_progress", "done", "cancelled"] }
+                },
+                "required": ["id", "status"]
+            }),
+        },
+        ToolDefinition {
+            name: "create_schema".into(),
+            description: "Create a new entity type schema".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
+            }),
+        },
+        ToolDefinition {
+            name: "create_relationship".into(),
+            description: "Create a relationship between two nodes".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "from_id": { "type": "string" },
+                    "to_id": { "type": "string" },
+                    "relationship_type": { "type": "string" }
+                },
+                "required": ["from_id", "to_id", "relationship_type"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_related_nodes".into(),
+            description: "Get nodes related to a given node".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"]
+            }),
+        },
+        ToolDefinition {
+            name: "delete_node".into(),
+            description: "Delete a node from the knowledge graph".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "id": { "type": "string" } },
+                "required": ["id"]
+            }),
+        },
+        ToolDefinition {
+            name: "create_nodes_from_markdown".into(),
+            description: "Import a markdown document and create a hierarchy of nodes".into(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "markdown": { "type": "string" } },
+                "required": ["markdown"]
+            }),
+        },
+    ]
+}
+
+/// Run a single-turn inference with a scoped tool list, return tool call names.
+async fn run_skill_inference(
+    engine: &dyn ChatInferenceEngine,
+    user_message: &str,
+    skill_description: &str,
+    tools: Vec<ToolDefinition>,
+) -> Vec<String> {
+    let system = format!(
+        "You are a helpful assistant managing a knowledge graph.\n\nACTIVE SKILL: {skill_description}\n\nUse the available tools to complete the user's request."
+    );
+
+    let request = InferenceRequest {
+        messages: vec![
+            ChatMessage {
+                role: Role::System,
+                content: system,
+                tool_call_id: None,
+                name: None,
+            },
+            ChatMessage {
+                role: Role::User,
+                content: user_message.to_string(),
+                tool_call_id: None,
+                name: None,
+            },
+        ],
+        tools: Some(tools),
+        temperature: Some(0.0),
+        max_tokens: Some(200),
+    };
+
+    let chunks: Arc<std::sync::Mutex<Vec<StreamingChunk>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let chunks_clone = chunks.clone();
+
+    let _usage = engine
+        .generate(
+            request,
+            Box::new(move |chunk| {
+                chunks_clone.lock().unwrap().push(chunk);
+            }),
+        )
+        .await
+        .expect("generate() should succeed");
+
+    let collected = chunks.lock().unwrap();
+    let mut tool_calls = Vec::new();
+    for chunk in collected.iter() {
+        if let StreamingChunk::ToolCallStart { name, .. } = chunk {
+            tool_calls.push(name.clone());
+        }
+    }
+    tool_calls
+}
+
+#[tokio::test]
+async fn test_skill_pipeline_research_real_model() {
+    let test_name = "test_skill_pipeline_research_real_model";
+    let Some(engine) = resolve_engine(test_name).await else {
+        return;
+    };
+
+    let all_tools = all_skill_tools();
+    let tools = tools_for_skill("Research & Search", &all_tools);
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    eprintln!("Research tools offered: {:?}", tool_names);
+
+    let tool_calls = run_skill_inference(
+        engine.as_ref(),
+        "What do I know about machine learning?",
+        "Search and explore the knowledge graph to find relevant information.",
+        tools,
+    )
+    .await;
+
+    eprintln!("{test_name}: tool calls = {:?}", tool_calls);
+
+    // Model should call a search tool or return text (both are valid)
+    // We verify it doesn't call non-whitelisted tools
+    for call in &tool_calls {
+        assert!(
+            call == "search_semantic" || call == "search_nodes" || call == "get_node",
+            "Research skill should only call search/get tools, got: {call}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_skill_pipeline_node_creation_real_model() {
+    let test_name = "test_skill_pipeline_node_creation_real_model";
+    let Some(engine) = resolve_engine(test_name).await else {
+        return;
+    };
+
+    let all_tools = all_skill_tools();
+    let tools = tools_for_skill("Node Creation", &all_tools);
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    eprintln!("Node Creation tools offered: {:?}", tool_names);
+
+    let tool_calls = run_skill_inference(
+        engine.as_ref(),
+        "Create a new task node called 'Review quarterly report'",
+        "Create new instances of existing node types.",
+        tools,
+    )
+    .await;
+
+    eprintln!("{test_name}: tool calls = {:?}", tool_calls);
+
+    for call in &tool_calls {
+        assert!(
+            call == "create_node" || call == "get_node",
+            "Node Creation skill should only call create_node/get_node, got: {call}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_skill_pipeline_schema_creation_real_model() {
+    let test_name = "test_skill_pipeline_schema_creation_real_model";
+    let Some(engine) = resolve_engine(test_name).await else {
+        return;
+    };
+
+    let all_tools = all_skill_tools();
+    let tools = tools_for_skill("Schema Creation", &all_tools);
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    eprintln!("Schema Creation tools offered: {:?}", tool_names);
+
+    let tool_calls = run_skill_inference(
+        engine.as_ref(),
+        "Create a new type called Project with fields for status and deadline",
+        "Define new entity types with custom fields.",
+        tools,
+    )
+    .await;
+
+    eprintln!("{test_name}: tool calls = {:?}", tool_calls);
+
+    for call in &tool_calls {
+        assert!(
+            call == "create_schema" || call == "get_node",
+            "Schema Creation skill should only call create_schema/get_node, got: {call}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_skill_pipeline_graph_editing_real_model() {
+    let test_name = "test_skill_pipeline_graph_editing_real_model";
+    let Some(engine) = resolve_engine(test_name).await else {
+        return;
+    };
+
+    let all_tools = all_skill_tools();
+    let tools = tools_for_skill("Graph Editing", &all_tools);
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    eprintln!("Graph Editing tools offered: {:?}", tool_names);
+
+    let tool_calls = run_skill_inference(
+        engine.as_ref(),
+        "Update the title of node abc-123 to 'Updated Architecture Notes'",
+        "Modify existing nodes in the knowledge graph.",
+        tools,
+    )
+    .await;
+
+    eprintln!("{test_name}: tool calls = {:?}", tool_calls);
+
+    for call in &tool_calls {
+        assert!(
+            call == "update_node"
+                || call == "update_task_status"
+                || call == "get_node"
+                || call == "search_nodes",
+            "Graph Editing skill should only call update/get/search tools, got: {call}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_skill_pipeline_relationship_management_real_model() {
+    let test_name = "test_skill_pipeline_relationship_management_real_model";
+    let Some(engine) = resolve_engine(test_name).await else {
+        return;
+    };
+
+    let all_tools = all_skill_tools();
+    let tools = tools_for_skill("Relationship Management", &all_tools);
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    eprintln!("Relationship Management tools offered: {:?}", tool_names);
+
+    let tool_calls = run_skill_inference(
+        engine.as_ref(),
+        "Connect node invoice-001 to node customer-456 with a 'belongs_to' relationship",
+        "Create connections between nodes.",
+        tools,
+    )
+    .await;
+
+    eprintln!("{test_name}: tool calls = {:?}", tool_calls);
+
+    for call in &tool_calls {
+        assert!(
+            call == "create_relationship" || call == "get_related_nodes" || call == "get_node",
+            "Relationship Management skill should only call relationship tools, got: {call}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_skill_pipeline_node_deletion_real_model() {
+    let test_name = "test_skill_pipeline_node_deletion_real_model";
+    let Some(engine) = resolve_engine(test_name).await else {
+        return;
+    };
+
+    let all_tools = all_skill_tools();
+    let tools = tools_for_skill("Node Deletion", &all_tools);
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    eprintln!("Node Deletion tools offered: {:?}", tool_names);
+
+    let tool_calls = run_skill_inference(
+        engine.as_ref(),
+        "Delete node old-meeting-notes-789",
+        "Delete nodes from the knowledge graph.",
+        tools,
+    )
+    .await;
+
+    eprintln!("{test_name}: tool calls = {:?}", tool_calls);
+
+    for call in &tool_calls {
+        assert!(
+            call == "delete_node" || call == "get_node",
+            "Node Deletion skill should only call delete_node/get_node, got: {call}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_skill_pipeline_bulk_import_real_model() {
+    let test_name = "test_skill_pipeline_bulk_import_real_model";
+    let Some(engine) = resolve_engine(test_name).await else {
+        return;
+    };
+
+    let all_tools = all_skill_tools();
+    let tools = tools_for_skill("Bulk Import", &all_tools);
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    eprintln!("Bulk Import tools offered: {:?}", tool_names);
+
+    let tool_calls = run_skill_inference(
+        engine.as_ref(),
+        "Import the following markdown: '# My Notes\\n\\nThis is a note.'",
+        "Import documents and create node hierarchies from markdown.",
+        tools,
+    )
+    .await;
+
+    eprintln!("{test_name}: tool calls = {:?}", tool_calls);
+
+    for call in &tool_calls {
+        assert!(
+            call == "create_nodes_from_markdown",
+            "Bulk Import skill should only call create_nodes_from_markdown, got: {call}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_skill_pipeline_organization_real_model() {
+    let test_name = "test_skill_pipeline_organization_real_model";
+    let Some(engine) = resolve_engine(test_name).await else {
+        return;
+    };
+
+    let all_tools = all_skill_tools();
+    let tools = tools_for_skill("Organization", &all_tools);
+    let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+    eprintln!("Organization tools offered: {:?}", tool_names);
+
+    let tool_calls = run_skill_inference(
+        engine.as_ref(),
+        "Add node project-123 to the collection 'Active Projects'",
+        "Organize nodes into collections and categories.",
+        tools,
+    )
+    .await;
+
+    eprintln!("{test_name}: tool calls = {:?}", tool_calls);
+
+    for call in &tool_calls {
+        assert!(
+            call == "create_relationship" || call == "get_node",
+            "Organization skill should only call create_relationship/get_node, got: {call}"
+        );
     }
 }

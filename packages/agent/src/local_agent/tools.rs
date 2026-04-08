@@ -93,6 +93,38 @@ struct UpdateTaskStatusParams {
     pub status: String,
 }
 
+/// Parameters for the delete_node tool
+#[derive(Debug, Deserialize)]
+struct DeleteNodeParams {
+    #[serde(alias = "node_id")]
+    pub id: String,
+}
+
+/// Parameters for the create_nodes_from_markdown tool (validation only)
+#[derive(Debug, Deserialize)]
+struct CreateNodesFromMarkdownParams {
+    pub markdown: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    #[serde(default)]
+    pub collection: Option<String>,
+}
+
+impl CreateNodesFromMarkdownParams {
+    fn validate(&self) -> Result<(), ToolError> {
+        if self.markdown.trim().is_empty() {
+            return Err(ToolError::InvalidArguments {
+                tool: "create_nodes_from_markdown".to_string(),
+                reason: "markdown content must not be empty".to_string(),
+            });
+        }
+        // Acknowledge optional fields to avoid dead_code warnings
+        let _ = &self.parent_id;
+        let _ = &self.collection;
+        Ok(())
+    }
+}
+
 /// Maximum characters for node body in full node results.
 const BODY_TRUNCATE_FULL: usize = 2000;
 
@@ -415,6 +447,48 @@ fn def_create_schema() -> ToolDefinition {
     }
 }
 
+fn def_delete_node() -> ToolDefinition {
+    ToolDefinition {
+        name: "delete_node".into(),
+        description: "Delete a node from the knowledge graph by its ID. Use get_node first to confirm the node exists before deleting.".into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Node ID to delete"
+                }
+            },
+            "required": ["id"]
+        }),
+    }
+}
+
+fn def_create_nodes_from_markdown() -> ToolDefinition {
+    ToolDefinition {
+        name: "create_nodes_from_markdown".into(),
+        description: "Import a markdown document and create a hierarchy of nodes. Headings become parent nodes, content becomes child nodes.".into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "markdown": {
+                    "type": "string",
+                    "description": "Markdown content to import as nodes"
+                },
+                "parent_id": {
+                    "type": "string",
+                    "description": "Optional parent node ID to attach the import under"
+                },
+                "collection": {
+                    "type": "string",
+                    "description": "Optional collection path to add imported nodes to"
+                }
+            },
+            "required": ["markdown"]
+        }),
+    }
+}
+
 fn def_update_task_status() -> ToolDefinition {
     ToolDefinition {
         name: "update_task_status".into(),
@@ -451,6 +525,8 @@ fn all_tool_definitions() -> Vec<ToolDefinition> {
         def_create_relationship(),
         def_get_related_nodes(),
         def_find_skills(),
+        def_delete_node(),
+        def_create_nodes_from_markdown(),
     ]
 }
 
@@ -1037,6 +1113,64 @@ impl GraphToolExecutor {
         ))
     }
 
+    async fn exec_delete_node(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: DeleteNodeParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "delete_node".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let ns = self.node_service()?;
+
+        let input = node_ops::DeleteNodeInput {
+            node_id: params.id.clone(),
+            version: None, // ops layer auto-fetches
+        };
+
+        let output = node_ops::delete_node(&ns, input)
+            .await
+            .map_err(|e| ops_error_to_tool(e, "delete_node"))?;
+
+        Ok(ok_result(
+            tool_call_id,
+            "delete_node",
+            json!({ "node_id": output.node_id, "deleted": output.existed }),
+        ))
+    }
+
+    async fn exec_create_nodes_from_markdown(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: CreateNodesFromMarkdownParams =
+            serde_json::from_value(args.clone()).map_err(|e| ToolError::InvalidArguments {
+                tool: "create_nodes_from_markdown".to_string(),
+                reason: e.to_string(),
+            })?;
+        params.validate()?;
+
+        let ns = self.node_service()?;
+
+        // Delegate to the MCP markdown handler which handles the full import pipeline
+        use nodespace_core::mcp::handlers::markdown::handle_create_nodes_from_markdown;
+        let result = handle_create_nodes_from_markdown(&ns, args)
+            .await
+            .map_err(|e| {
+                ToolError::ExecutionFailed(format!("create_nodes_from_markdown failed: {:?}", e))
+            })?;
+
+        Ok(ok_result(
+            tool_call_id,
+            "create_nodes_from_markdown",
+            result,
+        ))
+    }
+
     // -- Service accessors --
 
     fn node_service(&self) -> Result<Arc<NodeService>, ToolError> {
@@ -1074,6 +1208,11 @@ impl AgentToolExecutor for GraphToolExecutor {
             "create_relationship" => self.exec_create_relationship(&tool_call_id, args).await,
             "get_related_nodes" => self.exec_get_related_nodes(&tool_call_id, args).await,
             "find_skills" => self.exec_find_skills(&tool_call_id, args).await,
+            "delete_node" => self.exec_delete_node(&tool_call_id, args).await,
+            "create_nodes_from_markdown" => {
+                self.exec_create_nodes_from_markdown(&tool_call_id, args)
+                    .await
+            }
             _ => Err(ToolError::UnknownTool(name.to_string())),
         }
     }
@@ -1182,7 +1321,7 @@ mod tests {
 
     #[test]
     fn definitions_count() {
-        assert_eq!(all_tool_definitions().len(), 10);
+        assert_eq!(all_tool_definitions().len(), 12);
     }
 
     #[test]
@@ -1455,7 +1594,7 @@ mod tests {
     async fn available_tools_returns_all() {
         let executor = test_executor();
         let tools = executor.available_tools().await.unwrap();
-        assert_eq!(tools.len(), 10);
+        assert_eq!(tools.len(), 12);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"search_nodes"));
         assert!(names.contains(&"search_semantic"));
@@ -1467,5 +1606,7 @@ mod tests {
         assert!(names.contains(&"find_skills"));
         assert!(names.contains(&"create_schema"));
         assert!(names.contains(&"update_task_status"));
+        assert!(names.contains(&"delete_node"));
+        assert!(names.contains(&"create_nodes_from_markdown"));
     }
 }
