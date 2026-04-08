@@ -27,7 +27,7 @@ use crate::prompt_assembler::{PromptAssembler, TemplateContext};
 // ---------------------------------------------------------------------------
 
 /// Maximum number of tool-call iterations per turn.
-const MAX_TOOL_ITERATIONS: usize = 2;
+const MAX_TOOL_ITERATIONS: usize = 5;
 
 /// Total token budget for the context window.
 const TOTAL_TOKEN_BUDGET: u32 = 32_000;

@@ -187,7 +187,7 @@ fn def_search_nodes() -> ToolDefinition {
 fn def_search_semantic() -> ToolDefinition {
     ToolDefinition {
         name: "search_semantic".into(),
-        description: "Find nodes semantically related to a natural-language query".into(),
+        description: "Find nodes semantically related to a natural-language query. By default returns IDs and snippets only. Set include_markdown=1 to get full content for the top result, saving a separate get_node call.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -198,6 +198,14 @@ fn def_search_semantic() -> ToolDefinition {
                 "limit": {
                     "type": "integer",
                     "description": "Max results to return (default 5)"
+                },
+                "include_markdown": {
+                    "type": "integer",
+                    "description": "Number of top results to include full markdown content for (0-5, default 0). Set to 1 to get full content for the top result without a separate get_node call."
+                },
+                "collection": {
+                    "type": "string",
+                    "description": "Filter results to a specific collection path (e.g. 'Architecture', 'Development')"
                 }
             },
             "required": ["query"]
@@ -628,6 +636,8 @@ impl GraphToolExecutor {
             })?;
         let query = params.query;
         let limit = params.limit.unwrap_or(DEFAULT_SEMANTIC_LIMIT);
+        let include_markdown = params.include_markdown;
+        let collection = params.collection;
 
         let ns = self.node_service()?;
         let emb = self.embedding_service()?;
@@ -637,9 +647,9 @@ impl GraphToolExecutor {
             threshold: Some(SEMANTIC_THRESHOLD),
             limit: Some(limit),
             collection_id: None,
-            collection: None,
+            collection,
             exclude_collections: None,
-            include_markdown: None,
+            include_markdown,
             include_archived: None,
             scope: None,
         };
@@ -653,7 +663,7 @@ impl GraphToolExecutor {
             .nodes
             .iter()
             .map(|v| {
-                json!({
+                let mut item = json!({
                     "id": v.get("id").and_then(|v| v.as_str()).unwrap_or(""),
                     "title": truncate(
                         v.get("title").and_then(|v| v.as_str()).unwrap_or(""),
@@ -665,7 +675,14 @@ impl GraphToolExecutor {
                         v.get("content").and_then(|v| v.as_str()).unwrap_or(""),
                         BODY_TRUNCATE_SUMMARY
                     ),
-                })
+                });
+                // Include full markdown content if the ops layer returned it
+                if let Some(md) = v.get("markdown").and_then(|v| v.as_str()) {
+                    if !md.is_empty() {
+                        item["markdown"] = json!(truncate(md, BODY_TRUNCATE_FULL));
+                    }
+                }
+                item
             })
             .collect();
 
@@ -703,10 +720,7 @@ impl GraphToolExecutor {
             match handle_get_markdown_from_node_id(&ns, params).await {
                 Ok(result) => {
                     let md = result
-                        .get("content")
-                        .and_then(|c| c.as_array())
-                        .and_then(|arr| arr.first())
-                        .and_then(|item| item.get("text"))
+                        .get("markdown")
                         .and_then(|t| t.as_str())
                         .unwrap_or("");
                     let truncated = truncate(md, BODY_TRUNCATE_FULL);
