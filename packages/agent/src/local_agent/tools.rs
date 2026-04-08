@@ -100,30 +100,6 @@ struct DeleteNodeParams {
     pub id: String,
 }
 
-/// Parameters for the create_nodes_from_markdown tool (validation only)
-#[derive(Debug, Deserialize)]
-struct CreateNodesFromMarkdownParams {
-    pub markdown: String,
-    #[serde(default)]
-    pub parent_id: Option<String>,
-    #[serde(default)]
-    pub collection: Option<String>,
-}
-
-impl CreateNodesFromMarkdownParams {
-    fn validate(&self) -> Result<(), ToolError> {
-        if self.markdown.trim().is_empty() {
-            return Err(ToolError::InvalidArguments {
-                tool: "create_nodes_from_markdown".to_string(),
-                reason: "markdown content must not be empty".to_string(),
-            });
-        }
-        // Acknowledge optional fields to avoid dead_code warnings
-        let _ = &self.parent_id;
-        let _ = &self.collection;
-        Ok(())
-    }
-}
 
 /// Maximum characters for node body in full node results.
 const BODY_TRUNCATE_FULL: usize = 2000;
@@ -1147,18 +1123,35 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        let params: CreateNodesFromMarkdownParams =
-            serde_json::from_value(args.clone()).map_err(|e| ToolError::InvalidArguments {
+        // Inline validation: require non-empty "markdown" field
+        let markdown = args
+            .get("markdown")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::InvalidArguments {
                 tool: "create_nodes_from_markdown".to_string(),
-                reason: e.to_string(),
+                reason: "missing required field: markdown".to_string(),
             })?;
-        params.validate()?;
+        if markdown.trim().is_empty() {
+            return Err(ToolError::InvalidArguments {
+                tool: "create_nodes_from_markdown".to_string(),
+                reason: "markdown content must not be empty".to_string(),
+            });
+        }
+
+        // Remap agent field names to MCP handler field names:
+        // agent uses "markdown", handler expects "markdown_content"
+        let mut handler_args = args.clone();
+        if let Some(obj) = handler_args.as_object_mut() {
+            if let Some(content) = obj.remove("markdown") {
+                obj.insert("markdown_content".to_string(), content);
+            }
+        }
 
         let ns = self.node_service()?;
 
         // Delegate to the MCP markdown handler which handles the full import pipeline
         use nodespace_core::mcp::handlers::markdown::handle_create_nodes_from_markdown;
-        let result = handle_create_nodes_from_markdown(&ns, args)
+        let result = handle_create_nodes_from_markdown(&ns, handler_args)
             .await
             .map_err(|e| {
                 ToolError::ExecutionFailed(format!("create_nodes_from_markdown failed: {:?}", e))

@@ -94,7 +94,14 @@ static INTENT_PATTERNS: &[(&[&str], &str)] = &[
     (&["delete", "remove", "trash", "archive"], "delete"),
     // Organization
     (
-        &["organize", "categorize", "sort", "group", "tag"],
+        &[
+            "organize",
+            "categorize",
+            "sort",
+            "group",
+            "tag",
+            "add to collection",
+        ],
         "organize",
     ),
 ];
@@ -380,13 +387,12 @@ mod tests {
     #[test]
     fn skill_organization_intent() {
         let result = extract_intent("Add to collection X");
-        // "add to" doesn't match a specific pattern, fallback triggers
-        // but "organize" would be matched if present
+        assert_eq!(result.query, "organize");
+        assert!(result.from_pattern);
+
         let result2 = extract_intent("Organize my notes into categories");
         assert_eq!(result2.query, "organize");
         assert!(result2.from_pattern);
-        // "add to collection" - fallback (no explicit pattern match)
-        assert!(!result.query.is_empty());
     }
 
     // --- Edge cases ---
