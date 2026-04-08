@@ -1083,7 +1083,7 @@ fn get_tool_schemas(schemas: &[SchemaNode]) -> Value {
                         .filter_map(|v| v.as_str())
                         .collect::<Vec<_>>()
                         .join(", "))
-                    .unwrap_or_default()
+                    .unwrap_or_else(|| "(none)".to_string())
             ),
             "inputSchema": {
                 "type": "object",
