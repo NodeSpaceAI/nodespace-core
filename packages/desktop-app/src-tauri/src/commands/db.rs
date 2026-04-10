@@ -99,7 +99,10 @@ pub(crate) async fn create_service_bundle(
                         content: Some(seed.content.clone()),
                         ..Default::default()
                     };
-                    if let Err(e) = node_service.update_node_unchecked(&existing.id, update).await {
+                    if let Err(e) = node_service
+                        .update_node_unchecked(&existing.id, update)
+                        .await
+                    {
                         tracing::warn!(error = %e, title = %seed.title, "Failed to update prompt node");
                     } else {
                         tracing::info!(title = %seed.title, "Updated built-in prompt node content");
@@ -141,7 +144,10 @@ pub(crate) async fn create_service_bundle(
                                 content: Some(guidance.content.clone()),
                                 ..Default::default()
                             };
-                            if let Err(e) = node_service.update_node_unchecked(&existing_node.id, update).await {
+                            if let Err(e) = node_service
+                                .update_node_unchecked(&existing_node.id, update)
+                                .await
+                            {
                                 tracing::warn!(
                                     error = %e,
                                     skill = %seed.name,

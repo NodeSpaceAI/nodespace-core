@@ -226,6 +226,37 @@ impl PromptAssembler {
         assembled
     }
 
+    /// Assemble the base system prompt from seed nodes without a database.
+    ///
+    /// Renders each seed in priority order. The Workspace Context Template
+    /// (priority 10) is rendered with `workspace_context` substituted directly;
+    /// other minijinja templates get a minimal context.
+    ///
+    /// Intended for use in unit/integration tests where no DB is available.
+    pub fn assemble_static(workspace_context: &str) -> String {
+        let mut seeds = Self::seed_prompt_nodes();
+        seeds.sort_by_key(|s| s.priority);
+
+        let ctx = TemplateContext {
+            current_date: "2025-01-01".to_string(),
+            model_name: "test".to_string(),
+            workspace_context: workspace_context.to_string(),
+        };
+
+        let sections: Vec<String> = seeds
+            .iter()
+            .map(|s| {
+                if s.template_syntax == "minijinja" {
+                    Self::render_template(&s.content, &ctx)
+                } else {
+                    s.content.clone()
+                }
+            })
+            .collect();
+
+        sections.join("\n\n")
+    }
+
     /// Get seed prompt nodes that should be created on first run.
     ///
     /// These are the complete set of prompt sections for the agent. All prompt
@@ -254,14 +285,18 @@ impl PromptAssembler {
             SeedPrompt {
                 content: "TOOL STRATEGY:\n\
                     - ALWAYS search first before updating or getting a node. NEVER use placeholder IDs like \"abc-123\".\n\
-                    - To find nodes by meaning/topic: use search_semantic (natural language query)\n\
-                    - search_semantic results are ordered by relevance — the first result is the best match. Each result has: id, title, score (0-1 similarity), snippet (short preview), and optionally markdown (full content).\n\
-                    - search_semantic includes full markdown content for the top result by default. If the top result has a non-empty 'markdown' field, that IS the full document — use it directly to answer. Do NOT call get_node or search_nodes afterward.\n\
-                    - Only call get_node if you need full content for a result that did NOT include markdown (e.g. results 2-5). Use get_node with format=markdown and the ID.\n\
-                    - To find nodes by exact fields: use search_nodes (keyword + type filter)\n\
-                    - To update a task status: search for the task first, then use update_task_status with the real ID\n\
-                    - To create a new entity type: use create_schema (not create_node)\n\
-                    - To create an instance of an existing type: use create_node with node_type matching the schema ID\n\
+                    - To find nodes by exact title or keyword (when you know the name): use search_nodes with query=<keyword>. To filter by type (e.g. \"show all tasks\"), also pass node_type=\"task\".\n\
+                    - To find nodes by meaning/topic (when the exact name is unknown): use search_semantic (natural language query)\n\
+                    - search_semantic results are ordered by relevance. Each result has: id, title, score (0-1), snippet, and optionally markdown (full content).\n\
+                    - If a search_semantic result has a non-empty 'markdown' field, that IS the full document — summarize from it directly. Only call get_node for results that lack markdown.\n\
+                    - To get full content for a known node ID: use get_node with format=markdown.\n\
+                    - To find what nodes are connected to a node: use get_related_nodes with the node ID.\n\
+                    - To update a task status: search_nodes for the task by name, then use update_task_status with the real ID.\n\
+                    - To update a node's title or content: search_nodes for it by name, then use update_node with the real ID.\n\
+                    - To create a new entity type: use create_schema (not create_node). If the type already appears in ENTITY TYPES above, the schema already exists — do not call create_schema again.\n\
+                    - To modify an existing entity type (add/remove fields, change title_template): use update_schema with the schema_id\n\
+                    - To create any node: use create_node with content=<name or text> and node_type. Pass 'properties' only if the schema has fields (shown in ENTITY TYPES).\n\
+                    - If ENTITY TYPES shows a title template for the schema (e.g. title: \"{name} ({status})\"), include those template fields in 'properties' — the service composes the displayed title from them.\n\
                     - To connect nodes: use create_relationship with relationship names from the schemas above\n\
                     - Tool call arguments must be valid JSON. Do NOT include comments (#) in JSON."
                     .to_string(),
