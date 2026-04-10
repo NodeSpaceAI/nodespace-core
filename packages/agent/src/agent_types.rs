@@ -540,6 +540,10 @@ pub struct AgentSession {
     /// Built once per session on first turn, then reused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dynamic_context: Option<String>,
+    /// Full system prompt override (bypasses PromptAssembler / fallback).
+    /// Used in tests to inject a pre-built prompt without a live database.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_override: Option<String>,
 }
 
 /// Result of a complete agent turn (one round of generation + tool execution).

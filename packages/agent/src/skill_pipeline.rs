@@ -235,7 +235,7 @@ MULTIPLE DOCUMENTS: If the user asks about multiple topics, call search_semantic
             },
             SeedSkill {
                 name: "Node Creation".to_string(),
-                description: "Create new instances of existing node types — add a task, text note, or an entry for a custom type. Use when user wants to add a new record or item.".to_string(),
+                description: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Project, Customer, Invoice. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.".to_string(),
                 tool_whitelist: vec![
                     "create_node".to_string(),
                     "get_node".to_string(),
@@ -266,10 +266,10 @@ RELATIONSHIPS: Use relationships (not fields) when a field references another no
 - Invoice billed_to customer (one): {"name": "billed_to", "targetType": "customer", "direction": "out", "cardinality": "one"}
 - Project has_task task (many): {"name": "has_task", "targetType": "task", "direction": "out", "cardinality": "many"}
 
-TITLE TEMPLATE: Set title_template when a node's identity comes from its fields rather than free-form content. Use {field_name} placeholders. Examples:
-- Customer: "{first_name} {last_name}"
-- Invoice: "Invoice #{invoice_number}"
-- Project: "{name} ({status})"
+TITLE TEMPLATE: Set title_template when a node's identity comes from its fields rather than free-form content. Use {field_name} placeholders. CRITICAL: every placeholder in title_template MUST be defined as a field in the fields array. Examples:
+- Customer with fields [first_name, last_name]: title_template = "{first_name} {last_name}"
+- Invoice with fields [invoice_number, ...]: title_template = "Invoice #{invoice_number}"
+- Project with fields [name, status, ...]: title_template = "{name} ({status})"
 Omit title_template if the content/title field alone identifies the node.
 
 EXAMPLE — Invoice schema (references existing 'customer' type):
@@ -294,12 +294,13 @@ EXAMPLE — Invoice schema (references existing 'customer' type):
   ]
 }
 
-EXAMPLE — Project schema:
+EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are in fields):
 {
   "name": "Project",
   "description": "A tracked project with status and timeline",
   "title_template": "{name} ({status})",
   "fields": [
+    {"name": "name", "type": "text", "required": true},
     {"name": "status", "type": "enum", "required": true, "coreValues": [
       {"value": "planning", "label": "Planning"},
       {"value": "active", "label": "Active"},

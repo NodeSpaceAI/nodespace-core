@@ -543,8 +543,12 @@ async fn test_skill_pipeline_research_real_model() {
 
     eprintln!("{test_name}: tool calls = {:?}", tool_calls);
 
-    // Model should call a search tool or return text (both are valid)
-    // We verify it doesn't call non-whitelisted tools
+    assert!(
+        tool_calls
+            .iter()
+            .any(|c| c == "search_semantic" || c == "search_nodes"),
+        "Research skill must call a search tool, got: {tool_calls:?}"
+    );
     for call in &tool_calls {
         assert!(
             call == "search_semantic" || call == "search_nodes" || call == "get_node",
@@ -575,6 +579,10 @@ async fn test_skill_pipeline_node_creation_real_model() {
 
     eprintln!("{test_name}: tool calls = {:?}", tool_calls);
 
+    assert!(
+        tool_calls.iter().any(|c| c == "create_node"),
+        "Node Creation skill must call create_node, got: {tool_calls:?}"
+    );
     for call in &tool_calls {
         assert!(
             call == "create_node" || call == "get_node",
@@ -627,7 +635,7 @@ async fn test_skill_pipeline_graph_editing_real_model() {
 
     let tool_calls = run_skill_inference(
         engine.as_ref(),
-        "Update the title of node abc-123 to 'Updated Architecture Notes'",
+        "Find the 'Architecture Notes' node and update its title to 'System Architecture'",
         "Modify existing nodes in the knowledge graph.",
         tools,
     )
@@ -635,6 +643,10 @@ async fn test_skill_pipeline_graph_editing_real_model() {
 
     eprintln!("{test_name}: tool calls = {:?}", tool_calls);
 
+    assert!(
+        tool_calls.iter().any(|c| c == "update_node"),
+        "Graph Editing skill must call update_node, got: {tool_calls:?}"
+    );
     for call in &tool_calls {
         assert!(
             call == "update_node"
@@ -698,6 +710,10 @@ async fn test_skill_pipeline_node_deletion_real_model() {
 
     eprintln!("{test_name}: tool calls = {:?}", tool_calls);
 
+    assert!(
+        tool_calls.iter().any(|c| c == "delete_node"),
+        "Node Deletion skill must call delete_node, got: {tool_calls:?}"
+    );
     for call in &tool_calls {
         assert!(
             call == "delete_node" || call == "get_node",
@@ -770,25 +786,43 @@ async fn test_skill_pipeline_organization_real_model() {
 // Minimal tool executor for pipeline tests — returns realistic stub results
 // ---------------------------------------------------------------------------
 
-/// Build a `dynamic_context` string that mimics what the app injects for the
-/// Schema Creation skill: ENTITY TYPES + full skill guidance.
+/// Build the full system prompt that the Schema Creation skill would produce.
 ///
-/// This makes tests as realistic as the live app — the model receives the same
-/// guidance content it would get through the skill pipeline + prompt assembler.
+/// Mirrors what the live app sends to Ollama:
+///   1. Base prompt from `PromptAssembler::seed_prompt_nodes()` (with entity types
+///      rendered into the Workspace Context Template)
+///   2. Active skill header + description (from `SkillPipeline::seed_skill_nodes()`)
+///   3. Skill guidance content
+///
+/// Using the real seed sources means any change to prompt content or skill guidance
+/// is automatically reflected in tests — no manual sync needed.
 fn schema_creation_context(entity_types: &str) -> String {
-    // Pull the guidance content from the seeded skill definition
-    let guidance = nodespace_agent::skill_pipeline::SkillPipeline::seed_skill_nodes()
+    use nodespace_agent::prompt_assembler::PromptAssembler;
+
+    // 1. Base prompt with entity types injected into the workspace context slot.
+    let base = PromptAssembler::assemble_static(entity_types, None);
+
+    // 2. Skill name, description, and guidance from the seeded skill definition.
+    let skill = nodespace_agent::skill_pipeline::SkillPipeline::seed_skill_nodes()
         .into_iter()
-        .find(|s| s.name == "Schema Creation")
-        .and_then(|s| s.guidance_prompts.into_iter().next())
-        .map(|g| g.content)
-        .unwrap_or_default();
+        .find(|s| s.name == "Schema Creation");
+
+    let (skill_desc, guidance) = if let Some(s) = skill {
+        let desc = s.description.clone();
+        let g = s
+            .guidance_prompts
+            .into_iter()
+            .next()
+            .map(|g| g.content)
+            .unwrap_or_default();
+        (desc, g)
+    } else {
+        (String::new(), String::new())
+    };
 
     format!(
-        "{entity_types}\nACTIVE SKILL: Schema Creation\n\
-         Define a new entity type or schema with custom fields, enums, and relationships. \
-         Use when user says 'new type', 'node type', 'define fields', 'create schema', \
-         or wants to design a new kind of entity like Project, Customer, or Invoice.\n\
+        "{base}\n\nACTIVE SKILL: Schema Creation\n\
+         {skill_desc}\n\
          Focus on this skill's capabilities. Use only the tools provided.\n\n\
          {guidance}"
     )
@@ -844,11 +878,26 @@ impl StubToolExecutor {
             "create_node".to_string(),
             serde_json::json!({"id": "node-new1", "created": true}),
         );
+        results.insert(
+            "create_relationship".to_string(),
+            serde_json::json!({"created": true}),
+        );
+        results.insert(
+            "get_related_nodes".to_string(),
+            serde_json::json!({
+                "count": 1,
+                "nodes": [{"id": "note-xyz", "title": "Architecture Notes", "type": "text"}]
+            }),
+        );
+        results.insert(
+            "delete_node".to_string(),
+            serde_json::json!({"deleted": true}),
+        );
 
         let tools = vec![
             ToolDefinition {
                 name: "search_nodes".to_string(),
-                description: "Search nodes by keyword and type filter".to_string(),
+                description: "Search nodes by exact title or keyword. Use node_type to filter by type (e.g. node_type='task'). Prefer over search_semantic when you know the node name.".to_string(),
                 parameters_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -938,6 +987,40 @@ impl StubToolExecutor {
                         "content": {"type": "string"}
                     },
                     "required": ["node_type"]
+                }),
+            },
+            ToolDefinition {
+                name: "create_relationship".to_string(),
+                description: "Create a relationship between two nodes".to_string(),
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "source_id": {"type": "string"},
+                        "target_id": {"type": "string"},
+                        "relationship_type": {"type": "string"}
+                    },
+                    "required": ["source_id", "target_id", "relationship_type"]
+                }),
+            },
+            ToolDefinition {
+                name: "get_related_nodes".to_string(),
+                description: "Get nodes related to a given node. Use when asked what is connected to a node.".to_string(),
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "relationship_type": {"type": "string"}
+                    },
+                    "required": ["id"]
+                }),
+            },
+            ToolDefinition {
+                name: "delete_node".to_string(),
+                description: "Delete a node from the knowledge graph by its ID".to_string(),
+                parameters_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {"id": {"type": "string"}},
+                    "required": ["id"]
                 }),
             },
         ];
@@ -1119,7 +1202,7 @@ async fn test_pipeline_schema_creation_with_relationship() {
              - customer: Customer -- fields: name(text), email(text), phone(text), company(text)\n\
              - task: Task (core) -- fields: status(enum: open/in_progress/done)\n";
     service
-        .set_session_context(&session_id, schema_creation_context(entity_types))
+        .set_system_prompt(&session_id, schema_creation_context(entity_types))
         .await;
 
     let (tools, args) = run_turn_get_tools_and_args(
@@ -1187,7 +1270,7 @@ async fn test_pipeline_schema_creation_project_task_relationship() {
     let entity_types = "ENTITY TYPES:\n\
              - task: Task (core) -- fields: status(enum: open/in_progress/done)\n";
     service
-        .set_session_context(&session_id, schema_creation_context(entity_types))
+        .set_system_prompt(&session_id, schema_creation_context(entity_types))
         .await;
 
     let (tools, args) = run_turn_get_tools_and_args(
@@ -1270,5 +1353,234 @@ async fn test_pipeline_multi_turn_session_persistence() {
     assert!(
         tools2.iter().any(|t| t == "create_schema"),
         "Turn 2 expected create_schema, got: {tools2:?}"
+    );
+}
+
+/// Scenario: "find the task called 'Review quarterly report'"
+///
+/// The model should call search_nodes (keyword/title match), not search_semantic.
+/// This is the canonical case for search_nodes: the user knows the exact name.
+#[tokio::test]
+async fn test_pipeline_search_nodes_keyword() {
+    let Some(engine) = resolve_engine("test_pipeline_search_nodes_keyword").await else {
+        return;
+    };
+
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(StubToolExecutor::new());
+    let service = LocalAgentService::new(engine, executor, None);
+    let session_id = service.create_session(None).await;
+
+    let tools = run_turn_get_tools(
+        &service,
+        &session_id,
+        "Find the task called 'Review quarterly report'",
+    )
+    .await;
+
+    eprintln!("test_pipeline_search_nodes_keyword: tools = {tools:?}");
+
+    assert!(
+        tools.iter().any(|t| t == "search_nodes"),
+        "Expected search_nodes for exact-name lookup, got: {tools:?}"
+    );
+}
+
+/// Scenario: "show me all nodes connected to the Architecture Notes node"
+///
+/// The model should search for the node then call get_related_nodes.
+#[tokio::test]
+async fn test_pipeline_get_related_nodes() {
+    let Some(engine) = resolve_engine("test_pipeline_get_related_nodes").await else {
+        return;
+    };
+
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(StubToolExecutor::new());
+    let service = LocalAgentService::new(engine, executor, None);
+    let session_id = service.create_session(None).await;
+
+    let tools = run_turn_get_tools(
+        &service,
+        &session_id,
+        "Show me all nodes connected to the 'Architecture Notes' node",
+    )
+    .await;
+
+    eprintln!("test_pipeline_get_related_nodes: tools = {tools:?}");
+
+    assert!(
+        tools.iter().any(|t| t == "get_related_nodes"),
+        "Expected get_related_nodes, got: {tools:?}"
+    );
+}
+
+/// Scenario: "update the title of the 'Architecture Notes' node to 'System Architecture'"
+///
+/// The model should search for the node then call update_node (not update_task_status,
+/// which is only for task status changes).
+#[tokio::test]
+async fn test_pipeline_update_node_content() {
+    let Some(engine) = resolve_engine("test_pipeline_update_node_content").await else {
+        return;
+    };
+
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(StubToolExecutor::new());
+    let service = LocalAgentService::new(engine, executor, None);
+    let session_id = service.create_session(None).await;
+
+    let tools = run_turn_get_tools(
+        &service,
+        &session_id,
+        "Update the title of the 'Architecture Notes' node to 'System Architecture'",
+    )
+    .await;
+
+    eprintln!("test_pipeline_update_node_content: tools = {tools:?}");
+
+    assert!(
+        tools.iter().any(|t| t == "update_node"),
+        "Expected update_node for title change, got: {tools:?}"
+    );
+}
+
+/// Scenario: "show me the full content of node task-abc123"
+///
+/// The model is given an explicit node ID and should call get_node directly.
+#[tokio::test]
+async fn test_pipeline_get_node_by_id() {
+    let Some(engine) = resolve_engine("test_pipeline_get_node_by_id").await else {
+        return;
+    };
+
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(StubToolExecutor::new());
+    let service = LocalAgentService::new(engine, executor, None);
+    let session_id = service.create_session(None).await;
+
+    let tools = run_turn_get_tools(
+        &service,
+        &session_id,
+        "Show me the full content of node task-abc123",
+    )
+    .await;
+
+    eprintln!("test_pipeline_get_node_by_id: tools = {tools:?}");
+
+    assert!(
+        tools.iter().any(|t| t == "get_node"),
+        "Expected get_node for explicit ID lookup, got: {tools:?}"
+    );
+}
+
+/// Scenario: create a schema with a title_template that references a field.
+///
+/// The model MUST include all fields referenced in title_template in the fields array.
+/// This was a recurring bug where the model generated title_template: "{name} ({status})"
+/// but forgot to include "name" in fields, causing validation failures and retry loops.
+#[tokio::test]
+async fn test_pipeline_schema_creation_title_template_fields() {
+    let Some(engine) = resolve_engine("test_pipeline_schema_creation_title_template_fields").await
+    else {
+        return;
+    };
+
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(SchemaSkillToolExecutor::new());
+    let service = LocalAgentService::new(engine, executor, None);
+    let session_id = service.create_session(None).await;
+
+    service
+        .set_system_prompt(&session_id, schema_creation_context(""))
+        .await;
+
+    let (tools, args) = run_turn_get_tools_and_args(
+        &service,
+        &session_id,
+        "Create a 'Campaign' schema with a name and status field. \
+         Use title_template to show the title as '{name} ({status})'.",
+    )
+    .await;
+
+    assert!(
+        tools.iter().any(|t| t == "create_schema"),
+        "Expected create_schema to be called, got: {tools:?}"
+    );
+
+    let schema_args = tools
+        .iter()
+        .zip(args.iter())
+        .find(|(name, _)| *name == "create_schema")
+        .map(|(_, a)| a)
+        .expect("create_schema args not found");
+
+    eprintln!(
+        "create_schema args: {}",
+        serde_json::to_string_pretty(schema_args).unwrap()
+    );
+
+    let template = schema_args
+        .get("title_template")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if !template.is_empty() {
+        // Extract {field} tokens from the template
+        let fields = schema_args
+            .get("fields")
+            .and_then(|f| f.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let field_names: Vec<&str> = fields
+            .iter()
+            .filter_map(|f| f.get("name").and_then(|n| n.as_str()))
+            .collect();
+
+        // Find all {token} references in the template
+        let mut i = 0;
+        let bytes = template.as_bytes();
+        while i < bytes.len() {
+            if bytes[i] == b'{' {
+                if let Some(end) = bytes[i + 1..].iter().position(|&c| c == b'}') {
+                    let token = &template[i + 1..i + 1 + end];
+                    assert!(
+                        field_names.contains(&token),
+                        "title_template references '{{{}}}' but '{}' is not in fields array. \
+                         fields: {:?}, template: {}",
+                        token,
+                        token,
+                        field_names,
+                        template
+                    );
+                    i += 1 + end + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+    }
+}
+
+/// Scenario: "delete the 'Some thing to do' task"
+///
+/// The model should search for the task then call delete_node.
+#[tokio::test]
+async fn test_pipeline_delete_node() {
+    let Some(engine) = resolve_engine("test_pipeline_delete_node").await else {
+        return;
+    };
+
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(StubToolExecutor::new());
+    let service = LocalAgentService::new(engine, executor, None);
+    let session_id = service.create_session(None).await;
+
+    let tools = run_turn_get_tools(
+        &service,
+        &session_id,
+        "Delete the task called 'Some thing to do'",
+    )
+    .await;
+
+    eprintln!("test_pipeline_delete_node: tools = {tools:?}");
+
+    assert!(
+        tools.iter().any(|t| t == "delete_node"),
+        "Expected delete_node, got: {tools:?}"
     );
 }

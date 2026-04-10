@@ -23,28 +23,30 @@ use std::sync::Arc;
 // (e.g., agent uses "title"+"body" while MCP uses "content").
 // ---------------------------------------------------------------------------
 
-/// Parameters for the agent's create_node tool (title+body model)
+/// Parameters for the agent's create_node tool.
+///
+/// The model passes `content` as the node text. `node_service` derives the
+/// display title automatically — from `title_template`+`properties` if the schema
+/// defines one, or from `strip_markdown(content)` for root nodes otherwise.
+/// The agent never sets or manipulates the title field.
 #[derive(Debug, Deserialize)]
 struct AgentCreateNodeParams {
-    pub title: String,
-    pub node_type: String,
     #[serde(default)]
-    pub body: Option<String>,
+    pub content: Option<String>,
+    pub node_type: String,
     #[serde(default)]
     pub parent_id: Option<String>,
     #[serde(default)]
     pub properties: Option<Value>,
 }
 
-/// Parameters for the agent's update_node tool (title+body model)
+/// Parameters for the agent's update_node tool.
 #[derive(Debug, Deserialize)]
 struct AgentUpdateNodeParams {
     #[serde(alias = "node_id")]
     pub id: String,
     #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default)]
-    pub body: Option<String>,
+    pub content: Option<String>,
     #[serde(default)]
     pub properties: Option<Value>,
 }
@@ -154,6 +156,23 @@ fn ok_result(tool_call_id: &str, name: &str, data: Value) -> ToolResult {
     }
 }
 
+/// Prefix a bare node ID with `nodespace://` so the model sees the URI format
+/// it should use when referencing nodes in responses.
+fn node_uri(id: &str) -> String {
+    if id.is_empty() || id.starts_with("nodespace://") {
+        id.to_string()
+    } else {
+        format!("nodespace://{id}")
+    }
+}
+
+/// Strip the `nodespace://` prefix from a node ID supplied by the model.
+/// The model is instructed to use `nodespace://uuid` URIs, so incoming
+/// tool arguments may carry the prefix — strip it before hitting the DB.
+fn strip_node_uri(id: &str) -> &str {
+    id.strip_prefix("nodespace://").unwrap_or(id)
+}
+
 // ---------------------------------------------------------------------------
 // Tool definitions (JSON schemas)
 // ---------------------------------------------------------------------------
@@ -161,7 +180,7 @@ fn ok_result(tool_call_id: &str, name: &str, data: Value) -> ToolResult {
 fn def_search_nodes() -> ToolDefinition {
     ToolDefinition {
         name: "search_nodes".into(),
-        description: "Search for nodes by keyword or structured query".into(),
+        description: "Search nodes by exact title or keyword. Use node_type to filter by type (e.g. node_type='task' to find only tasks). Prefer this over search_semantic when you know the node name.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -237,32 +256,28 @@ fn def_get_node() -> ToolDefinition {
 fn def_create_node() -> ToolDefinition {
     ToolDefinition {
         name: "create_node".into(),
-        description: "Create a new node with content".into(),
+        description: "Create a new node. Always pass 'content' as the node name or text. Optionally pass 'properties' if the schema type has fields. If the schema has a title_template (shown in ENTITY TYPES), include those template fields in 'properties' — the service composes the displayed title from them automatically.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
-                "title": {
+                "content": {
                     "type": "string",
-                    "description": "Title for the node"
-                },
-                "body": {
-                    "type": "string",
-                    "description": "Body/content text of the node"
+                    "description": "The node name or text content"
                 },
                 "node_type": {
                     "type": "string",
-                    "description": "Node type (text, task, etc.)"
+                    "description": "Node type: 'text', 'task', or a custom schema ID (e.g. 'project', 'customer')"
                 },
                 "properties": {
                     "type": "object",
-                    "description": "Additional properties as key-value pairs"
+                    "description": "Schema field values (e.g. {\"status\": \"active\"}). For schemas with a title_template, include the template fields (e.g. {\"name\": \"Olympics Campaign\", \"status\": \"Closed\"})."
                 },
                 "parent_id": {
                     "type": "string",
                     "description": "Optional parent node ID"
                 }
             },
-            "required": ["title", "node_type"]
+            "required": ["node_type", "content"]
         }),
     }
 }
@@ -270,7 +285,7 @@ fn def_create_node() -> ToolDefinition {
 fn def_update_node() -> ToolDefinition {
     ToolDefinition {
         name: "update_node".into(),
-        description: "Update an existing node's content or properties".into(),
+        description: "Update an existing node's content or properties. The node service recomputes the title automatically after any update.".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -278,13 +293,9 @@ fn def_update_node() -> ToolDefinition {
                     "type": "string",
                     "description": "Node ID to update"
                 },
-                "title": {
+                "content": {
                     "type": "string",
-                    "description": "New title (optional)"
-                },
-                "body": {
-                    "type": "string",
-                    "description": "New body/content (optional)"
+                    "description": "New content/text for the node (optional)"
                 },
                 "properties": {
                     "type": "object",
@@ -411,7 +422,7 @@ fn def_create_schema() -> ToolDefinition {
                 },
                 "title_template": {
                     "type": "string",
-                    "description": "Template for auto-generating node titles from field values. Use {field_name} placeholders, e.g. '{name} ({status})' or '{first_name} {last_name}'. IMPORTANT: every field referenced here MUST be defined in the fields array (e.g. if you use '{name}', add a 'name' text field). Only include fields that meaningfully identify the node. Omit if the content/title field alone is sufficient."
+                    "description": "Template for auto-generating node titles. Use {field_name} placeholders. RULE: every {field_name} token MUST have a matching entry in the fields array — if you write '{name}' here, you MUST add {\"name\": \"name\", \"type\": \"text\"} to fields. Missing fields cause a validation error."
                 },
                 "relationships": {
                     "type": "array",
@@ -430,6 +441,73 @@ fn def_create_schema() -> ToolDefinition {
                 }
             },
             "required": ["name"]
+        }),
+    }
+}
+
+fn def_update_schema() -> ToolDefinition {
+    ToolDefinition {
+        name: "update_schema".into(),
+        description: "Modify an existing schema type: add/remove fields, add/remove relationships, update description or title_template.".into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "schema_id": {
+                    "type": "string",
+                    "description": "ID of the schema to update (e.g. 'project', 'customer')"
+                },
+                "description": {
+                    "type": "string",
+                    "description": "New description (optional)"
+                },
+                "title_template": {
+                    "type": "string",
+                    "description": "New title template using {field_name} placeholders (e.g. '{name} ({status})'). All referenced fields must exist in the schema."
+                },
+                "add_fields": {
+                    "type": "array",
+                    "description": "Fields to add",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" },
+                            "type": { "type": "string", "description": "text, number, date, enum, boolean" },
+                            "description": { "type": "string" },
+                            "coreValues": {
+                                "type": "array",
+                                "description": "For enum fields: array of {value, label} pairs",
+                                "items": { "type": "object", "properties": { "value": { "type": "string" }, "label": { "type": "string" } } }
+                            }
+                        },
+                        "required": ["name", "type"]
+                    }
+                },
+                "remove_fields": {
+                    "type": "array",
+                    "description": "Field names to remove",
+                    "items": { "type": "string" }
+                },
+                "add_relationships": {
+                    "type": "array",
+                    "description": "Relationships to add",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" },
+                            "targetType": { "type": "string" },
+                            "direction": { "type": "string", "enum": ["out", "in"] },
+                            "cardinality": { "type": "string", "enum": ["one", "many"] }
+                        },
+                        "required": ["name", "targetType", "direction", "cardinality"]
+                    }
+                },
+                "remove_relationships": {
+                    "type": "array",
+                    "description": "Relationship names to remove",
+                    "items": { "type": "string" }
+                }
+            },
+            "required": ["schema_id"]
         }),
     }
 }
@@ -508,6 +586,7 @@ fn all_tool_definitions() -> Vec<ToolDefinition> {
         def_create_node(),
         def_update_node(),
         def_create_schema(),
+        def_update_schema(),
         def_update_task_status(),
         def_create_relationship(),
         def_get_related_nodes(),
@@ -602,7 +681,7 @@ impl GraphToolExecutor {
             .iter()
             .map(|v| {
                 json!({
-                    "id": v.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "id": node_uri(v.get("id").and_then(|v| v.as_str()).unwrap_or("")),
                     "title": truncate(
                         v.get("title").and_then(|v| v.as_str()).unwrap_or(""),
                         100
@@ -663,7 +742,7 @@ impl GraphToolExecutor {
             .iter()
             .map(|v| {
                 let mut item = json!({
-                    "id": v.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "id": node_uri(v.get("id").and_then(|v| v.as_str()).unwrap_or("")),
                     "title": truncate(
                         v.get("title").and_then(|v| v.as_str()).unwrap_or(""),
                         100
@@ -702,7 +781,7 @@ impl GraphToolExecutor {
                 tool: "get_node".to_string(),
                 reason: e.to_string(),
             })?;
-        let id = params.id;
+        let id = strip_node_uri(&params.id).to_string();
         let format = params.format.unwrap_or_else(|| "json".to_string());
 
         let ns = self.node_service()?;
@@ -756,11 +835,11 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        // Collect any flat (unknown) keys before consuming args into params.
-        // This lets the model pass {"title": "X", "node_type": "task", "status": "open"}
-        // and have "status" automatically promoted into properties.
+        // Collect any flat (unknown) keys and promote them into properties.
+        // This tolerates models that pass schema fields at the top level rather
+        // than nested inside "properties".
         let flat_extras: serde_json::Map<String, Value> = {
-            const KNOWN: &[&str] = &["title", "node_type", "body", "properties", "parent_id"];
+            const KNOWN: &[&str] = &["content", "node_type", "properties", "parent_id"];
             args.as_object()
                 .map(|obj| {
                     obj.iter()
@@ -787,12 +866,10 @@ impl GraphToolExecutor {
 
         let ns = self.node_service()?;
 
-        let body = params.body.unwrap_or_default();
-        let content = if body.is_empty() {
-            params.title.clone()
-        } else {
-            format!("{}\n{}", params.title, body)
-        };
+        // node_service.compute_title() handles all title derivation:
+        // - title_template + properties for schema types that define one
+        // - strip_markdown(content) for root nodes (all custom schema instances)
+        let content = params.content.unwrap_or_default();
 
         let input = node_ops::CreateNodeInput {
             node_type: params.node_type,
@@ -810,7 +887,7 @@ impl GraphToolExecutor {
         Ok(ok_result(
             tool_call_id,
             "create_node",
-            json!({ "id": output.node_id }),
+            json!({ "id": node_uri(&output.node_id) }),
         ))
     }
 
@@ -819,11 +896,9 @@ impl GraphToolExecutor {
         tool_call_id: &str,
         args: Value,
     ) -> Result<ToolResult, ToolError> {
-        // Collect any flat (unknown) keys before consuming args into params.
-        // This lets the model pass {"id": "...", "status": "done"} without
-        // wrapping "status" in a "properties" object.
+        // Collect any flat (unknown) keys and promote them into properties.
         let flat_extras: serde_json::Map<String, Value> = {
-            const KNOWN: &[&str] = &["id", "node_id", "title", "body", "properties"];
+            const KNOWN: &[&str] = &["id", "node_id", "content", "properties"];
             args.as_object()
                 .map(|obj| {
                     obj.iter()
@@ -852,27 +927,20 @@ impl GraphToolExecutor {
             Some(Value::Object(props))
         };
 
-        let content_update = match (&params.title, &params.body) {
-            (Some(t), Some(b)) => Some(format!("{}\n{}", t, b)),
-            (Some(t), None) => Some(t.clone()),
-            (None, Some(b)) => Some(b.clone()),
-            (None, None) => None,
-        };
-
-        if content_update.is_none() && new_properties.is_none() {
+        if params.content.is_none() && new_properties.is_none() {
             return Err(ToolError::InvalidArguments {
                 tool: "update_node".into(),
-                reason: "At least one of 'title', 'body', or 'properties' must be provided".into(),
+                reason: "At least one of 'content' or 'properties' must be provided".into(),
             });
         }
 
         let ns = self.node_service()?;
 
         let input = node_ops::UpdateNodeInput {
-            node_id: params.id.clone(),
+            node_id: strip_node_uri(&params.id).to_string(),
             version: None, // ops layer auto-fetches
             node_type: None,
-            content: content_update,
+            content: params.content,
             properties: new_properties,
             add_to_collection: None,
             remove_from_collection: None,
@@ -886,7 +954,7 @@ impl GraphToolExecutor {
         Ok(ok_result(
             tool_call_id,
             "update_node",
-            json!({ "id": output.node_id, "updated": true }),
+            json!({ "id": node_uri(&output.node_id), "updated": true }),
         ))
     }
 
@@ -904,9 +972,9 @@ impl GraphToolExecutor {
         let ns = self.node_service()?;
 
         let input = rel_ops::CreateRelInput {
-            source_id: params.from_id.clone(),
+            source_id: strip_node_uri(&params.from_id).to_string(),
             relationship_name: params.relationship_type.clone(),
-            target_id: params.to_id.clone(),
+            target_id: strip_node_uri(&params.to_id).to_string(),
             edge_data: None,
         };
 
@@ -954,7 +1022,7 @@ impl GraphToolExecutor {
         let mut all_nodes: Vec<Value> = Vec::new();
         for dir in &directions {
             let input = rel_ops::GetRelatedInput {
-                node_id: params.id.clone(),
+                node_id: strip_node_uri(&params.id).to_string(),
                 relationship_name: rel_type.clone(),
                 direction: dir.to_string(),
             };
@@ -965,7 +1033,7 @@ impl GraphToolExecutor {
 
             for node_val in &output.related_nodes {
                 let mut summary = json!({
-                    "id": node_val.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                    "id": node_uri(node_val.get("id").and_then(|v| v.as_str()).unwrap_or("")),
                     "title": truncate(
                         node_val.get("title").and_then(|v| v.as_str()).unwrap_or(""),
                         100
@@ -1050,11 +1118,38 @@ impl GraphToolExecutor {
 
         // Delegate to the MCP schema handler which handles ID normalization
         // (e.g., "Project" → "project"), field namespacing, and validation.
-        let result = handle_create_schema(&ns, args)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("create_schema failed: {:?}", e)))?;
+        let result = handle_create_schema(&ns, args).await;
 
-        Ok(ok_result(tool_call_id, "create_schema", result))
+        match result {
+            Ok(value) => Ok(ok_result(tool_call_id, "create_schema", value)),
+            Err(e) => {
+                // Return validation errors as tool errors (not ToolError::ExecutionFailed)
+                // so the model sees the message and can self-correct.
+                let msg = format!("{:?}", e);
+                Ok(error_result(tool_call_id, "create_schema", &msg))
+            }
+        }
+    }
+
+    async fn exec_update_schema(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        use nodespace_core::mcp::handlers::schema::handle_update_schema;
+        let ns = self.node_service()?;
+
+        let result = handle_update_schema(&ns, args).await;
+
+        match result {
+            Ok(value) => Ok(ok_result(tool_call_id, "update_schema", value)),
+            Err(e) => {
+                // Return validation errors as tool errors (not ToolError::ExecutionFailed)
+                // so the model sees the message and can self-correct.
+                let msg = format!("{:?}", e);
+                Ok(error_result(tool_call_id, "update_schema", &msg))
+            }
+        }
     }
 
     async fn exec_update_task_status(
@@ -1085,7 +1180,7 @@ impl GraphToolExecutor {
         let ns = self.node_service()?;
 
         let input = node_ops::UpdateNodeInput {
-            node_id: params.id.clone(),
+            node_id: strip_node_uri(&params.id).to_string(),
             version: None,
             node_type: None,
             content: None,
@@ -1102,7 +1197,7 @@ impl GraphToolExecutor {
         Ok(ok_result(
             tool_call_id,
             "update_task_status",
-            json!({ "id": output.node_id, "status": params.status, "updated": true }),
+            json!({ "id": node_uri(&output.node_id), "status": params.status, "updated": true }),
         ))
     }
 
@@ -1120,7 +1215,7 @@ impl GraphToolExecutor {
         let ns = self.node_service()?;
 
         let input = node_ops::DeleteNodeInput {
-            node_id: params.id.clone(),
+            node_id: strip_node_uri(&params.id).to_string(),
             version: None, // ops layer auto-fetches
         };
 
@@ -1131,7 +1226,7 @@ impl GraphToolExecutor {
         Ok(ok_result(
             tool_call_id,
             "delete_node",
-            json!({ "node_id": output.node_id, "deleted": output.existed }),
+            json!({ "id": node_uri(&output.node_id), "deleted": output.existed }),
         ))
     }
 
@@ -1214,6 +1309,7 @@ impl AgentToolExecutor for GraphToolExecutor {
             "create_node" => self.exec_create_node(&tool_call_id, args).await,
             "update_node" => self.exec_update_node(&tool_call_id, args).await,
             "create_schema" => self.exec_create_schema(&tool_call_id, args).await,
+            "update_schema" => self.exec_update_schema(&tool_call_id, args).await,
             "update_task_status" => self.exec_update_task_status(&tool_call_id, args).await,
             "create_relationship" => self.exec_create_relationship(&tool_call_id, args).await,
             "get_related_nodes" => self.exec_get_related_nodes(&tool_call_id, args).await,
@@ -1312,11 +1408,11 @@ mod tests {
     }
 
     #[test]
-    fn agent_update_node_params_accepts_id_alias() {
-        let args = json!({ "id": "node-456", "title": "New title" });
+    fn agent_update_node_params_accepts_id_and_content() {
+        let args = json!({ "id": "node-456", "content": "New content" });
         let params: AgentUpdateNodeParams = serde_json::from_value(args).unwrap();
         assert_eq!(params.id, "node-456");
-        assert_eq!(params.title, Some("New title".to_string()));
+        assert_eq!(params.content, Some("New content".to_string()));
     }
 
     // -- Tool definitions --
@@ -1331,7 +1427,7 @@ mod tests {
 
     #[test]
     fn definitions_count() {
-        assert_eq!(all_tool_definitions().len(), 12);
+        assert_eq!(all_tool_definitions().len(), 13);
     }
 
     #[test]
@@ -1618,5 +1714,27 @@ mod tests {
         assert!(names.contains(&"update_task_status"));
         assert!(names.contains(&"delete_node"));
         assert!(names.contains(&"create_nodes_from_markdown"));
+    }
+
+    // -- Helper: node_uri / strip_node_uri round-trip --
+
+    #[test]
+    fn node_uri_round_trip() {
+        let bare_id = "550e8400-e29b-41d4-a716-446655440000";
+        let uri = node_uri(bare_id);
+        assert_eq!(uri, "nodespace://550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(strip_node_uri(&uri), bare_id);
+    }
+
+    #[test]
+    fn node_uri_idempotent() {
+        let uri = "nodespace://550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(node_uri(uri), uri);
+    }
+
+    #[test]
+    fn strip_node_uri_no_prefix() {
+        let bare_id = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(strip_node_uri(bare_id), bare_id);
     }
 }

@@ -123,9 +123,11 @@ impl ManagedAgentState {
         let node_service = self.app_services.node_service().await.ok();
         let embedding_service = self.app_services.embedding_service().await.ok();
 
-        let executor: Arc<dyn AgentToolExecutor> = Arc::new(
-            GraphToolExecutor::new_with_optional_services(node_service.clone(), embedding_service.clone()),
-        );
+        let executor: Arc<dyn AgentToolExecutor> =
+            Arc::new(GraphToolExecutor::new_with_optional_services(
+                node_service.clone(),
+                embedding_service.clone(),
+            ));
 
         // Create skill pipeline with embedding service for intent-driven skill injection
         let skill_pipeline = embedding_service.map(|emb| {
@@ -139,7 +141,12 @@ impl ManagedAgentState {
         let prompt_assembler = node_service
             .map(|ns| Arc::new(nodespace_agent::prompt_assembler::PromptAssembler::new(ns)));
 
-        let service = LocalAgentService::new_with_assembler(engine, executor, skill_pipeline, prompt_assembler);
+        let service = LocalAgentService::new_with_assembler(
+            engine,
+            executor,
+            skill_pipeline,
+            prompt_assembler,
+        );
 
         let mut guard = self.inner.write().await;
         *guard = service;

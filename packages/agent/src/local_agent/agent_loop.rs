@@ -123,8 +123,10 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             workspace_context: dynamic_ctx.to_string(),
         };
 
-        // Build base prompt (async path for assembler, sync fallback otherwise)
-        let base_prompt = if let Some(ref assembler) = self.prompt_assembler {
+        // Build base prompt: use override (tests), assembler (production), or fallback.
+        let base_prompt = if let Some(ref override_prompt) = session.system_prompt_override {
+            override_prompt.clone()
+        } else if let Some(ref assembler) = self.prompt_assembler {
             assembler
                 .assemble(&template_ctx, all_tools.clone())
                 .await
@@ -267,6 +269,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 let final_response = if normalized.is_empty() && !all_tool_executions.is_empty() {
                     let tool_name = &all_tool_executions.last().unwrap().name;
                     format!("Done — {} completed successfully.", tool_name)
+                } else if normalized.is_empty() {
+                    // Model returned nothing at all — no tools, no text. Surface a
+                    // visible error so the UI doesn't go blank.
+                    tracing::warn!("Agent returned empty response with no tool calls");
+                    "I wasn't able to process that request. Could you try rephrasing?".to_string()
                 } else {
                     normalized
                 };
@@ -330,7 +337,8 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     tool = %tc.function_name,
                     is_error,
                     duration_ms,
-                    result_preview = %result_value.to_string().chars().take(200).collect::<String>(),
+                    args_preview = %args.to_string().chars().take(300).collect::<String>(),
+                    result_preview = %result_value.to_string().chars().take(300).collect::<String>(),
                     "Tool executed"
                 );
 
@@ -429,8 +437,20 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 on_status(LocalAgentStatus::Idle);
                 session.status = LocalAgentStatus::Idle;
 
+                // Both final inference and last iteration returned empty — synthesize
+                // a summary from tool results so the UI always gets a response.
+                let fallback = if !all_tool_executions.is_empty() {
+                    let summary: Vec<String> = all_tool_executions
+                        .iter()
+                        .map(|t| format!("• {} completed", t.name))
+                        .collect();
+                    summary.join("\n")
+                } else {
+                    normalize_response(&response_text)
+                };
+
                 return Ok(AgentTurnResult {
-                    response: normalize_response(&response_text),
+                    response: fallback,
                     tool_calls_made: all_tool_executions,
                     usage: total_usage,
                 });
@@ -651,6 +671,7 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
             created_at: chrono::Utc::now(),
             tool_executions: Vec::new(),
             dynamic_context: None,
+            system_prompt_override: None,
         };
 
         let cancel = CancellationToken::new();
@@ -674,6 +695,18 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
         let mut sessions = self.sessions.write().await;
         if let Some(session) = sessions.get_mut(session_id) {
             session.dynamic_context = Some(context);
+        }
+    }
+
+    /// Override the full system prompt for a session.
+    ///
+    /// When set, this bypasses both `PromptAssembler` and `fallback_system_prompt`.
+    /// Intended for integration tests that want to inject a pre-built prompt
+    /// (constructed via `PromptAssembler::assemble_static`) without a live database.
+    pub async fn set_system_prompt(&self, session_id: &str, prompt: String) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(session_id) {
+            session.system_prompt_override = Some(prompt);
         }
     }
 
@@ -963,6 +996,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             tool_executions: Vec::new(),
             dynamic_context: None,
+            system_prompt_override: None,
         }
     }
 
