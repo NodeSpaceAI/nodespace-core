@@ -170,7 +170,7 @@ pub async fn handle_create_schema(
 
     // Check if schema already exists — return a clear error so the agent knows
     // to use create_node instead of retrying create_schema.
-    if node_service.get_schema_node(&schema_id).await.is_ok() {
+    if matches!(node_service.get_schema_node(&schema_id).await, Ok(Some(_))) {
         return Err(MCPError::invalid_params(format!(
             "Schema '{}' already exists. Use create_node with node_type='{}' to create instances.",
             params.name, schema_id
