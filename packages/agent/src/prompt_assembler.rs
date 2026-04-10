@@ -283,7 +283,8 @@ impl PromptAssembler {
                 title: "Workspace Context Template".to_string(),
             },
             SeedPrompt {
-                content: "TOOL STRATEGY:\n\
+                content: "NODE MODEL: Everything in NodeSpace is a node. Built-in types (task, text, date) are always available. Custom types (e.g. 'project', 'customer') require a schema node to exist first — the schema defines the type's fields and title template. Once a schema exists, create instances with create_node(node_type=<schema_id>). Use create_schema only to define a new type; use create_node to create data.\n\n\
+                    TOOL STRATEGY:\n\
                     - ALWAYS search first before updating or getting a node. NEVER use placeholder IDs like \"abc-123\".\n\
                     - To find nodes by exact title or keyword (when you know the name): use search_nodes with query=<keyword>. To filter by type (e.g. \"show all tasks\"), also pass node_type=\"task\".\n\
                     - To find nodes by meaning/topic (when the exact name is unknown): use search_semantic (natural language query)\n\
