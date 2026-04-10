@@ -1139,11 +1139,17 @@ impl GraphToolExecutor {
         use nodespace_core::mcp::handlers::schema::handle_update_schema;
         let ns = self.node_service()?;
 
-        let result = handle_update_schema(&ns, args)
-            .await
-            .map_err(|e| ToolError::ExecutionFailed(format!("update_schema failed: {:?}", e)))?;
+        let result = handle_update_schema(&ns, args).await;
 
-        Ok(ok_result(tool_call_id, "update_schema", result))
+        match result {
+            Ok(value) => Ok(ok_result(tool_call_id, "update_schema", value)),
+            Err(e) => {
+                // Return validation errors as tool errors (not ToolError::ExecutionFailed)
+                // so the model sees the message and can self-correct.
+                let msg = format!("{:?}", e);
+                Ok(error_result(tool_call_id, "update_schema", &msg))
+            }
+        }
     }
 
     async fn exec_update_task_status(
@@ -1708,5 +1714,27 @@ mod tests {
         assert!(names.contains(&"update_task_status"));
         assert!(names.contains(&"delete_node"));
         assert!(names.contains(&"create_nodes_from_markdown"));
+    }
+
+    // -- Helper: node_uri / strip_node_uri round-trip --
+
+    #[test]
+    fn node_uri_round_trip() {
+        let bare_id = "550e8400-e29b-41d4-a716-446655440000";
+        let uri = node_uri(bare_id);
+        assert_eq!(uri, "nodespace://550e8400-e29b-41d4-a716-446655440000");
+        assert_eq!(strip_node_uri(&uri), bare_id);
+    }
+
+    #[test]
+    fn node_uri_idempotent() {
+        let uri = "nodespace://550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(node_uri(uri), uri);
+    }
+
+    #[test]
+    fn strip_node_uri_no_prefix() {
+        let bare_id = "550e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(strip_node_uri(bare_id), bare_id);
     }
 }

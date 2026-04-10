@@ -800,7 +800,7 @@ fn schema_creation_context(entity_types: &str) -> String {
     use nodespace_agent::prompt_assembler::PromptAssembler;
 
     // 1. Base prompt with entity types injected into the workspace context slot.
-    let base = PromptAssembler::assemble_static(entity_types);
+    let base = PromptAssembler::assemble_static(entity_types, None);
 
     // 2. Skill name, description, and guidance from the seeded skill definition.
     let skill = nodespace_agent::skill_pipeline::SkillPipeline::seed_skill_nodes()

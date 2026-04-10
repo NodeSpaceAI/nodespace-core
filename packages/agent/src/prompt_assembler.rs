@@ -233,12 +233,12 @@ impl PromptAssembler {
     /// other minijinja templates get a minimal context.
     ///
     /// Intended for use in unit/integration tests where no DB is available.
-    pub fn assemble_static(workspace_context: &str) -> String {
+    pub fn assemble_static(workspace_context: &str, current_date: Option<&str>) -> String {
         let mut seeds = Self::seed_prompt_nodes();
         seeds.sort_by_key(|s| s.priority);
 
         let ctx = TemplateContext {
-            current_date: "2025-01-01".to_string(),
+            current_date: current_date.unwrap_or("2025-01-01").to_string(),
             model_name: "test".to_string(),
             workspace_context: workspace_context.to_string(),
         };
