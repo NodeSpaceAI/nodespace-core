@@ -235,7 +235,7 @@ MULTIPLE DOCUMENTS: If the user asks about multiple topics, call search_semantic
             },
             SeedSkill {
                 name: "Node Creation".to_string(),
-                description: "Create new instances of existing node types — add a task, text note, or an entry for a custom type. Use when user wants to add a new record or item.".to_string(),
+                description: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Project, Customer, Invoice. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.".to_string(),
                 tool_whitelist: vec![
                     "create_node".to_string(),
                     "get_node".to_string(),

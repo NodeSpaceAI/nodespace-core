@@ -269,6 +269,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 let final_response = if normalized.is_empty() && !all_tool_executions.is_empty() {
                     let tool_name = &all_tool_executions.last().unwrap().name;
                     format!("Done — {} completed successfully.", tool_name)
+                } else if normalized.is_empty() {
+                    // Model returned nothing at all — no tools, no text. Surface a
+                    // visible error so the UI doesn't go blank.
+                    tracing::warn!("Agent returned empty response with no tool calls");
+                    "I wasn't able to process that request. Could you try rephrasing?".to_string()
                 } else {
                     normalized
                 };
