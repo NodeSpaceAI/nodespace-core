@@ -90,10 +90,11 @@ fn build_markdown_recursive(
     }
 }
 
-/// Parameters for search_nodes (keyword/text search) method
+/// Parameters for search_nodes (keyword/title search) method
 #[derive(Debug, Deserialize)]
 pub struct SearchNodesParams {
-    /// Text query to search for in node content
+    /// Keyword or phrase to search for in node titles. Pass an empty string to
+    /// skip the title filter (useful when filtering only by node_type or filters).
     pub query: String,
 
     /// Filter by node type (e.g., "task", "text")
@@ -104,6 +105,11 @@ pub struct SearchNodesParams {
     /// Default: 10
     #[serde(default)]
     pub limit: Option<usize>,
+
+    /// Property filters as key-value pairs matched with equals.
+    /// e.g. {"status": "open"} or {"company": "Acme"}
+    #[serde(default)]
+    pub filters: Option<std::collections::HashMap<String, String>>,
 }
 
 /// Parameters for search_semantic method
@@ -165,6 +171,20 @@ pub struct SearchSemanticParams {
     /// Multiple filters are combined with AND logic
     #[serde(default)]
     pub property_filters: Option<serde_json::Value>,
+
+    /// When true, attach outgoing relationships of each result node as an "edges" array.
+    /// Each edge entry has: {"relationship": "...", "target_id": "...", "target_title": "..."}
+    /// Default: false (no edge data included)
+    #[serde(default)]
+    pub include_edges: Option<bool>,
+
+    /// When true, re-rank results by blending vector similarity with graph connectivity degree.
+    /// Blending formula: combined_score = 0.7 * similarity + 0.3 * normalized_degree
+    /// where normalized_degree = outgoing_edge_count / max_outgoing_edge_count_in_result_set
+    /// Surfaces well-connected, central knowledge nodes over isolated but textually similar ones.
+    /// Default: false (pure similarity ranking)
+    #[serde(default)]
+    pub graph_boost: Option<bool>,
 }
 
 /// Search root nodes by semantic similarity
