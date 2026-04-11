@@ -7,7 +7,8 @@
 use crate::models::Node;
 use crate::ops::OpsError;
 use crate::services::{
-    CollectionService, NodeEmbeddingService, NodeService, NodeServiceError, SearchScope,
+    CollectionService, NodeEmbeddingService, NodeService, NodeServiceError, SearchNodeFilters,
+    SearchScope,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -31,6 +32,10 @@ pub struct SearchSemanticInput {
     pub include_markdown: Option<usize>,
     pub include_archived: Option<bool>,
     pub scope: Option<String>,
+    /// Filter by specific node types (e.g., ["task", "text"])
+    pub node_types: Option<Vec<String>>,
+    /// Filter by node properties (key-value pairs, AND logic)
+    pub property_filters: Option<serde_json::Value>,
 }
 
 #[derive(Debug)]
@@ -253,6 +258,16 @@ pub async fn search_semantic(
         scope
     );
 
+    // Build service-layer filters for node_types and property_filters
+    let search_filters = if input.node_types.is_some() || input.property_filters.is_some() {
+        Some(SearchNodeFilters {
+            node_types: input.node_types.clone(),
+            property_filters: input.property_filters.clone(),
+        })
+    } else {
+        None
+    };
+
     // Over-fetch when post-filtering is needed
     let scope_filters = !matches!(scope, SearchScope::Everything);
     let has_post_filters = collection_member_ids.is_some()
@@ -262,7 +277,12 @@ pub async fn search_semantic(
     let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
     let results = embedding_service
-        .semantic_search_nodes(&input.query, effective_limit, threshold, None)
+        .semantic_search_nodes(
+            &input.query,
+            effective_limit,
+            threshold,
+            search_filters.as_ref(),
+        )
         .await
         .map_err(|e| {
             let err_msg = e.to_string();

@@ -223,7 +223,30 @@ fn def_search_semantic() -> ToolDefinition {
                 },
                 "collection": {
                     "type": "string",
-                    "description": "Filter results to a specific collection path (e.g. 'Architecture', 'Development')"
+                    "description": "Filter results to a specific collection path (e.g. 'Architecture', 'Development:Process'). Use this when you know which collection to search."
+                },
+                "exclude_collections": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Exclude results from these collection paths (e.g. ['Archived', 'Drafts']). Useful to suppress noise from known irrelevant collections."
+                },
+                "threshold": {
+                    "type": "number",
+                    "description": "Minimum similarity score (0.0-1.0, default 0.3). Lower values return broader results. Lower to 0.1-0.2 when you get no results or need broader recall. Keep at default for typical queries."
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["knowledge", "conversations", "everything"],
+                    "description": "Limit search to a node category. 'knowledge' (default): documents, text, headers. 'conversations': agent/chat nodes. 'everything': all node types."
+                },
+                "include_archived": {
+                    "type": "boolean",
+                    "description": "Include archived nodes in results (default false). Set to true to search historical or archived content."
+                },
+                "node_types": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Filter by specific node types (e.g. ['task', 'text']). Prefer 'collection' for topic filtering; use 'node_types' when you need a specific structural type."
                 }
             },
             "required": ["query"]
@@ -712,24 +735,24 @@ impl GraphToolExecutor {
                 tool: "search_semantic".to_string(),
                 reason: e.to_string(),
             })?;
-        let query = params.query;
+        let query = params.query.clone();
         let limit = params.limit.unwrap_or(DEFAULT_SEMANTIC_LIMIT);
-        let include_markdown = params.include_markdown;
-        let collection = params.collection;
 
         let ns = self.node_service()?;
         let emb = self.embedding_service()?;
 
         let input = search_ops::SearchSemanticInput {
             query: query.clone(),
-            threshold: Some(SEMANTIC_THRESHOLD),
+            threshold: params.threshold.or(Some(SEMANTIC_THRESHOLD)),
             limit: Some(limit),
-            collection_id: None,
-            collection,
-            exclude_collections: None,
-            include_markdown,
-            include_archived: None,
-            scope: None,
+            collection_id: params.collection_id,
+            collection: params.collection,
+            exclude_collections: params.exclude_collections,
+            include_markdown: params.include_markdown,
+            include_archived: params.include_archived,
+            scope: params.scope,
+            node_types: params.node_types,
+            property_filters: params.property_filters,
         };
 
         let output = search_ops::search_semantic(&ns, &emb, input)

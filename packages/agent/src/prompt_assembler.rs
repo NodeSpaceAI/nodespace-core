@@ -290,6 +290,7 @@ impl PromptAssembler {
                     - To find nodes by meaning/topic (when the exact name is unknown): use search_semantic (natural language query)\n\
                     - search_semantic results are ordered by relevance. Each result has: id, title, score (0-1), snippet, and optionally markdown (full content).\n\
                     - If a search_semantic result has a non-empty 'markdown' field, that IS the full document — summarize from it directly. Only call get_node for results that lack markdown.\n\
+                    - search_semantic optional params: use 'collection' to restrict to a topic area; use 'node_types' to filter by structural type (e.g. [\"task\"]); lower 'threshold' (e.g. 0.1) if no results are returned.\n\
                     - To get full content for a known node ID: use get_node with format=markdown.\n\
                     - To find what nodes are connected to a node: use get_related_nodes with the node ID.\n\
                     - To update a task status: search_nodes for the task by name, then use update_task_status with the real ID.\n\
