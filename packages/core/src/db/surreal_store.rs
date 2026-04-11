@@ -1829,14 +1829,11 @@ impl SurrealStore {
         // Build WHERE clause conditions, composing title_contains and node_type together
         // so that both filters are applied in a single query (no early returns that skip node_type).
         let mut conditions: Vec<String> = Vec::new();
-        let mut has_title_search = false;
 
-        if let Some(ref search_query) = query.title_contains {
+        if query.title_contains.is_some() {
             // Guard `title IS NOT NONE` before calling string::lowercase to avoid errors on
             // nodes that have no title set (SurrealDB 3.x errors on string::lowercase(NONE))
             conditions.push("title IS NOT NONE AND string::lowercase(title) CONTAINS string::lowercase($search_query)".to_string());
-            has_title_search = true;
-            let _ = search_query; // used via bind below
         }
 
         if query.node_type.is_some() {
@@ -1874,10 +1871,8 @@ impl SurrealStore {
 
         let mut query_builder = self.db.query(sql);
 
-        if has_title_search {
-            if let Some(ref search_query) = query.title_contains {
-                query_builder = query_builder.bind(("search_query", search_query.to_string()));
-            }
+        if let Some(ref search_query) = query.title_contains {
+            query_builder = query_builder.bind(("search_query", search_query.to_string()));
         }
 
         if let Some(node_type) = &query.node_type {
