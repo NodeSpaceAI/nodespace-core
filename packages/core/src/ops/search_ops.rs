@@ -7,7 +7,8 @@
 use crate::models::Node;
 use crate::ops::OpsError;
 use crate::services::{
-    CollectionService, NodeEmbeddingService, NodeService, NodeServiceError, SearchScope,
+    CollectionService, NodeEmbeddingService, NodeService, NodeServiceError, SearchNodeFilters,
+    SearchScope,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -31,6 +32,22 @@ pub struct SearchSemanticInput {
     pub include_markdown: Option<usize>,
     pub include_archived: Option<bool>,
     pub scope: Option<String>,
+    /// Filter by specific node types (e.g., ["task", "text"])
+    pub node_types: Option<Vec<String>>,
+    /// Filter by node properties (key-value pairs, AND logic)
+    pub property_filters: Option<serde_json::Value>,
+
+    /// When true, attach outgoing relationships of each result node as an "edges" array.
+    /// Each edge entry has: {"relationship": "...", "target_id": "...", "target_title": "..."}
+    /// Default: false (no edge data included)
+    pub include_edges: Option<bool>,
+
+    /// When true, re-rank results by blending vector similarity with graph connectivity degree.
+    /// Blending formula: combined_score = 0.7 * similarity + 0.3 * normalized_degree
+    /// where normalized_degree = outgoing_edge_count / max_outgoing_edge_count_in_result_set
+    /// Surfaces well-connected, central knowledge nodes over isolated but textually similar ones.
+    /// Default: false (pure similarity ranking)
+    pub graph_boost: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -253,6 +270,17 @@ pub async fn search_semantic(
         scope
     );
 
+    // Build service-layer filters for node_types and property_filters.
+    // node_types/property_filters over-fetching is handled inside semantic_search_nodes.
+    let search_filters = if input.node_types.is_some() || input.property_filters.is_some() {
+        Some(SearchNodeFilters {
+            node_types: input.node_types.clone(),
+            property_filters: input.property_filters.clone(),
+        })
+    } else {
+        None
+    };
+
     // Over-fetch when post-filtering is needed
     let scope_filters = !matches!(scope, SearchScope::Everything);
     let has_post_filters = collection_member_ids.is_some()
@@ -262,7 +290,12 @@ pub async fn search_semantic(
     let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
     let results = embedding_service
-        .semantic_search_nodes(&input.query, effective_limit, threshold, None)
+        .semantic_search_nodes(
+            &input.query,
+            effective_limit,
+            threshold,
+            search_filters.as_ref(),
+        )
         .await
         .map_err(|e| {
             let err_msg = e.to_string();

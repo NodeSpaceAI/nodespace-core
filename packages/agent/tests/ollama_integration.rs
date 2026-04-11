@@ -897,12 +897,17 @@ impl StubToolExecutor {
         let tools = vec![
             ToolDefinition {
                 name: "search_nodes".to_string(),
-                description: "Search nodes by exact title or keyword. Use node_type to filter by type (e.g. node_type='task'). Prefer over search_semantic when you know the node name.".to_string(),
+                description: "Search nodes by title keyword and/or filter by type and properties. Pass query=\"\" to skip title filter (e.g. to list all tasks). Use node_type to filter by type. Use filters for property key-value pairs (e.g. filters={\"status\":\"open\"}).".to_string(),
                 parameters_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string"},
-                        "node_type": {"type": "string"}
+                        "query": {"type": "string", "description": "Keyword or phrase to search for in node titles. Pass empty string to skip title filter."},
+                        "node_type": {"type": "string"},
+                        "filters": {
+                            "type": "object",
+                            "description": "Property filters as key-value pairs, e.g. {\"status\": \"open\"}.",
+                            "additionalProperties": {"type": "string"}
+                        }
                     },
                     "required": ["query"]
                 }),
@@ -1555,6 +1560,30 @@ async fn test_pipeline_schema_creation_title_template_fields() {
             i += 1;
         }
     }
+}
+
+/// Scenario: "find all my open tasks"
+///
+/// The model should call search_nodes with node_type="task" (not search_semantic)
+/// to list tasks filtered by type.
+#[tokio::test]
+async fn test_pipeline_search_nodes_with_type_filter() {
+    let Some(engine) = resolve_engine("test_pipeline_search_nodes_with_type_filter").await else {
+        return;
+    };
+
+    let executor: Arc<dyn AgentToolExecutor> = Arc::new(StubToolExecutor::new());
+    let service = LocalAgentService::new(engine, executor, None);
+    let session_id = service.create_session(None).await;
+
+    let tools = run_turn_get_tools(&service, &session_id, "Find all my open tasks").await;
+
+    eprintln!("test_pipeline_search_nodes_with_type_filter: tools = {tools:?}");
+
+    assert!(
+        tools.iter().any(|t| t == "search_nodes"),
+        "Expected search_nodes for listing tasks by type, got: {tools:?}"
+    );
 }
 
 /// Scenario: "delete the 'Some thing to do' task"

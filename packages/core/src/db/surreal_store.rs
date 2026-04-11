@@ -1826,37 +1826,15 @@ impl SurrealStore {
             return Ok(surreal_nodes.into_iter().map(Into::into).collect());
         }
 
-        // Handle title_contains query
-        if let Some(ref search_query) = query.title_contains {
+        // Build WHERE clause conditions, composing title_contains and node_type together
+        // so that both filters are applied in a single query (no early returns that skip node_type).
+        let mut conditions: Vec<String> = Vec::new();
+
+        if query.title_contains.is_some() {
             // Guard `title IS NOT NONE` before calling string::lowercase to avoid errors on
             // nodes that have no title set (SurrealDB 3.x errors on string::lowercase(NONE))
-            let sql = match (query.limit.is_some(), query.offset.is_some()) {
-                (false, false) => "SELECT * FROM node WHERE title IS NOT NONE AND string::lowercase(title) CONTAINS string::lowercase($search_query);",
-                (true, false) => "SELECT * FROM node WHERE title IS NOT NONE AND string::lowercase(title) CONTAINS string::lowercase($search_query) LIMIT $limit;",
-                (false, true) => "SELECT * FROM node WHERE title IS NOT NONE AND string::lowercase(title) CONTAINS string::lowercase($search_query) START AT $offset;",
-                (true, true) => "SELECT * FROM node WHERE title IS NOT NONE AND string::lowercase(title) CONTAINS string::lowercase($search_query) LIMIT $limit START AT $offset;",
-            };
-            let mut query_builder = self
-                .db
-                .query(sql)
-                .bind(("search_query", search_query.to_string()));
-            if let Some(limit) = query.limit {
-                query_builder = query_builder.bind(("limit", limit as i64));
-            }
-            if let Some(offset) = query.offset {
-                query_builder = query_builder.bind(("offset", offset as i64));
-            }
-            let mut response = query_builder
-                .await
-                .context("Failed to search nodes by title")?;
-            let surreal_nodes: Vec<SurrealNode> = response
-                .take(0)
-                .context("Failed to extract title search results")?;
-            return Ok(surreal_nodes.into_iter().map(Into::into).collect());
+            conditions.push("title IS NOT NONE AND string::lowercase(title) CONTAINS string::lowercase($search_query)".to_string());
         }
-
-        // Build WHERE clause conditions
-        let mut conditions = Vec::new();
 
         if query.node_type.is_some() {
             conditions.push("node_type = $node_type".to_string());
@@ -1871,23 +1849,42 @@ impl SurrealStore {
             None
         };
 
-        let sql = match (&where_clause, query.limit) {
-            (None, None) => "SELECT * FROM node;".to_string(),
-            (None, Some(_)) => "SELECT * FROM node LIMIT $limit;".to_string(),
-            (Some(clause), None) => format!("SELECT * FROM node WHERE {};", clause),
-            (Some(clause), Some(_)) => {
+        let sql = match (&where_clause, query.limit, query.offset) {
+            (None, None, None) => "SELECT * FROM node;".to_string(),
+            (None, Some(_), None) => "SELECT * FROM node LIMIT $limit;".to_string(),
+            (None, None, Some(_)) => "SELECT * FROM node START AT $offset;".to_string(),
+            (None, Some(_), Some(_)) => {
+                "SELECT * FROM node LIMIT $limit START AT $offset;".to_string()
+            }
+            (Some(clause), None, None) => format!("SELECT * FROM node WHERE {};", clause),
+            (Some(clause), Some(_), None) => {
                 format!("SELECT * FROM node WHERE {} LIMIT $limit;", clause)
             }
+            (Some(clause), None, Some(_)) => {
+                format!("SELECT * FROM node WHERE {} START AT $offset;", clause)
+            }
+            (Some(clause), Some(_), Some(_)) => format!(
+                "SELECT * FROM node WHERE {} LIMIT $limit START AT $offset;",
+                clause
+            ),
         };
 
         let mut query_builder = self.db.query(sql);
+
+        if let Some(ref search_query) = query.title_contains {
+            query_builder = query_builder.bind(("search_query", search_query.to_string()));
+        }
 
         if let Some(node_type) = &query.node_type {
             query_builder = query_builder.bind(("node_type", node_type.clone()));
         }
 
         if let Some(limit) = query.limit {
-            query_builder = query_builder.bind(("limit", limit));
+            query_builder = query_builder.bind(("limit", limit as i64));
+        }
+
+        if let Some(offset) = query.offset {
+            query_builder = query_builder.bind(("offset", offset as i64));
         }
 
         let mut response = query_builder.await.context("Failed to query nodes")?;

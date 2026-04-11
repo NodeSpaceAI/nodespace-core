@@ -228,7 +228,20 @@ USE MARKDOWN DIRECTLY: If the top result has a non-empty 'markdown' field, that 
 
 FETCH ADDITIONAL CONTENT: Only call get_node with format=markdown if you need full content for a lower-ranked result that did not include markdown.
 
-MULTIPLE DOCUMENTS: If the user asks about multiple topics, call search_semantic once per topic rather than searching broadly and fetching each result individually."#.to_string(),
+PARAMETER GUIDANCE:
+- Use 'collection' to narrow search to a namespace/folder (e.g. collection="Architecture").
+- Use 'node_types' to filter by type (e.g. node_types=["task"]) — prefer over 'collection' for type-based filtering.
+- Use 'scope'="conversations" when the user asks about past chats or conversation history.
+- Use 'threshold' to tune precision: default 0.3. Lower to 0.1-0.2 for broader recall when results are sparse.
+- Use 'include_archived'=true only when the user explicitly asks for archived or historical content.
+- Use 'exclude_collections' to suppress noisy collections (e.g. exclude_collections=["Archived"]).
+
+MULTIPLE DOCUMENTS: If the user asks about multiple topics, call search_semantic once per topic rather than searching broadly and fetching each result individually.
+
+LISTING BY TYPE OR PROPERTY: To list all nodes of a type or filtered by a property, use search_nodes (not search_semantic). Pass query="" to skip the title filter. Examples:
+- "find all my open tasks" → search_nodes(query="", node_type="task", filters={"status": "open"})
+- "list all customers" → search_nodes(query="", node_type="<customer-schema-id>")
+- "find tasks for Acme" → search_nodes(query="", node_type="task", filters={"company": "Acme"})"#.to_string(),
                         priority: 1,
                     },
                 ],
