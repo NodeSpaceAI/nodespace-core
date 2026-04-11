@@ -213,21 +213,6 @@ impl ManagedAgentState {
 
         tracing::debug!("ManagedAgentState: inference engine reset to NoOp");
     }
-
-    /// Reset the inference engine to NoOp (for use in sync shutdown context).
-    ///
-    /// Creates a fresh single-threaded runtime to avoid the "cannot block_on
-    /// inside a runtime" panic when called from within a Tokio runtime thread.
-    ///
-    /// Must be called BEFORE releasing GPU resources to ensure proper cleanup
-    /// order and avoid use-after-free crashes in Metal.
-    pub fn reset_engine_sync(&self) {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build shutdown runtime");
-        rt.block_on(self.reset_to_noop_engine());
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +259,7 @@ pub async fn ensure_model_ready(
     model_id: String,
     app: AppHandle,
     manager: State<'_, Arc<CompositeModelManager>>,
-    agent_state: State<'_, ManagedAgentState>,
+    agent_state: State<'_, Arc<ManagedAgentState>>,
 ) -> Result<bool, CommandError> {
     tracing::info!(model_id = %model_id, "ensure_model_ready called");
 
@@ -454,7 +439,7 @@ pub async fn ensure_model_ready(
 /// Get the current status of the local agent.
 #[tauri::command]
 pub async fn local_agent_status(
-    state: State<'_, ManagedAgentState>,
+    state: State<'_, Arc<ManagedAgentState>>,
 ) -> Result<LocalAgentStatus, CommandError> {
     let service = state.service().await;
     let sessions = service.get_sessions().await;
@@ -475,7 +460,7 @@ pub async fn local_agent_status(
 #[tauri::command]
 pub async fn local_agent_new_session(
     model_id: String,
-    state: State<'_, ManagedAgentState>,
+    state: State<'_, Arc<ManagedAgentState>>,
 ) -> Result<String, CommandError> {
     let service = state.service().await;
     let session_id = service.create_session(Some(model_id)).await;
@@ -509,7 +494,7 @@ pub async fn local_agent_send(
     session_id: String,
     message: String,
     app: AppHandle,
-    state: State<'_, ManagedAgentState>,
+    state: State<'_, Arc<ManagedAgentState>>,
 ) -> Result<AgentTurnResult, CommandError> {
     // Refresh workspace context per turn to capture any newly-added schemas
     if let Ok(ns) = state.app_services.node_service().await {
@@ -563,7 +548,7 @@ pub async fn local_agent_send(
 #[tauri::command]
 pub async fn local_agent_cancel(
     session_id: String,
-    state: State<'_, ManagedAgentState>,
+    state: State<'_, Arc<ManagedAgentState>>,
 ) -> Result<(), CommandError> {
     let service = state.service().await;
     service.cancel(&session_id).await;
@@ -575,7 +560,7 @@ pub async fn local_agent_cancel(
 #[tauri::command]
 pub async fn local_agent_end_session(
     session_id: String,
-    state: State<'_, ManagedAgentState>,
+    state: State<'_, Arc<ManagedAgentState>>,
 ) -> Result<(), CommandError> {
     let service = state.service().await;
     service.end_session(&session_id).await;
@@ -586,7 +571,7 @@ pub async fn local_agent_end_session(
 /// Get all active agent sessions.
 #[tauri::command]
 pub async fn local_agent_get_sessions(
-    state: State<'_, ManagedAgentState>,
+    state: State<'_, Arc<ManagedAgentState>>,
 ) -> Result<Vec<AgentSession>, CommandError> {
     let service = state.service().await;
     let session_pairs = service.get_sessions().await;
