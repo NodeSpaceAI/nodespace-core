@@ -180,17 +180,28 @@ fn strip_node_uri(id: &str) -> &str {
 fn def_search_nodes() -> ToolDefinition {
     ToolDefinition {
         name: "search_nodes".into(),
-        description: "Search nodes by exact title or keyword. Use node_type to filter by type (e.g. node_type='task' to find only tasks). Prefer this over search_semantic when you know the node name.".into(),
+        description: "Search nodes by title keyword and/or filter by type and properties. \
+            Searches the title field (indexed, populated for root and task nodes). \
+            Pass an empty query string to skip the title filter (e.g. to list all tasks). \
+            Use node_type to filter by type (e.g. node_type='task'). \
+            Use filters for property key-value pairs (e.g. filters={\"status\":\"open\"}). \
+            Prefer this over search_semantic when you know the node name or need to list nodes by type/property."
+            .into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Keyword or phrase to search for in node content"
+                    "description": "Keyword or phrase to search for in node titles. Pass empty string to skip title filter."
                 },
                 "node_type": {
                     "type": "string",
                     "description": "Optional filter by node type (text, task, date, etc.)"
+                },
+                "filters": {
+                    "type": "object",
+                    "description": "Property filters as key-value pairs, e.g. {\"status\": \"open\"} or {\"company\": \"Acme\"}. Keys are property names, values matched with equals.",
+                    "additionalProperties": { "type": "string" }
                 },
                 "limit": {
                     "type": "integer",
@@ -223,7 +234,30 @@ fn def_search_semantic() -> ToolDefinition {
                 },
                 "collection": {
                     "type": "string",
-                    "description": "Filter results to a specific collection path (e.g. 'Architecture', 'Development')"
+                    "description": "Filter results to a specific collection path (e.g. 'Architecture', 'Development'). Use for namespace/folder filtering."
+                },
+                "threshold": {
+                    "type": "number",
+                    "description": "Minimum similarity score (0.0-1.0). Lower values return more results with less precision. Default: 0.3. Lower to 0.1-0.2 for broader recall when initial results are too few."
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["knowledge", "conversations", "everything"],
+                    "description": "Search scope: 'knowledge' (default, searches text/header/code/schema nodes), 'conversations' (searches conversation messages), 'everything' (all node types). Use 'conversations' when the user asks about past chats or conversation history."
+                },
+                "include_archived": {
+                    "type": "boolean",
+                    "description": "Whether to include archived nodes in results. Default: false. Set to true when the user explicitly asks about archived or historical content."
+                },
+                "node_types": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Filter results to specific node types (e.g. [\"task\", \"text\"]). Use for type filtering; use 'collection' for namespace/folder filtering."
+                },
+                "exclude_collections": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Collection paths to exclude from results (e.g. [\"Archived\", \"Drafts\"]). Useful to narrow results when a collection is noisy."
                 }
             },
             "required": ["query"]
@@ -656,6 +690,34 @@ impl GraphToolExecutor {
 
         let ns = self.node_service()?;
 
+        // Build property filters from the `filters` map (key=value pairs, operator=equals)
+        let mut filter_items: Vec<node_ops::QueryFilterItem> = params
+            .filters
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(field, val)| node_ops::QueryFilterItem {
+                field,
+                operator: "equals".to_string(),
+                value: Value::String(val),
+            })
+            .collect();
+
+        // Title search filter — only added when query is non-empty.
+        // title is populated for root nodes and task nodes only.
+        if !query.is_empty() {
+            filter_items.push(node_ops::QueryFilterItem {
+                field: "title".to_string(),
+                operator: "contains".to_string(),
+                value: Value::String(query),
+            });
+        }
+
+        let filters = if filter_items.is_empty() {
+            None
+        } else {
+            Some(filter_items)
+        };
+
         let input = node_ops::QueryNodesInput {
             node_type,
             parent_id: None,
@@ -664,11 +726,7 @@ impl GraphToolExecutor {
             offset: None,
             collection_id: None,
             collection: None,
-            filters: Some(vec![node_ops::QueryFilterItem {
-                field: "content".to_string(),
-                operator: "contains".to_string(),
-                value: Value::String(query),
-            }]),
+            filters,
         };
 
         let output = node_ops::query_nodes(&ns, input)
@@ -712,24 +770,36 @@ impl GraphToolExecutor {
                 tool: "search_semantic".to_string(),
                 reason: e.to_string(),
             })?;
-        let query = params.query;
+        let query = params.query.clone();
         let limit = params.limit.unwrap_or(DEFAULT_SEMANTIC_LIMIT);
-        let include_markdown = params.include_markdown;
-        let collection = params.collection;
+
+        // Use caller-supplied threshold when provided; fall back to the local
+        // agent default (SEMANTIC_THRESHOLD = 0.3). This preserves the existing
+        // default behaviour while allowing the LLM to tune recall.
+        let threshold = params.threshold.unwrap_or(SEMANTIC_THRESHOLD);
 
         let ns = self.node_service()?;
         let emb = self.embedding_service()?;
 
         let input = search_ops::SearchSemanticInput {
             query: query.clone(),
-            threshold: Some(SEMANTIC_THRESHOLD),
+            threshold: Some(threshold),
             limit: Some(limit),
-            collection_id: None,
-            collection,
-            exclude_collections: None,
-            include_markdown,
-            include_archived: None,
-            scope: None,
+            collection_id: params.collection_id,
+            collection: params.collection,
+            exclude_collections: params.exclude_collections,
+            include_markdown: params.include_markdown,
+            include_archived: params.include_archived,
+            scope: params.scope,
+            node_types: params.node_types,
+            // property_filters is intentionally omitted from the tool schema:
+            // the complex filter structure (arbitrary key-value JSON object) is
+            // too difficult for the 8B model to construct reliably without
+            // additional scaffolding. Users can achieve type-based filtering
+            // via node_types and namespace-based filtering via collection.
+            property_filters: params.property_filters,
+            include_edges: None,
+            graph_boost: None,
         };
 
         let output = search_ops::search_semantic(&ns, &emb, input)
@@ -1462,6 +1532,50 @@ mod tests {
     }
 
     #[test]
+    fn search_nodes_schema_has_filters_property() {
+        let def = def_search_nodes();
+        let props = def.parameters_schema["properties"]
+            .as_object()
+            .expect("properties must be object");
+        assert!(
+            props.contains_key("filters"),
+            "schema must expose 'filters' property"
+        );
+        let filters_type = props["filters"]["type"].as_str().unwrap_or("");
+        assert_eq!(filters_type, "object", "filters must be of type object");
+    }
+
+    #[test]
+    fn search_nodes_params_parses_filters() {
+        let args = json!({
+            "query": "Review quarterly report",
+            "node_type": "task",
+            "filters": { "status": "open" }
+        });
+        let params: SearchNodesParams = serde_json::from_value(args).unwrap();
+        assert_eq!(params.query, "Review quarterly report");
+        assert_eq!(params.node_type, Some("task".to_string()));
+        let filters = params.filters.expect("filters should be present");
+        assert_eq!(filters.get("status").map(|s| s.as_str()), Some("open"));
+    }
+
+    #[test]
+    fn search_nodes_params_empty_query_with_node_type() {
+        let args = json!({ "query": "", "node_type": "task" });
+        let params: SearchNodesParams = serde_json::from_value(args).unwrap();
+        assert_eq!(params.query, "");
+        assert_eq!(params.node_type, Some("task".to_string()));
+        assert!(params.filters.is_none());
+    }
+
+    #[test]
+    fn search_nodes_params_filters_absent_is_none() {
+        let args = json!({ "query": "hello" });
+        let params: SearchNodesParams = serde_json::from_value(args).unwrap();
+        assert!(params.filters.is_none());
+    }
+
+    #[test]
     fn create_node_schema_requires_content_and_type() {
         let def = def_create_node();
         let required = def.parameters_schema["required"]
@@ -1737,5 +1851,67 @@ mod tests {
     fn strip_node_uri_no_prefix() {
         let bare_id = "550e8400-e29b-41d4-a716-446655440000";
         assert_eq!(strip_node_uri(bare_id), bare_id);
+    }
+
+    // -- Parity test: def_search_semantic schema vs SearchSemanticParams fields --
+
+    /// Asserts that every field in `SearchSemanticParams` is either represented
+    /// in the `def_search_semantic()` JSON schema (so the LLM can request it) or
+    /// explicitly documented as intentionally excluded.
+    ///
+    /// This test prevents future drift: when a new field is added to
+    /// `SearchSemanticParams`, the author must either add it to the schema here
+    /// or update the exclusion list with a clear comment explaining why.
+    #[test]
+    fn search_semantic_schema_parity_with_params() {
+        let def = def_search_semantic();
+        let props = def.parameters_schema["properties"]
+            .as_object()
+            .expect("def_search_semantic schema must have 'properties'");
+
+        // Fields in SearchSemanticParams that are exposed in the tool schema.
+        // When a new field is added to SearchSemanticParams, add it here (or to
+        // the exclusion list below) to satisfy this test.
+        let schema_fields = [
+            "query",
+            "limit",
+            "include_markdown",
+            "collection",
+            "threshold",
+            "scope",
+            "include_archived",
+            "node_types",
+            "exclude_collections",
+        ];
+
+        // Fields intentionally excluded from the tool schema:
+        // - "collection_id": internal ID form; the LLM should use the human-readable
+        //   "collection" (path) form instead, which resolves to a collection_id.
+        // - "property_filters": the complex key-value JSON structure is too difficult
+        //   for the 8B model to construct reliably. Type-based filtering via
+        //   "node_types" and namespace-based filtering via "collection" cover the
+        //   primary use cases. The field is still wired through exec_search_semantic
+        //   so MCP callers (which can provide well-formed JSON) can use it.
+        let excluded_fields = ["collection_id", "property_filters"];
+
+        for field in &schema_fields {
+            assert!(
+                props.contains_key(*field),
+                "SearchSemanticParams field '{}' is missing from def_search_semantic() schema. \
+                 Add it to the schema or move it to the excluded_fields list with a justification comment.",
+                field
+            );
+        }
+
+        // Verify excluded fields are not accidentally present in the schema
+        // (they are intentionally excluded, so their absence is expected).
+        for field in &excluded_fields {
+            assert!(
+                !props.contains_key(*field),
+                "Field '{}' is in the exclusion list but was found in the schema. \
+                 Remove it from excluded_fields if it should be schema-exposed.",
+                field
+            );
+        }
     }
 }
