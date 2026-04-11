@@ -399,8 +399,10 @@ pub fn run() {
 
                 // Local agent state: wraps LocalAgentService with a no-op engine
                 // initially. The real engine is injected when a model is loaded.
+                // Stored as Arc so it can be cloned and sent to dedicated OS threads
+                // during graceful shutdown (see release_gpu_resources).
                 let app_services = app.state::<app_services::AppServices>().inner().clone();
-                app.manage(ManagedAgentState::new(app_services));
+                app.manage(std::sync::Arc::new(ManagedAgentState::new(app_services)));
 
                 // Agent registry for discovering external ACP agents.
                 // Wrapped in Arc so it can be shared between Tauri state and AcpClientService.
@@ -633,9 +635,21 @@ pub(crate) fn release_gpu_resources(app_handle: &tauri::AppHandle) {
     // Step 1: Reset ManagedAgentState engine to NoOp
     // This drops any Arc references to ChatEngine before we tear down the backend.
     // MUST happen before release_llama_backend() (Step 3).
-    if let Some(agent_state) = app_handle.try_state::<ManagedAgentState>() {
+    //
+    // Spawn a dedicated OS thread to avoid "cannot start a runtime from within a
+    // runtime" panic: graceful_shutdown() is called from the Tauri run-event handler
+    // which already runs inside the Tokio runtime, so creating a new runtime or
+    // calling block_on directly here would panic. A fresh thread has no runtime
+    // context, so block_on is safe.
+    if let Some(agent_state) = app_handle.try_state::<Arc<ManagedAgentState>>() {
         tracing::info!("Shutdown: resetting inference engine to NoOp");
-        agent_state.reset_engine_sync();
+        let state_arc = agent_state.inner().clone();
+        let handle = std::thread::spawn(move || {
+            tauri::async_runtime::block_on(state_arc.reset_to_noop_engine());
+        });
+        if let Err(e) = handle.join() {
+            tracing::error!("Inference engine reset thread panicked: {:?}", e);
+        }
         tracing::info!("Shutdown: inference engine reset");
     }
 

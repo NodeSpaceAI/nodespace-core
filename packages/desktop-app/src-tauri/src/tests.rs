@@ -273,4 +273,55 @@ mod nodespace_tests {
 
         assert_eq!(all_ids.len(), 50, "Should have generated 50 unique IDs");
     }
+
+    // ========================================================================
+    // Shutdown / Teardown Tests (Issue #1082)
+    // ========================================================================
+
+    /// Verify that reset_to_noop_engine can be called from within a Tokio async
+    /// context without panicking ("Cannot start a runtime from within a runtime").
+    ///
+    /// Regression test for: the old reset_engine_sync() created a new
+    /// tokio::runtime::Runtime from inside the existing runtime, which panics.
+    /// The fix uses std::thread::spawn + block_on from the fresh thread instead.
+    #[tokio::test]
+    async fn test_reset_to_noop_engine_from_async_context() {
+        use crate::app_services::AppServices;
+        use crate::commands::local_agent::ManagedAgentState;
+
+        let app_services = AppServices::new();
+        let state = ManagedAgentState::new(app_services);
+
+        // This must NOT panic with "Cannot start a runtime from within a runtime".
+        // Previously this would have been: state.reset_engine_sync() which panicked
+        // because it called tokio::runtime::Builder::new_current_thread() from inside
+        // an already-running Tokio runtime (this #[tokio::test] context).
+        state.reset_to_noop_engine().await;
+    }
+
+    /// Verify that reset_to_noop_engine called from a dedicated thread (the pattern
+    /// used in release_gpu_resources) works correctly without panicking.
+    #[test]
+    fn test_reset_to_noop_engine_from_dedicated_thread() {
+        use crate::app_services::AppServices;
+        use crate::commands::local_agent::ManagedAgentState;
+        use std::sync::Arc;
+
+        let app_services = AppServices::new();
+        let state = Arc::new(ManagedAgentState::new(app_services));
+
+        // Simulate the pattern used in release_gpu_resources: spawn a dedicated
+        // OS thread and use block_on to drive the async reset.
+        let state_clone = state.clone();
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build test runtime");
+            rt.block_on(state_clone.reset_to_noop_engine());
+        });
+
+        // Must not panic
+        handle.join().expect("reset thread should not panic");
+    }
 }

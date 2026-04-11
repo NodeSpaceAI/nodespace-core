@@ -122,7 +122,7 @@ pub async fn chat_model_load(
 #[tauri::command]
 pub async fn chat_model_unload(
     manager: State<'_, Arc<CompositeModelManager>>,
-    agent_state: State<'_, crate::commands::local_agent::ManagedAgentState>,
+    agent_state: State<'_, std::sync::Arc<crate::commands::local_agent::ManagedAgentState>>,
 ) -> Result<(), CommandError> {
     manager
         .unload()
