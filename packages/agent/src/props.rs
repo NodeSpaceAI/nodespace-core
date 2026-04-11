@@ -6,11 +6,12 @@
 
 use serde_json::Value;
 
-/// Get a property value, checking both flat and namespaced locations.
+/// Get a property value, checking both namespaced and flat locations.
 ///
-/// Properties created via `create_node_with_parent` are namespaced under
-/// the node type key. This helper checks `properties.key` first, then
-/// falls back to `properties.{namespace}.key`.
+/// Properties are stored namespaced under the node type key after normalization
+/// (`properties.{namespace}.key`). This helper checks the namespace first so
+/// that MCP updates — which always normalize to namespaced format — take effect
+/// even when an older flat value exists from a pre-normalization database.
 ///
 /// # Arguments
 /// * `properties` - The node's properties JSON value
@@ -18,8 +19,9 @@ use serde_json::Value;
 /// * `key` - The property key to look up
 pub fn get_prop<'a>(properties: &'a Value, namespace: &str, key: &str) -> Option<&'a Value> {
     properties
-        .get(key)
-        .or_else(|| properties.get(namespace).and_then(|ns| ns.get(key)))
+        .get(namespace)
+        .and_then(|ns| ns.get(key))
+        .or_else(|| properties.get(key))
 }
 
 /// Get a string property, checking both flat and namespaced locations.
@@ -45,14 +47,31 @@ mod tests {
     }
 
     #[test]
-    fn get_prop_flat_takes_precedence() {
+    fn get_prop_namespace_takes_precedence() {
+        // Namespaced value wins: MCP updates normalize to namespace, so they must
+        // override any stale flat value left from a pre-normalization database.
         let props = json!({"description": "flat", "skill": {"description": "namespaced"}});
-        assert_eq!(get_prop_str(&props, "skill", "description"), Some("flat"));
+        assert_eq!(
+            get_prop_str(&props, "skill", "description"),
+            Some("namespaced")
+        );
     }
 
     #[test]
     fn get_prop_missing() {
         let props = json!({"other": "value"});
         assert_eq!(get_prop_str(&props, "skill", "description"), None);
+    }
+
+    #[test]
+    fn get_prop_namespace_overrides_stale_flat() {
+        // Regression test for #1080: skill seeded with flat {"max_iterations": 2},
+        // then MCP update normalizes to {"skill": {"max_iterations": 4}}.
+        // Both coexist until the node is re-seeded; namespace must win.
+        let props = json!({"max_iterations": 2, "skill": {"max_iterations": 4}});
+        assert_eq!(
+            get_prop(&props, "skill", "max_iterations").and_then(|v| v.as_u64()),
+            Some(4)
+        );
     }
 }

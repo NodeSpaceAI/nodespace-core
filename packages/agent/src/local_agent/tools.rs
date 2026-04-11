@@ -1462,12 +1462,12 @@ mod tests {
     }
 
     #[test]
-    fn create_node_schema_requires_title_and_type() {
+    fn create_node_schema_requires_content_and_type() {
         let def = def_create_node();
         let required = def.parameters_schema["required"]
             .as_array()
             .expect("required must be array");
-        assert!(required.contains(&json!("title")));
+        assert!(required.contains(&json!("content")));
         assert!(required.contains(&json!("node_type")));
     }
 
@@ -1548,15 +1548,15 @@ mod tests {
     #[tokio::test]
     async fn create_node_missing_required() {
         let executor = test_executor();
-        // Missing title
+        // Missing node_type (required field)
         let result = executor
-            .execute("create_node", json!({"node_type": "text"}))
+            .execute("create_node", json!({"content": "My node"}))
             .await;
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::InvalidArguments { tool, reason } => {
                 assert_eq!(tool, "create_node");
-                assert!(reason.contains("title"));
+                assert!(reason.contains("node_type"));
             }
             other => panic!("Expected InvalidArguments, got {:?}", other),
         }
@@ -1700,7 +1700,7 @@ mod tests {
     async fn available_tools_returns_all() {
         let executor = test_executor();
         let tools = executor.available_tools().await.unwrap();
-        assert_eq!(tools.len(), 12);
+        assert_eq!(tools.len(), 13);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"search_nodes"));
         assert!(names.contains(&"search_semantic"));
@@ -1711,6 +1711,7 @@ mod tests {
         assert!(names.contains(&"get_related_nodes"));
         assert!(names.contains(&"find_skills"));
         assert!(names.contains(&"create_schema"));
+        assert!(names.contains(&"update_schema"));
         assert!(names.contains(&"update_task_status"));
         assert!(names.contains(&"delete_node"));
         assert!(names.contains(&"create_nodes_from_markdown"));

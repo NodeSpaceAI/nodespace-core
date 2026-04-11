@@ -18,16 +18,25 @@ use std::collections::HashSet;
 use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 
-/// Get a string property, checking both flat and namespaced locations.
+/// Get a property value, checking namespaced location first, then flat.
+///
+/// Namespaced format (`properties.{namespace}.key`) takes precedence so that
+/// MCP updates — which always normalize to namespaced format — override stale
+/// flat values left from pre-normalization databases.
+fn get_namespaced_prop<'a>(properties: &'a Value, namespace: &str, key: &str) -> Option<&'a Value> {
+    properties
+        .get(namespace)
+        .and_then(|ns| ns.get(key))
+        .or_else(|| properties.get(key))
+}
+
+/// Get a string property, checking namespaced location first, then flat.
 fn get_namespaced_prop_str<'a>(
     properties: &'a Value,
     namespace: &str,
     key: &str,
 ) -> Option<&'a str> {
-    properties
-        .get(key)
-        .or_else(|| properties.get(namespace).and_then(|ns| ns.get(key)))
-        .and_then(|v| v.as_str())
+    get_namespaced_prop(properties, namespace, key).and_then(|v| v.as_str())
 }
 
 /// Lazy-initialized regex for date validation (compiled once)
@@ -1718,7 +1727,7 @@ impl NodeBehavior for SkillNodeBehavior {
         }
 
         // Validate description is a string if present
-        if let Some(desc) = node.properties.get("description") {
+        if let Some(desc) = get_namespaced_prop(&node.properties, "skill", "description") {
             if !desc.is_string() && !desc.is_null() {
                 return Err(NodeValidationError::InvalidProperties(
                     "description must be a string".to_string(),
@@ -1727,7 +1736,7 @@ impl NodeBehavior for SkillNodeBehavior {
         }
 
         // Validate tool_whitelist is an array of strings if present
-        if let Some(whitelist) = node.properties.get("tool_whitelist") {
+        if let Some(whitelist) = get_namespaced_prop(&node.properties, "skill", "tool_whitelist") {
             if let Some(arr) = whitelist.as_array() {
                 for item in arr {
                     if !item.is_string() {
@@ -1744,7 +1753,7 @@ impl NodeBehavior for SkillNodeBehavior {
         }
 
         // Validate max_iterations is a positive integer if present
-        if let Some(max_iter) = node.properties.get("max_iterations") {
+        if let Some(max_iter) = get_namespaced_prop(&node.properties, "skill", "max_iterations") {
             if let Some(n) = max_iter.as_i64() {
                 if n < 1 {
                     return Err(NodeValidationError::InvalidProperties(
@@ -1759,7 +1768,7 @@ impl NodeBehavior for SkillNodeBehavior {
         }
 
         // Validate output_format if present
-        if let Some(fmt) = node.properties.get("output_format") {
+        if let Some(fmt) = get_namespaced_prop(&node.properties, "skill", "output_format") {
             if let Some(s) = fmt.as_str() {
                 match s {
                     "text" | "json" | "markdown" => {}
