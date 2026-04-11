@@ -1234,6 +1234,129 @@ pub async fn handle_create_nodes_from_markdown(
     }
 }
 
+// ============================================================================
+// Node Template (Issue #1056)
+// ============================================================================
+//
+// Allows callers to define a hierarchy using markdown content while overriding
+// the node types and injecting extra properties into the root and children.
+// This is the unified path used by skill/prompt seeding, replacing the old
+// SeedSkill / SeedGuidancePrompt / SeedPrompt structs and their bespoke
+// to_node() conversions.
+
+/// Template for creating a typed node hierarchy from markdown content.
+///
+/// The markdown body is parsed through the same `prepare_nodes_from_markdown`
+/// pipeline used by the bulk-import MCP tool.  After parsing, the caller-
+/// supplied type overrides and property injections are applied so the result
+/// is ready for insertion via `NodeService`.
+///
+/// # Example — building a skill node with guidance children
+///
+/// ```ignore
+/// let tmpl = NodeTemplate {
+///     title: "Research & Search".to_string(),
+///     markdown_content: "When answering questions:\n\nSEARCH FIRST: …".to_string(),
+///     root_node_type: "skill".to_string(),
+///     root_properties: serde_json::json!({
+///         "description": "Search and explore the knowledge graph…",
+///         "tool_whitelist": ["search_semantic", "search_nodes", "get_node"],
+///         "max_iterations": 4,
+///         "output_format": "text",
+///     }),
+///     child_node_type: Some("prompt".to_string()),
+///     child_properties: Some(serde_json::json!({
+///         "priority": 1,
+///         "template_syntax": "plain",
+///         "source": "built-in",
+///     })),
+/// };
+/// let nodes = prepare_nodes_from_template(&tmpl)?;
+/// // nodes[0] is the skill root; nodes[1..] are prompt children
+/// ```
+#[derive(Debug, Clone)]
+pub struct NodeTemplate {
+    /// Human-readable name / label for the root node (stored as the node's `title`).
+    pub title: String,
+    /// Optional body text stored as the root node's `content`.
+    ///
+    /// When `Some`, this value becomes the root node's content field.
+    /// When `None` (default), `title` is used as the content.
+    ///
+    /// Use this for node types where the content is a long body (e.g. `prompt`
+    /// nodes whose content is the actual prompt text, while `title` is just the
+    /// short label).
+    pub content: Option<String>,
+    /// Markdown body that becomes the children.  May be empty.
+    pub markdown_content: String,
+    /// Override for the root node's `node_type` (e.g. `"skill"`, `"prompt"`).
+    pub root_node_type: String,
+    /// Extra properties to merge into the root node (override parsed defaults).
+    pub root_properties: serde_json::Value,
+    /// Optional type override applied to every child node produced by the parser.
+    pub child_node_type: Option<String>,
+    /// Optional properties to merge into every child node (override parsed defaults).
+    pub child_properties: Option<serde_json::Value>,
+}
+
+/// Parse a [`NodeTemplate`] into a flat list of [`PreparedNode`]s.
+///
+/// The first element is always the root node (with `parent_id = None`).
+/// Subsequent elements are children whose `parent_id` points to the root.
+///
+/// Type overrides and property injections are applied **after** parsing so
+/// the markdown hierarchy is preserved.  Property injection merges keys from
+/// the template into the parsed properties, with template values winning on
+/// conflict.
+pub fn prepare_nodes_from_template(tmpl: &NodeTemplate) -> Result<Vec<PreparedNode>, MCPError> {
+    let root_id = uuid::Uuid::new_v4().to_string();
+
+    // Root content: use explicit `content` field when provided, otherwise fall back to `title`.
+    let root_content = tmpl.content.clone().unwrap_or_else(|| tmpl.title.clone());
+
+    // Build root node directly (no markdown parsing needed for the title).
+    let root = PreparedNode::new(
+        root_id.clone(),
+        &tmpl.root_node_type,
+        root_content,
+        None, // root has no parent
+        1.0,
+        tmpl.root_properties.clone(),
+    );
+
+    // Parse children from the markdown body.
+    let mut children = if tmpl.markdown_content.trim().is_empty() {
+        Vec::new()
+    } else {
+        prepare_nodes_from_markdown(&tmpl.markdown_content, Some(root_id.clone()))?
+    };
+
+    // Apply child type / property overrides.
+    for child in &mut children {
+        if let Some(ref ct) = tmpl.child_node_type {
+            child.node_type = ct.clone();
+        }
+        if let Some(ref cp) = tmpl.child_properties {
+            // Merge: template properties win over parsed defaults.
+            if let (Some(parsed_obj), Some(override_obj)) =
+                (child.properties.as_object_mut(), cp.as_object())
+            {
+                for (k, v) in override_obj {
+                    parsed_obj.insert(k.clone(), v.clone());
+                }
+            } else {
+                // Replace entirely when either side isn't a plain object.
+                child.properties = cp.clone();
+            }
+        }
+    }
+
+    let mut nodes = Vec::with_capacity(1 + children.len());
+    nodes.push(root);
+    nodes.extend(children);
+    Ok(nodes)
+}
+
 /// Check if a string matches the date format YYYY-MM-DD
 fn is_date_format(s: &str) -> bool {
     use chrono::NaiveDate;

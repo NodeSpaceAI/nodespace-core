@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use nodespace_core::mcp::handlers::markdown::NodeTemplate;
 use nodespace_core::models::Node;
 use nodespace_core::services::NodeEmbeddingService;
 
@@ -197,23 +198,34 @@ impl SkillPipeline {
             .collect()
     }
 
-    /// Get default seed skill nodes for first-run creation.
-    pub fn seed_skill_nodes() -> Vec<SeedSkill> {
+    /// Get default seed skill templates for first-run creation.
+    ///
+    /// Each [`NodeTemplate`] produces one skill root node plus any guidance
+    /// prompt children defined in its markdown body.  Use
+    /// [`nodespace_core::mcp::handlers::markdown::prepare_nodes_from_template`]
+    /// to expand a template into a flat list of [`PreparedNode`]s before
+    /// inserting them via `NodeService::bulk_create_hierarchy`.
+    pub fn seed_skill_nodes() -> Vec<NodeTemplate> {
         vec![
-            SeedSkill {
-                name: "Research & Search".to_string(),
-                description: "Search and explore the knowledge graph to find relevant information, discover connections, and answer questions about stored knowledge.".to_string(),
-                tool_whitelist: vec![
-                    "search_semantic".to_string(),
-                    "search_nodes".to_string(),
-                    "get_node".to_string(),
-                ],
-                max_iterations: 4,
-                output_format: "text".to_string(),
-                guidance_prompts: vec![
-                    SeedGuidancePrompt {
-                        title: "Research & Search Guidance".to_string(),
-                        content: r#"When answering questions about stored knowledge:
+            NodeTemplate {
+                title: "Research & Search".to_string(),
+                content: None,
+                root_node_type: "skill".to_string(),
+                root_properties: serde_json::json!({
+                    "description": "Search and explore the knowledge graph to find relevant information, discover connections, and answer questions about stored knowledge.",
+                    "tool_whitelist": ["search_semantic", "search_nodes", "get_node"],
+                    "max_iterations": 4,
+                    "output_format": "text",
+                }),
+                child_node_type: Some("prompt".to_string()),
+                child_properties: Some(serde_json::json!({
+                    "priority": 1,
+                    "template_syntax": "plain",
+                    "source": "built-in",
+                })),
+                markdown_content: r#"# Research & Search Guidance
+
+When answering questions about stored knowledge:
 
 SEARCH FIRST: Always call search_semantic with a natural language query. Results are ordered by relevance — the first result is the best match.
 
@@ -229,34 +241,44 @@ USE MARKDOWN DIRECTLY: If the top result has a non-empty 'markdown' field, that 
 FETCH ADDITIONAL CONTENT: Only call get_node with format=markdown if you need full content for a lower-ranked result that did not include markdown.
 
 MULTIPLE DOCUMENTS: If the user asks about multiple topics, call search_semantic once per topic rather than searching broadly and fetching each result individually."#.to_string(),
-                        priority: 1,
-                    },
-                ],
             },
-            SeedSkill {
-                name: "Node Creation".to_string(),
-                description: "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Project, Customer, Invoice. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.".to_string(),
-                tool_whitelist: vec![
-                    "create_node".to_string(),
-                    "get_node".to_string(),
-                ],
-                max_iterations: 3,
-                output_format: "text".to_string(),
-                guidance_prompts: vec![],
+            NodeTemplate {
+                title: "Node Creation".to_string(),
+                content: None,
+                root_node_type: "skill".to_string(),
+                root_properties: serde_json::json!({
+                    "description": "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Project, Customer, Invoice. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
+                    "tool_whitelist": ["create_node", "get_node"],
+                    "max_iterations": 3,
+                    "output_format": "text",
+                }),
+                child_node_type: Some("prompt".to_string()),
+                child_properties: Some(serde_json::json!({
+                    "priority": 1,
+                    "template_syntax": "plain",
+                    "source": "built-in",
+                })),
+                markdown_content: String::new(),
             },
-            SeedSkill {
-                name: "Schema Creation".to_string(),
-                description: "Define a new entity type or schema with custom fields, enums, and relationships. Use when user says 'new type', 'node type', 'define fields', 'create schema', or wants to design a new kind of entity like Project, Customer, or Invoice.".to_string(),
-                tool_whitelist: vec![
-                    "create_schema".to_string(),
-                    "get_node".to_string(),
-                ],
-                max_iterations: 3,
-                output_format: "text".to_string(),
-                guidance_prompts: vec![
-                    SeedGuidancePrompt {
-                        title: "Schema Creation Guidance".to_string(),
-                        content: r#"When creating a schema:
+            NodeTemplate {
+                title: "Schema Creation".to_string(),
+                content: None,
+                root_node_type: "skill".to_string(),
+                root_properties: serde_json::json!({
+                    "description": "Define a new entity type or schema with custom fields, enums, and relationships. Use when user says 'new type', 'node type', 'define fields', 'create schema', or wants to design a new kind of entity like Project, Customer, or Invoice.",
+                    "tool_whitelist": ["create_schema", "get_node"],
+                    "max_iterations": 3,
+                    "output_format": "text",
+                }),
+                child_node_type: Some("prompt".to_string()),
+                child_properties: Some(serde_json::json!({
+                    "priority": 1,
+                    "template_syntax": "plain",
+                    "source": "built-in",
+                })),
+                markdown_content: r#"# Schema Creation Guidance
+
+When creating a schema:
 
 FIELDS: Only define type-specific fields. Do NOT add a 'name' or 'title' field — every node already has a built-in content/title field. EXCEPTION: if you use a 'name' placeholder in title_template (e.g. "{name} ({status})"), you MUST define 'name' as a text field so title generation works. A 'description' field is acceptable when it adds value beyond the title. Good fields: status (enum), due_date (date), priority (enum), budget (number), owner (text).
 
@@ -316,70 +338,104 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
     {"name": "has_task", "targetType": "task", "direction": "out", "cardinality": "many"}
   ]
 }"#.to_string(),
-                        priority: 1,
-                    },
-                ],
             },
-            SeedSkill {
-                name: "Graph Editing".to_string(),
-                description: "Modify existing nodes in the knowledge graph - update content, properties, titles, and metadata. For tasks, use update_task_status to change status.".to_string(),
-                tool_whitelist: vec![
-                    "update_node".to_string(),
-                    "update_task_status".to_string(),
-                    "get_node".to_string(),
-                    "search_nodes".to_string(),
-                ],
-                max_iterations: 3,
-                output_format: "text".to_string(),
-                guidance_prompts: vec![],
+            NodeTemplate {
+                title: "Graph Editing".to_string(),
+                content: None,
+                root_node_type: "skill".to_string(),
+                root_properties: serde_json::json!({
+                    "description": "Modify existing nodes in the knowledge graph - update content, properties, titles, and metadata. For tasks, use update_task_status to change status.",
+                    "tool_whitelist": ["update_node", "update_task_status", "get_node", "search_nodes"],
+                    "max_iterations": 3,
+                    "output_format": "text",
+                }),
+                child_node_type: Some("prompt".to_string()),
+                child_properties: Some(serde_json::json!({
+                    "priority": 1,
+                    "template_syntax": "plain",
+                    "source": "built-in",
+                })),
+                markdown_content: String::new(),
             },
-            SeedSkill {
-                name: "Relationship Management".to_string(),
-                description: "Create connections between nodes, explore relationships, and traverse the knowledge graph.".to_string(),
-                tool_whitelist: vec![
-                    "create_relationship".to_string(),
-                    "get_related_nodes".to_string(),
-                    "get_node".to_string(),
-                ],
-                max_iterations: 3,
-                output_format: "text".to_string(),
-                guidance_prompts: vec![],
+            NodeTemplate {
+                title: "Relationship Management".to_string(),
+                content: None,
+                root_node_type: "skill".to_string(),
+                root_properties: serde_json::json!({
+                    "description": "Create connections between nodes, explore relationships, and traverse the knowledge graph.",
+                    "tool_whitelist": ["create_relationship", "get_related_nodes", "get_node"],
+                    "max_iterations": 3,
+                    "output_format": "text",
+                }),
+                child_node_type: Some("prompt".to_string()),
+                child_properties: Some(serde_json::json!({
+                    "priority": 1,
+                    "template_syntax": "plain",
+                    "source": "built-in",
+                })),
+                markdown_content: String::new(),
             },
-            SeedSkill {
-                name: "Node Deletion".to_string(),
-                description: "Delete nodes from the knowledge graph. Use when user wants to remove, delete, or trash a node or record.".to_string(),
-                tool_whitelist: vec![
-                    "delete_node".to_string(),
-                    "get_node".to_string(),
-                ],
-                max_iterations: 3,
-                output_format: "text".to_string(),
-                guidance_prompts: vec![],
+            NodeTemplate {
+                title: "Node Deletion".to_string(),
+                content: None,
+                root_node_type: "skill".to_string(),
+                root_properties: serde_json::json!({
+                    "description": "Delete nodes from the knowledge graph. Use when user wants to remove, delete, or trash a node or record.",
+                    "tool_whitelist": ["delete_node", "get_node"],
+                    "max_iterations": 3,
+                    "output_format": "text",
+                }),
+                child_node_type: Some("prompt".to_string()),
+                child_properties: Some(serde_json::json!({
+                    "priority": 1,
+                    "template_syntax": "plain",
+                    "source": "built-in",
+                })),
+                markdown_content: String::new(),
             },
-            SeedSkill {
-                name: "Bulk Import".to_string(),
-                description: "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.".to_string(),
-                tool_whitelist: vec![
-                    "create_nodes_from_markdown".to_string(),
-                ],
-                max_iterations: 2,
-                output_format: "text".to_string(),
-                guidance_prompts: vec![],
+            NodeTemplate {
+                title: "Bulk Import".to_string(),
+                content: None,
+                root_node_type: "skill".to_string(),
+                root_properties: serde_json::json!({
+                    "description": "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.",
+                    "tool_whitelist": ["create_nodes_from_markdown"],
+                    "max_iterations": 2,
+                    "output_format": "text",
+                }),
+                child_node_type: Some("prompt".to_string()),
+                child_properties: Some(serde_json::json!({
+                    "priority": 1,
+                    "template_syntax": "plain",
+                    "source": "built-in",
+                })),
+                markdown_content: String::new(),
             },
-            SeedSkill {
-                name: "Organization".to_string(),
-                description: "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.".to_string(),
-                tool_whitelist: vec![
-                    "create_relationship".to_string(),
-                    "get_node".to_string(),
-                ],
-                max_iterations: 3,
-                output_format: "text".to_string(),
-                guidance_prompts: vec![],
+            NodeTemplate {
+                title: "Organization".to_string(),
+                content: None,
+                root_node_type: "skill".to_string(),
+                root_properties: serde_json::json!({
+                    "description": "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.",
+                    "tool_whitelist": ["create_relationship", "get_node"],
+                    "max_iterations": 3,
+                    "output_format": "text",
+                }),
+                child_node_type: Some("prompt".to_string()),
+                child_properties: Some(serde_json::json!({
+                    "priority": 1,
+                    "template_syntax": "plain",
+                    "source": "built-in",
+                })),
+                markdown_content: String::new(),
             },
         ]
     }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /// Extract tool_whitelist from a skill node's properties.
 fn extract_tool_whitelist(node: &Node) -> Vec<String> {
@@ -393,84 +449,33 @@ fn extract_tool_whitelist(node: &Node) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Descriptor for a seed skill node to be created on first run.
-#[derive(Debug, Clone)]
-pub struct SeedSkill {
-    pub name: String,
-    pub description: String,
-    pub tool_whitelist: Vec<String>,
-    pub max_iterations: usize,
-    pub output_format: String,
-    /// Child prompt nodes containing guidance, few-shot examples, etc.
-    pub guidance_prompts: Vec<SeedGuidancePrompt>,
-}
-
-/// A child prompt node that provides guidance for a skill.
-#[derive(Debug, Clone)]
-pub struct SeedGuidancePrompt {
-    pub title: String,
-    pub content: String,
-    pub priority: i64,
-}
-
-impl SeedGuidancePrompt {
-    /// Convert to a Node for creation via NodeService.
-    pub fn to_node(&self) -> Node {
-        let mut node = Node::new(
-            "prompt".to_string(),
-            self.content.clone(),
-            serde_json::json!({
-                "priority": self.priority,
-                "template_syntax": "plain",
-                "source": "built-in",
-            }),
-        );
-        node.title = Some(self.title.clone());
-        node
-    }
-}
-
-impl SeedSkill {
-    /// Convert to a Node for creation via NodeService.
-    pub fn to_node(&self) -> Node {
-        let mut node = Node::new(
-            "skill".to_string(),
-            self.name.clone(),
-            serde_json::json!({
-                "description": self.description,
-                "tool_whitelist": self.tool_whitelist,
-                "max_iterations": self.max_iterations,
-                "output_format": self.output_format,
-            }),
-        );
-        node.title = Some(self.name.clone());
-        node
-    }
-
-    /// Convert guidance prompts to child Nodes.
-    pub fn guidance_nodes(&self) -> Vec<Node> {
-        self.guidance_prompts
-            .iter()
-            .map(|g| {
-                let mut node = Node::new(
-                    "prompt".to_string(),
-                    g.content.clone(),
-                    serde_json::json!({
-                        "priority": g.priority,
-                        "template_syntax": "plain",
-                        "source": "built-in",
-                    }),
-                );
-                node.title = Some(g.title.clone());
-                node
-            })
-            .collect()
-    }
-}
 
 #[cfg(test)]
 mod tests {
+    use nodespace_core::mcp::handlers::markdown::prepare_nodes_from_template;
+
     use super::*;
+
+    /// Extract tool_whitelist from a skill NodeTemplate's root_properties.
+    fn tmpl_tool_whitelist(tmpl: &NodeTemplate) -> Vec<String> {
+        tmpl.root_properties
+            .get("tool_whitelist")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Extract max_iterations from a skill NodeTemplate's root_properties.
+    fn tmpl_max_iterations(tmpl: &NodeTemplate) -> usize {
+        tmpl.root_properties
+            .get("max_iterations")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize
+    }
 
     #[test]
     fn seed_skills_have_valid_properties() {
@@ -478,10 +483,26 @@ mod tests {
         assert_eq!(seeds.len(), 8, "Should have 8 seed skills");
 
         for seed in &seeds {
-            assert!(!seed.name.is_empty());
-            assert!(!seed.description.is_empty());
-            assert!(!seed.tool_whitelist.is_empty(), "Skills must have tools");
-            assert!(seed.max_iterations > 0);
+            assert!(!seed.title.is_empty());
+            assert!(
+                seed.root_properties
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false),
+                "Skill '{}' must have a non-empty description",
+                seed.title
+            );
+            assert!(
+                !tmpl_tool_whitelist(seed).is_empty(),
+                "Skill '{}' must have tools",
+                seed.title
+            );
+            assert!(
+                tmpl_max_iterations(seed) > 0,
+                "Skill '{}' must have max_iterations > 0",
+                seed.title
+            );
         }
     }
 
@@ -490,13 +511,11 @@ mod tests {
         let seeds = SkillPipeline::seed_skill_nodes();
         let schema_skill = seeds
             .iter()
-            .find(|s| s.name == "Schema Creation")
+            .find(|s| s.title == "Schema Creation")
             .expect("Schema Creation skill should exist");
 
         assert!(
-            schema_skill
-                .tool_whitelist
-                .contains(&"create_schema".to_string()),
+            tmpl_tool_whitelist(schema_skill).contains(&"create_schema".to_string()),
             "Schema Creation skill should whitelist create_schema"
         );
     }
@@ -506,32 +525,35 @@ mod tests {
         let seeds = SkillPipeline::seed_skill_nodes();
         let editing_skill = seeds
             .iter()
-            .find(|s| s.name == "Graph Editing")
+            .find(|s| s.title == "Graph Editing")
             .expect("Graph Editing skill should exist");
 
         assert!(
-            editing_skill
-                .tool_whitelist
-                .contains(&"update_task_status".to_string()),
+            tmpl_tool_whitelist(editing_skill).contains(&"update_task_status".to_string()),
             "Graph Editing skill should whitelist update_task_status"
         );
     }
 
     #[test]
-    fn seed_skill_to_node_conversion() {
+    fn seed_skill_template_produces_skill_node() {
         let seeds = SkillPipeline::seed_skill_nodes();
         for seed in &seeds {
-            let node = seed.to_node();
-            assert_eq!(node.node_type, "skill");
-            // Node::new() generates a UUID (36 chars with hyphens)
-            assert_eq!(node.id.len(), 36, "Node ID should be a UUID");
-            assert_eq!(node.id.chars().filter(|c| *c == '-').count(), 4);
-            assert_eq!(node.content, seed.name);
-            assert!(node.title.is_some());
-            assert_eq!(node.title.as_deref().unwrap(), seed.name);
-
-            let whitelist = extract_tool_whitelist(&node);
-            assert_eq!(whitelist, seed.tool_whitelist);
+            let nodes = prepare_nodes_from_template(seed)
+                .unwrap_or_else(|e| panic!("Template '{}' failed: {:?}", seed.title, e));
+            assert!(!nodes.is_empty(), "Template '{}' produced no nodes", seed.title);
+            let root = &nodes[0];
+            assert_eq!(root.node_type, "skill");
+            assert_eq!(root.id.len(), 36, "Node ID should be a UUID");
+            assert_eq!(root.id.chars().filter(|c| *c == '-').count(), 4);
+            assert_eq!(root.content, seed.title);
+            // root_properties are stored in the PreparedNode's properties
+            let whitelist = root
+                .properties
+                .get("tool_whitelist")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
+                .unwrap_or_default();
+            assert_eq!(whitelist, tmpl_tool_whitelist(seed));
         }
     }
 
@@ -677,20 +699,18 @@ mod tests {
         assert_eq!(config.search_limit, 3);
     }
 
-    // --- Skill whitelist tests for all 8 skills ---
+    // --- Skill whitelist tests for all 7 skills ---
 
     #[test]
     fn research_search_skill_whitelist() {
         let seeds = SkillPipeline::seed_skill_nodes();
         let skill = seeds
             .iter()
-            .find(|s| s.name == "Research & Search")
+            .find(|s| s.title == "Research & Search")
             .expect("Research & Search skill should exist");
+        let wl = tmpl_tool_whitelist(skill);
         assert!(
-            skill
-                .tool_whitelist
-                .contains(&"search_semantic".to_string())
-                || skill.tool_whitelist.contains(&"search_nodes".to_string()),
+            wl.contains(&"search_semantic".to_string()) || wl.contains(&"search_nodes".to_string()),
             "Research & Search should whitelist search_semantic or search_nodes"
         );
     }
@@ -700,10 +720,10 @@ mod tests {
         let seeds = SkillPipeline::seed_skill_nodes();
         let skill = seeds
             .iter()
-            .find(|s| s.name == "Node Creation")
+            .find(|s| s.title == "Node Creation")
             .expect("Node Creation skill should exist");
         assert!(
-            skill.tool_whitelist.contains(&"create_node".to_string()),
+            tmpl_tool_whitelist(skill).contains(&"create_node".to_string()),
             "Node Creation should whitelist create_node"
         );
     }
@@ -713,10 +733,10 @@ mod tests {
         let seeds = SkillPipeline::seed_skill_nodes();
         let skill = seeds
             .iter()
-            .find(|s| s.name == "Schema Creation")
+            .find(|s| s.title == "Schema Creation")
             .expect("Schema Creation skill should exist");
         assert!(
-            skill.tool_whitelist.contains(&"create_schema".to_string()),
+            tmpl_tool_whitelist(skill).contains(&"create_schema".to_string()),
             "Schema Creation should whitelist create_schema"
         );
     }
@@ -726,10 +746,10 @@ mod tests {
         let seeds = SkillPipeline::seed_skill_nodes();
         let skill = seeds
             .iter()
-            .find(|s| s.name == "Graph Editing")
+            .find(|s| s.title == "Graph Editing")
             .expect("Graph Editing skill should exist");
         assert!(
-            skill.tool_whitelist.contains(&"update_node".to_string()),
+            tmpl_tool_whitelist(skill).contains(&"update_node".to_string()),
             "Graph Editing should whitelist update_node"
         );
     }
@@ -739,12 +759,10 @@ mod tests {
         let seeds = SkillPipeline::seed_skill_nodes();
         let skill = seeds
             .iter()
-            .find(|s| s.name == "Relationship Management")
+            .find(|s| s.title == "Relationship Management")
             .expect("Relationship Management skill should exist");
         assert!(
-            skill
-                .tool_whitelist
-                .contains(&"create_relationship".to_string()),
+            tmpl_tool_whitelist(skill).contains(&"create_relationship".to_string()),
             "Relationship Management should whitelist create_relationship"
         );
     }
@@ -754,10 +772,10 @@ mod tests {
         let seeds = SkillPipeline::seed_skill_nodes();
         let skill = seeds
             .iter()
-            .find(|s| s.name == "Node Deletion")
+            .find(|s| s.title == "Node Deletion")
             .expect("Node Deletion skill should exist");
         assert!(
-            skill.tool_whitelist.contains(&"delete_node".to_string()),
+            tmpl_tool_whitelist(skill).contains(&"delete_node".to_string()),
             "Node Deletion should whitelist delete_node"
         );
     }
@@ -767,12 +785,10 @@ mod tests {
         let seeds = SkillPipeline::seed_skill_nodes();
         let skill = seeds
             .iter()
-            .find(|s| s.name == "Bulk Import")
+            .find(|s| s.title == "Bulk Import")
             .expect("Bulk Import skill should exist");
         assert!(
-            skill
-                .tool_whitelist
-                .contains(&"create_nodes_from_markdown".to_string()),
+            tmpl_tool_whitelist(skill).contains(&"create_nodes_from_markdown".to_string()),
             "Bulk Import should whitelist create_nodes_from_markdown"
         );
     }
@@ -782,12 +798,10 @@ mod tests {
         let seeds = SkillPipeline::seed_skill_nodes();
         let skill = seeds
             .iter()
-            .find(|s| s.name == "Organization")
+            .find(|s| s.title == "Organization")
             .expect("Organization skill should exist");
         assert!(
-            skill
-                .tool_whitelist
-                .contains(&"create_relationship".to_string()),
+            tmpl_tool_whitelist(skill).contains(&"create_relationship".to_string()),
             "Organization should whitelist create_relationship"
         );
     }
@@ -821,17 +835,23 @@ mod tests {
         ];
 
         let seeds = SkillPipeline::seed_skill_nodes();
-        let deletion_skill = seeds.iter().find(|s| s.name == "Node Deletion").unwrap();
+        let deletion_tmpl = seeds.iter().find(|s| s.title == "Node Deletion").unwrap();
+        let nodes = prepare_nodes_from_template(deletion_tmpl).unwrap();
+        let tool_whitelist = tmpl_tool_whitelist(deletion_tmpl);
 
         let skill_match = SkillMatch {
-            skill: deletion_skill.to_node(),
+            skill: Node::new(
+                nodes[0].node_type.clone(),
+                nodes[0].content.clone(),
+                nodes[0].properties.clone(),
+            ),
             confidence: 0.9,
             intent: ExtractedIntent {
                 query: "delete".to_string(),
                 from_pattern: true,
             },
-            tool_whitelist: deletion_skill.tool_whitelist.clone(),
-            max_iterations: deletion_skill.max_iterations,
+            tool_whitelist,
+            max_iterations: tmpl_max_iterations(deletion_tmpl),
         };
 
         let scoped = pipeline.scope_tools(&all_tools, &skill_match);
@@ -862,17 +882,23 @@ mod tests {
         ];
 
         let seeds = SkillPipeline::seed_skill_nodes();
-        let import_skill = seeds.iter().find(|s| s.name == "Bulk Import").unwrap();
+        let import_tmpl = seeds.iter().find(|s| s.title == "Bulk Import").unwrap();
+        let nodes = prepare_nodes_from_template(import_tmpl).unwrap();
+        let tool_whitelist = tmpl_tool_whitelist(import_tmpl);
 
         let skill_match = SkillMatch {
-            skill: import_skill.to_node(),
+            skill: Node::new(
+                nodes[0].node_type.clone(),
+                nodes[0].content.clone(),
+                nodes[0].properties.clone(),
+            ),
             confidence: 0.9,
             intent: ExtractedIntent {
                 query: "import".to_string(),
                 from_pattern: true,
             },
-            tool_whitelist: import_skill.tool_whitelist.clone(),
-            max_iterations: import_skill.max_iterations,
+            tool_whitelist,
+            max_iterations: tmpl_max_iterations(import_tmpl),
         };
 
         let scoped = pipeline.scope_tools(&all_tools, &skill_match);
@@ -904,17 +930,23 @@ mod tests {
         ];
 
         let seeds = SkillPipeline::seed_skill_nodes();
-        let org_skill = seeds.iter().find(|s| s.name == "Organization").unwrap();
+        let org_tmpl = seeds.iter().find(|s| s.title == "Organization").unwrap();
+        let nodes = prepare_nodes_from_template(org_tmpl).unwrap();
+        let tool_whitelist = tmpl_tool_whitelist(org_tmpl);
 
         let skill_match = SkillMatch {
-            skill: org_skill.to_node(),
+            skill: Node::new(
+                nodes[0].node_type.clone(),
+                nodes[0].content.clone(),
+                nodes[0].properties.clone(),
+            ),
             confidence: 0.9,
             intent: ExtractedIntent {
                 query: "organize".to_string(),
                 from_pattern: true,
             },
-            tool_whitelist: org_skill.tool_whitelist.clone(),
-            max_iterations: org_skill.max_iterations,
+            tool_whitelist,
+            max_iterations: tmpl_max_iterations(org_tmpl),
         };
 
         let scoped = pipeline.scope_tools(&all_tools, &skill_match);

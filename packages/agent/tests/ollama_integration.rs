@@ -338,12 +338,18 @@ async fn resolve_engine(test_name: &str) -> Option<Arc<dyn ChatInferenceEngine>>
 /// Build a scoped tool list for a skill (from the skill library).
 fn tools_for_skill(skill_name: &str, all_tools: &[ToolDefinition]) -> Vec<ToolDefinition> {
     let seeds = SkillPipeline::seed_skill_nodes();
-    let skill = seeds
+    let tmpl = seeds
         .iter()
-        .find(|s| s.name == skill_name)
+        .find(|s| s.title == skill_name)
         .unwrap_or_else(|| panic!("Skill '{}' not found in seed skills", skill_name));
 
-    let whitelist = &skill.tool_whitelist;
+    let whitelist: Vec<String> = tmpl
+        .root_properties
+        .get("tool_whitelist")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
     all_tools
         .iter()
         .filter(|t| whitelist.contains(&t.name))
@@ -805,16 +811,17 @@ fn schema_creation_context(entity_types: &str) -> String {
     // 2. Skill name, description, and guidance from the seeded skill definition.
     let skill = nodespace_agent::skill_pipeline::SkillPipeline::seed_skill_nodes()
         .into_iter()
-        .find(|s| s.name == "Schema Creation");
+        .find(|s| s.title == "Schema Creation");
 
     let (skill_desc, guidance) = if let Some(s) = skill {
-        let desc = s.description.clone();
-        let g = s
-            .guidance_prompts
-            .into_iter()
-            .next()
-            .map(|g| g.content)
-            .unwrap_or_default();
+        let desc = s
+            .root_properties
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        // guidance is the raw markdown body (first child content after parsing)
+        let g = s.markdown_content.clone();
         (desc, g)
     } else {
         (String::new(), String::new())
