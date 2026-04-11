@@ -51,7 +51,10 @@ mod tests {
         // Namespaced value wins: MCP updates normalize to namespace, so they must
         // override any stale flat value left from a pre-normalization database.
         let props = json!({"description": "flat", "skill": {"description": "namespaced"}});
-        assert_eq!(get_prop_str(&props, "skill", "description"), Some("namespaced"));
+        assert_eq!(
+            get_prop_str(&props, "skill", "description"),
+            Some("namespaced")
+        );
     }
 
     #[test]
