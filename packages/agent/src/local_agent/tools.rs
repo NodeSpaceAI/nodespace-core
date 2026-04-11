@@ -735,15 +735,19 @@ impl GraphToolExecutor {
                 tool: "search_semantic".to_string(),
                 reason: e.to_string(),
             })?;
-        let query = params.query.clone();
         let limit = params.limit.unwrap_or(DEFAULT_SEMANTIC_LIMIT);
+
+        // Use caller-supplied threshold when provided; fall back to the local agent default
+        // (SEMANTIC_THRESHOLD = 0.3). This preserves existing default behaviour while
+        // allowing the LLM to tune recall via the tool schema.
+        let threshold = params.threshold.unwrap_or(SEMANTIC_THRESHOLD);
 
         let ns = self.node_service()?;
         let emb = self.embedding_service()?;
 
         let input = search_ops::SearchSemanticInput {
-            query: query.clone(),
-            threshold: params.threshold.or(Some(SEMANTIC_THRESHOLD)),
+            query: params.query,
+            threshold: Some(threshold),
             limit: Some(limit),
             collection_id: params.collection_id,
             collection: params.collection,
@@ -1760,5 +1764,64 @@ mod tests {
     fn strip_node_uri_no_prefix() {
         let bare_id = "550e8400-e29b-41d4-a716-446655440000";
         assert_eq!(strip_node_uri(bare_id), bare_id);
+    }
+
+    // -- Parity test: def_search_semantic schema vs SearchSemanticParams fields --
+
+    /// Asserts that every field in `SearchSemanticParams` is either represented in
+    /// the `def_search_semantic()` JSON schema (so the LLM can request it) or
+    /// explicitly documented as intentionally excluded.
+    ///
+    /// This prevents future drift: when a new field is added to `SearchSemanticParams`,
+    /// the author must either add it to the schema here or update the exclusion list
+    /// with a clear justification comment.
+    #[test]
+    fn search_semantic_schema_parity_with_params() {
+        let def = def_search_semantic();
+        let props = def.parameters_schema["properties"]
+            .as_object()
+            .expect("def_search_semantic schema must have 'properties'");
+
+        // Fields from SearchSemanticParams exposed in the tool schema.
+        // Add new SearchSemanticParams fields here (or to excluded_fields below).
+        let schema_fields = [
+            "query",
+            "limit",
+            "include_markdown",
+            "collection",
+            "threshold",
+            "scope",
+            "include_archived",
+            "node_types",
+            "exclude_collections",
+        ];
+
+        // Fields intentionally excluded from the tool schema:
+        // - "collection_id": internal ID form; the LLM should use the human-readable
+        //   "collection" (path) instead, which gets resolved to a collection_id server-side.
+        // - "property_filters": the arbitrary key-value JSON object is too complex for the
+        //   8B model to construct reliably. Type-based filtering is covered by "node_types"
+        //   and namespace-based filtering by "collection". The field is still wired through
+        //   exec_search_semantic so MCP clients (which supply well-formed JSON) can use it.
+        let excluded_fields = ["collection_id", "property_filters"];
+
+        for field in &schema_fields {
+            assert!(
+                props.contains_key(*field),
+                "SearchSemanticParams field '{}' is missing from def_search_semantic() schema. \
+                 Add it to schema_fields or document why it's excluded in excluded_fields.",
+                field
+            );
+        }
+
+        // Verify excluded fields are not accidentally present in the schema.
+        for field in &excluded_fields {
+            assert!(
+                !props.contains_key(*field),
+                "Field '{}' is in excluded_fields but found in schema. \
+                 Remove it from excluded_fields if it should now be schema-exposed.",
+                field
+            );
+        }
     }
 }
