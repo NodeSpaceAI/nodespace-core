@@ -52,31 +52,40 @@ pub(crate) async fn create_service_bundle(
         .map_err(|e| format!("Failed to initialize node service: {}", e))?;
     tracing::info!("NodeService initialized");
 
-    // Seed agent prompt and skill nodes on first run (non-fatal)
+    // Seed agent prompt and skill nodes on first run (non-fatal).
+    //
+    // Uses the unified NodeTemplate pipeline (Issue #1056): each template is
+    // expanded into a PreparedNode list (root + children) and inserted via
+    // seed_nodes_from_templates.
+    //
+    // After the initial seed, built-in *prompt* node content is diff-checked so
+    // that changes to seed strings propagate to existing installations.  Skill
+    // guidance children are NOT diff-checked — guidance content is treated as
+    // user-editable after first seed (skills can be customised in the graph).
     {
         use nodespace_agent::prompt_assembler::PromptAssembler;
         use nodespace_agent::skill_pipeline::SkillPipeline;
+        use nodespace_core::mcp::handlers::markdown::prepare_nodes_from_template;
 
-        let prompt_seeds = PromptAssembler::seed_prompt_nodes();
+        let prompt_templates = PromptAssembler::seed_prompt_nodes();
+        let skill_templates = SkillPipeline::seed_skill_nodes();
 
-        let mut seed_nodes = Vec::new();
-        for seed in &prompt_seeds {
-            seed_nodes.push(seed.to_node());
+        // Expand all templates into PreparedNode lists.
+        let mut all_template_nodes: Vec<Vec<nodespace_core::mcp::handlers::markdown::PreparedNode>> = Vec::new();
+        for tmpl in prompt_templates.iter().chain(skill_templates.iter()) {
+            match prepare_nodes_from_template(tmpl) {
+                Ok(nodes) => all_template_nodes.push(nodes),
+                Err(e) => tracing::warn!(error = ?e, title = %tmpl.title, "Failed to expand seed template"),
+            }
         }
 
-        // Collect skill nodes (guidance children are created separately below)
-        let skill_seeds = SkillPipeline::seed_skill_nodes();
-        for seed in &skill_seeds {
-            seed_nodes.push(seed.to_node());
-        }
-
-        if let Err(e) = node_service.seed_nodes_if_needed(seed_nodes).await {
+        if let Err(e) = node_service.seed_nodes_from_templates(all_template_nodes).await {
             tracing::warn!(error = %e, "Failed to seed agent nodes (non-fatal)");
         }
 
-        // Update existing prompt nodes if their built-in content changed.
-        // seed_nodes_if_needed skips types that already exist, so we diff-check here.
-        // We query all prompt nodes once and match by title to avoid N queries.
+        // Update existing built-in prompt nodes whose content changed.
+        // seed_nodes_from_templates skips node types that already exist, so we
+        // diff-check prompt content here to propagate edits to existing installs.
         let all_prompt_nodes = node_service
             .query_nodes_simple(nodespace_core::models::NodeQuery {
                 node_type: Some("prompt".to_string()),
@@ -85,95 +94,34 @@ pub(crate) async fn create_service_bundle(
             .await
             .unwrap_or_default();
 
-        for seed in &prompt_seeds {
+        for tmpl in &prompt_templates {
+            // Resolve actual node content: `content` field overrides title (for prompts the
+            // prompt text is the content, not the title label).
+            let expected_content = tmpl
+                .content
+                .as_deref()
+                .unwrap_or(&tmpl.markdown_content)
+                .to_string();
             if let Some(existing) = all_prompt_nodes.iter().find(|n| {
-                n.title.as_deref() == Some(&seed.title)
+                n.title.as_deref() == Some(&tmpl.title)
                     && n.properties
                         .get("source")
                         .and_then(|v| v.as_str())
                         .map(|s| s == "built-in")
                         .unwrap_or(false)
             }) {
-                if existing.content != seed.content {
+                if existing.content != expected_content {
                     let update = nodespace_core::models::NodeUpdate {
-                        content: Some(seed.content.clone()),
+                        content: Some(expected_content.clone()),
                         ..Default::default()
                     };
                     if let Err(e) = node_service
                         .update_node_unchecked(&existing.id, update)
                         .await
                     {
-                        tracing::warn!(error = %e, title = %seed.title, "Failed to update prompt node");
+                        tracing::warn!(error = %e, title = %tmpl.title, "Failed to update prompt node");
                     } else {
-                        tracing::info!(title = %seed.title, "Updated built-in prompt node content");
-                    }
-                }
-            }
-        }
-
-        // Create guidance prompt children for skills that have them.
-        // This runs after seed_nodes_if_needed so the parent skills exist.
-        // We check if any skill guidance already exists to stay idempotent.
-        for seed in &skill_seeds {
-            if seed.guidance_prompts.is_empty() {
-                continue;
-            }
-            // Find the skill node we just created by querying for it
-            let query = nodespace_core::models::NodeQuery {
-                node_type: Some("skill".to_string()),
-                content_contains: Some(seed.name.clone()),
-                ..Default::default()
-            };
-            let skill_nodes = node_service
-                .query_nodes_simple(query)
-                .await
-                .unwrap_or_default();
-            if let Some(skill_node) = skill_nodes.first() {
-                let children = node_service
-                    .get_children(&skill_node.id)
-                    .await
-                    .unwrap_or_default();
-                for guidance in &seed.guidance_prompts {
-                    let existing = children
-                        .iter()
-                        .find(|c| c.title.as_deref() == Some(&guidance.title));
-                    if let Some(existing_node) = existing {
-                        // Update content if it changed
-                        if existing_node.content != guidance.content {
-                            let update = nodespace_core::models::NodeUpdate {
-                                content: Some(guidance.content.clone()),
-                                ..Default::default()
-                            };
-                            if let Err(e) = node_service
-                                .update_node_unchecked(&existing_node.id, update)
-                                .await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    skill = %seed.name,
-                                    guidance = %guidance.title,
-                                    "Failed to update guidance prompt for skill"
-                                );
-                            }
-                        }
-                    } else {
-                        let child = guidance.to_node();
-                        let params = nodespace_core::services::CreateNodeParams {
-                            id: Some(child.id.clone()),
-                            node_type: child.node_type.clone(),
-                            content: child.content.clone(),
-                            properties: child.properties.clone(),
-                            parent_id: Some(skill_node.id.clone()),
-                            insert_after_node_id: None,
-                        };
-                        if let Err(e) = node_service.create_node_with_parent(params).await {
-                            tracing::warn!(
-                                error = %e,
-                                skill = %seed.name,
-                                guidance = %guidance.title,
-                                "Failed to create guidance prompt for skill"
-                            );
-                        }
+                        tracing::info!(title = %tmpl.title, "Updated built-in prompt node content");
                     }
                 }
             }

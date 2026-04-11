@@ -938,62 +938,98 @@ impl NodeService {
         Ok(())
     }
 
-    /// Seed initial nodes if they don't already exist.
+    /// Seed node hierarchies from pre-expanded template node lists (Issue #1056).
     ///
-    /// Checks whether any nodes of each seed type already exist. If any node
-    /// of a given type is present, all seeds of that type are skipped.
-    /// Uses `create_node_with_parent` to ensure embedding markers are created.
+    /// Each element of `template_groups` is a flat `Vec<PreparedNode>` produced
+    /// by [`crate::mcp::handlers::markdown::prepare_nodes_from_template`].
+    /// The first element of each group is the root node; subsequent elements are
+    /// its children.
     ///
-    /// # Arguments
-    /// * `nodes` - Nodes to seed. All nodes of a given type are skipped if any
-    ///   node of that type already exists in the database.
-    pub async fn seed_nodes_if_needed(
+    /// Idempotency rule: if any node of a given `node_type` already exists in the
+    /// database, the entire type is skipped.
+    pub async fn seed_nodes_from_templates(
         &self,
-        nodes: Vec<crate::models::Node>,
+        template_groups: Vec<Vec<crate::mcp::handlers::markdown::PreparedNode>>,
     ) -> Result<(), NodeServiceError> {
-        if nodes.is_empty() {
+        if template_groups.is_empty() {
             return Ok(());
         }
 
-        // Collect unique node types from seeds
-        let seed_types: std::collections::HashSet<String> =
-            nodes.iter().map(|n| n.node_type.clone()).collect();
+        // Collect the root node_types we need to check for existence.
+        let root_types: std::collections::HashSet<String> = template_groups
+            .iter()
+            .filter_map(|g| g.first())
+            .map(|n| n.node_type.clone())
+            .collect();
 
-        // Check which types already have nodes (if any exist, skip seeding that type)
-        let mut seeded_types: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for node_type in &seed_types {
+        let mut seeded_types: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for node_type in &root_types {
             let filter = crate::models::NodeFilter {
                 node_type: Some(node_type.clone()),
                 ..Default::default()
             };
-            let existing = self.query_nodes(filter).await?;
-            if !existing.is_empty() {
+            if !self.query_nodes(filter).await?.is_empty() {
                 seeded_types.insert(node_type.clone());
             }
         }
 
-        let mut created = 0u32;
+        let mut created_roots = 0u32;
+        let mut created_children = 0u32;
         let mut skipped = 0u32;
 
-        for node in nodes {
-            if seeded_types.contains(&node.node_type) {
+        for group in template_groups {
+            let root = match group.first() {
+                Some(r) => r,
+                None => continue,
+            };
+
+            if seeded_types.contains(&root.node_type) {
                 skipped += 1;
                 continue;
             }
+
+            // Insert root node (no parent).
             self.create_node_with_parent(CreateNodeParams {
-                id: Some(node.id),
-                node_type: node.node_type,
-                content: node.content,
-                properties: node.properties,
+                id: Some(root.id.clone()),
+                node_type: root.node_type.clone(),
+                content: root.content.clone(),
+                properties: root.properties.clone(),
                 parent_id: None,
                 insert_after_node_id: None,
             })
             .await?;
-            created += 1;
+            created_roots += 1;
+
+            // Insert children via bulk_create_hierarchy (single transaction).
+            let children = &group[1..];
+            if !children.is_empty() {
+                let bulk_nodes: Vec<(String, String, String, Option<String>, f64, serde_json::Value)> =
+                    children
+                        .iter()
+                        .map(|n| {
+                            (
+                                n.id.clone(),
+                                n.node_type.clone(),
+                                n.content.clone(),
+                                n.parent_id.clone(),
+                                n.order,
+                                n.properties.clone(),
+                            )
+                        })
+                        .collect();
+                self.bulk_create_hierarchy(bulk_nodes).await?;
+                created_children += children.len() as u32;
+            }
         }
 
-        if created > 0 {
-            tracing::info!(created, skipped, "Agent nodes seeded");
+        if created_roots > 0 {
+            tracing::info!(
+                created_roots,
+                created_children,
+                skipped,
+                "Agent nodes seeded from templates"
+            );
         }
 
         Ok(())
