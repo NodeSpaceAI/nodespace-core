@@ -699,7 +699,7 @@ mod tests {
         assert_eq!(config.search_limit, 3);
     }
 
-    // --- Skill whitelist tests for all 7 skills ---
+    // --- Skill whitelist tests for all 8 skills ---
 
     #[test]
     fn research_search_skill_whitelist() {

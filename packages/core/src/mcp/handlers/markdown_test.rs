@@ -3017,3 +3017,186 @@ Some text here.
         assert_eq!(section_one_children[0].node_type, "text");
     }
 }
+
+// ============================================================================
+// NodeTemplate / prepare_nodes_from_template unit tests (Issue #1056)
+// ============================================================================
+
+#[cfg(test)]
+mod template_tests {
+    use crate::mcp::handlers::markdown::{prepare_nodes_from_template, NodeTemplate};
+
+    fn skill_template(name: &str, guidance: &str) -> NodeTemplate {
+        NodeTemplate {
+            title: name.to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: serde_json::json!({
+                "description": "test skill",
+                "tool_whitelist": ["get_node"],
+                "max_iterations": 3,
+            }),
+            child_node_type: Some("prompt".to_string()),
+            child_properties: Some(serde_json::json!({
+                "priority": 1,
+                "source": "built-in",
+            })),
+            markdown_content: guidance.to_string(),
+        }
+    }
+
+    fn prompt_template(title: &str, body: &str) -> NodeTemplate {
+        NodeTemplate {
+            title: title.to_string(),
+            content: Some(body.to_string()),
+            root_node_type: "prompt".to_string(),
+            root_properties: serde_json::json!({
+                "priority": 10,
+                "source": "built-in",
+            }),
+            child_node_type: None,
+            child_properties: None,
+            markdown_content: String::new(),
+        }
+    }
+
+    #[test]
+    fn skill_with_no_guidance_produces_single_root() {
+        let tmpl = skill_template("Node Creation", "");
+        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
+        assert_eq!(nodes.len(), 1, "Empty markdown_content → single root node");
+        let root = &nodes[0];
+        assert_eq!(root.node_type, "skill");
+        assert_eq!(root.content, "Node Creation");
+        assert!(root.parent_id.is_none());
+        assert_eq!(root.id.len(), 36); // UUID
+    }
+
+    #[test]
+    fn skill_with_guidance_produces_root_plus_children() {
+        let tmpl = skill_template(
+            "Research",
+            "# Research Guidance\n\nSearch first.\n\nThen read.",
+        );
+        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
+        assert!(nodes.len() > 1, "Should have root + at least one child");
+
+        let root = &nodes[0];
+        assert_eq!(root.node_type, "skill");
+        assert_eq!(root.content, "Research");
+        assert!(root.parent_id.is_none());
+
+        // All children should have child_node_type override applied
+        for child in &nodes[1..] {
+            assert_eq!(
+                child.node_type, "prompt",
+                "Child type should be overridden to 'prompt'"
+            );
+            // parent_id must be Some (either the root or a heading ancestor)
+            assert!(child.parent_id.is_some(), "Child must have a parent");
+        }
+    }
+
+    #[test]
+    fn child_properties_merged_into_children() {
+        let tmpl = skill_template("Schema Creation", "# Guidance\n\nDo this.");
+        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
+        assert!(nodes.len() > 1);
+
+        for child in &nodes[1..] {
+            assert_eq!(
+                child.properties.get("source").and_then(|v| v.as_str()),
+                Some("built-in"),
+                "child_properties should be merged into children"
+            );
+            assert_eq!(
+                child.properties.get("priority").and_then(|v| v.as_i64()),
+                Some(1),
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_template_uses_content_override_not_title() {
+        let body = "TOOL STRATEGY: Always search first.";
+        let tmpl = prompt_template("Tool Strategy Guide", body);
+        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
+        assert_eq!(nodes.len(), 1, "Prompt with no children → single node");
+        let root = &nodes[0];
+        assert_eq!(root.node_type, "prompt");
+        assert_eq!(
+            root.content, body,
+            "content field should override title as node content"
+        );
+        assert_ne!(root.content, "Tool Strategy Guide");
+    }
+
+    #[test]
+    fn template_without_content_override_uses_title() {
+        let tmpl = NodeTemplate {
+            title: "My Skill".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: serde_json::json!({}),
+            child_node_type: None,
+            child_properties: None,
+            markdown_content: String::new(),
+        };
+        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
+        assert_eq!(nodes[0].content, "My Skill");
+    }
+
+    #[test]
+    fn non_object_child_properties_replace_entirely() {
+        // When child_properties is not a JSON object (edge case), it replaces
+        // the child's parsed properties entirely rather than merging.
+        let tmpl = NodeTemplate {
+            title: "Edge Case Skill".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: serde_json::json!({}),
+            child_node_type: Some("prompt".to_string()),
+            child_properties: Some(serde_json::json!("plain-string")), // not an object
+            markdown_content: "- A guidance item".to_string(),
+        };
+        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
+        assert!(nodes.len() > 1, "Should have child from bullet list");
+        // The non-object child_properties replaces the child's properties
+        for child in &nodes[1..] {
+            assert_eq!(child.properties, serde_json::json!("plain-string"));
+        }
+    }
+
+    #[test]
+    fn root_properties_injected_onto_root_node() {
+        let tmpl = NodeTemplate {
+            title: "Typed Skill".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: serde_json::json!({
+                "tool_whitelist": ["search_semantic"],
+                "max_iterations": 5,
+            }),
+            child_node_type: None,
+            child_properties: None,
+            markdown_content: String::new(),
+        };
+        let nodes = prepare_nodes_from_template(&tmpl).unwrap();
+        let root = &nodes[0];
+        assert_eq!(
+            root.properties
+                .get("max_iterations")
+                .and_then(|v| v.as_u64()),
+            Some(5)
+        );
+        let wl: Vec<String> = root
+            .properties
+            .get("tool_whitelist")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        assert_eq!(wl, vec!["search_semantic"]);
+    }
+}

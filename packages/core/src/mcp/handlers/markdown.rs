@@ -1254,8 +1254,10 @@ pub async fn handle_create_nodes_from_markdown(
 /// # Example — building a skill node with guidance children
 ///
 /// ```ignore
+/// // Skill node: title used as content, guidance body becomes prompt children.
 /// let tmpl = NodeTemplate {
 ///     title: "Research & Search".to_string(),
+///     content: None, // title is used as the node content
 ///     markdown_content: "When answering questions:\n\nSEARCH FIRST: …".to_string(),
 ///     root_node_type: "skill".to_string(),
 ///     root_properties: serde_json::json!({
@@ -1273,6 +1275,17 @@ pub async fn handle_create_nodes_from_markdown(
 /// };
 /// let nodes = prepare_nodes_from_template(&tmpl)?;
 /// // nodes[0] is the skill root; nodes[1..] are prompt children
+///
+/// // Prompt node: long body text goes in `content`, `title` is the short label.
+/// let prompt_tmpl = NodeTemplate {
+///     title: "Tool Strategy Guide".to_string(),
+///     content: Some("TOOL STRATEGY: Always search before updating…".to_string()),
+///     markdown_content: String::new(), // no children
+///     root_node_type: "prompt".to_string(),
+///     root_properties: serde_json::json!({ "priority": 50, "source": "built-in" }),
+///     child_node_type: None,
+///     child_properties: None,
+/// };
 /// ```
 #[derive(Debug, Clone)]
 pub struct NodeTemplate {

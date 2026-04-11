@@ -56,8 +56,12 @@ pub(crate) async fn create_service_bundle(
     //
     // Uses the unified NodeTemplate pipeline (Issue #1056): each template is
     // expanded into a PreparedNode list (root + children) and inserted via
-    // seed_nodes_from_templates.  Built-in prompt content is also diff-checked
-    // so changes to the seed strings propagate to existing installations.
+    // seed_nodes_from_templates.
+    //
+    // After the initial seed, built-in *prompt* node content is diff-checked so
+    // that changes to seed strings propagate to existing installations.  Skill
+    // guidance children are NOT diff-checked — guidance content is treated as
+    // user-editable after first seed (skills can be customised in the graph).
     {
         use nodespace_agent::prompt_assembler::PromptAssembler;
         use nodespace_agent::skill_pipeline::SkillPipeline;
