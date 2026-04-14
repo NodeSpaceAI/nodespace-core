@@ -322,7 +322,7 @@ impl PromptAssembler {
                     - To find nodes by exact title or keyword (when you know the name): use search_nodes with query=<keyword>. To filter by type (e.g. \"show all tasks\"), pass node_type=\"task\" with query=\"\". To filter by property (e.g. \"open tasks\"), pass filters={\"status\":\"open\"}.\n\
                     - To find nodes by meaning/topic (when the exact name is unknown): use search_semantic (natural language query)\n\
                     - search_semantic results are ordered by relevance. Each result has: id, title, score (0-1), snippet, and optionally markdown (full content).\n\
-                    - search_semantic parameters: use 'collection' to scope to a namespace/folder, 'node_types' to filter by type (e.g. [\"task\"]), 'scope'='conversations' to search chat history, 'threshold' to tune precision (lower = broader recall), 'include_archived'=true to include archived content.\n\
+                    - search_semantic parameters: use 'collection' to scope to a namespace/folder, 'node_types' to filter by type (e.g. [\"task\"]), 'scope'='conversations' to search chat history, 'threshold' to tune precision (lower = broader recall), 'include_archived'=true to include archived content, 'exclude_collections' to suppress noisy collections, 'include_edges'=true to get relationship data with results, 'graph_boost'=true to rank well-connected nodes higher.\n\
                     - If a search_semantic result has a non-empty 'markdown' field, that IS the full document — summarize from it directly. Only call get_node for results that lack markdown.\n\
                     - To get full content for a known node ID: use get_node with format=markdown.\n\
                     - To find what nodes are connected to a node: use get_related_nodes with the node ID.\n\
@@ -411,7 +411,6 @@ impl PromptAssembler {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,7 +422,11 @@ mod tests {
 
         for seed in &seeds {
             let body = seed.content.as_deref().unwrap_or(&seed.markdown_content);
-            assert!(!body.is_empty(), "Seed '{}' content must not be empty", seed.title);
+            assert!(
+                !body.is_empty(),
+                "Seed '{}' content must not be empty",
+                seed.title
+            );
             assert!(!seed.title.is_empty(), "Seed title must not be empty");
             assert_eq!(seed.root_node_type, "prompt");
             assert_eq!(
@@ -449,11 +452,19 @@ mod tests {
         let seeds = PromptAssembler::seed_prompt_nodes();
         let priorities: Vec<i64> = seeds
             .iter()
-            .map(|s| s.root_properties.get("priority").and_then(|v| v.as_i64()).unwrap_or(0))
+            .map(|s| {
+                s.root_properties
+                    .get("priority")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
+            })
             .collect();
         let mut sorted = priorities.clone();
         sorted.sort();
-        assert_eq!(priorities, sorted, "Seed prompts should be in priority order");
+        assert_eq!(
+            priorities, sorted,
+            "Seed prompts should be in priority order"
+        );
     }
 
     #[test]

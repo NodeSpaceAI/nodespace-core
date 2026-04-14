@@ -808,11 +808,9 @@ impl GraphToolExecutor {
             include_archived: params.include_archived,
             scope: params.scope,
             node_types: params.node_types,
-            // property_filters is intentionally omitted from the tool schema:
-            // the complex filter structure (arbitrary key-value JSON object) is
-            // too difficult for the 8B model to construct reliably without
-            // additional scaffolding. Users can achieve type-based filtering
-            // via node_types and namespace-based filtering via collection.
+            // property_filters is exposed in the tool schema as a simple object.
+            // The 8B model may struggle with complex filter structures, but simple
+            // key-value pairs (e.g. {"status": "done"}) work well enough.
             property_filters: params.property_filters,
             include_edges: params.include_edges,
             graph_boost: params.graph_boost,

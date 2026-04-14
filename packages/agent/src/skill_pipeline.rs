@@ -247,6 +247,9 @@ PARAMETER GUIDANCE:
 - Use 'threshold' to tune precision: default 0.3. Lower to 0.1-0.2 for broader recall when results are sparse.
 - Use 'include_archived'=true only when the user explicitly asks for archived or historical content.
 - Use 'exclude_collections' to suppress noisy collections (e.g. exclude_collections=["Archived"]).
+- Use 'include_edges'=true to get relationship data (outgoing 'mentions' edges) with each result — saves a separate get_related_nodes call.
+- Use 'graph_boost'=true to rank well-connected nodes higher (blends similarity with graph connectivity). Useful when the user wants the most referenced/central node on a topic.
+- Use 'property_filters' for simple key-value filtering (e.g. property_filters={"status": "done"}). Prefer 'node_types' for type filtering.
 
 MULTIPLE DOCUMENTS: If the user asks about multiple topics, call search_semantic once per topic rather than searching broadly and fetching each result individually.
 
@@ -462,7 +465,6 @@ fn extract_tool_whitelist(node: &Node) -> Vec<String> {
         .unwrap_or_default()
 }
 
-
 #[cfg(test)]
 mod tests {
     use nodespace_core::mcp::handlers::markdown::prepare_nodes_from_template;
@@ -553,7 +555,11 @@ mod tests {
         for seed in &seeds {
             let nodes = prepare_nodes_from_template(seed)
                 .unwrap_or_else(|e| panic!("Template '{}' failed: {:?}", seed.title, e));
-            assert!(!nodes.is_empty(), "Template '{}' produced no nodes", seed.title);
+            assert!(
+                !nodes.is_empty(),
+                "Template '{}' produced no nodes",
+                seed.title
+            );
             let root = &nodes[0];
             assert_eq!(root.node_type, "skill");
             assert_eq!(root.id.len(), 36, "Node ID should be a UUID");
@@ -564,7 +570,11 @@ mod tests {
                 .properties
                 .get("tool_whitelist")
                 .and_then(|v| v.as_array())
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             assert_eq!(whitelist, tmpl_tool_whitelist(seed));
         }
