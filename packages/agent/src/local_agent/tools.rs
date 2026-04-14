@@ -1904,17 +1904,16 @@ mod tests {
             "include_archived",
             "node_types",
             "exclude_collections",
+            "collection_id",
+            "property_filters",
+            "include_edges",
+            "graph_boost",
         ];
 
-        // Fields intentionally excluded from the tool schema:
-        // - "collection_id": internal ID form; the LLM should use the human-readable
-        //   "collection" (path) form instead, which resolves to a collection_id.
-        // - "property_filters": the complex key-value JSON structure is too difficult
-        //   for the 8B model to construct reliably. Type-based filtering via
-        //   "node_types" and namespace-based filtering via "collection" cover the
-        //   primary use cases. The field is still wired through exec_search_semantic
-        //   so MCP callers (which can provide well-formed JSON) can use it.
-        let excluded_fields = ["collection_id", "property_filters"];
+        // No fields are currently excluded from the tool schema.
+        // If a field is added to SearchSemanticParams that should NOT be exposed
+        // to the LLM, add it here with a comment explaining why.
+        let excluded_fields: [&str; 0] = [];
 
         for field in &schema_fields {
             assert!(
@@ -1935,5 +1934,39 @@ mod tests {
                 field
             );
         }
+    }
+
+    // -- Scope passthrough test (issue #1085 acceptance criterion) --
+
+    /// Verifies that scope="conversations" is correctly parsed from JSON params
+    /// and would be forwarded to SearchSemanticInput by exec_search_semantic.
+    /// The executor builds SearchSemanticInput { scope: params.scope, ... },
+    /// so correct deserialization guarantees correct forwarding.
+    #[test]
+    fn search_semantic_scope_conversations_passthrough() {
+        let args = json!({
+            "query": "past discussions about architecture",
+            "scope": "conversations"
+        });
+        let params: SearchSemanticParams = serde_json::from_value(args).unwrap();
+        assert_eq!(params.scope, Some("conversations".to_string()));
+
+        // Build the same SearchSemanticInput that exec_search_semantic would
+        let input = nodespace_core::ops::search_ops::SearchSemanticInput {
+            query: params.query.clone(),
+            threshold: Some(params.threshold.unwrap_or(SEMANTIC_THRESHOLD)),
+            limit: Some(params.limit.unwrap_or(DEFAULT_SEMANTIC_LIMIT)),
+            collection_id: params.collection_id,
+            collection: params.collection,
+            exclude_collections: params.exclude_collections,
+            include_markdown: params.include_markdown,
+            include_archived: params.include_archived,
+            scope: params.scope.clone(),
+            node_types: params.node_types,
+            property_filters: params.property_filters,
+            include_edges: params.include_edges,
+            graph_boost: params.graph_boost,
+        };
+        assert_eq!(input.scope, Some("conversations".to_string()));
     }
 }

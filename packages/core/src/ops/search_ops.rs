@@ -44,7 +44,7 @@ pub struct SearchSemanticInput {
 
     /// When true, re-rank results by blending vector similarity with graph connectivity degree.
     /// Blending formula: combined_score = 0.7 * similarity + 0.3 * normalized_degree
-    /// where normalized_degree = outgoing_edge_count / max_outgoing_edge_count_in_result_set
+    /// where normalized_degree = (out_degree + in_degree) / max_degree_in_result_set
     /// Surfaces well-connected, central knowledge nodes over isolated but textually similar ones.
     /// Default: false (pure similarity ranking)
     pub graph_boost: Option<bool>,
@@ -342,6 +342,19 @@ pub async fn search_semantic(
         .take(limit)
         .collect();
 
+    // Pre-fetch outgoing "mentions" edges when needed by graph_boost or include_edges.
+    // Cache them to avoid redundant DB round-trips when both features are enabled.
+    let mut outgoing_edges_cache: HashMap<String, Vec<Node>> = HashMap::new();
+    if graph_boost || include_edges {
+        for (node, _) in &filtered_results {
+            let related = node_service
+                .get_related_nodes(&node.id, "mentions", "out")
+                .await
+                .unwrap_or_default();
+            outgoing_edges_cache.insert(node.id.clone(), related);
+        }
+    }
+
     // graph_boost: re-rank by blending similarity with normalized edge degree.
     //
     // Formula: combined_score = 0.7 * similarity + 0.3 * normalized_degree
@@ -352,9 +365,8 @@ pub async fn search_semantic(
     let filtered_results: Vec<(Node, f64)> = if graph_boost && !filtered_results.is_empty() {
         let mut degrees: HashMap<String, usize> = HashMap::new();
         for (node, _) in &filtered_results {
-            let out_count = node_service
-                .get_related_nodes(&node.id, "mentions", "out")
-                .await
+            let out_count = outgoing_edges_cache
+                .get(&node.id)
                 .map(|v| v.len())
                 .unwrap_or(0);
             let in_count = node_service
@@ -384,14 +396,11 @@ pub async fn search_semantic(
         filtered_results
     };
 
-    // include_edges: fetch outgoing "mentions" relationships for all result nodes.
+    // include_edges: build edge data from cached outgoing relationships.
     let mut edges_map: HashMap<String, Vec<Value>> = HashMap::new();
     if include_edges {
         for (node, _) in &filtered_results {
-            let related = node_service
-                .get_related_nodes(&node.id, "mentions", "out")
-                .await
-                .unwrap_or_default();
+            let related = outgoing_edges_cache.remove(&node.id).unwrap_or_default();
 
             let edges: Vec<Value> = related
                 .into_iter()

@@ -99,7 +99,7 @@ pub struct SearchSemanticParams {
 
     /// When true, re-rank results by blending vector similarity with graph connectivity degree.
     /// Blending formula: combined_score = 0.7 * similarity + 0.3 * normalized_degree
-    /// where normalized_degree = outgoing_edge_count / max_outgoing_edge_count_in_result_set
+    /// where normalized_degree = (out_degree + in_degree) / max_degree_in_result_set
     /// Surfaces well-connected, central knowledge nodes over isolated but textually similar ones.
     /// Default: false (pure similarity ranking)
     #[serde(default)]
