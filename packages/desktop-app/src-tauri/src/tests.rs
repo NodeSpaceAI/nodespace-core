@@ -301,6 +301,13 @@ mod nodespace_tests {
 
     /// Verify that reset_to_noop_engine called from a dedicated thread (the pattern
     /// used in release_gpu_resources) works correctly without panicking.
+    ///
+    /// This test uses `new_current_thread` to build a throwaway Tokio runtime on a
+    /// spawned OS thread, mirroring the production `release_gpu_resources` path which
+    /// calls `tauri::async_runtime::block_on` from a dedicated thread. Both drive a
+    /// single-threaded executor; the only difference is who owns the runtime. The
+    /// behaviour under test (no nested-runtime panic, correct lock ordering) is
+    /// identical in both cases.
     #[test]
     fn test_reset_to_noop_engine_from_dedicated_thread() {
         use crate::app_services::AppServices;
