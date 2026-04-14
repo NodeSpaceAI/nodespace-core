@@ -2253,6 +2253,44 @@ fn skill_test_executor() -> MockToolExecutor {
     MockToolExecutor { tools, results }
 }
 
+/// Extract tool_whitelist from a skill NodeTemplate's root_properties.
+fn tmpl_tool_whitelist(
+    tmpl: &nodespace_core::mcp::handlers::markdown::NodeTemplate,
+) -> Vec<String> {
+    tmpl.root_properties
+        .get("tool_whitelist")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Extract max_iterations from a skill NodeTemplate's root_properties.
+fn tmpl_max_iterations(
+    tmpl: &nodespace_core::mcp::handlers::markdown::NodeTemplate,
+) -> usize {
+    tmpl.root_properties
+        .get("max_iterations")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize
+}
+
+/// Build a Node from a NodeTemplate using prepare_nodes_from_template.
+fn tmpl_to_node(
+    tmpl: &nodespace_core::mcp::handlers::markdown::NodeTemplate,
+) -> nodespace_core::Node {
+    let nodes =
+        nodespace_core::mcp::handlers::markdown::prepare_nodes_from_template(tmpl).unwrap();
+    nodespace_core::Node::new(
+        nodes[0].node_type.clone(),
+        nodes[0].content.clone(),
+        nodes[0].properties.clone(),
+    )
+}
+
 /// Skill pipeline: Research & Search skill scopes to only search tools via MockEngine.
 #[tokio::test]
 async fn skill_pipeline_research_search_scoping() {
@@ -2264,21 +2302,21 @@ async fn skill_pipeline_research_search_scoping() {
     let seeds = SkillPipeline::seed_skill_nodes();
     let skill = seeds
         .iter()
-        .find(|s| s.name == "Research & Search")
+        .find(|s| s.title == "Research & Search")
         .unwrap();
 
     let executor = Arc::new(skill_test_executor());
     let all_tools = executor.available_tools().await.unwrap();
 
     let skill_match = SkillMatch {
-        skill: skill.to_node(),
+        skill: tmpl_to_node(skill),
         confidence: 0.9,
         intent: ExtractedIntent {
             query: "search".to_string(),
             from_pattern: true,
         },
-        tool_whitelist: skill.tool_whitelist.clone(),
-        max_iterations: skill.max_iterations,
+        tool_whitelist: tmpl_tool_whitelist(skill),
+        max_iterations: tmpl_max_iterations(skill),
     };
 
     let scoped = pipeline.scope_tools(&all_tools, &skill_match);
@@ -2306,20 +2344,20 @@ async fn skill_pipeline_node_creation_scoping() {
 
     let pipeline = Arc::new(SkillPipeline::new(None));
     let seeds = SkillPipeline::seed_skill_nodes();
-    let skill = seeds.iter().find(|s| s.name == "Node Creation").unwrap();
+    let skill = seeds.iter().find(|s| s.title == "Node Creation").unwrap();
 
     let executor = Arc::new(skill_test_executor());
     let all_tools = executor.available_tools().await.unwrap();
 
     let skill_match = SkillMatch {
-        skill: skill.to_node(),
+        skill: tmpl_to_node(skill),
         confidence: 0.9,
         intent: ExtractedIntent {
             query: "create".to_string(),
             from_pattern: true,
         },
-        tool_whitelist: skill.tool_whitelist.clone(),
-        max_iterations: skill.max_iterations,
+        tool_whitelist: tmpl_tool_whitelist(skill),
+        max_iterations: tmpl_max_iterations(skill),
     };
 
     let scoped = pipeline.scope_tools(&all_tools, &skill_match);
@@ -2347,20 +2385,20 @@ async fn skill_pipeline_schema_creation_scoping() {
 
     let pipeline = Arc::new(SkillPipeline::new(None));
     let seeds = SkillPipeline::seed_skill_nodes();
-    let skill = seeds.iter().find(|s| s.name == "Schema Creation").unwrap();
+    let skill = seeds.iter().find(|s| s.title == "Schema Creation").unwrap();
 
     let executor = Arc::new(skill_test_executor());
     let all_tools = executor.available_tools().await.unwrap();
 
     let skill_match = SkillMatch {
-        skill: skill.to_node(),
+        skill: tmpl_to_node(skill),
         confidence: 0.9,
         intent: ExtractedIntent {
             query: "create schema".to_string(),
             from_pattern: true,
         },
-        tool_whitelist: skill.tool_whitelist.clone(),
-        max_iterations: skill.max_iterations,
+        tool_whitelist: tmpl_tool_whitelist(skill),
+        max_iterations: tmpl_max_iterations(skill),
     };
 
     let scoped = pipeline.scope_tools(&all_tools, &skill_match);
@@ -2384,20 +2422,20 @@ async fn skill_pipeline_graph_editing_scoping() {
 
     let pipeline = Arc::new(SkillPipeline::new(None));
     let seeds = SkillPipeline::seed_skill_nodes();
-    let skill = seeds.iter().find(|s| s.name == "Graph Editing").unwrap();
+    let skill = seeds.iter().find(|s| s.title == "Graph Editing").unwrap();
 
     let executor = Arc::new(skill_test_executor());
     let all_tools = executor.available_tools().await.unwrap();
 
     let skill_match = SkillMatch {
-        skill: skill.to_node(),
+        skill: tmpl_to_node(skill),
         confidence: 0.9,
         intent: ExtractedIntent {
             query: "update".to_string(),
             from_pattern: true,
         },
-        tool_whitelist: skill.tool_whitelist.clone(),
-        max_iterations: skill.max_iterations,
+        tool_whitelist: tmpl_tool_whitelist(skill),
+        max_iterations: tmpl_max_iterations(skill),
     };
 
     let scoped = pipeline.scope_tools(&all_tools, &skill_match);
@@ -2427,21 +2465,21 @@ async fn skill_pipeline_relationship_management_scoping() {
     let seeds = SkillPipeline::seed_skill_nodes();
     let skill = seeds
         .iter()
-        .find(|s| s.name == "Relationship Management")
+        .find(|s| s.title == "Relationship Management")
         .unwrap();
 
     let executor = Arc::new(skill_test_executor());
     let all_tools = executor.available_tools().await.unwrap();
 
     let skill_match = SkillMatch {
-        skill: skill.to_node(),
+        skill: tmpl_to_node(skill),
         confidence: 0.9,
         intent: ExtractedIntent {
             query: "relate".to_string(),
             from_pattern: true,
         },
-        tool_whitelist: skill.tool_whitelist.clone(),
-        max_iterations: skill.max_iterations,
+        tool_whitelist: tmpl_tool_whitelist(skill),
+        max_iterations: tmpl_max_iterations(skill),
     };
 
     let scoped = pipeline.scope_tools(&all_tools, &skill_match);
@@ -2469,20 +2507,20 @@ async fn skill_pipeline_node_deletion_scoping() {
 
     let pipeline = Arc::new(SkillPipeline::new(None));
     let seeds = SkillPipeline::seed_skill_nodes();
-    let skill = seeds.iter().find(|s| s.name == "Node Deletion").unwrap();
+    let skill = seeds.iter().find(|s| s.title == "Node Deletion").unwrap();
 
     let executor = Arc::new(skill_test_executor());
     let all_tools = executor.available_tools().await.unwrap();
 
     let skill_match = SkillMatch {
-        skill: skill.to_node(),
+        skill: tmpl_to_node(skill),
         confidence: 0.9,
         intent: ExtractedIntent {
             query: "delete".to_string(),
             from_pattern: true,
         },
-        tool_whitelist: skill.tool_whitelist.clone(),
-        max_iterations: skill.max_iterations,
+        tool_whitelist: tmpl_tool_whitelist(skill),
+        max_iterations: tmpl_max_iterations(skill),
     };
 
     let scoped = pipeline.scope_tools(&all_tools, &skill_match);
@@ -2521,20 +2559,20 @@ async fn skill_pipeline_bulk_import_scoping() {
 
     let pipeline = Arc::new(SkillPipeline::new(None));
     let seeds = SkillPipeline::seed_skill_nodes();
-    let skill = seeds.iter().find(|s| s.name == "Bulk Import").unwrap();
+    let skill = seeds.iter().find(|s| s.title == "Bulk Import").unwrap();
 
     let executor = Arc::new(skill_test_executor());
     let all_tools = executor.available_tools().await.unwrap();
 
     let skill_match = SkillMatch {
-        skill: skill.to_node(),
+        skill: tmpl_to_node(skill),
         confidence: 0.9,
         intent: ExtractedIntent {
             query: "import".to_string(),
             from_pattern: true,
         },
-        tool_whitelist: skill.tool_whitelist.clone(),
-        max_iterations: skill.max_iterations,
+        tool_whitelist: tmpl_tool_whitelist(skill),
+        max_iterations: tmpl_max_iterations(skill),
     };
 
     let scoped = pipeline.scope_tools(&all_tools, &skill_match);
@@ -2565,20 +2603,20 @@ async fn skill_pipeline_organization_scoping() {
 
     let pipeline = Arc::new(SkillPipeline::new(None));
     let seeds = SkillPipeline::seed_skill_nodes();
-    let skill = seeds.iter().find(|s| s.name == "Organization").unwrap();
+    let skill = seeds.iter().find(|s| s.title == "Organization").unwrap();
 
     let executor = Arc::new(skill_test_executor());
     let all_tools = executor.available_tools().await.unwrap();
 
     let skill_match = SkillMatch {
-        skill: skill.to_node(),
+        skill: tmpl_to_node(skill),
         confidence: 0.9,
         intent: ExtractedIntent {
             query: "organize".to_string(),
             from_pattern: true,
         },
-        tool_whitelist: skill.tool_whitelist.clone(),
-        max_iterations: skill.max_iterations,
+        tool_whitelist: tmpl_tool_whitelist(skill),
+        max_iterations: tmpl_max_iterations(skill),
     };
 
     let scoped = pipeline.scope_tools(&all_tools, &skill_match);

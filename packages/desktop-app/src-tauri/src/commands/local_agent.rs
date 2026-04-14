@@ -77,25 +77,28 @@ pub struct ManagedAgentState {
 }
 
 impl ManagedAgentState {
+    /// Build a `LocalAgentService` with the no-op inference engine and no services.
+    ///
+    /// Used at startup (before real services exist) and during shutdown/reset.
+    fn build_noop_service() -> LocalAgentService<dyn ChatInferenceEngine, dyn AgentToolExecutor> {
+        use nodespace_agent::local_agent::tools::GraphToolExecutor;
+
+        let engine: Arc<dyn ChatInferenceEngine> = Arc::new(NoOpInferenceEngine);
+        let executor: Arc<dyn AgentToolExecutor> = Arc::new(GraphToolExecutor {
+            node_service: None,
+            embedding_service: None,
+        });
+        LocalAgentService::new(engine, executor, None)
+    }
+
     /// Create with a no-op inference engine.
     ///
     /// The `app_services` parameter is used to resolve NodeService and
     /// NodeEmbeddingService when constructing the tool executor. At startup,
     /// services may not be initialized yet, so the executor starts without them.
     pub fn new(app_services: crate::app_services::AppServices) -> Self {
-        use nodespace_agent::local_agent::tools::GraphToolExecutor;
-
-        let engine: Arc<dyn ChatInferenceEngine> = Arc::new(NoOpInferenceEngine);
-        // At startup, services aren't initialized yet. The executor handles
-        // None gracefully (returns "service unavailable" errors).
-        let executor: Arc<dyn AgentToolExecutor> = Arc::new(GraphToolExecutor {
-            node_service: None,
-            embedding_service: None,
-        });
-        let service = LocalAgentService::new(engine, executor, None);
-
         Self {
-            inner: RwLock::new(service),
+            inner: RwLock::new(Self::build_noop_service()),
             app_services,
             active_model_id: tokio::sync::Mutex::new(None),
         }
@@ -194,17 +197,10 @@ impl ManagedAgentState {
     /// This must be called BEFORE `release_llama_backend()` to ensure
     /// proper cleanup order and avoid use-after-free crashes in Metal.
     pub async fn reset_to_noop_engine(&self) {
-        use nodespace_agent::local_agent::tools::GraphToolExecutor;
-
-        let engine: Arc<dyn ChatInferenceEngine> = Arc::new(NoOpInferenceEngine);
-        let executor: Arc<dyn AgentToolExecutor> = Arc::new(GraphToolExecutor {
-            node_service: None,
-            embedding_service: None,
-        });
-        let service = LocalAgentService::new(engine, executor, None);
-
         let mut guard = self.inner.write().await;
-        *guard = service;
+        *guard = Self::build_noop_service();
+        // Explicitly release write lock before calling clear_active_model which
+        // acquires the active_model_id Mutex, to avoid lock ordering issues.
         drop(guard);
 
         // Clear active model so the next ensure_model_ready always re-installs
@@ -251,10 +247,11 @@ struct ModelStatusEvent {
 ///
 /// Emits `model://status` events for each phase transition so the frontend
 /// can update the status bar.
-#[tauri::command]
+///
 /// Returns `true` if the inference engine was (re-)installed, meaning existing
 /// sessions were dropped and the caller must create a new session.
 /// Returns `false` if the model was already loaded and the engine is unchanged.
+#[tauri::command]
 pub async fn ensure_model_ready(
     model_id: String,
     app: AppHandle,
