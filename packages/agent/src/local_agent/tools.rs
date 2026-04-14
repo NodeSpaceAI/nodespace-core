@@ -258,6 +258,22 @@ fn def_search_semantic() -> ToolDefinition {
                     "type": "array",
                     "items": { "type": "string" },
                     "description": "Collection paths to exclude from results (e.g. [\"Archived\", \"Drafts\"]). Useful to narrow results when a collection is noisy."
+                },
+                "collection_id": {
+                    "type": "string",
+                    "description": "Filter by collection ID directly (alternative to collection path)."
+                },
+                "property_filters": {
+                    "type": "object",
+                    "description": "Filter by node properties (AND logic, e.g. {\"status\": \"done\"})"
+                },
+                "include_edges": {
+                    "type": "boolean",
+                    "description": "When true, attach outgoing 'mentions' relationships of each result as an 'edges' array. Reduces round-trips for graph traversal. Default: false."
+                },
+                "graph_boost": {
+                    "type": "boolean",
+                    "description": "When true, re-rank results by blending similarity with graph connectivity (nodes with more relationships score higher). Formula: 0.7 * similarity + 0.3 * normalized_degree. Default: false."
                 }
             },
             "required": ["query"]
@@ -798,8 +814,8 @@ impl GraphToolExecutor {
             // additional scaffolding. Users can achieve type-based filtering
             // via node_types and namespace-based filtering via collection.
             property_filters: params.property_filters,
-            include_edges: None,
-            graph_boost: None,
+            include_edges: params.include_edges,
+            graph_boost: params.graph_boost,
         };
 
         let output = search_ops::search_semantic(&ns, &emb, input)
@@ -828,6 +844,12 @@ impl GraphToolExecutor {
                 if let Some(md) = v.get("markdown").and_then(|v| v.as_str()) {
                     if !md.is_empty() {
                         item["markdown"] = json!(truncate(md, BODY_TRUNCATE_FULL));
+                    }
+                }
+                // Include edge data if the ops layer returned it (include_edges=true)
+                if let Some(edges) = v.get("edges") {
+                    if edges.is_array() {
+                        item["edges"] = edges.clone();
                     }
                 }
                 item
