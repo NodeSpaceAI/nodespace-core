@@ -2269,9 +2269,7 @@ fn tmpl_tool_whitelist(
 }
 
 /// Extract max_iterations from a skill NodeTemplate's root_properties.
-fn tmpl_max_iterations(
-    tmpl: &nodespace_core::mcp::handlers::markdown::NodeTemplate,
-) -> usize {
+fn tmpl_max_iterations(tmpl: &nodespace_core::mcp::handlers::markdown::NodeTemplate) -> usize {
     tmpl.root_properties
         .get("max_iterations")
         .and_then(|v| v.as_u64())
@@ -2282,8 +2280,7 @@ fn tmpl_max_iterations(
 fn tmpl_to_node(
     tmpl: &nodespace_core::mcp::handlers::markdown::NodeTemplate,
 ) -> nodespace_core::Node {
-    let nodes =
-        nodespace_core::mcp::handlers::markdown::prepare_nodes_from_template(tmpl).unwrap();
+    let nodes = nodespace_core::mcp::handlers::markdown::prepare_nodes_from_template(tmpl).unwrap();
     nodespace_core::Node::new(
         nodes[0].node_type.clone(),
         nodes[0].content.clone(),

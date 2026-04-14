@@ -259,10 +259,6 @@ fn def_search_semantic() -> ToolDefinition {
                     "items": { "type": "string" },
                     "description": "Collection paths to exclude from results (e.g. [\"Archived\", \"Drafts\"]). Useful to narrow results when a collection is noisy."
                 },
-                "collection_id": {
-                    "type": "string",
-                    "description": "Filter by collection ID directly (alternative to collection path)."
-                },
                 "property_filters": {
                     "type": "object",
                     "description": "Filter by node properties (AND logic, e.g. {\"status\": \"done\"})"
@@ -1902,16 +1898,16 @@ mod tests {
             "include_archived",
             "node_types",
             "exclude_collections",
-            "collection_id",
             "property_filters",
             "include_edges",
             "graph_boost",
         ];
 
-        // No fields are currently excluded from the tool schema.
-        // If a field is added to SearchSemanticParams that should NOT be exposed
-        // to the LLM, add it here with a comment explaining why.
-        let excluded_fields: [&str; 0] = [];
+        // Fields intentionally excluded from the tool schema:
+        // - "collection_id": internal ID form; the LLM should use the human-readable
+        //   "collection" (path) form instead, which resolves to a collection_id server-side.
+        //   Still wired through exec_search_semantic for MCP clients that know the ID.
+        let excluded_fields = ["collection_id"];
 
         for field in &schema_fields {
             assert!(
