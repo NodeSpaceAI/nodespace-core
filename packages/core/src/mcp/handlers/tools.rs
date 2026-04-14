@@ -1031,6 +1031,16 @@ fn get_tool_schemas(schemas: &[SchemaNode]) -> Value {
                     "property_filters": {
                         "type": "object",
                         "description": "Filter by node properties using key-value pairs. Only nodes whose properties contain all specified key-value pairs (AND logic) will be included. Example: {'status': 'done', 'priority': 'high'}"
+                    },
+                    "include_edges": {
+                        "type": "boolean",
+                        "description": "When true, attach outgoing 'mentions' relationships of each result node as an 'edges' array. Reduces round-trips for graph traversal. Default: false.",
+                        "default": false
+                    },
+                    "graph_boost": {
+                        "type": "boolean",
+                        "description": "When true, re-rank results by blending similarity with graph connectivity. Nodes with more 'mentions' relationships score higher. Formula: 0.7 * similarity + 0.3 * normalized_degree. Default: false.",
+                        "default": false
                     }
                 },
                 "required": ["query"]

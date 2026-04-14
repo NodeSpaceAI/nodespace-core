@@ -4,91 +4,10 @@
 //! Pure business logic - no Tauri dependencies.
 
 use crate::mcp::types::MCPError;
-use crate::models::Node;
-use crate::services::{
-    CollectionService, NodeEmbeddingService, NodeService, NodeServiceError, SearchNodeFilters,
-    SearchScope,
-};
+use crate::services::{NodeEmbeddingService, NodeService};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-
-/// Maximum depth for markdown tree traversal (prevents stack overflow on deeply nested documents)
-const MARKDOWN_MAX_DEPTH: usize = 20;
-
-/// Recursively build markdown from a node tree
-/// This is a simplified version that produces clean markdown without node ID comments
-fn build_markdown_recursive(
-    node: &Node,
-    node_map: &HashMap<String, Node>,
-    adjacency_list: &HashMap<String, Vec<String>>,
-    output: &mut String,
-    depth: usize,
-    max_depth: usize,
-) {
-    if depth > max_depth {
-        return;
-    }
-
-    // Add node content with appropriate formatting based on type
-    match node.node_type.as_str() {
-        "header" => {
-            output.push_str(&node.content);
-            output.push_str("\n\n");
-        }
-        "text" => {
-            output.push_str(&node.content);
-            output.push_str("\n\n");
-        }
-        "task" => {
-            let status = node
-                .properties
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("todo");
-            let checkbox = if status == "done" { "[x]" } else { "[ ]" };
-            output.push_str(&format!("- {} {}\n", checkbox, node.content));
-        }
-        "code-block" => {
-            let language = node
-                .properties
-                .get("language")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            output.push_str(&format!("```{}\n{}\n```\n\n", language, node.content));
-        }
-        "quote-block" => {
-            for line in node.content.lines() {
-                output.push_str(&format!("> {}\n", line));
-            }
-            output.push('\n');
-        }
-        "ordered-list" => {
-            output.push_str(&format!("1. {}\n", node.content));
-        }
-        _ => {
-            output.push_str(&node.content);
-            output.push_str("\n\n");
-        }
-    }
-
-    // Recursively add children
-    if let Some(child_ids) = adjacency_list.get(&node.id) {
-        for child_id in child_ids {
-            if let Some(child) = node_map.get(child_id) {
-                build_markdown_recursive(
-                    child,
-                    node_map,
-                    adjacency_list,
-                    output,
-                    depth + 1,
-                    max_depth,
-                );
-            }
-        }
-    }
-}
 
 /// Parameters for search_nodes (keyword/title search) method
 #[derive(Debug, Deserialize)]
@@ -180,7 +99,7 @@ pub struct SearchSemanticParams {
 
     /// When true, re-rank results by blending vector similarity with graph connectivity degree.
     /// Blending formula: combined_score = 0.7 * similarity + 0.3 * normalized_degree
-    /// where normalized_degree = outgoing_edge_count / max_outgoing_edge_count_in_result_set
+    /// where normalized_degree = (out_degree + in_degree) / max_degree_in_result_set
     /// Surfaces well-connected, central knowledge nodes over isolated but textually similar ones.
     /// Default: false (pure similarity ranking)
     #[serde(default)]
@@ -209,303 +128,52 @@ pub async fn handle_search_semantic(
     embedding_service: &Arc<NodeEmbeddingService>,
     params: Value,
 ) -> Result<Value, MCPError> {
+    use crate::ops::{search_ops, OpsError};
+
     // Parse parameters
     let params: SearchSemanticParams = serde_json::from_value(params)
         .map_err(|e| MCPError::invalid_params(format!("Invalid parameters: {}", e)))?;
 
-    // Apply defaults (authoritative - schema defaults are client hints only)
-    // These values override any client-side defaults from the JSON schema
-    let threshold = params.threshold.unwrap_or(0.7);
-    let limit = params.limit.unwrap_or(20);
-    let include_markdown = params.include_markdown.unwrap_or(1).min(5); // Default 1, max 5
-    let include_archived = params.include_archived.unwrap_or(false);
-
-    // Parse search scope (Issue #1018) — defaults to Knowledge
-    let scope = match params.scope.as_deref() {
-        Some("conversations") => SearchScope::Conversations,
-        Some("everything") => SearchScope::Everything,
-        Some("knowledge") | None => SearchScope::Knowledge,
-        Some(unknown) => {
-            return Err(MCPError::invalid_params(format!(
-                "Invalid scope '{}'. Valid values: knowledge, conversations, everything",
-                unknown
-            )));
-        }
+    // Delegate all search logic to the shared search_ops layer, which owns the single
+    // canonical implementation of collection resolution, scope/lifecycle filtering,
+    // over-fetching, markdown inlining, include_edges, and graph_boost.
+    let input = search_ops::SearchSemanticInput {
+        query: params.query,
+        threshold: params.threshold,
+        limit: params.limit,
+        collection_id: params.collection_id,
+        collection: params.collection,
+        exclude_collections: params.exclude_collections,
+        include_markdown: params.include_markdown,
+        include_archived: params.include_archived,
+        scope: params.scope,
+        node_types: params.node_types,
+        property_filters: params.property_filters,
+        include_edges: params.include_edges,
+        graph_boost: params.graph_boost,
     };
 
-    // Validate parameters
-    if !(0.0..=1.0).contains(&threshold) {
-        return Err(MCPError::invalid_params(
-            "threshold must be between 0.0 and 1.0".to_string(),
-        ));
-    }
-
-    if limit > 1000 {
-        return Err(MCPError::invalid_params(
-            "limit cannot exceed 1000".to_string(),
-        ));
-    }
-
-    if params.query.trim().is_empty() {
-        return Err(MCPError::invalid_params(
-            "query cannot be empty or whitespace".to_string(),
-        ));
-    }
-
-    // Resolve collection ID and get member IDs if filtering by collection
-    let (collection_id, collection_member_ids): (Option<String>, Option<HashSet<String>>) =
-        if let Some(path) = &params.collection {
-            let collection_service =
-                CollectionService::new(embedding_service.store(), node_service);
-            match collection_service.resolve_path(path).await {
-                Ok(resolved) => {
-                    let coll_id = resolved.leaf_id().to_string();
-                    let members = collection_service
-                        .get_collection_members(&coll_id)
-                        .await
-                        .map_err(|e| {
-                            MCPError::internal_error(format!(
-                                "Failed to get collection members: {}",
-                                e
-                            ))
-                        })?;
-                    // Extract IDs from nodes for membership filtering
-                    (
-                        Some(coll_id),
-                        Some(members.into_iter().map(|n| n.id).collect()),
-                    )
-                }
-                Err(NodeServiceError::CollectionNotFound(_)) => {
-                    // Collection doesn't exist, return empty result
-                    return Ok(json!({
-                        "nodes": [],
-                        "count": 0,
-                        "query": params.query,
-                        "threshold": threshold,
-                        "collection_id": null
-                    }));
-                }
-                Err(e) => {
-                    return Err(MCPError::internal_error(format!(
-                        "Failed to resolve collection path: {}",
-                        e
-                    )))
-                }
-            }
-        } else if let Some(coll_id) = &params.collection_id {
-            let collection_service =
-                CollectionService::new(embedding_service.store(), node_service);
-            let members = collection_service
-                .get_collection_members(coll_id)
-                .await
-                .map_err(|e| {
-                    MCPError::internal_error(format!("Failed to get collection members: {}", e))
-                })?;
-            // Extract IDs from nodes for membership filtering
-            (
-                Some(coll_id.clone()),
-                Some(members.into_iter().map(|n| n.id).collect()),
-            )
-        } else {
-            (None, None)
-        };
-
-    // Resolve excluded collection paths and collect member IDs to exclude
-    let excluded_node_ids: HashSet<String> = if let Some(exclude_paths) =
-        &params.exclude_collections
-    {
-        let collection_service = CollectionService::new(embedding_service.store(), node_service);
-        let mut excluded = HashSet::new();
-
-        for path in exclude_paths {
-            match collection_service.resolve_path(path).await {
-                Ok(resolved) => {
-                    let coll_id = resolved.leaf_id().to_string();
-                    if let Ok(members) = collection_service.get_collection_members(&coll_id).await {
-                        // Extract IDs from nodes for exclusion filtering
-                        excluded.extend(members.into_iter().map(|n| n.id));
-                    }
-                }
-                Err(NodeServiceError::CollectionNotFound(_)) => {
-                    // Collection doesn't exist, skip silently
-                    tracing::debug!("Excluded collection '{}' not found, skipping", path);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to resolve excluded collection '{}': {}", path, e);
-                }
-            }
-        }
-        excluded
-    } else {
-        HashSet::new()
-    };
-
-    tracing::info!(
-        "Semantic search for: '{}' (scope: {:?})",
-        params.query,
-        scope
-    );
-
-    // Build service-layer filters (Issue #1059): delegating to the service ensures
-    // node_type / property filtering happens before results reach the handler.
-    let search_filters = if params.node_types.is_some() || params.property_filters.is_some() {
-        Some(SearchNodeFilters {
-            node_types: params.node_types.clone(),
-            property_filters: params.property_filters.clone(),
-        })
-    } else {
-        None
-    };
-
-    // When filtering by collection, excluding archived nodes, or applying scope,
-    // fetch more results to compensate for post-filtering.
-    // node_types / property_filters over-fetching is handled inside semantic_search_nodes.
-    let scope_filters = !matches!(scope, SearchScope::Everything);
-    let has_post_filters = collection_member_ids.is_some()
-        || !excluded_node_ids.is_empty()
-        || !include_archived
-        || scope_filters;
-    let effective_limit = if has_post_filters { limit * 3 } else { limit };
-
-    // Call the embedding service with service-layer filters (Issue #1059).
-    let results = embedding_service
-        .semantic_search_nodes(
-            &params.query,
-            effective_limit,
-            threshold,
-            search_filters.as_ref(),
-        )
+    let output = search_ops::search_semantic(node_service, embedding_service, input)
         .await
-        .map_err(|e| {
-            let err_msg = e.to_string();
-
-            // Check for specific error types to provide actionable feedback
-            if err_msg.contains("not initialized") || err_msg.contains("not available") {
-                MCPError::internal_error("Embedding service not ready".to_string())
-            } else if err_msg.contains("no embeddings") || err_msg.contains("not found") {
-                MCPError::invalid_params(
-                    "No content available for semantic search. Try adding content first."
-                        .to_string(),
-                )
-            } else if err_msg.contains("database") || err_msg.contains("Database") {
-                MCPError::internal_error(format!("Database error during search: {}", e))
-            } else {
-                MCPError::internal_error(format!("Search failed: {}", e))
+        .map_err(|e| match e {
+            OpsError::InvalidParams(msg) => MCPError::invalid_params(msg),
+            OpsError::Internal(msg) => MCPError::internal_error(msg),
+            OpsError::NotFound { id } => MCPError::node_not_found(&id),
+            OpsError::ValidationFailed(msg) => MCPError::validation_error(msg),
+            OpsError::VersionConflict { node_id, .. } => {
+                MCPError::internal_error(format!("Version conflict on node {}", node_id))
             }
         })?;
 
-    // Apply remaining post-filters: scope, lifecycle status, collection membership, exclusions.
-    // node_types and property_filters are already applied at the service layer above.
-    let filtered_results: Vec<_> = results
-        .into_iter()
-        .filter(|(node, _)| {
-            // Filter by search scope (Issue #1018)
-            if !NodeEmbeddingService::matches_scope(&node.node_type, &scope) {
-                return false;
-            }
-
-            // Filter by lifecycle status (Issue #755)
-            // Always exclude "deleted" nodes, exclude "archived" unless include_archived=true
-            let status = &node.lifecycle_status;
-            if status == "deleted" {
-                return false;
-            }
-            if status == "archived" && !include_archived {
-                return false;
-            }
-
-            // If include filter is specified, node must be in the collection
-            if let Some(ref member_ids) = collection_member_ids {
-                if !member_ids.contains(&node.id) {
-                    return false;
-                }
-            }
-            // Exclude nodes in excluded collections
-            if excluded_node_ids.contains(&node.id) {
-                return false;
-            }
-
-            true
-        })
-        .take(limit)
-        .collect();
-
-    // Fetch markdown for top N results if requested
-    // This saves AI agents from needing to call get_markdown_from_node_id separately
-    let mut markdown_contents: HashMap<String, String> = HashMap::new();
-
-    if include_markdown > 0 {
-        for (node, _) in filtered_results.iter().take(include_markdown) {
-            // Use get_subtree_data to fetch the full document tree (same as get_markdown_from_node_id)
-            if let Ok((Some(root_node), node_map, adjacency_list)) =
-                node_service.get_subtree_data(&node.id).await
-            {
-                // Build markdown from the tree (simplified version without node IDs for readability)
-                let mut markdown = String::new();
-                markdown.push_str(&root_node.content);
-                markdown.push_str("\n\n");
-
-                // Export children recursively
-                if let Some(child_ids) = adjacency_list.get(&root_node.id) {
-                    for child_id in child_ids {
-                        if let Some(child) = node_map.get(child_id) {
-                            build_markdown_recursive(
-                                child,
-                                &node_map,
-                                &adjacency_list,
-                                &mut markdown,
-                                0,
-                                MARKDOWN_MAX_DEPTH,
-                            );
-                        }
-                    }
-                }
-
-                markdown_contents.insert(node.id.clone(), markdown.trim().to_string());
-            }
-        }
-    }
-
-    // Transform results into JSON-serializable format
-    let nodes: Vec<Value> = filtered_results
-        .iter()
-        .enumerate()
-        .map(|(idx, (node, similarity))| {
-            let mut node_json = json!({
-                "id": node.id,
-                "nodeType": node.node_type,
-                "content": node.content,
-                "title": node.title,
-                "version": node.version,
-                "createdAt": node.created_at,
-                "modifiedAt": node.modified_at,
-                "properties": node.properties,
-                "similarity": similarity
-            });
-
-            // Include markdown for top N results
-            if idx < include_markdown {
-                if let Some(markdown) = markdown_contents.get(&node.id) {
-                    node_json["markdown"] = json!(markdown);
-                }
-            }
-
-            node_json
-        })
-        .collect();
-
-    // Return results with metadata
     Ok(json!({
-        "nodes": nodes,
-        "count": nodes.len(),
-        "query": params.query,
-        "threshold": threshold,
-        "collection_id": collection_id,
-        "include_markdown": include_markdown,
-        "include_archived": include_archived,
-        "scope": format!("{:?}", scope),
-        "node_types": params.node_types,
-        "property_filters": params.property_filters
+        "nodes": output.nodes,
+        "count": output.count,
+        "query": output.query,
+        "threshold": output.threshold,
+        "collection_id": output.collection_id,
+        "include_markdown": output.include_markdown,
+        "include_archived": output.include_archived,
+        "scope": output.scope,
     }))
 }
 
@@ -1097,5 +765,53 @@ mod search_tests {
         assert!(mock_response.get("node_types").is_some());
         assert!(mock_response.get("property_filters").is_some());
         assert_eq!(mock_response["node_types"], json!(["task"]));
+    }
+
+    // include_edges tests
+
+    #[test]
+    fn test_include_edges_param_default_none() {
+        let params = json!({ "query": "test" });
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert!(parsed.include_edges.is_none());
+        assert!(!parsed.include_edges.unwrap_or(false));
+    }
+
+    #[test]
+    fn test_include_edges_param_explicit_true() {
+        let params = json!({ "query": "test", "include_edges": true });
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.include_edges, Some(true));
+    }
+
+    #[test]
+    fn test_include_edges_param_explicit_false() {
+        let params = json!({ "query": "test", "include_edges": false });
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.include_edges, Some(false));
+    }
+
+    // graph_boost tests
+
+    #[test]
+    fn test_graph_boost_param_default_none() {
+        let params = json!({ "query": "test" });
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert!(parsed.graph_boost.is_none());
+        assert!(!parsed.graph_boost.unwrap_or(false));
+    }
+
+    #[test]
+    fn test_graph_boost_param_explicit_true() {
+        let params = json!({ "query": "test", "graph_boost": true });
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.graph_boost, Some(true));
+    }
+
+    #[test]
+    fn test_graph_boost_param_explicit_false() {
+        let params = json!({ "query": "test", "graph_boost": false });
+        let parsed: SearchSemanticParams = serde_json::from_value(params).unwrap();
+        assert_eq!(parsed.graph_boost, Some(false));
     }
 }

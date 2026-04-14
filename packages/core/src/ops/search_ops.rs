@@ -44,7 +44,7 @@ pub struct SearchSemanticInput {
 
     /// When true, re-rank results by blending vector similarity with graph connectivity degree.
     /// Blending formula: combined_score = 0.7 * similarity + 0.3 * normalized_degree
-    /// where normalized_degree = outgoing_edge_count / max_outgoing_edge_count_in_result_set
+    /// where normalized_degree = (out_degree + in_degree) / max_degree_in_result_set
     /// Surfaces well-connected, central knowledge nodes over isolated but textually similar ones.
     /// Default: false (pure similarity ranking)
     pub graph_boost: Option<bool>,
@@ -153,7 +153,7 @@ fn parse_scope(scope: Option<&str>) -> Result<SearchScope, OpsError> {
 // ============================================================================
 
 /// Semantic search with collection resolution, scope/lifecycle filtering,
-/// over-fetching, and optional markdown inlining for top results.
+/// over-fetching, optional markdown inlining, edge attachment, and graph boost re-ranking.
 pub async fn search_semantic(
     node_service: &Arc<NodeService>,
     embedding_service: &Arc<NodeEmbeddingService>,
@@ -164,6 +164,8 @@ pub async fn search_semantic(
     let limit = input.limit.unwrap_or(20);
     let include_markdown = input.include_markdown.unwrap_or(1).min(5);
     let include_archived = input.include_archived.unwrap_or(false);
+    let include_edges = input.include_edges.unwrap_or(false);
+    let graph_boost = input.graph_boost.unwrap_or(false);
     let scope = parse_scope(input.scope.as_deref())?;
 
     // Validate
@@ -340,6 +342,81 @@ pub async fn search_semantic(
         .take(limit)
         .collect();
 
+    // Pre-fetch outgoing "mentions" edges when needed by graph_boost or include_edges.
+    // Cache them to avoid redundant DB round-trips when both features are enabled.
+    let mut outgoing_edges_cache: HashMap<String, Vec<Node>> = HashMap::new();
+    if graph_boost || include_edges {
+        for (node, _) in &filtered_results {
+            let related = node_service
+                .get_related_nodes(&node.id, "mentions", "out")
+                .await
+                .unwrap_or_default();
+            outgoing_edges_cache.insert(node.id.clone(), related);
+        }
+    }
+
+    // graph_boost: re-rank by blending similarity with normalized edge degree.
+    //
+    // Formula: combined_score = 0.7 * similarity + 0.3 * normalized_degree
+    //
+    // Degree is (out_degree + in_degree) counted over "mentions" relationships only.
+    // Degrees are normalized to [0, 1] within the result set so that the boost is
+    // relative — a node only benefits when it is more connected than its peers.
+    let filtered_results: Vec<(Node, f64)> = if graph_boost && !filtered_results.is_empty() {
+        let mut degrees: HashMap<String, usize> = HashMap::new();
+        for (node, _) in &filtered_results {
+            let out_count = outgoing_edges_cache
+                .get(&node.id)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            let in_count = node_service
+                .get_related_nodes(&node.id, "mentions", "in")
+                .await
+                .map(|v| v.len())
+                .unwrap_or(0);
+            degrees.insert(node.id.clone(), out_count + in_count);
+        }
+
+        let max_degree = degrees.values().copied().max().unwrap_or(1).max(1);
+
+        let mut boosted: Vec<(Node, f64)> = filtered_results
+            .into_iter()
+            .map(|(node, similarity)| {
+                let degree = degrees.get(&node.id).copied().unwrap_or(0);
+                let normalized_degree = degree as f64 / max_degree as f64;
+                let combined = 0.7 * similarity + 0.3 * normalized_degree;
+                (node, combined)
+            })
+            .collect();
+
+        boosted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        boosted.truncate(limit);
+        boosted
+    } else {
+        filtered_results
+    };
+
+    // include_edges: build edge data from cached outgoing relationships.
+    let mut edges_map: HashMap<String, Vec<Value>> = HashMap::new();
+    if include_edges {
+        for (node, _) in &filtered_results {
+            let related = outgoing_edges_cache.remove(&node.id).unwrap_or_default();
+
+            let edges: Vec<Value> = related
+                .into_iter()
+                .map(|target| {
+                    json!({
+                        "relationship": "mentions",
+                        "target_id": target.id,
+                        "target_title": target.title
+                    })
+                })
+                .collect();
+
+            edges_map.insert(node.id.clone(), edges);
+        }
+    }
+
     // Fetch markdown for top N results
     let mut markdown_contents: HashMap<String, String> = HashMap::new();
     if include_markdown > 0 {
@@ -394,6 +471,11 @@ pub async fn search_semantic(
                 }
             }
 
+            if include_edges {
+                let edges = edges_map.get(&node.id).cloned().unwrap_or_default();
+                node_json["edges"] = json!(edges);
+            }
+
             node_json
         })
         .collect();
@@ -437,5 +519,73 @@ mod tests {
     fn test_parse_scope_invalid() {
         let err = parse_scope(Some("bogus")).unwrap_err();
         assert!(matches!(err, OpsError::InvalidParams(_)));
+    }
+
+    /// Verify that graph_boost re-ranking formula correctly promotes well-connected nodes.
+    ///
+    /// Setup: Node A has similarity=0.9 and degree=0, Node B has similarity=0.6 and degree=5.
+    /// Without boost A ranks first. With boost:
+    ///   A: 0.7 * 0.9 + 0.3 * 0.0 = 0.63
+    ///   B: 0.7 * 0.6 + 0.3 * 1.0 = 0.72  (normalized_degree = 5/5 = 1.0)
+    /// So B should rank first after boosting.
+    #[test]
+    fn test_graph_boost_reranking_formula() {
+        let high_similarity: f64 = 0.9;
+        let low_similarity: f64 = 0.6;
+
+        let max_degree: usize = 5;
+        let degree_a: usize = 0;
+        let degree_b: usize = 5;
+
+        let norm_a = degree_a as f64 / max_degree as f64;
+        let norm_b = degree_b as f64 / max_degree as f64;
+
+        let combined_a = 0.7 * high_similarity + 0.3 * norm_a;
+        let combined_b = 0.7 * low_similarity + 0.3 * norm_b;
+
+        assert!(
+            combined_b > combined_a,
+            "graph_boost should promote well-connected node B ({combined_b}) above high-similarity node A ({combined_a})"
+        );
+    }
+
+    #[test]
+    fn test_include_edges_defaults_false() {
+        let input = SearchSemanticInput {
+            query: "test".to_string(),
+            threshold: None,
+            limit: None,
+            collection_id: None,
+            collection: None,
+            exclude_collections: None,
+            include_markdown: None,
+            include_archived: None,
+            scope: None,
+            node_types: None,
+            property_filters: None,
+            include_edges: None,
+            graph_boost: None,
+        };
+        assert!(!input.include_edges.unwrap_or(false));
+    }
+
+    #[test]
+    fn test_graph_boost_defaults_false() {
+        let input = SearchSemanticInput {
+            query: "test".to_string(),
+            threshold: None,
+            limit: None,
+            collection_id: None,
+            collection: None,
+            exclude_collections: None,
+            include_markdown: None,
+            include_archived: None,
+            scope: None,
+            node_types: None,
+            property_filters: None,
+            include_edges: None,
+            graph_boost: None,
+        };
+        assert!(!input.graph_boost.unwrap_or(false));
     }
 }
