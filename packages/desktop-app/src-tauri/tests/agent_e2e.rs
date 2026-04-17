@@ -2254,6 +2254,7 @@ fn skill_test_executor() -> MockToolExecutor {
 }
 
 /// Extract tool_whitelist from a skill NodeTemplate's root_properties.
+/// Adapter for the NodeTemplate API change in #1096 (fields moved to root_properties).
 fn tmpl_tool_whitelist(
     tmpl: &nodespace_core::mcp::handlers::markdown::NodeTemplate,
 ) -> Vec<String> {
@@ -2269,6 +2270,7 @@ fn tmpl_tool_whitelist(
 }
 
 /// Extract max_iterations from a skill NodeTemplate's root_properties.
+/// Adapter for the NodeTemplate API change in #1096 (fields moved to root_properties).
 fn tmpl_max_iterations(tmpl: &nodespace_core::mcp::handlers::markdown::NodeTemplate) -> usize {
     tmpl.root_properties
         .get("max_iterations")
@@ -2277,6 +2279,7 @@ fn tmpl_max_iterations(tmpl: &nodespace_core::mcp::handlers::markdown::NodeTempl
 }
 
 /// Build a Node from a NodeTemplate using prepare_nodes_from_template.
+/// Adapter for the NodeTemplate API change in #1096 (to_node() removed, replaced by prepare_nodes_from_template).
 fn tmpl_to_node(
     tmpl: &nodespace_core::mcp::handlers::markdown::NodeTemplate,
 ) -> nodespace_core::Node {

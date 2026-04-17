@@ -261,7 +261,8 @@ fn def_search_semantic() -> ToolDefinition {
                 },
                 "property_filters": {
                     "type": "object",
-                    "description": "Filter by node properties (AND logic, e.g. {\"status\": \"done\"})"
+                    "description": "Filter by node properties (AND logic, e.g. {\"status\": \"done\"})",
+                    "additionalProperties": { "type": "string" }
                 },
                 "include_edges": {
                     "type": "boolean",
@@ -1926,6 +1927,17 @@ mod tests {
                 "Field '{}' is in the exclusion list but was found in the schema. \
                  Remove it from excluded_fields if it should be schema-exposed.",
                 field
+            );
+        }
+
+        // Reverse check: every schema property must be in schema_fields or excluded_fields.
+        // This catches schema properties added without updating the parity lists.
+        for key in props.keys() {
+            assert!(
+                schema_fields.contains(&key.as_str()) || excluded_fields.contains(&key.as_str()),
+                "Schema property '{}' is not listed in schema_fields or excluded_fields. \
+                 Add it to one of those lists in this test.",
+                key
             );
         }
     }
