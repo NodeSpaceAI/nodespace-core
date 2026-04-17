@@ -71,15 +71,22 @@ pub(crate) async fn create_service_bundle(
         let skill_templates = SkillPipeline::seed_skill_nodes();
 
         // Expand all templates into PreparedNode lists.
-        let mut all_template_nodes: Vec<Vec<nodespace_core::mcp::handlers::markdown::PreparedNode>> = Vec::new();
+        let mut all_template_nodes: Vec<
+            Vec<nodespace_core::mcp::handlers::markdown::PreparedNode>,
+        > = Vec::new();
         for tmpl in prompt_templates.iter().chain(skill_templates.iter()) {
             match prepare_nodes_from_template(tmpl) {
                 Ok(nodes) => all_template_nodes.push(nodes),
-                Err(e) => tracing::warn!(error = ?e, title = %tmpl.title, "Failed to expand seed template"),
+                Err(e) => {
+                    tracing::warn!(error = ?e, title = %tmpl.title, "Failed to expand seed template")
+                }
             }
         }
 
-        if let Err(e) = node_service.seed_nodes_from_templates(all_template_nodes).await {
+        if let Err(e) = node_service
+            .seed_nodes_from_templates(all_template_nodes)
+            .await
+        {
             tracing::warn!(error = %e, "Failed to seed agent nodes (non-fatal)");
         }
 

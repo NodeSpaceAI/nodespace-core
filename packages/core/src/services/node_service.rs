@@ -962,8 +962,7 @@ impl NodeService {
             .map(|n| n.node_type.clone())
             .collect();
 
-        let mut seeded_types: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut seeded_types: std::collections::HashSet<String> = std::collections::HashSet::new();
         for node_type in &root_types {
             let filter = crate::models::NodeFilter {
                 node_type: Some(node_type.clone()),
@@ -1004,20 +1003,26 @@ impl NodeService {
             // Insert children via bulk_create_hierarchy (single transaction).
             let children = &group[1..];
             if !children.is_empty() {
-                let bulk_nodes: Vec<(String, String, String, Option<String>, f64, serde_json::Value)> =
-                    children
-                        .iter()
-                        .map(|n| {
-                            (
-                                n.id.clone(),
-                                n.node_type.clone(),
-                                n.content.clone(),
-                                n.parent_id.clone(),
-                                n.order,
-                                n.properties.clone(),
-                            )
-                        })
-                        .collect();
+                let bulk_nodes: Vec<(
+                    String,
+                    String,
+                    String,
+                    Option<String>,
+                    f64,
+                    serde_json::Value,
+                )> = children
+                    .iter()
+                    .map(|n| {
+                        (
+                            n.id.clone(),
+                            n.node_type.clone(),
+                            n.content.clone(),
+                            n.parent_id.clone(),
+                            n.order,
+                            n.properties.clone(),
+                        )
+                    })
+                    .collect();
                 self.bulk_create_hierarchy(bulk_nodes).await?;
                 created_children += children.len() as u32;
             }

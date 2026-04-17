@@ -347,7 +347,11 @@ fn tools_for_skill(skill_name: &str, all_tools: &[ToolDefinition]) -> Vec<ToolDe
         .root_properties
         .get("tool_whitelist")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     all_tools
