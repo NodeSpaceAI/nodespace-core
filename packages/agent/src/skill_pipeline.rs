@@ -218,11 +218,7 @@ impl SkillPipeline {
 
                 }),
                 child_node_type: Some("prompt".to_string()),
-                child_properties: Some(serde_json::json!({
-                    "priority": 1,
-                    "template_syntax": "plain",
-                    "source": "built-in",
-                })),
+                child_properties: None,
                 markdown_content: r#"# Research & Search Guidance
 
 When answering questions about stored knowledge:
@@ -269,11 +265,7 @@ LISTING BY TYPE OR PROPERTY: To list all nodes of a type or filtered by a proper
 
                 }),
                 child_node_type: Some("prompt".to_string()),
-                child_properties: Some(serde_json::json!({
-                    "priority": 1,
-                    "template_syntax": "plain",
-                    "source": "built-in",
-                })),
+                child_properties: None,
                 markdown_content: String::new(),
             },
             NodeTemplate {
@@ -287,11 +279,7 @@ LISTING BY TYPE OR PROPERTY: To list all nodes of a type or filtered by a proper
 
                 }),
                 child_node_type: Some("prompt".to_string()),
-                child_properties: Some(serde_json::json!({
-                    "priority": 1,
-                    "template_syntax": "plain",
-                    "source": "built-in",
-                })),
+                child_properties: None,
                 markdown_content: r#"# Schema Creation Guidance
 
 When creating a schema:
@@ -366,11 +354,7 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
 
                 }),
                 child_node_type: Some("prompt".to_string()),
-                child_properties: Some(serde_json::json!({
-                    "priority": 1,
-                    "template_syntax": "plain",
-                    "source": "built-in",
-                })),
+                child_properties: None,
                 markdown_content: String::new(),
             },
             NodeTemplate {
@@ -384,11 +368,7 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
 
                 }),
                 child_node_type: Some("prompt".to_string()),
-                child_properties: Some(serde_json::json!({
-                    "priority": 1,
-                    "template_syntax": "plain",
-                    "source": "built-in",
-                })),
+                child_properties: None,
                 markdown_content: String::new(),
             },
             NodeTemplate {
@@ -402,11 +382,7 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
 
                 }),
                 child_node_type: Some("prompt".to_string()),
-                child_properties: Some(serde_json::json!({
-                    "priority": 1,
-                    "template_syntax": "plain",
-                    "source": "built-in",
-                })),
+                child_properties: None,
                 markdown_content: String::new(),
             },
             NodeTemplate {
@@ -420,11 +396,7 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
 
                 }),
                 child_node_type: Some("prompt".to_string()),
-                child_properties: Some(serde_json::json!({
-                    "priority": 1,
-                    "template_syntax": "plain",
-                    "source": "built-in",
-                })),
+                child_properties: None,
                 markdown_content: String::new(),
             },
             NodeTemplate {
@@ -438,11 +410,7 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
 
                 }),
                 child_node_type: Some("prompt".to_string()),
-                child_properties: Some(serde_json::json!({
-                    "priority": 1,
-                    "template_syntax": "plain",
-                    "source": "built-in",
-                })),
+                child_properties: None,
                 markdown_content: String::new(),
             },
         ]
