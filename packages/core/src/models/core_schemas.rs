@@ -800,75 +800,7 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             is_core: true,
             schema_version: 1,
             description: "AI agent prompt template".to_string(),
-            fields: vec![
-                SchemaField {
-                    name: "priority".to_string(),
-                    field_type: "number".to_string(),
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: None,
-                    user_values: None,
-                    indexed: true,
-                    required: Some(false),
-                    extensible: None,
-                    default: Some(serde_json::json!(100)),
-                    description: Some("Assembly ordering priority (lower = earlier)".to_string()),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                },
-                SchemaField {
-                    name: "template_syntax".to_string(),
-                    field_type: "enum".to_string(),
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: Some(vec![
-                        EnumValue {
-                            value: "plain".to_string(),
-                            label: "Plain Text".to_string(),
-                        },
-                        EnumValue {
-                            value: "minijinja".to_string(),
-                            label: "Minijinja Template".to_string(),
-                        },
-                    ]),
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: Some(false),
-                    default: Some(serde_json::json!("plain")),
-                    description: Some("Template rendering syntax".to_string()),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                },
-                SchemaField {
-                    name: "source".to_string(),
-                    field_type: "enum".to_string(),
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: Some(vec![
-                        EnumValue {
-                            value: "built-in".to_string(),
-                            label: "Built-in".to_string(),
-                        },
-                        EnumValue {
-                            value: "user-modified".to_string(),
-                            label: "User Modified".to_string(),
-                        },
-                        EnumValue {
-                            value: "user-created".to_string(),
-                            label: "User Created".to_string(),
-                        },
-                    ]),
-                    user_values: None,
-                    indexed: true,
-                    required: Some(false),
-                    extensible: Some(false),
-                    default: Some(serde_json::json!("user-created")),
-                    description: Some("Prompt origin for upgrade safety".to_string()),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                },
-            ],
+            fields: vec![],
             relationships: vec![],
             title_template: None,
             properties_header_summary_template: None,
@@ -927,34 +859,6 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: None,
                     default: Some(serde_json::json!(2)),
                     description: Some("Maximum ReAct loop iterations for this skill".to_string()),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                },
-                SchemaField {
-                    name: "output_format".to_string(),
-                    field_type: "enum".to_string(),
-                    protection: SchemaProtectionLevel::Core,
-                    core_values: Some(vec![
-                        EnumValue {
-                            value: "text".to_string(),
-                            label: "Plain Text".to_string(),
-                        },
-                        EnumValue {
-                            value: "json".to_string(),
-                            label: "JSON".to_string(),
-                        },
-                        EnumValue {
-                            value: "markdown".to_string(),
-                            label: "Markdown".to_string(),
-                        },
-                    ]),
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: Some(false),
-                    default: Some(serde_json::json!("text")),
-                    description: Some("Preferred output format for responses".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -1070,10 +974,7 @@ mod tests {
         let schemas = get_core_schemas();
         let prompt = schemas.iter().find(|s| s.id == "prompt").unwrap();
 
-        assert_eq!(prompt.fields.len(), 3);
-        assert!(prompt.get_field("priority").is_some());
-        assert!(prompt.get_field("template_syntax").is_some());
-        assert!(prompt.get_field("source").is_some());
+        assert_eq!(prompt.fields.len(), 0);
     }
 
     #[test]
@@ -1081,11 +982,10 @@ mod tests {
         let schemas = get_core_schemas();
         let skill = schemas.iter().find(|s| s.id == "skill").unwrap();
 
-        assert_eq!(skill.fields.len(), 4);
+        assert_eq!(skill.fields.len(), 3);
         assert!(skill.get_field("description").is_some());
         assert!(skill.get_field("tool_whitelist").is_some());
         assert!(skill.get_field("max_iterations").is_some());
-        assert!(skill.get_field("output_format").is_some());
 
         // Verify tool_whitelist is an array of strings
         let whitelist = skill.get_field("tool_whitelist").unwrap();

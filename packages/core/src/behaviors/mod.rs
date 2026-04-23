@@ -1602,20 +1602,14 @@ impl NodeBehavior for AiChatNodeBehavior {
 
 /// Behavior for prompt nodes (AI agent prompt templates)
 ///
-/// Prompt nodes store reusable prompt templates that the PromptAssembler
-/// combines into system prompts for AI conversations. They support plain text
-/// and Minijinja template syntaxes, with priority-based ordering for assembly.
-///
-/// # Validation Rules
-///
-/// - `template_syntax` must be "plain" or "minijinja"
-/// - `source` must be "built-in", "user-modified", or "user-created"
-/// - `priority` must be an integer
+/// Prompt root nodes store only the title in `content`; body content lives in
+/// child nodes. The PromptAssembler fetches children and concatenates their
+/// content for assembly. All prompts are rendered through Minijinja.
 ///
 /// # Embedding
 ///
-/// Prompt content is embedded for semantic search discovery but does not
-/// contribute to parent node embeddings.
+/// Prompt nodes are NOT semantically indexed — they are internal agent
+/// infrastructure, not user knowledge content.
 pub struct PromptNodeBehavior;
 
 impl NodeBehavior for PromptNodeBehavior {
@@ -1624,75 +1618,30 @@ impl NodeBehavior for PromptNodeBehavior {
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Prompt content should not be empty
+        // Prompt title (content) should not be empty
         if node.content.trim().is_empty() {
             return Err(NodeValidationError::InvalidProperties(
-                "Prompt content cannot be empty".to_string(),
+                "Prompt title (content) cannot be empty".to_string(),
             ));
-        }
-
-        // Validate template_syntax if present
-        if let Some(syntax) = node.properties.get("template_syntax") {
-            if let Some(s) = syntax.as_str() {
-                match s {
-                    "plain" | "minijinja" => {}
-                    _ => {
-                        return Err(NodeValidationError::InvalidProperties(format!(
-                            "Invalid template_syntax '{}': must be plain or minijinja",
-                            s
-                        )));
-                    }
-                }
-            }
-        }
-        // Validate source if present
-        if let Some(source) = node.properties.get("source") {
-            if let Some(s) = source.as_str() {
-                match s {
-                    "built-in" | "user-modified" | "user-created" => {}
-                    _ => {
-                        return Err(NodeValidationError::InvalidProperties(format!(
-                            "Invalid source '{}': must be built-in, user-modified, or user-created",
-                            s
-                        )));
-                    }
-                }
-            }
-        }
-        // Validate priority is integer if present
-        if let Some(priority) = node.properties.get("priority") {
-            if !priority.is_i64() && !priority.is_u64() {
-                return Err(NodeValidationError::InvalidProperties(
-                    "priority must be an integer".to_string(),
-                ));
-            }
         }
         Ok(())
     }
 
     fn can_have_children(&self) -> bool {
-        false // Prompt nodes are leaf content
+        true // Prompt body lives in child nodes
     }
 
     fn supports_markdown(&self) -> bool {
-        false // Prompt content may contain template syntax, not rendered as markdown
+        true // Child nodes will be markdown
     }
 
     fn default_metadata(&self) -> serde_json::Value {
-        serde_json::json!({
-            "priority": 100,
-            "template_syntax": "plain",
-            "source": "user-created"
-        })
+        serde_json::json!({})
     }
 
-    /// Prompt content gets embedded for semantic search discovery
-    fn get_embeddable_content(&self, node: &Node) -> Option<String> {
-        if node.content.trim().is_empty() {
-            None
-        } else {
-            Some(node.content.clone())
-        }
+    /// Prompt nodes are not semantically indexed
+    fn get_embeddable_content(&self, _node: &Node) -> Option<String> {
+        None
     }
 
     /// Prompts don't contribute to parent embeddings
@@ -1767,21 +1716,6 @@ impl NodeBehavior for SkillNodeBehavior {
             }
         }
 
-        // Validate output_format if present
-        if let Some(fmt) = get_namespaced_prop(&node.properties, "skill", "output_format") {
-            if let Some(s) = fmt.as_str() {
-                match s {
-                    "text" | "json" | "markdown" => {}
-                    _ => {
-                        return Err(NodeValidationError::InvalidProperties(format!(
-                            "Invalid output_format '{}': must be text, json, or markdown",
-                            s
-                        )));
-                    }
-                }
-            }
-        }
-
         Ok(())
     }
 
@@ -1798,7 +1732,6 @@ impl NodeBehavior for SkillNodeBehavior {
             "description": "",
             "tool_whitelist": [],
             "max_iterations": 2,
-            "output_format": "text"
         })
     }
 

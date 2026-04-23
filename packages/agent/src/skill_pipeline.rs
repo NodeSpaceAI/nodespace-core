@@ -215,7 +215,7 @@ impl SkillPipeline {
                     "description": "Search and explore the knowledge graph to find relevant information, discover connections, and answer questions about stored knowledge.",
                     "tool_whitelist": ["search_semantic", "search_nodes", "get_node"],
                     "max_iterations": 4,
-                    "output_format": "text",
+
                 }),
                 child_node_type: Some("prompt".to_string()),
                 child_properties: Some(serde_json::json!({
@@ -266,7 +266,7 @@ LISTING BY TYPE OR PROPERTY: To list all nodes of a type or filtered by a proper
                     "description": "Create new nodes, records, entries, or instances of any type — tasks, text notes, or custom types like Project, Customer, Invoice. Use when user wants to add, create, or insert a new item, record, entry, or example of an existing type.",
                     "tool_whitelist": ["create_node", "get_node"],
                     "max_iterations": 3,
-                    "output_format": "text",
+
                 }),
                 child_node_type: Some("prompt".to_string()),
                 child_properties: Some(serde_json::json!({
@@ -284,7 +284,7 @@ LISTING BY TYPE OR PROPERTY: To list all nodes of a type or filtered by a proper
                     "description": "Define a new entity type or schema with custom fields, enums, and relationships. Use when user says 'new type', 'node type', 'define fields', 'create schema', or wants to design a new kind of entity like Project, Customer, or Invoice.",
                     "tool_whitelist": ["create_schema", "get_node"],
                     "max_iterations": 3,
-                    "output_format": "text",
+
                 }),
                 child_node_type: Some("prompt".to_string()),
                 child_properties: Some(serde_json::json!({
@@ -363,7 +363,7 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
                     "description": "Modify existing nodes in the knowledge graph - update content, properties, titles, and metadata. For tasks, use update_task_status to change status.",
                     "tool_whitelist": ["update_node", "update_task_status", "get_node", "search_nodes"],
                     "max_iterations": 3,
-                    "output_format": "text",
+
                 }),
                 child_node_type: Some("prompt".to_string()),
                 child_properties: Some(serde_json::json!({
@@ -381,7 +381,7 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
                     "description": "Create connections between nodes, explore relationships, and traverse the knowledge graph.",
                     "tool_whitelist": ["create_relationship", "get_related_nodes", "get_node"],
                     "max_iterations": 3,
-                    "output_format": "text",
+
                 }),
                 child_node_type: Some("prompt".to_string()),
                 child_properties: Some(serde_json::json!({
@@ -399,7 +399,7 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
                     "description": "Delete nodes from the knowledge graph. Use when user wants to remove, delete, or trash a node or record.",
                     "tool_whitelist": ["delete_node", "get_node"],
                     "max_iterations": 3,
-                    "output_format": "text",
+
                 }),
                 child_node_type: Some("prompt".to_string()),
                 child_properties: Some(serde_json::json!({
@@ -417,7 +417,7 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
                     "description": "Import documents and create node hierarchies from markdown. Use when user wants to import, bulk create, or create nodes from a markdown document.",
                     "tool_whitelist": ["create_nodes_from_markdown"],
                     "max_iterations": 2,
-                    "output_format": "text",
+
                 }),
                 child_node_type: Some("prompt".to_string()),
                 child_properties: Some(serde_json::json!({
@@ -435,7 +435,7 @@ EXAMPLE — Project schema (title_template uses {name} AND {status}, so BOTH are
                     "description": "Organize nodes into collections and categories. Use when user wants to add to a collection, categorize, or group nodes.",
                     "tool_whitelist": ["create_relationship", "get_node"],
                     "max_iterations": 3,
-                    "output_format": "text",
+
                 }),
                 child_node_type: Some("prompt".to_string()),
                 child_properties: Some(serde_json::json!({
