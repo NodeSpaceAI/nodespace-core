@@ -56,12 +56,8 @@ pub(crate) async fn create_service_bundle(
     //
     // Uses the unified NodeTemplate pipeline (Issue #1056): each template is
     // expanded into a PreparedNode list (root + children) and inserted via
-    // seed_nodes_from_templates.
-    //
-    // After the initial seed, built-in *prompt* node content is diff-checked so
-    // that changes to seed strings propagate to existing installations.  Skill
-    // guidance children are NOT diff-checked — guidance content is treated as
-    // user-editable after first seed (skills can be customised in the graph).
+    // seed_nodes_from_templates. Seeding is idempotent — nodes that already
+    // exist are skipped.
     {
         use nodespace_agent::prompt_assembler::PromptAssembler;
         use nodespace_agent::skill_pipeline::SkillPipeline;
@@ -88,50 +84,6 @@ pub(crate) async fn create_service_bundle(
             .await
         {
             tracing::warn!(error = %e, "Failed to seed agent nodes (non-fatal)");
-        }
-
-        // Update existing built-in prompt nodes whose content changed.
-        // seed_nodes_from_templates skips node types that already exist, so we
-        // diff-check prompt content here to propagate edits to existing installs.
-        let all_prompt_nodes = node_service
-            .query_nodes_simple(nodespace_core::models::NodeQuery {
-                node_type: Some("prompt".to_string()),
-                ..Default::default()
-            })
-            .await
-            .unwrap_or_default();
-
-        for tmpl in &prompt_templates {
-            // Resolve actual node content: `content` field overrides title (for prompts the
-            // prompt text is the content, not the title label).
-            let expected_content = tmpl
-                .content
-                .as_deref()
-                .unwrap_or(&tmpl.markdown_content)
-                .to_string();
-            if let Some(existing) = all_prompt_nodes.iter().find(|n| {
-                n.title.as_deref() == Some(&tmpl.title)
-                    && n.properties
-                        .get("source")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s == "built-in")
-                        .unwrap_or(false)
-            }) {
-                if existing.content != expected_content {
-                    let update = nodespace_core::models::NodeUpdate {
-                        content: Some(expected_content.clone()),
-                        ..Default::default()
-                    };
-                    if let Err(e) = node_service
-                        .update_node_unchecked(&existing.id, update)
-                        .await
-                    {
-                        tracing::warn!(error = %e, title = %tmpl.title, "Failed to update prompt node");
-                    } else {
-                        tracing::info!(title = %tmpl.title, "Updated built-in prompt node content");
-                    }
-                }
-            }
         }
     }
 
