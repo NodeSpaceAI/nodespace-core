@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/nodespaceai-nodespace-core-badge.png)](https://mseep.ai/app/nodespaceai-nodespace-core)
+
 # NodeSpace
 
 > **Faster context. Fewer tokens.**
