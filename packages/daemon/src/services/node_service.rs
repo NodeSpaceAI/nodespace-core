@@ -55,17 +55,17 @@ use crate::nodespace::{
     GetNodeRelationshipsRequest, GetNodeRelationshipsResponse, GetNodeRequest,
     GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest, GetRelatedNodesResponse,
     GetRootsRequest, GetSchemaDefinitionRequest, ListConflictsRequest, MentionAutocompleteRequest,
-    MentionIdsResponse, MentionResponse, MentionTargetRequest, MoveChildrenToParentRequest,
-    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
-    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
-    NodeSortOrder, NodeTreeResponse, OptionalNodeResponse, OptionalStringClear,
-    OptionalTimestampClear, QueryNodesSimpleRequest, RelationshipDeletedPayload,
-    RelationshipPayload, RemoveNodeFromCollectionRequest, RenameCollectionRequest,
-    ReorderNodeRequest, ReorderNodeResponse, ResolveConflictRequest, SchemaParamsRequest,
-    SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest,
-    UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdateRelationshipPropertiesRequest,
-    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
-    WatchRequest,
+    MentionIdsResponse, MentionResponse, MentionTargetRequest, MergeNodesRequest,
+    MergeNodesResponse, MoveChildrenToParentRequest, MoveChildrenToParentResponse, MoveNodeRequest,
+    NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse, NodeReference,
+    NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse, OptionalNodeResponse,
+    OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest,
+    RelationshipDeletedPayload, RelationshipPayload, RemoveNodeFromCollectionRequest,
+    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResolveConflictRequest,
+    SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
+    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse,
+    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
+    UpdateTaskNodeRequest, UpsertNodeWithParentRequest, WatchRequest,
 };
 
 /// gRPC adapter that owns shared handles to the core services.
@@ -389,6 +389,28 @@ impl GrpcNodeService for NodeServiceImpl {
 
         Ok(Response::new(ConflictResponse {
             conflict: Some(conflict_record_to_proto(record)),
+        }))
+    }
+
+    async fn merge_nodes(
+        &self,
+        request: Request<MergeNodesRequest>,
+    ) -> Result<Response<MergeNodesResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let outcome = this
+            .node_service
+            .merge_nodes(&req.survivor_id, &req.loser_id, req.conflict_id.as_deref())
+            .await
+            .map_err(service_error_to_status)?;
+
+        Ok(Response::new(MergeNodesResponse {
+            survivor_id: outcome.survivor_id,
+            loser_id: outcome.loser_id,
+            properties_merged: outcome.properties_merged,
+            edges_repointed: outcome.edges_repointed,
+            edges_dropped: outcome.edges_dropped,
         }))
     }
 

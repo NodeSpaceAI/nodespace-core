@@ -6,6 +6,18 @@
 use super::*;
 use crate::models::conflict::{ConflictKind, ConflictRecord, ConflictStatus, Resolution};
 
+/// The outcome of a [`NodeService::merge_nodes`] call — what actually
+/// happened, for the caller (Conflicts view) to report to the user.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeOutcome {
+    pub survivor_id: String,
+    pub loser_id: String,
+    pub properties_merged: u32,
+    pub edges_repointed: u32,
+    pub edges_dropped: u32,
+}
+
 /// Stable namespace for deterministic conflict ids (UUIDv5). A fixed,
 /// arbitrary UUID — do NOT change it: existing open/resolved/dismissed
 /// records are keyed by ids derived from it, and changing it would silently
@@ -183,5 +195,81 @@ impl NodeService {
         }
 
         Ok(())
+    }
+
+    /// Merge `loser` into `survivor` (conflict-journal-and-resolution.md
+    /// §5.2, ADR-068): property union onto the survivor (survivor wins ties,
+    /// the loser's overwritten values are snapshotted into
+    /// `resolution.superseded`), every relationship edge touching the loser
+    /// re-pointed to the survivor, and the loser archived (see
+    /// `SqliteStore::merge_nodes_in_tx`'s doc comment for why `archived`
+    /// rather than a literal "deleted" tombstone). If `conflict_id` is given,
+    /// the record is closed as `resolved` with a `Resolution::Merge` in the
+    /// SAME transaction.
+    ///
+    /// **User-initiated only** — this method performs the merge unconditionally
+    /// whenever called; it is the caller's responsibility (the Conflicts view)
+    /// to gate this behind an explicit user action. Nothing in this crate
+    /// calls it automatically, at any confidence: two nodes sharing a value is
+    /// evidence, not proof (ADR-065 §5 — email is a claim, not an identity
+    /// key), and an auto-merge on a false positive would silently destroy a
+    /// distinct node's data and re-point its edges onto the wrong survivor.
+    pub async fn merge_nodes(
+        &self,
+        survivor_id: &str,
+        loser_id: &str,
+        conflict_id: Option<&str>,
+    ) -> Result<MergeOutcome, NodeServiceError> {
+        let survivor_id = survivor_id.to_string();
+        let loser_id = loser_id.to_string();
+        let conflict_id = conflict_id.map(|s| s.to_string());
+
+        let survivor_id_for_tx = survivor_id.clone();
+        let loser_id_for_tx = loser_id.clone();
+
+        let (properties_merged, edges_repointed, edges_dropped) = self
+            .with_transaction(move |ns_tx| {
+                let survivor_id = survivor_id_for_tx.clone();
+                let loser_id = loser_id_for_tx.clone();
+                let conflict_id = conflict_id.clone();
+                Box::pin(async move {
+                    let (properties_merged, superseded, edges_repointed, edges_dropped) =
+                        crate::db::SqliteStore::merge_nodes_in_tx(
+                            ns_tx.store_tx(),
+                            &survivor_id,
+                            &loser_id,
+                        )
+                        .await
+                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+                    if let Some(conflict_id) = conflict_id {
+                        let resolution = crate::models::Resolution::Merge {
+                            survivor: survivor_id.clone(),
+                            loser: loser_id.clone(),
+                            superseded,
+                            edges_repointed,
+                            edges_dropped,
+                        };
+                        crate::db::SqliteStore::resolve_conflict_in_tx(
+                            ns_tx.store_tx(),
+                            &conflict_id,
+                            &resolution,
+                        )
+                        .await
+                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                    }
+
+                    Ok((properties_merged, edges_repointed, edges_dropped))
+                })
+            })
+            .await?;
+
+        Ok(MergeOutcome {
+            survivor_id,
+            loser_id,
+            properties_merged,
+            edges_repointed,
+            edges_dropped,
+        })
     }
 }

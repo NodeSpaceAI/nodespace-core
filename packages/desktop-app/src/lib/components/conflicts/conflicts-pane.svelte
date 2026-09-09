@@ -82,6 +82,32 @@
       log.error('Failed to dismiss conflict', e);
     }
   }
+
+  let mergingConflictId = $state<string | null>(null);
+
+  /** Merge is offered only for a 2-participant record — the shape ADR-068
+   * §5.2 defines (a survivor and a loser). `survivorId` is whichever
+   * participant the user clicked "Keep this one" for. */
+  async function handleMerge(record: ConflictRecord, survivorId: string) {
+    const loserId = record.nodeIds.find((id) => id !== survivorId);
+    if (!loserId) return;
+    const survivorLabel = participantLabels.get(survivorId) ?? survivorId;
+    const loserLabel = participantLabels.get(loserId) ?? loserId;
+    const confirmed = window.confirm(
+      `Merge "${loserLabel}" into "${survivorLabel}"? ${loserLabel} will be archived; its ` +
+        'properties and relationships move onto the surviving node. This cannot be undone from here.'
+    );
+    if (!confirmed) return;
+
+    mergingConflictId = record.id;
+    try {
+      await conflictsStore.merge(survivorId, loserId, record.id);
+    } catch (e) {
+      log.error('Failed to merge nodes', e);
+    } finally {
+      mergingConflictId = null;
+    }
+  }
 </script>
 
 <div class="conflicts-pane">
@@ -136,6 +162,20 @@
 
                 {#if record.status === 'open'}
                   <div class="conflict-actions">
+                    {#if (record.kind === 'unique_field_collision' || record.kind === 'collection_name_collision') && record.nodeIds.length === 2}
+                      <!-- Merge (ADR-068 §5.2): user-initiated only, one
+                           button per participant to pick which one survives. -->
+                      {#each record.nodeIds as nodeId (nodeId)}
+                        <button
+                          type="button"
+                          class="conflict-action"
+                          disabled={mergingConflictId === record.id}
+                          onclick={() => handleMerge(record, nodeId)}
+                        >
+                          Keep {participantLabels.get(nodeId) ?? nodeId}
+                        </button>
+                      {/each}
+                    {/if}
                     <button
                       type="button"
                       class="conflict-action"

@@ -5,7 +5,7 @@
 //! instead of calling `packages/core` directly.
 
 use nodespace_proto::nodespace::{
-    ConflictsForNodeRequest, ListConflictsRequest, ResolveConflictRequest,
+    ConflictsForNodeRequest, ListConflictsRequest, MergeNodesRequest, ResolveConflictRequest,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -153,4 +153,48 @@ pub async fn resolve_conflict(
         conflict_data: None,
     })?;
     proto_to_conflict_record(record)
+}
+
+/// The outcome of a merge — what actually happened, for the Conflicts view
+/// to report to the user.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeOutcome {
+    pub survivor_id: String,
+    pub loser_id: String,
+    pub properties_merged: u32,
+    pub edges_repointed: u32,
+    pub edges_dropped: u32,
+}
+
+/// Merge `loser_id` into `survivor_id` (ADR-068 §5.2). **User-initiated
+/// only** — this command performs the merge unconditionally whenever
+/// called; the frontend must gate it behind an explicit user action, never
+/// call it automatically at any confidence level (see
+/// `NodeService::merge_nodes`'s doc comment for why).
+#[tauri::command]
+pub async fn merge_nodes(
+    client: State<'_, GrpcClient>,
+    survivor_id: String,
+    loser_id: String,
+    conflict_id: Option<String>,
+) -> Result<MergeOutcome, CommandError> {
+    let mut c = client.client().await;
+    let resp = c
+        .merge_nodes(Request::new(MergeNodesRequest {
+            survivor_id,
+            loser_id,
+            conflict_id,
+        }))
+        .await
+        .map_err(status_to_command_error)?
+        .into_inner();
+
+    Ok(MergeOutcome {
+        survivor_id: resp.survivor_id,
+        loser_id: resp.loser_id,
+        properties_merged: resp.properties_merged,
+        edges_repointed: resp.edges_repointed,
+        edges_dropped: resp.edges_dropped,
+    })
 }

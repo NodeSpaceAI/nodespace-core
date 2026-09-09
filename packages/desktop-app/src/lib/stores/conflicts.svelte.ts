@@ -123,6 +123,42 @@ class ConflictsStore {
   async adoptExisting(conflictId: string, adopted: string): Promise<void> {
     await this.resolve(conflictId, { action: 'adopt_existing', adopted });
   }
+
+  /**
+   * Merge `loserId` into `survivorId` (ADR-068 §5.2) — property union, edge
+   * re-pointing, the loser archived. **User-initiated only**: call this
+   * exclusively from an explicit user action in the Conflicts view, never
+   * automatically at any confidence level (a shared value is evidence, not
+   * proof — an auto-merge on a false positive would silently destroy a
+   * distinct node's data and re-point its edges onto the wrong survivor).
+   *
+   * If `conflictId` is given, the record is closed as `resolved` with a
+   * `Resolution::Merge` server-side in the same transaction; this refreshes
+   * that record locally afterward so the UI reflects it without a full reload.
+   */
+  async merge(
+    survivorId: string,
+    loserId: string,
+    conflictId?: string
+  ): Promise<MergeOutcome> {
+    const outcome = await invoke<MergeOutcome>('merge_nodes', {
+      survivorId,
+      loserId,
+      conflictId: conflictId ?? null
+    });
+    if (conflictId) {
+      await this.loadForNode(survivorId);
+    }
+    return outcome;
+  }
+}
+
+export interface MergeOutcome {
+  survivorId: string;
+  loserId: string;
+  propertiesMerged: number;
+  edgesRepointed: number;
+  edgesDropped: number;
 }
 
 export const conflictsStore = new ConflictsStore();

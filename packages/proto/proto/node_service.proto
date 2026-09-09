@@ -120,6 +120,9 @@ service NodeService {
   rpc ListConflicts(ListConflictsRequest) returns (ConflictListResponse);
   rpc ConflictsForNode(ConflictsForNodeRequest) returns (ConflictListResponse);
   rpc ResolveConflict(ResolveConflictRequest) returns (ConflictResponse);
+  // User-initiated only (ADR-068 §5.2) — never called automatically at any
+  // confidence level. See NodeService::merge_nodes's doc comment.
+  rpc MergeNodes(MergeNodesRequest) returns (MergeNodesResponse);
 
   // Streaming
   rpc WatchNodes(WatchRequest) returns (stream NodeEvent);
@@ -267,6 +270,23 @@ message ResolveConflictRequest {
 
 message ConflictResponse {
   ConflictRecord conflict = 1;
+}
+
+message MergeNodesRequest {
+  string survivor_id = 1;
+  string loser_id = 2;
+  // The open conflict record this merge resolves, if any. When set, the
+  // record is closed as `resolved` with a `Resolution::Merge` in the SAME
+  // transaction as the merge itself.
+  optional string conflict_id = 3;
+}
+
+message MergeNodesResponse {
+  string survivor_id = 1;
+  string loser_id = 2;
+  uint32 properties_merged = 3;
+  uint32 edges_repointed = 4;
+  uint32 edges_dropped = 5;
 }
 
 // GetNode returns NodeResponse (node_id + node_data populated).

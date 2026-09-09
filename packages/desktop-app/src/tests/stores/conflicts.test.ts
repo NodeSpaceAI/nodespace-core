@@ -117,4 +117,50 @@ describe('conflicts store', () => {
       expect(conflictsStore.records[0].status).toBe('dismissed');
     });
   });
+
+  describe('merge()', () => {
+    it('calls merge_nodes with the survivor/loser/conflictId and refreshes the record', async () => {
+      conflictsStore.records = [record({ id: 'c1', status: 'open', nodeIds: ['survivor', 'loser'] })];
+      const outcome = {
+        survivorId: 'survivor',
+        loserId: 'loser',
+        propertiesMerged: 1,
+        edgesRepointed: 2,
+        edgesDropped: 0
+      };
+      mockInvoke.mockResolvedValueOnce(outcome); // merge_nodes
+      mockInvoke.mockResolvedValueOnce([record({ id: 'c1', status: 'resolved' })]); // conflicts_for_node refresh
+
+      const result = await conflictsStore.merge('survivor', 'loser', 'c1');
+
+      expect(mockInvoke).toHaveBeenNthCalledWith(1, 'merge_nodes', {
+        survivorId: 'survivor',
+        loserId: 'loser',
+        conflictId: 'c1'
+      });
+      expect(mockInvoke).toHaveBeenNthCalledWith(2, 'conflicts_for_node', { nodeId: 'survivor' });
+      expect(result).toEqual(outcome);
+      expect(conflictsStore.records.find((r) => r.id === 'c1')?.status).toBe('resolved');
+    });
+
+    it('does not refresh when no conflictId is given (a standalone merge, no journal entry)', async () => {
+      const outcome = {
+        survivorId: 'survivor',
+        loserId: 'loser',
+        propertiesMerged: 0,
+        edgesRepointed: 0,
+        edgesDropped: 0
+      };
+      mockInvoke.mockResolvedValueOnce(outcome);
+
+      await conflictsStore.merge('survivor', 'loser');
+
+      expect(mockInvoke).toHaveBeenCalledTimes(1);
+      expect(mockInvoke).toHaveBeenCalledWith('merge_nodes', {
+        survivorId: 'survivor',
+        loserId: 'loser',
+        conflictId: null
+      });
+    });
+  });
 });
