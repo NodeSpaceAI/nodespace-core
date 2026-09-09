@@ -260,6 +260,31 @@ fn schema_named_in_query<'a>(
     }
 }
 
+/// Every retrieved skill's name and raw score, for the `all_scores` log
+/// field — not only the winner's `top_score`.
+///
+/// This is the two-part diagnostic ADR-038's routing work needs: a near-tied
+/// runner-up (a tiebreak, fixed by retrieval-shape changes) reads identically
+/// to a skill with no close competitor scoring badly on its own core use case
+/// (a description problem) if only the top score is logged, and those call
+/// for different fixes. See
+/// `nodespace_agent::local_agent::routing::all_candidate_scores` for the same
+/// field on the local-agent Stage-2 path — this is `skill_ops`'s own copy
+/// rather than a shared helper, since the two operate on different types
+/// (`SkillCandidate` there, `(Node, f32)` tuples here) across a crate
+/// boundary `core` cannot depend on `agent` to cross.
+///
+/// A free function rather than inline formatting specifically so the
+/// unfiltered-inclusion behavior is independently testable without spinning
+/// up `find_skills`'s live `NodeService`/`NodeEmbeddingService` dependencies.
+fn format_all_scores(skill_results: &[(nodespace_types::Node, f64)]) -> String {
+    skill_results
+        .iter()
+        .map(|(node, score)| format!("{}={:.3}", node.content, score))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Search for skill nodes via semantic search and return flat results with
 /// schema metadata for the matched skill's scoped types.
 ///
@@ -376,19 +401,7 @@ pub async fn find_skills(
         }));
     }
 
-    // `all_scores` carries every retrieved skill's name and raw score, not
-    // only the winner's `top_score` — the two-part diagnostic ADR-038's
-    // routing work needs: a near-tied runner-up (a tiebreak, fixed by
-    // retrieval-shape changes) reads identically to a skill with no close
-    // competitor scoring badly on its own core use case (a description
-    // problem) if only the top score is logged, and those call for different
-    // fixes. See `nodespace_agent::local_agent::routing::all_candidate_scores`
-    // for the same field on the local-agent Stage-2 path.
-    let all_scores: String = skill_results
-        .iter()
-        .map(|(node, score)| format!("{}={:.3}", node.content, score))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let all_scores = format_all_scores(&skill_results);
 
     tracing::info!(
         query = %input.query,
@@ -803,6 +816,29 @@ mod tests {
             title: None,
             lifecycle_status: "active".to_string(),
         }
+    }
+
+    #[test]
+    fn format_all_scores_includes_a_low_scoring_result_a_threshold_would_filter() {
+        // The entire point of `all_scores` is visibility into candidates a
+        // score gate would otherwise hide — a low score here (well below any
+        // of `routing::READ_SKILL_SCORE_BAR` /
+        // `MUTATING_SKILL_SCORE_BAR` / `DESTRUCTIVE_SKILL_SCORE_BAR` in the
+        // sibling `nodespace-agent` crate) must still appear, unlike a
+        // gate-filtered field would render it.
+        let results = vec![
+            (make_node("s1", "Research & Search"), 0.9),
+            (make_node("s2", "Below Any Bar"), 0.01),
+        ];
+        assert_eq!(
+            format_all_scores(&results),
+            "Research & Search=0.900, Below Any Bar=0.010"
+        );
+    }
+
+    #[test]
+    fn format_all_scores_is_empty_when_retrieval_returned_nothing() {
+        assert_eq!(format_all_scores(&[]), "");
     }
 
     #[test]
