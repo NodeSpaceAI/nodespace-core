@@ -318,6 +318,25 @@ export interface PluginDefinition {
    * while the template hasn't resolved to any value yet. Only meaningful when
    * `hasTitleTemplate` is true. */
   titleTemplate?: string;
+
+  /**
+   * True when `name` is a word a user would recognize as naming the thing itself — an entity
+   * noun ("Person") — rather than an internal label chosen for the plugin registry /
+   * slash-command menu ("Text Node", "Header Node").
+   *
+   * Every type with no inline node component (`rendersAsEntityRow` true) already qualifies by
+   * construction — nothing that renders only as a read-only entity row names itself for a
+   * slash-command menu, so its `name` is always the noun; those types need not set this.
+   * It exists for the one combination `rendersAsEntityRow` cannot see on its own: a type that
+   * BOTH has an inline node component AND has an entity-noun `name` — `person` being the first
+   * ("Person" is what a user calls the thing, independent of it also being inline-editable).
+   *
+   * Drives the "Untitled <name>" fallback for an untitled node's tab title
+   * (`node-type-predicates.ts`'s `hasEntityNounName`, consumed by `navigation-service.ts`).
+   * Default `false`/unset: opt in explicitly, never infer from the inline/entity-row split,
+   * which answers a different question (how the type is edited, not what its name means).
+   */
+  entityNoun?: boolean;
 }
 
 // Registry statistics for debugging

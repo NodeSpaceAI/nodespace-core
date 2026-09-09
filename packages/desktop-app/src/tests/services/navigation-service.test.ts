@@ -283,6 +283,104 @@ describe('NavigationService - generateTabTitle (via resolveNodeTarget)', () => {
     // the `<type> Node` fallback rather than the registry label "Task Node".
     expect(target?.title).toBe('task Node');
   });
+
+  it('generates fallback title for an untitled text node (still the raw <type> Node form)', async () => {
+    // Pins the original reason node-type-predicates' gate exists: `text`'s plugin name
+    // ("Text Node") is a registry label, not a title — must not regress to showing it.
+    const textNode: Node = {
+      id: 'text-untitled',
+      nodeType: 'text',
+      content: '',
+      version: 1,
+      properties: {},
+      createdAt: Date.now().toString(),
+      modifiedAt: Date.now().toString()
+    };
+    sharedNodeStore.setNode(textNode, { type: 'database', reason: 'test-setup' }, true);
+
+    const target = await navService.resolveNodeTarget('text-untitled');
+
+    expect(target?.title).toBe('text Node');
+  });
+
+  it('generates fallback title for an untitled header node (still the raw <type> Node form)', async () => {
+    const headerNode: Node = {
+      id: 'header-untitled',
+      nodeType: 'header',
+      content: '',
+      version: 1,
+      properties: {},
+      createdAt: Date.now().toString(),
+      modifiedAt: Date.now().toString()
+    };
+    sharedNodeStore.setNode(headerNode, { type: 'database', reason: 'test-setup' }, true);
+
+    const target = await navService.resolveNodeTarget('header-untitled');
+
+    expect(target?.title).toBe('header Node');
+  });
+
+  it('generates "Untitled Person" for an untitled person node, not "person Node"', async () => {
+    // The bug this fixes: person has an inline node component (rendersAsEntityRow is
+    // false) but its plugin name "Person" is a real entity noun — the gate used to
+    // exclude it from the plugin-name branch purely because it renders inline.
+    const personNode: Node = {
+      id: 'person-untitled',
+      nodeType: 'person',
+      content: '',
+      title: '', // unresolved title_template ("{first_name} {last_name}" with both empty)
+      version: 1,
+      properties: { person: { first_name: '', last_name: '' } },
+      createdAt: Date.now().toString(),
+      modifiedAt: Date.now().toString()
+    };
+    sharedNodeStore.setNode(personNode, { type: 'database', reason: 'test-setup' }, true);
+
+    const target = await navService.resolveNodeTarget('person-untitled');
+
+    expect(target?.title).toBe('Untitled Person');
+  });
+
+  it('ignores stale content on an untitled title_template-driven person, rather than showing it', async () => {
+    // person is title_template-driven: an unresolved title must not fall back to `content`
+    // (e.g. leftover content from before a type conversion) — it must reach the
+    // "Untitled Person" fallback instead, matching resolveTitleOrContent's rule.
+    const personNode: Node = {
+      id: 'person-stale-content',
+      nodeType: 'person',
+      content: 'leftover text from before conversion',
+      title: ' ', // template resolved to whitespace only — still unresolved
+      version: 1,
+      properties: {},
+      createdAt: Date.now().toString(),
+      modifiedAt: Date.now().toString()
+    };
+    sharedNodeStore.setNode(personNode, { type: 'database', reason: 'test-setup' }, true);
+
+    const target = await navService.resolveNodeTarget('person-stale-content');
+
+    expect(target?.title).toBe('Untitled Person');
+  });
+
+  it('generates "Untitled AI Chat" for a brand-new ai-chat with no messages yet', async () => {
+    // ai-chat is already an entity row (no inline component), so it already reached the
+    // plugin-name branch before this fix — this pins that the "Untitled " prefix now
+    // generically applies there too, not just to person.
+    const chatNode: Node = {
+      id: 'chat-untitled',
+      nodeType: 'ai-chat',
+      content: '',
+      version: 1,
+      properties: {},
+      createdAt: Date.now().toString(),
+      modifiedAt: Date.now().toString()
+    };
+    sharedNodeStore.setNode(chatNode, { type: 'database', reason: 'test-setup' }, true);
+
+    const target = await navService.resolveNodeTarget('chat-untitled');
+
+    expect(target?.title).toBe('Untitled AI Chat');
+  });
 });
 
 describe('NavigationService - navigateToNode', () => {

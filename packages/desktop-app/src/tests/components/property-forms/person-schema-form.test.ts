@@ -95,6 +95,26 @@ async function blurEmail(value: string) {
   await fireEvent.blur(input, { target: { value } });
 }
 
+describe('PersonSchemaForm — field placeholders', () => {
+  // `email`'s placeholder ("email@example.com") was always a good example. `first_name`
+  // and `last_name` used to hardcode their own label text back as the placeholder
+  // ("First name" / "Last name") — pins that this no longer restates the label, and
+  // instead shows a real example, matching email's pattern.
+  it('shows example values, not the field label repeated back', () => {
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    const firstName = screen.getByLabelText('First name') as HTMLInputElement;
+    const lastName = screen.getByLabelText('Last name') as HTMLInputElement;
+    const email = screen.getByLabelText('Email') as HTMLInputElement;
+
+    expect(firstName.placeholder).not.toBe('First name');
+    expect(firstName.placeholder.length).toBeGreaterThan(0);
+    expect(lastName.placeholder).not.toBe('Last name');
+    expect(lastName.placeholder.length).toBeGreaterThan(0);
+    expect(email.placeholder).toBe('email@example.com');
+  });
+});
+
 describe('PersonSchemaForm — adopt-existing suggestion', () => {
   it('surfaces the suggestion when the blurred email collides with another person', async () => {
     findDuplicateForSpy.mockResolvedValue(existingMatch());

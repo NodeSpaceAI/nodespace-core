@@ -678,6 +678,10 @@ export const personNodePlugin: PluginDefinition = {
   // stored schema — must match core_schemas.rs's person title_template.
   hasTitleTemplate: true,
   titleTemplate: '{first_name} {last_name}',
+  // "Person" is a real entity noun, not a registry label like "Text Node" — even though
+  // person also has an inline node component below (unlike other entity-noun types, which
+  // render as read-only entity rows). See PluginDefinition.entityNoun's doc comment.
+  entityNoun: true,
   node: {
     lazyLoad: () => import('../design/components/person-node.svelte'),
     priority: 1

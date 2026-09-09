@@ -37,7 +37,8 @@ import type { Node } from '$lib/types';
 import { formatDateTitle } from '$lib/utils/date-formatting';
 import { formatTabTitle } from '$lib/utils/text-formatting';
 import { createLogger } from '$lib/utils/logger';
-import { rendersAsEntityRow } from '$lib/design/components/node-type-predicates';
+import { rendersAsEntityRow, hasEntityNounName } from '$lib/design/components/node-type-predicates';
+import { resolveTitleOrContent } from '$lib/utils/node-display-title';
 
 const log = createLogger('NavigationService');
 
@@ -176,23 +177,26 @@ export class NavigationService {
       return formatDateTitle(date);
     }
 
-    // For other nodes, prefer computed title (from title_template) over content
-    if (node.title && typeof node.title === 'string' && node.title.trim()) {
-      return formatTabTitle(node.title, `${node.nodeType} Node`);
+    // For other nodes, prefer the computed title (from a title_template) over content — the
+    // same rule every other title-resolving surface uses (resolveTitleOrContent), so a
+    // title-template-driven type with a stale `content` (e.g. converted from another type)
+    // doesn't leak that stale value here instead of falling through to the fallback below.
+    const hasTitleTemplate = pluginRegistry.hasTitleTemplate(node.nodeType);
+    const resolved = resolveTitleOrContent(node, hasTitleTemplate);
+    if (resolved.trim()) {
+      return formatTabTitle(resolved, `${node.nodeType} Node`);
     }
 
-    if (node.content && typeof node.content === 'string' && node.content.trim()) {
-      return formatTabTitle(node.content, `${node.nodeType} Node`);
-    }
-
-    // Untitled node: fall back to the plugin's display name (e.g. "Customer").
-    // Gated to entity rows, where plugin names are entity nouns worth showing as a
-    // title. Inline-editable types name their plugins for the registry, not the user
-    // ("Text Node", "Header Node"), so using those here would render "Text Node" for
-    // an untitled text node instead of the `<type> Node` fallback below.
-    if (rendersAsEntityRow(node.nodeType)) {
+    // Untitled node: fall back to the plugin's display name (e.g. "Untitled Customer"),
+    // rather than the raw type id ("customer Node"). Gated to types whose plugin `name` is a
+    // genuine entity noun — entity rows by construction, plus any inline-editable type that is
+    // nonetheless an entity noun (person — see hasEntityNounName's doc comment). Inline-
+    // editable content primitives name their plugins for the registry, not the user ("Text
+    // Node", "Header Node"), so using those here would render "Text Node" for an untitled text
+    // node instead of the `<type> Node` fallback below.
+    if (rendersAsEntityRow(node.nodeType) || hasEntityNounName(node.nodeType)) {
       const plugin = pluginRegistry.getPlugin(node.nodeType);
-      if (plugin?.name) return plugin.name;
+      if (plugin?.name) return `Untitled ${plugin.name}`;
     }
 
     // Fallback to node type
