@@ -85,6 +85,44 @@ pub const fn daemon_socket_relative(is_debug: bool, is_pro: bool) -> &'static st
 /// long-lived service, so there is no plist-equivalent to drift out of sync.
 pub const DAEMON_PIPE_NAME: &str = r"\\.\pipe\nodespace-daemon";
 
+/// Every UI pid-file filename, in the same build-variant order as
+/// [`DAEMON_SOCKET_NAMES`].
+///
+/// The desktop app writes its own pid here at startup (Unix only — Windows
+/// signals the UI process by image name instead, see the daemon crate's
+/// `tray::signal_ui_to_quit`); the daemon's tray "Quit" reads it to find and
+/// close the running window, the mirror image of how the desktop app finds
+/// and stops the daemon via [`daemon_socket_relative`]. Scoped by build
+/// variant for the same reason that table is: a dev build's file must never
+/// collide with a release build's, or a release Quit could reach into a
+/// stray dev UI process's window (or vice versa).
+pub const UI_PID_NAMES: [&str; 4] = ["ui.pid", "ui-pro.pid", "ui-dev.pid", "ui-dev-pro.pid"];
+
+/// The UI pid-file filename for one build variant. See [`daemon_socket_name`]
+/// for the parameter contract — identical here.
+pub const fn ui_pid_name(is_debug: bool, is_pro: bool) -> &'static str {
+    match (is_debug, is_pro) {
+        (false, false) => UI_PID_NAMES[0],
+        (false, true) => UI_PID_NAMES[1],
+        (true, false) => UI_PID_NAMES[2],
+        (true, true) => UI_PID_NAMES[3],
+    }
+}
+
+/// The UI pid-file path for one build variant, relative to the user's home
+/// directory (e.g. `.nodespace/ui-dev.pid`). Mirrors
+/// [`daemon_socket_relative`]'s contract exactly: both the desktop app and
+/// the daemon derive this path from their own build-variant flags rather
+/// than one side copying the other's answer.
+pub const fn ui_pid_relative(is_debug: bool, is_pro: bool) -> &'static str {
+    match (is_debug, is_pro) {
+        (false, false) => ".nodespace/ui.pid",
+        (false, true) => ".nodespace/ui-pro.pid",
+        (true, false) => ".nodespace/ui-dev.pid",
+        (true, true) => ".nodespace/ui-dev-pro.pid",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +155,44 @@ mod tests {
         // reports "is the daemon running?" against it — that must be the socket
         // a shipped community install actually uses.
         assert_eq!(DAEMON_SOCKET_NAMES[0], daemon_socket_name(false, false));
+    }
+
+    #[test]
+    fn ui_pid_relative_path_is_state_dir_joined_to_name() {
+        for (is_debug, is_pro) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert_eq!(
+                ui_pid_relative(is_debug, is_pro),
+                format!("{}/{}", STATE_DIR, ui_pid_name(is_debug, is_pro)),
+                "variant (debug={is_debug}, pro={is_pro})"
+            );
+        }
+    }
+
+    #[test]
+    fn every_variant_gets_a_distinct_ui_pid_file() {
+        let mut names: Vec<&str> = [(false, false), (false, true), (true, false), (true, true)]
+            .iter()
+            .map(|&(d, p)| ui_pid_name(d, p))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            4,
+            "build variants must not share a UI pid file"
+        );
+    }
+
+    #[test]
+    fn ui_pid_name_never_collides_with_a_daemon_socket_name() {
+        // The two files live in the same `.nodespace/` directory, so a
+        // collision here would mean the desktop app's pid file and the
+        // daemon's own socket could shadow each other on disk.
+        for (is_debug, is_pro) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert_ne!(
+                ui_pid_name(is_debug, is_pro),
+                daemon_socket_name(is_debug, is_pro)
+            );
+        }
     }
 }

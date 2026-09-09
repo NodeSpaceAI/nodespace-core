@@ -3557,6 +3557,7 @@ dependencies = [
  "dirs 5.0.1",
  "hyper-util",
  "image",
+ "libc",
  "nodespace-agent",
  "nodespace-core",
  "nodespace-nlp-engine",

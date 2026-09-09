@@ -426,6 +426,17 @@ pub fn run() {
             // Register shutdown token as managed state for background task coordination.
             app.manage(shutdown_token_for_setup.clone());
 
+            // Record this process's own pid so the daemon's tray "Quit" can
+            // find and close this window (see `daemon_setup::
+            // write_own_ui_pid_file`'s doc comment), and listen for the
+            // SIGTERM it sends there -- the daemon-to-app half of fully
+            // quitting NodeSpace from a single action, either direction.
+            #[cfg(unix)]
+            {
+                daemon_setup::write_own_ui_pid_file();
+                tauri::async_runtime::spawn(listen_for_quit_signal(app.handle().clone()));
+            }
+
             // Window <-> database pin registry — every emit-routing decision
             // in `window_routing::emit_routed` reads this.
             app.manage(window_routing::WindowDatabaseRegistry::default());
@@ -660,41 +671,7 @@ pub fn run() {
             } else if *event.id() == open_integrations_id {
                 window_routing::emit_routed(app, "menu-open-integrations", (), None);
             } else if *event.id() == quit_id {
-                // Still start the normal window-close path when a window
-                // exists -- it's what carries the pending-write flush (see
-                // `app-initialization.ts`'s `registerTauriCloseHandler`) --
-                // but that path depends on a window existing at all and on
-                // its webview being alive enough to run the flush and call
-                // `destroy()`. Neither holds if every window is already
-                // closed or the webview has crashed/hung, so `Quit` would
-                // otherwise silently do nothing. `arm_quit_watchdog` bounds
-                // how long this waits before forcing an unconditional exit.
-                if let Some(window) = window_routing::resolve_focus_window(app) {
-                    let _ = window.close();
-                }
-                if let Some(shutdown_token) = app.try_state::<ShutdownToken>() {
-                    arm_quit_watchdog(
-                        shutdown_token.inner().clone(),
-                        QUIT_WATCHDOG_TIMEOUT,
-                        || {
-                            tracing::error!(
-                                timeout_secs = QUIT_WATCHDOG_TIMEOUT.as_secs(),
-                                "Tray Quit did not reach ExitRequested via the normal close \
-                             path in time -- forcing exit."
-                            );
-                            // `AppHandle::exit` only posts a message onto the
-                            // native event loop's proxy (confirmed against the
-                            // vendored `tauri-runtime-wry` source) -- it needs
-                            // that loop to still be pumping, which is exactly
-                            // what's in question if the normal path never got
-                            // here. `std::process::exit` is unconditional
-                            // regardless of what any thread, including the main
-                            // one, is doing -- matching `nodespace-daemon`'s
-                            // `arm_shutdown_watchdog`, which this mirrors.
-                            std::process::exit(0);
-                        },
-                    );
-                }
+                initiate_app_quit(app);
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -1030,18 +1007,29 @@ mod window_geometry_capture_tests {
     }
 }
 
-/// Perform graceful shutdown: cancel background tasks.
+/// Perform graceful shutdown: cancel background tasks, and stop the daemon
+/// so a window close (Cmd+Q, the red traffic-light button, or any other path
+/// that actually reaches this point) also fully quits the daemon half of the
+/// app instead of leaving it -- and its tray icon -- running invisibly.
 ///
 /// Guarded by [`ShutdownToken::begin_shutdown_once`] so the sequence runs
 /// exactly once per token even though `ExitRequested` and `Exit` can both
 /// drive it for the same exit (see `handle_run_event`).
+///
+/// Only ever reached once a close has actually gone through -- never from a
+/// vetoed `CloseRequested` (`handle_run_event` deliberately does not call
+/// this from that event) -- so a frontend veto to flush unsaved writes never
+/// also takes the daemon down out from under it.
 ///
 /// No blocking sleep here: the previous 200ms `std::thread::sleep` ran on
 /// the Tauri event-loop thread — the same thread that services the webview —
 /// which stalls the UI at exactly the moment a flush needs to make progress.
 /// It also couldn't have helped the background tasks it was meant to give
 /// time to: they run on the async runtime's own worker threads and react to
-/// `cancel()` independently of how long this thread blocks afterward.
+/// `cancel()` independently of how long this thread blocks afterward. The
+/// daemon-stop call below is the same story: synchronous and fire-and-forget
+/// (see `daemon_setup::signal_daemon_to_stop`'s doc comment), so it can't
+/// stall this thread either.
 pub(crate) fn graceful_shutdown<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     use tauri::Manager;
 
@@ -1055,7 +1043,59 @@ pub(crate) fn graceful_shutdown<R: tauri::Runtime>(app_handle: &tauri::AppHandle
     }
 
     shutdown_token.cancel();
+
+    #[cfg(unix)]
+    daemon_setup::remove_own_ui_pid_file();
+    #[cfg(any(unix, windows))]
+    daemon_setup::signal_daemon_to_stop();
+
     tracing::info!("Shutdown: complete");
+}
+
+/// Pins the "window-close also stops the daemon" half of this fix at the
+/// call site itself: `graceful_shutdown`'s actual `kill`/`taskkill` call is
+/// compiled out under `cfg(test)` (see `daemon_setup::signal_daemon_to_stop`'s
+/// doc comment for why — it would otherwise be a real, irreversible action
+/// against whatever daemon happens to be running on the machine `cargo test`
+/// executes on), so there is no way to observe the *effect* behaviorally in
+/// this suite. This instead asserts the *wiring*: that `graceful_shutdown`'s
+/// body actually calls the daemon-stop and pid-file-cleanup functions, the
+/// same level `shutdown_tests.rs` already tests `graceful_shutdown` calls at
+/// (`ShutdownToken::cancel`) — matching `window_geometry_capture_tests`'
+/// established precedent for pinning an effect that can't be exercised
+/// behaviorally against a source-text assertion instead.
+#[cfg(test)]
+mod graceful_shutdown_stops_daemon_tests {
+    #[test]
+    fn graceful_shutdown_stops_the_daemon_and_cleans_up_the_ui_pid_file() {
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("pub(crate) fn graceful_shutdown")
+            .expect("graceful_shutdown not found in lib.rs");
+        // Ends at graceful_shutdown's own closing log line rather than
+        // searching for the next function's name -- the latter would also
+        // match that same string where it appears inside *this* test
+        // module's own source (the `.find(...)` call and assertion message
+        // below), silently widening the slice to include this test's own
+        // panic message text and making the assertion pass even if the real
+        // call in `graceful_shutdown`'s body were deleted.
+        let end = source[start..]
+            .find("tracing::info!(\"Shutdown: complete\");")
+            .map(|offset| start + offset)
+            .expect("graceful_shutdown's closing log line not found in lib.rs");
+        let function_source = &source[start..end];
+
+        assert!(
+            function_source.contains("daemon_setup::signal_daemon_to_stop()"),
+            "graceful_shutdown must call daemon_setup::signal_daemon_to_stop() so a window \
+             close (Cmd+Q, the red traffic-light button, or any other path that actually \
+             reaches ExitRequested/Exit) also stops the daemon and its tray icon"
+        );
+        assert!(
+            function_source.contains("daemon_setup::remove_own_ui_pid_file()"),
+            "graceful_shutdown must clean up the UI pid file it wrote at startup"
+        );
+    }
 }
 
 /// Bounds how long the tray "Quit" item waits for the normal window-close
@@ -1091,6 +1131,80 @@ fn arm_quit_watchdog(
             on_timeout();
         }
     });
+}
+
+/// Shared body for every path that should fully quit this app through the
+/// normal window-close pipeline: the app's own "Quit" menu item / Cmd+Q, and
+/// a SIGTERM from the daemon's tray "Quit" (see [`listen_for_quit_signal`]).
+///
+/// Still starts the normal window-close path when a window exists -- it's
+/// what carries the pending-write flush (see `app-initialization.ts`'s
+/// `registerTauriCloseHandler`) -- but that path depends on a window
+/// existing at all and on its webview being alive enough to run the flush
+/// and call `destroy()`. Neither holds if every window is already closed or
+/// the webview has crashed/hung, so a bare `window.close()` would otherwise
+/// silently do nothing. [`arm_quit_watchdog`] bounds how long this waits
+/// before forcing an unconditional exit.
+fn initiate_app_quit<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    use tauri::Manager;
+
+    if let Some(window) = window_routing::resolve_focus_window(app) {
+        let _ = window.close();
+    }
+    if let Some(shutdown_token) = app.try_state::<ShutdownToken>() {
+        arm_quit_watchdog(
+            shutdown_token.inner().clone(),
+            QUIT_WATCHDOG_TIMEOUT,
+            || {
+                tracing::error!(
+                    timeout_secs = QUIT_WATCHDOG_TIMEOUT.as_secs(),
+                    "Quit did not reach ExitRequested via the normal close path in time -- \
+                     forcing exit."
+                );
+                // `AppHandle::exit` only posts a message onto the native
+                // event loop's proxy (confirmed against the vendored
+                // `tauri-runtime-wry` source) -- it needs that loop to still
+                // be pumping, which is exactly what's in question if the
+                // normal path never got here. `std::process::exit` is
+                // unconditional regardless of what any thread, including the
+                // main one, is doing -- matching `nodespace-daemon`'s
+                // `arm_shutdown_watchdog`, which this mirrors.
+                std::process::exit(0);
+            },
+        );
+    }
+}
+
+/// Listens for SIGTERM -- the signal the daemon's tray "Quit" sends to this
+/// process once it verifies this process's pid against the UI binary path
+/// (see `daemon_setup::write_own_ui_pid_file` and `nodespace-daemon`'s
+/// `tray::signal_ui_to_quit`) -- and, on receipt, routes it through
+/// [`initiate_app_quit`]: the exact same window-close path the app's own
+/// Quit menu item and Cmd+Q already use, so a pending unsaved-work flush
+/// veto (see `handle_run_event`'s doc comment) is still respected instead of
+/// the window being torn down out from under it.
+///
+/// Runs for the life of the app; exits on its own once the process does.
+#[cfg(unix)]
+async fn listen_for_quit_signal<R: tauri::Runtime>(app_handle: tauri::AppHandle<R>) {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = match signal(SignalKind::terminate()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "failed to install SIGTERM handler; Tray Quit will not be able to close this window"
+            );
+            return;
+        }
+    };
+    // One-shot: once a SIGTERM is handled the app is already on its way out
+    // via `initiate_app_quit`, so there is nothing meaningful left to listen
+    // for afterward.
+    sigterm.recv().await;
+    tracing::info!("SIGTERM received (Tray Quit) — closing window");
+    initiate_app_quit(&app_handle);
 }
 
 #[cfg(test)]
@@ -1215,6 +1329,81 @@ mod relaunch_tests {
             super::take_pending_tray_database_selection(),
             None,
             "a second pull must not re-deliver an already-consumed selection"
+        );
+    }
+}
+
+/// Structural coverage for the rest of this fix's wiring — the pieces inside
+/// `run()` (a real Tauri app builder, not exercisable against
+/// `tauri::test::MockRuntime`) that can't be driven behaviorally: does the
+/// app's own Quit menu item / Cmd+Q route through `initiate_app_quit`, does
+/// a SIGTERM from the daemon's tray Quit route through the same function,
+/// and does app setup actually register the pid file + SIGTERM listener
+/// that make that possible. Same source-text-assertion approach as
+/// `graceful_shutdown_stops_daemon_tests` and the pre-existing
+/// `window_geometry_capture_tests` above.
+#[cfg(test)]
+mod quit_wiring_tests {
+    #[test]
+    fn menu_quit_routes_through_initiate_app_quit() {
+        let source = include_str!("lib.rs");
+        let marker = source
+            .find("== quit_id {")
+            .expect("quit_id menu branch not found in lib.rs");
+        let window = &source[marker..(marker + 150).min(source.len())];
+
+        assert!(
+            window.contains("initiate_app_quit(app)"),
+            "the app's own \"Quit\" menu item (and Cmd+Q, which shares its accelerator) must \
+             call initiate_app_quit, not duplicate its own window-close logic: {window}"
+        );
+    }
+
+    #[test]
+    fn sigterm_from_tray_quit_routes_through_initiate_app_quit() {
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("async fn listen_for_quit_signal")
+            .expect("listen_for_quit_signal not found in lib.rs");
+        // A fixed window, not a search to EOF: `listen_for_quit_signal` is
+        // the last real function in this file before the test modules
+        // (including this one) begin, so slicing to EOF would pull in this
+        // very test's own source -- which contains the literal string being
+        // asserted for as part of its own `.contains(...)` call -- making
+        // the assertion pass even if the real call in the function body
+        // were deleted. 800 bytes comfortably covers the whole function
+        // (it's ~20 lines) without reaching that far.
+        let window = &source[start..(start + 800).min(source.len())];
+
+        assert!(
+            window.contains("initiate_app_quit(&app_handle)"),
+            "listen_for_quit_signal must route a SIGTERM (sent by the daemon's tray Quit) \
+             through initiate_app_quit -- the same window-close + flush-veto path the app's \
+             own Quit menu item and Cmd+Q use"
+        );
+    }
+
+    #[test]
+    fn setup_writes_the_ui_pid_file_and_listens_for_quit_signal() {
+        let source = include_str!("lib.rs");
+        let start = source
+            .find("app.manage(shutdown_token_for_setup.clone());")
+            .expect("shutdown token registration not found in lib.rs");
+        let end = source[start..]
+            .find("Window <-> database pin registry")
+            .map(|offset| start + offset)
+            .expect("window_routing registry setup not found after shutdown token registration");
+        let setup_slice = &source[start..end];
+
+        assert!(
+            setup_slice.contains("daemon_setup::write_own_ui_pid_file()"),
+            "app setup must record this process's own pid so the daemon's tray Quit can find \
+             and close this window: {setup_slice}"
+        );
+        assert!(
+            setup_slice.contains("listen_for_quit_signal(app.handle().clone())"),
+            "app setup must start listening for the SIGTERM the daemon's tray Quit sends: \
+             {setup_slice}"
         );
     }
 }
