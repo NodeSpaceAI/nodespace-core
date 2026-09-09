@@ -129,6 +129,11 @@ pub struct DatabaseServices {
     /// `shutdown` has a handle to cancel without reaching back into the
     /// gRPC impl.
     shutdown_token: tokio_util::sync::CancellationToken,
+    /// Stops this database's conflict-journal reconciliation sweep
+    /// (ADR-068 §5.4) on retirement. `None` when the sweep never started
+    /// (should not happen in practice — kept `Option` for symmetry with
+    /// how other optional background tasks are represented here).
+    conflict_sweep_shutdown: Option<watch::Sender<bool>>,
 }
 
 impl DatabaseServices {
@@ -153,6 +158,9 @@ impl DatabaseServices {
         // task on drop). The shared model is left untouched.
         if let Some(ready) = self.embedding_state.write().await.take() {
             drop(ready.processor);
+        }
+        if let Some(tx) = &self.conflict_sweep_shutdown {
+            let _ = tx.send(true);
         }
         // End every live `WatchNodes` stream on this database rather than
         // leaving them as zombies once the database is gone. Idempotent —
@@ -337,6 +345,17 @@ pub async fn build_database_services(
         })
     });
 
+    // Conflict-journal reconciliation sweep (ADR-068 §5.4) — a low-frequency
+    // backstop, not required for S1-S3 correctness. One per database, its own
+    // watch-channel shutdown signal (mirroring cron_runner_loop's shape),
+    // stopped by `DatabaseServices::shutdown` alongside this database's other
+    // background tasks.
+    let (conflict_sweep_shutdown_tx, conflict_sweep_shutdown_rx) = watch::channel(false);
+    tokio::spawn(nodespace_core::conflict_sweep::conflict_sweep_loop(
+        node_service.clone(),
+        conflict_sweep_shutdown_rx,
+    ));
+
     Ok((
         DatabaseServices {
             node_service_grpc,
@@ -346,6 +365,7 @@ pub async fn build_database_services(
             embeddings_service_grpc,
             embedding_state,
             shutdown_token,
+            conflict_sweep_shutdown: Some(conflict_sweep_shutdown_tx),
         },
         embedding_task,
     ))

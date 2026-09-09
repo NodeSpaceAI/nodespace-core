@@ -22,6 +22,7 @@
 
 pub mod agent_params;
 pub mod behaviors;
+pub mod conflict_sweep;
 pub mod db;
 pub mod markdown;
 pub mod models;

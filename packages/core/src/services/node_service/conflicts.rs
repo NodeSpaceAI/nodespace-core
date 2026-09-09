@@ -272,4 +272,170 @@ impl NodeService {
             edges_dropped,
         })
     }
+
+    /// Reconciliation sweep (conflict-journal-and-resolution.md §5.4): close
+    /// every OPEN conflict record whose participant(s) are gone (hard-deleted)
+    /// or no longer collide (renamed, merged elsewhere). Not required for S1-S3
+    /// correctness — a stale open record for a departed node is a stale row,
+    /// not a wrong one — but required before the Conflicts view is fully
+    /// trustworthy, and the backstop for the accepted TOCTOU gap in the
+    /// pre-write-check/post-write-mark detection pattern (§4): a full re-scan
+    /// re-runs each kind's predicate and closes anything the inline check
+    /// alone would have missed.
+    ///
+    /// Best-effort per record: one record's re-check failing (e.g. a
+    /// transient store error) is logged and skipped, not propagated — a sweep
+    /// is a background maintenance pass, not a user-facing operation whose
+    /// failure should abort the rest of the pass.
+    ///
+    /// Returns the number of records closed.
+    pub async fn reconcile_conflicts(&self) -> Result<u32, NodeServiceError> {
+        let open = self
+            .store
+            .list_conflicts(Some(ConflictStatus::Open), None, None)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        let mut closed = 0u32;
+        for record in open {
+            match self.reconcile_one(&record).await {
+                Ok(true) => closed += 1,
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(
+                        conflict_id = %record.id,
+                        error = %e,
+                        "reconciliation sweep: failed to re-check conflict record, skipping"
+                    );
+                }
+            }
+        }
+        Ok(closed)
+    }
+
+    /// Re-check one open record; close it (resolved, no user action) if a
+    /// participant is gone or the kind's predicate no longer finds a
+    /// collision. Returns whether it was closed.
+    async fn reconcile_one(&self, record: &ConflictRecord) -> Result<bool, NodeServiceError> {
+        // A hard-deleted participant closes the record unconditionally,
+        // regardless of kind — there is nothing left to re-collide.
+        for node_id in &record.node_ids {
+            if self.get_node(node_id).await?.is_none() {
+                self.close_stale(&record.id, "participant_deleted").await?;
+                return Ok(true);
+            }
+        }
+
+        let still_conflicts = match record.kind {
+            ConflictKind::UniqueFieldCollision => {
+                self.unique_field_collision_still_holds(record).await?
+            }
+            ConflictKind::CollectionNameCollision => {
+                self.collection_name_collision_still_holds(record).await?
+            }
+            // No detection yet for these kinds (S1-S3 scope); nothing to
+            // re-check, so never auto-close one.
+            ConflictKind::SupersededEdit | ConflictKind::DuplicateReactiveCreate => true,
+        };
+
+        if !still_conflicts {
+            self.close_stale(&record.id, "no_longer_conflicting")
+                .await?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    async fn close_stale(&self, conflict_id: &str, reason: &str) -> Result<(), NodeServiceError> {
+        self.store
+            .resolve_conflict(
+                conflict_id,
+                Resolution::SelfResolved {
+                    reason: reason.to_string(),
+                },
+            )
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn unique_field_collision_still_holds(
+        &self,
+        record: &ConflictRecord,
+    ) -> Result<bool, NodeServiceError> {
+        let (Some(node_type), Some(field), Some(_original_value)) = (
+            record.detail.get("node_type").and_then(|v| v.as_str()),
+            record.detail.get("field").and_then(|v| v.as_str()),
+            record.detail.get("value").and_then(|v| v.as_str()),
+        ) else {
+            return Ok(true); // malformed detail — leave it for a human, don't guess
+        };
+        let case_insensitive = record
+            .detail
+            .get("case_insensitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Re-derive from each participant's OWN CURRENT value, not the value
+        // recorded at detection time — a participant may have since changed
+        // it (as this exact scenario exercises: Bob edits his email away
+        // from Alice's). Checking a stale `detail.value` from an arbitrary
+        // participant's exclusion perspective is wrong in both directions:
+        // excluding the participant who MOVED AWAY still finds the OTHER
+        // participant's still-correct value and reports a false collision.
+        for node_id in &record.node_ids {
+            let Some(node) = self.get_node(node_id).await? else {
+                continue; // already handled by the hard-delete check in reconcile_one
+            };
+            let Some(current_value) = node
+                .properties
+                .get(node_type)
+                .and_then(|p| p.get(field))
+                .and_then(|v| v.as_str())
+            else {
+                continue;
+            };
+            if current_value.trim().is_empty() {
+                continue;
+            }
+
+            let conflicting = self
+                .store
+                .find_conflicting_unique(
+                    node_type,
+                    field,
+                    current_value,
+                    Some(node_id),
+                    case_insensitive,
+                )
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            if conflicting.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    async fn collection_name_collision_still_holds(
+        &self,
+        record: &ConflictRecord,
+    ) -> Result<bool, NodeServiceError> {
+        let Some(name) = record.detail.get("name").and_then(|v| v.as_str()) else {
+            return Ok(true);
+        };
+        let Some(subject_id) = record.node_ids.first() else {
+            return Ok(true);
+        };
+        let existing = self
+            .store
+            .get_collection_by_name(name)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        Ok(match existing {
+            // A different active collection still holds the name -> still colliding.
+            Some(node) => &node.id != subject_id,
+            None => false,
+        })
+    }
 }

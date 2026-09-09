@@ -150,6 +150,16 @@ pub enum Resolution {
         edges_repointed: u32,
         edges_dropped: u32,
     },
+    /// Closed by the reconciliation sweep (conflict-journal-and-resolution.md
+    /// §5.4), not a human: a participant was hard-deleted, or the kind's
+    /// predicate no longer finds a collision (renamed, merged elsewhere on
+    /// another device — §5.3's cross-device self-resolution). `reason` is a
+    /// short machine string (`"participant_deleted"` |
+    /// `"no_longer_conflicting"`) so the Conflicts view can label a
+    /// self-resolved record distinctly from one a user actually decided.
+    SelfResolved {
+        reason: String,
+    },
 }
 
 impl Resolution {
@@ -162,7 +172,8 @@ impl Resolution {
             Self::AdoptExisting { .. }
             | Self::Rename { .. }
             | Self::Restore { .. }
-            | Self::Merge { .. } => ConflictStatus::Resolved,
+            | Self::Merge { .. }
+            | Self::SelfResolved { .. } => ConflictStatus::Resolved,
         }
     }
 }
