@@ -37,8 +37,8 @@ describe("SKILL_REPO", () => {
 });
 
 describe("readSkillSource", () => {
-  test("reads the live packages/skill/SKILL.md and references/cli.md off disk", () => {
-    const { body, referenceCli } = readSkillSource();
+  test("reads the live packages/skill/SKILL.md, references/cli.md, and references/shared-workspaces.md off disk", () => {
+    const { body, referenceCli, referenceSharedWorkspaces } = readSkillSource();
     // Read independently (not via the function under test) so this actually
     // catches the function reading a stale/wrong path, not just echoing it.
     const expectedBody = readFileSync(
@@ -49,8 +49,13 @@ describe("readSkillSource", () => {
       join(REPO_ROOT, "packages", "skill", "references", "cli.md"),
       "utf8",
     );
+    const expectedReferenceSharedWorkspaces = readFileSync(
+      join(REPO_ROOT, "packages", "skill", "references", "shared-workspaces.md"),
+      "utf8",
+    );
     expect(body).toBe(expectedBody);
     expect(referenceCli).toBe(expectedReferenceCli);
+    expect(referenceSharedWorkspaces).toBe(expectedReferenceSharedWorkspaces);
   });
 
   // The checked-in SKILL.md body carries no frontmatter (renderPublishFiles
@@ -70,8 +75,12 @@ describe("sharedShimPaths", () => {
   // agent's shims here gets picked up automatically -- and this test fails
   // loudly if that derivation ever stops matching what today's AGENTS
   // actually declares as shared.
-  test("is exactly SKILL.md and references/cli.md today", () => {
-    expect(sharedShimPaths().sort()).toEqual(["SKILL.md", "references/cli.md"]);
+  test("is exactly SKILL.md, references/cli.md, and references/shared-workspaces.md today", () => {
+    expect(sharedShimPaths().sort()).toEqual([
+      "SKILL.md",
+      "references/cli.md",
+      "references/shared-workspaces.md",
+    ]);
   });
 
   test("excludes every harness-specific shim", () => {
@@ -86,11 +95,12 @@ describe("sharedShimPaths", () => {
 });
 
 describe("renderPublishFiles", () => {
-  test("publishes exactly SKILL.md and references/cli.md under skills/nodespace/", () => {
+  test("publishes exactly SKILL.md, references/cli.md, and references/shared-workspaces.md under skills/nodespace/", () => {
     const files = renderPublishFiles("v0.2.2");
     expect(files.map((f) => f.relPath).sort()).toEqual([
       "skills/nodespace/SKILL.md",
       "skills/nodespace/references/cli.md",
+      "skills/nodespace/references/shared-workspaces.md",
     ]);
   });
 
@@ -145,6 +155,26 @@ describe("renderPublishFiles", () => {
     const referenceCli = files.find((f) => f.relPath === "skills/nodespace/references/cli.md")!;
     const { referenceCli: expected } = readSkillSource();
     expect(referenceCli.content).toBe(expected);
+  });
+
+  test("references/shared-workspaces.md is copied through verbatim", () => {
+    const files = renderPublishFiles("v0.2.2");
+    const referenceSharedWorkspaces = files.find(
+      (f) => f.relPath === "skills/nodespace/references/shared-workspaces.md",
+    )!;
+    const { referenceSharedWorkspaces: expected } = readSkillSource();
+    expect(referenceSharedWorkspaces.content).toBe(expected);
+  });
+
+  // SKILL.md's stub for the moved section must still name the file it points
+  // at, or the publish step would ship a reference nothing in the body links
+  // to -- the same dangling-reference failure mode the issue that added this
+  // file exists to prevent, just checked against the published copy instead
+  // of the local one.
+  test("SKILL.md links to references/shared-workspaces.md by the exact published path", () => {
+    const files = renderPublishFiles("v0.2.2");
+    const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
+    expect(skillMd.content).toContain("references/shared-workspaces.md");
   });
 });
 

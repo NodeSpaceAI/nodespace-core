@@ -62,14 +62,24 @@ export const AGENTS: AgentConfig[] = [
     name: 'claude-code',
     detectionDir: claudeConfigDir,
     installDir: join(claudeConfigDir, 'skills', 'nodespace'),
-    shims: ['SKILL.md', 'references/cli.md', 'shims/claude-code/nodespace-hook.ts'],
+    shims: [
+      'SKILL.md',
+      'references/cli.md',
+      'references/shared-workspaces.md',
+      'shims/claude-code/nodespace-hook.ts',
+    ],
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
     name: 'codex',
     detectionDir: join(home, '.codex'),
     installDir: join(home, '.codex', 'skills', 'nodespace'),
-    shims: ['SKILL.md', 'references/cli.md', 'shims/codex/nodespace-plugin.ts'],
+    shims: [
+      'SKILL.md',
+      'references/cli.md',
+      'references/shared-workspaces.md',
+      'shims/codex/nodespace-plugin.ts',
+    ],
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
@@ -83,14 +93,19 @@ export const AGENTS: AgentConfig[] = [
     // as Claude Code/Codex/OpenCode, so it just runs `nodespace` directly per
     // SKILL.md's Preflight "Branch 1" — no tool-registration integration
     // (MCP or otherwise) needed for it to use the CLI.
-    shims: ['SKILL.md', 'references/cli.md'],
+    shims: ['SKILL.md', 'references/cli.md', 'references/shared-workspaces.md'],
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
     name: 'opencode',
     detectionDir: join(home, '.opencode'),
     installDir: join(home, '.opencode', 'skills', 'nodespace'),
-    shims: ['SKILL.md', 'references/cli.md', 'shims/opencode/nodespace-plugin.ts'],
+    shims: [
+      'SKILL.md',
+      'references/cli.md',
+      'references/shared-workspaces.md',
+      'shims/opencode/nodespace-plugin.ts',
+    ],
     skillFrontmatter: SKILL_FRONTMATTER,
   },
 ];

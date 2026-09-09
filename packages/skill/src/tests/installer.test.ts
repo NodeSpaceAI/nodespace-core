@@ -33,7 +33,14 @@ function seedPkgRoot(root: string, agent: typeof AGENTS[number]): void {
   for (const shim of agent.shims) {
     const dir = join(root, shim.includes('/') ? shim.split('/').slice(0, -1).join('/') : '');
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(root, shim), shim.endsWith('.md') ? SKILL_MD_CONTENT : SHIM_CONTENT, 'utf8');
+    // Content is unique per shim path, not just per shim "kind" -- so a test
+    // can tell two installed files apart, e.g. that installing two reference
+    // files (references/cli.md, references/shared-workspaces.md) lands both
+    // with their own content rather than one silently overwriting the other.
+    const content = shim.endsWith('.md')
+      ? `${SKILL_MD_CONTENT}\n<!-- ${shim} -->`
+      : `${SHIM_CONTENT} (${shim})`;
+    writeFileSync(join(root, shim), content, 'utf8');
   }
 }
 
@@ -238,6 +245,36 @@ describe('install', () => {
     }
   });
 
+  // `references/` now holds two files (cli.md and shared-workspaces.md) for
+  // every agent that ships references at all. Each must land as its own
+  // distinct file rather than one clobbering the other -- the scenario
+  // installedName()'s directory-preserving behavior was never exercised
+  // against until a second reference file existed.
+  it('installs multiple reference files side by side without collision', () => {
+    for (const config of AGENTS) {
+      const refs = config.shims.filter(s => s.startsWith('references/'));
+      // Canary: if the reference set ever shrinks back to one file, this
+      // test silently stops covering the scenario it is named for.
+      expect(refs.length, `${config.name} has fewer than 2 reference files`).toBeGreaterThan(1);
+
+      mkdirSync(config.detectionDir, { recursive: true });
+      seedPkgRoot(FAKE_PKG_ROOT, config);
+      install([config.name], FAKE_PKG_ROOT);
+
+      const installedContents = refs.map(ref =>
+        readFileSync(join(config.installDir, ref), 'utf8')
+      );
+      // Every reference file's installed content matches its own source, and
+      // no two are identical -- collapsing to the same content is exactly
+      // what a path-flattening bug would produce.
+      for (const [i, ref] of refs.entries()) {
+        const expected = readFileSync(join(FAKE_PKG_ROOT, ref), 'utf8');
+        expect(installedContents[i], `${config.name}: ${ref}`).toBe(expected);
+      }
+      expect(new Set(installedContents).size).toBe(refs.length);
+    }
+  });
+
   it('creates install directory if it does not exist', () => {
     const agentName = 'codex';
     const config = AGENTS.find(a => a.name === agentName)!;
@@ -361,6 +398,30 @@ describe('uninstall', () => {
         ).toBe(false);
       }
     }
+  });
+
+  // references/ holds two files today. If a user (or another tool) deletes
+  // just one of them by hand before uninstall runs, the directory-emptiness
+  // check must still see the surviving reference, then correctly prune it
+  // and the directory once uninstall removes it too -- a state that can only
+  // arise once more than one file shares that directory.
+  it('removing one reference file by hand does not strand the other or the install dir', () => {
+    const config = AGENTS.find(a => a.name === 'claude-code')!;
+    const refs = config.shims.filter(s => s.startsWith('references/'));
+    expect(refs.length).toBeGreaterThan(1);
+
+    mkdirSync(config.detectionDir, { recursive: true });
+    seedPkgRoot(FAKE_PKG_ROOT, config);
+    install([config.name], FAKE_PKG_ROOT);
+
+    // Simulate a user deleting just one reference file by hand.
+    rmSync(join(config.installDir, refs[0]));
+    expect(existsSync(join(config.installDir, refs[1]))).toBe(true);
+
+    const results = uninstall([config.name]);
+    expect(results[0].removed).not.toContain(join(config.installDir, refs[0]));
+    expect(results[0].removed).toContain(join(config.installDir, refs[1]));
+    expect(existsSync(config.installDir)).toBe(false);
   });
 
   // Uninstall must not reach outside what it installed. Pruning "any empty
