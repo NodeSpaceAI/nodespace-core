@@ -3821,10 +3821,10 @@ mod tests {
         let mut saw_relationship_updated = false;
         while let Ok(envelope) = rx.try_recv() {
             match envelope.event {
-                DomainEvent::NodeUpdated { node_id, .. } if node_id == child_id => {
-                    if !saw_relationship_updated {
-                        saw_node_updated_first = true;
-                    }
+                DomainEvent::NodeUpdated { node_id, .. }
+                    if node_id == child_id && !saw_relationship_updated =>
+                {
+                    saw_node_updated_first = true;
                 }
                 DomainEvent::RelationshipUpdated { .. } => {
                     saw_relationship_updated = true;
