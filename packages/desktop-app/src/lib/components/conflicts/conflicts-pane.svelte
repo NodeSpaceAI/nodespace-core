@@ -108,6 +108,50 @@
       mergingConflictId = null;
     }
   }
+
+  /** Non-destructive: record that `adopted` was kept instead of treating the
+   * other participant as a distinct node. Offered only for a 2-participant
+   * `UniqueFieldCollision`/`CollectionNameCollision` record, same shape as
+   * merge, but without touching either node's data. */
+  async function handleAdoptExisting(record: ConflictRecord, adopted: string) {
+    try {
+      await conflictsStore.adoptExisting(record.id, adopted);
+    } catch (e) {
+      log.error('Failed to record adopt-existing resolution', e);
+    }
+  }
+
+  let renamingConflictId = $state<string | null>(null);
+  let renameDraft = $state('');
+
+  function startRename(record: ConflictRecord, nodeId: string) {
+    renamingConflictId = record.id;
+    renameDraft = participantLabels.get(nodeId) ?? '';
+  }
+
+  function cancelRename() {
+    renamingConflictId = null;
+    renameDraft = '';
+  }
+
+  /** Collection-name collisions only: rename one participant so its name no
+   * longer collides. */
+  async function confirmRename(record: ConflictRecord, nodeId: string) {
+    const from = participantLabels.get(nodeId) ?? nodeId;
+    const to = renameDraft.trim();
+    if (!to || to === from) {
+      cancelRename();
+      return;
+    }
+    try {
+      await conflictsStore.rename(record.id, nodeId, from, to);
+      participantLabels = new Map(participantLabels).set(nodeId, to);
+    } catch (e) {
+      log.error('Failed to rename collection', e);
+    } finally {
+      cancelRename();
+    }
+  }
 </script>
 
 <div class="conflicts-pane">
@@ -161,29 +205,71 @@
                 </div>
 
                 {#if record.status === 'open'}
-                  <div class="conflict-actions">
-                    {#if (record.kind === 'unique_field_collision' || record.kind === 'collection_name_collision') && record.nodeIds.length === 2}
-                      <!-- Merge (ADR-068 §5.2): user-initiated only, one
-                           button per participant to pick which one survives. -->
-                      {#each record.nodeIds as nodeId (nodeId)}
+                  {#if renamingConflictId === record.id}
+                    <div class="conflict-rename-form">
+                      <input
+                        type="text"
+                        class="conflict-rename-input"
+                        bind:value={renameDraft}
+                        placeholder="New name"
+                      />
+                      <button
+                        type="button"
+                        class="conflict-action"
+                        onclick={() => confirmRename(record, record.nodeIds[1])}
+                      >
+                        Save
+                      </button>
+                      <button type="button" class="conflict-action" onclick={cancelRename}>
+                        Cancel
+                      </button>
+                    </div>
+                  {:else}
+                    <div class="conflict-actions">
+                      {#if (record.kind === 'unique_field_collision' || record.kind === 'collection_name_collision') && record.nodeIds.length === 2}
+                        <!-- Merge (ADR-068 §5.2): user-initiated only, one
+                             button per participant to pick which one survives. -->
+                        {#each record.nodeIds as nodeId (nodeId)}
+                          <button
+                            type="button"
+                            class="conflict-action"
+                            disabled={mergingConflictId === record.id}
+                            onclick={() => handleMerge(record, nodeId)}
+                          >
+                            Keep {participantLabels.get(nodeId) ?? nodeId}
+                          </button>
+                        {/each}
+                        <!-- Adopt existing (§5.1): non-destructive — creates
+                             nothing, deletes nothing, just records which
+                             participant is the "real" one going forward. -->
                         <button
                           type="button"
                           class="conflict-action"
-                          disabled={mergingConflictId === record.id}
-                          onclick={() => handleMerge(record, nodeId)}
+                          onclick={() => handleAdoptExisting(record, record.nodeIds[0])}
                         >
-                          Keep {participantLabels.get(nodeId) ?? nodeId}
+                          Adopt existing
                         </button>
-                      {/each}
-                    {/if}
-                    <button
-                      type="button"
-                      class="conflict-action"
-                      onclick={() => handleDismiss(record.id)}
-                    >
-                      Dismiss
-                    </button>
-                  </div>
+                      {/if}
+                      {#if record.kind === 'collection_name_collision'}
+                        <!-- Rename (§5.1, collection-name collisions only):
+                             an ordinary update_node on one participant. -->
+                        <button
+                          type="button"
+                          class="conflict-action"
+                          onclick={() => startRename(record, record.nodeIds[1])}
+                        >
+                          Rename
+                        </button>
+                      {/if}
+                      <button
+                        type="button"
+                        class="conflict-action"
+                        onclick={() => handleDismiss(record.id)}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  {/if}
                 {/if}
               </li>
             {/each}
@@ -306,6 +392,8 @@
 
   .conflict-actions {
     flex-shrink: 0;
+    display: flex;
+    gap: 0.4rem;
   }
 
   .conflict-action {
@@ -319,5 +407,21 @@
 
   .conflict-action:hover {
     background: hsl(var(--accent));
+  }
+
+  .conflict-rename-form {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+  }
+
+  .conflict-rename-input {
+    font-size: 0.85rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.3rem;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
   }
 </style>

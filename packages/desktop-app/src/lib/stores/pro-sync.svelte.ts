@@ -231,16 +231,15 @@ class ProSyncStore {
    * a Pro daemon). This is NOT "sync is active" — whether sync is enabled and
    * authenticated for the *active database* is axis 2, held on that database's
    * DatabaseSettingsNode. Use `isProSyncActive()` from `ui-extensions.svelte` for
-   * the combined two-axis gate (what the membership store keys off). The
-   * recovered-items log is per-user, not per-database, so it keys off this
-   * axis-1 flag directly.
+   * the combined two-axis gate (what the membership store keys off).
    */
   isPro = $derived(this.tier === 'pro');
 
   /**
    * Callbacks fired once when `tier` first resolves to 'pro'. Lets consumers run a
-   * Pro-confirmed one-shot (e.g. loading the recovered-items log) from this state
-   * transition rather than an $effect that guards on isPro (ADR-049). A callback
+   * Pro-confirmed one-shot (e.g. `collaboration-view.svelte` loading its collection
+   * membership) from this state transition rather than an $effect that guards on
+   * isPro (ADR-049). A callback
    * registered after tier is already 'pro' fires immediately.
    *
    * `proConfirmed` is a deliberate one-way latch: Pro tier is a per-process capability

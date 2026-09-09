@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { createLogger } from '$lib/utils/logger';
+import { backendAdapter } from '$lib/services/backend-adapter';
 
 const log = createLogger('Conflicts');
 
@@ -122,6 +123,24 @@ class ConflictsStore {
    * newly-created duplicate. */
   async adoptExisting(conflictId: string, adopted: string): Promise<void> {
     await this.resolve(conflictId, { action: 'adopt_existing', adopted });
+  }
+
+  /**
+   * Collection-name collisions only: rename one participant so its name no
+   * longer collides, then record the rename as this record's resolution.
+   * The rename itself is an ordinary `update_node` (not a special backend
+   * path) — re-detection finds no collision afterward and the record would
+   * close naturally even without this call, but recording the resolution
+   * here makes the "why" visible in the Conflicts view immediately rather
+   * than waiting for the next reconciliation sweep.
+   */
+  async rename(conflictId: string, renamed: string, from: string, to: string): Promise<void> {
+    const node = await backendAdapter.getNode(renamed);
+    if (!node) {
+      throw new Error(`Cannot rename: node ${renamed} no longer exists`);
+    }
+    await backendAdapter.updateNode(renamed, node.version, { content: to });
+    await this.resolve(conflictId, { action: 'rename', renamed, from, to });
   }
 
   /**

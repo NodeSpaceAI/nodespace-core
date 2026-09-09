@@ -562,6 +562,58 @@ mod offline_convergence_tests {
         Ok(())
     }
 
+    /// A title- or lifecycle_status-only update touches neither `content`
+    /// nor `properties` — where a unique field's value actually lives — so
+    /// `update_node` skips the post-commit re-detection call entirely for
+    /// it (a perf short-circuit: no get_node/get_schema_node round-trip for
+    /// an update that could not possibly introduce or need to re-detect a
+    /// collision). This must not be confused with the content-only case
+    /// above, which still re-runs detection.
+    #[tokio::test]
+    async fn title_only_update_does_not_bump_occurrences() -> Result<()> {
+        let device_a = device().await?;
+        let alice_id = device_a
+            .service
+            .create_node(Node::new(
+                "person".to_string(),
+                "Alice".to_string(),
+                json!({ "person": { "name": "Alice", "email": "alice@example.com" } }),
+            ))
+            .await?;
+        let device_b = device().await?;
+        let bob_id = device_b
+            .service
+            .create_node(Node::new(
+                "person".to_string(),
+                "Bob".to_string(),
+                json!({ "person": { "name": "Bob", "email": "alice@example.com" } }),
+            ))
+            .await?;
+        let bobs_node = device_b.service.get_node(&bob_id).await?.unwrap();
+        apply_incoming(&device_a.service, bobs_node).await?;
+
+        let first = open_unique_field_collisions(&device_a.service, &alice_id).await?;
+        assert_eq!(first[0].occurrences, 1);
+
+        let bob_current = device_a.service.get_node(&bob_id).await?.unwrap();
+        device_a
+            .service
+            .update_node(
+                &bob_id,
+                bob_current.version,
+                NodeUpdate::new().with_title(Some("Bob Title".to_string())),
+            )
+            .await?;
+
+        let second = open_unique_field_collisions(&device_a.service, &alice_id).await?;
+        assert_eq!(
+            second[0].occurrences, 1,
+            "a title-only update must not re-run unique-field-collision detection"
+        );
+
+        Ok(())
+    }
+
     /// Dismissing a conflict record, then re-detecting the same collision,
     /// must leave it dismissed rather than re-raising it — the
     /// dismiss-persistence property `_possible_duplicate` never had

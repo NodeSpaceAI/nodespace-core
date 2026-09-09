@@ -5,7 +5,7 @@
  * local-only install (that's the defect ADR-068 fixes), so `load()` always
  * calls the daemon regardless of `proSync.isPro`.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const mockInvoke = vi.fn();
 import { mockTauriCore } from '../helpers/mock-tauri-core';
@@ -24,6 +24,8 @@ vi.mock('$lib/utils/logger', () => ({
 }));
 
 import { conflictsStore, type ConflictRecord } from '$lib/stores/conflicts.svelte';
+import { backendAdapter } from '$lib/services/backend-adapter';
+import type { Node } from '$lib/types';
 
 function record(overrides: Partial<ConflictRecord> = {}): ConflictRecord {
   return {
@@ -47,6 +49,10 @@ describe('conflicts store', () => {
     mockInvoke.mockReset();
     conflictsStore.records = [];
     conflictsStore.loaded = false;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe('load()', () => {
@@ -115,6 +121,38 @@ describe('conflicts store', () => {
         resolution: { action: 'dismiss' }
       });
       expect(conflictsStore.records[0].status).toBe('dismissed');
+    });
+  });
+
+  describe('rename()', () => {
+    it('updates the node then records a rename resolution', async () => {
+      const existing: Partial<Node> = { id: 'coll-1', version: 3 };
+      vi.spyOn(backendAdapter, 'getNode').mockResolvedValueOnce(existing as Node);
+      vi.spyOn(backendAdapter, 'updateNode').mockResolvedValueOnce({} as Node);
+      conflictsStore.records = [
+        record({ id: 'c1', status: 'open', nodeIds: ['coll-1', 'coll-2'] })
+      ];
+      mockInvoke.mockResolvedValueOnce(record({ id: 'c1', status: 'resolved' }));
+
+      await conflictsStore.rename('c1', 'coll-1', 'Work', 'Work (EU)');
+
+      expect(backendAdapter.getNode).toHaveBeenCalledWith('coll-1');
+      expect(backendAdapter.updateNode).toHaveBeenCalledWith('coll-1', 3, {
+        content: 'Work (EU)'
+      });
+      expect(mockInvoke).toHaveBeenCalledWith('resolve_conflict', {
+        conflictId: 'c1',
+        resolution: { action: 'rename', renamed: 'coll-1', from: 'Work', to: 'Work (EU)' }
+      });
+      expect(conflictsStore.records[0].status).toBe('resolved');
+    });
+
+    it('throws without calling resolve_conflict when the node no longer exists', async () => {
+      vi.spyOn(backendAdapter, 'getNode').mockResolvedValueOnce(null);
+
+      await expect(conflictsStore.rename('c1', 'gone', 'Work', 'Work (EU)')).rejects.toThrow();
+
+      expect(mockInvoke).not.toHaveBeenCalled();
     });
   });
 
