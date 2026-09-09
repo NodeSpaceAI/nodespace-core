@@ -120,7 +120,7 @@ pub struct CommandError {
     pub conflict_data: Option<serde_json::Value>,
 }
 
-fn status_to_command_error(status: tonic::Status) -> CommandError {
+pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
     // A cascade delete refused by the ADR-041 subtree access gate carries the
     // inaccessible-node count in `x-subtree-inaccessible-count` metadata. Only a
     // FailedPrecondition WITH that metadata is an access refusal — the daemon

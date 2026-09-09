@@ -36,18 +36,11 @@ export function schemaWith(id: string, isCore: boolean, fields: SchemaField[]): 
   };
 }
 
-/** `person` — 3 visible, 1 system (core_schemas.rs, the `person` SchemaNode). */
+/** `person` — 3 visible, no system fields (core_schemas.rs, the `person` SchemaNode). */
 export const PERSON_FIELDS: SchemaField[] = [
   field({ name: 'first_name', friendlyName: 'First name', type: 'string', protection: 'core' }),
   field({ name: 'last_name', friendlyName: 'Last name', type: 'string', protection: 'core' }),
-  field({ name: 'email', friendlyName: 'Email', type: 'string', protection: 'core' }),
-  field({
-    name: '_possible_duplicate',
-    friendlyName: 'Possible duplicate',
-    type: 'boolean',
-    protection: 'system',
-    default: false
-  })
+  field({ name: 'email', friendlyName: 'Email', type: 'string', protection: 'core' })
 ];
 
 /** `person`'s field names that should survive a user-visibility filter. */

@@ -9,6 +9,7 @@
 //! `Chat` returns `Unimplemented` — covered by a separate streaming issue.
 
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -42,27 +43,29 @@ use crate::nodespace::{
     node_event::Event as NodeEventKind, node_service_server::NodeService as GrpcNodeService,
     AddNodeToCollectionByPathRequest, AddNodeToCollectionRequest, BatchUpdateFailure, ChatRequest,
     ChatResponse, CollectionIdResponse, CollectionIdsResponse, CollectionInfo,
-    CollectionListResponse, CollectionMembersRequest, CountNodesResponse, CreateCollectionRequest,
-    CreateMentionRequest, CreateNodeRequest, CreateRelationshipRequest, CreateRelationshipResponse,
-    DeleteCollectionRequest, DeleteMentionRequest, DeleteNodeRequest, DeleteNodeResponse,
-    DeleteRelationshipRequest, DeleteRelationshipResponse, Empty, ExecuteQueryRequest,
-    ExportMarkdownRequest, ExportMarkdownResponse, FindCollectionByPathRequest,
-    FindDuplicateRequest, GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest,
-    GetChildrenTreeRequest, GetCollectionByNameRequest, GetDaemonVersionRequest,
-    GetDaemonVersionResponse, GetNodeRelationshipsRequest, GetNodeRelationshipsResponse,
-    GetNodeRequest, GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest,
-    GetRelatedNodesResponse, GetRootsRequest, GetSchemaDefinitionRequest,
-    MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
-    MoveChildrenToParentRequest, MoveChildrenToParentResponse, MoveNodeRequest,
+    CollectionListResponse, CollectionMembersRequest, ConflictListResponse,
+    ConflictRecord as ConflictRecordProto, ConflictResponse, ConflictsForNodeRequest,
+    CountNodesResponse, CreateCollectionRequest, CreateMentionRequest, CreateNodeRequest,
+    CreateRelationshipRequest, CreateRelationshipResponse, DeleteCollectionRequest,
+    DeleteMentionRequest, DeleteNodeRequest, DeleteNodeResponse, DeleteRelationshipRequest,
+    DeleteRelationshipResponse, Empty, ExecuteQueryRequest, ExportMarkdownRequest,
+    ExportMarkdownResponse, FindCollectionByPathRequest, FindDuplicateRequest,
+    GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest, GetChildrenTreeRequest,
+    GetCollectionByNameRequest, GetDaemonVersionRequest, GetDaemonVersionResponse,
+    GetNodeRelationshipsRequest, GetNodeRelationshipsResponse, GetNodeRequest,
+    GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest, GetRelatedNodesResponse,
+    GetRootsRequest, GetSchemaDefinitionRequest, ListConflictsRequest, MentionAutocompleteRequest,
+    MentionIdsResponse, MentionResponse, MentionTargetRequest, MergeNodesRequest,
+    MergeNodesResponse, MoveChildrenToParentRequest, MoveChildrenToParentResponse, MoveNodeRequest,
     NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse, NodeReference,
     NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse, OptionalNodeResponse,
     OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest,
     RelationshipDeletedPayload, RelationshipPayload, RemoveNodeFromCollectionRequest,
-    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, SchemaParamsRequest,
-    SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest,
-    UpdateNodesBatchRequest, UpdateNodesBatchResponse, UpdateRelationshipPropertiesRequest,
-    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
-    WatchRequest,
+    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResolveConflictRequest,
+    SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
+    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse,
+    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
+    UpdateTaskNodeRequest, UpsertNodeWithParentRequest, WatchRequest,
 };
 
 /// gRPC adapter that owns shared handles to the core services.
@@ -316,6 +319,99 @@ impl GrpcNodeService for NodeServiceImpl {
                 node_data: None,
             })),
         }
+    }
+
+    async fn list_conflicts(
+        &self,
+        request: Request<ListConflictsRequest>,
+    ) -> Result<Response<ConflictListResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let status = req
+            .status
+            .as_deref()
+            .map(nodespace_core::models::ConflictStatus::from_str)
+            .transpose()
+            .map_err(Status::invalid_argument)?;
+        let kind = req
+            .kind
+            .as_deref()
+            .map(nodespace_core::models::ConflictKind::from_str)
+            .transpose()
+            .map_err(Status::invalid_argument)?;
+        let limit = (req.limit > 0).then_some(req.limit as u32);
+
+        let records = this
+            .node_service
+            .list_conflicts(status, kind, limit)
+            .await
+            .map_err(service_error_to_status)?;
+
+        Ok(Response::new(ConflictListResponse {
+            conflicts: records.into_iter().map(conflict_record_to_proto).collect(),
+        }))
+    }
+
+    async fn conflicts_for_node(
+        &self,
+        request: Request<ConflictsForNodeRequest>,
+    ) -> Result<Response<ConflictListResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let records = this
+            .node_service
+            .conflicts_for_node(&req.node_id)
+            .await
+            .map_err(service_error_to_status)?;
+
+        Ok(Response::new(ConflictListResponse {
+            conflicts: records.into_iter().map(conflict_record_to_proto).collect(),
+        }))
+    }
+
+    async fn resolve_conflict(
+        &self,
+        request: Request<ResolveConflictRequest>,
+    ) -> Result<Response<ConflictResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let resolution: nodespace_core::models::Resolution = serde_json::from_str(&req.resolution)
+            .map_err(|e| Status::invalid_argument(format!("invalid resolution JSON: {e}")))?;
+
+        let record = this
+            .node_service
+            .resolve_conflict(&req.conflict_id, resolution)
+            .await
+            .map_err(service_error_to_status)?;
+
+        Ok(Response::new(ConflictResponse {
+            conflict: Some(conflict_record_to_proto(record)),
+        }))
+    }
+
+    async fn merge_nodes(
+        &self,
+        request: Request<MergeNodesRequest>,
+    ) -> Result<Response<MergeNodesResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let outcome = this
+            .node_service
+            .merge_nodes(&req.survivor_id, &req.loser_id, req.conflict_id.as_deref())
+            .await
+            .map_err(service_error_to_status)?;
+
+        Ok(Response::new(MergeNodesResponse {
+            survivor_id: outcome.survivor_id,
+            loser_id: outcome.loser_id,
+            properties_merged: outcome.properties_merged,
+            edges_repointed: outcome.edges_repointed,
+            edges_dropped: outcome.edges_dropped,
+        }))
     }
 
     async fn update_node(
@@ -1952,6 +2048,22 @@ pub(crate) fn node_to_proto(node: Node) -> NodeData {
     }
 }
 
+fn conflict_record_to_proto(record: nodespace_core::models::ConflictRecord) -> ConflictRecordProto {
+    ConflictRecordProto {
+        id: record.id,
+        kind: record.kind.as_str().to_string(),
+        node_ids: record.node_ids,
+        detail: record.detail.to_string(),
+        status: record.status.as_str().to_string(),
+        detected_at: record.detected_at,
+        detected_by: record.detected_by,
+        occurrences: record.occurrences,
+        last_seen_at: record.last_seen_at,
+        resolved_at: record.resolved_at,
+        resolution: record.resolution.map(|r| r.to_string()),
+    }
+}
+
 /// Map the wire `NodeSortOrder` to the core `OrderBy` the store applies as a
 /// SQL `ORDER BY`. `NODE_SORT_ORDER_UNSPECIFIED` — the zero value, also what
 /// an unrecognized raw value decodes to — maps to a deterministic default
@@ -2403,6 +2515,106 @@ mod tests {
             other_found.node_id, bob_id,
             "excluding Alice must still surface Bob as the real duplicate"
         );
+    }
+
+    /// ADR-068: the conflict-journal RPCs round-trip a `UniqueFieldCollision`
+    /// record end to end through proto — `ListConflicts`, `ConflictsForNode`,
+    /// and `ResolveConflict` — proving the wire conversion
+    /// (`conflict_record_to_proto`), not just the already-covered core logic.
+    #[tokio::test]
+    async fn conflict_journal_rpcs_round_trip_a_unique_field_collision() {
+        let (svc, _tmp) = make_service().await;
+
+        let alice_id = svc
+            .create_node(Request::new(crate::nodespace::CreateNodeRequest {
+                id: None,
+                node_type: "person".to_string(),
+                content: "Alice".to_string(),
+                parent_id: None,
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                properties: r#"{"person":{"first_name":"Alice","email":"alice@example.com"}}"#
+                    .to_string(),
+                position: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .node_id;
+
+        // A colliding email journals a UniqueFieldCollision naming both.
+        let bob_id = svc
+            .create_node(Request::new(crate::nodespace::CreateNodeRequest {
+                id: None,
+                node_type: "person".to_string(),
+                content: "Bob".to_string(),
+                parent_id: None,
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                properties: r#"{"person":{"first_name":"Bob","email":"alice@example.com"}}"#
+                    .to_string(),
+                position: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .node_id;
+
+        // ConflictsForNode: Alice's node names exactly one open record.
+        let for_alice = svc
+            .conflicts_for_node(Request::new(crate::nodespace::ConflictsForNodeRequest {
+                node_id: alice_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(for_alice.conflicts.len(), 1);
+        let record = &for_alice.conflicts[0];
+        assert_eq!(record.kind, "unique_field_collision");
+        assert_eq!(record.status, "open");
+        let mut node_ids = record.node_ids.clone();
+        node_ids.sort();
+        let mut expected = vec![alice_id.clone(), bob_id.clone()];
+        expected.sort();
+        assert_eq!(node_ids, expected);
+        let detail: serde_json::Value = serde_json::from_str(&record.detail).unwrap();
+        assert_eq!(detail["field"], "email");
+
+        // ListConflicts with a kind filter surfaces the same record.
+        let listed = svc
+            .list_conflicts(Request::new(crate::nodespace::ListConflictsRequest {
+                status: Some("open".to_string()),
+                kind: Some("unique_field_collision".to_string()),
+                limit: 0,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(listed.conflicts.iter().any(|c| c.id == record.id));
+
+        // ResolveConflict(dismiss) transitions status and is reflected on
+        // both a fresh ListConflicts and ConflictsForNode read.
+        let resolved = svc
+            .resolve_conflict(Request::new(crate::nodespace::ResolveConflictRequest {
+                conflict_id: record.id.clone(),
+                resolution: r#"{"action":"dismiss"}"#.to_string(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let resolved_record = resolved.conflict.expect("resolve must return the record");
+        assert_eq!(resolved_record.status, "dismissed");
+
+        let for_alice_after = svc
+            .conflicts_for_node(Request::new(crate::nodespace::ConflictsForNodeRequest {
+                node_id: alice_id,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(for_alice_after.conflicts[0].status, "dismissed");
     }
 
     /// ADR-037: the RPC wiring for `GetLocalPerson` resolves the

@@ -634,8 +634,8 @@ async fn test_update_schema_remove_fields_rejects_system_protected_field() {
     let result = handle_update_schema(
         &svc,
         json!({
-            "schema_id": "person",
-            "remove_fields": ["_possible_duplicate"]
+            "schema_id": "ai-chat",
+            "remove_fields": ["last_active"]
         }),
     )
     .await;
@@ -644,20 +644,17 @@ async fn test_update_schema_remove_fields_rejects_system_protected_field() {
         .expect_err("removing a System-protected field must be rejected")
         .to_string();
     assert!(
-        err.contains("_possible_duplicate") && err.contains("system"),
+        err.contains("last_active") && err.contains("system"),
         "error should name the field and its protection level: {err}"
     );
 
     let schema = svc
-        .get_schema_node("person")
+        .get_schema_node("ai-chat")
         .await
         .expect("get_schema_node should succeed")
-        .expect("core person schema should exist");
+        .expect("core ai-chat schema should exist");
     assert!(
-        schema
-            .fields
-            .iter()
-            .any(|f| f.name == "_possible_duplicate"),
+        schema.fields.iter().any(|f| f.name == "last_active"),
         "System-protected field must survive a rejected removal"
     );
 }

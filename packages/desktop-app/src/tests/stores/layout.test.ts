@@ -54,11 +54,11 @@ describe('Layout Store - Layout State Management', () => {
       const items = layoutStore.navigationItems;
 
       // Note: Collections section is rendered separately in NavigationSidebar, not in this store
-      // Items: daily-journal, search, favorites, settings
+      // Items: daily-journal, search, favorites, conflicts, settings
       // (agent-sessions removed per ADR-034 — PTY is provider mode 2d of the ai-chat node;
       //  "AI Chat" item temporarily removed pending its rework into an expandable list of
-      //  recent ai-chat nodes)
-      expect(items).toHaveLength(4);
+      //  recent ai-chat nodes; "conflicts" added for the ADR-068 Conflicts view)
+      expect(items).toHaveLength(5);
       expect(items[0].id).toBe('daily-journal');
       expect(items[0].active).toBe(false); // No default active state - nav items just navigate
       expect(items[0].type).toBe('link');

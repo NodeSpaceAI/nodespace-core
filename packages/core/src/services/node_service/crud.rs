@@ -158,6 +158,19 @@ impl NodeService {
 
         // NOTE: NodeCreated event is now automatically emitted by store notifier
 
+        // Post-commit, best-effort `UniqueFieldCollision` detection (ADR-068):
+        // the node above is already durably written, so a detection failure
+        // must never fail or undo this create. This is the real caller the
+        // old `mark_possible_duplicates` never had — see
+        // `conflicts::detect_unique_field_collisions`.
+        if let Err(e) = self.detect_unique_field_collisions(&node.id).await {
+            tracing::warn!(
+                node_id = %node.id,
+                error = %e,
+                "failed to detect unique-field collisions after create_node (create unaffected)"
+            );
+        }
+
         tracing::debug!(
             node_id = %node.id,
             "create_node: COMPLETE at {}ms",
@@ -1235,6 +1248,31 @@ impl NodeService {
                         );
                     }
                 }
+
+                // Post-commit, best-effort `UniqueFieldCollision` detection
+                // (ADR-068) — same posture as `create_node`'s call: the
+                // update above already succeeded and must never be undone by
+                // a detection failure. Skipped when this update touched
+                // NEITHER content nor properties (a title- or
+                // lifecycle_status-only change): unique-field values live
+                // under `properties`, so such an update cannot introduce —
+                // or need to re-detect against — a collision, avoiding a
+                // get_node + get_schema_node round-trip. A content-only
+                // update still runs this: `detect_unique_field_collisions`
+                // re-derives from the node's CURRENT properties regardless
+                // of what changed, and re-detection of an already-open
+                // collision is what bumps `occurrences`/`last_seen_at` (see
+                // `redetecting_the_same_collision_bumps_occurrences_not_a_new_record`).
+                if touches_content {
+                    if let Err(e) = self.detect_unique_field_collisions(node_id).await {
+                        tracing::warn!(
+                            node_id,
+                            error = %e,
+                            "failed to detect unique-field collisions after update_node (update unaffected)"
+                        );
+                    }
+                }
+
                 Ok(updated_node)
             }
             None => {

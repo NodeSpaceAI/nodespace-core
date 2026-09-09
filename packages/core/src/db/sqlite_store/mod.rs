@@ -496,6 +496,7 @@ impl SqliteStore {
 // The remaining `impl SqliteStore` methods are split by concern into these
 // child modules; each is an additional `impl SqliteStore` block over the same
 // struct. See ADR-053 groundwork (node CRUD / relationships / embeddings / search).
+mod conflicts;
 mod connections;
 mod embeddings;
 mod nodes;

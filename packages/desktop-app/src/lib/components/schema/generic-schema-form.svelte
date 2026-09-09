@@ -9,10 +9,10 @@
   - leaf fields (string/text, number, boolean, enum, date) → SchemaFieldLeaf
   - object/array → summary trigger opening the shared NestedPropertyModal
 
-  `protection: 'system'` fields (e.g. person's `_possible_duplicate`, never
-  actually reached today since person has its own hardcoded form — see
-  TaskSchemaForm/PersonSchemaForm) are filtered out of every list below:
-  system-managed fields must never render as a user-editable control.
+  `protection: 'system'` fields (e.g. ai-chat's `capture:transcript`, never
+  actually reached today since ai-chat has its own dedicated viewer) are
+  filtered out of every list below: system-managed fields must never render
+  as a user-editable control.
 
   Values are read from node.properties[nodeType][field.name] when the type namespaces its
   properties (core types with backend behavior), falling back to flat
@@ -41,14 +41,13 @@
 
   let { nodeId, schema, autoOpen = false }: { nodeId: string; schema: SchemaNode; autoOpen?: boolean } = $props();
 
-  // System-managed fields (e.g. a convergence marker like person's
-  // `_possible_duplicate`) are never user-editable — filtered out of every
-  // list below (rendering, field-count stats) rather than just the one that
-  // happened to be reachable when this was written. Not currently reachable
-  // in production (the only core types with system fields, ai-chat and
-  // collection, both have dedicated viewers that bypass this component
-  // entirely), but a real gap if anything ever renders a system-field type
-  // through this generic per-field loop.
+  // System-managed fields (e.g. ai-chat's `capture:transcript`) are never
+  // user-editable — filtered out of every list below (rendering, field-count
+  // stats) rather than just the one that happened to be reachable when this
+  // was written. Not currently reachable in production (the only core types
+  // with system fields, ai-chat and collection, both have dedicated viewers
+  // that bypass this component entirely), but a real gap if anything ever
+  // renders a system-field type through this generic per-field loop.
   const visibleFields = $derived(schema.fields.filter(isUserVisibleField));
 
   const node = $derived<Node | null>(nodeId ? (sharedNodeStore.getNode(nodeId) ?? null) : null);

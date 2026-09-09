@@ -35,7 +35,6 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import { proSync } from '$lib/stores/pro-sync.svelte';
-import { recoveredItems } from '$lib/stores/recovered-items.svelte';
 import { sharedNodeStore, SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
 import { initializeTauriSyncListeners } from '$lib/services/tauri-sync-listener';
@@ -66,8 +65,6 @@ describe('Free-user guardrail: Pro features stay inert in the community build', 
     SharedNodeStore.resetInstance();
     // Community/free build: not Pro.
     proSync.tier = 'community';
-    recoveredItems.items = [];
-    recoveredItems.loaded = false;
     (global.window as unknown as { __TAURI__?: unknown }).__TAURI__ = {};
     vi.spyOn(backendAdapterModule.backendAdapter, 'getNode').mockImplementation(
       async (id: string) => testNode(id)
@@ -89,34 +86,6 @@ describe('Free-user guardrail: Pro features stay inert in the community build', 
   it("the default 'unknown' tier (fresh app, before any probe) is also not Pro", () => {
     proSync.tier = 'unknown';
     expect(proSync.isPro).toBe(false);
-  });
-
-  // -------------------------------------------------------------------------
-  // Recovered Items — the conflict-loser viewer/restore UI.
-  // The daemon writes its local-only log only in Pro; the frontend store must
-  // never even ask for it in community, so no badge/snackbar can ever appear.
-  // -------------------------------------------------------------------------
-  describe('Recovered Items viewer is inert', () => {
-    it('load() is a no-op and never invokes the daemon command', async () => {
-      await recoveredItems.load();
-
-      expect(recoveredItems.items).toEqual([]);
-      expect(recoveredItems.loaded).toBe(true);
-      expect(mockInvoke).not.toHaveBeenCalled();
-    });
-
-    it('reports no recovered item for any node (no badge ever renders)', () => {
-      expect(recoveredItems.hasFor('any-node-id')).toBe(false);
-      expect(recoveredItems.itemFor('any-node-id')).toBeUndefined();
-    });
-
-    it("the default 'unknown' tier is inert too (no daemon call on first paint)", async () => {
-      proSync.tier = 'unknown';
-      await recoveredItems.load();
-
-      expect(recoveredItems.items).toEqual([]);
-      expect(mockInvoke).not.toHaveBeenCalled();
-    });
   });
 
   // -------------------------------------------------------------------------

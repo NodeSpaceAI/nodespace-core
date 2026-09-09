@@ -15,25 +15,20 @@
   suggest-don't-block by design: the field save above is never gated on the
   lookup, and create-anyway always remains possible.
 
-  Convergence duplicate indicator (ADR-065 §4): a duplicate that
-  slips past the creation-time suggestion above (offline write, sync
-  convergence) gets detected out-of-band and stamped onto BOTH colliding
-  nodes as `properties.person._possible_duplicate`. When that marker is set,
-  a small "Possible duplicate" badge appears; clicking it re-runs the exact
-  same lookup and reuses the exact same suggestion UI as the blur-triggered
-  check above — no separate merge/resolution machinery.
+  A duplicate that slips past this creation-time suggestion (offline write,
+  sync convergence) is surfaced instead as a durable `UniqueFieldCollision`
+  record in the conflict journal (ADR-068) — see the Conflicts view, not this
+  form.
 -->
 
 <script lang="ts">
   import { Input } from '$lib/components/ui/input';
   import { Alert, AlertDescription } from '$lib/components/ui/alert';
-  import { Badge } from '$lib/components/ui/badge';
   import { Button } from '$lib/components/ui/button';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { createLogger } from '$lib/utils/logger';
-  import { isPossibleDuplicate } from '$lib/utils/possible-duplicate';
   import type { Node } from '$lib/types';
   import RelationshipViewerModal from '$lib/components/relationships/relationship-viewer-modal.svelte';
   import { loadNodeRelationshipsView } from '$lib/services/relationship-viewer-service';
@@ -98,18 +93,6 @@
   let checkedForEmail: string | null = null;
   let checkGeneration = 0;
 
-  // Convergence duplicate indicator (ADR-065 §4): true once
-  // out-of-band detection (offline write, sync convergence) has stamped
-  // `properties.person._possible_duplicate` on this node — independent of
-  // (and typically set well after) the blur-triggered check above.
-  const isFlaggedDuplicate = $derived(isPossibleDuplicate(node));
-
-  // Set when a badge-triggered recheck completes and finds no live collision
-  // — the marker itself is permanent (nothing clears it), so a recheck can
-  // legitimately find "nothing here anymore" and that must be visible, not a
-  // silent no-op. Cleared on any new check attempt and on nodeId change.
-  let recheckFoundNothing = $state(false);
-
   // A component instance can be reused across different person nodes (no
   // `{#key nodeId}` at the call site) — reset the suggestion when the node
   // being edited changes, or a suggestion computed for the PREVIOUS person
@@ -119,7 +102,6 @@
     void nodeId;
     duplicateMatch = null;
     checkedForEmail = null;
-    recheckFoundNothing = false;
     checkGeneration++;
   });
 
@@ -150,9 +132,6 @@
 
   async function handleEmailBlur(e: FocusEvent) {
     const value = (e.currentTarget as HTMLInputElement).value;
-    // A fresh edit supersedes any earlier "recheck found nothing" feedback,
-    // which was scoped to whatever email the badge was clicked for.
-    recheckFoundNothing = false;
     // Fired concurrently, not sequentially: the duplicate check must not wait
     // for the save to land first, or — since both write and read this node's
     // own email — a check that runs AFTER the save sees two rows holding
@@ -206,32 +185,6 @@
       if (generation !== checkGeneration) return;
       log.error('Duplicate lookup failed (non-blocking)', { err });
       duplicateMatch = null;
-    }
-  }
-
-  /**
-   * Entry point for the convergence duplicate indicator badge:
-   * re-runs the exact same lookup `checkForDuplicate` performs on blur,
-   * reusing the exact same suggestion UI (`duplicateMatch` +
-   * adoptExisting/dismissDuplicateSuggestion below) rather than a parallel
-   * resolution path. Clears `checkedForEmail` first so the lookup isn't
-   * skipped as "already checked" — the badge exists precisely because a
-   * marker set by out-of-band detection can be stale relative to whatever
-   * this form last checked (or never checked at all, if the marker was set
-   * before this form ever loaded).
-   *
-   * Awaits the lookup (unlike the blur handler, which fires-and-forgets
-   * concurrently with the save) so it can tell the user when a recheck finds
-   * nothing — the marker is permanent once set, so "click to review" finding
-   * no live collision is an expected, not exceptional, outcome that must not
-   * be a silent no-op.
-   */
-  async function recheckPossibleDuplicate() {
-    checkedForEmail = null;
-    recheckFoundNothing = false;
-    await checkForDuplicate(email);
-    if (!duplicateMatch) {
-      recheckFoundNothing = true;
     }
   }
 
@@ -292,28 +245,6 @@
       onblur={handleEmailBlur}
     />
   </div>
-
-  {#if isFlaggedDuplicate && !duplicateMatch}
-    <!-- Convergence duplicate indicator (ADR-065 §4): informational,
-         non-modal — never blocks editing this node. Clicking re-runs the same
-         lookup as the blur check and reuses the Alert below, rather than
-         showing a second, different suggestion UI. -->
-    <button type="button" class="possible-duplicate-trigger" onclick={recheckPossibleDuplicate}>
-      <Badge
-        variant="outline"
-        class="border-yellow-500 text-yellow-700 dark:text-yellow-400"
-      >
-        <UserRoundSearchIcon class="h-3 w-3" />
-        Possible duplicate — click to review
-      </Badge>
-    </button>
-    {#if recheckFoundNothing}
-      <!-- The marker is permanent (nothing clears it) — a recheck finding no
-           LIVE collision right now is an expected outcome, not an error, and
-           must be visible rather than a silent no-op on click. -->
-      <p class="possible-duplicate-no-match">No conflicting person found right now.</p>
-    {/if}
-  {/if}
 
   {#if duplicateMatch}
     <Alert variant="warning">
@@ -384,22 +315,5 @@
   .duplicate-actions {
     display: flex;
     gap: 0.5rem;
-  }
-
-  /* Reset: the badge trigger is a <button> for accessibility/click semantics,
-     not for its default chrome — the Badge inside supplies the visible pill. */
-  .possible-duplicate-trigger {
-    display: inline-flex;
-    align-self: flex-start;
-    padding: 0;
-    background: none;
-    border: none;
-    cursor: pointer;
-  }
-
-  .possible-duplicate-no-match {
-    margin: -0.25rem 0 0;
-    font-size: 0.75rem;
-    color: hsl(var(--muted-foreground));
   }
 </style>

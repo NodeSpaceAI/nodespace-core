@@ -74,51 +74,86 @@ impl SqliteStore {
         Ok(node)
     }
 
-    /// Stamp the local-only `_possible_duplicate` marker (ADR-065 §4) on both
-    /// sides of a collection-name collision: `new_id` (the node that was just
-    /// created) and `existing_id` (the pre-existing collection it collides
-    /// with by name). Written via `set_property_bool` — OCC-bypassing (no
-    /// version check, no version bump) and event-free, the same low-level
-    /// primitive `NodeService::mark_possible_duplicates` uses, so the marker
-    /// can never look like a content edit or perturb LWW/echo state. Errors
-    /// are logged and swallowed: the create this follows has already
-    /// succeeded and must not be undone by a marker-write failure.
+    /// Journal a `CollectionNameCollision` conflict record (ADR-068) naming
+    /// both sides of a collection-name collision: `new_id` (the node that was
+    /// just created/renamed) and `existing_id` (the pre-existing collection
+    /// it collides with by name). This is its own `ConflictKind`, distinct
+    /// from `UniqueFieldCollision` — it is enforced by a different predicate
+    /// (`get_collection_by_name`, not `find_conflicting_unique`), is not
+    /// schema-declared, and resolves differently (renaming one collection is
+    /// a valid resolution with no analogue for a duplicate person). Errors
+    /// are logged and swallowed: the write this follows has already
+    /// succeeded and must not be undone by a journal-write failure.
     ///
     /// Called from `create_node` for a collision detected on insert, and also
     /// from `update_node` / `update_node_with_version_check` for a collision
     /// detected on a `content` change that leaves the node (effectively)
     /// collection-typed — i.e. a rename. All three callers detect BEFORE
-    /// their write and mark AFTER it, and all three exclude the node's own id
-    /// from the pre-write match so a no-op or case-only rename onto itself
-    /// never self-marks.
+    /// their write and journal AFTER it, and all three exclude the node's own
+    /// id from the pre-write match so a no-op or case-only rename onto itself
+    /// never self-journals.
     ///
     /// The collision detection this backs (`get_collection_by_name`, called
     /// by each caller before its write) has a real TOCTOU gap under genuine
     /// concurrent writes that would land on the same name: two concurrent
     /// calls can each run their pre-write lookup before either write lands,
-    /// so both see "no collision" and neither gets marked. This is accepted
-    /// as best-effort — the same non-atomicity
-    /// `NodeService::mark_possible_duplicates` and nodespace-sync's own
-    /// `mark_possible_duplicate` already accept for person.email — not a bug
-    /// unique to this mechanism.
+    /// so both see "no collision" and neither gets journaled. This is
+    /// accepted as best-effort, same as `UniqueFieldCollision` detection
+    /// (conflict-journal-and-resolution.md §4) — a periodic reconciliation
+    /// sweep is the backstop, not a tighter lock.
     ///
     /// `get_collection_by_name` itself only matches `lifecycle_status =
     /// 'active'` collections, so a collision against an archived collection
-    /// is never detected or marked by any caller — archiving a collection
+    /// is never detected or journaled by any caller — archiving a collection
     /// frees up its name.
     async fn mark_collection_name_collision(&self, new_id: &str, existing_id: &str) {
-        let path = format!(
-            "$.collection.{}",
-            crate::models::core_schemas::POSSIBLE_DUPLICATE_FIELD
-        );
-        for id in [new_id, existing_id] {
-            if let Err(e) = self.set_property_bool(id, &path, true).await {
+        use crate::models::conflict::ConflictKind;
+
+        let mut node_ids = vec![new_id.to_string(), existing_id.to_string()];
+        node_ids.sort();
+
+        // Discriminator is the case-folded name (conflict-journal-and-
+        // resolution.md §2.3) — the same fold `get_collection_by_name` and
+        // `normalize_collection_name` apply, so a collision detected via
+        // either the create or the rename path always derives the same id.
+        let name = match self.get_node(new_id).await {
+            Ok(Some(node)) => node.content.trim().to_lowercase(),
+            _ => {
+                // The node we just wrote is unreadable immediately after —
+                // should not happen, but journaling nothing is safer than
+                // guessing a discriminator that could collide with an
+                // unrelated name's conflict id.
                 tracing::warn!(
-                    node_id = %id,
-                    error = %e,
-                    "failed to set collection-name-collision possible-duplicate marker (triggering write unaffected)"
+                    node_id = %new_id,
+                    "failed to re-read node for collection-name-collision discriminator; skipping journal write"
                 );
+                return;
             }
+        };
+
+        let id = crate::services::node_service::deterministic_conflict_id(
+            ConflictKind::CollectionNameCollision,
+            &node_ids,
+            &name,
+        );
+        let detail = serde_json::json!({ "name": name });
+
+        if let Err(e) = self
+            .record_conflict(
+                &id,
+                ConflictKind::CollectionNameCollision,
+                &node_ids,
+                detail,
+                None,
+            )
+            .await
+        {
+            tracing::warn!(
+                new_id = %new_id,
+                existing_id = %existing_id,
+                error = %e,
+                "failed to journal collection-name-collision conflict (triggering write unaffected)"
+            );
         }
     }
 

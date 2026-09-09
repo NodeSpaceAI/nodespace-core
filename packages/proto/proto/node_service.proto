@@ -115,6 +115,15 @@ service NodeService {
   rpc RenameCollection(RenameCollectionRequest) returns (NodeResponse);
   rpc DeleteCollection(DeleteCollectionRequest) returns (Empty);
 
+  // Conflict journal (ADR-068): a local-only, resolvable record of a
+  // convergence conflict, replacing the `_possible_duplicate` boolean.
+  rpc ListConflicts(ListConflictsRequest) returns (ConflictListResponse);
+  rpc ConflictsForNode(ConflictsForNodeRequest) returns (ConflictListResponse);
+  rpc ResolveConflict(ResolveConflictRequest) returns (ConflictResponse);
+  // User-initiated only (ADR-068 §5.2) — never called automatically at any
+  // confidence level. See NodeService::merge_nodes's doc comment.
+  rpc MergeNodes(MergeNodesRequest) returns (MergeNodesResponse);
+
   // Streaming
   rpc WatchNodes(WatchRequest) returns (stream NodeEvent);
   rpc Chat(stream ChatRequest) returns (stream ChatResponse);
@@ -211,6 +220,73 @@ message FindDuplicateRequest {
   // in-progress edit hasn't landed yet as the ONLY holder of `value` doesn't
   // spuriously match itself once it has. Unset = no exclusion.
   optional string exclude_id = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Conflict journal (ADR-068)
+// ---------------------------------------------------------------------------
+
+// A single conflict record. `detail` and `resolution` are JSON-encoded
+// strings (kind-specific evidence / resolution shape — see
+// conflict-journal-and-resolution.md §2.4/§2.5), mirroring how NodeData
+// encodes `properties`. `resolution`/`resolved_at` are unset on an open record.
+message ConflictRecord {
+  string id = 1;
+  string kind = 2;               // "unique_field_collision" | "collection_name_collision" | "superseded_edit" | "duplicate_reactive_create"
+  repeated string node_ids = 3;  // participants, sorted
+  string detail = 4;             // JSON-encoded, kind-specific evidence
+  string status = 5;             // "open" | "resolved" | "dismissed"
+  string detected_at = 6;
+  optional string detected_by = 7;
+  int64 occurrences = 8;
+  string last_seen_at = 9;
+  optional string resolved_at = 10;
+  optional string resolution = 11; // JSON-encoded Resolution, when resolved/dismissed
+}
+
+message ListConflictsRequest {
+  // Unset = every status. One of "open" | "resolved" | "dismissed".
+  optional string status = 1;
+  // Unset = every kind.
+  optional string kind = 2;
+  // 0 = no limit.
+  int32 limit = 3;
+}
+
+message ConflictsForNodeRequest {
+  string node_id = 1;
+}
+
+message ConflictListResponse {
+  repeated ConflictRecord conflicts = 1;
+}
+
+message ResolveConflictRequest {
+  string conflict_id = 1;
+  // JSON-encoded Resolution (see nodespace_core::models::conflict::Resolution's
+  // serde form — `{"action": "dismiss"}`, `{"action": "adopt_existing", "adopted": "<id>"}`, etc.).
+  string resolution = 2;
+}
+
+message ConflictResponse {
+  ConflictRecord conflict = 1;
+}
+
+message MergeNodesRequest {
+  string survivor_id = 1;
+  string loser_id = 2;
+  // The open conflict record this merge resolves, if any. When set, the
+  // record is closed as `resolved` with a `Resolution::Merge` in the SAME
+  // transaction as the merge itself.
+  optional string conflict_id = 3;
+}
+
+message MergeNodesResponse {
+  string survivor_id = 1;
+  string loser_id = 2;
+  uint32 properties_merged = 3;
+  uint32 edges_repointed = 4;
+  uint32 edges_dropped = 5;
 }
 
 // GetNode returns NodeResponse (node_id + node_data populated).

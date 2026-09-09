@@ -31,14 +31,6 @@ use crate::models::schema::{
 use crate::models::SchemaNode;
 use chrono::Utc;
 
-/// Reserved, system-managed property key that carries the convergence
-/// "possible duplicate" indicator (ADR-065 §4). Stored namespaced by type,
-/// like every other property: `properties.<node_type>._possible_duplicate`.
-/// Single source of truth: both the schema field declaration below and
-/// `NodeService::mark_possible_duplicates` (`services/node_service/schema.rs`)
-/// reference this constant rather than each hardcoding the string.
-pub const POSSIBLE_DUPLICATE_FIELD: &str = "_possible_duplicate";
-
 /// Get all core schema definitions as SchemaNode instances
 ///
 /// Returns all core schemas ready to be converted to Node via `schema.into_node()`
@@ -534,29 +526,6 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                          nodes (ADR-037 opt-in restriction). Default false = open."
                             .to_string(),
                     ),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
-                },
-                SchemaField {
-                    name: POSSIBLE_DUPLICATE_FIELD.to_string(),
-                    friendly_name: "Possible duplicate".to_string(),
-                    field_type: "boolean".to_string(),
-                    // Never re-broadcast: the sync engine excludes local_only
-                    // properties from a push and ignores them on a pull, so this
-                    // marker stays wherever `SqliteStore::create_node` set it and
-                    // never fights convergence or gets echoed back.
-                    local_only: true,
-                    protection: SchemaProtectionLevel::System,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: Some(serde_json::Value::Bool(false)),
-                    description: Some("System-managed convergence indicator: set when this collection's name collides with another ACTIVE existing collection (get_collection_by_name filters to lifecycle_status = 'active', so a collision against an archived collection is never detected or marked — archiving a collection frees up its name) after both land in the same database (e.g. two offline devices each created a collection with the same name, or one renamed a collection onto a name the other already uses). Set on both create and rename/update. Never written directly; see SqliteStore::create_node / update_node / update_node_with_version_check's collection-name-collision handling.".to_string()),
                     item_type: None,
                     fields: None,
                     item_fields: None,
@@ -1277,12 +1246,14 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             title_template: None,
             properties_header_summary_template: None,
         },
-        // Person schema — identity primitive (first_name, last_name, email), plus
-        // the system-managed convergence marker (_possible_duplicate). Display
-        // identity is composed by title_template below, the single place the
-        // first/last composition rule lives — PersonNodeBehavior::compute_display_name
-        // mirrors it for the embedding-content fallback, which title_template
-        // doesn't reach.
+        // Person schema — identity primitive (first_name, last_name, email).
+        // A convergence collision on `email` is journaled as a
+        // `UniqueFieldCollision` conflict record (ADR-068), not stored as a
+        // property on the node. Display identity is composed by
+        // title_template below, the single place the first/last composition
+        // rule lives — PersonNodeBehavior::compute_display_name mirrors it
+        // for the embedding-content fallback, which title_template doesn't
+        // reach.
         SchemaNode {
             id: "person".to_string(),
             content: "Person".to_string(),
@@ -1352,29 +1323,6 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     // two otherwise-identical claims.
                     unique: Some(true),
                     unique_case_insensitive: Some(true),
-                },
-                SchemaField {
-                    name: POSSIBLE_DUPLICATE_FIELD.to_string(),
-                    friendly_name: "Possible duplicate".to_string(),
-                    field_type: "boolean".to_string(),
-                    // Never re-broadcast: the sync engine excludes local_only
-                    // properties from a push and ignores them on a pull, so this
-                    // marker stays wherever NodeService::mark_possible_duplicates
-                    // set it and never fights convergence or gets echoed back.
-                    local_only: true,
-                    protection: SchemaProtectionLevel::System,
-                    core_values: None,
-                    user_values: None,
-                    indexed: false,
-                    required: Some(false),
-                    extensible: None,
-                    default: Some(serde_json::Value::Bool(false)),
-                    description: Some("System-managed convergence indicator (ADR-065): set when this person's email collides with another active person after both land in the same database. Never written directly; see NodeService::mark_possible_duplicates.".to_string()),
-                    item_type: None,
-                    fields: None,
-                    item_fields: None,
-                    unique: None,
-                    unique_case_insensitive: None,
                 },
             ],
             // A person has many tasks; the inverse (a task's single assignee)

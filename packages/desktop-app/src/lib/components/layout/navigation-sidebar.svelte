@@ -9,6 +9,7 @@
   } from '$lib/stores/layout.svelte';
   import { navigationStore, setActiveTab, addTab } from '$lib/stores/navigation.svelte';
   import { openSettings } from '$lib/utils/open-settings';
+  import { openConflicts } from '$lib/utils/open-conflicts';
   import { collectionsState, collectionsData } from '$lib/stores/collections.svelte';
   import { formatDateISO } from '$lib/utils/date-formatting.js';
   import { getNavigationService } from '$lib/services/navigation-service';
@@ -268,6 +269,8 @@
     } else if (itemId === 'settings') {
       // Shared singleton tab (same one the File menu + database indicator open).
       openSettings();
+    } else if (itemId === 'conflicts') {
+      openConflicts();
     }
 
     // Update active state in navigation items
