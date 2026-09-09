@@ -21,6 +21,7 @@
 //!   - If service is registered but daemon crashed: restart it.
 //!   - If service is missing (e.g. clean install): re-run first-launch setup.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -152,52 +153,180 @@ pub fn kill_stale_daemon_sync() {
     );
 
     // Kill only nodespaced processes using the socket (not gRPC clients like nodespace-app).
-    // Parse lsof -F pn output to collect unique PIDs, then verify each is nodespaced
-    // before SIGKILLing. Deduplicating into a HashSet avoids spawning ps more than once
-    // per PID when the daemon has multiple FDs open on the socket.
-    let sock = socket_path.to_string_lossy();
-    if let Ok(out) = std::process::Command::new("lsof")
-        .args(["-F", "pn", "-U", sock.as_ref()])
-        .output()
-    {
-        use std::collections::HashSet;
-        let output = String::from_utf8_lossy(&out.stdout);
-        let mut current_pid: Option<i32> = None;
-        let mut pids_to_check: HashSet<i32> = HashSet::new();
-        for line in output.lines() {
-            if let Some(pid_str) = line.strip_prefix('p') {
-                current_pid = pid_str.parse::<i32>().ok();
-            } else if line.strip_prefix('n').is_some() {
-                if let Some(pid) = current_pid {
-                    pids_to_check.insert(pid);
-                }
-            }
-        }
-        let installed_str = installed.to_string_lossy().into_owned();
-        for pid in pids_to_check {
-            // Verify the PID's argv[0] matches our installed binary path exactly,
-            // not just a trailing-substring heuristic that could match unrelated processes.
-            let exe_check = std::process::Command::new("ps")
-                .args(["-p", &pid.to_string(), "-o", "args="])
-                .output()
-                .ok();
-            let is_our_daemon = exe_check
-                .as_ref()
-                .map(|o| {
-                    let args = String::from_utf8_lossy(&o.stdout);
-                    let argv0 = args.split_whitespace().next().unwrap_or("");
-                    argv0 == installed_str
-                })
-                .unwrap_or(false);
-            if is_our_daemon {
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-                tracing::info!(pid, "Sent SIGKILL to stale nodespaced");
-            }
+    // Verify each PID holding the socket is actually nodespaced (by installed
+    // binary path) before SIGKILLing.
+    let installed_str = installed.to_string_lossy().into_owned();
+    for pid in pids_holding_unix_socket(&socket_path) {
+        if process_argv0_matches(pid, &installed_str) {
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+            tracing::info!(pid, "Sent SIGKILL to stale nodespaced");
         }
     }
 
     // Remove stale socket so the health check in ensure_daemon_running sees NotRunning
     let _ = std::fs::remove_file(&socket_path);
+}
+
+/// PIDs of every process currently holding the Unix socket at `socket_path`
+/// open, resolved via `lsof -F pn -U`. Parses `-F pn` output (a `p<pid>` line
+/// followed by one or more `n<name>` lines) into the set of unique PIDs,
+/// regardless of how many file descriptors any one of them has open on it.
+///
+/// Shared by every caller here that needs "whichever process is currently
+/// serving this socket" without assuming who started it — launchd, a
+/// previous app launch, or a manual run.
+#[cfg(unix)]
+fn pids_holding_unix_socket(socket_path: &Path) -> HashSet<i32> {
+    let mut pids = HashSet::new();
+    let sock = socket_path.to_string_lossy();
+    let Ok(out) = std::process::Command::new("lsof")
+        .args(["-F", "pn", "-U", sock.as_ref()])
+        .output()
+    else {
+        return pids;
+    };
+    let output = String::from_utf8_lossy(&out.stdout);
+    let mut current_pid: Option<i32> = None;
+    for line in output.lines() {
+        if let Some(pid_str) = line.strip_prefix('p') {
+            current_pid = pid_str.parse::<i32>().ok();
+        } else if line.strip_prefix('n').is_some() {
+            if let Some(pid) = current_pid {
+                pids.insert(pid);
+            }
+        }
+    }
+    pids
+}
+
+/// True when `pid`'s argv[0], as reported by `ps -o args=`, is exactly
+/// `expected_path`. A full match rather than a trailing-substring heuristic,
+/// so a coincidentally similar path can't be mistaken for ours.
+///
+/// Guards every signal this file sends against a PID that coincidentally got
+/// reused by an unrelated process for a number a real nodespaced instance
+/// used to hold.
+#[cfg(unix)]
+fn process_argv0_matches(pid: i32, expected_path: &str) -> bool {
+    if expected_path.is_empty() {
+        return false;
+    }
+    let Ok(out) = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .output()
+    else {
+        return false;
+    };
+    let args = String::from_utf8_lossy(&out.stdout);
+    args.split_whitespace().next() == Some(expected_path)
+}
+
+/// Send SIGTERM to the running daemon so a GUI quit (Cmd+Q, the red
+/// traffic-light button, or any other window-close path that actually
+/// reaches [`crate::graceful_shutdown`]) also stops the background service —
+/// and, transitively, removes its tray icon — instead of leaving it running
+/// invisibly. Verified the same way [`kill_stale_daemon_sync`] verifies its
+/// own target, via [`pids_holding_unix_socket`] + [`process_argv0_matches`].
+///
+/// Synchronous and fire-and-forget: this does not wait for the daemon to
+/// actually exit. The daemon has its own watchdog-protected drain once it
+/// receives the signal (`SHUTDOWN_WATCHDOG_TIMEOUT` in `nodespaced`'s
+/// `main.rs`), and this call site — inside a `RunEvent` handler on the
+/// tao/wry event loop — must not block waiting on it.
+///
+/// The actual `kill` syscall is compiled out under `cfg(test)`: this is a
+/// real, irreversible action against whatever process is actually holding
+/// the daemon socket on the machine `cargo test` runs on, which is not safe
+/// to execute as a side effect of a unit test suite (`graceful_shutdown`,
+/// this function's only caller, is exercised directly by several tests in
+/// `shutdown_tests.rs`). [`pids_holding_unix_socket`] and
+/// [`process_argv0_matches`] above are read-only OS queries and stay
+/// unconditional — they're what the tests below exercise.
+#[cfg(unix)]
+pub fn signal_daemon_to_stop() {
+    let Some(home) = home_dir() else { return };
+    let socket_path = home.join(daemon_socket_relative());
+    let installed = home
+        .join(DAEMON_BIN_DIR)
+        .join(daemon_binary_name())
+        .to_string_lossy()
+        .into_owned();
+
+    for pid in pids_holding_unix_socket(&socket_path) {
+        if process_argv0_matches(pid, &installed) {
+            #[cfg(not(test))]
+            {
+                // SAFETY: kill() is always safe to call with a valid pid and signal.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
+            tracing::info!(pid, "Sent SIGTERM to nodespaced on app quit");
+        }
+    }
+}
+
+/// Windows counterpart of [`signal_daemon_to_stop`] above. There is no
+/// graceful signal-based shutdown path on Windows anywhere in this codebase
+/// today — [`kill_running_daemon`]'s Windows variant already force-kills the
+/// daemon via `taskkill` for the binary-update-restart case — so this
+/// mirrors that existing, already-accepted gap rather than introducing a new
+/// one: the daemon's `shutdown_all`/GPU-release drain does not run.
+#[cfg(windows)]
+pub fn signal_daemon_to_stop() {
+    let image_name = daemon_image_name_for(is_pro_build());
+    #[cfg(not(test))]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/IM", &image_name])
+            .output();
+    }
+    tracing::info!(%image_name, "Sent taskkill to nodespaced on app quit");
+}
+
+/// Filename [`ui_pid_relative`]'s callers write/read, scoped by this
+/// process's own build variant — mirrors [`daemon_socket_relative`] exactly.
+#[cfg(unix)]
+fn ui_pid_relative() -> &'static str {
+    nodespace_proto::socket::ui_pid_relative(cfg!(debug_assertions), is_pro_build())
+}
+
+/// Write `pid` to `path`, creating any missing parent directory first. Split
+/// out from [`write_own_ui_pid_file`] so the pure write behavior is testable
+/// against a tempdir path without touching the real home directory.
+#[cfg(unix)]
+fn write_pid_file(path: &Path, pid: u32) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, pid.to_string())
+}
+
+/// Record this process's own pid so the daemon's tray "Quit" can find and
+/// close this window (see `nodespace-daemon`'s `tray::signal_ui_to_quit`).
+/// Call once during app setup.
+///
+/// Best-effort: a write failure here just means Tray → Quit falls back to
+/// leaving this window open (the pre-existing behavior this issue fixes),
+/// not a fatal startup error.
+#[cfg(unix)]
+pub fn write_own_ui_pid_file() {
+    let Some(home) = home_dir() else { return };
+    let path = home.join(ui_pid_relative());
+    if let Err(e) = write_pid_file(&path, std::process::id()) {
+        tracing::warn!(error = %e, path = %path.display(), "failed to write UI pid file");
+    }
+}
+
+/// Best-effort cleanup of the pid file [`write_own_ui_pid_file`] wrote, so a
+/// stale entry doesn't linger pointing at a pid that may later be reused by
+/// an unrelated process. Not load-bearing for correctness on its own — every
+/// reader of this file also verifies the pid's argv0 before acting on it —
+/// but keeps the file honest between runs. Call from
+/// [`crate::graceful_shutdown`], mirroring [`signal_daemon_to_stop`]'s call
+/// site.
+#[cfg(unix)]
+pub fn remove_own_ui_pid_file() {
+    let Some(home) = home_dir() else { return };
+    let _ = std::fs::remove_file(home.join(ui_pid_relative()));
 }
 
 /// This process's own executable path, symlinks resolved — the value every
@@ -334,51 +463,17 @@ async fn kill_running_daemon(socket_path: &Path) {
 
     // Resolve the PID via lsof rather than storing it, so this works whether the
     // daemon was started by launchd, a previous app launch, or manually.
-    // Parse -F pn output to extract PIDs, then verify each against our installed
-    // binary path before sending SIGTERM.
-    {
-        use std::collections::HashSet;
-        use std::process::Command;
-        let installed = home_dir()
-            .map(|h| h.join(DAEMON_BIN_DIR).join(daemon_binary_name()))
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let sock = socket_path.to_string_lossy();
-        if let Ok(out) = Command::new("lsof")
-            .args(["-F", "pn", "-U", sock.as_ref()])
-            .output()
-        {
-            let output = String::from_utf8_lossy(&out.stdout);
-            let mut current_pid: Option<i32> = None;
-            let mut pids_to_kill: HashSet<i32> = HashSet::new();
-            for line in output.lines() {
-                if let Some(pid_str) = line.strip_prefix('p') {
-                    current_pid = pid_str.parse::<i32>().ok();
-                } else if line.strip_prefix('n').is_some() {
-                    if let Some(pid) = current_pid {
-                        pids_to_kill.insert(pid);
-                    }
-                }
-            }
-            for pid in pids_to_kill {
-                let exe_check = Command::new("ps")
-                    .args(["-p", &pid.to_string(), "-o", "args="])
-                    .output()
-                    .ok();
-                let is_our_daemon = exe_check
-                    .as_ref()
-                    .map(|o| {
-                        let args = String::from_utf8_lossy(&o.stdout);
-                        let argv0 = args.split_whitespace().next().unwrap_or("");
-                        !installed.is_empty() && argv0 == installed
-                    })
-                    .unwrap_or(false);
-                if is_our_daemon {
-                    // SAFETY: kill() is always safe to call with a valid pid and signal.
-                    unsafe { libc::kill(pid, libc::SIGTERM) };
-                    tracing::info!("Sent SIGTERM to old nodespaced (pid {})", pid);
-                }
-            }
+    // Verify each PID holding the socket against our installed binary path
+    // before sending SIGTERM.
+    let installed = home_dir()
+        .map(|h| h.join(DAEMON_BIN_DIR).join(daemon_binary_name()))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    for pid in pids_holding_unix_socket(socket_path) {
+        if process_argv0_matches(pid, &installed) {
+            // SAFETY: kill() is always safe to call with a valid pid and signal.
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+            tracing::info!("Sent SIGTERM to old nodespaced (pid {})", pid);
         }
     }
 
@@ -1899,5 +1994,120 @@ mod sidecar_path_tests {
         } else {
             assert_eq!(name, "nodespaced");
         }
+    }
+}
+
+/// Coverage for the pieces of the Unix quit-signalling path
+/// ([`signal_daemon_to_stop`], and the shared [`pids_holding_unix_socket`] /
+/// [`process_argv0_matches`] helpers it and [`kill_stale_daemon_sync`] /
+/// [`kill_running_daemon`] all use) that can be exercised safely: real,
+/// read-only OS queries against this test binary's own process, never an
+/// actual signal. The `kill` syscall itself is compiled out under
+/// `cfg(test)` — see [`signal_daemon_to_stop`]'s doc comment for why it
+/// can't be exercised behaviorally here.
+#[cfg(all(test, unix))]
+mod unix_quit_signal_tests {
+    use super::{process_argv0_matches, write_pid_file};
+    use std::os::unix::net::UnixListener;
+
+    /// A real UDS this test process itself holds open, so
+    /// `pids_holding_unix_socket` has something true to find without
+    /// depending on any other process (real or otherwise) being alive on the
+    /// test machine.
+    #[test]
+    fn pids_holding_unix_socket_finds_this_process() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock_path = dir.path().join("test.sock");
+        let _listener = UnixListener::bind(&sock_path).expect("bind test socket");
+
+        let pids = super::pids_holding_unix_socket(&sock_path);
+
+        assert!(
+            pids.contains(&(std::process::id() as i32)),
+            "the process currently holding the socket (this test binary) must be found; got {pids:?}"
+        );
+    }
+
+    #[test]
+    fn pids_holding_unix_socket_is_empty_for_an_unbound_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock_path = dir.path().join("nothing-listens-here.sock");
+
+        assert!(super::pids_holding_unix_socket(&sock_path).is_empty());
+    }
+
+    #[test]
+    fn process_argv0_matches_this_process_against_its_own_exe_path() {
+        let pid = std::process::id() as i32;
+        let exe = std::env::current_exe()
+            .expect("current_exe")
+            .to_string_lossy()
+            .into_owned();
+
+        assert!(
+            process_argv0_matches(pid, &exe),
+            "this test binary's own pid must match its own current_exe() path"
+        );
+    }
+
+    #[test]
+    fn process_argv0_matches_rejects_a_different_expected_path() {
+        let pid = std::process::id() as i32;
+
+        assert!(!process_argv0_matches(
+            pid,
+            "/definitely/not/the/test/binary"
+        ));
+    }
+
+    #[test]
+    fn process_argv0_matches_rejects_an_empty_expected_path() {
+        let pid = std::process::id() as i32;
+
+        assert!(!process_argv0_matches(pid, ""));
+    }
+
+    #[test]
+    fn write_pid_file_writes_the_given_pid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ui.pid");
+
+        write_pid_file(&path, 4242).expect("write_pid_file");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "4242");
+    }
+
+    #[test]
+    fn write_pid_file_overwrites_a_previous_pid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("ui.pid");
+
+        write_pid_file(&path, 1).expect("first write");
+        write_pid_file(&path, 2).expect("second write");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "2",
+            "a later write must replace the earlier pid, not append to it"
+        );
+    }
+
+    #[test]
+    fn write_pid_file_creates_missing_parent_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nested").join("dir").join("ui.pid");
+
+        write_pid_file(&path, 7).expect("write_pid_file should create parents");
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "7");
+    }
+
+    #[test]
+    fn ui_pid_relative_is_scoped_under_the_nodespace_state_dir() {
+        let relative = super::ui_pid_relative();
+        assert!(
+            relative.starts_with(".nodespace/ui") && relative.ends_with(".pid"),
+            "unexpected UI pid-file path: {relative}"
+        );
     }
 }

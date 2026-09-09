@@ -1,9 +1,13 @@
 //! System tray for `nodespaced` (ADR-031).
 //!
 //! Owns the menu-bar / notification-area icon and acts as the platform-wide
-//! UI launcher. The tray is the only path that fully shuts down NodeSpace —
-//! closing the Tauri window terminates the UI process only; the daemon keeps
-//! running with the tray visible.
+//! UI launcher. Quit is symmetric across both halves of the app: the tray's
+//! own "Quit" also asks any running desktop-app window to close (see
+//! [`signal_ui_to_quit`]), and the desktop app's own window-close path
+//! (Cmd+Q, the red traffic-light button, or any other close that actually
+//! goes through) signals this daemon to stop in turn (see `nodespace-app`'s
+//! `daemon_setup::signal_daemon_to_stop`) — a single action from either side
+//! fully quits NodeSpace rather than leaving the other half running.
 //!
 //! Threading: the `tao` event loop must run on the main thread (macOS
 //! `NSApplication` is main-thread-only), so the tonic gRPC server runs on a
@@ -38,6 +42,107 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 /// <id>` CLI argument (see [`TrayState::open_ui`]), which is what the app's
 /// `tauri-plugin-single-instance` relaunch handler reads instead.
 pub const INITIAL_DATABASE_ENV: &str = "NODESPACE_INITIAL_DATABASE";
+
+/// This build variant's UI pid-file path, mirroring `nodespace-app`'s
+/// `daemon_setup::write_own_ui_pid_file` -- both sides derive the identical
+/// path from their own build-variant flags (debug/release x community/Pro)
+/// rather than one copying the other's answer, exactly like the daemon
+/// socket path each side already derives independently. `None` when the
+/// home directory can't be resolved, same as every other home-relative path
+/// in this crate.
+fn ui_pid_path() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(home.join(nodespace_proto::socket::ui_pid_relative(
+        cfg!(debug_assertions),
+        cfg!(feature = "pro"),
+    )))
+}
+
+/// The pid in `pid_file`, if it both parses and belongs to a live process
+/// whose argv[0] matches `expected_binary` exactly -- the same verify-
+/// before-signal discipline `nodespace-app`'s `daemon_setup::
+/// kill_running_daemon` uses for the daemon side of this relationship.
+///
+/// `None` covers every "nothing to signal" case identically and silently: no
+/// file (no UI process ever started, or one started and already exited and
+/// cleaned up after itself), unparsable contents, a dead pid, or a live pid
+/// some unrelated process now owns.
+#[cfg(unix)]
+fn verified_ui_pid(pid_file: &Path, expected_binary: &Path) -> Option<i32> {
+    let contents = std::fs::read_to_string(pid_file).ok()?;
+    let pid: i32 = contents.trim().parse().ok()?;
+    let expected = expected_binary.to_string_lossy();
+    let out = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "args="])
+        .output()
+        .ok()?;
+    let args = String::from_utf8_lossy(&out.stdout);
+    (args.split_whitespace().next() == Some(expected.as_ref())).then_some(pid)
+}
+
+/// Ask the running desktop app, if any, to close its window too -- so tray
+/// "Quit" fully quits NodeSpace rather than leaving a GUI window pointed at
+/// a daemon that's about to disappear underneath it. Best-effort and silent
+/// about failure either way: no UI window being open at all (the user
+/// already closed it earlier and the daemon has been running tray-only) is
+/// the common, expected case here, not an error.
+///
+/// On Unix, `pid_file` is verified via [`verified_ui_pid`] against
+/// `ui_binary` before anything is signalled. SIGTERM there routes into the
+/// app's own `initiate_app_quit` -- the exact same window-close +
+/// flush-veto path its own Quit menu item and Cmd+Q already use, so a
+/// pending unsaved-work flush is still respected. On Windows there is no pid
+/// file: `taskkill /F /IM` targets `ui_binary`'s resolved image name
+/// directly, force-killing it -- this loses the flush-before-close the Unix
+/// path preserves, mirroring the same already-accepted gap `nodespace-app`'s
+/// `daemon_setup::kill_running_daemon` (Windows variant) has for the daemon
+/// side of a binary-update restart.
+///
+/// The actual `kill`/`taskkill` call is compiled out under `cfg(test)`: it's
+/// a real, irreversible action against whatever process the pid file (or,
+/// on Windows, the resolved UI binary's image name) happens to name on the
+/// machine `cargo test` runs on, which is not safe to execute as a side
+/// effect of a unit test suite. [`verified_ui_pid`] above is a read-only OS
+/// query and stays unconditional -- it's what the tests below exercise.
+#[cfg(unix)]
+fn signal_ui_to_quit(pid_file: Option<&Path>, ui_binary: Option<&Path>) {
+    let (Some(pid_file), Some(expected)) = (pid_file, ui_binary) else {
+        return;
+    };
+    let Some(pid) = verified_ui_pid(pid_file, expected) else {
+        return;
+    };
+    #[cfg(not(test))]
+    {
+        // SAFETY: kill() is always safe to call with a valid pid and signal.
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+    }
+    tracing::info!(pid, "Tray Quit: sent SIGTERM to the UI process");
+}
+
+/// Windows counterpart of the Unix [`signal_ui_to_quit`] above. There is no
+/// pid file on this platform -- `taskkill /F /IM` targets `ui_binary`'s
+/// resolved image name directly, force-killing it. This loses the
+/// flush-before-close the Unix path preserves via SIGTERM, mirroring the
+/// same already-accepted gap `nodespace-app`'s `daemon_setup::
+/// kill_running_daemon` (Windows variant) has for the daemon side of a
+/// binary-update restart. `_pid_file` is unused here -- Windows has no
+/// equivalent lookup -- but kept in the signature so both platforms' call
+/// sites in `run` stay identical.
+#[cfg(windows)]
+fn signal_ui_to_quit(_pid_file: Option<&Path>, ui_binary: Option<&Path>) {
+    let Some(image_name) = ui_binary.and_then(|p| p.file_name()) else {
+        return;
+    };
+    #[cfg(not(test))]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/IM"])
+            .arg(image_name)
+            .output();
+    }
+    tracing::info!(?image_name, "Tray Quit: sent taskkill to the UI process");
+}
 
 /// Events the tonic side of the daemon can push into the tray event loop.
 ///
@@ -448,6 +553,13 @@ pub fn run<T>(seed_controller: impl FnOnce(TrayController) -> T) -> Result<T> {
                     }
                 } else if menu_event.id == s.quit_id {
                     tracing::info!("Tray Quit selected — initiating shutdown");
+                    // Re-resolve immediately before use, same discipline as
+                    // `open_ui` -- the daemon can outlive any single state of
+                    // the filesystem, so a path cached at tray-build time
+                    // could be stale by the time the user actually clicks
+                    // Quit.
+                    s.refresh_ui_binary();
+                    signal_ui_to_quit(ui_pid_path().as_deref(), s.ui_binary.as_deref());
                     // `notify_waiters` wakes only currently-registered waiters.
                     // The gRPC server's `shutdown().await` is registered at
                     // server-build time (synchronously inside the seed closure
@@ -964,6 +1076,101 @@ mod tests {
 
         let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
         assert_eq!(args, vec!["--database", "db-123"]);
+    }
+}
+
+/// Coverage for [`verified_ui_pid`] — the read-only lookup half of the
+/// "tray Quit also closes the UI window" signal path
+/// ([`signal_ui_to_quit`]). Every case here uses this test binary's own,
+/// real pid: safe because these functions only ever *read* process state
+/// (`std::fs::read_to_string`, `ps`), never signal anything — the actual
+/// `kill`/`taskkill` call in `signal_ui_to_quit` is compiled out under
+/// `cfg(test)` and is not exercised here (see that function's doc comment).
+#[cfg(all(test, unix))]
+mod verified_ui_pid_tests {
+    use super::verified_ui_pid;
+
+    #[test]
+    fn finds_the_pid_when_the_file_and_binary_both_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("ui.pid");
+        let this_pid = std::process::id();
+        let this_exe = std::env::current_exe().expect("current_exe");
+        std::fs::write(&pid_file, this_pid.to_string()).expect("write pid file");
+
+        assert_eq!(verified_ui_pid(&pid_file, &this_exe), Some(this_pid as i32));
+    }
+
+    #[test]
+    fn rejects_a_pid_file_whose_binary_does_not_match() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("ui.pid");
+        std::fs::write(&pid_file, std::process::id().to_string()).expect("write pid file");
+
+        assert_eq!(
+            verified_ui_pid(&pid_file, std::path::Path::new("/not/the/real/binary")),
+            None,
+            "a real, live pid must still be rejected if its argv0 doesn't match"
+        );
+    }
+
+    #[test]
+    fn returns_none_for_a_missing_pid_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("does-not-exist.pid");
+        let this_exe = std::env::current_exe().expect("current_exe");
+
+        assert_eq!(verified_ui_pid(&pid_file, &this_exe), None);
+    }
+
+    #[test]
+    fn returns_none_for_unparsable_pid_file_contents() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("ui.pid");
+        std::fs::write(&pid_file, "not-a-pid").expect("write pid file");
+        let this_exe = std::env::current_exe().expect("current_exe");
+
+        assert_eq!(verified_ui_pid(&pid_file, &this_exe), None);
+    }
+
+    /// A pid that (almost certainly) belongs to no live process at all —
+    /// distinct from "belongs to a live process with the wrong argv0".
+    #[test]
+    fn returns_none_for_a_pid_with_no_live_process() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("ui.pid");
+        // PID 1 is always `init`/`launchd` on a real Unix system, never this
+        // test binary — using it (rather than a made-up huge number that
+        // could coincidentally be unassigned but still "exist" in some
+        // container's pid namespace oddities) keeps this deterministic.
+        std::fs::write(&pid_file, "1").expect("write pid file");
+        let this_exe = std::env::current_exe().expect("current_exe");
+
+        assert_eq!(verified_ui_pid(&pid_file, &this_exe), None);
+    }
+}
+
+/// Pins the "tray Quit also closes the UI window" wiring at the call site:
+/// `run`'s live `tao` event loop can't be driven in a unit test (no real
+/// display), so this asserts the source itself calls [`signal_ui_to_quit`]
+/// from the `quit_id` branch — the same source-text-assertion precedent
+/// `nodespace-app`'s `quit_wiring_tests` module uses for its mirror-image
+/// half of this fix.
+#[cfg(test)]
+mod quit_signals_ui_tests {
+    #[test]
+    fn tray_quit_signals_the_ui_process_to_close() {
+        let source = include_str!("tray.rs");
+        let marker = source
+            .find("== s.quit_id {")
+            .expect("quit_id menu branch not found in tray.rs");
+        let window = &source[marker..(marker + 700).min(source.len())];
+
+        assert!(
+            window.contains("signal_ui_to_quit(ui_pid_path().as_deref(), s.ui_binary.as_deref())"),
+            "the tray's \"Quit\" item must call signal_ui_to_quit so the running desktop app's \
+             window also closes, not just the daemon: {window}"
+        );
     }
 }
 

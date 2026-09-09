@@ -42,6 +42,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 tower = { version = "0.5", features = ["util"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 dirs = "5.0"
+libc = "0.2"
 
 [features]
 # Build the Pro edition binary. Compile with `--features pro` to set edition() to "pro".
