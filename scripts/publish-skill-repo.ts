@@ -95,18 +95,18 @@ export function normalizeVersion(version: string): string {
 }
 
 /** The harness-agnostic files every installer target ships -- the
- * intersection of all four agents' `shims` lists in packages/skill/src/agents.ts
+ * intersection of every agent's `shims` list in packages/skill/src/agents.ts
  * (today: SKILL.md, references/cli.md, and references/shared-workspaces.md).
  * Harness-specific shims (the
  * `shims/claude-code/nodespace-hook.ts` family) are deliberately excluded:
  * they're per-harness integration glue the installer places into each
  * agent's own hook/plugin system, not part of a generic Agent Skills folder
- * a user can drop into any of the four.
+ * a user can drop into any of them.
  *
  * Derived from AGENTS rather than hardcoded, on purpose: this is the same
- * "four separate places enumerate what the skill is made of" drift class
+ * "several separate places enumerate what the skill is made of" drift class
  * `packages/skill/src/tests/installer.test.ts` guards against for
- * build-skill.ts, the installer, and the PTY path -- a fifth hardcoded list
+ * build-skill.ts, the installer, and the PTY path -- a hardcoded list
  * here would be exactly the kind of copy that silently stops matching AGENTS
  * if a shared reference is ever added or removed. */
 export function sharedShimPaths(): string[] {
