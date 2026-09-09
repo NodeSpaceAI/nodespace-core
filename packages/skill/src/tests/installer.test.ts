@@ -55,13 +55,14 @@ afterEach(() => {
 });
 
 describe('AGENTS config', () => {
-  it('defines four agents', () => {
-    expect(AGENTS).toHaveLength(4);
+  it('defines five agents', () => {
+    expect(AGENTS).toHaveLength(5);
     const names = AGENTS.map(a => a.name);
     expect(names).toContain('claude-code');
     expect(names).toContain('codex');
     expect(names).toContain('antigravity');
     expect(names).toContain('opencode');
+    expect(names).toContain('pi');
   });
 
   it('each agent has detectionDir, installDir, SKILL.md shim, and at least one agent shim', () => {
@@ -79,6 +80,7 @@ describe('AGENTS config', () => {
       codex: '.codex',
       antigravity: '.gemini',
       opencode: '.opencode',
+      pi: '.pi',
     };
     for (const agent of AGENTS) {
       expect(agent.installDir).toContain(expectedDirs[agent.name]);
