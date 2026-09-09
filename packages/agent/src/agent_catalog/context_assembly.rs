@@ -33,6 +33,17 @@ const SKILL_MD: &str = include_str!("../../../skill/SKILL.md");
 /// written next to it.
 const SKILL_CLI_REFERENCE: &str = include_str!("../../../skill/references/cli.md");
 
+/// `packages/skill/references/shared-workspaces.md`, embedded for the same
+/// reason as [`SKILL_MD`].
+///
+/// SKILL.md links to this by relative path when a session is bound to a
+/// synced NodeSpace Pro collection — it covers write visibility, attribution,
+/// sync latency, and date-node sync limits. Embedding it too means a PTY
+/// session gets the whole skill rather than a body pointing at a file that
+/// was never written next to it.
+const SKILL_SHARED_WORKSPACES: &str =
+    include_str!("../../../skill/references/shared-workspaces.md");
+
 /// Default token budget when none is specified by the caller.
 const DEFAULT_TOKEN_BUDGET: u32 = 50_000;
 
@@ -365,14 +376,19 @@ impl GraphContextAssembler {
 /// Write the embedded skill — `SKILL.md` plus its `references/` tier — into
 /// `session_dir`.
 ///
-/// Both are written because SKILL.md links to `references/cli.md` by relative
-/// path; writing only the body would leave that link dangling and the CLI
-/// reference unreachable from the session.
+/// All of it is written because SKILL.md links to each `references/*.md` file
+/// by relative path; writing only the body would leave those links dangling
+/// and the reference content unreachable from the session.
 async fn write_skill_md(session_dir: &Path) -> Result<(), ContextError> {
     tokio::fs::write(session_dir.join("SKILL.md"), SKILL_MD).await?;
     let references = session_dir.join("references");
     tokio::fs::create_dir_all(&references).await?;
     tokio::fs::write(references.join("cli.md"), SKILL_CLI_REFERENCE).await?;
+    tokio::fs::write(
+        references.join("shared-workspaces.md"),
+        SKILL_SHARED_WORKSPACES,
+    )
+    .await?;
     Ok(())
 }
 
@@ -730,6 +746,11 @@ mod tests {
         assert!(SKILL_MD.contains("NodeSpace"));
     }
 
+    #[test]
+    fn embedded_shared_workspaces_matches_source_file() {
+        assert!(SKILL_SHARED_WORKSPACES.contains("shared"));
+    }
+
     #[tokio::test]
     async fn write_skill_md_writes_embedded_content() {
         let session_dir = tempfile::tempdir().unwrap();
@@ -741,9 +762,13 @@ mod tests {
         assert_eq!(written, SKILL_MD);
     }
 
-    /// SKILL.md links to `references/cli.md` by relative path, so the session
-    /// dir must carry it too — otherwise the body points at a file that was
-    /// never written and the CLI reference is silently unreachable.
+    /// SKILL.md links to each `references/*.md` file by relative path, so the
+    /// session dir must carry all of them too — otherwise the body points at
+    /// a file that was never written and its content is silently
+    /// unreachable. Scans `packages/skill/references/` directly (rather than
+    /// hardcoding filenames) so a future reference file added there without
+    /// a matching embed/write in `write_skill_md` fails this test instead of
+    /// silently reproducing this exact gap.
     #[tokio::test]
     async fn write_skill_md_also_writes_the_references_tier() {
         let session_dir = tempfile::tempdir().unwrap();
@@ -752,16 +777,32 @@ mod tests {
         let body = tokio::fs::read_to_string(session_dir.path().join("SKILL.md"))
             .await
             .unwrap();
-        assert!(
-            body.contains("references/cli.md"),
-            "SKILL.md no longer links to references/cli.md — if the reference \
-             layout changed, update write_skill_md to match"
-        );
 
-        let reference = tokio::fs::read_to_string(session_dir.path().join("references/cli.md"))
-            .await
-            .expect("references/cli.md was not written next to SKILL.md");
-        assert_eq!(reference, SKILL_CLI_REFERENCE);
+        let references_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skill/references");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&references_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|ext| ext != "md") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            assert!(
+                body.contains(&format!("references/{name}")),
+                "SKILL.md no longer links to references/{name} — if the reference \
+                 layout changed, update this test to match"
+            );
+
+            let expected = std::fs::read_to_string(&path).unwrap();
+            let written =
+                tokio::fs::read_to_string(session_dir.path().join("references").join(&name))
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("references/{name} was not written next to SKILL.md")
+                    });
+            assert_eq!(written, expected, "references/{name} was written stale");
+            checked += 1;
+        }
+        assert!(checked > 0, "no reference files found to check");
     }
 
     #[tokio::test]
