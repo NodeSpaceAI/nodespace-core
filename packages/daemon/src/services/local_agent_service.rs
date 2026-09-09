@@ -2203,12 +2203,13 @@ const MAX_RESOLVED_ENTITIES: usize = 20;
 pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatResolvedEntity> {
     // Every entity-resolving tool's per-node JSON uses the same `id`/`title`
     // key names (see `run_node_query`, `exec_get_node`, `exec_get_related_nodes`
-    // in `nodespace-agent`), but `id` itself is not uniform: the raw
-    // `get_node` payload carries a bare UUID while every list/query tool's
-    // summary carries the `nodespace://`-prefixed URI form. Node identity
-    // elsewhere in this file (`completed_writes_from`) is stored exactly as
-    // the tool reported it rather than normalised, so the same choice is made
-    // here — the node id is opaque to this function, just captured verbatim.
+    // in `nodespace-agent`), and `id` itself is uniform too: `exec_get_node`
+    // normalises its result's `id` through the same `node_uri(...)` helper
+    // every list/query tool's summary already uses, so every entity-resolving
+    // tool's `id` is the `nodespace://`-prefixed URI form here. This function
+    // still treats the node id as opaque — it just captures whatever string
+    // the tool reported — but relies on that upstream normalisation for
+    // dedup-by-node_id to actually collapse the same node across tools.
     let node_type_of = |v: &serde_json::Value| -> Option<String> {
         v.get("nodeType")
             .or_else(|| v.get("type"))
