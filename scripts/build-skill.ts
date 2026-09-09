@@ -71,7 +71,7 @@ import {
   rmSync,
   statSync,
 } from 'node:fs';
-import { basename, dirname, join, relative, sep } from 'node:path';
+import { basename, dirname, extname, join, relative, sep } from 'node:path';
 import { arch, platform } from 'node:os';
 
 const WORKSPACE_ROOT = join(import.meta.dir, '..');
@@ -309,13 +309,23 @@ export async function compileInstaller(
   // one — keeps that bounded at one per interrupted run rather than
   // accumulating silently. They are never bundled regardless: tauri-build's
   // copy_binaries iterates the exact `externalBin` names, not a glob.
+  // The tmp marker goes *before* the extension, not after: `bun build
+  // --compile` on Windows silently appends `.exe` to an --outfile that
+  // doesn't already end in it, so a tempfile named `foo.exe.tmp-1234`
+  // actually lands on disk as `foo.exe.tmp-1234.exe` and the rename below
+  // then fails with ENOENT looking for the un-suffixed name. Keeping the
+  // real extension trailing (`foo.tmp-1234.exe`) means bun sees it's already
+  // there and leaves the name alone, on every platform.
+  const ext = extname(outfile);
+  const stem = ext ? outfile.slice(0, -ext.length) : outfile;
+
   for (const stale of readdirSync(dirname(outfile))) {
-    if (stale.startsWith(`${basename(outfile)}.tmp-`)) {
+    if (stale.startsWith(`${basename(stem)}.tmp-`)) {
       rmSync(join(dirname(outfile), stale), { recursive: true, force: true });
     }
   }
 
-  const tempfile = `${outfile}.tmp-${process.pid}`;
+  const tempfile = `${stem}.tmp-${process.pid}${ext}`;
   try {
     await compile(entrypoint, tempfile);
     if (platform() !== 'win32') {
