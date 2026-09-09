@@ -56,6 +56,21 @@ export interface AiChatCompletedWrite {
   canonicalArgs: string;
 }
 
+/**
+ * A concrete graph entity a read-only tool call surfaced during an assistant
+ * turn (e.g. a `search_nodes` result the reply refers to). Minimal identity
+ * only, so the next turn can resolve "that"/"it" back to a node id even
+ * though only prose survives from a read-only turn otherwise.
+ */
+export interface AiChatResolvedEntity {
+  /** Node the read tool surfaced. */
+  nodeId: string;
+  /** Short title for the node, when available. */
+  title?: string;
+  /** The node's type (e.g. 'task'), when available. */
+  nodeType?: string;
+}
+
 export interface AiChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
@@ -64,6 +79,8 @@ export interface AiChatMessage {
   reasoning?: string;
   /** Graph writes this assistant turn completed. Absent when the turn only read. */
   completedWrites?: AiChatCompletedWrite[];
+  /** Graph entities this assistant turn's reads surfaced. */
+  resolvedEntities?: AiChatResolvedEntity[];
   /**
    * The clarifying question, when this message is a `route_clarify` turn
    * (ADR-038) rather than an ordinary reply. `content` still carries the

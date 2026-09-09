@@ -85,6 +85,34 @@ pub struct AiChatCompletedWrite {
     pub canonical_args: String,
 }
 
+/// A concrete graph entity a read-only tool call surfaced during an assistant
+/// turn.
+///
+/// `completed_writes` gives the next turn durable proof of what a write-tool
+/// call did; nothing analogous existed for reads, so a turn that merely
+/// *looked up* a node (`search_nodes`, `get_node`, ...) left no structured
+/// trace once the ephemeral session ended — only the assistant's prose reply
+/// survived, with no node id in it. A follow-up like "update that" then has
+/// nothing to resolve "that" against. This is the read-side counterpart:
+/// minimal identity only (no mutable fields, so it cannot go stale in a way
+/// that misleads), populated from the same tool-execution records
+/// `completed_writes` already derives from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatResolvedEntity {
+    /// ID of the node a read tool surfaced (as a `nodespace://` URI, matching
+    /// the form the model uses to refer to nodes elsewhere).
+    pub node_id: String,
+
+    /// Short human-readable title for the node, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+
+    /// The node's type (e.g. `"task"`), when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_type: Option<String>,
+}
+
 /// A single message in an ai-chat conversation.
 ///
 /// Mirrors the frontend `AiChatMessage` TypeScript interface.
@@ -109,6 +137,13 @@ pub struct AiChatMessage {
     /// for assistant turns that only read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub completed_writes: Vec<AiChatCompletedWrite>,
+
+    /// Concrete graph entities this assistant turn's read-only tool calls
+    /// surfaced (deduplicated by node id). Empty for user messages and for
+    /// assistant turns whose reads found nothing. See
+    /// [`AiChatResolvedEntity`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_entities: Vec<AiChatResolvedEntity>,
 
     /// The clarifying question, when this message is a `route_clarify` turn
     /// (ADR-038) rather than an ordinary reply. `content` still carries the

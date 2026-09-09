@@ -21,6 +21,20 @@ pub struct AiChatCompletedWrite {
     pub canonical_args: String,
 }
 
+/// A concrete graph entity a read-only tool call surfaced during an assistant
+/// turn.
+///
+/// Mirrors `nodespace_core::models::AiChatResolvedEntity`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatResolvedEntity {
+    pub node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_type: Option<String>,
+}
+
 /// A single message in an ai-chat conversation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +48,9 @@ pub struct AiChatMessage {
     /// Graph writes this assistant turn completed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub completed_writes: Vec<AiChatCompletedWrite>,
+    /// Graph entities this assistant turn's reads surfaced.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolved_entities: Vec<AiChatResolvedEntity>,
 
     /// The clarifying question, when this message is a `route_clarify` turn
     /// (ADR-038) rather than an ordinary reply. `content` still carries the
