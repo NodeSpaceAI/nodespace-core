@@ -162,17 +162,35 @@ pub async fn ensure_sqlite_vec_registered() {
 /// This is vendored C we cannot patch. This crate is the only workspace
 /// member with a DIRECT `libsql`/`libsql-ffi` dependency, but `libsql-ffi`
 /// is also linked TRANSITIVELY into `nodespace-agent`, `nodespace-daemon`,
-/// and `nodespace-cli` (`cargo tree -i libsql-ffi`), and each of those
-/// crates has its own non-`#[ignore]`d integration tests that call
-/// `SqliteStore::new()` directly and still run at `--test-threads=2` under
-/// `rust:test:workspace`. The same race is reachable there in principle;
-/// it just hasn't been observed to trigger — plausibly because those
-/// suites are far smaller (tens of tests, not 1000+), so two connections
-/// opening at literally the same instant is far less likely. That gap is
-/// a deliberate, tracked deferral, not an oversight — do NOT read "no
-/// other crate's tests carry this hazard" into this comment; they can, at
-/// lower observed odds, and a similar fix may be warranted there if that
-/// changes.
+/// and `nodespace-cli` (`cargo tree -i libsql-ffi`): each has its own
+/// non-`#[ignore]`d tests that call `SqliteStore::new()` directly, both in
+/// `tests/*.rs` integration targets and, more heavily, in `#[cfg(test)]`
+/// unit tests inside `nodespace-agent`'s and `nodespace-daemon`'s own
+/// `--lib` targets — `nodespace-agent`'s lib alone runs 621 tests in one
+/// binary, not the "tens of tests" a prior version of this comment assumed
+/// made the race negligible there.
+///
+/// That reachability is no longer theoretical: reproduced directly, once
+/// in 100 `--test-threads=16` runs of `nodespace-agent`'s lib suite (a
+/// setup-time `NodeService::new()` panic — `QueryFailed("Failed to query
+/// nodes")` — with no code change between that run and every surrounding
+/// passing run of the identical test; the exact failure shape this crate's
+/// own root-caused issue described). `nodespace-daemon`'s lib and every
+/// integration target named in that investigation stayed clean across
+/// ~190 further runs at the same thread count, but per the "no guarded
+/// region narrower than the whole process" reasoning two paragraphs below
+/// (established from this crate's own prior narrow-fix failure), a clean
+/// run elsewhere is the low-probability-but-nonzero outcome the vendored
+/// bug predicts at these suites' smaller sizes, not evidence those targets
+/// are unexposed. All three crates' `--lib --bins --tests` targets are
+/// therefore now serialized the same way as this crate:
+/// `rust:test:libsql-linked` in `package.json`, excluded from
+/// `rust:test:workspace`'s `--test-threads=2` run exactly as this crate
+/// is. If CI or a local run ever surfaces this failure shape in
+/// `nodespace-cli` specifically (the one crate of the three whose `--lib`
+/// target has no direct `SqliteStore` construction, so its exposure is
+/// narrower than the other two), that is corroborating evidence, not a
+/// surprise — not grounds to narrow the treatment back down.
 ///
 /// In production there is exactly one `SqliteStore` per daemon lifetime, so
 /// the race needs genuine test-suite concurrency (many independent stores
@@ -188,7 +206,9 @@ pub async fn ensure_sqlite_vec_registered() {
 /// connection, for the life of the process" — which is `--test-threads=1`
 /// implemented as a hand-rolled lock, with strictly more surface for a
 /// missed call site. Serializing the whole binary is the direct fix, not a
-/// workaround: see `rust:test:core` in `package.json`.
+/// workaround: see `rust:test:core` in `package.json` (and
+/// `rust:test:libsql-linked` for the same treatment applied to
+/// `nodespace-agent`/`nodespace-daemon`/`nodespace-cli`, above).
 pub struct SqliteStore {
     /// The store's SQLite connections. Reachable only through
     /// [`SqliteStore::write`] / [`SqliteStore::read`] — the raw handles live in
