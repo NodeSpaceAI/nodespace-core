@@ -15,8 +15,8 @@
  *
  * It never hand-writes the skill body: it copies `packages/skill/SKILL.md`
  * (the body -- the checked-in file carries no frontmatter, see
- * packages/skill/src/types.ts) and `packages/skill/references/cli.md`
- * verbatim, whatever they currently are. If a future change to
+ * packages/skill/src/types.ts) and every shared `references/*.md` file
+ * (see `sharedShimPaths`) verbatim, whatever they currently are. If a future change to
  * `packages/skill` shrinks SKILL.md to a stub with guidance fetched from the
  * graph at runtime instead, this script keeps working unmodified -- it has
  * no assumption baked in about the body's size or shape, only about where it
@@ -96,7 +96,8 @@ export function normalizeVersion(version: string): string {
 
 /** The harness-agnostic files every installer target ships -- the
  * intersection of all four agents' `shims` lists in packages/skill/src/agents.ts
- * (today: SKILL.md and references/cli.md). Harness-specific shims (the
+ * (today: SKILL.md, references/cli.md, and references/shared-workspaces.md).
+ * Harness-specific shims (the
  * `shims/claude-code/nodespace-hook.ts` family) are deliberately excluded:
  * they're per-harness integration glue the installer places into each
  * agent's own hook/plugin system, not part of a generic Agent Skills folder
@@ -116,18 +117,26 @@ export function sharedShimPaths(): string[] {
 /** Reads packages/skill's current build inputs from disk -- never a cached
  * or previously-rendered copy, so this always reflects whatever
  * `packages/skill` produces *right now*, drift-free by construction. */
-export function readSkillSource(): { body: string; referenceCli: string } {
+export function readSkillSource(): {
+  body: string;
+  referenceCli: string;
+  referenceSharedWorkspaces: string;
+} {
   return {
     body: readFileSync(join(SKILL_DIR, "SKILL.md"), "utf8"),
     referenceCli: readFileSync(join(SKILL_DIR, "references", "cli.md"), "utf8"),
+    referenceSharedWorkspaces: readFileSync(
+      join(SKILL_DIR, "references", "shared-workspaces.md"),
+      "utf8",
+    ),
   };
 }
 
 /** Renders every shared file this script publishes -- the SKILL.md
  * frontmatter is generated here (`compatibility` needs the release version,
  * which `packages/skill`'s own build doesn't know at compile time); every
- * other shared file (currently just `references/cli.md`) is copied through
- * unmodified. */
+ * other shared file (currently `references/cli.md` and
+ * `references/shared-workspaces.md`) is copied through unmodified. */
 export function renderPublishFiles(version: string): RepoFile[] {
   const v = normalizeVersion(version);
   const frontmatter = buildSkillFrontmatter({
