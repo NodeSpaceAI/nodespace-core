@@ -3,9 +3,7 @@
 //! Shared logic for skill search used by the local agent's `search_skills`
 //! tool and the MCP `find_skills` handler exposed to external agents.
 
-use crate::services::{
-    flatten_subtree_content, NodeEmbeddingService, NodeService, SearchNodeFilters,
-};
+use crate::services::{flatten_subtree_content, NodeEmbeddingService, NodeService};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
@@ -305,29 +303,24 @@ pub async fn find_skills(
 ) -> Result<FindSkillsOutput, OpsError> {
     let limit = input.limit.unwrap_or(3).min(MAX_SKILL_LIMIT);
 
-    // Skills are a small fraction of the total corpus (~8-20 nodes in a workspace
-    // of potentially thousands). `semantic_search_nodes` applies a 3× over-fetch
-    // when filters are active, but that still yields only `limit * 3` KNN candidates
-    // from the global embedding space. At low skill density, most of those slots will
-    // be occupied by non-skill nodes and discarded. Pre-inflating here ensures the
-    // inner KNN window is large enough to contain the requested number of skill nodes
-    // before post-filtering. `semantic_search_nodes` already truncates to the limit
-    // it receives, so we truncate the final result ourselves.
-    let search_limit = (limit * 5).max(limit + 15);
-    let skill_filter = SearchNodeFilters {
-        node_types: Some(vec!["skill".to_string()]),
-        property_filters: None,
-    };
-    let mut skill_results = embedding_service
-        .semantic_search_nodes(
-            &input.query,
-            search_limit,
-            SKILL_SEARCH_THRESHOLD,
-            Some(&skill_filter),
-        )
+    // Skill selection is a small, closed-candidate classification problem
+    // (~8-20 skill nodes), not open-ended document recall — so it uses
+    // `semantic_search_nodes_of_type`'s exact linear-scan KNN over just the
+    // `skill` type, rather than `semantic_search_nodes`'s hybrid BM25+KNN
+    // tiering. That tiering orders results tier1(BM25∩KNN) ++ tier2(KNN-only)
+    // ++ tier3(BM25-only) — a hard partition, not a blended score — so any
+    // BM25 hit outranks every KNN-only result regardless of score magnitude.
+    // BM25 there also matches into a skill's full guidance-markdown subtree,
+    // not just its title/description, so an incidental keyword collision in
+    // instructional prose (irrelevant to the query's actual intent) could
+    // rank a weakly-matching skill above the true best semantic match. Pure
+    // KNN cosine ranking over skill roots avoids both: no BM25 involvement at
+    // all, and no children in scope (only `node_type = 'skill'` roots are
+    // indexed by this query).
+    let skill_results = embedding_service
+        .semantic_search_nodes_of_type(&input.query, "skill", limit, SKILL_SEARCH_THRESHOLD)
         .await
         .map_err(|e| OpsError::Internal(format!("Skill search failed: {}", e)))?;
-    skill_results.truncate(limit);
 
     // Fetch all schemas once; used to attach metadata to each matched skill.
     let all_schemas = node_service
