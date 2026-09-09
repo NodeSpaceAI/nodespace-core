@@ -376,10 +376,25 @@ pub async fn find_skills(
         }));
     }
 
+    // `all_scores` carries every retrieved skill's name and raw score, not
+    // only the winner's `top_score` — the two-part diagnostic ADR-038's
+    // routing work needs: a near-tied runner-up (a tiebreak, fixed by
+    // retrieval-shape changes) reads identically to a skill with no close
+    // competitor scoring badly on its own core use case (a description
+    // problem) if only the top score is logged, and those call for different
+    // fixes. See `nodespace_agent::local_agent::routing::all_candidate_scores`
+    // for the same field on the local-agent Stage-2 path.
+    let all_scores: String = skill_results
+        .iter()
+        .map(|(node, score)| format!("{}={:.3}", node.content, score))
+        .collect::<Vec<_>>()
+        .join(", ");
+
     tracing::info!(
         query = %input.query,
         results_found = total_results,
         top_score = skill_results.first().map(|(_, s)| *s).unwrap_or(0.0),
+        all_scores = %all_scores,
         "find_skills executed"
     );
 
