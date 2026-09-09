@@ -79,7 +79,12 @@ function nsRaw(args: string[]): void {
 interface NodeJson {
   id: string;
   version: number;
-  properties: { "ai-chat"?: AiChat };
+  // The CLI's `--json` output is flat — an ai-chat node's own fields
+  // (turn_status, messages, ...) sit directly on `properties`, not nested
+  // under an "ai-chat" key. Writes still go through batchUpdateProps nested
+  // under "ai-chat", which the daemon's `AiChatNode::from_node` accepts
+  // (nested-or-flat) regardless of how the CLI echoes it back.
+  properties: Partial<AiChat>;
 }
 
 function getNode(id: string): NodeJson {
@@ -300,7 +305,7 @@ function reportTurnLog(sinceByte: number): void {
 
 async function cmdSend(id: string, message: string): Promise<void> {
   const node = getNode(id);
-  const aichat: AiChat = node.properties["ai-chat"] ?? defaultAiChat();
+  const aichat: AiChat = { ...defaultAiChat(), ...node.properties };
   const beforeAssistant = aichat.messages.filter(
     (m) => m.role === "assistant",
   ).length;
@@ -326,7 +331,7 @@ async function cmdSend(id: string, message: string): Promise<void> {
   while (Date.now() < deadline) {
     await sleep(1000);
     const cur = getNode(id);
-    latest = cur.properties["ai-chat"] ?? latest;
+    latest = { ...latest, ...cur.properties };
     const afterAssistant = latest.messages.filter(
       (m) => m.role === "assistant",
     ).length;
@@ -346,8 +351,7 @@ async function cmdSend(id: string, message: string): Promise<void> {
 
 function cmdShow(id: string): void {
   const node = getNode(id);
-  const aichat = node.properties["ai-chat"];
-  for (const m of aichat?.messages ?? []) {
+  for (const m of node.properties.messages ?? []) {
     console.log(`${m.role}> ${m.content}`);
   }
 }
