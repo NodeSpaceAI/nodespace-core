@@ -1,4 +1,4 @@
-export type AgentName = 'claude-code' | 'codex' | 'antigravity' | 'opencode';
+export type AgentName = 'claude-code' | 'codex' | 'antigravity' | 'opencode' | 'pi';
 
 export interface AgentConfig {
   name: AgentName;

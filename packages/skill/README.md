@@ -63,8 +63,9 @@ directory — it has no source-relative sibling directory to find
 |-------|-----------|--------------|
 | Claude Code | `~/.claude/` exists | `~/.claude/skills/nodespace/SKILL.md` |
 | Codex | `~/.codex/` exists | `~/.codex/skills/nodespace/SKILL.md` |
-| Gemini CLI | `~/.gemini/` exists | `~/.gemini/skills/nodespace/SKILL.md` |
+| Antigravity CLI | `~/.gemini/antigravity-cli/` exists | `~/.gemini/antigravity-cli/skills/nodespace/SKILL.md` |
 | OpenCode | `~/.opencode/` exists | `~/.opencode/skills/nodespace/SKILL.md` |
+| Pi | `~/.pi/agent/` exists | `~/.pi/agent/skills/nodespace/SKILL.md` |
 
 ## Prerequisites
 

@@ -108,6 +108,22 @@ export const AGENTS: AgentConfig[] = [
     ],
     skillFrontmatter: SKILL_FRONTMATTER,
   },
+  {
+    name: 'pi',
+    // Pi (pi.dev / earendil-works/pi) stores its global config, skills, and
+    // extensions under ~/.pi/agent/ -- not a bare ~/.pi -- per its skills.md
+    // and extensions.md docs (skill dirs: ~/.pi/agent/skills/, ~/.agents/skills/;
+    // extension dirs: ~/.pi/agent/extensions/*.ts, ~/.pi/agent/extensions/*/index.ts).
+    detectionDir: join(home, '.pi', 'agent'),
+    installDir: join(home, '.pi', 'agent', 'skills', 'nodespace'),
+    shims: [
+      'SKILL.md',
+      'references/cli.md',
+      'references/shared-workspaces.md',
+      'shims/pi/nodespace-extension.ts',
+    ],
+    skillFrontmatter: SKILL_FRONTMATTER,
+  },
 ];
 
 /** The frontmatter block every target installs. Exported for tests. */

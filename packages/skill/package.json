@@ -1,7 +1,7 @@
 {
   "name": "@nodespaceai/skill",
   "version": "0.2.0",
-  "description": "NodeSpace skill package — install NodeSpace tools into PTY agents (Claude Code, Codex, Antigravity CLI, OpenCode)",
+  "description": "NodeSpace skill package — install NodeSpace tools into PTY agents (Claude Code, Codex, Antigravity CLI, OpenCode, Pi)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

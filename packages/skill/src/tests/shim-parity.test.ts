@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 // there is nothing in packages/skill/shims/ for it to drift against.
 //
 // What each remaining shim declares:
-//  - codex / opencode (`nodespace-plugin.ts`): `name` + `description` per tool object — codex is the reference.
+//  - codex / opencode / pi (`nodespace-plugin.ts` / `nodespace-extension.ts`):
+//    `name` + `description` per tool object — codex is the reference.
 //  - claude-code (`nodespace-hook.ts`): registers by NAME via `hook('name', …)`;
 //    it carries no per-tool description, so only its tool NAMES are comparable.
 
@@ -62,6 +63,10 @@ describe("ACP shim tool parity", () => {
 
   it("opencode tool names + descriptions match codex", () => {
     expect(tsPluginToolMap("opencode/nodespace-plugin.ts")).toEqual(codex);
+  });
+
+  it("pi tool names + descriptions match codex", () => {
+    expect(tsPluginToolMap("pi/nodespace-extension.ts")).toEqual(codex);
   });
 
   it("claude-code registers exactly the expected tool names", () => {
