@@ -332,6 +332,11 @@ fn every_seeded_skill_is_represented() {
                     && skill.contains("nodespace relationship get")
             }
             "Node Deletion" => skill.contains("nodespace node delete"),
+            "Conflict Resolution" => {
+                skill.contains("nodespace conflicts list")
+                    && skill.contains("nodespace conflicts dismiss")
+            }
+            "Node Merge" => skill.contains("nodespace conflicts merge"),
             "Bulk Import" => skill.contains("nodespace import"),
             "Organization" => skill.contains("member_of"),
             // A skill added later has no arm here and fails loudly, which is

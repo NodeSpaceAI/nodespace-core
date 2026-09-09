@@ -253,6 +253,18 @@ If the user wants something out of the way rather than gone, prefer moving it (r
 
 **A node type can be deleted too** — `nodespace schema delete <type>`, once `schema update` has cleared any relationship declarations pointing at or from it. Asked to remove, drop or clean up a type, including a throwaway one you just created, reach for this; never call it unsupported or strip a schema to an empty shell instead. Sequence in `references/cli.md`.
 
+### Resolve a duplicate or colliding record
+
+```bash
+nodespace conflicts list --status open                 # see what's outstanding
+nodespace conflicts show <conflict-id>                  # confirm the participants and evidence
+nodespace conflicts dismiss <conflict-id>                # acceptable as-is — no node changes
+nodespace conflicts adopt <conflict-id> --keep <node-id> # continue with the existing node — no node changes
+nodespace conflicts merge --survivor <node-id> --conflict-id <conflict-id>  # combine into one record
+```
+
+`merge` is the one irreversible-feeling action here — it archives the losing node and re-points its edges immediately when called. Only call it once the user has confirmed which node should survive; `dismiss` and `adopt` don't touch either node. Full options and output shape in `references/cli.md`.
+
 ### Bulk import from markdown
 
 ```bash

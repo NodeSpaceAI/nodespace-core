@@ -5,7 +5,9 @@
 //! output is unambiguous and scriptable.
 
 use anyhow::Result;
-use nodespace_daemon::nodespace::{DeleteNodeResponse, NodeListResponse};
+use nodespace_daemon::nodespace::{
+    ConflictRecord as ConflictRecordProto, DeleteNodeResponse, MergeNodesResponse, NodeListResponse,
+};
 use nodespace_daemon::NodeData;
 use serde_json::json;
 
@@ -244,6 +246,128 @@ pub fn node_to_json(node: &NodeData) -> serde_json::Value {
         value["markdown"] = json!(node.markdown);
     }
     value
+}
+
+/// Parse a conflict's `detail`/`resolution` wire strings (JSON-encoded, per
+/// `node_service.proto`'s `ConflictRecord`) into real JSON, mirroring
+/// `properties_to_json`'s reason for existing: a consumer should never have
+/// to double-decode a nested JSON string.
+pub fn conflict_to_json(record: &ConflictRecordProto) -> serde_json::Value {
+    let detail: serde_json::Value =
+        serde_json::from_str(&record.detail).unwrap_or_else(|_| json!(record.detail));
+    let resolution = record
+        .resolution
+        .as_ref()
+        .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap_or_else(|_| json!(s)));
+
+    json!({
+        "id": record.id,
+        "kind": record.kind,
+        "node_ids": record.node_ids,
+        "detail": detail,
+        "status": record.status,
+        "detected_at": record.detected_at,
+        "detected_by": record.detected_by,
+        "occurrences": record.occurrences,
+        "last_seen_at": record.last_seen_at,
+        "resolved_at": record.resolved_at,
+        "resolution": resolution,
+    })
+}
+
+pub fn print_conflict(record: &ConflictRecordProto, json: bool) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&conflict_to_json(record))?
+        );
+    } else {
+        write_human_conflict(record);
+    }
+    Ok(())
+}
+
+pub fn print_conflict_list(records: &[ConflictRecordProto], json: bool) -> Result<()> {
+    if json {
+        let value = json!({
+            "count": records.len(),
+            "conflicts": records.iter().map(conflict_to_json).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+
+    if records.is_empty() {
+        println!("No conflicts returned (count: 0)");
+        return Ok(());
+    }
+
+    println!("{} conflict(s):", records.len());
+    for (idx, record) in records.iter().enumerate() {
+        if idx > 0 {
+            println!();
+        }
+        write_human_conflict(record);
+    }
+    Ok(())
+}
+
+fn write_human_conflict(record: &ConflictRecordProto) {
+    println!("id:              {}", record.id);
+    println!("kind:            {}", record.kind);
+    println!("status:          {}", record.status);
+    println!("node_ids:        {}", record.node_ids.join(", "));
+    println!("detected_at:     {}", record.detected_at);
+    if let Some(by) = &record.detected_by {
+        println!("detected_by:     {by}");
+    }
+    println!("occurrences:     {}", record.occurrences);
+    println!("last_seen_at:    {}", record.last_seen_at);
+    let detail: serde_json::Value =
+        serde_json::from_str(&record.detail).unwrap_or_else(|_| json!(record.detail));
+    println!("detail:          {detail}");
+    if let Some(resolved_at) = &record.resolved_at {
+        println!("resolved_at:     {resolved_at}");
+    }
+    if let Some(resolution) = &record.resolution {
+        let resolution: serde_json::Value =
+            serde_json::from_str(resolution).unwrap_or_else(|_| json!(resolution));
+        println!("resolution:      {resolution}");
+    }
+}
+
+pub fn print_merge_outcome(response: &MergeNodesResponse, json: bool) -> Result<()> {
+    if json {
+        let value = json!({
+            "survivor_id": response.survivor_id,
+            "loser_id": response.loser_id,
+            "properties_merged": response.properties_merged,
+            "edges_repointed": response.edges_repointed,
+            "edges_dropped": response.edges_dropped,
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        println!(
+            "Merged {} into {}: {} propert{} merged, {} edge{} re-pointed, {} edge{} dropped",
+            response.loser_id,
+            response.survivor_id,
+            response.properties_merged,
+            if response.properties_merged == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            response.edges_repointed,
+            if response.edges_repointed == 1 {
+                ""
+            } else {
+                "s"
+            },
+            response.edges_dropped,
+            if response.edges_dropped == 1 { "" } else { "s" },
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

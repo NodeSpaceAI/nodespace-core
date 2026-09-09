@@ -2072,6 +2072,11 @@ fn write_summary_arg(tool: &str) -> Option<&'static [&'static str]> {
         "create_schema" => Some(&["name"]),
         "update_schema" => Some(&["schema_id"]),
         "create_nodes_from_markdown" => Some(&["markdown"]),
+        // The loser is the node a repeat would re-attack (already archived by
+        // the first call), so it is the more informative evidence — but
+        // `survivor_id` is also accepted since either argument identifies the
+        // same merge attempt.
+        "merge_conflict" => Some(&["loser_id", "survivor_id"]),
         // `create_relationship` has no single describing argument; the call site
         // renders the edge from its own fields instead.
         _ => None,

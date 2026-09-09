@@ -51,14 +51,15 @@ use crate::nodespace::{
     DeleteRelationshipResponse, Empty, ExecuteQueryRequest, ExportMarkdownRequest,
     ExportMarkdownResponse, FindCollectionByPathRequest, FindDuplicateRequest,
     GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest, GetChildrenTreeRequest,
-    GetCollectionByNameRequest, GetDaemonVersionRequest, GetDaemonVersionResponse,
-    GetNodeRelationshipsRequest, GetNodeRelationshipsResponse, GetNodeRequest,
-    GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest, GetRelatedNodesResponse,
-    GetRootsRequest, GetSchemaDefinitionRequest, ListConflictsRequest, MentionAutocompleteRequest,
-    MentionIdsResponse, MentionResponse, MentionTargetRequest, MergeNodesRequest,
-    MergeNodesResponse, MoveChildrenToParentRequest, MoveChildrenToParentResponse, MoveNodeRequest,
-    NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse, NodeReference,
-    NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse, OptionalNodeResponse,
+    GetCollectionByNameRequest, GetConflictRequest, GetDaemonVersionRequest,
+    GetDaemonVersionResponse, GetNodeRelationshipsRequest, GetNodeRelationshipsResponse,
+    GetNodeRequest, GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest,
+    GetRelatedNodesResponse, GetRootsRequest, GetSchemaDefinitionRequest, ListConflictsRequest,
+    MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
+    MergeNodesRequest, MergeNodesResponse, MoveChildrenToParentRequest,
+    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
+    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
+    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
     OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest,
     RelationshipDeletedPayload, RelationshipPayload, RemoveNodeFromCollectionRequest,
     RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResolveConflictRequest,
@@ -368,6 +369,24 @@ impl GrpcNodeService for NodeServiceImpl {
 
         Ok(Response::new(ConflictListResponse {
             conflicts: records.into_iter().map(conflict_record_to_proto).collect(),
+        }))
+    }
+
+    async fn get_conflict(
+        &self,
+        request: Request<GetConflictRequest>,
+    ) -> Result<Response<OptionalConflictResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let record = this
+            .node_service
+            .get_conflict(&req.conflict_id)
+            .await
+            .map_err(service_error_to_status)?;
+
+        Ok(Response::new(OptionalConflictResponse {
+            conflict: record.map(conflict_record_to_proto),
         }))
     }
 

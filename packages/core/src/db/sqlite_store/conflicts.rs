@@ -75,7 +75,7 @@ impl SqliteStore {
     }
 
     /// Read a single conflict record by id, if it exists.
-    async fn get_conflict(&self, id: &str) -> Result<Option<ConflictRecord>> {
+    pub async fn get_conflict(&self, id: &str) -> Result<Option<ConflictRecord>> {
         let mut rows = self
             .read()
             .await?

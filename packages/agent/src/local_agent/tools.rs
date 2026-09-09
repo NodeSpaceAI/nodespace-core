@@ -11,12 +11,14 @@ use crate::agent_types::{
 };
 use async_trait::async_trait;
 use nodespace_core::agent_params::{SearchNodesParams, SearchSemanticParams};
+use nodespace_core::models::conflict::{ConflictKind, ConflictStatus, Resolution};
 use nodespace_core::ops::{node_ops, query_ops, rel_ops, search_ops, OpsError};
 use nodespace_core::schema::handle_create_schema;
 use nodespace_core::services::{NodeEmbeddingService, NodeService};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::borrow::Cow;
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -202,6 +204,59 @@ struct UpdateTaskStatusParams {
 struct DeleteNodeParams {
     #[serde(alias = "node_id")]
     pub id: String,
+}
+
+/// Parameters for the list_conflicts tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListConflictsParams {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// When set, list only conflicts naming this node as a participant
+    /// (mirrors `conflicts_for_node`); `status`/`kind`/`limit` are ignored.
+    #[serde(default, alias = "node_id")]
+    pub node: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// Parameters for the get_conflict tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GetConflictParams {
+    pub conflict_id: String,
+}
+
+/// Parameters for the dismiss_conflict tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DismissConflictParams {
+    pub conflict_id: String,
+}
+
+/// Parameters for the adopt_existing_conflict tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdoptExistingConflictParams {
+    pub conflict_id: String,
+    /// The node id to keep; the conflict's other participant is the one
+    /// being set aside.
+    pub keep: String,
+}
+
+/// Parameters for the merge_conflict tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MergeConflictParams {
+    pub survivor_id: String,
+    pub loser_id: String,
+    /// The open conflict record this merge resolves, closed as resolved in
+    /// the same transaction. Optional — a merge can also be performed
+    /// without an associated conflict record.
+    #[serde(default)]
+    pub conflict_id: Option<String>,
 }
 
 /// Maximum characters for node body in full node results.
@@ -1423,6 +1478,137 @@ fn def_delete_node() -> ToolDefinition {
     }
 }
 
+fn def_list_conflicts() -> ToolDefinition {
+    ToolDefinition {
+        name: "list_conflicts".into(),
+        description: "List records from the conflict journal — durable evidence that two nodes collide \
+            (e.g. two active nodes share a unique field's value, or two collections share a name). \
+            Read-only; does not change anything. Filter by status/kind, or pass 'node' to list only the \
+            conflicts naming a specific node as a participant. Use get_conflict to see the full detail \
+            and any prior resolution for one record.".into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "resolved", "dismissed"],
+                    "description": "Filter by resolution status. Omit for every status."
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["unique_field_collision", "collection_name_collision"],
+                    "description": "Filter by conflict kind. Omit for every kind."
+                },
+                "node": {
+                    "type": "string",
+                    "description": "List only conflicts naming this node id as a participant. When set, status/kind/limit are ignored."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of records to return. Ignored when 'node' is set."
+                }
+            }
+        }),
+    }
+}
+
+fn def_get_conflict() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_conflict".into(),
+        description: "Get one conflict record by its own id, including its kind-specific evidence \
+            ('detail') and, if already resolved or dismissed, the resolution that was applied. \
+            Read-only."
+            .into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "conflict_id": {
+                    "type": "string",
+                    "description": "Conflict record id, from list_conflicts"
+                }
+            },
+            "required": ["conflict_id"]
+        }),
+    }
+}
+
+fn def_dismiss_conflict() -> ToolDefinition {
+    ToolDefinition {
+        name: "dismiss_conflict".into(),
+        description: "Acknowledge a conflict as acceptable, without changing either participant node. \
+            Use when the collision is expected and not actually a problem (e.g. two people genuinely \
+            share a mailbox). Performs the dismissal immediately when called — only call this once the \
+            user's intent to dismiss this specific conflict is clear. A dismissed conflict will not be \
+            re-raised by future detection.".into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "conflict_id": {
+                    "type": "string",
+                    "description": "Conflict record id, from list_conflicts"
+                }
+            },
+            "required": ["conflict_id"]
+        }),
+    }
+}
+
+fn def_adopt_existing_conflict() -> ToolDefinition {
+    ToolDefinition {
+        name: "adopt_existing_conflict".into(),
+        description: "Resolve a conflict by continuing with an already-existing node instead of the new \
+            one, without deleting or modifying either node. Use when the user means the existing record, \
+            not a new one. Performs the resolution immediately when called — only call this once the \
+            user's intent is clear about which node ('keep') to continue with.".into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "conflict_id": {
+                    "type": "string",
+                    "description": "Conflict record id, from list_conflicts"
+                },
+                "keep": {
+                    "type": "string",
+                    "description": "Node id to keep — the conflict's other participant is set aside"
+                }
+            },
+            "required": ["conflict_id", "keep"]
+        }),
+    }
+}
+
+fn def_merge_conflict() -> ToolDefinition {
+    ToolDefinition {
+        name: "merge_conflict".into(),
+        description: "Merge a losing node into a surviving node: unions their properties onto the \
+            survivor (the survivor's value wins any overlap, and the loser's overwritten values are kept \
+            in the resolution record, never silently discarded), re-points every relationship edge from \
+            the loser to the survivor, and archives the loser. This is the one irreversible-feeling action \
+            in the conflict journal — it changes graph structure immediately when called and is never \
+            performed automatically at any confidence level. Only call this once the user has explicitly \
+            confirmed which node should survive and which should be merged away. Use get_conflict or \
+            get_node first to confirm which participant is which.".into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "survivor_id": {
+                    "type": "string",
+                    "description": "Node id to keep — receives the union of properties and every re-pointed edge"
+                },
+                "loser_id": {
+                    "type": "string",
+                    "description": "Node id to merge away — archived after the merge"
+                },
+                "conflict_id": {
+                    "type": "string",
+                    "description": "The open conflict record this merge resolves, closed as resolved in the same transaction. Optional."
+                }
+            },
+            "required": ["survivor_id", "loser_id"]
+        }),
+    }
+}
+
 fn def_create_nodes_from_markdown() -> ToolDefinition {
     ToolDefinition {
         name: "create_nodes_from_markdown".into(),
@@ -1599,6 +1785,11 @@ pub enum Tool {
     DeleteNode,
     CreateNodesFromMarkdown,
     RouteClarify,
+    ListConflicts,
+    GetConflict,
+    DismissConflict,
+    AdoptExistingConflict,
+    MergeConflict,
 }
 
 impl Tool {
@@ -1626,6 +1817,11 @@ impl Tool {
         Tool::DeleteNode,
         Tool::CreateNodesFromMarkdown,
         Tool::RouteClarify,
+        Tool::ListConflicts,
+        Tool::GetConflict,
+        Tool::DismissConflict,
+        Tool::AdoptExistingConflict,
+        Tool::MergeConflict,
     ];
 
     /// The number of variants, counted by walking every one of them.
@@ -1657,7 +1853,12 @@ impl Tool {
                 Tool::SearchSkills => Tool::DeleteNode,
                 Tool::DeleteNode => Tool::CreateNodesFromMarkdown,
                 Tool::CreateNodesFromMarkdown => Tool::RouteClarify,
-                Tool::RouteClarify => break,
+                Tool::RouteClarify => Tool::ListConflicts,
+                Tool::ListConflicts => Tool::GetConflict,
+                Tool::GetConflict => Tool::DismissConflict,
+                Tool::DismissConflict => Tool::AdoptExistingConflict,
+                Tool::AdoptExistingConflict => Tool::MergeConflict,
+                Tool::MergeConflict => break,
             };
         }
         n
@@ -1699,6 +1900,11 @@ impl Tool {
                 Tool::DeleteNode => 12,
                 Tool::CreateNodesFromMarkdown => 13,
                 Tool::RouteClarify => 14,
+                Tool::ListConflicts => 15,
+                Tool::GetConflict => 16,
+                Tool::DismissConflict => 17,
+                Tool::AdoptExistingConflict => 18,
+                Tool::MergeConflict => 19,
             };
             assert!(expected == i, "Tool::ALL lists a variant out of order");
             i += 1;
@@ -1727,6 +1933,11 @@ impl Tool {
             Tool::DeleteNode => "delete_node",
             Tool::CreateNodesFromMarkdown => "create_nodes_from_markdown",
             Tool::RouteClarify => super::routing::ROUTE_CLARIFY_TOOL,
+            Tool::ListConflicts => "list_conflicts",
+            Tool::GetConflict => "get_conflict",
+            Tool::DismissConflict => "dismiss_conflict",
+            Tool::AdoptExistingConflict => "adopt_existing_conflict",
+            Tool::MergeConflict => "merge_conflict",
         }
     }
 
@@ -1755,6 +1966,11 @@ impl Tool {
             Tool::DeleteNode => def_delete_node(),
             Tool::CreateNodesFromMarkdown => def_create_nodes_from_markdown(),
             Tool::RouteClarify => def_route_clarify(),
+            Tool::ListConflicts => def_list_conflicts(),
+            Tool::GetConflict => def_get_conflict(),
+            Tool::DismissConflict => def_dismiss_conflict(),
+            Tool::AdoptExistingConflict => def_adopt_existing_conflict(),
+            Tool::MergeConflict => def_merge_conflict(),
         }
     }
 
@@ -1780,6 +1996,11 @@ impl Tool {
             Tool::DeleteNode => "node deletion",
             Tool::CreateNodesFromMarkdown => "markdown import",
             Tool::RouteClarify => "clarifying question",
+            Tool::ListConflicts => "conflict listing",
+            Tool::GetConflict => "conflict lookup",
+            Tool::DismissConflict => "conflict dismissal",
+            Tool::AdoptExistingConflict => "conflict resolution",
+            Tool::MergeConflict => "node merge",
         }
     }
 
@@ -1798,13 +2019,25 @@ impl Tool {
             | Tool::GetNode
             | Tool::GetRelatedNodes
             | Tool::SearchSkills
-            | Tool::RouteClarify => WriteSemantics::Read,
+            | Tool::RouteClarify
+            | Tool::ListConflicts
+            | Tool::GetConflict => WriteSemantics::Read,
 
             // Idempotent writes. Setting a node to the same content, or a task
             // to the same status, twice is a no-op — the second call is not a
             // duplicate, and refusing it would break a user legitimately
             // re-asserting a value.
-            Tool::UpdateNode | Tool::UpdateTaskStatus => WriteSemantics::IdempotentWrite,
+            //
+            // dismiss_conflict/adopt_existing_conflict are the same shape: a
+            // conflict record's `status`/`resolution` columns are overwritten
+            // unconditionally on every `resolve_conflict` call (no
+            // already-resolved guard, unlike detection's own upsert), so
+            // calling either again with the same conflict_id/args re-asserts
+            // the same terminal state instead of duplicating anything.
+            Tool::UpdateNode
+            | Tool::UpdateTaskStatus
+            | Tool::DismissConflict
+            | Tool::AdoptExistingConflict => WriteSemantics::IdempotentWrite,
 
             // Not idempotent, but not guarded either. A repeated `add_fields`
             // or `add_relationships` rejects the field as already present, and
@@ -1821,12 +2054,16 @@ impl Tool {
 
             // Writes whose repeat produces a second, unwanted copy of the
             // user's data — or, for a delete, re-attacks a node the record
-            // already shows removed.
+            // already shows removed. merge_conflict belongs here for the same
+            // reason as delete_node: the loser is archived by the first call,
+            // so a repeat with the same loser_id re-attacks an already-merged
+            // node rather than being a safe no-op.
             Tool::CreateNode
             | Tool::CreateSchema
             | Tool::CreateRelationship
             | Tool::CreateNodesFromMarkdown
-            | Tool::DeleteNode => WriteSemantics::DuplicableWrite,
+            | Tool::DeleteNode
+            | Tool::MergeConflict => WriteSemantics::DuplicableWrite,
         }
     }
 
@@ -1862,7 +2099,11 @@ impl Tool {
     /// default to "safe", it has to be classified by whoever adds it.
     pub fn removes_user_data(self) -> bool {
         match self {
-            Tool::DeleteNode => true,
+            // merge_conflict archives the loser node — the same "gone from
+            // under the user" shape as delete_node, just reached via a
+            // different verb. Deliberately widening the pinned destructive
+            // set below rather than letting this default to false.
+            Tool::DeleteNode | Tool::MergeConflict => true,
             Tool::SearchNodes
             | Tool::ResolveQuery
             | Tool::SearchSemantic
@@ -1876,7 +2117,11 @@ impl Tool {
             | Tool::CreateNode
             | Tool::CreateSchema
             | Tool::CreateRelationship
-            | Tool::CreateNodesFromMarkdown => false,
+            | Tool::CreateNodesFromMarkdown
+            | Tool::ListConflicts
+            | Tool::GetConflict
+            | Tool::DismissConflict
+            | Tool::AdoptExistingConflict => false,
         }
     }
 
@@ -1901,7 +2146,12 @@ impl Tool {
             | Tool::SearchSemantic
             | Tool::GetNode
             | Tool::GetRelatedNodes => true,
-            Tool::SearchSkills | Tool::RouteClarify => false,
+            // get_conflict/list_conflicts return conflict-journal records, not
+            // graph nodes — a conflict id is not the kind of entity "that" can
+            // resolve against across turns.
+            Tool::SearchSkills | Tool::RouteClarify | Tool::ListConflicts | Tool::GetConflict => {
+                false
+            }
             Tool::CreateNode
             | Tool::UpdateNode
             | Tool::CreateSchema
@@ -1909,7 +2159,10 @@ impl Tool {
             | Tool::UpdateTaskStatus
             | Tool::CreateRelationship
             | Tool::DeleteNode
-            | Tool::CreateNodesFromMarkdown => false,
+            | Tool::CreateNodesFromMarkdown
+            | Tool::DismissConflict
+            | Tool::AdoptExistingConflict
+            | Tool::MergeConflict => false,
         }
     }
 
@@ -1945,7 +2198,12 @@ impl Tool {
             | Tool::SearchSkills
             | Tool::DeleteNode
             | Tool::CreateNodesFromMarkdown
-            | Tool::RouteClarify => false,
+            | Tool::RouteClarify
+            | Tool::ListConflicts
+            | Tool::GetConflict
+            | Tool::DismissConflict
+            | Tool::AdoptExistingConflict
+            | Tool::MergeConflict => false,
         }
     }
 }
@@ -3304,6 +3562,168 @@ impl GraphToolExecutor {
         ))
     }
 
+    async fn exec_list_conflicts(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: ListConflictsParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "list_conflicts".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let ns = self.node_service()?;
+
+        let records = if let Some(node_id) = params.node {
+            ns.conflicts_for_node(strip_node_uri(&node_id))
+                .await
+                .map_err(|e| ToolError::ExecutionFailed(format!("list_conflicts failed: {e}")))?
+        } else {
+            let status = params
+                .status
+                .as_deref()
+                .map(ConflictStatus::from_str)
+                .transpose()
+                .map_err(|reason| ToolError::InvalidArguments {
+                    tool: "list_conflicts".to_string(),
+                    reason,
+                })?;
+            let kind = params
+                .kind
+                .as_deref()
+                .map(ConflictKind::from_str)
+                .transpose()
+                .map_err(|reason| ToolError::InvalidArguments {
+                    tool: "list_conflicts".to_string(),
+                    reason,
+                })?;
+            ns.list_conflicts(status, kind, params.limit)
+                .await
+                .map_err(|e| ToolError::ExecutionFailed(format!("list_conflicts failed: {e}")))?
+        };
+
+        Ok(ok_result(
+            tool_call_id,
+            "list_conflicts",
+            json!({ "count": records.len(), "conflicts": records }),
+        ))
+    }
+
+    async fn exec_get_conflict(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: GetConflictParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "get_conflict".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let ns = self.node_service()?;
+
+        match ns.get_conflict(&params.conflict_id).await {
+            Ok(Some(record)) => Ok(ok_result(tool_call_id, "get_conflict", json!(record))),
+            Ok(None) => Ok(error_result(
+                tool_call_id,
+                "get_conflict",
+                &format!("no conflict record found with id '{}'", params.conflict_id),
+            )),
+            Err(e) => Ok(error_result(
+                tool_call_id,
+                "get_conflict",
+                &format!("get_conflict failed: {e}"),
+            )),
+        }
+    }
+
+    async fn exec_dismiss_conflict(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: DismissConflictParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "dismiss_conflict".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let ns = self.node_service()?;
+
+        let record = ns
+            .resolve_conflict(&params.conflict_id, Resolution::Dismiss)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("dismiss_conflict failed: {e}")))?;
+
+        Ok(ok_result(tool_call_id, "dismiss_conflict", json!(record)))
+    }
+
+    async fn exec_adopt_existing_conflict(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: AdoptExistingConflictParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "adopt_existing_conflict".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let ns = self.node_service()?;
+
+        let resolution = Resolution::AdoptExisting {
+            adopted: strip_node_uri(&params.keep).to_string(),
+        };
+        let record = ns
+            .resolve_conflict(&params.conflict_id, resolution)
+            .await
+            .map_err(|e| {
+                ToolError::ExecutionFailed(format!("adopt_existing_conflict failed: {e}"))
+            })?;
+
+        Ok(ok_result(
+            tool_call_id,
+            "adopt_existing_conflict",
+            json!(record),
+        ))
+    }
+
+    async fn exec_merge_conflict(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: MergeConflictParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "merge_conflict".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let ns = self.node_service()?;
+
+        let outcome = ns
+            .merge_nodes(
+                strip_node_uri(&params.survivor_id),
+                strip_node_uri(&params.loser_id),
+                params.conflict_id.as_deref(),
+            )
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("merge_conflict failed: {e}")))?;
+
+        Ok(ok_result(
+            tool_call_id,
+            "merge_conflict",
+            json!({
+                "survivor_id": node_uri(&outcome.survivor_id),
+                "loser_id": node_uri(&outcome.loser_id),
+                "properties_merged": outcome.properties_merged,
+                "edges_repointed": outcome.edges_repointed,
+                "edges_dropped": outcome.edges_dropped,
+            }),
+        ))
+    }
+
     async fn exec_delete_node(
         &self,
         tool_call_id: &str,
@@ -3594,6 +4014,13 @@ impl AgentToolExecutor for GraphToolExecutor {
                     .await
             }
             Tool::RouteClarify => self.exec_route_clarify(&tool_call_id, args),
+            Tool::ListConflicts => self.exec_list_conflicts(&tool_call_id, args).await,
+            Tool::GetConflict => self.exec_get_conflict(&tool_call_id, args).await,
+            Tool::DismissConflict => self.exec_dismiss_conflict(&tool_call_id, args).await,
+            Tool::AdoptExistingConflict => {
+                self.exec_adopt_existing_conflict(&tool_call_id, args).await
+            }
+            Tool::MergeConflict => self.exec_merge_conflict(&tool_call_id, args).await,
         }
     }
 
@@ -4013,7 +4440,7 @@ mod tests {
     fn definitions_count() {
         // Derived from the registry: one definition per `Tool::ALL` entry.
         assert_eq!(all_tool_definitions().len(), Tool::ALL.len());
-        assert_eq!(all_tool_definitions().len(), 15);
+        assert_eq!(all_tool_definitions().len(), 20);
     }
 
     #[test]
@@ -4052,8 +4479,10 @@ mod tests {
             .collect();
         // Pinned deliberately rather than asserted loosely: adding a second
         // destructive tool should make an author confirm the routing bar is
-        // what they want for it, not slip in silently.
-        assert_eq!(destructive, vec!["delete_node"]);
+        // what they want for it, not slip in silently. merge_conflict joins
+        // delete_node here because it archives the loser node — the same
+        // "gone from under the user" shape, reached via a different verb.
+        assert_eq!(destructive, vec!["delete_node", "merge_conflict"]);
     }
 
     #[test]
