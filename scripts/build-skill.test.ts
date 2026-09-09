@@ -442,6 +442,37 @@ describe("compileInstaller", () => {
     );
   });
 
+  test("keeps outfile's extension on the compile target", async () => {
+    // The regression this guards: `bun build --compile` on Windows silently
+    // appends `.exe` to a target that doesn't already end in it, so a naive
+    // `${outfile}.tmp-${pid}` target (extension-less) gets written to a
+    // different path than the one compileInstaller then tries to rename,
+    // and the rename 404s. The tmp marker must land before the extension,
+    // not after, on every platform outfile might carry one on.
+    const outfile = join(root, "installer.exe");
+    const targets: string[] = [];
+
+    await compileInstaller("entry.ts", outfile, async (_entry, target) => {
+      targets.push(target);
+      writeFileSync(target, "compiled bytes");
+    });
+
+    expect(targets[0]).toMatch(/\.exe$/);
+    expect(readFileSync(outfile, "utf8")).toBe("compiled bytes");
+  });
+
+  test("sweeps an orphaned temp file for an outfile that carries an extension", async () => {
+    const outfile = join(root, "installer.exe");
+    writeFileSync(join(root, "installer.tmp-999999.exe"), "orphaned 58MB partial");
+
+    await compileInstaller("entry.ts", outfile, async (_entry, target) => {
+      writeFileSync(target, "compiled bytes");
+    });
+
+    expect(listFilesRecursive(root).filter((rel) => rel.includes(".tmp-"))).toEqual([]);
+    expect(readFileSync(outfile, "utf8")).toBe("compiled bytes");
+  });
+
   test("rejects with the compiler's own error, unwrapped", async () => {
     const outfile = join(root, "installer");
     const failure = new Error("bun build exited with code 1");
