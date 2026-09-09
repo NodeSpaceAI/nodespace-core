@@ -185,6 +185,12 @@ async fn merge(client: &mut NodeClient, args: MergeArgs, json_out: bool) -> Resu
             let record = response
                 .conflict
                 .with_context(|| format!("no conflict record found with id '{conflict_id}'"))?;
+            // Every conflict kind resolvable today names exactly two
+            // participants (see conflict.rs's `node_ids: Vec<String>` doc
+            // comment) — so "the other one" is unambiguous once `--survivor`
+            // is excluded. A record with more or fewer participants isn't a
+            // shape this code can infer a loser from, so it refuses rather
+            // than guess; the caller falls back to `--loser` explicitly.
             let other: Vec<&String> = record
                 .node_ids
                 .iter()
