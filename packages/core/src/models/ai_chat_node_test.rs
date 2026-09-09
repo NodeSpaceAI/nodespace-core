@@ -247,6 +247,7 @@ mod tests {
             timestamp: None,
             reasoning: None,
             completed_writes: Vec::new(),
+            resolved_entities: Vec::new(),
             question: None,
             options: Vec::new(),
         });

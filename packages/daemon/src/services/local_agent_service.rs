@@ -24,10 +24,11 @@ use nodespace_agent::local_agent::agent_loop::{
 };
 use nodespace_agent::local_agent::model_manager::GgufModelManager;
 use nodespace_agent::local_agent::tools::{
-    is_cross_turn_guarded_tool, is_write_tool, GraphToolExecutor, SharedEmbeddingService,
+    is_cross_turn_guarded_tool, is_write_tool, resolves_entities_tool, GraphToolExecutor,
+    SharedEmbeddingService,
 };
 use nodespace_core::models::{
-    AiChatCompletedWrite, AiChatMessage, AiChatNode, NodeFilter, NodeUpdate,
+    AiChatCompletedWrite, AiChatMessage, AiChatNode, AiChatResolvedEntity, NodeFilter, NodeUpdate,
 };
 use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceError};
 use tokio::sync::{broadcast, Mutex, RwLock};
@@ -822,6 +823,7 @@ impl LocalAgentServiceImpl {
                         &result.response,
                         result.reasoning.as_deref(),
                         completed_writes_from(&result.tool_calls_made),
+                        resolved_entities_from(&result.tool_calls_made),
                         result.clarify.as_ref(),
                     )
                     .await
@@ -865,7 +867,14 @@ impl LocalAgentServiceImpl {
                         // avoid repeating the same failing action blindly.
                         let error_text = format!("This turn failed and could not complete: {e}");
                         match self
-                            .append_assistant_message(&node_id, &error_text, None, Vec::new(), None)
+                            .append_assistant_message(
+                                &node_id,
+                                &error_text,
+                                None,
+                                Vec::new(),
+                                Vec::new(),
+                                None,
+                            )
                             .await
                         {
                             Ok(()) => needs_idle_reset = false,
@@ -1041,6 +1050,7 @@ impl LocalAgentServiceImpl {
         content: &str,
         reasoning: Option<&str>,
         completed_writes: Vec<AiChatCompletedWrite>,
+        resolved_entities: Vec<AiChatResolvedEntity>,
         clarify: Option<&ClarifyPrompt>,
     ) -> Result<(), String> {
         for attempt in 0..MAX_WRITE_ATTEMPTS {
@@ -1067,6 +1077,7 @@ impl LocalAgentServiceImpl {
                 timestamp: Some(chrono::Utc::now().to_rfc3339()),
                 reasoning,
                 completed_writes: completed_writes.clone(),
+                resolved_entities: resolved_entities.clone(),
                 question: clarify.map(|c| c.question.clone()),
                 options: clarify.map(|c| c.options.clone()).unwrap_or_default(),
             });
@@ -2165,6 +2176,92 @@ pub fn completed_writes_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatCo
         .collect()
 }
 
+/// Maximum distinct entities carried forward from one turn's reads.
+///
+/// A read-only turn can surface many nodes (a broad `search_nodes` call); only
+/// the ones most likely to be the subject of a follow-up ("that", "it") are
+/// worth the context cost of remembering. Capped by count, not by time — this
+/// mirrors the per-turn recompute-from-history model the rest of the ephemeral
+/// session already uses, rather than introducing a TTL concept nothing else
+/// here has.
+const MAX_RESOLVED_ENTITIES: usize = 20;
+
+/// Pull the graph entities a turn's read-only tool calls surfaced.
+///
+/// The read-side counterpart to `completed_writes_from`. Reads never get a
+/// structured record today — only the assistant's prose reply survives once
+/// the ephemeral session ends — so a turn that reports "one task node" leaves
+/// nothing for a follow-up ("update that") to resolve against. This derives
+/// that record from the same tool-execution results `completed_writes_from`
+/// already reads, filtered to tools whose results describe concrete nodes
+/// (`Tool::resolves_entities`) instead of tools that write.
+///
+/// Failed calls are excluded, same as writes: a lookup that errored surfaced
+/// nothing. Deduplicated by node id (last occurrence wins, so a later, more
+/// specific mention of the same node overrides an earlier one) and capped to
+/// `MAX_RESOLVED_ENTITIES` distinct entities, most-recent-first.
+pub fn resolved_entities_from(executions: &[ToolExecutionRecord]) -> Vec<AiChatResolvedEntity> {
+    // Every entity-resolving tool's per-node JSON uses the same `id`/`title`
+    // key names (see `run_node_query`, `exec_get_node`, `exec_get_related_nodes`
+    // in `nodespace-agent`), but `id` itself is not uniform: the raw
+    // `get_node` payload carries a bare UUID while every list/query tool's
+    // summary carries the `nodespace://`-prefixed URI form. Node identity
+    // elsewhere in this file (`completed_writes_from`) is stored exactly as
+    // the tool reported it rather than normalised, so the same choice is made
+    // here — the node id is opaque to this function, just captured verbatim.
+    let node_type_of = |v: &serde_json::Value| -> Option<String> {
+        v.get("nodeType")
+            .or_else(|| v.get("type"))
+            .and_then(|t| t.as_str())
+            .map(str::to_string)
+    };
+    let entity_from_node = |v: &serde_json::Value| -> Option<AiChatResolvedEntity> {
+        let node_id = v.get("id").and_then(|id| id.as_str())?.to_string();
+        let title = v.get("title").and_then(|t| t.as_str()).map(clip_summary);
+        let node_type = node_type_of(v);
+        Some(AiChatResolvedEntity {
+            node_id,
+            title,
+            node_type,
+        })
+    };
+
+    let mut entities: Vec<AiChatResolvedEntity> = Vec::new();
+    for r in executions
+        .iter()
+        .filter(|r| !r.is_error && resolves_entities_tool(&r.name))
+    {
+        // `get_node` returns a single node object at the top level.
+        // `search_nodes`/`get_related_nodes` nest a list under `"nodes"`,
+        // `search_semantic` under `"results"`, and `resolve_query` returns
+        // either a single resolved node (`"resolved": true`, fields at top
+        // level) or a `"candidates"` list when ambiguous.
+        if let Some(candidates) = r
+            .result
+            .get("nodes")
+            .or_else(|| r.result.get("results"))
+            .or_else(|| r.result.get("candidates"))
+            .and_then(|v| v.as_array())
+        {
+            entities.extend(candidates.iter().filter_map(entity_from_node));
+        } else if let Some(entity) = entity_from_node(&r.result) {
+            entities.push(entity);
+        }
+    }
+
+    // Dedup by node id, keeping the last (most recent) occurrence, then cap
+    // to the most recent MAX_RESOLVED_ENTITIES distinct entities.
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped: Vec<AiChatResolvedEntity> = Vec::new();
+    for entity in entities.into_iter().rev() {
+        if seen.insert(entity.node_id.clone()) {
+            deduped.push(entity);
+        }
+    }
+    deduped.truncate(MAX_RESOLVED_ENTITIES);
+    deduped
+}
+
 /// Rebuild the duplicate-guard's view of earlier turns from persisted messages.
 ///
 /// Filtering to the guarded tools here keeps the set small, since the
@@ -2213,6 +2310,43 @@ fn completed_writes_message(writes: &[AiChatCompletedWrite]) -> Option<ChatMessa
         }
         if let Some(ref id) = w.node_id {
             lines.push_str(&format!(" -> {id}"));
+        }
+        lines.push('\n');
+    }
+    Some(ChatMessage::text(
+        Role::System,
+        lines.trim_end().to_string(),
+    ))
+}
+
+/// Render persisted resolved entities as a system-role note for the rebuilt
+/// history.
+///
+/// The read-side counterpart to `completed_writes_message`: a turn's prose
+/// reply ("one task node") carries no node id, so a follow-up ("update that")
+/// has nothing concrete to resolve against. This restates the same reads as a
+/// fact-of-record the model can match a pronoun/ellipsis reference against,
+/// the same way `completed_writes_message` lets it match "that" for a write.
+///
+/// `Role::System` for the same reason `completed_writes_message` uses it, not
+/// `Role::Tool`: no tool-call turn precedes it in persisted history, so a
+/// tool-role message here would be an orphan result.
+fn resolved_entities_message(entities: &[AiChatResolvedEntity]) -> Option<ChatMessage> {
+    if entities.is_empty() {
+        return None;
+    }
+    let mut lines = String::from(
+        "Record of graph entities looked up in the previous turn. If the \
+         user's next message refers to one by pronoun or description \
+         (\"that\", \"it\", \"the task\"), use the matching id below:\n",
+    );
+    for e in entities {
+        lines.push_str(&format!("- {}", e.node_id));
+        if let Some(ref t) = e.title {
+            lines.push_str(&format!(" \"{t}\""));
+        }
+        if let Some(ref nt) = e.node_type {
+            lines.push_str(&format!(" ({nt})"));
         }
         lines.push('\n');
     }
@@ -2449,12 +2583,13 @@ pub fn node_history_from_messages(messages: Vec<AiChatMessage>) -> Vec<ChatMessa
             let mut msg = ChatMessage::text(role, content);
             // Round-trip any persisted reasoning so reloaded history retains it.
             msg.reasoning = m.reasoning;
-            // Follow the assistant turn with the record of what it actually wrote,
-            // so the next turn can tell a completed instruction from a pending one.
-            match completed_writes_message(&m.completed_writes) {
-                Some(evidence) => vec![msg, evidence],
-                None => vec![msg],
-            }
+            // Follow the assistant turn with the record of what it actually wrote
+            // and/or looked up, so the next turn can tell a completed instruction
+            // from a pending one, and can resolve a pronoun back to a node id.
+            let mut out = vec![msg];
+            out.extend(completed_writes_message(&m.completed_writes));
+            out.extend(resolved_entities_message(&m.resolved_entities));
+            out
         })
         .collect()
 }
@@ -2772,6 +2907,7 @@ mod tests {
             timestamp: Some(chrono::Utc::now().to_rfc3339()),
             reasoning: None,
             completed_writes: Vec::new(),
+            resolved_entities: Vec::new(),
             question: None,
             options: Vec::new(),
         });
@@ -3786,7 +3922,7 @@ mod tests {
             "a status write to a missing node must return Err"
         );
         assert!(
-            svc.append_assistant_message(&node_id, "Reply.", None, Vec::new(), None)
+            svc.append_assistant_message(&node_id, "Reply.", None, Vec::new(), Vec::new(), None)
                 .await
                 .is_err(),
             "an append to a missing node must return Err"
@@ -3928,6 +4064,7 @@ mod tests {
             "The answer.",
             Some("I reasoned about it."),
             Vec::new(),
+            Vec::new(),
             None,
         )
         .await
@@ -3964,6 +4101,7 @@ mod tests {
              - Track who owes me money\n- Search existing notes",
             None,
             Vec::new(),
+            Vec::new(),
             Some(&clarify),
         )
         .await
@@ -3997,9 +4135,16 @@ mod tests {
         let (svc, node_service, _tempdir) = test_service().await;
         let node_id = create_ai_chat_node(&node_service).await;
 
-        svc.append_assistant_message(&node_id, "Here's your answer.", None, Vec::new(), None)
-            .await
-            .expect("append");
+        svc.append_assistant_message(
+            &node_id,
+            "Here's your answer.",
+            None,
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("append");
 
         let messages = load_chat_messages(&node_service, &node_id).await;
         let assistant = messages
@@ -4045,6 +4190,7 @@ mod tests {
             "I have added \"Kind of Blue\".",
             None,
             writes,
+            Vec::new(),
             None,
         )
         .await
@@ -4117,16 +4263,182 @@ mod tests {
         assert!(writes.is_empty());
     }
 
-    /// A turn that only read must not emit an evidence message at all — an empty
-    /// "writes completed" block would be noise in every prompt.
+    /// `resolved_entities_from` is the read-side counterpart to
+    /// `completed_writes_from`: it must pull node identity out of every
+    /// entity-resolving tool's result shape (`search_nodes`'s `"nodes"` list,
+    /// `get_node`'s single top-level node), and must NOT record a tool that
+    /// merely writes (`create_node`) even though it also reports an id.
+    #[test]
+    fn resolved_entities_from_reads_node_and_search_result_shapes() {
+        let entities = resolved_entities_from(&[
+            exec(
+                "search_nodes",
+                serde_json::json!({"query": "tasks"}),
+                serde_json::json!({
+                    "count": 1,
+                    "nodes": [
+                        {"id": "nodespace://t1", "title": "Finish the report", "type": "task"}
+                    ]
+                }),
+            ),
+            exec(
+                "get_node",
+                serde_json::json!({"id": "nodespace://t1"}),
+                serde_json::json!({"id": "nodespace://t1", "title": "Finish the report", "nodeType": "task"}),
+            ),
+            exec(
+                "create_node",
+                serde_json::json!({"content": "New task"}),
+                serde_json::json!({"id": "nodespace://t2"}),
+            ),
+        ]);
+
+        // The write is excluded even though its result also carries an "id".
+        assert!(
+            !entities.iter().any(|e| e.node_id == "nodespace://t2"),
+            "a write tool's result must not be recorded as a resolved entity: {entities:?}"
+        );
+
+        let t1 = entities
+            .iter()
+            .find(|e| e.node_id == "nodespace://t1")
+            .expect("search_nodes/get_node result must resolve nodespace://t1");
+        assert_eq!(t1.title.as_deref(), Some("Finish the report"));
+        assert_eq!(t1.node_type.as_deref(), Some("task"));
+    }
+
+    /// A failed read surfaced nothing; recording it would tell the next turn
+    /// about a node lookup that never actually returned data.
+    #[test]
+    fn failed_reads_resolve_no_entities() {
+        let failed = ToolExecutionRecord {
+            tool_call_id: "tc_1".into(),
+            name: "get_node".into(),
+            args: serde_json::json!({"id": "n1"}),
+            result: serde_json::json!({"error": "not found"}),
+            is_error: true,
+            duration_ms: 1,
+        };
+        assert!(resolved_entities_from(&[failed]).is_empty());
+    }
+
+    /// Duplicate node ids across multiple read calls in one turn collapse to a
+    /// single entry, keeping the most recent occurrence.
+    #[test]
+    fn resolved_entities_are_deduped_by_node_id() {
+        let entities = resolved_entities_from(&[
+            exec(
+                "get_node",
+                serde_json::json!({"id": "nodespace://t1"}),
+                serde_json::json!({"id": "nodespace://t1", "title": "Old title", "nodeType": "task"}),
+            ),
+            exec(
+                "get_node",
+                serde_json::json!({"id": "nodespace://t1"}),
+                serde_json::json!({"id": "nodespace://t1", "title": "Renamed title", "nodeType": "task"}),
+            ),
+        ]);
+        assert_eq!(
+            entities.len(),
+            1,
+            "duplicate node ids must collapse: {entities:?}"
+        );
+        assert_eq!(entities[0].title.as_deref(), Some("Renamed title"));
+    }
+
+    /// A broad search can surface far more nodes than are worth carrying
+    /// forward; the cap keeps the per-turn context cost bounded regardless of
+    /// how many results a single `search_nodes` call returns.
+    #[test]
+    fn resolved_entities_are_capped_at_the_maximum() {
+        let nodes: Vec<serde_json::Value> = (0..MAX_RESOLVED_ENTITIES + 10)
+            .map(|i| {
+                serde_json::json!({"id": format!("nodespace://n{i}"), "title": format!("Node {i}"), "type": "task"})
+            })
+            .collect();
+        let entities = resolved_entities_from(&[exec(
+            "search_nodes",
+            serde_json::json!({"query": "everything"}),
+            serde_json::json!({"count": nodes.len(), "nodes": nodes}),
+        )]);
+        assert_eq!(entities.len(), MAX_RESOLVED_ENTITIES);
+    }
+
+    /// The regression this issue exists to fix: a read-only turn ("how many
+    /// tasks do we have") resolves a node, and the NEXT turn's rebuilt history
+    /// must still carry that node's id — not just the prose reply — so a
+    /// follow-up ("update that status") has something concrete to resolve
+    /// "that" against.
     #[tokio::test]
-    async fn read_only_turn_adds_no_evidence_message() {
+    async fn resolved_entity_from_a_read_only_turn_is_visible_in_the_next_turns_history() {
         let (svc, node_service, _tempdir) = test_service().await;
         let node_id = create_ai_chat_node(&node_service).await;
 
-        svc.append_assistant_message(&node_id, "I found 3 tasks.", None, Vec::new(), None)
-            .await
-            .expect("append");
+        let entities = resolved_entities_from(&[exec(
+            "search_nodes",
+            serde_json::json!({"query": "tasks", "node_type": "task"}),
+            serde_json::json!({
+                "count": 1,
+                "nodes": [
+                    {"id": "nodespace://one-task", "title": "Finish the report", "type": "task"}
+                ]
+            }),
+        )]);
+        assert_eq!(
+            entities.len(),
+            1,
+            "the read must resolve exactly one entity"
+        );
+
+        svc.append_assistant_message(
+            &node_id,
+            "You have one task node: \"Finish the report\".",
+            None,
+            Vec::new(),
+            entities,
+            None,
+        )
+        .await
+        .expect("append");
+
+        // What the NEXT turn actually sees.
+        let history = load_node_history(&node_service, &node_id).await;
+
+        let evidence = history
+            .iter()
+            .find(|m| matches!(m.role, Role::System))
+            .expect(
+                "next turn must see durable evidence of the resolved entity; without it the \
+                 model cannot resolve a follow-up pronoun (\"that\", \"it\") back to a node id",
+            );
+        assert!(evidence.content.contains("nodespace://one-task"));
+        assert!(evidence.content.contains("Finish the report"));
+
+        // Never an orphan tool-role message, for the same reason as writes.
+        assert!(
+            !history.iter().any(|m| matches!(m.role, Role::Tool)),
+            "evidence must not be injected as an orphan tool result"
+        );
+    }
+
+    /// A turn that read but resolved nothing (no writes, no entities) must not
+    /// emit an evidence message at all — an empty "writes completed"/"entities
+    /// resolved" block would be noise in every prompt.
+    #[tokio::test]
+    async fn read_only_turn_with_no_resolved_entities_adds_no_evidence_message() {
+        let (svc, node_service, _tempdir) = test_service().await;
+        let node_id = create_ai_chat_node(&node_service).await;
+
+        svc.append_assistant_message(
+            &node_id,
+            "I found 3 tasks.",
+            None,
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("append");
 
         let history = load_node_history(&node_service, &node_id).await;
         assert!(!history.iter().any(|m| matches!(m.role, Role::System)));
@@ -4225,12 +4537,26 @@ mod tests {
         let node_id = create_ai_chat_node(&node_service).await;
 
         // None and whitespace-only both persist no reasoning field.
-        svc.append_assistant_message(&node_id, "Plain answer.", None, Vec::new(), None)
-            .await
-            .expect("append none");
-        svc.append_assistant_message(&node_id, "Another answer.", Some("   "), Vec::new(), None)
-            .await
-            .expect("append whitespace");
+        svc.append_assistant_message(
+            &node_id,
+            "Plain answer.",
+            None,
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("append none");
+        svc.append_assistant_message(
+            &node_id,
+            "Another answer.",
+            Some("   "),
+            Vec::new(),
+            Vec::new(),
+            None,
+        )
+        .await
+        .expect("append whitespace");
 
         let history = load_node_history(&node_service, &node_id).await;
         let assistants: Vec<_> = history
@@ -4538,6 +4864,7 @@ model = "model-b"
                     canonical_args: "sha256:abc123".to_string(),
                 },
             ],
+            resolved_entities: Vec::new(),
             question: None,
             options: Vec::new(),
         }];
@@ -4575,6 +4902,7 @@ model = "model-b"
                 canonical_args: r#"{"id":"nodespace://n1","field_values":{"status":"paid"}}"#
                     .to_string(),
             }],
+            resolved_entities: Vec::new(),
             question: None,
             options: Vec::new(),
         }]);
@@ -4601,6 +4929,7 @@ model = "model-b"
             timestamp: None,
             reasoning: None,
             completed_writes: vec![write],
+            resolved_entities: Vec::new(),
             question: None,
             options: Vec::new(),
         }
@@ -4613,6 +4942,7 @@ model = "model-b"
             timestamp: None,
             reasoning: None,
             completed_writes: vec![],
+            resolved_entities: Vec::new(),
             question: None,
             options: Vec::new(),
         }
@@ -4923,6 +5253,7 @@ model = "model-b"
                 timestamp: None,
                 reasoning: None,
                 completed_writes: vec![],
+                resolved_entities: Vec::new(),
                 question: None,
                 options: Vec::new(),
             },
@@ -5105,6 +5436,7 @@ model = "model-b"
                 timestamp: None,
                 reasoning: None,
                 completed_writes: vec![],
+                resolved_entities: Vec::new(),
                 question: None,
                 options: Vec::new(),
             },
@@ -5119,6 +5451,7 @@ model = "model-b"
                     summary: Some("Redwood Summit".to_string()),
                     canonical_args: r#"{"content":"Redwood Summit"}"#.to_string(),
                 }],
+                resolved_entities: Vec::new(),
                 question: None,
                 options: Vec::new(),
             },
@@ -5187,6 +5520,7 @@ model = "model-b"
                     canonical_args: r#"{"schema_id":"s1"}"#.to_string(),
                 },
             ],
+            resolved_entities: Vec::new(),
             question: None,
             options: Vec::new(),
         }];

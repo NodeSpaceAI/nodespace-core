@@ -1880,6 +1880,39 @@ impl Tool {
         }
     }
 
+    /// Whether a successful call can surface a concrete graph node whose
+    /// identity is worth remembering across turns.
+    ///
+    /// A strict subset of the reads (`write_semantics() == Read`):
+    /// `search_nodes`/`resolve_query`/`search_semantic`/`get_node`/
+    /// `get_related_nodes` return actual graph nodes, so a result like "one
+    /// task node" can be tied to the node id the next turn needs to resolve
+    /// "that" against. `search_skills` returns skill definitions, not graph
+    /// nodes, and `route_clarify` returns a question, not a lookup result —
+    /// neither has a node identity worth persisting.
+    ///
+    /// An exhaustive match rather than a list, for the same reason
+    /// [`Tool::write_semantics`] is: a tool added later must be classified by
+    /// whoever adds it, not silently default to either answer.
+    pub fn resolves_entities(self) -> bool {
+        match self {
+            Tool::SearchNodes
+            | Tool::ResolveQuery
+            | Tool::SearchSemantic
+            | Tool::GetNode
+            | Tool::GetRelatedNodes => true,
+            Tool::SearchSkills | Tool::RouteClarify => false,
+            Tool::CreateNode
+            | Tool::UpdateNode
+            | Tool::CreateSchema
+            | Tool::UpdateSchema
+            | Tool::UpdateTaskStatus
+            | Tool::CreateRelationship
+            | Tool::DeleteNode
+            | Tool::CreateNodesFromMarkdown => false,
+        }
+    }
+
     /// Whether this tool has a required parameter whose description sends the
     /// model to the `EXISTING SCHEMAS` block that only Stage-2 routing
     /// (`routing::render_candidates_for_prompt`) injects.
@@ -1969,6 +2002,15 @@ pub fn is_cross_turn_guarded_tool(tool: &str) -> bool {
 /// Whether a tool changes graph state, by wire name. Computed from the registry.
 pub fn is_write_tool(tool: &str) -> bool {
     Tool::from_name(tool).is_some_and(Tool::is_write)
+}
+
+/// Whether a tool's successful result can surface a concrete graph node, by
+/// wire name. Computed from the registry.
+///
+/// An unrecognised name resolves nothing — same fail-open direction as
+/// [`is_write_tool`]: an unknown tool is not treated as evidence either way.
+pub fn resolves_entities_tool(tool: &str) -> bool {
+    Tool::from_name(tool).is_some_and(Tool::resolves_entities)
 }
 
 /// Whether a tool irreversibly removes user data, by wire name. Computed from
@@ -4003,6 +4045,60 @@ mod tests {
         // and load-bearing — see `removes_user_data_tool`'s doc comment.
         assert!(!removes_user_data_tool("some_external_tool"));
         assert!(removes_user_data_tool("delete_node"));
+    }
+
+    #[test]
+    fn entity_resolving_tools_are_a_strict_subset_of_reads() {
+        // A tool that surfaces a concrete node must itself be a read — the
+        // cross-turn duplicate guard already refuses to let a write repeat, so
+        // a write masquerading as entity-resolving would double-count the same
+        // node in two unrelated mechanisms.
+        for tool in Tool::ALL {
+            if tool.resolves_entities() {
+                assert!(
+                    !tool.is_write(),
+                    "{} resolves entities but is classified as a write",
+                    tool.name()
+                );
+            }
+        }
+
+        let resolving: Vec<&str> = Tool::ALL
+            .iter()
+            .filter(|t| t.resolves_entities())
+            .map(|t| t.name())
+            .collect();
+        // Pinned deliberately, same reasoning as the destructive-tools pin
+        // above: a future read tool should make its author confirm whether it
+        // belongs here, not silently inherit or miss the classification.
+        assert_eq!(
+            resolving,
+            vec![
+                "search_nodes",
+                "resolve_query",
+                "search_semantic",
+                "get_node",
+                "get_related_nodes",
+            ]
+        );
+    }
+
+    #[test]
+    fn skill_search_and_route_clarify_do_not_resolve_entities() {
+        // Reads, but neither returns a graph node: skill search returns skill
+        // definitions, and route_clarify returns a question back to the user.
+        assert!(!resolves_entities_tool("search_skills"));
+        assert!(!resolves_entities_tool(
+            crate::local_agent::routing::ROUTE_CLARIFY_TOOL
+        ));
+    }
+
+    #[test]
+    fn an_unregistered_tool_name_does_not_resolve_entities() {
+        // Same fail-open direction as `is_write_tool`: an unknown tool is
+        // treated as evidence of neither a write nor a resolved entity.
+        assert!(!resolves_entities_tool("some_external_tool"));
+        assert!(resolves_entities_tool("get_node"));
     }
 
     #[test]
