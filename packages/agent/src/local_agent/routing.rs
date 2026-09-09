@@ -376,6 +376,29 @@ pub fn routed_skill_names(candidates: &[SkillCandidate]) -> String {
         .join(", ")
 }
 
+/// Every retrieved candidate's name and raw score, comma-separated, for the
+/// `all_scores` log field — **not** filtered by [`clears_score_gate`], unlike
+/// [`routed_skill_names`].
+///
+/// `routed_skill_names` and the OTel `routing.top_score` attribute together
+/// answer "which skill won" and "how well did the winner score", but neither
+/// distinguishes a tiebreak (the runner-up scored 0.81 against the winner's
+/// 0.82) from a skill that scored badly on its own core use case (0.3, no
+/// close competitor) — two defects with different fixes that look identical
+/// from the winner's score alone. This is the field that tells them apart
+/// from ordinary logs, without a dedicated measurement run.
+///
+/// Preserves retrieval's score-descending order (the order `route`'s `merged`
+/// is already sorted into) rather than re-sorting, so the log line's order
+/// matches rank.
+pub fn all_candidate_scores(candidates: &[SkillCandidate]) -> String {
+    candidates
+        .iter()
+        .map(|c| format!("{}={:.3}", c.name, c.score))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Render retrieved candidates for injection into the Stage-2 prompt.
 ///
 /// Delivered **in the prompt** rather than as a tool result. ADR-064 rule 4
@@ -1182,6 +1205,27 @@ mod tests {
     fn no_eligible_candidates_renders_nothing() {
         let cands = vec![candidate("weak", 0.001, &["create_schema"])];
         assert!(render_candidates_for_prompt(&cands).is_none());
+    }
+
+    #[test]
+    fn all_candidate_scores_includes_every_candidate_regardless_of_the_gate() {
+        // Unlike `routed_skill_names`, a below-bar candidate must still
+        // appear — this field exists specifically to show the scores the
+        // gate filtered out, so a tiebreak or a low-scoring-with-no-
+        // competitor situation is distinguishable from the log alone.
+        let cands = vec![
+            candidate("Research & Search", 0.9, &["search_nodes"]),
+            candidate("Below The Bar", 0.01, &["search_nodes"]),
+        ];
+        assert_eq!(
+            all_candidate_scores(&cands),
+            "Research & Search=0.900, Below The Bar=0.010"
+        );
+    }
+
+    #[test]
+    fn all_candidate_scores_is_empty_when_retrieval_returned_nothing() {
+        assert_eq!(all_candidate_scores(&[]), "");
     }
 
     #[test]

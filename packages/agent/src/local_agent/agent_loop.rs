@@ -3157,11 +3157,17 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
         // an empty value here means retrieval returned nothing above the bar,
         // which is exactly the "routed but matched nothing" case
         // `stage2_candidates_injected` distinguishes on the assembly line.
+        // `all_scores` carries every retrieved candidate's score, not only the
+        // winner's — `routing.top_score` above cannot tell a tiebreak (a
+        // near-tied runner-up) apart from a skill scoring badly on its own
+        // core use case with no close competitor, and those two situations
+        // call for different fixes. See `all_candidate_scores`'s doc comment.
         tracing::info!(
             routing_decision = routing_decision_tag,
             routing_latency_ms = elapsed_ms,
             candidates = outcome.candidates.len(),
             routed_skills = %routing::routed_skill_names(&outcome.candidates),
+            all_scores = %routing::all_candidate_scores(&outcome.candidates),
             "two-stage routing overhead"
         );
         outcome
