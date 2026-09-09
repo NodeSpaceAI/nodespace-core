@@ -158,6 +158,19 @@ impl NodeService {
 
         // NOTE: NodeCreated event is now automatically emitted by store notifier
 
+        // Post-commit, best-effort `UniqueFieldCollision` detection (ADR-068):
+        // the node above is already durably written, so a detection failure
+        // must never fail or undo this create. This is the real caller the
+        // old `mark_possible_duplicates` never had — see
+        // `conflicts::detect_unique_field_collisions`.
+        if let Err(e) = self.detect_unique_field_collisions(&node.id).await {
+            tracing::warn!(
+                node_id = %node.id,
+                error = %e,
+                "failed to detect unique-field collisions after create_node (create unaffected)"
+            );
+        }
+
         tracing::debug!(
             node_id = %node.id,
             "create_node: COMPLETE at {}ms",
@@ -1235,6 +1248,19 @@ impl NodeService {
                         );
                     }
                 }
+
+                // Post-commit, best-effort `UniqueFieldCollision` detection
+                // (ADR-068) — same posture as `create_node`'s call: the
+                // update above already succeeded and must never be undone by
+                // a detection failure.
+                if let Err(e) = self.detect_unique_field_collisions(node_id).await {
+                    tracing::warn!(
+                        node_id,
+                        error = %e,
+                        "failed to detect unique-field collisions after update_node (update unaffected)"
+                    );
+                }
+
                 Ok(updated_node)
             }
             None => {

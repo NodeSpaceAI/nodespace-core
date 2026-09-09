@@ -2,11 +2,9 @@
  * TableView column derivation — protection-level filtering.
  *
  * TableView used to iterate `schema.fields` unconditionally, so every
- * `protection: 'system'` field became a user-facing column. That put a
- * "Possible duplicate" column on person (a local-only convergence marker that
- * is permanently empty on a local-only install) and would surface six columns
- * on ai-chat — including `capture:transcript`, raw PTY scrollback documented as
- * possibly containing secrets, tokens and absolute paths.
+ * `protection: 'system'` field became a user-facing column — surfacing six
+ * columns on ai-chat, including `capture:transcript`, raw PTY scrollback
+ * documented as possibly containing secrets, tokens and absolute paths.
  *
  * The detail form already filtered these out (see
  * generic-schema-form-protection-filter.test.ts), so the two views disagreed.
@@ -38,8 +36,8 @@ afterEach(() => {
 });
 
 describe('TableView — protection-level filtering', () => {
-  it('omits person’s system-managed "Possible duplicate" column', () => {
-    const { container, getByText, queryByText } = render(TableView, {
+  it('renders all of person’s fields — none are system-protected', () => {
+    const { container, getByText } = render(TableView, {
       props: {
         nodeIds: [],
         schema: schemaWith('person', true, PERSON_FIELDS),
@@ -51,7 +49,6 @@ describe('TableView — protection-level filtering', () => {
     expect(getByText('First name')).toBeTruthy();
     expect(getByText('Last name')).toBeTruthy();
     expect(getByText('Email')).toBeTruthy();
-    expect(queryByText('Possible duplicate')).toBeNull();
     // The leading '' column is the content/title link column.
     expect(headerTexts(container)).toEqual(['', 'First name', 'Last name', 'Email']);
   });

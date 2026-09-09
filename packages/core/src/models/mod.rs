@@ -10,6 +10,7 @@
 //! All entities use the Pure JSON schema approach with data stored in the
 //! `properties` field of the universal `nodes` table.
 
+pub mod conflict;
 pub mod core_schemas;
 pub mod embedding;
 mod node;
@@ -58,6 +59,7 @@ mod ordered_list_node_test;
 
 pub use ai_chat_node::{AiChatCompletedWrite, AiChatMessage, AiChatNode};
 pub use code_block_node::{CodeBlockNode, CodeBlockValidationError};
+pub use conflict::{ConflictKind, ConflictRecord, ConflictStatus, Resolution};
 pub use node::{
     DeleteResult, FilterOperator, Node, NodeFilter, NodeQuery, NodeReference, NodeRelationship,
     NodeUpdate, OrderBy, PropertyFilter, TraversalDirection, ValidationError,

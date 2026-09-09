@@ -13,7 +13,7 @@ export interface ConflictNotification {
     | 'deleted-node'
     | 'child-transfer-failure'
     | 'write-failure'
-    | 'recovered-items';
+    | 'conflict-journal';
   createdAt: number;
 }
 

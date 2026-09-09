@@ -41,6 +41,7 @@
 mod collection_name_convergence_tests {
     use anyhow::Result;
     use nodespace_core::db::SqliteStore;
+    use nodespace_core::models::conflict::{ConflictKind, ConflictStatus};
     use nodespace_core::models::{Node, NodeUpdate};
     use nodespace_core::ops::collection_ops::{create_collection, CreateCollectionInput};
     use nodespace_core::ops::OpsError;
@@ -76,12 +77,16 @@ mod collection_name_convergence_tests {
         Ok(id)
     }
 
-    fn marker(n: &Node) -> bool {
-        n.properties
-            .get("collection")
-            .and_then(|p| p.get("_possible_duplicate"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
+    /// Does an OPEN `CollectionNameCollision` conflict record name this node?
+    /// Replaces the old `properties.collection._possible_duplicate` boolean
+    /// (ADR-068): the journal is the single source of truth, queried the same
+    /// way the resolution surface would (`conflicts_for_node`), never
+    /// re-derived from a property the write path used to stamp.
+    async fn marked(service: &NodeService, node_id: &str) -> Result<bool> {
+        let records = service.conflicts_for_node(node_id).await?;
+        Ok(records.iter().any(|r| {
+            r.kind == ConflictKind::CollectionNameCollision && r.status == ConflictStatus::Open
+        }))
     }
 
     #[tokio::test]
@@ -158,16 +163,28 @@ mod collection_name_convergence_tests {
         assert_eq!(a_after.node_type, "collection");
         assert_eq!(b_after.node_type, "collection");
 
-        // --- Both sides are marked as a possible duplicate, automatically ---
-        // Unlike the person-email mechanism (a separate opt-in
-        // `mark_possible_duplicates` call), the collection-name marker is set
-        // synchronously inside `SqliteStore::create_node` itself, so no
-        // additional call is needed here — it must already be true.
-        assert!(marker(&a_after), "Device A's own collection must be marked");
+        // --- Both sides are journaled as a CollectionNameCollision, automatically ---
+        // Unlike the person-email mechanism (detection wired into
+        // create_node/update_node's own post-commit hook), the collection-name
+        // journal write is triggered synchronously inside
+        // `SqliteStore::create_node` itself, so no additional call is needed
+        // here — the record must already exist.
         assert!(
-            marker(&b_after),
-            "Device B's synced-in collection must be marked"
+            marked(&device_a.service, &work_a_id).await?,
+            "Device A's own collection must be journaled"
         );
+        assert!(
+            marked(&device_a.service, &work_b_id).await?,
+            "Device B's synced-in collection must be journaled"
+        );
+
+        let a_records = device_a.service.conflicts_for_node(&work_a_id).await?;
+        assert_eq!(a_records.len(), 1);
+        assert_eq!(a_records[0].kind, ConflictKind::CollectionNameCollision);
+        assert_eq!(a_records[0].detail["name"], "work");
+        let mut sorted_expected = vec![work_a_id.clone(), work_b_id.clone()];
+        sorted_expected.sort();
+        assert_eq!(a_records[0].node_ids, sorted_expected);
 
         Ok(())
     }
@@ -201,15 +218,13 @@ mod collection_name_convergence_tests {
 
         // Both distinct collections now coexist in A with no collision at all.
         assert!(device_a.service.get_node(&work_id).await?.is_some());
-        let personal_after = device_a.service.get_node(&personal_id).await?.unwrap();
         assert!(
-            !marker(&personal_after),
-            "two genuinely distinct collection names must never be marked"
+            !marked(&device_a.service, &personal_id).await?,
+            "two genuinely distinct collection names must never be journaled"
         );
-        let work_after = device_a.service.get_node(&work_id).await?.unwrap();
         assert!(
-            !marker(&work_after),
-            "no marker must be set on the pre-existing side absent a real collision"
+            !marked(&device_a.service, &work_id).await?,
+            "no record must exist for the pre-existing side absent a real collision"
         );
 
         Ok(())
@@ -258,8 +273,8 @@ mod collection_name_convergence_tests {
             b_after.content, "WORK",
             "each side's own casing is preserved"
         );
-        assert!(marker(&a_after));
-        assert!(marker(&b_after));
+        assert!(marked(&device_a.service, &work_a_id).await?);
+        assert!(marked(&device_a.service, &work_b_id).await?);
 
         Ok(())
     }
@@ -275,9 +290,15 @@ mod collection_name_convergence_tests {
     /// third party, where the marking outcome would genuinely depend on
     /// unspecified SELECT/INSERT interleaving (a real, accepted TOCTOU gap;
     /// see `mark_collection_name_collision`'s doc comment). This design lets
-    /// the test assert markers deterministically while still exercising real
-    /// concurrent writers, not just proving the no-rejection guarantee isn't
-    /// an artifact of strict sequencing.
+    /// the test assert journal records deterministically while still
+    /// exercising real concurrent writers, not just proving the no-rejection
+    /// guarantee isn't an artifact of strict sequencing.
+    ///
+    /// Each concurrent apply detects its OWN pairwise collision against the
+    /// pre-existing hub node (hub+A, hub+B) — two distinct
+    /// `CollectionNameCollision` records, not one record naming all three,
+    /// since detection always compares the just-written node against
+    /// whatever `get_collection_by_name` finds at that moment (one match).
     #[tokio::test]
     async fn concurrent_convergence_of_two_same_named_collections_never_rejects() -> Result<()> {
         let hub = Arc::new(device().await?);
@@ -326,40 +347,43 @@ mod collection_name_convergence_tests {
             .expect("task must not panic")
             .expect("concurrent apply of B must never be rejected on a name collision");
 
-        let hub_after = hub.service.get_node(&hub_id).await?.unwrap();
-        let a_after = hub.service.get_node(&a_id).await?.unwrap();
-        let b_after = hub.service.get_node(&b_id).await?.unwrap();
         assert!(
-            marker(&hub_after),
-            "hub's pre-existing collection must be marked — it was durably committed \
+            marked(&hub.service, &hub_id).await?,
+            "hub's pre-existing collection must be journaled — it was durably committed \
              before the race started, so both concurrent applies' collision checks are \
              guaranteed to see it regardless of interleaving"
         );
         assert!(
-            marker(&a_after),
-            "A's concurrently-applied collection must be marked"
+            marked(&hub.service, &a_id).await?,
+            "A's concurrently-applied collection must be journaled"
         );
         assert!(
-            marker(&b_after),
-            "B's concurrently-applied collection must be marked"
+            marked(&hub.service, &b_id).await?,
+            "B's concurrently-applied collection must be journaled"
+        );
+
+        // Two distinct pairwise records (hub+A, hub+B) — the hub node
+        // participates in both.
+        let hub_records = hub.service.conflicts_for_node(&hub_id).await?;
+        assert_eq!(
+            hub_records.len(),
+            2,
+            "the hub's node participates in two distinct pairwise collisions"
         );
 
         Ok(())
     }
 
-    /// Unlike `person`'s convergence marking (an explicit, opt-in
-    /// `mark_possible_duplicates` call, LIMIT-1 pairwise — see
-    /// `person_duplicate_convergence_test.rs`'s three-way test, which ends up
-    /// with exactly 2 of 3 marked from a SINGLE call), the collection-name
-    /// marker is stamped automatically on EVERY create. With three
-    /// independent devices each creating "Triple" and converging
-    /// sequentially into one hub, that automatic-and-cascading design means
-    /// every new arrival transitively re-marks the whole existing colliding
-    /// set (an already-marked node's marker write is an idempotent no-op) —
-    /// so, unlike person's "exactly 2 of 3" LIMIT-1 caveat, ALL THREE end up
-    /// marked here. This locks in that (stronger) guarantee so a future
-    /// change to automatic-vs-opt-in marking is caught by this test rather
-    /// than discovered later.
+    /// Unlike `person`'s convergence detection (`find_conflicting_unique` is
+    /// `LIMIT 1`, so with three mutually-colliding people, some pairwise
+    /// collisions can go undetected — see `person_duplicate_convergence_test.rs`'s
+    /// three-way test), `get_collection_by_name` is ALSO `LIMIT 1`, but
+    /// because collection-name detection runs automatically on EVERY create
+    /// (not opt-in), each new arrival's own create-time check against the
+    /// then-current state is enough for every one of the three nodes to end
+    /// up naming at least one open `CollectionNameCollision` record by the
+    /// time all three have converged — even though no single record names
+    /// all three at once (each record is a pairwise detection).
     #[tokio::test]
     async fn three_way_name_collision_all_survive_and_all_get_marked() -> Result<()> {
         let hub = device().await?;
@@ -392,8 +416,10 @@ mod collection_name_convergence_tests {
         }
 
         for (i, id) in ids.iter().enumerate() {
-            let n = hub.service.get_node(id).await?.unwrap();
-            assert!(marker(&n), "device {i}'s collection must be marked");
+            assert!(
+                marked(&hub.service, id).await?,
+                "device {i}'s collection must be named by at least one open record"
+            );
         }
 
         Ok(())
@@ -442,11 +468,9 @@ mod collection_name_convergence_tests {
             .expect("a name collision on rename must never be rejected, only marked");
         assert_eq!(updated.content, "Original");
 
-        let existing_after = hub.service.get_node(&existing_id).await?.unwrap();
-        let renamed_after = hub.service.get_node(&renamed_id).await?.unwrap();
         assert!(
-            marker(&existing_after) && marker(&renamed_after),
-            "a rename introducing a fresh name collision must mark both the renamed node \
+            marked(&hub.service, &existing_id).await? && marked(&hub.service, &renamed_id).await?,
+            "a rename introducing a fresh name collision must journal both the renamed node \
              and the pre-existing collection it now collides with"
         );
 
@@ -486,11 +510,9 @@ mod collection_name_convergence_tests {
             .await
             .expect("a name collision on an unchecked rename must never be rejected");
 
-        let existing_after = hub.service.get_node(&existing_id).await?.unwrap();
-        let renamed_after = hub.service.get_node(&renamed_id).await?.unwrap();
         assert!(
-            marker(&existing_after) && marker(&renamed_after),
-            "the unchecked update path must mark both sides of a rename-introduced collision, \
+            marked(&hub.service, &existing_id).await? && marked(&hub.service, &renamed_id).await?,
+            "the unchecked update path must journal both sides of a rename-introduced collision, \
              same as the version-checked path"
         );
 
@@ -525,7 +547,7 @@ mod collection_name_convergence_tests {
             .await?;
         assert_eq!(updated.content, "ENGINEERING");
         assert!(
-            !marker(&updated),
+            !marked(&hub.service, &id).await?,
             "a case-only rename must not match itself as a collision"
         );
 
@@ -560,7 +582,7 @@ mod collection_name_convergence_tests {
         let updated = hub.service.get_node(&id).await?.unwrap();
         assert_eq!(updated.content, "ENGINEERING");
         assert!(
-            !marker(&updated),
+            !marked(&hub.service, &id).await?,
             "a case-only rename must not match itself as a collision, on the unchecked path either"
         );
 
@@ -601,11 +623,9 @@ mod collection_name_convergence_tests {
                 json!({}),
             ))
             .await?;
-        let new_node = hub.service.get_node(&new_id).await?.unwrap();
-        let archived_after_create = hub.service.get_node(&archived_id).await?.unwrap();
         assert!(
-            !marker(&new_node) && !marker(&archived_after_create),
-            "creating a collection with an archived collection's name must not mark either \
+            !marked(&hub.service, &new_id).await? && !marked(&hub.service, &archived_id).await?,
+            "creating a collection with an archived collection's name must not journal either \
              side — the archived collection no longer holds that name"
         );
 
@@ -620,18 +640,23 @@ mod collection_name_convergence_tests {
             ))
             .await?;
         let other_before = hub.service.get_node(&other_id).await?.unwrap();
-        let other_after = hub
-            .service
+        hub.service
             .update_node(
                 &other_id,
                 other_before.version,
                 NodeUpdate::new().with_content("Legacy".to_string()),
             )
             .await?;
-        let archived_after_rename = hub.service.get_node(&archived_id).await?.unwrap();
+        // `other_id` collides with the ALREADY-ACTIVE `new_id` (created above,
+        // in the CREATE-path section) — a real, expected collision, journaled
+        // correctly. The archived collection specifically must stay out of
+        // it: renaming onto its name must not journal against the archived
+        // node, only (if at all) against another currently-active holder of
+        // that name.
         assert!(
-            !marker(&other_after) && !marker(&archived_after_rename),
-            "renaming onto an archived collection's name must not mark either side either"
+            !marked(&hub.service, &archived_id).await?,
+            "renaming onto an archived collection's name must never journal against the \
+             archived node itself"
         );
 
         Ok(())

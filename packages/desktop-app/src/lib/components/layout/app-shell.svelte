@@ -40,8 +40,8 @@
   import { nodeRefPreview } from '$lib/services/node-ref-preview.svelte';
   import UpdateBanner from '$lib/components/update-banner.svelte';
   import { updateStatus } from '$lib/stores/update-status.svelte';
-  import { recoveredItems } from '$lib/stores/recovered-items.svelte';
   import { conflictNotifications } from '$lib/stores/conflict-notifications.svelte';
+  import { conflictsStore } from '$lib/stores/conflicts.svelte';
   import {
     daemonStatus,
     startDaemonStatusListener,
@@ -68,21 +68,20 @@
   // first-launch wizard — see the `identityOnly` prop on OnboardingWizard.
   let onboardingIdentityOnly = $state(false);
 
-  // Recovered Items: once the daemon's probe confirms Pro tier, load
-  // the local-only recovery log. If the daemon preserved any conflict "losers",
-  // show a one-time snackbar on first open; the inline badge handles per-node
-  // review/restore. Guarded one-shot so it loads exactly once per session; fully
-  // inert in community (proSync.isPro is false → load() returns empty → no toast).
-  // Fired from proSync.onProConfirmed (the tier state-transition site) rather than a
-  // guarded $effect (ADR-049); fully inert in community since the callback never fires.
-  function loadRecoveredItems(): void {
-    recoveredItems.load().then(() => {
-      if (recoveredItems.items.length === 0) return;
-      const n = recoveredItems.items.length;
+  // Conflict journal (ADR-068): load on every startup, unconditionally —
+  // unlike the deleted Recovered Items log, this is NOT Pro-gated; the
+  // journal is designed to work on a purely local-only install. The inline
+  // per-node indicator and the Conflicts view both read `conflictsStore`
+  // directly; this only decides whether a one-time startup nudge is worth
+  // showing when open conflicts already exist.
+  function loadConflicts(): void {
+    conflictsStore.load().then(() => {
+      const open = conflictsStore.records.filter((r) => r.status === 'open');
+      if (open.length === 0) return;
       conflictNotifications.add({
-        nodeId: recoveredItems.items[0].node_id,
-        message: `${n} recovered item${n === 1 ? '' : 's'} from a sync conflict — open the affected node to review or restore.`,
-        conflictType: 'recovered-items'
+        nodeId: open[0].nodeIds[0] ?? '',
+        message: `${open.length} unresolved conflict${open.length === 1 ? '' : 's'} — open Conflicts to review.`,
+        conflictType: 'conflict-journal'
       });
     });
   }
@@ -231,7 +230,6 @@
     let cleanupMCP: (() => Promise<void>) | null = null;
     let staleNodesInterval: ReturnType<typeof setInterval> | null = null;
     let cleanupProSync: (() => void) | null = null;
-    let unregisterProConfirmed: (() => void) | null = null;
     let unlistenTier: Promise<() => void> | null = null;
     let unlistenSelectDatabase: Promise<() => void> | null = null;
 
@@ -248,9 +246,10 @@
         .then((stop) => (cleanupProSync = stop))
         .catch((e) => log.warn('proSync.start failed', { error: e }));
 
-      // Load the recovered-items log once the daemon confirms Pro tier. Registering
-      // here (a listener, not an effect) keeps the sequencing at the transition site.
-      unregisterProConfirmed = proSync.onProConfirmed(loadRecoveredItems);
+      // Load the conflict journal on every startup — unconditional, not
+      // gated on Pro tier (ADR-068: the journal works on a purely
+      // local-only install, which is exactly the defect it fixes).
+      loadConflicts();
 
       // Sync theme from backend preferences (overrides localStorage if different)
       invoke<{ activeDatabasePath: string; display: { renderMarkdown: boolean; theme: string } }>('get_settings')
@@ -593,7 +592,6 @@
         (await unlistenSelectDatabase)();
       }
       cleanupProSync?.();
-      unregisterProConfirmed?.();
       if (cleanupMCP) {
         await cleanupMCP();
       }

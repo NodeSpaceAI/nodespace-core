@@ -1,0 +1,120 @@
+/**
+ * Conflicts store (ADR-068): `load`, `hasOpenFor`, and the resolution
+ * actions. Unlike the deleted `recovered-items.svelte.ts`, this store is
+ * NOT Pro-gated — the conflict journal is designed to work on a purely
+ * local-only install (that's the defect ADR-068 fixes), so `load()` always
+ * calls the daemon regardless of `proSync.isPro`.
+ */
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+const mockInvoke = vi.fn();
+import { mockTauriCore } from '../helpers/mock-tauri-core';
+
+vi.mock('@tauri-apps/api/core', () =>
+  mockTauriCore({ invoke: (...args: unknown[]) => mockInvoke(...args) })
+);
+
+vi.mock('$lib/utils/logger', () => ({
+  createLogger: () => ({
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn()
+  })
+}));
+
+import { conflictsStore, type ConflictRecord } from '$lib/stores/conflicts.svelte';
+
+function record(overrides: Partial<ConflictRecord> = {}): ConflictRecord {
+  return {
+    id: 'c1',
+    kind: 'unique_field_collision',
+    nodeIds: ['n1', 'n2'],
+    detail: { node_type: 'person', field: 'email', value: 'a@example.com' },
+    status: 'open',
+    detectedAt: '2026-01-01T00:00:00Z',
+    detectedBy: null,
+    occurrences: 1,
+    lastSeenAt: '2026-01-01T00:00:00Z',
+    resolvedAt: null,
+    resolution: null,
+    ...overrides
+  };
+}
+
+describe('conflicts store', () => {
+  beforeEach(() => {
+    mockInvoke.mockReset();
+    conflictsStore.records = [];
+    conflictsStore.loaded = false;
+  });
+
+  describe('load()', () => {
+    it('populates records from list_conflicts', async () => {
+      mockInvoke.mockResolvedValueOnce([record()]);
+
+      await conflictsStore.load();
+
+      expect(mockInvoke).toHaveBeenCalledWith('list_conflicts', {
+        input: { status: null, kind: null, limit: null }
+      });
+      expect(conflictsStore.records).toEqual([record()]);
+      expect(conflictsStore.loaded).toBe(true);
+    });
+
+    it('clears records and marks loaded on failure, without throwing', async () => {
+      mockInvoke.mockRejectedValueOnce(new Error('daemon unreachable'));
+
+      await expect(conflictsStore.load()).resolves.toBeUndefined();
+
+      expect(conflictsStore.records).toEqual([]);
+      expect(conflictsStore.loaded).toBe(true);
+    });
+  });
+
+  describe('hasOpenFor()', () => {
+    it('is true for a node named by an OPEN record', () => {
+      conflictsStore.records = [record({ nodeIds: ['n1', 'n2'], status: 'open' })];
+      expect(conflictsStore.hasOpenFor('n1')).toBe(true);
+      expect(conflictsStore.hasOpenFor('n2')).toBe(true);
+    });
+
+    it('is false for a node named only by a DISMISSED record', () => {
+      conflictsStore.records = [record({ nodeIds: ['n1'], status: 'dismissed' })];
+      expect(conflictsStore.hasOpenFor('n1')).toBe(false);
+    });
+
+    it('is false for a node named by no record at all', () => {
+      conflictsStore.records = [record({ nodeIds: ['n1'] })];
+      expect(conflictsStore.hasOpenFor('unrelated')).toBe(false);
+    });
+  });
+
+  describe('loadForNode()', () => {
+    it('merges results into the shared cache by id', async () => {
+      conflictsStore.records = [record({ id: 'existing' })];
+      mockInvoke.mockResolvedValueOnce([record({ id: 'c2', nodeIds: ['n3'] })]);
+
+      const result = await conflictsStore.loadForNode('n3');
+
+      expect(mockInvoke).toHaveBeenCalledWith('conflicts_for_node', { nodeId: 'n3' });
+      expect(result).toEqual([record({ id: 'c2', nodeIds: ['n3'] })]);
+      expect(conflictsStore.records.map((r) => r.id).sort()).toEqual(['c2', 'existing']);
+    });
+  });
+
+  describe('dismiss()', () => {
+    it('calls resolve_conflict with a dismiss resolution and updates the record in place', async () => {
+      conflictsStore.records = [record({ id: 'c1', status: 'open' })];
+      mockInvoke.mockResolvedValueOnce(record({ id: 'c1', status: 'dismissed' }));
+
+      await conflictsStore.dismiss('c1');
+
+      expect(mockInvoke).toHaveBeenCalledWith('resolve_conflict', {
+        conflictId: 'c1',
+        resolution: { action: 'dismiss' }
+      });
+      expect(conflictsStore.records[0].status).toBe('dismissed');
+    });
+  });
+});

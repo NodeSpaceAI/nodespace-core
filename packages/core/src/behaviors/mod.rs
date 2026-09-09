@@ -1660,8 +1660,9 @@ impl NodeBehavior for QueryNodeBehavior {
 ///   hard-rejected, whether at create time or on a rename (NodeSpace is
 ///   local-first — two offline devices can each validly create or rename a
 ///   collection onto the same name), and is instead surfaced as a
-///   non-blocking `_possible_duplicate` marker on both nodes once they land
-///   in the same database (`SqliteStore::create_node`, `SqliteStore::update_node`,
+///   non-blocking `CollectionNameCollision` conflict-journal record naming
+///   both nodes once they land in the same database (ADR-068;
+///   `SqliteStore::create_node`, `SqliteStore::update_node`,
 ///   `SqliteStore::update_node_with_version_check`), mirroring the
 ///   suggest-don't-block posture ADR-065 established for the schema-declared
 ///   `unique` rule.

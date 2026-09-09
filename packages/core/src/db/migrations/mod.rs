@@ -24,12 +24,13 @@ mod v001_initial_schema;
 mod v002_embedding_origin;
 mod v003_property_indexes;
 mod v004_schema_relationship_edges;
+mod v005_conflict_journal;
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Highest migration version known to this build. Bump when adding a migration.
-pub const LATEST_VERSION: i64 = 4;
+pub const LATEST_VERSION: i64 = 5;
 
 /// Pre-migration backups retained per database. A new release that ships schema
 /// changes writes one snapshot before touching the existing data; older ones are
@@ -42,6 +43,7 @@ async fn apply_migration(tx: &libsql::Transaction, version: i64) -> Result<()> {
         2 => v002_embedding_origin::apply(tx).await,
         3 => v003_property_indexes::apply(tx).await,
         4 => v004_schema_relationship_edges::apply(tx).await,
+        5 => v005_conflict_journal::apply(tx).await,
         _ => unreachable!("no migration defined for version {version}"),
     }
 }
@@ -52,6 +54,7 @@ fn migration_name(version: i64) -> &'static str {
         2 => "embedding_origin",
         3 => "property_indexes",
         4 => "schema_relationship_edges",
+        5 => "conflict_journal",
         _ => "unknown",
     }
 }

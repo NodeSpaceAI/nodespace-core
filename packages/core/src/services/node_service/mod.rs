@@ -37,6 +37,7 @@ use tokio::sync::broadcast;
 // Sub-module declarations
 pub mod access_gate;
 pub(crate) mod bulk;
+pub mod conflicts;
 pub(crate) mod crud;
 pub(crate) mod embedding;
 pub(crate) mod hierarchy;
@@ -44,6 +45,7 @@ pub(crate) mod query;
 pub(crate) mod relationship;
 pub(crate) mod schema;
 
+pub use conflicts::deterministic_conflict_id;
 pub use hierarchy::flatten_subtree_content;
 
 /// Reserved ID for the DatabaseSettingsNode singleton instance.

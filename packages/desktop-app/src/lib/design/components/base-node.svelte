@@ -544,15 +544,11 @@
 
   // Import structured view mode renderer (avoids {@html} XSS warning)
   import ViewModeRenderer from './view-mode-renderer.svelte';
-  // Pro-only inline badge for sync conflict "losers". Renders nothing
-  // unless this node has a preserved superseded edit, so it is inert in community.
-  import RecoveredItemsBadge from '$lib/components/recovered-items-badge.svelte';
-  // Convergence duplicate indicator (ADR-065 §4). Renders nothing
-  // unless this node is a `person` currently flagged
-  // `properties.person._possible_duplicate`, so it is inert for every other
-  // node type and for unflagged people.
-  import PossibleDuplicateBadge from '$lib/components/possible-duplicate-badge.svelte';
-
+  // Inline conflict-journal indicator (ADR-068): a derived read of
+  // `conflictsStore` — never a stored property — that links into the
+  // Conflicts view rather than resolving in a popover. Renders nothing
+  // unless this node is named by an open conflict record.
+  import ConflictIndicatorBadge from '$lib/components/conflict-indicator-badge.svelte';
   // Event dispatcher - aligned with NodeViewerEventDetails interface
   const dispatch = createEventDispatcher<{
     contentChanged: { content: string; cursorPosition?: number };
@@ -959,8 +955,7 @@
       {/if}</div>
   {/if}
 
-  <RecoveredItemsBadge {nodeId} />
-  <PossibleDuplicateBadge {nodeId} />
+  <ConflictIndicatorBadge {nodeId} />
 </div>
 
 <!-- Professional Node Autocomplete Component -->

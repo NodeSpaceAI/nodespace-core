@@ -733,10 +733,10 @@ mod collection_service_tests {
     #[tokio::test]
     async fn test_collection_name_uniqueness_is_best_effort_not_enforced() -> Result<()> {
         // NodeSpace is local-first: a collection-name collision is suggest-don't-block
-        // (non-blocking `_possible_duplicate` marker on both sides), never a hard
-        // rejection — a hard error here would propagate straight out of
-        // `nodespace-sync`'s `apply_node_upsert` and permanently wedge the sync
-        // cursor on a benign duplicate name. See
+        // (a non-blocking `CollectionNameCollision` conflict record naming both
+        // sides — ADR-068), never a hard rejection — a hard error here would
+        // propagate straight out of `nodespace-sync`'s `apply_node_upsert` and
+        // permanently wedge the sync cursor on a benign duplicate name. See
         // `tests/collection_name_convergence_test.rs` for the full adversarial
         // convergence coverage of this behavior; this test only re-confirms that
         // `resolve_path`'s deterministic-id get-or-create still avoids ever hitting
@@ -759,8 +759,8 @@ mod collection_service_tests {
 
         // A caller that creates a collection node directly (bypassing resolve_path's
         // deterministic id) with a colliding name — e.g. a sync-pulled peer node —
-        // must succeed, not error, and both nodes must be marked as possible
-        // duplicates.
+        // must succeed, not error, and both nodes must be journaled as a
+        // CollectionNameCollision.
         use nodespace_core::models::Node;
         let duplicate_node = Node::new(
             "collection".to_string(),
@@ -771,19 +771,24 @@ mod collection_service_tests {
         let created = store.create_node(duplicate_node, None, None).await?;
         assert_eq!(created.id, duplicate_id);
 
-        let first = store.get_node(&first_id).await?.unwrap();
-        let duplicate = store.get_node(&duplicate_id).await?.unwrap();
-        let marked = |n: &Node| {
-            n.properties
-                .get("collection")
-                .and_then(|p| p.get("_possible_duplicate"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
+        let marked = |id: &str| {
+            let store = store.clone();
+            let id = id.to_string();
+            async move {
+                let records = store.conflicts_for_node(&id).await.unwrap();
+                records.iter().any(|r| {
+                    r.kind == nodespace_core::models::ConflictKind::CollectionNameCollision
+                        && r.status == nodespace_core::models::ConflictStatus::Open
+                })
+            }
         };
-        assert!(marked(&first), "the pre-existing collection must be marked");
         assert!(
-            marked(&duplicate),
-            "the newly-created collection must be marked"
+            marked(&first_id).await,
+            "the pre-existing collection must be journaled"
+        );
+        assert!(
+            marked(&duplicate_id).await,
+            "the newly-created collection must be journaled"
         );
 
         Ok(())
@@ -799,7 +804,7 @@ mod collection_service_tests {
         let first_id = resolved.leaf_id().to_string();
 
         // Create with different case, directly (bypassing resolve_path's
-        // deterministic id) — must succeed and mark both sides, not error.
+        // deterministic id) — must succeed and journal both sides, not error.
         use nodespace_core::models::Node;
         let uppercase_node = Node::new(
             "collection".to_string(),
@@ -810,19 +815,24 @@ mod collection_service_tests {
         let created = store.create_node(uppercase_node, None, None).await?;
         assert_eq!(created.id, uppercase_id);
 
-        let first = store.get_node(&first_id).await?.unwrap();
-        let uppercase = store.get_node(&uppercase_id).await?.unwrap();
-        let marked = |n: &Node| {
-            n.properties
-                .get("collection")
-                .and_then(|p| p.get("_possible_duplicate"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
+        let marked = |id: &str| {
+            let store = store.clone();
+            let id = id.to_string();
+            async move {
+                let records = store.conflicts_for_node(&id).await.unwrap();
+                records.iter().any(|r| {
+                    r.kind == nodespace_core::models::ConflictKind::CollectionNameCollision
+                        && r.status == nodespace_core::models::ConflictStatus::Open
+                })
+            }
         };
-        assert!(marked(&first), "the pre-existing collection must be marked");
         assert!(
-            marked(&uppercase),
-            "the newly-created, differently-cased collection must be marked"
+            marked(&first_id).await,
+            "the pre-existing collection must be journaled"
+        );
+        assert!(
+            marked(&uppercase_id).await,
+            "the newly-created, differently-cased collection must be journaled"
         );
 
         Ok(())
