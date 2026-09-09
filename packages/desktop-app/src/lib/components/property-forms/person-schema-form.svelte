@@ -268,7 +268,7 @@
       id="person-first-name"
       type="text"
       value={firstName}
-      placeholder="First name"
+      placeholder="Jane"
       onblur={handleFirstNameBlur}
     />
   </div>
@@ -278,7 +278,7 @@
       id="person-last-name"
       type="text"
       value={lastName}
-      placeholder="Last name"
+      placeholder="Doe"
       onblur={handleLastNameBlur}
     />
   </div>

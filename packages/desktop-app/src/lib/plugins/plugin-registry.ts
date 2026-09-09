@@ -306,6 +306,16 @@ export class PluginRegistry {
   }
 
   /**
+   * Check whether a plugin's `name` is declared as a user-facing entity noun — see
+   * `PluginDefinition.entityNoun`'s doc comment (types.ts) for the full rule. Independent of
+   * `hasNodeComponent`: a type can be inline-editable and still have an entity-noun name.
+   */
+  hasEntityNounName(nodeType: string): boolean {
+    const plugin = this.plugins.get(nodeType);
+    return !!(plugin && this.enabledPlugins.has(nodeType) && plugin.entityNoun);
+  }
+
+  /**
    * Check if a reference component is available for a node type
    */
   hasReferenceComponent(nodeType: string): boolean {

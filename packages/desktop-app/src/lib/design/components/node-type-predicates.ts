@@ -38,6 +38,24 @@ export function rendersAsEntityRow(nodeType: string): boolean {
 }
 
 /**
+ * True when nodeType's plugin `name` is a legitimate user-facing entity noun (e.g. "Person"),
+ * rather than an internal label chosen for the plugin registry / slash-command menu (e.g.
+ * "Text Node", "Header Node").
+ *
+ * This is a DIFFERENT question from `rendersAsEntityRow`, and deliberately not derived from
+ * it. Every entity row already has an entity-noun name by construction (nothing that renders
+ * only as a read-only row names itself for a slash-command menu), but the converse doesn't
+ * hold: `person` has both an inline node component (so `rendersAsEntityRow('person')` is
+ * false) and an entity-noun name ("Person"). A gate that conflates the two — e.g. asking only
+ * `rendersAsEntityRow` before using a plugin's name as an untitled node's display name — wrongly
+ * excludes person and would exclude any future type with the same combination. Ask this
+ * directly instead. See `PluginDefinition.entityNoun` (types.ts) for how a plugin opts in.
+ */
+export function hasEntityNounName(nodeType: string): boolean {
+  return pluginRegistry.hasEntityNounName(nodeType);
+}
+
+/**
  * True when this type needs the generic, schema-driven properties form — no plugin
  * registered a hardcoded, type-specific schema form for it.
  *

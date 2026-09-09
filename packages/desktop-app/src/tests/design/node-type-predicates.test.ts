@@ -12,6 +12,7 @@ import {
   computeHeaderDisplayValue,
   hasInlineNodeComponent,
   rendersAsEntityRow,
+  hasEntityNounName,
   needsGenericSchemaForm
 } from '$lib/design/components/node-type-predicates';
 
@@ -68,6 +69,34 @@ describe('node-type-predicates', () => {
       for (const nodeType of inlineEditable) {
         expect(rendersAsEntityRow(nodeType), `${nodeType} should be inline-editable`).toBe(false);
       }
+    });
+  });
+
+  describe('hasEntityNounName', () => {
+    it('is true for person, despite person also rendering inline (not an entity row)', () => {
+      // The exact combination rendersAsEntityRow cannot see on its own: person has both an
+      // inline node component AND a plugin `name` ("Person") that is a real entity noun.
+      expect(rendersAsEntityRow('person')).toBe(false);
+      expect(hasEntityNounName('person')).toBe(true);
+    });
+
+    it('is false for inline-editable content primitives, whose plugin name is a registry label', () => {
+      // "Text Node" / "Header Node" / "Task Node" are labels for the plugin registry and
+      // slash-command menu, not nouns a user would call the thing — must not opt in.
+      expect(hasEntityNounName('text')).toBe(false);
+      expect(hasEntityNounName('header')).toBe(false);
+      expect(hasEntityNounName('task')).toBe(false);
+    });
+
+    it('is false for an unregistered/unknown node type', () => {
+      expect(hasEntityNounName('not-a-real-type')).toBe(false);
+    });
+
+    it('does not imply, and is not implied by, rendersAsEntityRow', () => {
+      // ai-chat is an entity row (no inline component) but was never opted into
+      // entityNoun — the two predicates are independent, not two views of one flag.
+      expect(rendersAsEntityRow('ai-chat')).toBe(true);
+      expect(hasEntityNounName('ai-chat')).toBe(false);
     });
   });
 
