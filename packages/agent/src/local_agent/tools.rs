@@ -2751,6 +2751,23 @@ impl GraphToolExecutor {
                             }
                         }
                     }
+                    // Normalise `id` to the `nodespace://` URI form every
+                    // other entity-resolving tool's result already uses
+                    // (`search_nodes`/`search_semantic`/`get_related_nodes`/
+                    // `resolve_query`, all built on `node_uri(...)`).
+                    // `node_to_typed_value` sets this to the bare UUID and
+                    // carries the URI separately under `"uri"` — without this,
+                    // `resolved_entities_from`'s dedup-by-`node_id` would treat
+                    // the same node as two different entities depending on
+                    // which tool last reported it, and the model could echo
+                    // the bare-UUID form back into a later tool call that
+                    // expects the URI form.
+                    if let Some(id) = node_data.get("id").and_then(|v| v.as_str()) {
+                        let uri = node_uri(id);
+                        if let Some(obj) = node_data.as_object_mut() {
+                            obj.insert("id".to_string(), json!(uri));
+                        }
+                    }
                     Ok(ok_result(tool_call_id, "get_node", node_data))
                 }
                 Err(OpsError::NotFound { .. }) => Ok(error_result(
@@ -5833,6 +5850,34 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(stored.result["content"], json!("Buy milk and eggs"));
+        }
+
+        /// `get_node`'s `id` must come back as the same `nodespace://`-prefixed
+        /// URI form every other entity-resolving tool's result uses
+        /// (`search_nodes`, `search_semantic`, `get_related_nodes`,
+        /// `resolve_query` — all built on `node_uri(...)`). `node_to_typed_value`
+        /// otherwise leaves `id` as the bare UUID (carrying the URI separately
+        /// under `"uri"`), which would make `resolved_entities_from`'s
+        /// dedup-by-`node_id` treat the same node as two different entities
+        /// depending on which tool last reported it.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn get_node_result_id_is_the_nodespace_uri_form() {
+            let (ns, _tmp) = make_test_service().await;
+            let executor = plain_executor(ns.clone());
+            let id = create_task(&executor, "Buy milk").await;
+
+            let stored = executor
+                .execute("get_node", json!({ "id": id }))
+                .await
+                .unwrap();
+
+            let returned_id = stored.result["id"].as_str().expect("id is a string");
+            assert_eq!(
+                returned_id,
+                format!("nodespace://{id}"),
+                "get_node's id must be prefixed like every other entity-resolving \
+                 tool's result, not left as the bare UUID: {returned_id:?}"
+            );
         }
 
         /// The write the reproducing turn was supposed to make. Asserts the
