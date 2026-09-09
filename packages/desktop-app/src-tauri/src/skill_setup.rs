@@ -1375,15 +1375,55 @@ mod tests {
         std::fs::create_dir_all(dst)?;
         for entry in std::fs::read_dir(src)? {
             let entry = entry?;
-            let file_type = entry.file_type()?;
             let dest_path = dst.join(entry.file_name());
-            if file_type.is_dir() {
+            // `entry.file_type()` reports a symlink as a symlink, never
+            // following it -- so a symlink to a directory (bun's own
+            // hoisted-package convention under node_modules) fails the
+            // `is_dir()` check below and falls into `fs::copy`, which only
+            // accepts a symlink to a *regular file* and errors on one that
+            // resolves to a directory. `entry.path().is_dir()` follows the
+            // link, so a symlinked directory recurses (dereferenced) same as
+            // a real one; a symlink to a regular file still takes the
+            // `fs::copy` branch, unaffected.
+            if entry.path().is_dir() {
                 copy_dir_recursive(&entry.path(), &dest_path)?;
             } else {
                 std::fs::copy(entry.path(), &dest_path)?;
             }
         }
         Ok(())
+    }
+
+    /// Regression test: bun's node_modules layout hoists shared/workspace
+    /// packages as symlinks to *directories*, not to regular files --
+    /// `fs::copy` alone only accepts a symlink to a regular file, so a naive
+    /// `file_type().is_dir()` check (which reports a symlink as a symlink,
+    /// never following it) sends a symlinked directory into `fs::copy` and
+    /// it errors "neither a regular file nor a symlink to a regular file".
+    /// Unix-only: this is bun's own symlink convention on macOS/Linux --
+    /// Windows hoisting uses junctions, a different mechanism this test
+    /// doesn't need to cover.
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_recursive_dereferences_a_symlinked_subdirectory() {
+        let scratch = tempfile::tempdir().expect("create scratch dir");
+        let src = scratch.path().join("src");
+        let real_target = scratch.path().join("real-target");
+        std::fs::create_dir_all(&real_target).expect("create the symlink's real target");
+        std::fs::write(real_target.join("file.txt"), "hoisted package contents")
+            .expect("write into the symlink's real target");
+        std::fs::create_dir_all(&src).expect("create src root");
+        std::os::unix::fs::symlink(&real_target, src.join("linked-dep"))
+            .expect("create a symlink-to-directory, as bun's hoisted node_modules does");
+
+        let dst = scratch.path().join("dst");
+        copy_dir_recursive(&src, &dst).expect("copy a tree containing a symlinked directory");
+
+        assert_eq!(
+            std::fs::read_to_string(dst.join("linked-dep").join("file.txt"))
+                .expect("the symlinked directory's contents must be copied, not skipped"),
+            "hoisted package contents"
+        );
     }
 
     /// End-to-end proof of the staleness fix: installs for real into an
