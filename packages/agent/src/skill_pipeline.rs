@@ -241,6 +241,51 @@ SUCCESS: {success_no_reverify}"#,
     )
 }
 
+/// Builds the Conflict Resolution skill's markdown_content.
+///
+/// Covers the read tools (`list_conflicts`, `get_conflict`) and the two
+/// non-destructive resolution actions (`dismiss_conflict`,
+/// `adopt_existing_conflict`). `merge_conflict` is deliberately NOT
+/// whitelisted here — it archives a node and re-points its edges, the same
+/// "cannot be undone" shape as `delete_node`, so it stays single-owner (see
+/// `SINGLE_OWNER_BY_DESIGN` in this module's tests) rather than being offered
+/// alongside the lower-stakes actions in this skill.
+fn conflict_resolution_guidance() -> String {
+    r#"# Conflict Resolution Guidance
+
+This skill inspects and resolves records from the conflict journal — durable evidence that two nodes collide (e.g. two active nodes share a unique field's value, or two collections share a name). It does not touch ordinary node reads or writes.
+
+FIND THEN ACT: Use list_conflicts (optionally filtered by status/kind/node) or get_conflict to find and confirm the exact conflict record and its participants before resolving anything.
+
+DISMISS vs ADOPT: dismiss_conflict acknowledges a conflict as acceptable without changing either node — use it when the collision is fine as-is (e.g. two people genuinely share a mailbox). adopt_existing_conflict resolves a conflict by continuing with an existing node instead of a newly created one, without deleting or modifying either node — use it when the user means the existing record, not a new one.
+
+Both actions apply immediately when called and are visible everywhere the conflict journal is read (the desktop app included) — only call one once the user's intent about which conflict, and which node to keep, is clear. Do not guess.
+
+MERGING NODES: This skill does not merge nodes — that is a separate, more consequential action reserved for a dedicated skill, since it archives a node and re-points its edges."#
+        .to_string()
+}
+
+/// Builds the Node Merge skill's markdown_content, interpolating the shared
+/// success-means-stop rule.
+fn node_merge_guidance() -> String {
+    format!(
+        r#"# Node Merge Guidance
+
+NOT ALWAYS A MERGE: dismiss_conflict and adopt_existing_conflict are also available here. If the user wants to dismiss a conflict as acceptable, or continue with an existing node without touching the other one, use one of those instead of merge_conflict — neither changes or removes any node.
+
+When merging two nodes:
+
+FIND THEN CONFIRM: Use get_conflict (if a conflict record names both nodes) or get_node to confirm the identity of both participants before merging. Never guess which node is the survivor.
+
+SURVIVOR AND LOSER: Call merge_conflict with survivor_id (the node to keep) and loser_id (the node to archive). If an open conflict record names this pair, pass its id as conflict_id so the record closes as resolved in the same call. The survivor receives the union of both nodes' properties (the survivor's own value wins any overlap) and every relationship edge the loser had.
+
+Only call merge_conflict once the user has explicitly confirmed which node should survive — this is the one action in the conflict journal that changes graph structure immediately and is never performed automatically.
+
+SUCCESS: {success_no_reverify}"#,
+        success_no_reverify = SUCCESS_NO_REVERIFY.imperative,
+    )
+}
+
 /// Builds the Bulk Import skill's markdown_content, interpolating the shared
 /// no-followup-search success rule.
 fn bulk_import_guidance() -> String {
@@ -493,6 +538,40 @@ SUCCESS: After create_node returns a node ID, confirm to the user what was creat
             markdown_content: node_deletion_guidance(),
         },
         NodeTemplate {
+            title: "Conflict Resolution".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: serde_json::json!({
+                "description": "List, inspect, dismiss, or resolve conflicts between colliding nodes recorded in the conflict journal. Use when the user asks about duplicates, collisions, or conflicts that need a decision.",
+                "tool_whitelist": ["list_conflicts", "get_conflict", "dismiss_conflict", "adopt_existing_conflict", "search_nodes"],
+                "max_iterations": 3,
+            }),
+            child_node_type: None,
+            child_properties: None,
+            tier: SeedTier::System,
+            markdown_content: conflict_resolution_guidance(),
+        },
+        NodeTemplate {
+            title: "Node Merge".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: serde_json::json!({
+                // `merge_conflict` is destructive (archives the loser node,
+                // re-points its edges) the same way delete_node is, so this
+                // skill is single-owner by the same ADR-038 reasoning
+                // (`SINGLE_OWNER_BY_DESIGN` in this module's tests) rather
+                // than being folded into Conflict Resolution's lower-stakes
+                // whitelist.
+                "description": "Merge two nodes that both represent the same real thing into one, combining their data and archiving the loser. Use when the user wants two duplicate or colliding records combined into a single record.",
+                "tool_whitelist": ["merge_conflict", "dismiss_conflict", "adopt_existing_conflict", "get_conflict", "get_node", "search_nodes"],
+                "max_iterations": 3,
+            }),
+            child_node_type: None,
+            child_properties: None,
+            tier: SeedTier::System,
+            markdown_content: node_merge_guidance(),
+        },
+        NodeTemplate {
             title: "Bulk Import".to_string(),
             content: None,
             root_node_type: "skill".to_string(),
@@ -645,7 +724,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 8, "Should have 8 seed skills");
+        assert_eq!(seeds.len(), 10, "Should have 10 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());
@@ -1026,6 +1105,8 @@ mod tests {
             ("Graph Editing", true, false),
             ("Relationship Management", true, false),
             ("Node Deletion", true, true),
+            ("Conflict Resolution", true, false),
+            ("Node Merge", true, true),
             ("Bulk Import", true, false),
             ("Organization", true, false),
             ("Research & Search", false, false),
@@ -1206,11 +1287,19 @@ mod tests {
         // `create_nodes_from_markdown`: Bulk Import's whitelist is exactly this
         // one tool, and the intent ("import this document") is lexically
         // unmistakable rather than an inflection of another request.
+        //
+        // `merge_conflict`: the same reasoning as `delete_node` — it archives
+        // a node and re-points its edges, an irreversible-feeling structural
+        // change. `stage2_permitted_names`-style destructive gating wants this
+        // reachable from exactly one retrieval winner (Node Merge), not
+        // offered alongside Conflict Resolution's lower-stakes
+        // dismiss/adopt-existing actions.
         const SINGLE_OWNER_BY_DESIGN: &[&str] = &[
             "delete_node",
             "create_schema",
             "update_schema",
             "create_nodes_from_markdown",
+            "merge_conflict",
         ];
 
         // Enumerated from the REGISTRY, not from `owners`. Iterating the map

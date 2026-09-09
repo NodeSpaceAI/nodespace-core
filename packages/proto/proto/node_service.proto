@@ -119,6 +119,7 @@ service NodeService {
   // convergence conflict, replacing the `_possible_duplicate` boolean.
   rpc ListConflicts(ListConflictsRequest) returns (ConflictListResponse);
   rpc ConflictsForNode(ConflictsForNodeRequest) returns (ConflictListResponse);
+  rpc GetConflict(GetConflictRequest) returns (OptionalConflictResponse);
   rpc ResolveConflict(ResolveConflictRequest) returns (ConflictResponse);
   // User-initiated only (ADR-068 §5.2) — never called automatically at any
   // confidence level. See NodeService::merge_nodes's doc comment.
@@ -259,6 +260,14 @@ message ConflictsForNodeRequest {
 
 message ConflictListResponse {
   repeated ConflictRecord conflicts = 1;
+}
+
+message GetConflictRequest {
+  string conflict_id = 1;
+}
+
+message OptionalConflictResponse {
+  optional ConflictRecord conflict = 1;
 }
 
 message ResolveConflictRequest {

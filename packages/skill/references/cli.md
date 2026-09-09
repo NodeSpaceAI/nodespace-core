@@ -445,6 +445,44 @@ A database is addressed by **name or id**. When a name is ambiguous (shared by m
 
 **Output:** `list` prints a table (or the full list with `--json`); the other commands print the affected database record (`--json` emits the full `DatabaseInfo`).
 
+### Conflicts
+
+Reads and resolves records from the conflict journal — durable evidence that two nodes collide (e.g. two active `person` nodes share a unique-flagged field's value, or two collections share a name). This is a second client onto the same journal the desktop app's Conflicts view reads and writes, so a dismiss/adopt/merge made here is immediately visible there and vice versa.
+
+```bash
+# List conflicts (optionally filtered)
+nodespace conflicts list
+nodespace conflicts list --status open
+nodespace conflicts list --kind unique_field_collision
+nodespace conflicts list --node <node-id>   # conflicts naming this node as a participant
+
+# Show one conflict record in full, including detail and any prior resolution
+nodespace conflicts show <conflict-id>
+
+# Dismiss a conflict as acceptable, without changing either node
+nodespace conflicts dismiss <conflict-id>
+
+# Resolve by continuing with an existing node instead of a new one (non-destructive)
+nodespace conflicts adopt <conflict-id> --keep <node-id>
+
+# Merge a losing node into a surviving node: unions properties, re-points edges, archives the loser
+nodespace conflicts merge --survivor <node-id> --loser <node-id>
+nodespace conflicts merge --survivor <node-id> --conflict-id <conflict-id>   # loser inferred from the record
+```
+
+**Options:**
+- `list [--status open|resolved|dismissed] [--kind unique_field_collision|collection_name_collision] [--node <id>] [--limit <n>]` — `--node` lists only conflicts naming that node as a participant and, when set, ignores `--status`/`--kind`/`--limit`
+- `show <conflict-id>` — full record, including `detail` (kind-specific evidence) and `resolution` (once resolved or dismissed)
+- `dismiss <conflict-id>` — acknowledges the conflict; re-detection will not reopen it
+- `adopt <conflict-id> --keep <node-id>` — resolves without deleting or modifying either node
+- `merge --survivor <node-id> [--loser <node-id>] [--conflict-id <conflict-id>]` — `--loser` is required unless `--conflict-id` names an open record with exactly one other participant besides `--survivor`, in which case the loser is inferred
+
+**Which action for which kind:** `dismiss` and `adopt` apply to any kind. `merge` makes sense for `unique_field_collision` (two node records for the same real thing) but not `collection_name_collision` (renaming one collection, via `nodespace node update`, is the fix there — then dismiss or let the record self-resolve).
+
+**Merge is the one irreversible-feeling action here** — it archives the loser node and re-points its edges immediately when called, and is never performed automatically at any confidence level. Only call it once the user has explicitly confirmed which node should survive; use `show` or `nodespace node get` first to confirm the identity of both participants. `dismiss` and `adopt` are comparatively low-stakes: neither node is changed.
+
+**Output:** a `ConflictRecord` — `id`, `kind`, `node_ids` (sorted participants), `detail` (kind-specific evidence, e.g. `{"node_type":"person","field":"email","value":"...","case_insensitive":true}`), `status` (`open`/`resolved`/`dismissed`), `detected_at`, `occurrences`, `resolved_at`/`resolution` once settled (e.g. `{"action":"dismiss"}`, `{"action":"adopt_existing","adopted":"<id>"}`, `{"action":"merge","survivor":"<id>","loser":"<id>",...}`). `merge` additionally prints `properties_merged`/`edges_repointed`/`edges_dropped`.
+
 ### Complete command surface
 
 <!-- BEGIN GENERATED: cli-surface (see packages/cli/src/lib.rs (clap derive), packages/cli/examples/gen_skill_md.rs) -->
@@ -645,6 +683,36 @@ Manage typed relationship edges between nodes (distinct from mentions)
 - `<ID>` — Node ID to query relationships for (required)
 - `--type <RELATIONSHIP_NAME>` — Relationship name (as defined on the node's schema) (required)
 - `--direction <DIRECTION>` — Direction to traverse
+
+### `nodespace conflicts`
+
+Inspect and resolve the local conflict journal (list, show, dismiss, adopt, merge)
+
+**`nodespace conflicts list`** — List conflict records, optionally filtered by status, kind, or participant node
+
+- `--status <STATUS>` — Filter by status: open | resolved | dismissed. Omit for every status
+- `--kind <KIND>` — Filter by kind: unique_field_collision | collection_name_collision
+- `--node <NODE>` — List only conflicts naming this node id as a participant
+- `--limit <LIMIT>` — Cap the number of records returned. Ignored when `--node` is set
+
+**`nodespace conflicts show`** — Show a single conflict record by its own id, including detail and any prior resolution
+
+- `<CONFLICT_ID>` — Conflict record id (required)
+
+**`nodespace conflicts dismiss`** — Dismiss a conflict as acceptable — acknowledges it without changing any node
+
+- `<CONFLICT_ID>` — Conflict record id (required)
+
+**`nodespace conflicts adopt`** — Resolve a conflict by continuing with an existing node instead of the new one (non-destructive)
+
+- `<CONFLICT_ID>` — Conflict record id (required)
+- `--keep <KEEP>` — The node id to keep — the counterparty is resolved without navigating to it (required)
+
+**`nodespace conflicts merge`** — Merge a losing node into a surviving node: unions properties, re-points edges, archives the loser
+
+- `--survivor <SURVIVOR>` — Surviving node id — receives the union of properties and every re-pointed edge (required)
+- `--loser <LOSER>` — Losing node id, archived after the merge. Required unless `--conflict-id` names a two-participant record, in which case the other participant is used
+- `--conflict-id <CONFLICT_ID>` — The open conflict record this merge resolves, closed as resolved in the same transaction
 
 ### `nodespace session`
 

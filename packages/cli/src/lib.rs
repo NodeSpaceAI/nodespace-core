@@ -153,6 +153,11 @@ pub enum Command {
         #[command(subcommand)]
         action: commands::relationship::RelationshipAction,
     },
+    /// Inspect and resolve the local conflict journal (list, show, dismiss, adopt, merge).
+    Conflicts {
+        #[command(subcommand)]
+        action: commands::conflicts::ConflictsAction,
+    },
     /// Manage PTY agent sessions (launch, attach, list, kill).
     Session {
         #[command(subcommand)]
@@ -409,6 +414,11 @@ pub async fn run(cli: Cli) -> Result<()> {
             let (interceptor, _) = resolve_routing(&sock, selection).await?;
             let mut client = connect(&sock, interceptor).await?;
             commands::relationship::run(&mut client, action, json).await
+        }
+        Command::Conflicts { action } => {
+            let (interceptor, _) = resolve_routing(&sock, selection).await?;
+            let mut client = connect(&sock, interceptor).await?;
+            commands::conflicts::run(&mut client, action, json).await
         }
         Command::Session { action } => {
             let (interceptor, _) = resolve_routing(&sock, selection).await?;

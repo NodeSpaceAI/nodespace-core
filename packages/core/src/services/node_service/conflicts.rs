@@ -88,6 +88,17 @@ impl NodeService {
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
+    /// Read a single conflict record by id, if it exists.
+    pub async fn get_conflict(
+        &self,
+        conflict_id: &str,
+    ) -> Result<Option<ConflictRecord>, NodeServiceError> {
+        self.store
+            .get_conflict(conflict_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+    }
+
     /// Apply a resolution to an existing conflict record.
     pub async fn resolve_conflict(
         &self,

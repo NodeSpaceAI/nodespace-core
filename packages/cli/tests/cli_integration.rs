@@ -23,11 +23,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use nodespace_agent::pty::PtySessionManager;
-use nodespace_cli::{commands, connect, connect_database, DatabaseIdInterceptor};
+use nodespace_cli::{commands, connect, connect_database, DatabaseIdInterceptor, NodeClient};
 use nodespace_core::{NodeService as CoreNodeService, SqliteStore};
 use nodespace_daemon::nodespace::{
-    CreateDatabaseRequest, CreateNodeRequest, GetNodeRequest, GetRelatedNodesRequest,
-    ListDatabasesRequest, NodeSortOrder, QueryNodesSimpleRequest,
+    ConflictsForNodeRequest, CreateDatabaseRequest, CreateNodeRequest, GetConflictRequest,
+    GetNodeRequest, GetRelatedNodesRequest, ListDatabasesRequest, NodeSortOrder,
+    QueryNodesSimpleRequest,
 };
 use nodespace_daemon::{
     DatabaseManager, DatabaseServiceImpl, DatabaseServiceServer, DbManagerLayer, NodeServiceImpl,
@@ -939,6 +940,254 @@ async fn schema_delete_requires_relationship_declarations_removed_first() {
     )
     .await
     .expect_err("the deleted schema must no longer resolve");
+
+    let _ = shutdown.send(());
+}
+
+/// Seed two `person` nodes sharing the same (case-insensitively) unique
+/// `email`, which trips the create-path `detect_unique_field_collisions`
+/// hook and journals an open `UniqueFieldCollision` record naming both. The
+/// `person` type's `unique_case_insensitive` email field is a system-seeded
+/// schema (`NodeService::new` seeds it), so no explicit `create_schema` call
+/// is needed — mirrors `person_duplicate_convergence_test.rs`'s fixture.
+///
+/// `email_local_part` must be distinct per call within a test: the field is
+/// case-insensitively unique across every active `person` node in the store,
+/// so reusing a value across two calls would make the second pair collide
+/// with the first pair's nodes too, not just with each other.
+async fn seed_colliding_people(raw: &mut NodeClient, email_local_part: &str) -> (String, String) {
+    let email = format!("{email_local_part}@example.com");
+    let alice = raw
+        .create_node(CreateNodeRequest {
+            node_type: "person".into(),
+            content: "Alice".into(),
+            parent_id: None,
+            properties: serde_json::json!({"person": {"email": email}}).to_string(),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            id: None,
+            position: None,
+        })
+        .await
+        .expect("seed alice")
+        .into_inner()
+        .node_id;
+
+    let bob = raw
+        .create_node(CreateNodeRequest {
+            node_type: "person".into(),
+            content: "Bob".into(),
+            parent_id: None,
+            properties: serde_json::json!({"person": {"email": email.to_uppercase()}}).to_string(),
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            id: None,
+            position: None,
+        })
+        .await
+        .expect("seed bob (colliding email)")
+        .into_inner()
+        .node_id;
+
+    (alice, bob)
+}
+
+#[tokio::test]
+async fn conflicts_list_show_and_dismiss_round_trip() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    let (alice, _bob) = seed_colliding_people(&mut raw, "list-show-dismiss").await;
+
+    // list --node finds the journaled collision.
+    commands::conflicts::run(
+        &mut client,
+        commands::conflicts::ConflictsAction::List(commands::conflicts::ListArgs {
+            status: None,
+            kind: None,
+            node: Some(alice.clone()),
+            limit: None,
+        }),
+        true,
+    )
+    .await
+    .expect("conflicts list --node");
+
+    let conflicts = raw
+        .conflicts_for_node(ConflictsForNodeRequest {
+            node_id: alice.clone(),
+        })
+        .await
+        .expect("raw conflicts_for_node")
+        .into_inner()
+        .conflicts;
+    let open = conflicts
+        .iter()
+        .find(|c| c.kind == "unique_field_collision" && c.status == "open")
+        .expect("the colliding email must have journaled a conflict");
+    let conflict_id = open.id.clone();
+
+    // show fetches the same record by its own id.
+    commands::conflicts::run(
+        &mut client,
+        commands::conflicts::ConflictsAction::Show(commands::conflicts::ShowArgs {
+            conflict_id: conflict_id.clone(),
+        }),
+        true,
+    )
+    .await
+    .expect("conflicts show");
+
+    // dismiss resolves it as Dismissed.
+    commands::conflicts::run(
+        &mut client,
+        commands::conflicts::ConflictsAction::Dismiss(commands::conflicts::DismissArgs {
+            conflict_id: conflict_id.clone(),
+        }),
+        true,
+    )
+    .await
+    .expect("conflicts dismiss");
+
+    let after = raw
+        .get_conflict(GetConflictRequest {
+            conflict_id: conflict_id.clone(),
+        })
+        .await
+        .expect("raw get_conflict after dismiss")
+        .into_inner()
+        .conflict
+        .expect("record must still exist");
+    assert_eq!(after.status, "dismissed");
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn conflicts_show_missing_id_surfaces_a_clear_error() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    let err = commands::conflicts::run(
+        &mut client,
+        commands::conflicts::ConflictsAction::Show(commands::conflicts::ShowArgs {
+            conflict_id: "does-not-exist".into(),
+        }),
+        false,
+    )
+    .await
+    .expect_err("expected error for an unknown conflict id");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("does-not-exist"),
+        "error should name the missing id: {msg}"
+    );
+
+    let _ = shutdown.send(());
+}
+
+#[tokio::test]
+async fn conflicts_adopt_and_merge_round_trip() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+
+    // adopt, on its own pair.
+    let (alice, _bob) = seed_colliding_people(&mut raw, "adopt-pair").await;
+    let conflict = raw
+        .conflicts_for_node(ConflictsForNodeRequest {
+            node_id: alice.clone(),
+        })
+        .await
+        .expect("raw conflicts_for_node")
+        .into_inner()
+        .conflicts
+        .into_iter()
+        .find(|c| c.kind == "unique_field_collision" && c.status == "open")
+        .expect("journaled collision");
+
+    commands::conflicts::run(
+        &mut client,
+        commands::conflicts::ConflictsAction::Adopt(commands::conflicts::AdoptArgs {
+            conflict_id: conflict.id.clone(),
+            keep: alice.clone(),
+        }),
+        true,
+    )
+    .await
+    .expect("conflicts adopt");
+
+    let after = raw
+        .get_conflict(GetConflictRequest {
+            conflict_id: conflict.id,
+        })
+        .await
+        .expect("raw get_conflict after adopt")
+        .into_inner()
+        .conflict
+        .expect("record must still exist");
+    assert_eq!(after.status, "resolved");
+
+    // merge, on a fresh pair with --conflict-id inferring the loser.
+    let (carol, dave) = seed_colliding_people(&mut raw, "merge-pair").await;
+    let merge_conflict = raw
+        .conflicts_for_node(ConflictsForNodeRequest {
+            node_id: carol.clone(),
+        })
+        .await
+        .expect("raw conflicts_for_node")
+        .into_inner()
+        .conflicts
+        .into_iter()
+        .find(|c| c.kind == "unique_field_collision" && c.status == "open")
+        .expect("journaled collision");
+
+    commands::conflicts::run(
+        &mut client,
+        commands::conflicts::ConflictsAction::Merge(commands::conflicts::MergeArgs {
+            survivor: carol.clone(),
+            loser: None,
+            conflict_id: Some(merge_conflict.id.clone()),
+        }),
+        true,
+    )
+    .await
+    .expect("conflicts merge (loser inferred from conflict_id)");
+
+    let loser_after = raw
+        .get_node(GetNodeRequest {
+            node_id: dave.clone(),
+        })
+        .await
+        .expect("raw get_node on merged-away loser")
+        .into_inner()
+        .node_data
+        .expect("loser row must still exist, archived");
+    assert_eq!(loser_after.lifecycle_status, "archived");
+
+    let closed = raw
+        .get_conflict(GetConflictRequest {
+            conflict_id: merge_conflict.id,
+        })
+        .await
+        .expect("raw get_conflict after merge")
+        .into_inner()
+        .conflict
+        .expect("record must still exist");
+    assert_eq!(closed.status, "resolved");
 
     let _ = shutdown.send(());
 }

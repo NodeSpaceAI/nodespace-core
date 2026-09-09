@@ -260,3 +260,49 @@ async fn merge_closes_the_conflict_record_with_a_merge_resolution() -> Result<()
 
     Ok(())
 }
+
+#[tokio::test]
+async fn get_conflict_returns_the_record_by_its_own_id() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+
+    let alice_id = svc
+        .create_node(Node::new(
+            "person".to_string(),
+            "Alice".to_string(),
+            json!({ "person": { "first_name": "Alice", "email": "alice@example.com" } }),
+        ))
+        .await?;
+    let _bob_id = svc
+        .create_node(Node::new(
+            "person".to_string(),
+            "Bob".to_string(),
+            json!({ "person": { "first_name": "Bob", "email": "alice@example.com" } }),
+        ))
+        .await?;
+
+    let records = svc.conflicts_for_node(&alice_id).await?;
+    let open = records
+        .iter()
+        .find(|r| r.kind == ConflictKind::UniqueFieldCollision && r.status == ConflictStatus::Open)
+        .expect("the colliding email must have journaled a conflict");
+
+    let fetched = svc
+        .get_conflict(&open.id)
+        .await?
+        .expect("get_conflict must find the record by its own id");
+    assert_eq!(fetched.id, open.id);
+    assert_eq!(fetched.kind, ConflictKind::UniqueFieldCollision);
+    assert_eq!(fetched.status, ConflictStatus::Open);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_conflict_returns_none_for_an_unknown_id() -> Result<()> {
+    let (svc, _tmp) = service().await?;
+
+    let missing = svc.get_conflict("not-a-real-conflict-id").await?;
+    assert!(missing.is_none());
+
+    Ok(())
+}
