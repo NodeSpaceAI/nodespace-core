@@ -69,10 +69,14 @@ let updateNodeSpy: ReturnType<typeof vi.fn>;
 let findDuplicateForSpy: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  updateNodeSpy = vi.fn().mockResolvedValue(personNode());
+  // The save path is sharedNodeStore.updateNode (ADR-049), matching every
+  // other property form — not backendAdapter.updateNode directly. It's
+  // synchronous (void), not a Promise: the store applies the change
+  // optimistically and hands persistence off in the background.
+  updateNodeSpy = vi.fn();
   vi.spyOn(sharedNodeStore, 'getNode').mockReturnValue(personNode());
-  vi.spyOn(backendAdapter, 'updateNode').mockImplementation(
-    updateNodeSpy as unknown as typeof backendAdapter.updateNode
+  vi.spyOn(sharedNodeStore, 'updateNode').mockImplementation(
+    updateNodeSpy as unknown as typeof sharedNodeStore.updateNode
   );
   findDuplicateForSpy = vi.fn().mockResolvedValue(null);
   vi.spyOn(backendAdapter, 'findDuplicateFor').mockImplementation(
@@ -138,8 +142,8 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
 
     // The write happens regardless of the suggestion — suggest, never block.
     expect(updateNodeSpy).toHaveBeenCalledTimes(1);
-    const [, , update] = updateNodeSpy.mock.calls[0];
-    expect((update.properties.person as Record<string, unknown>).email).toBe('bob@example.com');
+    const [, changes] = updateNodeSpy.mock.calls[0];
+    expect((changes.properties.person as Record<string, unknown>).email).toBe('bob@example.com');
   });
 
   it('"Use existing" navigates to the match and dismisses the suggestion', async () => {
@@ -207,30 +211,33 @@ describe('PersonSchemaForm — adopt-existing suggestion', () => {
     expect(screen.queryByText(/already exists/i)).toBeNull();
   });
 
-  it('check and save fire concurrently — the check does not wait for the save', async () => {
-    // Regression guard: an earlier version awaited the save before starting
-    // the duplicate check, so by the time the check ran, this node's own
-    // freshly-saved row already held the value too — a real false-negative
-    // risk given the lookup has no ORDER BY. Assert the check is issued
-    // before the save's promise has settled, not after.
-    let resolveSave!: () => void;
-    updateNodeSpy.mockReturnValue(
+  it('the save is never gated behind the duplicate lookup', async () => {
+    // Regression guard: an earlier version of this form awaited the save
+    // (a real network round trip via backendAdapter.updateNode) before
+    // starting the duplicate check, so by the time the check ran, this
+    // node's own freshly-saved row already held the value too — a real
+    // false-negative risk given the lookup has no ORDER BY. The save now
+    // goes through sharedNodeStore.updateNode, which applies optimistically
+    // and returns synchronously (persistence happens in the background) —
+    // so it must already have landed by the time a still-pending duplicate
+    // lookup resolves, not queued behind it.
+    let resolveLookup!: (match: Node | null) => void;
+    findDuplicateForSpy.mockReturnValue(
       new Promise((resolve) => {
-        resolveSave = () => resolve(personNode());
+        resolveLookup = resolve;
       })
     );
-    findDuplicateForSpy.mockResolvedValue(null);
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
 
     const input = screen.getByLabelText('Email');
     const blurPromise = fireEvent.blur(input, { target: { value: 'bob@example.com' } });
 
-    // The duplicate check must already have been issued while the save is
-    // still in flight, not queued behind it.
+    // The save is synchronous — it must already have happened even though
+    // the duplicate lookup is still pending.
     await waitFor(() => expect(findDuplicateForSpy).toHaveBeenCalled());
     expect(updateNodeSpy).toHaveBeenCalledTimes(1);
 
-    resolveSave();
+    resolveLookup(null);
     await blurPromise;
   });
 
@@ -328,5 +335,82 @@ describe('PersonSchemaForm — Relationships trigger gate', () => {
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
 
     await waitFor(() => expect(screen.getByText('Relationships')).toBeTruthy());
+  });
+});
+
+/**
+ * Field saves route through sharedNodeStore.updateNode (ADR-049), title
+ * resolution regression.
+ *
+ * Before this fix, `updateField()` called `backendAdapter.updateNode(...)`
+ * directly and discarded its response — the only property form in the
+ * codebase that bypassed `sharedNodeStore.updateNode`, the store-mediated
+ * path every viewer (including BaseNodeViewer, which reads titles reactively
+ * from the store) actually reads from. Confirmed by runtime repro: editing
+ * first/last name left the store's cached copy of the node — including its
+ * title AND its own first_name/last_name properties — completely
+ * untouched; nothing (not even a delayed update) reflected the edit without
+ * an external `NodeUpdated` domain-event re-hydration, which doesn't fire at
+ * all outside a live Tauri runtime (see tauri-sync-listener.ts's Tauri-
+ * environment guard) and, even when it does fire, races an in-memory cache
+ * (`ensureNode`) that serves the stale entry indefinitely once populated.
+ * The persisted value itself was never at risk — the backend computed and
+ * stored the correct title on every save — this was purely a frontend
+ * store-staleness bug.
+ */
+describe('PersonSchemaForm — save path routes through the store (title-update regression)', () => {
+  it('calls sharedNodeStore.updateNode, not backendAdapter.updateNode, on a name edit', async () => {
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    const firstName = screen.getByLabelText('First name');
+    await fireEvent.blur(firstName, { target: { value: 'Carol' } });
+
+    expect(updateNodeSpy).toHaveBeenCalledTimes(1);
+    const [calledNodeId, changes, source] = updateNodeSpy.mock.calls[0];
+    expect(calledNodeId).toBe('person-1');
+    expect((changes.properties.person as Record<string, unknown>).first_name).toBe('Carol');
+    expect(source).toEqual({ type: 'viewer', viewerId: 'person-schema-form' });
+  });
+
+  it('resolves the title to "{first_name} {last_name}" in the store immediately after editing, with no reload', async () => {
+    // Exercise the REAL sharedNodeStore (not the spy the rest of this file
+    // uses) so this test proves the actual store-mediated round trip, not
+    // just that the component calls the right method name. Only the network
+    // boundary (backendAdapter.updateNode) is stubbed, standing in for a
+    // backend that correctly recomputes the title from title_template —
+    // exactly what the issue's own root-cause analysis says is not in
+    // question.
+    (sharedNodeStore.updateNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+    (sharedNodeStore.getNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+
+    const seeded = personNode({
+      title: 'Untitled',
+      properties: { person: { first_name: '', last_name: '', email: '' } }
+    });
+    sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
+
+    vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async (id, version, update) => {
+      const patched = (update as { properties?: { person?: Record<string, unknown> } })
+        .properties?.person;
+      const merged = { first_name: '', last_name: '', email: '', ...patched };
+      return {
+        ...seeded,
+        id,
+        version: (version as number) + 1,
+        properties: { person: merged },
+        title: `${merged.first_name} ${merged.last_name}`.trim() || 'Untitled'
+      } as Node;
+    });
+
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    const firstName = screen.getByLabelText('First name') as HTMLInputElement;
+    const lastName = screen.getByLabelText('Last name') as HTMLInputElement;
+    await fireEvent.blur(firstName, { target: { value: 'Jane' } });
+    await fireEvent.blur(lastName, { target: { value: 'Doe' } });
+
+    await waitFor(() => expect(sharedNodeStore.getNode('person-1')?.title).toBe('Jane Doe'));
+    // No manual reload/re-fetch performed above — the assertion above already
+    // covers "no reload required".
   });
 });
