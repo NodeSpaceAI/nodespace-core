@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { extractResourceRoot, skipReasonText } from '../install.js';
+import { extractResourceRoot, skipReasonText, mcpSkipReasonText } from '../install.js';
 
 describe('extractResourceRoot', () => {
   it('returns no resourceRoot and all args unchanged when the flag is absent', () => {
@@ -54,5 +54,17 @@ describe('skipReasonText', () => {
   it('falls back to the generic incomplete-package message otherwise', () => {
     const text = skipReasonText({ agent: 'codex', installed: [] });
     expect(text).toBe('detected but no files to install (package may be incomplete)');
+  });
+});
+
+describe('mcpSkipReasonText', () => {
+  it('passes through a given reason verbatim', () => {
+    expect(mcpSkipReasonText('`nodespace` was not found on $PATH')).toBe(
+      '`nodespace` was not found on $PATH'
+    );
+  });
+
+  it('falls back to a generic message when no reason is given', () => {
+    expect(mcpSkipReasonText(undefined)).toBe('detected but nothing to configure');
   });
 });

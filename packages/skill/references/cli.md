@@ -779,4 +779,16 @@ Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (C
 
 **`nodespace skill status`** — Report which harnesses currently have the skill installed
 
+### `nodespace mcp`
+
+Host a stdio MCP server exposing one passthrough tool, for bash-less MCP surfaces (e.g. Claude Desktop's Chat tab) that cannot shell this CLI directly — see `commands::mcp` for the architecture and its ADR-038 trust-boundary controls. Disabled until `nodespace mcp install` explicitly turns it on. With no subcommand, hosts the stdio server itself — what a client config launches, not something a person types directly
+
+**`nodespace mcp install`** — Configure a detected bash-less MCP client (currently Claude Desktop) to launch `nodespace mcp`, and enable the passthrough tool. Safe to re-run
+
+- `--yes` — Install without prompting for confirmation. Implied automatically when stdin/stdout isn't a terminal — mirrors `nodespace skill install`'s `--yes`
+
+**`nodespace mcp uninstall`** — Remove the MCP config this wrote from every detected client and disable the passthrough tool again
+
+**`nodespace mcp status`** — Report whether the passthrough tool is enabled and which clients currently have a config pointing at it
+
 <!-- END GENERATED: cli-surface -->

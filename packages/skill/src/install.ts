@@ -16,6 +16,9 @@
 import { install, uninstall, checkInstalled } from './installer.js';
 import type { AgentName, InstallResult } from './types.js';
 import { AGENTS } from './agents.js';
+import { installMcp, uninstallMcp, checkMcpInstalled } from './mcp-installer.js';
+import type { McpClientName } from './mcp-clients.js';
+import { MCP_CLIENTS } from './mcp-clients.js';
 
 /**
  * The reason text printed on a "⚠ agent: ..." line -- pulled out to a pure
@@ -57,38 +60,61 @@ export function extractResourceRoot(argv: string[]): { rest: string[]; resourceR
   return { rest, resourceRoot };
 }
 
+/**
+ * The reason text printed on a "⚠ client: ..." line for an MCP
+ * install/uninstall outcome, parallel to [`skipReasonText`] above.
+ */
+export function mcpSkipReasonText(reason: string | undefined): string {
+  return reason ?? 'detected but nothing to configure';
+}
+
 function main(): void {
   const { rest: positional, resourceRoot } = extractResourceRoot(process.argv.slice(2));
   const command = positional[0];
   const agentArg = positional[1] as AgentName | undefined;
 
   const validAgents = AGENTS.map(a => a.name);
+  const validMcpClients = MCP_CLIENTS.map(c => c.name);
 
   function isValidAgent(name: string): name is AgentName {
     return validAgents.includes(name as AgentName);
   }
 
+  function isValidMcpClient(name: string): name is McpClientName {
+    return validMcpClients.includes(name as McpClientName);
+  }
+
   function printUsage(): void {
-    console.log(`Usage: bun install.js <command> [agent] [--resource-root <path>]
+    console.log(`Usage: bun install.js <command> [agent|client] [--resource-root <path>]
 
 Commands:
-  install [agent]    Install NodeSpace skill for detected (or specified) agents
-  uninstall [agent]  Remove NodeSpace skill from detected (or specified) agents
-  status [agent]     Report which (of the specified, or every configured) agents
-                      actually have SKILL.md on disk right now -- a pure
-                      filesystem check, no install/uninstall side effects
+  install [agent]        Install NodeSpace skill for detected (or specified) agents
+  uninstall [agent]      Remove NodeSpace skill from detected (or specified) agents
+  status [agent]         Report which (of the specified, or every configured) agents
+                          actually have SKILL.md on disk right now -- a pure
+                          filesystem check, no install/uninstall side effects
+  mcp-install [client]   Configure a detected (or specified) bash-less MCP
+                          client to launch \`nodespace mcp\`
+  mcp-uninstall [client] Remove NodeSpace's entry from a detected (or
+                          specified) MCP client's config
+  mcp-status [client]    Report which (of the specified, or every configured)
+                          MCP clients currently have a config entry -- a pure
+                          filesystem check, no install/uninstall side effects
 
 Agents: ${validAgents.join(', ')}
+MCP clients: ${validMcpClients.join(', ')}
 
 --resource-root <path>  Where SKILL.md/shims/references actually live. Only
                          needed by the compiled standalone binary distribution
                          — a plain dist/install.js run finds these next to
-                         itself automatically.
+                         itself automatically. Ignored by the mcp-* commands,
+                         which have no such resources.
 
 Examples:
   bun install.js install
   bun install.js install claude-code
   bun install.js uninstall
+  bun install.js mcp-install
   nodespace-skill-installer install --resource-root /path/to/resources/skill`);
   }
 
@@ -97,13 +123,22 @@ Examples:
     process.exit(0);
   }
 
-  if (agentArg && !isValidAgent(agentArg)) {
+  const isMcpCommand = command.startsWith('mcp-');
+  const mcpClientArg = positional[1] as McpClientName | undefined;
+
+  if (!isMcpCommand && agentArg && !isValidAgent(agentArg)) {
     console.error(`Unknown agent: ${agentArg}`);
     console.error(`Valid agents: ${validAgents.join(', ')}`);
     process.exit(1);
   }
+  if (isMcpCommand && mcpClientArg && !isValidMcpClient(mcpClientArg)) {
+    console.error(`Unknown MCP client: ${mcpClientArg}`);
+    console.error(`Valid MCP clients: ${validMcpClients.join(', ')}`);
+    process.exit(1);
+  }
 
   const targetAgents = agentArg ? [agentArg] : undefined;
+  const targetMcpClients = mcpClientArg ? [mcpClientArg] : undefined;
 
   if (command === 'install') {
     const results = resourceRoot ? install(targetAgents, resourceRoot) : install(targetAgents);
@@ -175,6 +210,61 @@ Examples:
     // same parser instead of needing a second one for this command.
     const present = new Set(checkInstalled(targetAgents));
     const checked = targetAgents ?? validAgents;
+    for (const name of checked) {
+      if (present.has(name)) {
+        console.log(`✓ ${name}: present`);
+      } else {
+        console.log(`  ${name}: not present`);
+      }
+    }
+  } else if (command === 'mcp-install') {
+    const results = installMcp(targetMcpClients);
+
+    if (results.length === 0) {
+      console.log('No supported bash-less MCP clients detected.');
+      console.log(`Checked: ${validMcpClients.join(', ')}`);
+      console.log('To configure one manually, specify a client: bun install.js mcp-install <client>');
+      process.exit(0);
+    }
+
+    const seen = new Set<string>();
+    for (const result of results) {
+      seen.add(result.client);
+      if (result.installed) {
+        // On stdout, not stderr -- `commands::mcp::install` (the Rust
+        // caller) parses this exact "✓ client: ..." / "⚠ client: reason"
+        // contract via the same `parse_installer_output` the skill
+        // installer's own `install`/`uninstall`/`status` already use.
+        console.log(`✓ ${result.client}: MCP config written`);
+      } else {
+        console.log(`⚠ ${result.client}: ${mcpSkipReasonText(result.skipReason)}`);
+      }
+    }
+    if (!mcpClientArg) {
+      for (const name of validMcpClients) {
+        if (!seen.has(name)) {
+          console.log(`  ${name}: not detected`);
+        }
+      }
+    }
+  } else if (command === 'mcp-uninstall') {
+    const results = uninstallMcp(targetMcpClients);
+
+    if (results.length === 0) {
+      console.log('No MCP client configs found.');
+      process.exit(0);
+    }
+
+    for (const result of results) {
+      if (result.removed) {
+        console.log(`✓ ${result.client}: MCP config removed`);
+      } else {
+        console.log(`  ${result.client}: ${result.skipReason ?? 'nothing to remove'}`);
+      }
+    }
+  } else if (command === 'mcp-status') {
+    const present = new Set(checkMcpInstalled(targetMcpClients));
+    const checked = targetMcpClients ?? validMcpClients;
     for (const name of checked) {
       if (present.has(name)) {
         console.log(`✓ ${name}: present`);

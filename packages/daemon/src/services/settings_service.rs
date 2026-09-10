@@ -26,6 +26,23 @@ struct DaemonConfig {
     capture: CaptureConfig,
     #[serde(default)]
     openai_compat: OpenAiCompatSettings,
+    #[serde(default)]
+    mcp: McpConfig,
+}
+
+/// MCP passthrough-tool settings persisted in daemon.toml under `[mcp]`.
+///
+/// ADR-038's Trust Boundary requires "explicit user enablement" before an
+/// external tool goes live -- `nodespace mcp` (the stdio server in
+/// `packages/cli/src/commands/mcp.rs`) refuses to serve anything unless this
+/// is `true`. Defaults to `false`, the same shape [`CaptureConfig`] uses for
+/// its own opt-in `enabled` flag: a missing `[mcp]` section (no prior
+/// `nodespace mcp install` run, or a config file that predates this field)
+/// reads as "not enabled," never as "enabled by omission."
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 /// OpenAI-compatible provider configs persisted in daemon.toml under
@@ -198,6 +215,74 @@ pub async fn find_openai_compat_config(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(anyhow::anyhow!("failed to read daemon config: {}", e)),
     }
+}
+
+/// Read the MCP passthrough-tool's enablement setting from the config file at
+/// the given path. Used by `nodespace mcp` (the CLI's stdio server, a
+/// separate process from the daemon -- see `packages/cli/src/commands/mcp.rs`)
+/// to decide whether it may serve anything at all. A missing file reads as
+/// "not enabled," matching [`McpConfig`]'s default -- there is no daemon
+/// running required to make this call; it is a plain file read against
+/// `~/.nodespace/daemon.toml`, the same file the daemon itself reads via
+/// [`SettingsServiceImpl`].
+pub async fn read_mcp_settings(config_path: &std::path::Path) -> anyhow::Result<McpConfig> {
+    match tokio::fs::read_to_string(config_path).await {
+        Ok(contents) => {
+            let config: DaemonConfig = toml::from_str(&contents)
+                .map_err(|e| anyhow::anyhow!("failed to parse daemon config: {}", e))?;
+            Ok(config.mcp)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(McpConfig::default()),
+        Err(e) => Err(anyhow::anyhow!("failed to read daemon config: {}", e)),
+    }
+}
+
+/// Set the MCP passthrough-tool's enablement flag, preserving every other
+/// section of `daemon.toml` untouched. This is the explicit-user-enablement
+/// write ADR-038's Trust Boundary requires: `nodespace mcp install`/
+/// `uninstall` (see `packages/cli/src/commands/mcp.rs`) are the only callers,
+/// turning the flag on only once a client's MCP config has actually been
+/// written, and off again on uninstall.
+///
+/// A direct, unlocked read-modify-write against the file -- the same shape
+/// [`record_routing_probe_verdict`] already uses to write `daemon.toml` from
+/// outside `SettingsServiceImpl`'s RPC surface, for the same reason: this is
+/// called from the separate `nodespace` CLI process, which has no RPC
+/// connection to serialize through. The realistic race (a concurrent
+/// Settings-GUI save via `SettingsServiceImpl::write_config`) is the same
+/// small, accepted window documented there.
+pub async fn set_mcp_enabled(config_path: &std::path::Path, enabled: bool) -> anyhow::Result<()> {
+    let mut config: DaemonConfig = match tokio::fs::read_to_string(config_path).await {
+        Ok(contents) => toml::from_str(&contents)
+            .map_err(|e| anyhow::anyhow!("failed to parse daemon config: {e}"))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DaemonConfig::default(),
+        Err(e) => return Err(anyhow::anyhow!("failed to read daemon config: {e}")),
+    };
+    config.mcp.enabled = enabled;
+
+    if let Some(parent) = config_path.parent() {
+        // Owner-only from birth: this directory holds daemon.toml, which can
+        // carry third-party API keys alongside this flag.
+        crate::create_dir_owner_only(parent)
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to create config directory: {e}"))?;
+    }
+    let serialized = toml::to_string_pretty(&config)
+        .map_err(|e| anyhow::anyhow!("failed to serialize daemon config: {e}"))?;
+    write_config_atomic(config_path, &serialized)
+        .await
+        .map_err(|e| match e {
+            WriteConfigAtomicError::Write(e) => {
+                anyhow::anyhow!("failed to write daemon config: {e}")
+            }
+            #[cfg(unix)]
+            WriteConfigAtomicError::Chmod(e) => {
+                anyhow::anyhow!("failed to set daemon config permissions: {e}")
+            }
+            WriteConfigAtomicError::Rename(e) => {
+                anyhow::anyhow!("failed to finalize daemon config write: {e}")
+            }
+        })
 }
 
 /// Which step of [`write_config_atomic`]'s temp-file-then-rename sequence
@@ -1027,6 +1112,104 @@ mod tests {
             mode, 0o600,
             "surviving daemon.toml should still be owner-only, got {:o}",
             mode
+        );
+    }
+
+    #[tokio::test]
+    async fn read_mcp_settings_defaults_to_disabled_when_file_missing() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tempdir.path().join("daemon.toml");
+        let settings = read_mcp_settings(&config_path)
+            .await
+            .expect("missing file must not error");
+        assert!(!settings.enabled);
+    }
+
+    #[tokio::test]
+    async fn set_mcp_enabled_then_read_roundtrips() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tempdir.path().join("daemon.toml");
+
+        set_mcp_enabled(&config_path, true)
+            .await
+            .expect("enable should succeed");
+        let settings = read_mcp_settings(&config_path)
+            .await
+            .expect("read should succeed");
+        assert!(settings.enabled);
+
+        set_mcp_enabled(&config_path, false)
+            .await
+            .expect("disable should succeed");
+        let settings = read_mcp_settings(&config_path)
+            .await
+            .expect("read should succeed");
+        assert!(!settings.enabled);
+    }
+
+    #[tokio::test]
+    async fn set_mcp_enabled_creates_the_config_directory_when_missing() {
+        let tempdir = tempfile::TempDir::new().expect("tempdir");
+        let config_path = tempdir.path().join("nested").join("daemon.toml");
+
+        set_mcp_enabled(&config_path, true)
+            .await
+            .expect("enable should succeed even when the parent dir doesn't exist yet");
+        assert!(config_path.exists());
+    }
+
+    /// The `[mcp]` flag must not clobber unrelated sections -- a real
+    /// daemon.toml can already carry `openai_compat.configs` (with API keys)
+    /// when a user first runs `nodespace mcp install`.
+    #[tokio::test]
+    async fn set_mcp_enabled_preserves_other_sections() {
+        let (svc, tempdir) = test_impl();
+        let config_path = tempdir.path().join("daemon.toml");
+        svc.set_open_ai_compat_configs(Request::new(SetOpenAiCompatConfigsRequest {
+            configs: vec![probe_config("a", "https://a.example.com", "gpt-4o")],
+        }))
+        .await
+        .expect("baseline openai_compat set should succeed");
+
+        set_mcp_enabled(&config_path, true)
+            .await
+            .expect("enable should succeed");
+
+        let found = find_openai_compat_config(&config_path, "a")
+            .await
+            .expect("read should succeed");
+        assert!(
+            found.is_some(),
+            "enabling MCP must not erase existing openai_compat config"
+        );
+        let settings = read_mcp_settings(&config_path)
+            .await
+            .expect("read should succeed");
+        assert!(settings.enabled);
+    }
+
+    /// Symmetric to the above: writing `openai_compat` config (e.g. a later
+    /// Settings-GUI save) must not silently flip `mcp.enabled` back off.
+    #[tokio::test]
+    async fn set_open_ai_compat_configs_preserves_mcp_enabled() {
+        let (svc, tempdir) = test_impl();
+        let config_path = tempdir.path().join("daemon.toml");
+        set_mcp_enabled(&config_path, true)
+            .await
+            .expect("enable should succeed");
+
+        svc.set_open_ai_compat_configs(Request::new(SetOpenAiCompatConfigsRequest {
+            configs: vec![probe_config("a", "https://a.example.com", "gpt-4o")],
+        }))
+        .await
+        .expect("openai_compat set should succeed");
+
+        let settings = read_mcp_settings(&config_path)
+            .await
+            .expect("read should succeed");
+        assert!(
+            settings.enabled,
+            "an unrelated settings write must not disable MCP"
         );
     }
 
