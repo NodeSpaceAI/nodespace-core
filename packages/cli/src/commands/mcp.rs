@@ -169,8 +169,11 @@ fn validate_tool_schema(schema: &Value) -> Result<(), String> {
 /// Recursive worker for [`validate_tool_schema`]: walks every JSON Schema
 /// construct that can nest (`properties`, `items`, an object-valued
 /// `additionalProperties`, and the `anyOf`/`oneOf`/`allOf` combinators),
-/// rejecting depth beyond [`MAX_SCHEMA_NESTING_DEPTH`] and any
-/// `additionalProperties: true` (unbounded) at any level. A schema fragment
+/// rejecting depth beyond [`MAX_SCHEMA_NESTING_DEPTH`] and any unbounded
+/// `additionalProperties` at any level that describes a JSON object (see
+/// [`describes_object_schema`]). Per the JSON Schema spec, `true`, an
+/// unconstrained `{}` schema, and an *omitted* key are all equally
+/// unbounded -- the key defaults to `true` when absent. A schema fragment
 /// that isn't a JSON object (a leaf like `{"type": "string"}`'s scalar
 /// values) has nothing further to walk and passes trivially.
 fn check_schema_depth(node: &Value, depth: usize) -> Result<(), String> {
@@ -183,10 +186,14 @@ fn check_schema_depth(node: &Value, depth: usize) -> Result<(), String> {
         return Ok(());
     };
 
-    if let Some(additional) = map.get("additionalProperties") {
-        if additional.as_bool() == Some(true) {
-            return Err("tool schema has unbounded additionalProperties: true".to_string());
-        }
+    let additional = map.get("additionalProperties");
+    if is_unbounded_additional_properties(map) {
+        let shown = additional.map_or_else(|| "omitted".to_string(), |v| v.to_string());
+        return Err(format!(
+            "tool schema has unbounded additionalProperties: {shown} (omitted, `true`, and `{{}}` are all unbounded)"
+        ));
+    }
+    if let Some(additional) = additional {
         if additional.is_object() {
             check_schema_depth(additional, depth + 1)?;
         }
@@ -207,6 +214,36 @@ fn check_schema_depth(node: &Value, depth: usize) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whether a schema fragment describes a JSON object -- the only shape
+/// `additionalProperties` constrains. Per the JSON Schema spec a fragment
+/// can describe an object either via an explicit `"type": "object"` or via
+/// a `properties` map with no `type` at all, so both are treated as
+/// "needs an `additionalProperties` bound." A leaf (`{"type": "string"}`),
+/// an array (`{"type": "array", "items": ...}`), or a bare combinator
+/// wrapper (`{"anyOf": [...]}`) has no such shape and is exempt.
+fn describes_object_schema(map: &serde_json::Map<String, Value>) -> bool {
+    map.get("type").and_then(Value::as_str) == Some("object") || map.contains_key("properties")
+}
+
+/// Whether a schema fragment's `additionalProperties` is unbounded. Per the
+/// JSON Schema spec, an explicit `true` always means "any additional
+/// property is allowed," and `{}` is an unconstrained schema that accepts
+/// any value -- both are unbounded regardless of what else the fragment
+/// says, exactly like the pre-existing `true` check this extends. An
+/// *omitted* key defaults to `true` too, but only where `additionalProperties`
+/// is actually meaningful -- a fragment that [`describes_object_schema`] --
+/// so a leaf like `{"type": "string"}` isn't wrongly required to carry one.
+/// `false` or a genuinely constraining object schema (checked separately, by
+/// recursing into it) bounds the property set.
+fn is_unbounded_additional_properties(map: &serde_json::Map<String, Value>) -> bool {
+    match map.get("additionalProperties") {
+        Some(Value::Bool(unbounded)) => *unbounded,
+        Some(Value::Object(fields)) => fields.is_empty(),
+        Some(_) => false,
+        None => describes_object_schema(map),
+    }
 }
 
 /// `nodespace mcp install`/`uninstall`/`status`.
@@ -548,6 +585,7 @@ fn tools_list_result() -> Result<Value, String> {
             }
         },
         "required": ["args"],
+        "additionalProperties": false,
     });
     validate_tool_schema(&schema)?;
 
@@ -830,6 +868,7 @@ mod tests {
                 "args": {"type": "string", "description": "..."}
             },
             "required": ["args"],
+            "additionalProperties": false,
         });
         assert!(validate_tool_schema(&schema).is_ok());
     }
@@ -842,11 +881,56 @@ mod tests {
     }
 
     #[test]
+    fn validate_tool_schema_rejects_omitted_additional_properties_at_top_level() {
+        // Per the JSON Schema spec, an omitted `additionalProperties` key
+        // defaults to `true` -- just as unbounded as writing it explicitly.
+        let schema = json!({"type": "object", "properties": {"x": {"type": "string"}}});
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("additionalProperties"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_schema_rejects_empty_object_additional_properties_at_top_level() {
+        // `additionalProperties: {}` is an unconstrained schema -- it accepts
+        // any value, so it is equally unbounded as `true` or an omitted key.
+        let schema = json!({"type": "object", "additionalProperties": {}});
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("additionalProperties"), "got: {err}");
+    }
+
+    #[test]
     fn validate_tool_schema_rejects_unbounded_additional_properties_nested_inside_properties() {
         let schema = json!({
             "type": "object",
+            "additionalProperties": false,
             "properties": {
                 "nested": {"type": "object", "additionalProperties": true}
+            },
+        });
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("additionalProperties"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_schema_rejects_omitted_additional_properties_nested_inside_properties() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "nested": {"type": "object", "properties": {"y": {"type": "string"}}}
+            },
+        });
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("additionalProperties"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_schema_rejects_empty_object_additional_properties_nested_inside_properties() {
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "nested": {"type": "object", "additionalProperties": {}}
             },
         });
         let err = validate_tool_schema(&schema).expect_err("must reject");
@@ -872,10 +956,16 @@ mod tests {
     fn validate_tool_schema_rejects_excessive_nesting_depth() {
         // Build a schema nested one level deeper than MAX_SCHEMA_NESTING_DEPTH
         // via `properties`, so it must be rejected regardless of the exact
-        // constant's value.
+        // constant's value. Each level is explicitly bounded
+        // (`additionalProperties: false`) so the only failure exercised here
+        // is the depth check, not the unbounded-additionalProperties check.
         let mut schema = json!({"type": "string"});
         for _ in 0..(MAX_SCHEMA_NESTING_DEPTH + 2) {
-            schema = json!({"type": "object", "properties": {"x": schema}});
+            schema = json!({
+                "type": "object",
+                "properties": {"x": schema},
+                "additionalProperties": false,
+            });
         }
         let err = validate_tool_schema(&schema).expect_err("must reject excessive nesting");
         assert!(err.contains("depth"), "got: {err}");
@@ -884,10 +974,15 @@ mod tests {
     #[test]
     fn validate_tool_schema_accepts_nesting_at_exactly_the_bound() {
         // MAX_SCHEMA_NESTING_DEPTH levels of `properties` nesting must still
-        // pass -- the bound is inclusive, not off-by-one.
+        // pass -- the bound is inclusive, not off-by-one. Each level is
+        // explicitly bounded so this exercises only the depth check.
         let mut schema = json!({"type": "string"});
         for _ in 0..MAX_SCHEMA_NESTING_DEPTH {
-            schema = json!({"type": "object", "properties": {"x": schema}});
+            schema = json!({
+                "type": "object",
+                "properties": {"x": schema},
+                "additionalProperties": false,
+            });
         }
         assert!(validate_tool_schema(&schema).is_ok());
     }
