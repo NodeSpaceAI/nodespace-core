@@ -485,7 +485,25 @@ SUCCESS: After create_node returns a node ID, confirm to the user what was creat
             content: None,
             root_node_type: "skill".to_string(),
             root_properties: serde_json::json!({
-                "description": "Create connections between nodes, explore relationships, and traverse the knowledge graph.",
+                // The prior wording ("Create connections between nodes,
+                // explore relationships, and traverse the knowledge graph")
+                // never used the verbs a user actually says for linking two
+                // things, so it lost Stage-2 retrieval outright on "point
+                // rebuild task at the decision it has to respect" — this
+                // skill's own score did not even reach the printed top-3
+                // against that query.
+                //
+                // Measured on the locked embedding model against that exact
+                // query plus the seeded control prompts for Node Creation,
+                // Graph Editing, Node Deletion, Schema Creation, and
+                // Organization (each of which whitelists create_relationship
+                // too, or must keep winning its own prompt unaffected): this
+                // wording is the first of several tried that clears
+                // RETRIEVAL_TOP_K on the failing query — moving Relationship
+                // Management from unranked (6th, score ~0.803) to 1st (~0.913,
+                // ahead of the query's next-highest scorer at ~0.903) — while
+                // leaving every control prompt's own top-3 winner unchanged.
+                "description": "Point a task, note, or record at another one it depends on, has to respect, or relates to — link or connect the two so the relationship is recorded, not just written in prose. Also covers associating one node with another and exploring or traversing existing relationships in the knowledge graph.",
                 "tool_whitelist": ["create_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
                 "max_iterations": 3,
             }),
@@ -1234,6 +1252,34 @@ mod tests {
                 desc.contains(verb),
                 "Node Deletion's description is missing {verb:?}, a verb a real deletion \
                  request may use. Description: {desc:?}"
+            );
+        }
+    }
+
+    /// The verbs a real linking request uses must all be present, since the
+    /// description is the entire retrieval signal for this skill. Regression
+    /// test for a measured defect: the prior wording never used the words a
+    /// user actually says for linking two things ("point at", "link",
+    /// "connect", "relate", "associate"), so it lost Stage-2 retrieval
+    /// outright against a real linking prompt despite `create_relationship`
+    /// being exactly the tool that turn needed.
+    #[test]
+    fn relationship_management_description_carries_the_linking_verbs() {
+        let desc = seed_skill_nodes()
+            .into_iter()
+            .find(|t| t.title == "Relationship Management")
+            .expect("Relationship Management must be seeded")
+            .root_properties
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_lowercase();
+
+        for verb in ["point", "link", "connect", "relate", "associat"] {
+            assert!(
+                desc.contains(verb),
+                "Relationship Management's description is missing {verb:?}, a verb a real \
+                 linking request may use. Description: {desc:?}"
             );
         }
     }
