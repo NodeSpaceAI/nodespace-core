@@ -1,7 +1,8 @@
-//! Data-layer proof of the two graph-guidance mechanisms #2532 required, run
-//! against the real production seed registry (`skill_pipeline::seed_skill_nodes`)
-//! rather than a synthetic node type, and without an embedding model --
-//! headless, no daemon, no gRPC -- so it runs in every normal `cargo test`.
+//! Data-layer proof of the graph's fetch-at-activation guidance mechanism,
+//! run against the real production seed registry
+//! (`skill_pipeline::seed_skill_nodes`) rather than a synthetic node type,
+//! and without an embedding model -- headless, no daemon, no gRPC -- so it
+//! runs in every normal `cargo test`.
 //!
 //! `nodespace skill guidance` (packages/cli) is a thin formatting layer over
 //! exactly the reads this test performs directly on `NodeService`
@@ -13,19 +14,21 @@
 //! here instead, at the layer the CLI itself reads from.
 //!
 //! 1. [`a_users_graph_edit_to_seeded_guidance_is_immediately_visible_to_a_fetch`] --
-//!    the runtime half of #2532: a user/team edit to a seeded skill's
-//!    guidance content (the same node an external agent's fetch reads)
-//!    reaches a fetch with no reseed or daemon restart involved.
+//!    the runtime half of the mechanism: a user/team edit to a seeded
+//!    skill's guidance content (the same node an external agent's fetch
+//!    reads) reaches a fetch with no reseed or daemon restart involved.
 //! 2. [`a_skill_rules_content_change_reaches_an_already_seeded_database`] --
-//!    the seeding prerequisite #2532 listed as still-needed: proves, using
-//!    the real `seed_skill_nodes()` registry, that a compiled-template
-//!    content change (what editing `skill_pipeline.rs` produces) reaches an
+//!    the seeding prerequisite this mechanism depends on: proves, using the
+//!    real `seed_skill_nodes()` registry, that a compiled-template content
+//!    change (what editing `skill_pipeline.rs` produces) reaches an
 //!    existing install on next seed rather than being frozen by the first
-//!    node of that type ever created. This is PR #1818/#1812's per-node
-//!    versioned reconciliation (`NodeService::seed_nodes_from_templates`),
-//!    already merged well before #2532 was filed -- this test is new
-//!    coverage confirming it still holds for the actual skill registry, not
-//!    a re-implementation of the fix.
+//!    node of that type ever created. The reconciliation this exercises
+//!    (`NodeService::seed_nodes_from_templates`) is per-node and
+//!    version-hash-keyed, replacing an older type-level skip that froze
+//!    every node of a type once one existed -- already the case well before
+//!    this test was written, so this is new coverage confirming the fix
+//!    still holds for the actual skill registry, not a re-implementation of
+//!    it.
 //!
 //! Both tests read the whole subtree via [`NodeService::get_subtree_data`] --
 //! the same structural walk `search_ops::search_semantic`'s `include_markdown`
@@ -90,8 +93,9 @@ async fn a_users_graph_edit_to_seeded_guidance_is_immediately_visible_to_a_fetch
     let original_content = target.content.clone();
 
     // Simulate a user/team editing this guidance node directly in the graph
-    // -- exactly the action #2532's runtime-half criterion describes, done
-    // through the same `update_node` path the desktop app and CLI both use.
+    // -- the live-edit scenario the runtime half of this mechanism exists
+    // for, done through the same `update_node` path the desktop app and CLI
+    // both use.
     let edited_content = "EDITED BY TEAM: prefer collection-scoped search before a broad query.";
     node_service
         .update_node(
@@ -181,7 +185,7 @@ async fn a_skill_rules_content_change_reaches_an_already_seeded_database() {
             .content
             .contains("CHANGED: this is a post-ship content fix.")),
         "a skill_pipeline.rs-style content change must reach the already-seeded database on \
-         next seed, not be frozen by the first skill node ever created (the type-level skip \
-         PR #1818/#1812 replaced with per-node versioned reconciliation)"
+         next seed, not be frozen by the first skill node ever created (per-node \
+         version-hash-keyed reconciliation, not a type-level skip)"
     );
 }

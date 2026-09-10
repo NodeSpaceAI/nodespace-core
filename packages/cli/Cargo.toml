@@ -31,6 +31,11 @@ nodespace-types = { workspace = true }
 # POSIX-shell-style argument splitting, applied to the `mcp` passthrough
 # tool's `args` string.
 shell-words = "1.1"
+# Per-invocation random tag for `skill guidance`'s provenance banner (see
+# `commands::skill::provenance_tag`) — the same OS-backed randomness
+# `prepare_nodes_from_template` uses for node ids, so fetched graph content
+# authored before a given call cannot predict or forge it.
+uuid = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
