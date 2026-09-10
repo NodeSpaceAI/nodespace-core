@@ -14,6 +14,7 @@
         { id: 'ai-models', label: 'AI Models' },
         { id: 'import', label: 'Import Sources' },
         { id: 'integrations', label: 'Integrations' },
+        { id: 'labs', label: 'Labs' },
         { id: 'about', label: 'About' },
     ];
 </script>
