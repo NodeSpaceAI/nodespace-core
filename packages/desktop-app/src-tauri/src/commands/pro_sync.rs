@@ -44,6 +44,15 @@ const SUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5)
 /// rebuild wakes the task immediately, ahead of this).
 const RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Bound on the `ListTenantMemberships`/`BindTenant` calls behind the "add
+/// synced database" dialog — the same lazy channel `SUBSCRIBE_TIMEOUT` above
+/// guards has no client-side timeout of its own, so a wedged daemon would
+/// otherwise hang these forever. That matters most for `BindTenant`: the
+/// dialog's `binding` step blocks every dismiss path (Escape/outside-click/
+/// close button) for the duration of the call, so a hang without this bound
+/// would leave the dialog stuck with no way out.
+const MEMBERSHIP_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Snapshot of the most recent tier-detection result. Returned to
 /// the frontend on demand so the UI doesn't have to wait for the
 /// `pro:tier-detected` Tauri event when re-mounting.
@@ -398,11 +407,14 @@ pub struct TenantMembershipsDto {
 #[tauri::command]
 pub async fn pro_list_tenant_memberships(app: AppHandle) -> Result<TenantMembershipsDto, String> {
     let mut client = membership_client(&app).await?;
-    let resp = client
-        .list_tenant_memberships(ListTenantMembershipsRequest {})
-        .await
-        .map_err(|e| format!("ListTenantMemberships failed: {e}"))?
-        .into_inner();
+    let resp = tokio::time::timeout(
+        MEMBERSHIP_RPC_TIMEOUT,
+        client.list_tenant_memberships(ListTenantMembershipsRequest {}),
+    )
+    .await
+    .map_err(|_elapsed| "ListTenantMemberships timed out".to_string())?
+    .map_err(|e| format!("ListTenantMemberships failed: {e}"))?
+    .into_inner();
 
     let selection = match TenantSelection::try_from(resp.selection) {
         Ok(TenantSelection::AutoSelect) => "auto-select",
@@ -460,15 +472,18 @@ pub async fn pro_bind_tenant(
     collection: Option<String>,
 ) -> Result<BindTenantResultDto, String> {
     let mut client = membership_client(&app).await?;
-    let resp = client
-        .bind_tenant(BindTenantRequest {
+    let resp = tokio::time::timeout(
+        MEMBERSHIP_RPC_TIMEOUT,
+        client.bind_tenant(BindTenantRequest {
             database_id: database_id.unwrap_or_default(),
             schema,
             collection: collection.unwrap_or_default(),
-        })
-        .await
-        .map_err(|e| format!("BindTenant failed: {e}"))?
-        .into_inner();
+        }),
+    )
+    .await
+    .map_err(|_elapsed| "BindTenant timed out".to_string())?
+    .map_err(|e| format!("BindTenant failed: {e}"))?
+    .into_inner();
     tracing::info!(schema = %resp.schema, synced = resp.synced, "Pro: BindTenant");
     Ok(BindTenantResultDto {
         synced: resp.synced,
