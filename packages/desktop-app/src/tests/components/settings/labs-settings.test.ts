@@ -38,6 +38,13 @@ describe('LabsSettings', () => {
     expect(teamSyncCard.getAttribute('aria-disabled')).toBe('true');
     expect(teamSyncCard.textContent).toContain('In development');
 
+    // aria-disabled is only meaningful to assistive tech on an element with a
+    // widget/composite role — the Card renders a plain <div>, so it needs an
+    // explicit role for the disabled state to actually be announced.
+    expect(teamSyncCard.getAttribute('role')).toBe('group');
+    expect(teamSyncCard.getAttribute('aria-label')).toMatch(/team synchronization/i);
+    expect(teamSyncCard.getAttribute('aria-label')).toMatch(/in development/i);
+
     // The AI Chat card is not disabled — only Team synchronization is.
     expect(cards[0].getAttribute('aria-disabled')).not.toBe('true');
   });

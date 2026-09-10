@@ -23,7 +23,12 @@
   </Card>
 
   <!-- Team synchronization -->
-  <Card class="mb-4 gap-0 rounded-lg py-0 opacity-60" aria-disabled="true">
+  <Card
+    class="mb-4 gap-0 rounded-lg py-0 opacity-60"
+    role="group"
+    aria-disabled="true"
+    aria-label="Team synchronization: In development, not yet available"
+  >
     <CardHeader class="p-5 pb-4">
       <div class="mb-1.5 flex items-center gap-2.5">
         <span class="text-foreground text-[0.9375rem] font-semibold">Team synchronization</span>
