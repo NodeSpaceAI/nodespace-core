@@ -690,6 +690,8 @@ pub fn run() {
             commands::pro_sync::pro_signout,
             commands::pro_sync::pro_enable_sync,
             commands::pro_sync::pro_activate_database,
+            commands::pro_sync::pro_list_tenant_memberships,
+            commands::pro_sync::pro_bind_tenant,
             commands::pro_sync::pro_set_member,
             commands::pro_sync::pro_remove_member,
             commands::pro_sync::pro_leave_collection,
