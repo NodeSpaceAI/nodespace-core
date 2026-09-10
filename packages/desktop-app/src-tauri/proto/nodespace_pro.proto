@@ -39,18 +39,33 @@ service CloudSyncService {
   // the orchestrator loop then reports AUTH_REQUIRED. Idempotent.
   rpc SignOut (SignOutRequest) returns (SignOutResponse);
 
-  // Enable per-database cloud sync after the user's first-Pro consent. Flips
-  // the active database's DatabaseSettingsNode sync_enabled to true — the field
-  // the registry-driven Pro UI gates its collaboration surfaces on — so the UI
-  // can advance from the enable prompt to sign-in. Idempotent.
+  // Opt-in to cloud sync for the active database. Flips the
+  // DatabaseSettingsNode `sync_enabled` flag to true (the writer the Pro-sync
+  // UI's enable-prompt variant needs). Called by the first-Pro consent modal
+  // before it starts the OAuth sign-in. Idempotent.
   rpc EnableSync (EnableSyncRequest) returns (EnableSyncResponse);
 
-  // Switch the cloud-sync session to follow a different local database (ADR-053
-  // single-active sync). The desktop calls this from its switch-database action,
-  // right after re-pointing routing, so switching database also switches which
-  // tenant syncs — not just which one is read/written. An empty database_id
-  // deactivates (local-only). Idempotent for the already-active database.
+  // Switch the cloud-sync session to follow a different local database
+  // (ADR-053 single-active sync). Deactivates the currently-syncing database's
+  // session and activates the target's: reads the target's bound tenant and —
+  // if it is bound — starts a fresh orchestrator against that tenant's schema,
+  // reusing the signed-in session (the Supabase JWT is tenant-agnostic). An
+  // empty database_id, or a target with no bound tenant, leaves sync
+  // deactivated: the database is local-only until it is bound. Idempotent for
+  // the already-active database. The desktop calls this from its
+  // switch-database action so a tenant switch re-targets sync, not just reads.
   rpc ActivateDatabase (ActivateDatabaseRequest) returns (ActivateDatabaseResponse);
+
+  // Bind a local database to a cloud tenant and start syncing it (ADR-053
+  // per-database cloud sync). Writes the tenant binding to the database's
+  // settings (authoritative) and the registry display mirror, then activates the
+  // database so a local-only one becomes synced in a single call
+  // (activate-on-bind). An empty database_id targets the active/default database;
+  // an empty schema unbinds (the database goes local-only). Rebinding to a
+  // different tenant re-targets sync. The full multi-tenant switch flow: create a
+  // database, BindTenant it to a tenant, and thereafter ActivateDatabase to
+  // switch between bound tenants.
+  rpc BindTenant (BindTenantRequest) returns (BindTenantResponse);
 
   // --- Team membership (M5, #147). Thin adapters over the cloud
   // membership RPCs; the daemon forwards the signed-in user's JWT, so
@@ -93,6 +108,20 @@ service CloudSyncService {
   // client fetches once on connect and clears on sign-out — keeping the hot
   // status path untouched. person_node_id is empty when the bind hasn't landed.
   rpc GetIdentity (GetIdentityRequest) returns (GetIdentityResponse);
+
+  // Discovery-driven sign-in (#409): enumerate the caller's tenants via
+  // public.my_tenant_memberships() and return them with the authoritative status,
+  // plus a selection hint the UI uses to drive 0 -> no-workspace, 1 -> auto-select,
+  // N -> picker. The picker's chosen tenant is bound via BindTenant.
+  rpc ListTenantMemberships (ListTenantMembershipsRequest) returns (ListTenantMembershipsResponse);
+
+  // Tenant-wide user management (#284, ADR-066 Decision 2: owner / tenant-admin /
+  // member). Thin JWT-forwarding callers over the live cloud RPCs; the cloud
+  // enforces every gate (owner/admin predicates, exactly-one-owner, person-node
+  // protection), the daemon adds no authorization of its own.
+  rpc ListTenantMembers (ListTenantMembersRequest) returns (ListTenantMembersResponse);
+  rpc SetTenantRole (SetTenantRoleRequest) returns (MembershipAck);
+  rpc TransferOwnership (TransferOwnershipRequest) returns (MembershipAck);
 }
 
 // --- Messages -----------------------------------------------------
@@ -149,6 +178,14 @@ message SyncStatusEvent {
     SYNCING           = 5;
     CONNECTED         = 6;
     ERROR             = 7;
+    // Terminal states (sync#371): the session is stopped, ALL local data is
+    // retained, and the outbox is parked (no retry loop, no discard). They differ
+    // only in copy + recoverability.
+    // Removed from the workspace — recovery only via a fresh invite.
+    EVICTED               = 8;
+    // Subscription lapsed — cached data stays (local-only mode); re-subscription
+    // within the retention window drains the parked outbox and sync resumes.
+    SUBSCRIPTION_EXPIRED  = 9;
   }
   State state = 1;
   // Free-form context, e.g. error message or current LIVE SELECT cursor.
@@ -171,7 +208,7 @@ message EnableSyncResponse {}
 
 message ActivateDatabaseRequest {
   // Registry id of the database to make the active cloud-sync target. Empty =
-  // deactivate the current session (go local-only).
+  // deactivate the current session (go local-only, no cloud connection).
   string database_id = 1;
 }
 message ActivateDatabaseResponse {
@@ -179,6 +216,23 @@ message ActivateDatabaseResponse {
   // tenant); false when the target is local-only or sync was deactivated.
   bool synced = 1;
   // The tenant schema now syncing; empty when local-only / deactivated.
+  string schema = 2;
+}
+
+message BindTenantRequest {
+  // Registry id of the database to bind; empty = the active/default database.
+  string database_id = 1;
+  // Tenant schema to bind to, e.g. "tenant_demo"; empty = unbind (local-only).
+  string schema = 2;
+  // Default collection id within the tenant (the member_of target for new
+  // nodes). Ignored when schema is empty.
+  string collection = 3;
+}
+message BindTenantResponse {
+  // True when binding started a cloud-sync session (the schema is non-empty);
+  // false on unbind (the database is now local-only).
+  bool synced = 1;
+  // The tenant schema now bound/syncing; empty when unbound.
   string schema = 2;
 }
 
@@ -293,4 +347,46 @@ message GetIdentityRequest {}
 message GetIdentityResponse {
   string person_node_id = 1;  // empty until the identity bind lands
   string email = 2;           // signed-in email; empty when signed out
+}
+
+// --- Discovery-driven sign-in (#409) ------------------------------
+message ListTenantMembershipsRequest {}
+message TenantMembershipInfo {
+  string tenant_id = 1;  // tenant id (the billable unit)
+  string schema = 2;     // tenant schema (tenant_<id>); may be empty if not returned
+  string status = 3;     // pending | active | suspended | removed
+  string role = 4;       // owner | tenant-admin | member (open set); may be empty
+}
+message ListTenantMembershipsResponse {
+  // Every tenant the caller belongs to, with its authoritative registry status.
+  repeated TenantMembershipInfo memberships = 1;
+  // Selection hint derived from the ACTIVE memberships. The UI drives the flow from
+  // this rather than re-deriving it, so daemon and client agree on the count.
+  enum Selection {
+    NO_WORKSPACE = 0;  // zero active tenants
+    AUTO_SELECT  = 1;  // exactly one active tenant -> auto-select it
+    PICKER       = 2;  // more than one active tenant -> show a picker
+  }
+  Selection selection = 2;
+  // Populated only when selection == AUTO_SELECT: the single active tenant to bind.
+  TenantMembershipInfo auto_selected = 3;
+}
+
+// --- Tenant-wide user management (#284) ---------------------------
+message ListTenantMembersRequest {}
+message TenantMember {
+  string person_id = 1;  // person node id (the has_role edge subject)
+  string email = 2;      // signed-in email, if known
+  string role = 3;       // owner | tenant-admin | member
+  string status = 4;     // pending | active
+}
+message ListTenantMembersResponse {
+  repeated TenantMember members = 1;
+}
+message SetTenantRoleRequest {
+  string person_id = 1;  // target person node
+  string role = 2;       // owner | tenant-admin | member
+}
+message TransferOwnershipRequest {
+  string person_id = 1;  // the person to make the new sole owner
 }

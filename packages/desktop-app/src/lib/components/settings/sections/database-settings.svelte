@@ -4,8 +4,10 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
   import DatabaseNameDialog from '$lib/components/layout/database-name-dialog.svelte';
+  import AddSyncedDatabaseDialog from './add-synced-database-dialog.svelte';
   import IdentityCard from './identity-card.svelte';
   import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
+  import { proSync } from '$lib/stores/pro-sync.svelte';
   import { createLogger } from '$lib/utils/logger';
 
   const log = createLogger('DatabaseSettings');
@@ -14,6 +16,7 @@
   const activeDatabaseId = $derived(databaseStore.activeDatabaseId);
 
   let newDialogOpen = $state(false);
+  let addSyncedDialogOpen = $state(false);
   let renameDialogOpen = $state(false);
   let renameTarget = $state<DatabaseInfo | null>(null);
   let removeDialogOpen = $state(false);
@@ -103,6 +106,11 @@
     <div class="flex gap-2">
       <Button variant="outline" size="sm" onclick={() => (newDialogOpen = true)}>New</Button>
       <Button variant="outline" size="sm" onclick={openExisting}>Open existing…</Button>
+      {#if proSync.isPro}
+        <Button variant="outline" size="sm" onclick={() => (addSyncedDialogOpen = true)}>
+          Add synced database…
+        </Button>
+      {/if}
     </div>
   </div>
   <p class="text-muted-foreground mb-6 text-sm leading-relaxed">
@@ -192,6 +200,8 @@
   placeholder="e.g. Work"
   onConfirm={createDatabase}
 />
+
+<AddSyncedDatabaseDialog bind:open={addSyncedDialogOpen} />
 
 <DatabaseNameDialog
   bind:open={renameDialogOpen}

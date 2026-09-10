@@ -10,13 +10,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::services::pro_client::pb::cloud_sync_service_client::CloudSyncServiceClient;
+use crate::services::pro_client::pb::list_tenant_memberships_response::Selection as TenantSelection;
 use crate::services::pro_client::pb::sync_status_event::State as PbState;
 use crate::services::pro_client::pb::{
-    AcceptInviteRequest, ActivateDatabaseRequest, ApproveRequestRequest, CreateInviteRequest,
-    EnableSyncRequest, GetIdentityRequest, InitiateOAuthRequest, JoinCollectionRequest,
-    LeaveCollectionRequest, ListInvitesRequest, ListJoinableCollectionsRequest, ListMembersRequest,
-    ListRequestsRequest, RemoveMemberRequest, RequestJoinRequest, RevokeInviteRequest,
-    SetMemberRequest, SignOutRequest, WatchSyncStatusRequest,
+    AcceptInviteRequest, ActivateDatabaseRequest, ApproveRequestRequest, BindTenantRequest,
+    CreateInviteRequest, EnableSyncRequest, GetIdentityRequest, InitiateOAuthRequest,
+    JoinCollectionRequest, LeaveCollectionRequest, ListInvitesRequest,
+    ListJoinableCollectionsRequest, ListMembersRequest, ListRequestsRequest,
+    ListTenantMembershipsRequest, RemoveMemberRequest, RequestJoinRequest, RevokeInviteRequest,
+    SetMemberRequest, SignOutRequest, TenantMembershipInfo, WatchSyncStatusRequest,
 };
 use crate::services::{ProClient, ProTier};
 use tonic::transport::Channel;
@@ -340,6 +342,138 @@ pub async fn pro_activate_database(app: AppHandle, database_id: String) -> Resul
     // re-target the daemon's session, so the old attribution must stand.
     pro.set_active_database_id(database_id).await;
     Ok(())
+}
+
+// --- Add-synced-database-from-cloud (ADR-053 discovery-driven bind) -------
+//
+// The two RPCs a fresh-profile "add synced database" flow needs beyond
+// sign-in: enumerate the signed-in user's tenants, then bind a local
+// database to the chosen one. Both are thin JWT-forwarding pass-throughs,
+// mirroring the membership commands below — no authority of their own.
+
+/// One tenant the signed-in user belongs to, returned by
+/// [`pro_list_tenant_memberships`].
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantMembershipDto {
+    /// The tenant id (the billable unit).
+    pub tenant_id: String,
+    /// Tenant schema, e.g. "tenant_demo"; may be empty if not returned.
+    pub schema: String,
+    /// "pending" | "active" | "suspended" | "removed".
+    pub status: String,
+    /// "owner" | "tenant-admin" | "member" (open set); may be empty.
+    pub role: String,
+}
+
+fn to_membership_dto(m: TenantMembershipInfo) -> TenantMembershipDto {
+    TenantMembershipDto {
+        tenant_id: m.tenant_id,
+        schema: m.schema,
+        status: m.status,
+        role: m.role,
+    }
+}
+
+/// Every tenant the signed-in user belongs to, plus the daemon's selection
+/// hint, returned by [`pro_list_tenant_memberships`].
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TenantMembershipsDto {
+    /// Every tenant the caller belongs to, with its authoritative status.
+    pub memberships: Vec<TenantMembershipDto>,
+    /// "no-workspace" (zero active tenants) | "auto-select" (exactly one) |
+    /// "picker" (more than one) — derived from the ACTIVE memberships. The
+    /// frontend drives the flow off this rather than re-deriving it, so
+    /// daemon and client agree on the count.
+    pub selection: String,
+    /// Populated only when `selection == "auto-select"`.
+    pub auto_selected: Option<TenantMembershipDto>,
+}
+
+/// List every tenant the signed-in user belongs to (discovery-driven
+/// sign-in) — the tenant picker's data source for the "add synced database"
+/// flow. Requires a signed-in session; the cloud RPC enumerates via
+/// `public.my_tenant_memberships()`, scoped server-side to the caller's JWT.
+#[tauri::command]
+pub async fn pro_list_tenant_memberships(app: AppHandle) -> Result<TenantMembershipsDto, String> {
+    let mut client = membership_client(&app).await?;
+    let resp = client
+        .list_tenant_memberships(ListTenantMembershipsRequest {})
+        .await
+        .map_err(|e| format!("ListTenantMemberships failed: {e}"))?
+        .into_inner();
+
+    let selection = match TenantSelection::try_from(resp.selection) {
+        Ok(TenantSelection::AutoSelect) => "auto-select",
+        Ok(TenantSelection::Picker) => "picker",
+        // NoWorkspace and any unrecognized wire value both fail safe to the
+        // same "nothing to auto-select or pick from" outcome the frontend
+        // renders identically (an empty-state message).
+        Ok(TenantSelection::NoWorkspace) | Err(_) => "no-workspace",
+    }
+    .to_string();
+
+    Ok(TenantMembershipsDto {
+        memberships: resp
+            .memberships
+            .into_iter()
+            .map(to_membership_dto)
+            .collect(),
+        selection,
+        auto_selected: resp.auto_selected.map(to_membership_dto),
+    })
+}
+
+/// Result of [`pro_bind_tenant`] — mirrors `BindTenantResponse`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BindTenantResultDto {
+    /// True when the bind started a cloud-sync session (non-empty schema);
+    /// false on unbind (the database is now local-only).
+    pub synced: bool,
+    /// The tenant schema now bound/syncing; empty when unbound.
+    pub schema: String,
+}
+
+/// Bind a local database to a cloud tenant and start syncing it (ADR-053
+/// per-database cloud sync) — the "add synced database" flow's final step.
+/// Writes the tenant binding to the target database's settings and
+/// activates it (activate-on-bind), so a freshly-created local-only database
+/// becomes synced — including the cursor-0 catch-up the orchestrator runs
+/// for a newly-bound database — in this single call. `database_id` empty
+/// targets the active/default database; `schema` empty unbinds (goes
+/// local-only); `collection` is the default landing collection within the
+/// tenant, ignored when `schema` is empty.
+///
+/// This only binds on the daemon side — it does not change which database
+/// the desktop app is *viewing*. The frontend still calls
+/// `set_active_database` (and, via `databaseStore.switchTo`,
+/// `pro_activate_database`) afterward to switch the UI onto the newly-bound
+/// database; that second `ActivateDatabase` call is idempotent against the
+/// session bind-on-activate already started.
+#[tauri::command]
+pub async fn pro_bind_tenant(
+    app: AppHandle,
+    database_id: Option<String>,
+    schema: String,
+    collection: Option<String>,
+) -> Result<BindTenantResultDto, String> {
+    let mut client = membership_client(&app).await?;
+    let resp = client
+        .bind_tenant(BindTenantRequest {
+            database_id: database_id.unwrap_or_default(),
+            schema,
+            collection: collection.unwrap_or_default(),
+        })
+        .await
+        .map_err(|e| format!("BindTenant failed: {e}"))?
+        .into_inner();
+    tracing::info!(schema = %resp.schema, synced = resp.synced, "Pro: BindTenant");
+    Ok(BindTenantResultDto {
+        synced: resp.synced,
+        schema: resp.schema,
+    })
 }
 
 // --- Team membership commands (M5) ----------------------------------
