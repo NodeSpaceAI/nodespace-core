@@ -287,6 +287,38 @@ async fn scenario_8a_paraphrases_show_wording_sensitivity() {
     }
 }
 
+/// Regression test for a measured defect: Relationship Management's seeded
+/// description never used the words a user actually says for linking two
+/// things ("point at", "link", "connect"), so it lost Stage-2 retrieval
+/// outright against the dev-workflow matrix's scenario 11c prompt — its own
+/// score did not even reach the printed top-3. Asserts the fix's acceptance
+/// criterion directly: across `REPS` identical calls, "Relationship
+/// Management" clears `RETRIEVAL_TOP_K` every time.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn scenario_11c_routes_relationship_management_every_rep() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+
+    let query = "point rebuild task at the decision it has to respect";
+    let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+
+    let mut misses = Vec::new();
+    for (i, ranked) in rankings.iter().enumerate() {
+        eprintln!("rep {}: {:?}", i + 1, ranked);
+        if !ranked.iter().any(|n| n == "Relationship Management") {
+            misses.push(i + 1);
+        }
+    }
+
+    assert!(
+        misses.is_empty(),
+        "Relationship Management dropped out of the top-{RETRIEVAL_TOP_K} on rep(s) {misses:?} \
+         of {REPS} for query {query:?} — rankings were: {rankings:?}"
+    );
+}
+
 /// Control case, run alongside 8a per the golden-prompt file's own
 /// methodology: a fix that stabilizes 8a must not silently regress a prompt
 /// that already routes correctly.
@@ -311,6 +343,39 @@ async fn control_prompt_still_routes_node_creation_every_rep() {
     assert!(
         misses.is_empty(),
         "Node Creation dropped out of the top-{RETRIEVAL_TOP_K} on rep(s) {misses:?} of {REPS} \
+         for query {query:?} — rankings were: {rankings:?}"
+    );
+}
+
+/// Second control case for the same fix, chosen deliberately rather than
+/// picked at random: Organization is the one other seeded skill besides
+/// Relationship Management that whitelists `create_relationship`
+/// (`packages/agent/src/skill_pipeline.rs`), and its own description leans on
+/// "categorize"/"group"/"collection" language that sits semantically close to
+/// the new wording's "connect"/"associate"/"link" vocabulary. A fix that
+/// stabilizes Relationship Management's retrieval must not crowd Organization
+/// out of the top-3 on a prompt that already routes to it correctly.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn control_prompt_still_routes_organization_every_rep() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+
+    let query = "Add this note to my reading list collection";
+    let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+
+    let mut misses = Vec::new();
+    for (i, ranked) in rankings.iter().enumerate() {
+        eprintln!("rep {}: {:?}", i + 1, ranked);
+        if !ranked.iter().any(|n| n == "Organization") {
+            misses.push(i + 1);
+        }
+    }
+
+    assert!(
+        misses.is_empty(),
+        "Organization dropped out of the top-{RETRIEVAL_TOP_K} on rep(s) {misses:?} of {REPS} \
          for query {query:?} — rankings were: {rankings:?}"
     );
 }

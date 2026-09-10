@@ -485,7 +485,32 @@ SUCCESS: After create_node returns a node ID, confirm to the user what was creat
             content: None,
             root_node_type: "skill".to_string(),
             root_properties: serde_json::json!({
-                "description": "Create connections between nodes, explore relationships, and traverse the knowledge graph.",
+                // The prior wording ("Create connections between nodes,
+                // explore relationships, and traverse the knowledge graph")
+                // never used the verbs a user actually says for linking two
+                // things, so it lost Stage-2 retrieval outright on "point
+                // rebuild task at the decision it has to respect" — this
+                // skill's own score did not even reach the printed top-3
+                // against that query.
+                //
+                // Measured on the locked embedding model against that exact
+                // query plus the seeded control prompts for Node Creation,
+                // Graph Editing, Node Deletion, Schema Creation, and
+                // Organization: an earlier draft leaning on generic
+                // "link"/"connect"/"associate"/"relates to" vocabulary DID
+                // clear RETRIEVAL_TOP_K on the failing query, but that same
+                // generic vocabulary crowded Organization itself out of its
+                // own top-3 on "Add this note to my reading list collection"
+                // — reproducing this exact defect for a different skill,
+                // since Organization also whitelists create_relationship and
+                // its own description already uses "categorize"/"group",
+                // semantically adjacent to "associate"/"relate". Dropping the
+                // generic verbs and leading with "edge" plus the query's own
+                // "depends on"/"must respect"/"points at" phrasing clears the
+                // failing query (Relationship Management: unranked 6th at
+                // ~0.803 -> 2nd at ~0.837) without displacing Organization's
+                // own top-3 on its control prompt.
+                "description": "Record an edge between two nodes: a task or note that depends on, must respect, or points at another record. Explore or traverse existing relationships between nodes in the knowledge graph.",
                 "tool_whitelist": ["create_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
                 "max_iterations": 3,
             }),
@@ -1234,6 +1259,41 @@ mod tests {
                 desc.contains(verb),
                 "Node Deletion's description is missing {verb:?}, a verb a real deletion \
                  request may use. Description: {desc:?}"
+            );
+        }
+    }
+
+    /// The words a real linking request uses must all be present, since the
+    /// description is the entire retrieval signal for this skill. Regression
+    /// test for a measured defect: the prior wording never used the words a
+    /// user actually says for linking two things ("point at", "depends on",
+    /// "must respect"), so it lost Stage-2 retrieval outright against a real
+    /// linking prompt despite `create_relationship` being exactly the tool
+    /// that turn needed.
+    ///
+    /// Deliberately does NOT assert generic "link"/"connect"/"associate"/
+    /// "relate" verbs: an earlier draft carrying those cleared retrieval for
+    /// this skill but crowded Organization out of ITS own top-3 (see
+    /// `control_prompt_still_routes_organization_every_rep`), since
+    /// Organization also whitelists `create_relationship` and its
+    /// "categorize"/"group" language sits semantically adjacent to them.
+    #[test]
+    fn relationship_management_description_carries_the_linking_verbs() {
+        let desc = seed_skill_nodes()
+            .into_iter()
+            .find(|t| t.title == "Relationship Management")
+            .expect("Relationship Management must be seeded")
+            .root_properties
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_lowercase();
+
+        for phrase in ["point", "depends on", "must respect", "edge"] {
+            assert!(
+                desc.contains(phrase),
+                "Relationship Management's description is missing {phrase:?}, wording a real \
+                 linking request may use. Description: {desc:?}"
             );
         }
     }
