@@ -105,19 +105,25 @@
     checkGeneration++;
   });
 
-  async function updateField(field: 'first_name' | 'last_name' | 'email', value: string) {
+  // Routed through sharedNodeStore.updateNode (ADR-049), matching every
+  // other property form — NOT backendAdapter.updateNode directly. The store
+  // applies the change optimistically and synchronously (so the title,
+  // recomputed from title_template, reaches every reader — including
+  // BaseNodeViewer — immediately once persistence resolves) and owns
+  // persistence + error reporting itself; callers don't need their own
+  // try/catch around it, matching generic-schema-form.svelte /
+  // task-schema-form.svelte.
+  function updateField(field: 'first_name' | 'last_name' | 'email', value: string) {
     if (!node) return;
-    try {
-      const updatedProperties = {
-        ...node.properties,
-        person: { ...personProps, [field]: value }
-      };
-      await backendAdapter.updateNode(nodeId, node.version, {
-        properties: updatedProperties
-      });
-    } catch (err) {
-      log.error('Failed to update person field', { field, err });
-    }
+    const updatedProperties = {
+      ...node.properties,
+      person: { ...personProps, [field]: value }
+    };
+    sharedNodeStore.updateNode(
+      nodeId,
+      { properties: updatedProperties },
+      { type: 'viewer', viewerId: 'person-schema-form' }
+    );
   }
 
   function handleFirstNameBlur(e: FocusEvent) {
@@ -132,17 +138,18 @@
 
   async function handleEmailBlur(e: FocusEvent) {
     const value = (e.currentTarget as HTMLInputElement).value;
-    // Fired concurrently, not sequentially: the duplicate check must not wait
-    // for the save to land first, or — since both write and read this node's
-    // own email — a check that runs AFTER the save sees two rows holding
-    // `value` (this node's own freshly-saved copy, plus any real duplicate),
-    // and with no ORDER BY on the lookup, could match itself and hide the
-    // real duplicate entirely. `excludeId` below closes this structurally
-    // regardless of ordering, but firing both together also means the
-    // suggestion isn't held back by an in-flight save.
-    const tasks: Promise<unknown>[] = [checkForDuplicate(value)];
-    if (value !== email) tasks.push(updateField('email', value));
-    await Promise.all(tasks);
+    // The store write below is synchronous (it applies optimistically and
+    // hands persistence off in the background), so issuing it before
+    // awaiting the duplicate lookup already guarantees the check is never
+    // gated behind the save landing — since both write and read this node's
+    // own email, a check that ran AFTER the save landed would see two rows
+    // holding `value` (this node's own freshly-saved copy, plus any real
+    // duplicate), and with no ORDER BY on the lookup, could match itself and
+    // hide the real duplicate entirely. `excludeId` below closes this
+    // structurally regardless of ordering, but issuing the check immediately
+    // also means the suggestion isn't held back by an in-flight save.
+    if (value !== email) updateField('email', value);
+    await checkForDuplicate(value);
   }
 
   /**
