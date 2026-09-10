@@ -346,3 +346,36 @@ async fn control_prompt_still_routes_node_creation_every_rep() {
          for query {query:?} — rankings were: {rankings:?}"
     );
 }
+
+/// Second control case for the same fix, chosen deliberately rather than
+/// picked at random: Organization is the one other seeded skill besides
+/// Relationship Management that whitelists `create_relationship`
+/// (`packages/agent/src/skill_pipeline.rs`), and its own description leans on
+/// "categorize"/"group"/"collection" language that sits semantically close to
+/// the new wording's "connect"/"associate"/"link" vocabulary. A fix that
+/// stabilizes Relationship Management's retrieval must not crowd Organization
+/// out of the top-3 on a prompt that already routes to it correctly.
+#[tokio::test]
+#[ignore = "requires the locked nomic-embed-text-v1.5 GGUF on disk"]
+async fn control_prompt_still_routes_organization_every_rep() {
+    let Some((embedding_service, node_service, _temp_dir)) = seed_and_embed().await else {
+        return;
+    };
+
+    let query = "Add this note to my reading list collection";
+    let rankings = repeated_rankings(&embedding_service, &node_service, query).await;
+
+    let mut misses = Vec::new();
+    for (i, ranked) in rankings.iter().enumerate() {
+        eprintln!("rep {}: {:?}", i + 1, ranked);
+        if !ranked.iter().any(|n| n == "Organization") {
+            misses.push(i + 1);
+        }
+    }
+
+    assert!(
+        misses.is_empty(),
+        "Organization dropped out of the top-{RETRIEVAL_TOP_K} on rep(s) {misses:?} of {REPS} \
+         for query {query:?} — rankings were: {rankings:?}"
+    );
+}

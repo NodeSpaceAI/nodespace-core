@@ -496,14 +496,21 @@ SUCCESS: After create_node returns a node ID, confirm to the user what was creat
                 // Measured on the locked embedding model against that exact
                 // query plus the seeded control prompts for Node Creation,
                 // Graph Editing, Node Deletion, Schema Creation, and
-                // Organization (each of which whitelists create_relationship
-                // too, or must keep winning its own prompt unaffected): this
-                // wording is the first of several tried that clears
-                // RETRIEVAL_TOP_K on the failing query — moving Relationship
-                // Management from unranked (6th, score ~0.803) to 1st (~0.913,
-                // ahead of the query's next-highest scorer at ~0.903) — while
-                // leaving every control prompt's own top-3 winner unchanged.
-                "description": "Point a task, note, or record at another one it depends on, has to respect, or relates to — link or connect the two so the relationship is recorded, not just written in prose. Also covers associating one node with another and exploring or traversing existing relationships in the knowledge graph.",
+                // Organization: an earlier draft leaning on generic
+                // "link"/"connect"/"associate"/"relates to" vocabulary DID
+                // clear RETRIEVAL_TOP_K on the failing query, but that same
+                // generic vocabulary crowded Organization itself out of its
+                // own top-3 on "Add this note to my reading list collection"
+                // — reproducing this exact defect for a different skill,
+                // since Organization also whitelists create_relationship and
+                // its own description already uses "categorize"/"group",
+                // semantically adjacent to "associate"/"relate". Dropping the
+                // generic verbs and leading with "edge" plus the query's own
+                // "depends on"/"must respect"/"points at" phrasing clears the
+                // failing query (Relationship Management: unranked 6th at
+                // ~0.803 -> 2nd at ~0.837) without displacing Organization's
+                // own top-3 on its control prompt.
+                "description": "Record an edge between two nodes: a task or note that depends on, must respect, or points at another record. Explore or traverse existing relationships between nodes in the knowledge graph.",
                 "tool_whitelist": ["create_relationship", "get_related_nodes", "get_node", "search_semantic", "search_nodes"],
                 "max_iterations": 3,
             }),
@@ -1256,13 +1263,20 @@ mod tests {
         }
     }
 
-    /// The verbs a real linking request uses must all be present, since the
+    /// The words a real linking request uses must all be present, since the
     /// description is the entire retrieval signal for this skill. Regression
     /// test for a measured defect: the prior wording never used the words a
-    /// user actually says for linking two things ("point at", "link",
-    /// "connect", "relate", "associate"), so it lost Stage-2 retrieval
-    /// outright against a real linking prompt despite `create_relationship`
-    /// being exactly the tool that turn needed.
+    /// user actually says for linking two things ("point at", "depends on",
+    /// "must respect"), so it lost Stage-2 retrieval outright against a real
+    /// linking prompt despite `create_relationship` being exactly the tool
+    /// that turn needed.
+    ///
+    /// Deliberately does NOT assert generic "link"/"connect"/"associate"/
+    /// "relate" verbs: an earlier draft carrying those cleared retrieval for
+    /// this skill but crowded Organization out of ITS own top-3 (see
+    /// `control_prompt_still_routes_organization_every_rep`), since
+    /// Organization also whitelists `create_relationship` and its
+    /// "categorize"/"group" language sits semantically adjacent to them.
     #[test]
     fn relationship_management_description_carries_the_linking_verbs() {
         let desc = seed_skill_nodes()
@@ -1275,10 +1289,10 @@ mod tests {
             .unwrap_or_default()
             .to_lowercase();
 
-        for verb in ["point", "link", "connect", "relate", "associat"] {
+        for phrase in ["point", "depends on", "must respect", "edge"] {
             assert!(
-                desc.contains(verb),
-                "Relationship Management's description is missing {verb:?}, a verb a real \
+                desc.contains(phrase),
+                "Relationship Management's description is missing {phrase:?}, wording a real \
                  linking request may use. Description: {desc:?}"
             );
         }
