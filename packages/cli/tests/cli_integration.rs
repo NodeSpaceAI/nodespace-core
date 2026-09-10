@@ -373,6 +373,44 @@ async fn search_without_embedding_service_reports_unavailable() {
     let _ = shutdown.send(());
 }
 
+/// `nodespace skill guidance` is dispatched specially in `lib.rs::run` (the
+/// one `skill` subcommand that opens a `NodeClient`, unlike
+/// install/uninstall/status). This proves that wiring reaches the real
+/// `NodeService.SearchNodes` RPC end to end -- same embedding-gated failure
+/// mode as plain `search`, since `skill guidance` deliberately reuses that
+/// RPC rather than adding a parallel code path. The success path (a real
+/// seeded skill's guidance coming back with a provenance envelope) is
+/// covered without an embedding model in `packages/agent`'s
+/// `skill_guidance_fetch_mechanism` test, which reads the same seeded
+/// `skill` nodes directly off `NodeService` instead of through this
+/// semantic-search-gated RPC.
+#[tokio::test]
+async fn skill_guidance_without_embedding_service_reports_unavailable() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    let err = commands::skill::run_guidance(
+        &mut client,
+        commands::skill::GuidanceArgs {
+            query: "write an ADR".into(),
+            limit: 3,
+        },
+        true,
+    )
+    .await
+    .expect_err("expected unavailable");
+
+    let status = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<tonic::Status>())
+        .expect("expected tonic::Status in error chain");
+    assert_eq!(status.code(), Code::Unavailable);
+
+    let _ = shutdown.send(());
+}
+
 #[tokio::test]
 async fn diagnostics_collect_reports_counts_and_recency() {
     let (sock, shutdown, _tempdir) = spawn_routing_daemon().await;

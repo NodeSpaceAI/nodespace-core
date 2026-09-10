@@ -436,9 +436,19 @@ pub async fn run(cli: Cli) -> Result<()> {
             commands::database::run(&mut client, action, json).await
         }
         Command::Uninstall(args) => commands::uninstall::run(args),
-        // Never touches the daemon -- shells out to the bundled/compiled
-        // skill installer directly, same as `uninstall` above.
-        Command::Skill { action } => commands::skill::run(action),
+        // `install`/`uninstall`/`status` never touch the daemon -- they shell
+        // out to the bundled/compiled skill installer directly. `guidance` is
+        // the one `skill` subcommand that does: it fetches procedural
+        // guidance from the graph via the same `NodeService.SearchNodes` RPC
+        // `search` uses, so it alone needs a routed `NodeClient` here.
+        Command::Skill { action } => match action {
+            commands::skill::SkillAction::Guidance(args) => {
+                let (interceptor, _) = resolve_routing(&sock, selection).await?;
+                let mut client = connect(&sock, interceptor).await?;
+                commands::skill::run_guidance(&mut client, args, json).await
+            }
+            other => commands::skill::run(other),
+        },
         // `mcp` doesn't connect to the daemon itself — each dispatched call
         // shells back out to this same binary (see `commands::mcp`), so it
         // only needs the resolved socket path and raw database selection,

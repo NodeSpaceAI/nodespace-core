@@ -66,6 +66,7 @@ export const AGENTS: AgentConfig[] = [
       'SKILL.md',
       'references/cli.md',
       'references/shared-workspaces.md',
+      'references/graph-authored-guidance.md',
       'shims/claude-code/nodespace-hook.ts',
     ],
     skillFrontmatter: SKILL_FRONTMATTER,
@@ -78,6 +79,7 @@ export const AGENTS: AgentConfig[] = [
       'SKILL.md',
       'references/cli.md',
       'references/shared-workspaces.md',
+      'references/graph-authored-guidance.md',
       'shims/codex/nodespace-plugin.ts',
     ],
     skillFrontmatter: SKILL_FRONTMATTER,
@@ -93,7 +95,7 @@ export const AGENTS: AgentConfig[] = [
     // as Claude Code/Codex/OpenCode, so it just runs `nodespace` directly per
     // SKILL.md's Preflight "Branch 1" — no tool-registration integration
     // (MCP or otherwise) needed for it to use the CLI.
-    shims: ['SKILL.md', 'references/cli.md', 'references/shared-workspaces.md'],
+    shims: ['SKILL.md', 'references/cli.md', 'references/shared-workspaces.md', 'references/graph-authored-guidance.md'],
     skillFrontmatter: SKILL_FRONTMATTER,
   },
   {
@@ -104,6 +106,7 @@ export const AGENTS: AgentConfig[] = [
       'SKILL.md',
       'references/cli.md',
       'references/shared-workspaces.md',
+      'references/graph-authored-guidance.md',
       'shims/opencode/nodespace-plugin.ts',
     ],
     skillFrontmatter: SKILL_FRONTMATTER,
@@ -120,6 +123,7 @@ export const AGENTS: AgentConfig[] = [
       'SKILL.md',
       'references/cli.md',
       'references/shared-workspaces.md',
+      'references/graph-authored-guidance.md',
       'shims/pi/nodespace-extension.ts',
     ],
     skillFrontmatter: SKILL_FRONTMATTER,

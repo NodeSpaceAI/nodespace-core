@@ -37,8 +37,9 @@ describe("SKILL_REPO", () => {
 });
 
 describe("readSkillSource", () => {
-  test("reads the live packages/skill/SKILL.md, references/cli.md, and references/shared-workspaces.md off disk", () => {
-    const { body, referenceCli, referenceSharedWorkspaces } = readSkillSource();
+  test("reads the live packages/skill/SKILL.md, references/cli.md, references/shared-workspaces.md, and references/graph-authored-guidance.md off disk", () => {
+    const { body, referenceCli, referenceSharedWorkspaces, referenceGraphAuthoredGuidance } =
+      readSkillSource();
     // Read independently (not via the function under test) so this actually
     // catches the function reading a stale/wrong path, not just echoing it.
     const expectedBody = readFileSync(
@@ -53,9 +54,14 @@ describe("readSkillSource", () => {
       join(REPO_ROOT, "packages", "skill", "references", "shared-workspaces.md"),
       "utf8",
     );
+    const expectedReferenceGraphAuthoredGuidance = readFileSync(
+      join(REPO_ROOT, "packages", "skill", "references", "graph-authored-guidance.md"),
+      "utf8",
+    );
     expect(body).toBe(expectedBody);
     expect(referenceCli).toBe(expectedReferenceCli);
     expect(referenceSharedWorkspaces).toBe(expectedReferenceSharedWorkspaces);
+    expect(referenceGraphAuthoredGuidance).toBe(expectedReferenceGraphAuthoredGuidance);
   });
 
   // The checked-in SKILL.md body carries no frontmatter (renderPublishFiles
@@ -75,10 +81,11 @@ describe("sharedShimPaths", () => {
   // agent's shims here gets picked up automatically -- and this test fails
   // loudly if that derivation ever stops matching what today's AGENTS
   // actually declares as shared.
-  test("is exactly SKILL.md, references/cli.md, and references/shared-workspaces.md today", () => {
+  test("is exactly SKILL.md, references/cli.md, references/shared-workspaces.md, and references/graph-authored-guidance.md today", () => {
     expect(sharedShimPaths().sort()).toEqual([
       "SKILL.md",
       "references/cli.md",
+      "references/graph-authored-guidance.md",
       "references/shared-workspaces.md",
     ]);
   });
@@ -95,11 +102,12 @@ describe("sharedShimPaths", () => {
 });
 
 describe("renderPublishFiles", () => {
-  test("publishes exactly SKILL.md, references/cli.md, and references/shared-workspaces.md under skills/nodespace/", () => {
+  test("publishes exactly SKILL.md, references/cli.md, references/shared-workspaces.md, and references/graph-authored-guidance.md under skills/nodespace/", () => {
     const files = renderPublishFiles("v0.2.2");
     expect(files.map((f) => f.relPath).sort()).toEqual([
       "skills/nodespace/SKILL.md",
       "skills/nodespace/references/cli.md",
+      "skills/nodespace/references/graph-authored-guidance.md",
       "skills/nodespace/references/shared-workspaces.md",
     ]);
   });
@@ -166,6 +174,15 @@ describe("renderPublishFiles", () => {
     expect(referenceSharedWorkspaces.content).toBe(expected);
   });
 
+  test("references/graph-authored-guidance.md is copied through verbatim", () => {
+    const files = renderPublishFiles("v0.2.2");
+    const referenceGraphAuthoredGuidance = files.find(
+      (f) => f.relPath === "skills/nodespace/references/graph-authored-guidance.md",
+    )!;
+    const { referenceGraphAuthoredGuidance: expected } = readSkillSource();
+    expect(referenceGraphAuthoredGuidance.content).toBe(expected);
+  });
+
   // SKILL.md's stub for the moved section must still name the file it points
   // at, or the publish step would ship a reference nothing in the body links
   // to -- the same dangling-reference failure mode the issue that added this
@@ -175,6 +192,12 @@ describe("renderPublishFiles", () => {
     const files = renderPublishFiles("v0.2.2");
     const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
     expect(skillMd.content).toContain("references/shared-workspaces.md");
+  });
+
+  test("SKILL.md links to references/graph-authored-guidance.md by the exact published path", () => {
+    const files = renderPublishFiles("v0.2.2");
+    const skillMd = files.find((f) => f.relPath === "skills/nodespace/SKILL.md")!;
+    expect(skillMd.content).toContain("references/graph-authored-guidance.md");
   });
 });
 

@@ -779,6 +779,11 @@ Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (C
 
 **`nodespace skill status`** — Report which harnesses currently have the skill installed
 
+**`nodespace skill guidance`** — Fetch procedural guidance from the graph's seeded `skill` nodes — the fetch half of the fetch-at-activation model SKILL.md's body instructs an activated agent to use. Output is always provenance- marked (a banner in human mode, a `"provenance": "graph-fetched"` envelope in `--json` mode) so fetched content is never indistinguishable from the skill's own static instructions
+
+- `<QUERY>` — Free-text description of the task at hand (e.g. "write an ADR and save it"). Matched semantically against seeded skill guidance so results are scoped to what's relevant right now rather than the whole registry. Pass an empty string (the default) to list every seeded skill's guidance
+- `--limit <LIMIT>` — Maximum number of guidance entries to return. Bounded server-side to 5 regardless of a higher value, matching `search --include-content`'s own cap
+
 ### `nodespace mcp`
 
 Host a stdio MCP server exposing one passthrough tool, for bash-less MCP surfaces (e.g. Claude Desktop's Chat tab) that cannot shell this CLI directly — see `commands::mcp` for the architecture and its ADR-038 trust-boundary controls. Disabled until `nodespace mcp install` explicitly turns it on. With no subcommand, hosts the stdio server itself — what a client config launches, not something a person types directly
