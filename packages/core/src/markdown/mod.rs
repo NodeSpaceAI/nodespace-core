@@ -1314,16 +1314,20 @@ pub async fn handle_create_nodes_from_markdown(
 /// let nodes = prepare_nodes_from_template(&tmpl)?;
 /// // nodes[0] is the skill root; nodes[1..] are its markdown-typed children
 /// ```
-/// Seeding tier for a [`NodeTemplate`], controlling reconciliation behavior
-/// when the template content changes after the node already exists.
+/// Seeding tier for a [`NodeTemplate`] — labels the node's intended role
+/// (engineering artifact vs. example/workspace content). Reconciliation
+/// behavior itself no longer depends on this: every seeded node, regardless
+/// of tier, is durability-guarded per aspect (config vs. guidance — see
+/// `_seed.config_modified` / `_seed.guidance_modified` in
+/// `seed_nodes_from_templates`'s doc comment). An aspect a user has touched
+/// is never auto-replaced by a template-hash change; only an explicit reset
+/// discards it.
 ///
 /// - `System`: an engineering artifact stored as a node (skill descriptions,
-///   tool definitions, prompt sections). Not user-editable — always replaced
-///   when the template's content hash changes, same as updating a compiled-in
-///   constant.
-/// - `Starter`: example/workspace content genuinely owned by the user once
-///   they touch it. Replaced on hash mismatch only until the user edits it;
-///   after that, reconciliation skips it and logs once.
+///   tool definitions, prompt sections). Most seeded content today.
+/// - `Starter`: example/workspace content. Distinguished from `System` by
+///   intent/labeling only — both tiers reconcile through the same per-aspect
+///   guard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SeedTier {
     #[default]
@@ -1426,13 +1430,21 @@ pub fn prepare_nodes_from_template(
     nodes.push(root);
     nodes.extend(children);
 
-    // Stamp reconciliation metadata onto the root's properties *after* the
-    // content hash is computed, so the hash reflects only authored content —
-    // not the metadata describing it. `seed_key` is the template's `title`,
-    // a stable slug used to match this group to an existing DB node across
-    // runs (the root's `content`/`properties` are expected to drift; the
-    // title is the one thing seed_nodes_from_templates can rely on to find
-    // "the same template" again).
+    // Stamp reconciliation metadata onto the root's properties *after* both
+    // hashes are computed, so they reflect only authored content — not the
+    // metadata describing it. `seed_key` is the template's `title`, a stable
+    // slug used to match this group to an existing DB node across runs (the
+    // root's `content`/`properties` are expected to drift; the title is the
+    // one thing seed_nodes_from_templates can rely on to find "the same
+    // template" again).
+    //
+    // Two independent hashes, not one: `config_version` covers only the root
+    // node (the retrieval/dispatch knobs — description, tool_whitelist,
+    // max_iterations) and `guidance_version` covers only the children (the
+    // procedural markdown body). A seeded node's config and guidance are
+    // edited independently by users, so reconciliation needs to detect and
+    // guard drift in each independently rather than collapsing both into one
+    // hash where an edit to either would look identical to the other.
     //
     // Nested under a single `_seed` key rather than flat top-level keys:
     // `normalize_flat_properties_to_namespace` (crud.rs) moves flat
@@ -1441,13 +1453,15 @@ pub fn prepare_nodes_from_template(
     // different path depending on the template's type. `_`-prefixed keys are
     // exempt from that hoisting, so `_seed` lands at a fixed,
     // type-independent path every time.
-    let seed_version = compute_seed_version(&nodes);
+    let config_version = compute_seed_version(std::slice::from_ref(&nodes[0]));
+    let guidance_version = compute_seed_version(&nodes[1..]);
     if let Some(root_props) = nodes[0].properties.as_object_mut() {
         root_props.insert(
             "_seed".to_string(),
             serde_json::json!({
                 "key": tmpl.title,
-                "version": seed_version,
+                "config_version": config_version,
+                "guidance_version": guidance_version,
                 "tier": tmpl.tier.as_str(),
             }),
         );
@@ -1456,13 +1470,15 @@ pub fn prepare_nodes_from_template(
     Ok(nodes)
 }
 
-/// Compute a stable content hash for a template's expanded node group.
+/// Compute a stable content hash for a slice of a template's expanded node
+/// group — the root alone (config aspect) or the children alone (guidance
+/// aspect); see the two call sites in [`prepare_nodes_from_template`].
 ///
-/// Hashes `node_type` + `content` + `properties` for the root and every
-/// child, in order. Ignores `id`, `parent_id`, and `order`, which are
-/// per-insertion, not part of the template's authored content — including
-/// them would make every reconciliation see a "changed" hash even when
-/// nothing about the template itself changed.
+/// Hashes `node_type` + `content` + `properties` for each node in order.
+/// Ignores `id`, `parent_id`, and `order`, which are per-insertion, not part
+/// of the template's authored content — including them would make every
+/// reconciliation see a "changed" hash even when nothing about the template
+/// itself changed.
 ///
 /// `serde_json::Value` objects serialize with sorted keys (no `preserve_order`
 /// feature enabled), so this is stable across process runs regardless of the

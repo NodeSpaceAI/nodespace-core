@@ -437,15 +437,22 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         Command::Uninstall(args) => commands::uninstall::run(args),
         // `install`/`uninstall`/`status` never touch the daemon -- they shell
-        // out to the bundled/compiled skill installer directly. `guidance` is
-        // the one `skill` subcommand that does: it fetches procedural
-        // guidance from the graph via the same `NodeService.SearchNodes` RPC
-        // `search` uses, so it alone needs a routed `NodeClient` here.
+        // out to the bundled/compiled skill installer directly. `guidance`
+        // and `reset` are the two `skill` subcommands that do: `guidance`
+        // fetches procedural guidance from the graph via the same
+        // `NodeService.SearchNodes` RPC `search` uses, and `reset` calls the
+        // new `NodeService.ResetSeedNode` RPC -- both need a routed
+        // `NodeClient` here.
         Command::Skill { action } => match action {
             commands::skill::SkillAction::Guidance(args) => {
                 let (interceptor, _) = resolve_routing(&sock, selection).await?;
                 let mut client = connect(&sock, interceptor).await?;
                 commands::skill::run_guidance(&mut client, args, json).await
+            }
+            commands::skill::SkillAction::Reset(args) => {
+                let (interceptor, _) = resolve_routing(&sock, selection).await?;
+                let mut client = connect(&sock, interceptor).await?;
+                commands::skill::run_reset(&mut client, args, json).await
             }
             other => commands::skill::run(other),
         },

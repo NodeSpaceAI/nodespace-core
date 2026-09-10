@@ -1782,27 +1782,42 @@ impl NodeService {
     /// Each element of `template_groups` is a flat `Vec<PreparedNode>` produced
     /// by [`crate::markdown::prepare_nodes_from_template`], which stamps the
     /// root node's properties with a `_seed` object containing `key` (the
-    /// template's stable title), `version` (a content hash), and `tier`
-    /// (`"system"` or `"starter"`). Its `_` prefix is what keeps it at the top
-    /// level: [`Self::normalize_flat_properties_to_namespace`] leaves
-    /// `_`-prefixed keys where they are instead of hoisting them into
+    /// template's stable title), `config_version` (a hash of the root alone),
+    /// `guidance_version` (a hash of the children alone), and `tier`
+    /// (`"system"` or `"starter"`, labeling only — see [`crate::markdown::SeedTier`]).
+    /// Its `_` prefix is what keeps it at the top level:
+    /// [`Self::normalize_flat_properties_to_namespace`] leaves `_`-prefixed
+    /// keys where they are instead of hoisting them into
     /// `properties[node_type]` on write, so `_seed` sits at a fixed,
     /// type-independent path that reconciliation can look up by key.
     ///
-    /// Reconciliation is per node, keyed by `_seed.key` within each `node_type`:
+    /// Reconciliation is per node, keyed by `_seed.key` within each
+    /// `node_type`, and runs **per aspect** — config (the root's own
+    /// properties) and guidance (its markdown children) are reconciled
+    /// independently, since a user editing one does not touch the other:
     ///
-    /// | state                                          | action              |
-    /// |-------------------------------------------------|---------------------|
-    /// | absent                                           | create              |
-    /// | present, hash matches                            | skip (up to date)   |
-    /// | present, `system`, hash differs                  | replace             |
-    /// | present, `starter`, not user-modified, hash differs | replace          |
-    /// | present, `starter`, user-modified                | skip, log once      |
+    /// | state                                                        | action                    |
+    /// |---------------------------------------------------------------|---------------------------|
+    /// | node absent                                                    | create (root + children) |
+    /// | config hash matches                                            | skip                     |
+    /// | config hash differs, `config_modified` not set                 | replace root properties  |
+    /// | config hash differs, `config_modified` set                     | skip, log once           |
+    /// | guidance hash matches                                          | skip                     |
+    /// | guidance hash differs, `guidance_modified` not set              | replace children         |
+    /// | guidance hash differs, `guidance_modified` set                 | skip, log once           |
     ///
-    /// A "replace" deletes the existing subtree and recreates it fresh — the
-    /// same insert path used for a first-time create — rather than diffing
-    /// individual children, since template content (including which children
-    /// exist) can change between versions.
+    /// A config "replace" updates the existing root's `properties` in place —
+    /// the root's id and content are untouched. A guidance "replace" deletes
+    /// the existing children and recreates them from the template — the same
+    /// insert path used for a first-time create — rather than diffing
+    /// individual children, since which children exist can change between
+    /// template versions. The two replaces are independent: a config-only
+    /// template change never touches children, and vice versa.
+    ///
+    /// This never discards content a user has touched — see `_seed.config_modified`
+    /// / `_seed.guidance_modified`, stamped by [`Self::update_node`]. The only
+    /// path that discards a user-modified aspect is an explicit reset (see
+    /// `reset_seed_node`), which is deliberately not this function.
     pub async fn seed_nodes_from_templates(
         &self,
         template_groups: Vec<Vec<crate::markdown::PreparedNode>>,
@@ -1843,22 +1858,30 @@ impl NodeService {
 
         let mut created_roots = 0u32;
         let mut created_children = 0u32;
-        let mut replaced = 0u32;
-        let mut skipped_current = 0u32;
-        let mut skipped_user_modified = 0u32;
+        let mut replaced_config = 0u32;
+        let mut replaced_guidance = 0u32;
+        let mut skipped_config_current = 0u32;
+        let mut skipped_guidance_current = 0u32;
+        let mut skipped_config_modified = 0u32;
+        let mut skipped_guidance_modified = 0u32;
 
         for group in template_groups {
             let root = match group.first() {
                 Some(r) => r,
                 None => continue,
             };
+            let children = &group[1..];
             let seed_meta = root.properties.get("_seed");
             let seed_key = seed_meta
                 .and_then(|s| s.get("key"))
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
-            let seed_version = seed_meta
-                .and_then(|s| s.get("version"))
+            let config_version = seed_meta
+                .and_then(|s| s.get("config_version"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let guidance_version = seed_meta
+                .and_then(|s| s.get("guidance_version"))
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
 
@@ -1866,101 +1889,267 @@ impl NodeService {
                 .get(&root.node_type)
                 .and_then(|by_key| by_key.get(seed_key));
 
-            if let Some(existing_node) = existing {
-                let existing_seed = existing_node.properties.get("_seed");
-                let existing_version = existing_seed
-                    .and_then(|s| s.get("version"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
+            let Some(existing_node) = existing else {
+                // Absent: create root + children together, same as before.
+                self.create_node_with_parent(CreateNodeParams {
+                    id: Some(root.id.clone()),
+                    node_type: root.node_type.clone(),
+                    content: root.content.clone(),
+                    properties: root.properties.clone(),
+                    parent_id: None,
+                    position: crate::services::InsertPositionOwned::End,
+                    lifecycle_status: None,
+                })
+                .await?;
+                created_roots += 1;
 
-                if existing_version == seed_version {
-                    skipped_current += 1;
-                    continue;
+                if !children.is_empty() {
+                    created_children += self
+                        .bulk_create_seed_children(&root.id, &root.id, children)
+                        .await?;
                 }
+                continue;
+            };
 
-                let user_modified = existing_seed
-                    .and_then(|s| s.get("user_modified"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+            let existing_seed = existing_node.properties.get("_seed");
+            let existing_config_version = existing_seed
+                .and_then(|s| s.get("config_version"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let existing_guidance_version = existing_seed
+                .and_then(|s| s.get("guidance_version"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let config_modified = existing_seed
+                .and_then(|s| s.get("config_modified"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let guidance_modified = existing_seed
+                .and_then(|s| s.get("guidance_modified"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
-                if user_modified {
-                    tracing::info!(
-                        seed_key,
-                        node_type = %root.node_type,
-                        "Seed content changed but node was user-modified; skipping"
-                    );
-                    skipped_user_modified += 1;
-                    continue;
-                }
-
-                // Replace: delete the existing subtree, then fall through to the
-                // same create path used for a brand-new node. The recreated root
-                // gets `root.id` — a fresh UUID assigned by
-                // `prepare_nodes_from_template` on every call — not the deleted
-                // node's ID. Nothing references seeded prompt/skill/tool nodes by
-                // stable ID today, so this is safe, but any future feature that
-                // does (e.g. a `mentions` edge into a skill node) would need
-                // either a stable ID carried across replace, or an explicit
-                // decision that seeded-content IDs are not a stable reference
-                // surface.
-                self.delete_node(&existing_node.id, existing_node.version)
-                    .await?;
-                replaced += 1;
+            // Config aspect: the root's own content/properties.
+            if existing_config_version == config_version {
+                skipped_config_current += 1;
+            } else if config_modified {
+                tracing::info!(
+                    seed_key,
+                    node_type = %root.node_type,
+                    "Seed config changed but node was user-modified; skipping"
+                );
+                skipped_config_modified += 1;
+            } else {
+                self.replace_seed_config(&existing_node.id, root).await?;
+                replaced_config += 1;
             }
 
-            // Insert root node (no parent).
-            self.create_node_with_parent(CreateNodeParams {
-                id: Some(root.id.clone()),
-                node_type: root.node_type.clone(),
-                content: root.content.clone(),
-                properties: root.properties.clone(),
-                parent_id: None,
-                position: crate::services::InsertPositionOwned::End,
-                lifecycle_status: None,
-            })
-            .await?;
-            created_roots += 1;
-
-            // Insert children via bulk_create_hierarchy (single transaction).
-            let children = &group[1..];
-            if !children.is_empty() {
-                let bulk_nodes: Vec<(
-                    String,
-                    String,
-                    String,
-                    Option<String>,
-                    f64,
-                    serde_json::Value,
-                )> = children
-                    .iter()
-                    .map(|n| {
-                        (
-                            n.id.clone(),
-                            n.node_type.clone(),
-                            n.content.clone(),
-                            n.parent_id.clone(),
-                            n.order,
-                            n.properties.clone(),
-                        )
-                    })
-                    .collect();
-                self.bulk_create_hierarchy(bulk_nodes).await?;
-                created_children += children.len() as u32;
+            // Guidance aspect: the markdown children.
+            if existing_guidance_version == guidance_version {
+                skipped_guidance_current += 1;
+            } else if guidance_modified {
+                tracing::info!(
+                    seed_key,
+                    node_type = %root.node_type,
+                    "Seed guidance changed but node was user-modified; skipping"
+                );
+                skipped_guidance_modified += 1;
+            } else {
+                created_children += self
+                    .replace_seed_guidance(&existing_node.id, &root.id, children)
+                    .await?;
+                replaced_guidance += 1;
             }
         }
 
-        if created_roots > 0 || replaced > 0 {
+        if created_roots > 0 || replaced_config > 0 || replaced_guidance > 0 {
             tracing::info!(
                 created_roots,
                 created_children,
-                replaced,
-                skipped_current,
-                skipped_user_modified,
+                replaced_config,
+                replaced_guidance,
+                skipped_config_current,
+                skipped_guidance_current,
+                skipped_config_modified,
+                skipped_guidance_modified,
                 "Agent nodes reconciled from templates"
             );
         }
 
         Ok(())
+    }
+
+    /// Insert a template's children under an already-existing root via
+    /// [`Self::bulk_create_hierarchy`]. Shared by the create path and the
+    /// guidance-replace path in [`Self::seed_nodes_from_templates`].
+    ///
+    /// `template_root_id` is the synthetic root id `prepare_nodes_from_template`
+    /// generated for *this* template expansion — every direct child's
+    /// `parent_id` points at it (never `None`; see
+    /// `prepare_nodes_from_markdown`'s `root_id` handling). On the create path
+    /// that id is the real, freshly-inserted root, so no remapping is needed.
+    /// On the guidance-replace path it is a throwaway id from an
+    /// `prepare_nodes_from_template` call whose root was never inserted — the
+    /// *existing* root (`root_id`) is what's kept — so every direct child's
+    /// `parent_id` must be rewritten from `template_root_id` to `root_id`.
+    /// Grandchildren (nested under a direct child, not the root) already
+    /// point at a sibling's id within this same batch and are left alone.
+    async fn bulk_create_seed_children(
+        &self,
+        root_id: &str,
+        template_root_id: &str,
+        children: &[crate::markdown::PreparedNode],
+    ) -> Result<u32, NodeServiceError> {
+        if children.is_empty() {
+            return Ok(0);
+        }
+        let bulk_nodes: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            f64,
+            serde_json::Value,
+        )> = children
+            .iter()
+            .map(|n| {
+                let parent_id = match &n.parent_id {
+                    Some(pid) if pid == template_root_id => Some(root_id.to_string()),
+                    other => other.clone(),
+                };
+                (
+                    n.id.clone(),
+                    n.node_type.clone(),
+                    n.content.clone(),
+                    parent_id,
+                    n.order,
+                    n.properties.clone(),
+                )
+            })
+            .collect();
+        self.bulk_create_hierarchy(bulk_nodes).await?;
+        Ok(children.len() as u32)
+    }
+
+    /// Config-only replace: merge the template's `root_properties` (including
+    /// the freshly-stamped `_seed` block) into the existing root's properties
+    /// in place. The root's id and content are untouched — this is
+    /// deliberately not a delete/recreate, so it cannot disturb the root's
+    /// children or anything referencing the root by id.
+    ///
+    /// Uses `update_node_unchecked`, not `update_node`: the latter is the
+    /// interactive-edit path that stamps `_seed.config_modified` on any
+    /// property write, which would make this reconciliation-driven replace
+    /// indistinguishable from a user edit on the very next pass. Also skips
+    /// `update_node`'s OCC version check — reconciliation runs at startup
+    /// before any user session is attached, so there is no concurrent editor
+    /// to race against here.
+    ///
+    /// A deep-merge (not a full replace) of properties: a template that
+    /// removes a `root_properties` key rather than changing its value would
+    /// leave the old key behind. No seeded template does this today; if one
+    /// ever does, this would need to diff and explicitly unset removed keys.
+    async fn replace_seed_config(
+        &self,
+        existing_root_id: &str,
+        template_root: &crate::markdown::PreparedNode,
+    ) -> Result<(), NodeServiceError> {
+        let update = crate::models::NodeUpdate {
+            properties: Some(template_root.properties.clone()),
+            ..Default::default()
+        };
+        self.update_node_unchecked(existing_root_id, update).await
+    }
+
+    /// Guidance-only replace: delete the existing children and recreate them
+    /// from the template, leaving the root untouched. Returns the number of
+    /// children created. `template_root_id` is the template expansion's
+    /// synthetic root id — see [`Self::bulk_create_seed_children`].
+    async fn replace_seed_guidance(
+        &self,
+        existing_root_id: &str,
+        template_root_id: &str,
+        template_children: &[crate::markdown::PreparedNode],
+    ) -> Result<u32, NodeServiceError> {
+        for child in self.get_children(existing_root_id).await? {
+            self.delete_node(&child.id, child.version).await?;
+        }
+        self.bulk_create_seed_children(existing_root_id, template_root_id, template_children)
+            .await
+    }
+
+    /// Explicitly discard a seeded node's user-modified aspect(s), restoring
+    /// them to the given template — the one path in the system allowed to
+    /// override `_seed.config_modified` / `_seed.guidance_modified`
+    /// (ADR-072). Everywhere else (`seed_nodes_from_templates`) treats those
+    /// flags as a hard stop; this ignores them on purpose, since discarding a
+    /// user edit here is exactly what the caller asked for by invoking reset.
+    ///
+    /// `template_group` is the current compiled template for `seed_key`,
+    /// already expanded by [`crate::markdown::prepare_nodes_from_template`]
+    /// — this method takes prepared data rather than resolving the key
+    /// itself so `nodespace-core` does not need a dependency on
+    /// `nodespace-agent`, where the actual seed sources
+    /// (`seed_skill_nodes`, etc.) live. The daemon layer resolves "key ->
+    /// current template" and calls this.
+    ///
+    /// Returns `(config_reset, guidance_reset)`: whether each requested
+    /// aspect was actually present and reset (`false` if the node itself, or
+    /// that specific aspect, did not exist — e.g. a config-only reset on a
+    /// node that has no children yet).
+    pub async fn reset_seed_node(
+        &self,
+        node_type: &str,
+        seed_key: &str,
+        template_group: &[crate::markdown::PreparedNode],
+        reset_config: bool,
+        reset_guidance: bool,
+    ) -> Result<(bool, bool), NodeServiceError> {
+        let template_root = match template_group.first() {
+            Some(r) => r,
+            None => return Ok((false, false)),
+        };
+        let children = &template_group[1..];
+
+        let filter = crate::models::NodeFilter {
+            node_type: Some(node_type.to_string()),
+            ..Default::default()
+        };
+        let existing = self.query_nodes(filter).await?.into_iter().find(|n| {
+            n.properties
+                .get("_seed")
+                .and_then(|s| s.get("key"))
+                .and_then(|v| v.as_str())
+                == Some(seed_key)
+        });
+        let Some(existing_node) = existing else {
+            return Ok((false, false));
+        };
+
+        let mut config_reset = false;
+        let mut guidance_reset = false;
+
+        if reset_config {
+            self.replace_seed_config(&existing_node.id, template_root)
+                .await?;
+            self.store
+                .set_property_bool(&existing_node.id, "$._seed.config_modified", false)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            config_reset = true;
+        }
+
+        if reset_guidance {
+            self.replace_seed_guidance(&existing_node.id, &template_root.id, children)
+                .await?;
+            self.store
+                .set_property_bool(&existing_node.id, "$._seed.guidance_modified", false)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+            guidance_reset = true;
+        }
+
+        Ok((config_reset, guidance_reset))
     }
 
     /// Get access to the underlying SqliteStore
@@ -6512,6 +6701,300 @@ mod tests {
             "replace must not leave the stale skill node behind"
         );
         assert_eq!(nodes[0].properties["skill"]["description"], "Search v2");
+    }
+
+    /// A user editing only a seeded skill's guidance children must not block
+    /// an unrelated config-only template change from applying, and vice
+    /// versa — config and guidance are independent aspects (ADR-072), not one
+    /// coupled `user_modified` flag.
+    #[tokio::test]
+    async fn reseed_skips_modified_guidance_but_replaces_unmodified_config() {
+        use crate::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+
+        let skill_tmpl = |description: &str, guidance: &str| NodeTemplate {
+            title: "Research & Search".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: json!({
+                "description": description,
+                "tool_whitelist": ["search_semantic"],
+            }),
+            child_node_type: Some("text".to_string()),
+            child_properties: None,
+            tier: SeedTier::System,
+            markdown_content: guidance.to_string(),
+        };
+
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&skill_tmpl(
+                "Search v1",
+                "Guidance v1.",
+            ))
+            .unwrap()])
+            .await
+            .unwrap();
+
+        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let root = &nodes[0];
+        let children = service.get_children(&root.id).await.unwrap();
+
+        // User edits only the guidance child.
+        service
+            .update_node(
+                &children[0].id,
+                children[0].version,
+                NodeUpdate::new().with_content("User's own guidance.".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let root_after_edit = service.get_node(&root.id).await.unwrap().unwrap();
+        assert_eq!(
+            root_after_edit.properties["_seed"]["guidance_modified"], true,
+            "editing a guidance child must stamp guidance_modified on the root"
+        );
+        assert!(
+            !root_after_edit.properties["_seed"]
+                .get("config_modified")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            "editing guidance must not stamp config_modified"
+        );
+
+        // Re-seed with BOTH config and guidance changed under the same seed_key.
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&skill_tmpl(
+                "Search v2",
+                "Guidance v2.",
+            ))
+            .unwrap()])
+            .await
+            .unwrap();
+
+        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        assert_eq!(nodes.len(), 1, "reconciliation must not duplicate the node");
+        assert_eq!(
+            nodes[0].properties["skill"]["description"], "Search v2",
+            "unmodified config must still replace even though guidance is protected"
+        );
+        let children = service.get_children(&nodes[0].id).await.unwrap();
+        assert_eq!(
+            children[0].content, "User's own guidance.",
+            "user-modified guidance must survive reseed despite the template changing"
+        );
+    }
+
+    /// Symmetric case: editing only the root's config must not block an
+    /// unrelated guidance-only template change from applying.
+    #[tokio::test]
+    async fn reseed_skips_modified_config_but_replaces_unmodified_guidance() {
+        use crate::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+
+        let skill_tmpl = |description: &str, guidance: &str| NodeTemplate {
+            title: "Research & Search".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: json!({
+                "description": description,
+                "tool_whitelist": ["search_semantic"],
+            }),
+            child_node_type: Some("text".to_string()),
+            child_properties: None,
+            tier: SeedTier::System,
+            markdown_content: guidance.to_string(),
+        };
+
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&skill_tmpl(
+                "Search v1",
+                "Guidance v1.",
+            ))
+            .unwrap()])
+            .await
+            .unwrap();
+
+        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let root = &nodes[0];
+
+        // User edits only the root's own properties (config).
+        service
+            .update_node(
+                &root.id,
+                root.version,
+                NodeUpdate::new().with_properties(json!({"description": "User's own description"})),
+            )
+            .await
+            .unwrap();
+
+        let root_after_edit = service.get_node(&root.id).await.unwrap().unwrap();
+        assert_eq!(
+            root_after_edit.properties["_seed"]["config_modified"], true,
+            "editing the root's properties must stamp config_modified"
+        );
+        assert!(
+            !root_after_edit.properties["_seed"]
+                .get("guidance_modified")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            "editing config must not stamp guidance_modified"
+        );
+
+        // Re-seed with BOTH config and guidance changed under the same seed_key.
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&skill_tmpl(
+                "Search v2",
+                "Guidance v2.",
+            ))
+            .unwrap()])
+            .await
+            .unwrap();
+
+        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        assert_eq!(nodes.len(), 1, "reconciliation must not duplicate the node");
+        assert_eq!(
+            nodes[0].properties["skill"]["description"], "User's own description",
+            "user-modified config must survive reseed despite the template changing"
+        );
+        let children = service.get_children(&nodes[0].id).await.unwrap();
+        assert_eq!(
+            children[0].content, "Guidance v2.",
+            "unmodified guidance must still replace even though config is protected"
+        );
+    }
+
+    /// `reset_seed_node` is the one path allowed to override a user-modified
+    /// aspect — unlike `seed_nodes_from_templates`, it must discard the
+    /// user's guidance edit even though `guidance_modified` is set, and clear
+    /// the flag afterward so a plain reseed doesn't immediately re-protect it.
+    #[tokio::test]
+    async fn reset_seed_node_discards_modified_guidance_ignoring_flag() {
+        use crate::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+
+        let skill_tmpl = NodeTemplate {
+            title: "Research & Search".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: json!({"description": "Search v1"}),
+            child_node_type: Some("text".to_string()),
+            child_properties: None,
+            tier: SeedTier::System,
+            markdown_content: "Guidance v1.".to_string(),
+        };
+        let prepared = prepare_nodes_from_template(&skill_tmpl).unwrap();
+
+        service
+            .seed_nodes_from_templates(vec![prepared.clone()])
+            .await
+            .unwrap();
+
+        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let root = &nodes[0];
+        let children = service.get_children(&root.id).await.unwrap();
+
+        service
+            .update_node(
+                &children[0].id,
+                children[0].version,
+                NodeUpdate::new().with_content("User's own guidance.".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let (config_reset, guidance_reset) = service
+            .reset_seed_node("skill", "Research & Search", &prepared, false, true)
+            .await
+            .unwrap();
+        assert!(!config_reset, "config reset was not requested");
+        assert!(
+            guidance_reset,
+            "guidance reset was requested and node exists"
+        );
+
+        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        assert_eq!(nodes.len(), 1, "reset must not duplicate the node");
+        let children = service.get_children(&nodes[0].id).await.unwrap();
+        assert_eq!(
+            children[0].content, "Guidance v1.",
+            "reset must discard the user's edit and restore the template's guidance"
+        );
+        assert!(
+            !nodes[0].properties["_seed"]
+                .get("guidance_modified")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            "reset must clear guidance_modified so a later reseed can replace again"
+        );
+    }
+
+    /// Symmetric case for config, and confirms `--all`-style dual reset works
+    /// in one call.
+    #[tokio::test]
+    async fn reset_seed_node_discards_modified_config_and_guidance_together() {
+        use crate::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+
+        let skill_tmpl = NodeTemplate {
+            title: "Research & Search".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: json!({"description": "Search v1"}),
+            child_node_type: Some("text".to_string()),
+            child_properties: None,
+            tier: SeedTier::System,
+            markdown_content: "Guidance v1.".to_string(),
+        };
+        let prepared = prepare_nodes_from_template(&skill_tmpl).unwrap();
+
+        service
+            .seed_nodes_from_templates(vec![prepared.clone()])
+            .await
+            .unwrap();
+
+        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let root = &nodes[0];
+        let children = service.get_children(&root.id).await.unwrap();
+
+        service
+            .update_node(
+                &root.id,
+                root.version,
+                NodeUpdate::new().with_properties(json!({"description": "User's own"})),
+            )
+            .await
+            .unwrap();
+        service
+            .update_node(
+                &children[0].id,
+                children[0].version,
+                NodeUpdate::new().with_content("User's own guidance.".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let (config_reset, guidance_reset) = service
+            .reset_seed_node("skill", "Research & Search", &prepared, true, true)
+            .await
+            .unwrap();
+        assert!(config_reset);
+        assert!(guidance_reset);
+
+        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        assert_eq!(
+            nodes[0].properties["skill"]["description"], "Search v1",
+            "--all reset must restore config to the template"
+        );
+        let children = service.get_children(&nodes[0].id).await.unwrap();
+        assert_eq!(
+            children[0].content, "Guidance v1.",
+            "--all reset must restore guidance to the template"
+        );
     }
 
     /// `tool` seed templates carry a nested `parameter_schema` object as a plain

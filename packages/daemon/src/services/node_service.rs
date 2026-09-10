@@ -62,11 +62,12 @@ use crate::nodespace::{
     NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
     OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest,
     RelationshipDeletedPayload, RelationshipPayload, RemoveNodeFromCollectionRequest,
-    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResolveConflictRequest,
-    SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
-    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse,
-    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
-    UpdateTaskNodeRequest, UpsertNodeWithParentRequest, WatchRequest,
+    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
+    ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
+    SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
+    UpdateNodesBatchResponse, UpdateRelationshipPropertiesRequest,
+    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
+    WatchRequest,
 };
 
 /// gRPC adapter that owns shared handles to the core services.
@@ -500,6 +501,119 @@ impl GrpcNodeService for NodeServiceImpl {
             node_id: output.node_id,
             existed: output.existed,
             deleted_count: output.deleted_count,
+        }))
+    }
+
+    async fn reset_seed_node(
+        &self,
+        request: Request<ResetSeedNodeRequest>,
+    ) -> Result<Response<ResetSeedNodeResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let Some(template) = resolve_seed_template(&req.node_type, &req.seed_key) else {
+            return Ok(Response::new(ResetSeedNodeResponse {
+                found: false,
+                config_reset: false,
+                guidance_reset: false,
+                config_summary: String::new(),
+                guidance_summary: String::new(),
+            }));
+        };
+
+        let prepared = match nodespace_core::markdown::prepare_nodes_from_template(&template) {
+            Ok(p) => p,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "Failed to expand seed template '{}': {e}",
+                    req.seed_key
+                )))
+            }
+        };
+
+        // Before-state summary — read regardless of dry_run, since the
+        // caller needs it either way (a confirmation prompt on dry_run, an
+        // audit line on the real run).
+        let existing = this
+            .node_service
+            .query_nodes(nodespace_core::models::NodeFilter {
+                node_type: Some(req.node_type.clone()),
+                ..Default::default()
+            })
+            .await
+            .map_err(service_error_to_status)?
+            .into_iter()
+            .find(|n| {
+                n.properties
+                    .get("_seed")
+                    .and_then(|s| s.get("key"))
+                    .and_then(|v| v.as_str())
+                    == Some(req.seed_key.as_str())
+            });
+
+        let Some(existing_node) = existing else {
+            return Ok(Response::new(ResetSeedNodeResponse {
+                found: false,
+                config_reset: false,
+                guidance_reset: false,
+                config_summary: String::new(),
+                guidance_summary: String::new(),
+            }));
+        };
+
+        let config_summary = if req.reset_config {
+            existing_node
+                .properties
+                .get(req.node_type.as_str())
+                .cloned()
+                .unwrap_or(existing_node.properties.clone())
+                .to_string()
+        } else {
+            String::new()
+        };
+        let guidance_summary = if req.reset_guidance {
+            let children = this
+                .node_service
+                .get_children(&existing_node.id)
+                .await
+                .map_err(service_error_to_status)?;
+            format!(
+                "{} guidance node(s), current preview: {:.120}",
+                children.len(),
+                children.first().map(|c| c.content.as_str()).unwrap_or("")
+            )
+        } else {
+            String::new()
+        };
+
+        if req.dry_run {
+            return Ok(Response::new(ResetSeedNodeResponse {
+                found: true,
+                config_reset: req.reset_config,
+                guidance_reset: req.reset_guidance,
+                config_summary,
+                guidance_summary,
+            }));
+        }
+
+        let (config_reset, guidance_reset) = this
+            .node_service
+            .reset_seed_node(
+                &req.node_type,
+                &req.seed_key,
+                &prepared,
+                req.reset_config,
+                req.reset_guidance,
+            )
+            .await
+            .map_err(service_error_to_status)?;
+
+        Ok(Response::new(ResetSeedNodeResponse {
+            found: true,
+            config_reset,
+            guidance_reset,
+            config_summary,
+            guidance_summary,
         }))
     }
 
@@ -2191,6 +2305,22 @@ fn relationship_to_proto(
         relationship_type: rel.relationship_type.clone(),
         properties: rel.properties.to_string(),
     }
+}
+
+/// Find the currently-compiled seed template for `(node_type, seed_key)`
+/// across every seed source the daemon seeds at startup (`seed_agent_nodes`
+/// in `services/assembly.rs`). `seed_key` matches `NodeTemplate.title`
+/// verbatim (see `prepare_nodes_from_template`, which stamps `_seed.key` from
+/// it) — case-sensitive, no normalization.
+fn resolve_seed_template(
+    node_type: &str,
+    seed_key: &str,
+) -> Option<nodespace_core::markdown::NodeTemplate> {
+    nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
+        .into_iter()
+        .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
+        .chain(nodespace_agent::skill_pipeline::seed_tool_nodes())
+        .find(|t| t.root_node_type == node_type && t.title == seed_key)
 }
 
 fn ops_error_to_status(err: OpsError) -> Status {

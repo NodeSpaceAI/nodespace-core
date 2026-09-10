@@ -189,3 +189,86 @@ async fn a_skill_rules_content_change_reaches_an_already_seeded_database() {
          version-hash-keyed reconciliation, not a type-level skip)"
     );
 }
+
+/// `nodespace skill reset` (ADR-072) against the real production skill
+/// registry: a user edit to guidance is protected from an unrelated
+/// `skill_pipeline.rs` content change (as proven above), but `reset_seed_node`
+/// must still be able to discard it on request and restore the current
+/// compiled template -- the escape hatch the durability guard exists
+/// alongside.
+#[tokio::test]
+async fn reset_seed_node_restores_a_users_edited_guidance_to_the_current_template() {
+    let (node_service, _temp) = seeded_service().await;
+
+    let skills = node_service
+        .query_nodes_by_type("skill", None)
+        .await
+        .expect("query skills");
+    let root = skills
+        .iter()
+        .find(|n| n.content == RESEARCH_AND_SEARCH)
+        .expect("Research & Search must be seeded");
+    let children_before = node_service
+        .get_children(&root.id)
+        .await
+        .expect("get children");
+    let target = children_before
+        .first()
+        .expect("seeded guidance must have at least one direct child");
+
+    node_service
+        .update_node(
+            &target.id,
+            target.version,
+            NodeUpdate::new().with_content("User's own guidance override.".to_string()),
+        )
+        .await
+        .expect("user edit must succeed");
+
+    // Confirm the durability guard actually engaged: a reseed with the
+    // unmodified real registry must leave the user's edit alone (guidance
+    // hash for this skill hasn't changed, so this is also a no-op branch --
+    // the guard is exercised properly by the *modified* case, covered in
+    // nodespace-core's own `reseed_skips_modified_guidance_...` tests; this
+    // integration test's job is only to prove reset works against the real
+    // registry, not to re-prove the guard itself).
+    let template = seed_skill_nodes()
+        .into_iter()
+        .find(|t| t.title == RESEARCH_AND_SEARCH)
+        .expect("Research & Search template must exist");
+    let prepared = prepare_nodes_from_template(&template).expect("template must parse");
+
+    let (config_reset, guidance_reset) = node_service
+        .reset_seed_node("skill", RESEARCH_AND_SEARCH, &prepared, false, true)
+        .await
+        .expect("reset must succeed");
+    assert!(!config_reset, "config reset was not requested");
+    assert!(
+        guidance_reset,
+        "guidance reset was requested against an existing node"
+    );
+
+    let children_after = node_service
+        .get_children(&root.id)
+        .await
+        .expect("get children after reset");
+    assert!(
+        children_after
+            .iter()
+            .all(|n| n.content != "User's own guidance override."),
+        "reset must discard the user's edit"
+    );
+
+    let root_after = node_service
+        .get_node(&root.id)
+        .await
+        .expect("get root")
+        .expect("root must still exist");
+    assert!(
+        !root_after.properties["_seed"]
+            .get("guidance_modified")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        "reset must clear guidance_modified so a later reseed can replace again"
+    );
+}
