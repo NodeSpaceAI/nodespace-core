@@ -1343,6 +1343,36 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Set a string value at a JSON path within a node's properties in-place.
+    /// Same best-effort, OCC-bypassing posture as [`Self::set_property_bool`]
+    /// — see its doc comment for when this is (and isn't) safe to use.
+    ///
+    /// Unlike the bool variant, `json_set` is passed the raw string directly
+    /// (not wrapped in `json(...)`), since `json()` would parse the string as
+    /// JSON syntax rather than storing it as a JSON string value — a
+    /// content-hash string like a hex digest happens not to be valid JSON on
+    /// its own, but relying on that would be fragile.
+    pub async fn set_property_string(
+        &self,
+        node_id: &str,
+        json_path: &str,
+        value: &str,
+    ) -> Result<()> {
+        self.write()
+            .await
+            .execute(
+                "UPDATE node SET properties = json_set(properties, ?1, ?2) WHERE id = ?3",
+                libsql::params![
+                    json_path.to_string(),
+                    value.to_string(),
+                    node_id.to_string()
+                ],
+            )
+            .await
+            .context("Failed to set property key")?;
+        Ok(())
+    }
+
     pub async fn delete_with_version_check(
         &self,
         id: &str,

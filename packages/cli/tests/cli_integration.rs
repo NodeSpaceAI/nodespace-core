@@ -2857,6 +2857,14 @@ fn skill_reset_requires_an_explicit_scope_flag() {
     let err = ResetHarness::try_parse_from(["reset", "Research & Search", "--yes"])
         .expect_err("--yes alone must not satisfy the scope requirement");
     assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+    // Combining --guidance and --config must parse and be equivalent to
+    // --all, not conflict -- the ArgGroup allows multiple selections
+    // (`.multiple(true)`), matching the documented "equivalent to passing
+    // both flags" behavior for --all.
+    let ok = ResetHarness::try_parse_from(["reset", "Research & Search", "--guidance", "--config"])
+        .expect("--guidance and --config together must parse, not conflict");
+    assert!(ok.args.guidance && ok.args.config);
 }
 
 /// End-to-end: `run_reset` against a real gRPC daemon, with `--yes` so it

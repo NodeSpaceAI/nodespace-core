@@ -1940,7 +1940,7 @@ impl NodeService {
                 );
                 skipped_config_modified += 1;
             } else {
-                self.replace_seed_config(&existing_node.id, root).await?;
+                self.replace_seed_config(existing_node, root).await?;
                 replaced_config += 1;
             }
 
@@ -1956,7 +1956,7 @@ impl NodeService {
                 skipped_guidance_modified += 1;
             } else {
                 created_children += self
-                    .replace_seed_guidance(&existing_node.id, &root.id, children)
+                    .replace_seed_guidance(&existing_node.id, &root.id, children, guidance_version)
                     .await?;
                 replaced_guidance += 1;
             }
@@ -2037,6 +2037,19 @@ impl NodeService {
     /// deliberately not a delete/recreate, so it cannot disturb the root's
     /// children or anything referencing the root by id.
     ///
+    /// The template's `_seed` block carries a `guidance_version` computed
+    /// from *its own* children — meaningless here, since this call never
+    /// touches children. Applied verbatim, it would silently overwrite the
+    /// existing node's real `guidance_version` with the current template's,
+    /// desyncing the stored hash from the children's actual content whenever
+    /// guidance wasn't replaced in the same reconciliation pass (e.g.
+    /// guidance is user-modified and guarded while config replaces
+    /// normally) — corrupting the current/modified bookkeeping on every
+    /// subsequent pass even though no content is lost. So `_seed` is
+    /// rebuilt here from the template's config-relevant fields plus the
+    /// existing node's own guidance fields, rather than taking the
+    /// template's `_seed` as-is.
+    ///
     /// Uses `update_node_unchecked`, not `update_node`: the latter is the
     /// interactive-edit path that stamps `_seed.config_modified` on any
     /// property write, which would make this reconciliation-driven replace
@@ -2051,18 +2064,31 @@ impl NodeService {
     /// ever does, this would need to diff and explicitly unset removed keys.
     async fn replace_seed_config(
         &self,
-        existing_root_id: &str,
+        existing_node: &Node,
         template_root: &crate::markdown::PreparedNode,
     ) -> Result<(), NodeServiceError> {
+        let mut properties = template_root.properties.clone();
+        if let Some(seed) = properties.get_mut("_seed") {
+            let existing_seed = existing_node.properties.get("_seed");
+            if let Some(guidance_version) = existing_seed.and_then(|s| s.get("guidance_version")) {
+                seed["guidance_version"] = guidance_version.clone();
+            }
+            if let Some(guidance_modified) = existing_seed.and_then(|s| s.get("guidance_modified"))
+            {
+                seed["guidance_modified"] = guidance_modified.clone();
+            }
+        }
         let update = crate::models::NodeUpdate {
-            properties: Some(template_root.properties.clone()),
+            properties: Some(properties),
             ..Default::default()
         };
-        self.update_node_unchecked(existing_root_id, update).await
+        self.update_node_unchecked(&existing_node.id, update).await
     }
 
     /// Guidance-only replace: delete the existing children and recreate them
-    /// from the template, leaving the root untouched. Returns the number of
+    /// from the template, leaving the root untouched, then stamp the root's
+    /// `_seed.guidance_version` to `new_guidance_version` so this replace
+    /// isn't redone on the next reconciliation pass. Returns the number of
     /// children created. `template_root_id` is the template expansion's
     /// synthetic root id — see [`Self::bulk_create_seed_children`].
     async fn replace_seed_guidance(
@@ -2070,12 +2096,30 @@ impl NodeService {
         existing_root_id: &str,
         template_root_id: &str,
         template_children: &[crate::markdown::PreparedNode],
+        new_guidance_version: &str,
     ) -> Result<u32, NodeServiceError> {
         for child in self.get_children(existing_root_id).await? {
             self.delete_node(&child.id, child.version).await?;
         }
-        self.bulk_create_seed_children(existing_root_id, template_root_id, template_children)
+        let created = self
+            .bulk_create_seed_children(existing_root_id, template_root_id, template_children)
+            .await?;
+
+        // Best-effort, OCC-bypassing write, same posture as
+        // `update_node`'s `_seed` flag stamp (see its doc comment): a
+        // concurrent editor of this root's config landing here would have
+        // its own version bump masked, but `_seed.guidance_version` is
+        // idempotent to overwrite, so no content or edit is lost.
+        self.store
+            .set_property_string(
+                existing_root_id,
+                "$._seed.guidance_version",
+                new_guidance_version,
+            )
             .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        Ok(created)
     }
 
     /// Explicitly discard a seeded node's user-modified aspect(s), restoring
@@ -2130,7 +2174,7 @@ impl NodeService {
         let mut guidance_reset = false;
 
         if reset_config {
-            self.replace_seed_config(&existing_node.id, template_root)
+            self.replace_seed_config(&existing_node, template_root)
                 .await?;
             self.store
                 .set_property_bool(&existing_node.id, "$._seed.config_modified", false)
@@ -2140,8 +2184,19 @@ impl NodeService {
         }
 
         if reset_guidance {
-            self.replace_seed_guidance(&existing_node.id, &template_root.id, children)
-                .await?;
+            let new_guidance_version = template_root
+                .properties
+                .get("_seed")
+                .and_then(|s| s.get("guidance_version"))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            self.replace_seed_guidance(
+                &existing_node.id,
+                &template_root.id,
+                children,
+                new_guidance_version,
+            )
+            .await?;
             self.store
                 .set_property_bool(&existing_node.id, "$._seed.guidance_modified", false)
                 .await
@@ -6517,6 +6572,147 @@ mod tests {
         let children = service.get_children(&nodes[0].id).await.unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].content, "You are v2, rewritten.");
+    }
+
+    /// Regression: a guidance replace must stamp `_seed.guidance_version` to
+    /// the new value, or reconciliation replays the same replace forever —
+    /// every subsequent pass sees a stale stored hash, concludes guidance is
+    /// still out of date, and re-deletes/recreates children it just created.
+    #[tokio::test]
+    async fn reseed_does_not_replay_a_guidance_replace_on_the_next_pass() {
+        use crate::markdown::{prepare_nodes_from_template, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+
+        let v1 = seed_template("Core Identity", "You are v1.", SeedTier::System);
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&v1).unwrap()])
+            .await
+            .unwrap();
+
+        let v2 = seed_template("Core Identity", "You are v2, rewritten.", SeedTier::System);
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&v2).unwrap()])
+            .await
+            .unwrap();
+
+        let nodes_after_replace = service
+            .query_nodes_by_type("agent-guidance", None)
+            .await
+            .unwrap();
+        let children_after_replace = service
+            .get_children(&nodes_after_replace[0].id)
+            .await
+            .unwrap();
+        let child_id_after_replace = children_after_replace[0].id.clone();
+
+        // Re-seed a THIRD time with the exact same (v2) template. If
+        // `guidance_version` wasn't stamped after the replace, this pass
+        // would see a hash mismatch again and delete+recreate the child that
+        // was just created — a new id, even though content is unchanged.
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&v2).unwrap()])
+            .await
+            .unwrap();
+
+        let nodes_after_noop = service
+            .query_nodes_by_type("agent-guidance", None)
+            .await
+            .unwrap();
+        assert_eq!(nodes_after_noop.len(), 1);
+        let children_after_noop = service.get_children(&nodes_after_noop[0].id).await.unwrap();
+        assert_eq!(
+            children_after_noop[0].id, child_id_after_replace,
+            "an already-current guidance replace must not be redone on the next pass \
+             (guidance_version must have been stamped after the replace)"
+        );
+    }
+
+    /// Regression: a config-only replace must not disturb `_seed.guidance_version`
+    /// or `_seed.guidance_modified` for an aspect it never touched — doing so
+    /// would desync the stored guidance hash from the children's actual
+    /// content, corrupting the current/modified bookkeeping on every
+    /// subsequent pass even though no content is lost.
+    #[tokio::test]
+    async fn reseed_config_replace_does_not_disturb_guidance_bookkeeping() {
+        use crate::markdown::{prepare_nodes_from_template, NodeTemplate, SeedTier};
+
+        let (service, _temp) = create_test_service().await;
+
+        let skill_tmpl = |description: &str, guidance: &str| NodeTemplate {
+            title: "Research & Search".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: json!({
+                "description": description,
+                "tool_whitelist": ["search_semantic"],
+            }),
+            child_node_type: Some("text".to_string()),
+            child_properties: None,
+            tier: SeedTier::System,
+            markdown_content: guidance.to_string(),
+        };
+
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&skill_tmpl(
+                "Search v1",
+                "Guidance v1.",
+            ))
+            .unwrap()])
+            .await
+            .unwrap();
+
+        let nodes = service.query_nodes_by_type("skill", None).await.unwrap();
+        let root = &nodes[0];
+        let children = service.get_children(&root.id).await.unwrap();
+
+        // User edits only guidance -- guards it against future replace.
+        service
+            .update_node(
+                &children[0].id,
+                children[0].version,
+                NodeUpdate::new().with_content("User's own guidance.".to_string()),
+            )
+            .await
+            .unwrap();
+        let guidance_version_after_edit = service
+            .get_node(&root.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .properties["_seed"]["guidance_version"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Re-seed with BOTH config and guidance changed. Config replaces
+        // (unmodified); guidance is guarded (modified) and must be skipped.
+        service
+            .seed_nodes_from_templates(vec![prepare_nodes_from_template(&skill_tmpl(
+                "Search v2",
+                "Guidance v2.",
+            ))
+            .unwrap()])
+            .await
+            .unwrap();
+
+        let root_after = service.get_node(&root.id).await.unwrap().unwrap();
+        assert_eq!(
+            root_after.properties["skill"]["description"], "Search v2",
+            "sanity: config must have actually replaced"
+        );
+        assert_eq!(
+            root_after.properties["_seed"]["guidance_version"]
+                .as_str()
+                .unwrap(),
+            guidance_version_after_edit,
+            "a config-only replace must not advance guidance_version for guidance \
+             that was guarded, not actually replaced"
+        );
+        assert_eq!(
+            root_after.properties["_seed"]["guidance_modified"], true,
+            "a config-only replace must not clear guidance_modified"
+        );
     }
 
     #[tokio::test]

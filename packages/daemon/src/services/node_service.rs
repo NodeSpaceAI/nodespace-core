@@ -2316,11 +2316,20 @@ fn resolve_seed_template(
     node_type: &str,
     seed_key: &str,
 ) -> Option<nodespace_core::markdown::NodeTemplate> {
-    nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
-        .into_iter()
-        .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
-        .chain(nodespace_agent::skill_pipeline::seed_tool_nodes())
-        .find(|t| t.root_node_type == node_type && t.title == seed_key)
+    let mut matches =
+        nodespace_agent::prompt_assembler::PromptAssembler::seed_agent_guidance_nodes()
+            .into_iter()
+            .chain(nodespace_agent::skill_pipeline::seed_skill_nodes())
+            .chain(nodespace_agent::skill_pipeline::seed_tool_nodes())
+            .filter(|t| t.root_node_type == node_type && t.title == seed_key);
+
+    let first = matches.next();
+    debug_assert!(
+        matches.next().is_none(),
+        "multiple seed templates share (node_type, title) = ({node_type}, {seed_key}) -- \
+         resolve_seed_template's caller has no way to know which one it got"
+    );
+    first
 }
 
 fn ops_error_to_status(err: OpsError) -> Status {

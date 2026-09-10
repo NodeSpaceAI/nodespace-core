@@ -113,6 +113,7 @@ pub struct GuidanceArgs {
     clap::ArgGroup::new("reset_scope")
         .args(["guidance", "config", "all"])
         .required(true)
+        .multiple(true)
 ))]
 pub struct ResetArgs {
     /// The seed key to reset — a seeded skill's exact title (e.g. "Research
@@ -290,6 +291,11 @@ fn format_reset_summary(
 /// the system (ADR-072) — auto-confirming a content discard with no human
 /// watching would defeat the reason confirmation exists here at all. A
 /// script that wants this to succeed unattended must pass `--yes`.
+///
+/// The prompt itself prints to stderr, not stdout: `run_reset` may still
+/// write a `--json` result to stdout after this returns, and a caller
+/// piping stdout for that JSON must never see prompt text interleaved with
+/// it, even on a real terminal.
 fn confirm_reset(summary: &str) -> Result<bool> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         anyhow::bail!(
@@ -298,10 +304,10 @@ fn confirm_reset(summary: &str) -> Result<bool> {
         );
     }
 
-    println!("{summary}");
-    print!("Proceed? [y/N] ");
+    eprintln!("{summary}");
+    eprint!("Proceed? [y/N] ");
     use std::io::Write;
-    std::io::stdout().flush().ok();
+    std::io::stderr().flush().ok();
 
     let mut reply = String::new();
     std::io::stdin()
