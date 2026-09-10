@@ -9,10 +9,14 @@ import { fileURLToPath } from "node:url";
 // automated guard that they never drift out of agreement: any rename or
 // description edit in one shim (without the others) fails here.
 //
-// Antigravity CLI carries no shim here — its native tool-registration path is
-// MCP, and it points at the already-existing `nodespace mcp` stdio server
-// (packages/cli/src/commands/mcp.rs) instead of a hand-authored tool list, so
-// there is nothing in packages/skill/shims/ for it to drift against.
+// Antigravity CLI carries no shim here — it is a shell-capable coding agent,
+// same as Claude Code/Codex/OpenCode, so it reaches NodeSpace via skill +
+// `nodespace` CLI directly (SKILL.md's Preflight "Branch 1"), the same as
+// every other shell-capable harness (see `agents.ts`'s `antigravity` entry).
+// It does not consume `nodespace mcp` (packages/cli/src/commands/mcp.rs) --
+// that stdio server is for bash-less surfaces with no shell at all (e.g.
+// Claude Desktop's Chat tab), which Antigravity CLI is not. There is
+// therefore nothing in packages/skill/shims/ for it to drift against.
 //
 // What each remaining shim declares:
 //  - codex / opencode / pi (`nodespace-plugin.ts` / `nodespace-extension.ts`):

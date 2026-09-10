@@ -28,4 +28,4 @@ pub use embeddings_service::{EmbeddingReady, EmbeddingsServiceImpl};
 pub use import_service::ImportServiceImpl;
 pub use local_agent_service::{LocalAgentServiceImpl, SharedLocalAgent};
 pub use node_service::NodeServiceImpl;
-pub use settings_service::SettingsServiceImpl;
+pub use settings_service::{McpConfig, SettingsServiceImpl};

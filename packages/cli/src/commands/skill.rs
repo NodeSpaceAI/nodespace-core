@@ -153,24 +153,41 @@ fn report_install_outcome(outcome: &InstallOutcome) {
 }
 
 /// One "agent: reason" pairing from a "⚠ agent: reason" installer line.
+///
+/// `pub(crate)`: reused as-is by `commands::mcp`'s `install`/`uninstall`/
+/// `status` subcommands, which invoke the exact same compiled installer
+/// binary/script (it bundles `packages/skill`'s full `dist/`, not just the
+/// skill-file installer) with different subcommand strings
+/// (`mcp-install`/`mcp-uninstall`/`mcp-status`) and parse its output through
+/// the same "✓ name: ..." / "⚠ name: reason" contract. One MCP client name
+/// (e.g. `claude-desktop`) plays the same role here that an agent name plays
+/// for the skill installer, so the field is still called `agent` rather than
+/// generalized to `item` -- renaming it is not worth the diff noise.
 #[derive(Debug)]
-struct SkippedAgent {
-    agent: String,
-    reason: String,
+pub(crate) struct SkippedAgent {
+    pub(crate) agent: String,
+    pub(crate) reason: String,
 }
 
 /// Parsed result of one installer invocation: agents actually acted on
 /// (installed, removed, or found present, depending on subcommand), and
 /// agents detected but skipped with a reason.
+///
+/// `pub(crate)` -- see [`SkippedAgent`]'s doc comment for why `commands::mcp`
+/// shares this instead of a parallel copy.
 #[derive(Debug)]
-struct InstallOutcome {
-    installed: Vec<String>,
-    skipped: Vec<SkippedAgent>,
+pub(crate) struct InstallOutcome {
+    pub(crate) installed: Vec<String>,
+    pub(crate) skipped: Vec<SkippedAgent>,
 }
 
 /// How to invoke the skill installer, resolved once by [`resolve_installer`].
+///
+/// `pub(crate)` -- see [`SkippedAgent`]'s doc comment; `commands::mcp` shares
+/// this resolution rather than re-implementing sidecar/script discovery for
+/// what is, on disk, the exact same installer.
 #[derive(Debug)]
-enum Installer {
+pub(crate) enum Installer {
     /// The compiled standalone sidecar -- no bun/node dependency. Mirrors
     /// `skill_setup.rs`'s `Installer::Compiled`, minus the Tauri resource
     /// resolver: `resource_root` is derived from the sidecar's own
@@ -185,7 +202,10 @@ enum Installer {
 
 /// Locate the skill installer: the compiled sidecar beside the running
 /// `nodespace` executable if present, the source-checkout script otherwise.
-fn resolve_installer() -> Result<Installer> {
+///
+/// `pub(crate)` -- shared with `commands::mcp`; see [`SkippedAgent`]'s doc
+/// comment.
+pub(crate) fn resolve_installer() -> Result<Installer> {
     if let Some(installer) = resolve_compiled_installer() {
         return Ok(installer);
     }
@@ -265,7 +285,12 @@ fn resolve_script_installer() -> Result<Installer> {
 /// first and `node` second.
 const INSTALLER_RUNTIMES: [&str; 2] = ["bun", "node"];
 
-fn run_installer_subcommand(installer: &Installer, subcommand: &str) -> Result<InstallOutcome> {
+/// `pub(crate)` -- shared with `commands::mcp`; see [`SkippedAgent`]'s doc
+/// comment.
+pub(crate) fn run_installer_subcommand(
+    installer: &Installer,
+    subcommand: &str,
+) -> Result<InstallOutcome> {
     match installer {
         Installer::Compiled {
             binary,

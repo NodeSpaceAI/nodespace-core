@@ -179,11 +179,15 @@ pub enum Command {
     },
     /// Host a stdio MCP server exposing one passthrough tool, for bash-less
     /// MCP surfaces (e.g. Claude Desktop's Chat tab) that cannot shell this
-    /// CLI directly. Hidden from `--help` and the generated skill CLI
-    /// reference: it is a transport a connector config launches, not a verb
-    /// an agent types — see `commands::mcp` for the architecture.
-    #[command(hide = true)]
-    Mcp,
+    /// CLI directly — see `commands::mcp` for the architecture and its
+    /// ADR-038 trust-boundary controls. Disabled until `nodespace mcp
+    /// install` explicitly turns it on. With no subcommand, hosts the stdio
+    /// server itself — what a client config launches, not something a
+    /// person types directly.
+    Mcp {
+        #[command(subcommand)]
+        action: Option<commands::mcp::McpAction>,
+    },
 }
 
 /// Resolve the socket path from an explicit override or env/default.
@@ -438,8 +442,12 @@ pub async fn run(cli: Cli) -> Result<()> {
         // `mcp` doesn't connect to the daemon itself — each dispatched call
         // shells back out to this same binary (see `commands::mcp`), so it
         // only needs the resolved socket path and raw database selection,
-        // not a client.
-        Command::Mcp => commands::mcp::run(sock.clone(), cli.database.clone()).await,
+        // not a client. `install`/`uninstall`/`status` need neither: they
+        // touch `~/.nodespace/daemon.toml` and a client's own MCP config
+        // directly.
+        Command::Mcp { action } => {
+            commands::mcp::run(action, sock.clone(), cli.database.clone()).await
+        }
     }
 }
 
