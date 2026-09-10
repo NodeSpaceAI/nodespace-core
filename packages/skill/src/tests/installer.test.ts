@@ -34,9 +34,10 @@ function seedPkgRoot(root: string, agent: typeof AGENTS[number]): void {
     const dir = join(root, shim.includes('/') ? shim.split('/').slice(0, -1).join('/') : '');
     mkdirSync(dir, { recursive: true });
     // Content is unique per shim path, not just per shim "kind" -- so a test
-    // can tell two installed files apart, e.g. that installing two reference
-    // files (references/cli.md, references/shared-workspaces.md) lands both
-    // with their own content rather than one silently overwriting the other.
+    // can tell multiple installed files apart, e.g. that installing several
+    // reference files (references/cli.md, references/shared-workspaces.md,
+    // references/graph-authored-guidance.md) lands each with its own content
+    // rather than one silently overwriting another.
     const content = shim.endsWith('.md')
       ? `${SKILL_MD_CONTENT}\n<!-- ${shim} -->`
       : `${SHIM_CONTENT} (${shim})`;
@@ -247,11 +248,12 @@ describe('install', () => {
     }
   });
 
-  // `references/` now holds two files (cli.md and shared-workspaces.md) for
-  // every agent that ships references at all. Each must land as its own
-  // distinct file rather than one clobbering the other -- the scenario
-  // installedName()'s directory-preserving behavior was never exercised
-  // against until a second reference file existed.
+  // `references/` now holds multiple files (cli.md, shared-workspaces.md,
+  // graph-authored-guidance.md) for every agent that ships references at
+  // all. Each must land as its own distinct file rather than one clobbering
+  // the other -- the scenario installedName()'s directory-preserving
+  // behavior was never exercised against until a second reference file
+  // existed.
   it('installs multiple reference files side by side without collision', () => {
     for (const config of AGENTS) {
       const refs = config.shims.filter(s => s.startsWith('references/'));
@@ -402,11 +404,12 @@ describe('uninstall', () => {
     }
   });
 
-  // references/ holds two files today. If a user (or another tool) deletes
-  // just one of them by hand before uninstall runs, the directory-emptiness
-  // check must still see the surviving reference, then correctly prune it
-  // and the directory once uninstall removes it too -- a state that can only
-  // arise once more than one file shares that directory.
+  // references/ holds multiple files today. If a user (or another tool)
+  // deletes just one of them by hand before uninstall runs, the
+  // directory-emptiness check must still see the surviving references, then
+  // correctly prune them and the directory once uninstall removes them too
+  // -- a state that can only arise once more than one file shares that
+  // directory.
   it('removing one reference file by hand does not strand the other or the install dir', () => {
     const config = AGENTS.find(a => a.name === 'claude-code')!;
     const refs = config.shims.filter(s => s.startsWith('references/'));

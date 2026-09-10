@@ -102,6 +102,10 @@ NodeSpace daemon must be running. The `nodespace` CLI communicates with `nodespa
 
 Start the daemon: `nodespaced` (or it starts automatically on login if installed via DMG).
 
+## Graph-Authored Guidance (Fetched)
+
+A user or team can author procedural guidance directly in the graph, fetched at point of use rather than rendered into this file. **Before a nontrivial operation** (a spec/ADR/design, a multi-step import, a schema change), run `nodespace skill guidance "<task>"` (Branch 2: `args: "skill guidance <task>"`) — results are provenance-marked, never silently merged into this document's own text. Read **`references/graph-authored-guidance.md`** before your first call: it covers the trust boundary, the marker format, and why a failed or empty fetch is not a failure of the task.
+
 ## Tool Decision Guide
 
 Use this to pick the right command for the task at hand.

@@ -44,6 +44,16 @@ const SKILL_CLI_REFERENCE: &str = include_str!("../../../skill/references/cli.md
 const SKILL_SHARED_WORKSPACES: &str =
     include_str!("../../../skill/references/shared-workspaces.md");
 
+/// `packages/skill/references/graph-authored-guidance.md`, embedded for the
+/// same reason as [`SKILL_MD`].
+///
+/// SKILL.md links to this by relative path before its first `skill guidance`
+/// call — it covers the trust boundary for graph-fetched procedural
+/// guidance. Embedding it too means a PTY session gets the whole skill
+/// rather than a body pointing at a file that was never written next to it.
+const SKILL_GRAPH_AUTHORED_GUIDANCE: &str =
+    include_str!("../../../skill/references/graph-authored-guidance.md");
+
 /// Default token budget when none is specified by the caller.
 const DEFAULT_TOKEN_BUDGET: u32 = 50_000;
 
@@ -387,6 +397,11 @@ async fn write_skill_md(session_dir: &Path) -> Result<(), ContextError> {
     tokio::fs::write(
         references.join("shared-workspaces.md"),
         SKILL_SHARED_WORKSPACES,
+    )
+    .await?;
+    tokio::fs::write(
+        references.join("graph-authored-guidance.md"),
+        SKILL_GRAPH_AUTHORED_GUIDANCE,
     )
     .await?;
     Ok(())
@@ -749,6 +764,11 @@ mod tests {
     #[test]
     fn embedded_shared_workspaces_matches_source_file() {
         assert!(SKILL_SHARED_WORKSPACES.contains("shared"));
+    }
+
+    #[test]
+    fn embedded_graph_authored_guidance_matches_source_file() {
+        assert!(SKILL_GRAPH_AUTHORED_GUIDANCE.contains("graph-fetched"));
     }
 
     #[tokio::test]

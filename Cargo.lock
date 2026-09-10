@@ -3507,6 +3507,7 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tower 0.5.3",
+ "uuid",
 ]
 
 [[package]]
