@@ -358,7 +358,7 @@ describe('PersonSchemaForm — Relationships trigger gate', () => {
  * stored the correct title on every save — this was purely a frontend
  * store-staleness bug.
  */
-describe('PersonSchemaForm — save path (issue #2547 regression)', () => {
+describe('PersonSchemaForm — save path routes through the store (title-update regression)', () => {
   it('calls sharedNodeStore.updateNode, not backendAdapter.updateNode, on a name edit', async () => {
     render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
 
