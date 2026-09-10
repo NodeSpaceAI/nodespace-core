@@ -269,8 +269,9 @@ describe('AddSyncedDatabaseDialog', () => {
   });
 
   it('an identity-check failure surfaces the error with a retry action', async () => {
+    const identitySpy = vi.fn().mockRejectedValue(new Error('daemon unreachable'));
     mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'pro_current_person') return Promise.reject(new Error('daemon unreachable'));
+      if (cmd === 'pro_current_person') return identitySpy();
       throw new Error(`unexpected invoke: ${cmd}`);
     });
 
@@ -278,5 +279,101 @@ describe('AddSyncedDatabaseDialog', () => {
 
     await waitFor(() => expect(screen.getByText('daemon unreachable')).toBeTruthy());
     expect(screen.getByText('Retry')).toBeTruthy();
+
+    // No tenant has been picked yet — Retry here means "recheck sign-in",
+    // i.e. it goes through pro_current_person again (unlike a bind-stage
+    // Retry, which resumes confirmBind instead — see the next test).
+    await fireEvent.click(screen.getByText('Retry'));
+    await waitFor(() => expect(identitySpy).toHaveBeenCalledTimes(2));
+  });
+
+  it('retry after a failed bind reuses the already-created database and collection instead of duplicating them', async () => {
+    const createSpy = vi.spyOn(databaseStore, 'create').mockResolvedValue(dbEntry());
+    const switchToSpy = vi.spyOn(databaseStore, 'switchTo').mockResolvedValue(undefined);
+    const createNodeSpy = vi
+      .spyOn(backendAdapter, 'createNode')
+      .mockResolvedValue('coll-landing');
+
+    const identitySpy = vi.fn().mockResolvedValue(SIGNED_IN);
+    const tenantsSpy = vi.fn().mockResolvedValue(ONE_ACTIVE_TENANT);
+    let bindCallCount = 0;
+    mockInvoke.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === 'pro_current_person') return identitySpy();
+      if (cmd === 'pro_list_tenant_memberships') return tenantsSpy();
+      if (cmd === 'pro_bind_tenant') {
+        bindCallCount += 1;
+        if (bindCallCount === 1) {
+          return Promise.reject(new Error('transient network blip'));
+        }
+        expect(args).toEqual({
+          databaseId: 'db-new',
+          schema: 'tenant_demo',
+          collection: 'coll-landing'
+        });
+        return Promise.resolve({ synced: true, schema: 'tenant_demo' });
+      }
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    render(AddSyncedDatabaseDialog, { props: { open: true } });
+    await waitFor(() => expect(screen.getByText('Create & sync')).toBeTruthy());
+    await fireEvent.click(screen.getByText('Create & sync'));
+
+    await waitFor(() => expect(screen.getByText('transient network blip')).toBeTruthy());
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(createNodeSpy).toHaveBeenCalledTimes(1);
+
+    await fireEvent.click(screen.getByText('Retry'));
+
+    await waitFor(() => expect(bindCallCount).toBe(2));
+    // The whole point of the fix: a retry must NOT recreate the database or
+    // mint a second collection, and must not restart from the identity check
+    // or tenant listing either — it resumes confirmBind directly.
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(createNodeSpy).toHaveBeenCalledTimes(1);
+    expect(identitySpy).toHaveBeenCalledTimes(1);
+    expect(tenantsSpy).toHaveBeenCalledTimes(1);
+    expect(switchToSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('cannot be dismissed while a bind is in flight, and closes on its own once it settles', async () => {
+    vi.spyOn(databaseStore, 'create').mockResolvedValue(dbEntry());
+    vi.spyOn(databaseStore, 'switchTo').mockResolvedValue(undefined);
+    vi.spyOn(backendAdapter, 'createNode').mockResolvedValue('coll-landing');
+
+    // A mutable holder (rather than a bare reassigned `let`) so TypeScript
+    // doesn't narrow the closure-assigned function to `never` at the call site.
+    const bindGate: { resolve: (() => void) | null } = { resolve: null };
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'pro_current_person') return Promise.resolve(SIGNED_IN);
+      if (cmd === 'pro_list_tenant_memberships') return Promise.resolve(ONE_ACTIVE_TENANT);
+      if (cmd === 'pro_bind_tenant') {
+        return new Promise((resolve) => {
+          bindGate.resolve = () => resolve({ synced: true, schema: 'tenant_demo' });
+        });
+      }
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    render(AddSyncedDatabaseDialog, { props: { open: true } });
+    await waitFor(() => expect(screen.getByText('Create & sync')).toBeTruthy());
+    await fireEvent.click(screen.getByText('Create & sync'));
+    await waitFor(() => expect(screen.getByText(/Creating .* binding/)).toBeTruthy());
+
+    // The X close button is not rendered at all while binding.
+    expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
+
+    // Escape must not close the dialog mid-bind: Dialog.Content's
+    // escapeKeydownBehavior is set to 'ignore' while step === 'binding' (see
+    // the file doc comment) — without it this would unmount the dialog
+    // content entirely (confirmed: this assertion fails without the fix).
+    await fireEvent.keyDown(document, { key: 'Escape' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.getByText(/Creating .* binding/)).toBeTruthy();
+
+    // Once the bind resolves, the dialog closes itself via the normal
+    // success path (close()), unaffected by the binding-only guard above.
+    bindGate.resolve?.();
+    await waitFor(() => expect(screen.queryByText(/Creating .* binding/)).toBeNull());
   });
 });

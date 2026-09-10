@@ -32,6 +32,33 @@
   daemon's OAuth session is genuinely live). So this dialog checks/awaits
   sign-in via `pro_current_person` (GetIdentity) and the raw `sync:status`
   event directly, rather than reading `proSync`.
+
+  Retry-after-failure resumes rather than restarts: `confirmBind` remembers
+  the database/collection it already created (`createdDatabaseId` /
+  `mintedCollectionId`) and reuses them on a subsequent call instead of
+  creating fresh ones — a bind-step failure (a flaky `BindTenant` call, say)
+  must not leave behind a pile of orphaned local databases and "My Workspace"
+  collections from every retry. The generic error step's Retry button routes
+  to `confirmBind()` (resume) rather than `checkIdentity()` (full restart)
+  whenever a tenant has already been picked — see `retry()`.
+
+  Closing while a bind is in flight is blocked outright, not merely relabeled
+  as a no-op cancel: `confirmBind`'s chain (create -> switchTo -> mint ->
+  bind) has already committed to changing the user's active database by the
+  time any of it can fail, and none of those steps are safely abortable
+  mid-flight without risking a WORSE inconsistent state than just letting it
+  finish. Every dismissal path is blocked while `step === 'binding'`: the X
+  button is unrendered (`showCloseButton`) and Escape/outside-click are set
+  to bits-ui's `escapeKeydownBehavior`/`interactOutsideBehavior: 'ignore'`.
+  Note this can't be done by vetoing `Dialog.Root`'s `onOpenChange` (the
+  approach this file used at first) — bits-ui's dialog state is a
+  `$bindable` the primitive mutates directly on every dismiss interaction
+  (`open = v; onOpenChange(v)`, in that order, per its own source), so by the
+  time `onOpenChange` fires the primitive has already closed regardless of
+  what the callback does; `escapeKeydownBehavior`/`interactOutsideBehavior`
+  are bits-ui's actual extension points for stopping a dismissal before it
+  starts, and are what this file uses instead — no cancellation token
+  invented here, no precedent needed.
 -->
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
@@ -80,6 +107,13 @@
   let databaseName = $state('');
   let signingIn = $state(false);
   let unlistenStatus: UnlistenFn | null = null;
+  /**
+   * The database/collection `confirmBind` already created, if a previous
+   * attempt got that far before failing. Non-null means a Retry must reuse
+   * them rather than creating duplicates — see the file doc comment.
+   */
+  let createdDatabaseId = $state<string | null>(null);
+  let mintedCollectionId = $state<string | null>(null);
 
   /** Friendly display name for a tenant schema, e.g. "tenant_demo" -> "Demo". */
   function tenantLabel(schema: string): string {
@@ -162,6 +196,11 @@
 
   function backToPicker(): void {
     selectedTenant = null;
+    // Abandoning the in-progress attempt for whichever tenant was picked —
+    // a subsequent pick (of the same or a different tenant) must not silently
+    // reuse a database/collection created for this abandoned one.
+    createdDatabaseId = null;
+    mintedCollectionId = null;
     step = tenants.length > 1 ? 'pick-tenant' : 'sign-in';
     if (tenants.length <= 1) void checkIdentity();
   }
@@ -173,45 +212,76 @@
     step = 'binding';
     errorMessage = '';
     try {
-      const entry = await databaseStore.create(name);
-      if (!entry) {
-        throw new Error(databaseStore.error ?? 'Failed to create the local database');
+      // Reuse a database/collection from a previous failed attempt (a Retry)
+      // instead of creating fresh ones every time — see the file doc comment.
+      let dbId = createdDatabaseId;
+      if (!dbId) {
+        const entry = await databaseStore.create(name);
+        if (!entry) {
+          throw new Error(databaseStore.error ?? 'Failed to create the local database');
+        }
+        dbId = entry.id;
+        // Recorded immediately on success, before anything that can still
+        // fail below — a later failure must see this database as already
+        // created, not attempt to create a second one.
+        createdDatabaseId = dbId;
       }
+
       // Switch onto the new (still local-only) database FIRST — `create_node`
       // below routes through the data-plane client's currently-active database,
       // so the landing collection must be minted after this, or it would land in
-      // whichever database the app had open before this flow started.
-      await databaseStore.switchTo(entry.id);
+      // whichever database the app had open before this flow started. Cheap and
+      // idempotent to repeat on a retry.
+      await databaseStore.switchTo(dbId);
 
       // Mint this bind's private landing collection (see the file doc comment
-      // for why this step exists at all).
-      const collectionId = await backendAdapter.createNode({
-        id: crypto.randomUUID(),
-        nodeType: 'collection',
-        content: 'My Workspace',
-        properties: { collection: { restrictedToMembers: true } }
-      });
+      // for why this step exists at all) — reusing one from a previous attempt
+      // rather than minting a second "My Workspace" collection on retry.
+      let collectionId = mintedCollectionId;
+      if (!collectionId) {
+        collectionId = await backendAdapter.createNode({
+          id: globalThis.crypto.randomUUID(),
+          nodeType: 'collection',
+          content: 'My Workspace',
+          properties: { collection: { restrictedToMembers: true } }
+        });
+        mintedCollectionId = collectionId;
+      }
 
       // BindTenant activates the sync session server-side (activate-on-bind,
       // including the cursor-0 catch-up) — the desktop is already showing this
       // database from the switchTo above, so no further re-point is needed.
       await invoke('pro_bind_tenant', {
-        databaseId: entry.id,
+        databaseId: dbId,
         schema: tenant.schema,
         collection: collectionId
       });
       close();
     } catch (err) {
-      // The local database (if `create` succeeded before the failure) is left
-      // registered, local-only — never deleted here, and the desktop may already
-      // be showing it (the switchTo above). `create_database` only registers a
-      // file; auto-removing it on a later failure could discard real content a
-      // partially-successful bind already wrote (e.g. the minted collection
-      // node), and the user can always retry the bind or remove it manually
-      // from the list below.
+      // The local database/collection (if created before the failure) are left
+      // in place, never deleted here, and the desktop may already be showing the
+      // database (the switchTo above) — `createdDatabaseId`/`mintedCollectionId`
+      // stay set so a Retry reuses them (see `retry()`) instead of piling up a
+      // fresh orphan on every failed attempt.
       log.error('Failed to bind the new database to the tenant', err);
       step = 'error';
       errorMessage = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  /**
+   * The generic error step's Retry action. A tenant already picked means the
+   * failure happened during `confirmBind` (create/switch/mint/bind) — resume
+   * that attempt (reusing `createdDatabaseId`/`mintedCollectionId` if set)
+   * rather than restarting the whole wizard from the identity check, which
+   * would otherwise re-run `databaseStore.create` and mint a second
+   * collection on every retry.
+   */
+  function retry(): void {
+    if (selectedTenant) {
+      void confirmBind();
+    } else {
+      void checkIdentity();
     }
   }
 
@@ -226,6 +296,8 @@
     selectedTenant = null;
     databaseName = '';
     signingIn = false;
+    createdDatabaseId = null;
+    mintedCollectionId = null;
     stopListeningForSignIn();
   }
 
@@ -239,7 +311,12 @@
 </script>
 
 <Dialog.Root bind:open>
-  <Dialog.Content class="sm:max-w-md">
+  <Dialog.Content
+    class="sm:max-w-md"
+    showCloseButton={step !== 'binding'}
+    escapeKeydownBehavior={step === 'binding' ? 'ignore' : 'close'}
+    interactOutsideBehavior={step === 'binding' ? 'ignore' : 'close'}
+  >
     <Dialog.Header>
       <Dialog.Title>Add synced database</Dialog.Title>
       <Dialog.Description>
@@ -347,7 +424,7 @@
         </div>
       </div>
       <Dialog.Footer>
-        <Button variant="outline" onclick={() => void checkIdentity()}>Retry</Button>
+        <Button variant="outline" onclick={retry}>Retry</Button>
         <Button variant="ghost" onclick={close}>Close</Button>
       </Dialog.Footer>
     {/if}
