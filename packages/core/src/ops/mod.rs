@@ -113,9 +113,7 @@ impl From<NodeServiceError> for OpsError {
             err @ NodeServiceError::UnknownNodeType { .. } => {
                 OpsError::InvalidParams(err.to_string())
             }
-            NodeServiceError::PlaybookValidationFailed { errors } => {
-                OpsError::InvalidParams(errors)
-            }
+            NodeServiceError::PlayValidationFailed { errors } => OpsError::InvalidParams(errors),
             NodeServiceError::CollectionNotFound(name) => OpsError::NotFound { id: name },
             NodeServiceError::InvalidUpdate(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::InvalidCollectionPath(msg) => OpsError::ValidationFailed(msg),

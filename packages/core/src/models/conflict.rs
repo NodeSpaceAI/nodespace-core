@@ -25,8 +25,8 @@ pub enum ConflictKind {
     /// A local edit was overwritten by last-writer-wins during sync apply.
     /// Reserved for the Recovered Items fold-in (S2); no writer yet.
     SupersededEdit,
-    /// N devices independently created a node for the same playbook trigger.
-    /// Reserved for the ADR-060 playbook work; no detection yet.
+    /// N devices independently created a node for the same play trigger.
+    /// Reserved for the ADR-060 play work; no detection yet.
     DuplicateReactiveCreate,
 }
 

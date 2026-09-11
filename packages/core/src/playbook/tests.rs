@@ -1,4 +1,4 @@
-//! Tests for the Playbook Engine
+//! Tests for the Play Engine
 //!
 //! Phase 1: TriggerKey matching, lifecycle operations, trigger index management,
 //!          schema drift detection, PropertyChanged dual lookup, and rule parsing.
@@ -12,12 +12,12 @@ mod playbook_tests {
     use chrono::Utc;
     use serde_json::json;
 
-    /// Helper: create a minimal playbook node with the given rules JSON.
-    fn make_playbook_node(id: &str, rules: serde_json::Value) -> Node {
+    /// Helper: create a minimal play node with the given rules JSON.
+    fn make_play_node(id: &str, rules: serde_json::Value) -> Node {
         Node {
             id: id.to_string(),
-            node_type: "playbook".to_string(),
-            content: format!("Test Playbook {}", id),
+            node_type: "play".to_string(),
+            content: format!("Test Play {}", id),
             version: 1,
             created_at: Utc::now(),
             modified_at: Utc::now(),
@@ -29,13 +29,13 @@ mod playbook_tests {
         }
     }
 
-    /// Helper: create a playbook node with a specific created_at for ordering tests.
-    fn make_playbook_node_at(
+    /// Helper: create a play node with a specific created_at for ordering tests.
+    fn make_play_node_at(
         id: &str,
         rules: serde_json::Value,
         created_at: chrono::DateTime<Utc>,
     ) -> Node {
-        let mut node = make_playbook_node(id, rules);
+        let mut node = make_play_node(id, rules);
         node.created_at = created_at;
         node
     }
@@ -172,7 +172,7 @@ mod playbook_tests {
 
         assert!(matches!(
             parse_rule(&def),
-            Err(PlaybookParseError::InvalidTriggerType(_))
+            Err(PlayParseError::InvalidTriggerType(_))
         ));
     }
 
@@ -194,7 +194,7 @@ mod playbook_tests {
 
         assert!(matches!(
             parse_rule(&def),
-            Err(PlaybookParseError::InvalidEventType(_))
+            Err(PlayParseError::InvalidEventType(_))
         ));
     }
 
@@ -216,7 +216,7 @@ mod playbook_tests {
 
         assert!(matches!(
             parse_rule(&def),
-            Err(PlaybookParseError::MissingField(_))
+            Err(PlayParseError::MissingField(_))
         ));
     }
 
@@ -238,7 +238,7 @@ mod playbook_tests {
 
         assert!(matches!(
             parse_rule(&def),
-            Err(PlaybookParseError::InvalidCondition(_))
+            Err(PlayParseError::InvalidCondition(_))
         ));
     }
 
@@ -401,10 +401,10 @@ mod playbook_tests {
 
     #[test]
     fn test_parse_rules_from_namespace_nested_properties() {
-        // DB-stored format: properties are wrapped under {"playbook": {"rules": [...]}}
+        // DB-stored format: properties are wrapped under {"play": {"rules": [...]}}
         // after create_node's namespace normalization
         let properties = json!({
-            "playbook": {
+            "play": {
                 "rules": [
                     {
                         "name": "db-rule",
@@ -426,9 +426,9 @@ mod playbook_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_activate_playbook_builds_trigger_index() {
+    fn test_activate_play_builds_trigger_index() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "on invoice created",
@@ -438,7 +438,7 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
+        mgr.activate_play(&node).unwrap();
 
         assert_eq!(mgr.active_playbooks().len(), 1);
         assert!(mgr.active_playbooks().contains_key("pb1"));
@@ -450,14 +450,14 @@ mod playbook_tests {
         };
         let rules = mgr.lookup_rules(&[key]);
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].playbook_id, "pb1");
+        assert_eq!(rules[0].play_id, "pb1");
         assert_eq!(rules[0].rule_index, 0);
     }
 
     #[test]
-    fn test_activate_playbook_idempotent() {
+    fn test_activate_play_idempotent() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "rule1",
@@ -467,16 +467,16 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
-        mgr.activate_playbook(&node).unwrap(); // no-op
+        mgr.activate_play(&node).unwrap();
+        mgr.activate_play(&node).unwrap(); // no-op
 
         assert_eq!(mgr.active_playbooks().len(), 1);
     }
 
     #[test]
-    fn test_deactivate_playbook_removes_from_index() {
+    fn test_deactivate_play_removes_from_index() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "rule1",
@@ -486,10 +486,10 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
+        mgr.activate_play(&node).unwrap();
         assert_eq!(mgr.active_playbooks().len(), 1);
 
-        mgr.deactivate_playbook("pb1");
+        mgr.deactivate_play("pb1");
         assert_eq!(mgr.active_playbooks().len(), 0);
         assert!(mgr.trigger_index().is_empty());
     }
@@ -497,13 +497,13 @@ mod playbook_tests {
     #[test]
     fn test_deactivate_nonexistent_is_noop() {
         let mut mgr = PlaybookLifecycleManager::new();
-        mgr.deactivate_playbook("nonexistent"); // should not panic
+        mgr.deactivate_play("nonexistent"); // should not panic
     }
 
     #[test]
-    fn test_disable_playbook_removes_from_index_keeps_in_registry() {
+    fn test_disable_play_removes_from_index_keeps_in_registry() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "rule1",
@@ -513,23 +513,20 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
-        mgr.disable_playbook("pb1");
+        mgr.activate_play(&node).unwrap();
+        mgr.disable_play("pb1");
 
         // Still in active_playbooks but marked disabled
         assert_eq!(mgr.active_playbooks().len(), 1);
-        assert_eq!(
-            mgr.get_playbook("pb1").unwrap().status,
-            PlaybookStatus::Disabled
-        );
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Disabled);
         // Removed from trigger index
         assert!(mgr.trigger_index().is_empty());
     }
 
     #[test]
-    fn test_reenable_playbook() {
+    fn test_reenable_play() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "rule1",
@@ -539,17 +536,14 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
-        mgr.disable_playbook("pb1");
+        mgr.activate_play(&node).unwrap();
+        mgr.disable_play("pb1");
         assert!(mgr.trigger_index().is_empty());
 
-        mgr.reenable_playbook(&node).unwrap();
+        mgr.reenable_play(&node).unwrap();
 
         // Back in index
-        assert_eq!(
-            mgr.get_playbook("pb1").unwrap().status,
-            PlaybookStatus::Active
-        );
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Active);
         let key = TriggerKey::NodeEvent {
             event: NodeEventType::NodeCreated,
             node_type: "task".to_string(),
@@ -565,7 +559,7 @@ mod playbook_tests {
     #[test]
     fn test_property_changed_exact_match() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "status watcher",
@@ -580,7 +574,7 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
+        mgr.activate_play(&node).unwrap();
 
         // Exact match: property_key = "status"
         let exact = TriggerKey::NodeEvent {
@@ -604,7 +598,7 @@ mod playbook_tests {
         let mut mgr = PlaybookLifecycleManager::new();
 
         // Rule with no property_key = wildcard (matches all property changes)
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "any change watcher",
@@ -618,7 +612,7 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
+        mgr.activate_play(&node).unwrap();
 
         // Wildcard key lookup
         let wildcard = TriggerKey::NodeEvent {
@@ -634,7 +628,7 @@ mod playbook_tests {
         let mut mgr = PlaybookLifecycleManager::new();
 
         // Rule 1: exact key "status"
-        let node1 = make_playbook_node(
+        let node1 = make_play_node(
             "pb1",
             json!([{
                 "name": "status watcher",
@@ -650,7 +644,7 @@ mod playbook_tests {
         );
 
         // Rule 2: wildcard (any property change on invoice)
-        let node2 = make_playbook_node(
+        let node2 = make_play_node(
             "pb2",
             json!([{
                 "name": "any change watcher",
@@ -664,8 +658,8 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node1).unwrap();
-        mgr.activate_playbook(&node2).unwrap();
+        mgr.activate_play(&node1).unwrap();
+        mgr.activate_play(&node2).unwrap();
 
         // Dual lookup: exact "status" + wildcard None (as trigger_keys_for_event produces)
         let keys = vec![
@@ -780,8 +774,8 @@ mod playbook_tests {
         let earlier = Utc::now() - chrono::Duration::hours(2);
         let later = Utc::now();
 
-        // Playbook A: created earlier, 2 rules
-        let pb_a = make_playbook_node_at(
+        // Play A: created earlier, 2 rules
+        let pb_a = make_play_node_at(
             "pb-a",
             json!([
                 {
@@ -800,8 +794,8 @@ mod playbook_tests {
             earlier,
         );
 
-        // Playbook B: created later, 1 rule
-        let pb_b = make_playbook_node_at(
+        // Play B: created later, 1 rule
+        let pb_b = make_play_node_at(
             "pb-b",
             json!([{
                 "name": "b-rule-0",
@@ -812,8 +806,8 @@ mod playbook_tests {
             later,
         );
 
-        mgr.activate_playbook(&pb_a).unwrap();
-        mgr.activate_playbook(&pb_b).unwrap();
+        mgr.activate_play(&pb_a).unwrap();
+        mgr.activate_play(&pb_b).unwrap();
 
         let key = TriggerKey::NodeEvent {
             event: NodeEventType::NodeCreated,
@@ -823,13 +817,13 @@ mod playbook_tests {
         let rules = mgr.lookup_rules(&[key]);
 
         assert_eq!(rules.len(), 3);
-        // Earlier playbook's rules first, in index order
-        assert_eq!(rules[0].playbook_id, "pb-a");
+        // Earlier play's rules first, in index order
+        assert_eq!(rules[0].play_id, "pb-a");
         assert_eq!(rules[0].rule_index, 0);
-        assert_eq!(rules[1].playbook_id, "pb-a");
+        assert_eq!(rules[1].play_id, "pb-a");
         assert_eq!(rules[1].rule_index, 1);
-        // Later playbook's rules after
-        assert_eq!(rules[2].playbook_id, "pb-b");
+        // Later play's rules after
+        assert_eq!(rules[2].play_id, "pb-b");
         assert_eq!(rules[2].rule_index, 0);
     }
 
@@ -838,11 +832,11 @@ mod playbook_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_schema_update_disables_referencing_playbooks() {
+    fn test_schema_update_disables_referencing_plays() {
         let mut mgr = PlaybookLifecycleManager::new();
 
-        // Playbook referencing "invoice" node type
-        let node = make_playbook_node(
+        // Play referencing "invoice" node type
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "invoice watcher",
@@ -857,26 +851,20 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
-        assert_eq!(
-            mgr.get_playbook("pb1").unwrap().status,
-            PlaybookStatus::Active
-        );
+        mgr.activate_play(&node).unwrap();
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Active);
 
         // Schema for "invoice" is updated
         let disabled = mgr.handle_schema_update("invoice", "2.0.0");
         assert_eq!(disabled, vec!["pb1"]);
-        assert_eq!(
-            mgr.get_playbook("pb1").unwrap().status,
-            PlaybookStatus::Disabled
-        );
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Disabled);
     }
 
     #[test]
-    fn test_schema_update_ignores_unrelated_playbooks() {
+    fn test_schema_update_ignores_unrelated_plays() {
         let mut mgr = PlaybookLifecycleManager::new();
 
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "task watcher",
@@ -886,15 +874,12 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
+        mgr.activate_play(&node).unwrap();
 
-        // Schema for "invoice" is updated — should NOT affect "task" playbook
+        // Schema for "invoice" is updated — should NOT affect "task" play
         let disabled = mgr.handle_schema_update("invoice", "2.0.0");
         assert!(disabled.is_empty());
-        assert_eq!(
-            mgr.get_playbook("pb1").unwrap().status,
-            PlaybookStatus::Active
-        );
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Active);
     }
 
     // -----------------------------------------------------------------------
@@ -904,7 +889,7 @@ mod playbook_tests {
     #[test]
     fn test_scheduled_trigger_added_to_cron_registry() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "daily invoice check",
@@ -914,7 +899,7 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
+        mgr.activate_play(&node).unwrap();
 
         let registry = mgr.cron_registry();
         assert_eq!(registry.len(), 1);
@@ -927,7 +912,7 @@ mod playbook_tests {
     fn test_cron_deduplication_same_expression_and_type() {
         let mut mgr = PlaybookLifecycleManager::new();
 
-        let node1 = make_playbook_node(
+        let node1 = make_play_node(
             "pb1",
             json!([{
                 "name": "check 1",
@@ -937,7 +922,7 @@ mod playbook_tests {
             }]),
         );
 
-        let node2 = make_playbook_node(
+        let node2 = make_play_node(
             "pb2",
             json!([{
                 "name": "check 2",
@@ -947,8 +932,8 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node1).unwrap();
-        mgr.activate_playbook(&node2).unwrap();
+        mgr.activate_play(&node1).unwrap();
+        mgr.activate_play(&node2).unwrap();
 
         // Same cron + node_type → single registry entry with 2 rules
         let registry = mgr.cron_registry();
@@ -959,7 +944,7 @@ mod playbook_tests {
     #[test]
     fn test_cron_registry_cleaned_on_deactivate() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "daily check",
@@ -969,10 +954,10 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
+        mgr.activate_play(&node).unwrap();
         assert_eq!(mgr.cron_registry().len(), 1);
 
-        mgr.deactivate_playbook("pb1");
+        mgr.deactivate_play("pb1");
         assert!(mgr.cron_registry().is_empty());
     }
 
@@ -983,7 +968,7 @@ mod playbook_tests {
     #[test]
     fn test_relationship_trigger_in_index() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([{
                 "name": "on relationship added",
@@ -997,7 +982,7 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
+        mgr.activate_play(&node).unwrap();
 
         let key = TriggerKey::RelationshipEvent {
             event: RelEventType::RelationshipAdded,
@@ -1012,9 +997,9 @@ mod playbook_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_playbook_with_mixed_triggers() {
+    fn test_play_with_mixed_triggers() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb1",
             json!([
                 {
@@ -1042,7 +1027,7 @@ mod playbook_tests {
             ]),
         );
 
-        mgr.activate_playbook(&node).unwrap();
+        mgr.activate_play(&node).unwrap();
 
         // 2 graph_event rules in trigger index
         assert_eq!(mgr.trigger_index().len(), 2);
@@ -1050,20 +1035,20 @@ mod playbook_tests {
         assert_eq!(mgr.cron_registry().len(), 1);
 
         // Deactivate cleans everything
-        mgr.deactivate_playbook("pb1");
+        mgr.deactivate_play("pb1");
         assert!(mgr.trigger_index().is_empty());
         assert!(mgr.cron_registry().is_empty());
     }
 
     // -----------------------------------------------------------------------
-    // Multiple playbooks interacting
+    // Multiple plays interacting
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_deactivate_one_playbook_preserves_others() {
+    fn test_deactivate_one_play_preserves_others() {
         let mut mgr = PlaybookLifecycleManager::new();
 
-        let node1 = make_playbook_node(
+        let node1 = make_play_node(
             "pb1",
             json!([{
                 "name": "rule1",
@@ -1073,7 +1058,7 @@ mod playbook_tests {
             }]),
         );
 
-        let node2 = make_playbook_node(
+        let node2 = make_play_node(
             "pb2",
             json!([{
                 "name": "rule2",
@@ -1083,8 +1068,8 @@ mod playbook_tests {
             }]),
         );
 
-        mgr.activate_playbook(&node1).unwrap();
-        mgr.activate_playbook(&node2).unwrap();
+        mgr.activate_play(&node1).unwrap();
+        mgr.activate_play(&node2).unwrap();
 
         let key = TriggerKey::NodeEvent {
             event: NodeEventType::NodeCreated,
@@ -1093,10 +1078,10 @@ mod playbook_tests {
         };
         assert_eq!(mgr.lookup_rules(std::slice::from_ref(&key)).len(), 2);
 
-        mgr.deactivate_playbook("pb1");
+        mgr.deactivate_play("pb1");
         let remaining = mgr.lookup_rules(&[key]);
         assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].playbook_id, "pb2");
+        assert_eq!(remaining[0].play_id, "pb2");
     }
 
     // -----------------------------------------------------------------------
@@ -1155,7 +1140,7 @@ mod playbook_tests {
     #[test]
     fn test_execution_work_item_construction() {
         let mut mgr = PlaybookLifecycleManager::new();
-        let pb_node = make_playbook_node(
+        let pb_node = make_play_node(
             "pb1",
             json!([{
                 "name": "on task created",
@@ -1164,7 +1149,7 @@ mod playbook_tests {
                 "actions": [{"action_type": "update_node", "params": {}}]
             }]),
         );
-        mgr.activate_playbook(&pb_node).unwrap();
+        mgr.activate_play(&pb_node).unwrap();
 
         let key = TriggerKey::NodeEvent {
             event: NodeEventType::NodeCreated,
@@ -1207,7 +1192,7 @@ mod playbook_tests {
 
         // Verify the work item carries all the data the processor needs
         assert_eq!(work_item.rules.len(), 1);
-        assert_eq!(work_item.rules[0].playbook_id, "pb1");
+        assert_eq!(work_item.rules[0].play_id, "pb1");
         assert_eq!(work_item.rules[0].rule.name, "on task created");
         assert_eq!(work_item.rules[0].rule.conditions.len(), 1);
         assert_eq!(work_item.rules[0].rule.actions.len(), 1);
@@ -1397,10 +1382,10 @@ mod playbook_tests {
 
     #[test]
     fn test_error_fingerprint_consistent() {
-        use crate::playbook::logging::{error_fingerprint, PlaybookErrorType};
+        use crate::playbook::logging::{error_fingerprint, PlayErrorType};
 
-        let fp1 = error_fingerprint("pb-123", "my_rule", 0, &PlaybookErrorType::CycleLimit);
-        let fp2 = error_fingerprint("pb-123", "my_rule", 0, &PlaybookErrorType::CycleLimit);
+        let fp1 = error_fingerprint("pb-123", "my_rule", 0, &PlayErrorType::CycleLimit);
+        let fp2 = error_fingerprint("pb-123", "my_rule", 0, &PlayErrorType::CycleLimit);
 
         // Same inputs → same fingerprint
         assert_eq!(fp1, fp2);
@@ -1410,55 +1395,52 @@ mod playbook_tests {
 
     #[test]
     fn test_error_fingerprint_different_for_different_inputs() {
-        use crate::playbook::logging::{error_fingerprint, PlaybookErrorType};
+        use crate::playbook::logging::{error_fingerprint, PlayErrorType};
 
-        let base = error_fingerprint("pb-123", "my_rule", 0, &PlaybookErrorType::CycleLimit);
+        let base = error_fingerprint("pb-123", "my_rule", 0, &PlayErrorType::CycleLimit);
 
-        // Different playbook_id
-        let different_pb =
-            error_fingerprint("pb-456", "my_rule", 0, &PlaybookErrorType::CycleLimit);
+        // Different play_id
+        let different_pb = error_fingerprint("pb-456", "my_rule", 0, &PlayErrorType::CycleLimit);
         assert_ne!(base, different_pb);
 
         // Different rule_name
         let different_rule =
-            error_fingerprint("pb-123", "other_rule", 0, &PlaybookErrorType::CycleLimit);
+            error_fingerprint("pb-123", "other_rule", 0, &PlayErrorType::CycleLimit);
         assert_ne!(base, different_rule);
 
         // Different error_location_index
-        let different_idx =
-            error_fingerprint("pb-123", "my_rule", 5, &PlaybookErrorType::CycleLimit);
+        let different_idx = error_fingerprint("pb-123", "my_rule", 5, &PlayErrorType::CycleLimit);
         assert_ne!(base, different_idx);
 
         // Different error_type
-        let different_type =
-            error_fingerprint("pb-123", "my_rule", 0, &PlaybookErrorType::MissingPath);
+        let different_type = error_fingerprint("pb-123", "my_rule", 0, &PlayErrorType::MissingPath);
         assert_ne!(base, different_type);
     }
 
     #[test]
     fn test_error_fingerprint_excludes_dynamic_data() {
-        use crate::playbook::logging::{error_fingerprint, PlaybookErrorType};
+        use crate::playbook::logging::{error_fingerprint, PlayErrorType};
 
-        // The fingerprint is only based on playbook_id, rule_name,
+        // The fingerprint is only based on play_id, rule_name,
         // error_location_index, and error_type. Dynamic data excluded by design.
-        let fp1 = error_fingerprint("pb-123", "rule_a", 2, &PlaybookErrorType::ActionError);
-        let fp2 = error_fingerprint("pb-123", "rule_a", 2, &PlaybookErrorType::ActionError);
+        let fp1 = error_fingerprint("pb-123", "rule_a", 2, &PlayErrorType::ActionError);
+        let fp2 = error_fingerprint("pb-123", "rule_a", 2, &PlayErrorType::ActionError);
         assert_eq!(fp1, fp2);
     }
 
     #[test]
-    fn test_playbook_error_type_display() {
-        use crate::playbook::logging::PlaybookErrorType;
+    fn test_play_error_type_display() {
+        use crate::playbook::logging::PlayErrorType;
 
-        assert_eq!(PlaybookErrorType::CycleLimit.to_string(), "cycle_limit");
-        assert_eq!(PlaybookErrorType::MissingPath.to_string(), "missing_path");
-        assert_eq!(PlaybookErrorType::TypeMismatch.to_string(), "type_mismatch");
+        assert_eq!(PlayErrorType::CycleLimit.to_string(), "cycle_limit");
+        assert_eq!(PlayErrorType::MissingPath.to_string(), "missing_path");
+        assert_eq!(PlayErrorType::TypeMismatch.to_string(), "type_mismatch");
         assert_eq!(
-            PlaybookErrorType::VersionConflict.to_string(),
+            PlayErrorType::VersionConflict.to_string(),
             "version_conflict"
         );
-        assert_eq!(PlaybookErrorType::CompileError.to_string(), "compile_error");
-        assert_eq!(PlaybookErrorType::ActionError.to_string(), "action_error");
+        assert_eq!(PlayErrorType::CompileError.to_string(), "compile_error");
+        assert_eq!(PlayErrorType::ActionError.to_string(), "action_error");
     }
 
     #[test]
@@ -1492,15 +1474,15 @@ mod playbook_tests {
 
     #[test]
     fn test_all_error_type_fingerprints_are_unique() {
-        use crate::playbook::logging::{error_fingerprint, PlaybookErrorType};
+        use crate::playbook::logging::{error_fingerprint, PlayErrorType};
 
         let types = [
-            PlaybookErrorType::CycleLimit,
-            PlaybookErrorType::MissingPath,
-            PlaybookErrorType::TypeMismatch,
-            PlaybookErrorType::VersionConflict,
-            PlaybookErrorType::CompileError,
-            PlaybookErrorType::ActionError,
+            PlayErrorType::CycleLimit,
+            PlayErrorType::MissingPath,
+            PlayErrorType::TypeMismatch,
+            PlayErrorType::VersionConflict,
+            PlayErrorType::CompileError,
+            PlayErrorType::ActionError,
         ];
 
         let fingerprints: Vec<String> = types

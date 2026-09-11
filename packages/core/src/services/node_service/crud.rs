@@ -136,9 +136,9 @@ impl NodeService {
             node.title = self.compute_title(&node, None).await?;
         }
 
-        // Synchronous playbook validation gate — reject invalid playbooks before persist
-        if node.node_type == "playbook" {
-            self.validate_playbook_rules(&node.properties).await?;
+        // Synchronous play validation gate — reject invalid plays before persist
+        if node.node_type == "play" {
+            self.validate_play_rules(&node.properties).await?;
         }
 
         // Schema nodes go through the normal create path
@@ -222,8 +222,8 @@ impl NodeService {
             node.title = self.compute_title(&node, None).await?;
         }
 
-        if node.node_type == "playbook" {
-            self.validate_playbook_rules(&node.properties).await?;
+        if node.node_type == "play" {
+            self.validate_play_rules(&node.properties).await?;
         }
 
         crate::db::SqliteStore::create_node_in_tx(tx.store_tx(), &node)
@@ -1059,9 +1059,9 @@ impl NodeService {
             self.validate_node_against_schema(&updated).await?;
         }
 
-        // Synchronous playbook validation gate — reject invalid rule changes before persist
-        if updated.node_type == "playbook" && properties_changed {
-            self.validate_playbook_rules(&updated.properties).await?;
+        // Synchronous play validation gate — reject invalid rule changes before persist
+        if updated.node_type == "play" && properties_changed {
+            self.validate_play_rules(&updated.properties).await?;
         }
 
         // Sync title when content, node_type, or properties change
@@ -1920,8 +1920,8 @@ impl NodeService {
         self.validate_node_with_fields(node, &fields)
     }
 
-    /// Validate playbook rules before persisting.
-    pub(crate) async fn validate_playbook_rules(
+    /// Validate play rules before persisting.
+    pub(crate) async fn validate_play_rules(
         &self,
         properties: &serde_json::Value,
     ) -> Result<(), NodeServiceError> {
@@ -1931,8 +1931,8 @@ impl NodeService {
         let rule_defs = match parse_rules_from_properties(properties) {
             Ok(defs) => defs,
             Err(e) => {
-                return Err(NodeServiceError::PlaybookValidationFailed {
-                    errors: format!("Failed to parse playbook rules: {}", e),
+                return Err(NodeServiceError::PlayValidationFailed {
+                    errors: format!("Failed to parse play rules: {}", e),
                 });
             }
         };
@@ -1943,7 +1943,7 @@ impl NodeService {
             match parse_rule(def) {
                 Ok(rule) => parsed_rules.push(std::sync::Arc::new(rule)),
                 Err(e) => {
-                    return Err(NodeServiceError::PlaybookValidationFailed {
+                    return Err(NodeServiceError::PlayValidationFailed {
                         errors: format!("Failed to parse rule '{}': {}", def.name, e),
                     });
                 }
@@ -1951,10 +1951,8 @@ impl NodeService {
         }
 
         // Step 3: Run the full validation pipeline (schema checks, CEL compile, paths)
-        if let Err(errors) =
-            crate::playbook::validation::validate_playbook(&parsed_rules, self).await
-        {
-            return Err(NodeServiceError::playbook_validation_failed(&errors));
+        if let Err(errors) = crate::playbook::validation::validate_play(&parsed_rules, self).await {
+            return Err(NodeServiceError::play_validation_failed(&errors));
         }
 
         Ok(())

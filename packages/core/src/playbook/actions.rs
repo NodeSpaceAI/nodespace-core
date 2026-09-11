@@ -1,4 +1,4 @@
-//! Action Executor for the Playbook Engine (Phase 4)
+//! Action Executor for the Play Engine (Phase 4)
 //!
 //! Executes graph operations (create_node, update_node, add_relationship,
 //! remove_relationship) with a sequential execution model and incremental
@@ -99,7 +99,7 @@ impl std::error::Error for ActionError {}
 pub enum ActionResult {
     /// All actions completed successfully.
     Success,
-    /// An action failed -- rule should be aborted, playbook disabled.
+    /// An action failed -- rule should be aborted, play disabled.
     Failed(ActionError),
 }
 

@@ -1011,8 +1011,8 @@ pub struct UpdateSchemaParams {
     /// Example: `"{status} · {company}"`
     #[serde(default)]
     pub properties_header_summary_template: Option<String>,
-    /// If true, proceed with the schema update even if active playbooks would be
-    /// affected. If false (default), return an error listing the affected playbooks.
+    /// If true, proceed with the schema update even if active plays would be
+    /// affected. If false (default), return an error listing the affected plays.
     #[serde(default)]
     pub force: bool,
 }
@@ -1033,9 +1033,9 @@ pub struct SchemaUpdateOutput {
     pub relationships_added: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relationships_removed: Option<usize>,
-    /// Playbooks affected by this schema change (present when force=true and playbooks were affected)
+    /// Plays affected by this schema change (present when force=true and plays were affected)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub affected_playbooks: Option<Vec<String>>,
+    pub affected_plays: Option<Vec<String>>,
 }
 
 /// Update a schema with multiple changes
@@ -1082,8 +1082,8 @@ pub async fn handle_update_schema(
     let mut params: UpdateSchemaParams = serde_json::from_value(params)
         .map_err(|e| MarkdownError::invalid_params(format!("{e}")))?;
 
-    // --- Phase 0: Verify schema exists, validate renames, run playbook impact check ---
-    // Schema existence is verified upfront so rename/playbook validation errors are reported
+    // --- Phase 0: Verify schema exists, validate renames, run play impact check ---
+    // Schema existence is verified upfront so rename/play validation errors are reported
     // before any mutations execute. The fetched schema is also the pre-mutation snapshot the
     // protection-level and grammar checks below validate `remove_fields`/`rename_fields`
     // against, before Phase 1 or Phase 2 touch anything.
@@ -1095,7 +1095,7 @@ pub async fn handle_update_schema(
             MarkdownError::invalid_params(format!("Schema '{}' not found", params.schema_id))
         })?;
 
-    // Validate renames before executing any mutations (including the playbook guard below)
+    // Validate renames before executing any mutations (including the play guard below)
     if let Some(ref renames) = params.rename_fields {
         let mut seen_sources = std::collections::HashSet::new();
         let mut seen_destinations = std::collections::HashSet::new();
@@ -1193,7 +1193,7 @@ pub async fn handle_update_schema(
         }
     }
 
-    // Check if any active playbooks would be affected by this schema change.
+    // Check if any active plays would be affected by this schema change.
     // Done before any mutations so a blocked rename doesn't partially execute.
     let affected =
         crate::playbook::validation::check_schema_change_impact(&params.schema_id, node_service)
@@ -1203,7 +1203,7 @@ pub async fn handle_update_schema(
     if !affected.is_empty() && !params.force {
         let names: Vec<String> = affected.iter().map(|a| a.to_string()).collect();
         return Err(MarkdownError::invalid_params(format!(
-            "Schema change would affect {} active playbook(s): {}. Use force=true to proceed.",
+            "Schema change would affect {} active play(s): {}. Use force=true to proceed.",
             affected.len(),
             names.join("; ")
         )));
@@ -1213,7 +1213,7 @@ pub async fn handle_update_schema(
         Some(
             affected
                 .iter()
-                .map(|a| format!("{} ({})", a.playbook_name, a.playbook_id))
+                .map(|a| format!("{} ({})", a.play_name, a.play_id))
                 .collect(),
         )
     } else {
@@ -1569,7 +1569,7 @@ pub async fn handle_update_schema(
         } else {
             None
         },
-        affected_playbooks: affected_names,
+        affected_plays: affected_names,
     };
 
     serde_json::to_value(&output)

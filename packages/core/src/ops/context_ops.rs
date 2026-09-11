@@ -347,7 +347,7 @@ pub async fn build_workspace_context(
 
     // Fetch active playbooks
     let playbook_nodes = node_service
-        .query_nodes_by_type("playbook", Some("active"))
+        .query_nodes_by_type("play", Some("active"))
         .await
         .unwrap_or_default();
 

@@ -572,7 +572,7 @@ impl NodeService {
         // empty `changed_properties`. That diverged from the single-update path
         // (which normalizes flat client props → deep-merges into the existing
         // namespaced props) AND silently no-opped every property-change-driven
-        // subscriber/playbook rule. Mirror single-update here: normalize + deep-merge,
+        // subscriber/play rule. Mirror single-update here: normalize + deep-merge,
         // validate the merged candidate, persist the merged value, and emit the real
         // `changed_properties` computed from old→new.
         //

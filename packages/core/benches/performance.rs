@@ -6,7 +6,7 @@
 //! - Atomic node operations (create_child_node_atomic)
 //! - Markdown import throughput (1000-node imports)
 //! - OCC (Optimistic Concurrency Control) overhead
-//! - Playbook engine: trigger index lookup, path extraction, graph resolution,
+//! - Play engine: trigger index lookup, path extraction, graph resolution,
 //!   CEL evaluation, activation at scale, event-to-rule matching throughput
 
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
@@ -536,29 +536,29 @@ fn bench_bm25_search_roots(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// Playbook Engine Benchmarks
+// Play Engine Benchmarks
 // ---------------------------------------------------------------------------
 
-/// Helper: create a playbook node with the given rules JSON.
-fn make_playbook_node(id: &str, rules_json: serde_json::Value) -> Node {
+/// Helper: create a play node with the given rules JSON.
+fn make_play_node(id: &str, rules_json: serde_json::Value) -> Node {
     Node::new_with_id(
         id.to_string(),
-        "playbook".to_string(),
-        format!("playbook {}", id),
+        "play".to_string(),
+        format!("play {}", id),
         json!({ "rules": rules_json }),
     )
 }
 
-/// Generate N playbooks all triggering on the same node_type.
+/// Generate N plays all triggering on the same node_type.
 ///
-/// Each playbook has a single rule with a `node_created` trigger on the
+/// Each play has a single rule with a `node_created` trigger on the
 /// given `node_type`. Conditions and actions are empty because the
 /// trigger-index and event-matching benchmarks only exercise lookup, not
 /// condition evaluation.
-fn generate_playbooks(count: usize, node_type: &str) -> Vec<Node> {
+fn generate_plays(count: usize, node_type: &str) -> Vec<Node> {
     (0..count)
         .map(|i| {
-            make_playbook_node(
+            make_play_node(
                 &format!("pb-bench-{}", i),
                 json!([{
                     "name": format!("rule-{}", i),
@@ -578,17 +578,17 @@ fn generate_playbooks(count: usize, node_type: &str) -> Vec<Node> {
 /// Benchmark 1: TriggerIndex lookup performance
 ///
 /// Measures how `lookup_rules()` latency scales with the number of active
-/// playbooks. All playbooks trigger on the same node_type, testing the
+/// plays. All plays trigger on the same node_type, testing the
 /// worst-case for a single TriggerKey bucket.
 fn bench_trigger_index_lookup(c: &mut Criterion) {
-    let mut group = c.benchmark_group("playbook/trigger_index_lookup");
+    let mut group = c.benchmark_group("play/trigger_index_lookup");
 
     for count in [10, 100, 500, 1000] {
-        // Setup: activate N playbooks
+        // Setup: activate N plays
         let mut lm = PlaybookLifecycleManager::new();
-        let playbooks = generate_playbooks(count, "task");
-        for pb in &playbooks {
-            lm.activate_playbook(pb).unwrap();
+        let plays = generate_plays(count, "task");
+        for pb in &plays {
+            lm.activate_play(pb).unwrap();
         }
 
         let keys = vec![TriggerKey::NodeEvent {
@@ -597,7 +597,7 @@ fn bench_trigger_index_lookup(c: &mut Criterion) {
             property_key: None,
         }];
 
-        group.bench_with_input(BenchmarkId::new("playbooks", count), &count, |b, _| {
+        group.bench_with_input(BenchmarkId::new("plays", count), &count, |b, _| {
             b.iter(|| {
                 black_box(lm.lookup_rules(&keys));
             });
@@ -613,7 +613,7 @@ fn bench_trigger_index_lookup(c: &mut Criterion) {
 /// of varying complexity, from single property access to deep multi-hop
 /// paths with comprehension macros.
 fn bench_path_extraction(c: &mut Criterion) {
-    let mut group = c.benchmark_group("playbook/path_extraction");
+    let mut group = c.benchmark_group("play/path_extraction");
 
     let expressions: Vec<(&str, &str)> = vec![
         ("simple_property", "node.status == 'open'"),
@@ -663,7 +663,7 @@ fn bench_graph_resolver(c: &mut Criterion) {
         .build()
         .unwrap();
 
-    let mut group = c.benchmark_group("playbook/graph_resolver");
+    let mut group = c.benchmark_group("play/graph_resolver");
     group.sample_size(20);
 
     // Setup: create a schema chain of depth 5
@@ -874,7 +874,7 @@ fn bench_cel_evaluation_e2e(c: &mut Criterion) {
         .build()
         .unwrap();
 
-    let mut group = c.benchmark_group("playbook/cel_evaluation");
+    let mut group = c.benchmark_group("play/cel_evaluation");
     group.sample_size(20);
 
     // Setup: create a 3-node chain with relationships:
@@ -980,28 +980,28 @@ fn bench_cel_evaluation_e2e(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark 5: Playbook activation at scale
+/// Benchmark 5: Play activation at scale
 ///
 /// Measures the full activation pipeline — JSON rule parsing
 /// (`parse_rules_from_properties`) **and** trigger-index insertion
-/// (`activate_playbook`) — as a combined metric. Both steps run inside
-/// `activate_playbook()`, so this benchmark reflects the real cost of
-/// onboarding N playbooks at startup.
-fn bench_playbook_activation(c: &mut Criterion) {
-    let mut group = c.benchmark_group("playbook/activation");
+/// (`activate_play`) — as a combined metric. Both steps run inside
+/// `activate_play()`, so this benchmark reflects the real cost of
+/// onboarding N plays at startup.
+fn bench_play_activation(c: &mut Criterion) {
+    let mut group = c.benchmark_group("play/activation");
     group.sample_size(20);
 
     for count in [10, 100, 500, 1000] {
-        let playbooks = generate_playbooks(count, "task");
+        let plays = generate_plays(count, "task");
 
         group.bench_with_input(
-            BenchmarkId::new("activate_n_playbooks", count),
-            &playbooks,
-            |b, playbooks| {
+            BenchmarkId::new("activate_n_plays", count),
+            &plays,
+            |b, plays| {
                 b.iter(|| {
                     let mut lm = PlaybookLifecycleManager::new();
-                    for pb in playbooks {
-                        lm.activate_playbook(pb).unwrap();
+                    for pb in plays {
+                        lm.activate_play(pb).unwrap();
                     }
                     black_box(&lm);
                 });
@@ -1015,16 +1015,16 @@ fn bench_playbook_activation(c: &mut Criterion) {
 /// Benchmark 6: Event-to-rule matching throughput
 ///
 /// Measures the full `trigger_keys_for_event()` -> `lookup_rules()` pipeline
-/// to characterize events-per-second throughput at various playbook scales.
+/// to characterize events-per-second throughput at various play scales.
 fn bench_event_to_rule_matching(c: &mut Criterion) {
-    let mut group = c.benchmark_group("playbook/event_matching");
+    let mut group = c.benchmark_group("play/event_matching");
 
     for count in [10, 100, 500, 1000] {
-        // Setup: activate N playbooks
+        // Setup: activate N plays
         let mut lm = PlaybookLifecycleManager::new();
-        let playbooks = generate_playbooks(count, "task");
-        for pb in &playbooks {
-            lm.activate_playbook(pb).unwrap();
+        let plays = generate_plays(count, "task");
+        for pb in &plays {
+            lm.activate_play(pb).unwrap();
         }
 
         // Simulate a NodeCreated event
@@ -1067,7 +1067,7 @@ fn bench_event_to_rule_matching(c: &mut Criterion) {
             },
         );
 
-        // Event that matches NO playbooks (different node_type)
+        // Event that matches NO plays (different node_type)
         let unmatched_event = DomainEvent::NodeCreated {
             node_type: "invoice".to_string(),
             node_id: "bench-event-node".to_string(),
@@ -1100,7 +1100,7 @@ criterion_group!(
     bench_path_extraction,
     bench_graph_resolver,
     bench_cel_evaluation_e2e,
-    bench_playbook_activation,
+    bench_play_activation,
     bench_event_to_rule_matching,
 );
 criterion_main!(benches);

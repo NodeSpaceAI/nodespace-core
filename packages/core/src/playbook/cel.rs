@@ -1,4 +1,4 @@
-//! CEL Evaluator for the Playbook Engine
+//! CEL Evaluator for the Play Engine
 //!
 //! Compiles and evaluates CEL (Common Expression Language) conditions against
 //! trigger nodes. Uses the `cel-interpreter` crate with custom variable resolution
@@ -21,7 +21,7 @@
 //! # Missing Path Behavior
 //!
 //! In conditions, a missing path evaluates to `false` — the condition is not met,
-//! but the playbook stays active. This matches the spec: relationships are built
+//! but the play stays active. This matches the spec: relationships are built
 //! progressively, so a condition checking `node.story.epic.status` should wait
 //! until the chain exists, not disable itself.
 
@@ -75,7 +75,7 @@ pub enum ConditionResult {
 
 /// Compile a CEL expression string into a reusable Program.
 ///
-/// Used at playbook save time for validation and at runtime for evaluation.
+/// Used at play save time for validation and at runtime for evaluation.
 pub fn compile_condition(expr: &str) -> Result<Program, CelCompileError> {
     Program::compile(expr).map_err(|e| CelCompileError {
         expression: expr.to_string(),
@@ -411,7 +411,7 @@ fn parse_date_and_compute_days(date_str: &str, since: bool) -> Result<Value, Exe
 /// compatible with the Phase 3 behavior).
 ///
 /// Missing path errors (NoSuchKey, UndeclaredReference) evaluate to `false`
-/// per the spec — the condition fails but the playbook remains active.
+/// per the spec — the condition fails but the play remains active.
 pub async fn evaluate_conditions(
     conditions: &[CompiledCondition],
     node: &Node,
@@ -467,7 +467,7 @@ pub async fn evaluate_conditions(
                 return ConditionResult::Fail { condition_index: i };
             }
             Err(ExecutionError::NoSuchKey(_)) | Err(ExecutionError::UndeclaredReference(_)) => {
-                // Missing path → false (spec: condition not met, playbook stays active)
+                // Missing path → false (spec: condition not met, play stays active)
                 debug!(
                     "Condition[{}] has missing path (evaluates to false): {}",
                     i, condition.source
@@ -476,7 +476,7 @@ pub async fn evaluate_conditions(
             }
             Err(e) => {
                 // Other runtime errors — treat as condition failure, not compile error
-                // The playbook stays active; it's the condition that doesn't match.
+                // The play stays active; it's the condition that doesn't match.
                 debug!(
                     "Condition[{}] runtime error (evaluates to false): {} — {}",
                     i, condition.source, e

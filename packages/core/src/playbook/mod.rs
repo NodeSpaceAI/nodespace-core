@@ -1,8 +1,8 @@
-//! Playbook Engine Module
+//! Play Engine Module
 //!
-//! The playbook engine evaluates playbook rules and executes graph operations.
+//! The play engine evaluates play rules and executes graph operations.
 //! It subscribes to the domain event broadcast channel, matches events against
-//! active playbook triggers, evaluates CEL conditions, and executes actions.
+//! active play triggers, evaluates CEL conditions, and executes actions.
 //!
 //! # Architecture
 //!

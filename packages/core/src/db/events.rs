@@ -100,7 +100,7 @@ pub(crate) fn node_thing(id: &str) -> String {
     }
 }
 
-/// Describes a single property change for playbook trigger matching
+/// Describes a single property change for play trigger matching
 ///
 /// Computed by diffing pre-mutation and post-mutation node properties.
 /// Used by the playbook engine for fine-grained `property_changed` triggers.

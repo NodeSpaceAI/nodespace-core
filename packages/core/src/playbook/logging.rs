@@ -1,6 +1,6 @@
-//! Playbook Engine Logging — Log Node Creation and Error Deduplication
+//! Play Engine Logging — Log Node Creation and Error Deduplication
 //!
-//! When the playbook engine encounters errors (cycle limits, type mismatches,
+//! When the play engine encounters errors (cycle limits, type mismatches,
 //! missing paths, etc.), it creates `playbook_log` nodes to make errors visible
 //! in the node graph. Repeated errors with the same structural cause are
 //! deduplicated via SHA-256 fingerprinting: `occurrences` is incremented and
@@ -8,7 +8,7 @@
 //!
 //! # Error Fingerprint
 //!
-//! `hash(playbook_id, rule_name, error_location_index, error_type)`
+//! `hash(play_id, rule_name, error_location_index, error_type)`
 //!
 //! Dynamic values (node IDs, timestamps) are excluded so that the same
 //! structural error always produces the same fingerprint.
@@ -22,25 +22,25 @@ use std::fmt;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
-/// Maximum depth for playbook execution chains.
+/// Maximum depth for play execution chains.
 ///
 /// When `depth + 1 > MAX_CHAIN_DEPTH`, the engine stops processing,
-/// disables the offending playbook, and creates a log node.
+/// disables the offending play, and creates a log node.
 pub const MAX_CHAIN_DEPTH: u8 = 10;
 
 /// Error types for log node fingerprinting.
 ///
 /// Used as part of the fingerprint hash to distinguish structurally
-/// different error categories for the same playbook/rule.
+/// different error categories for the same play/rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlaybookErrorType {
+pub enum PlayErrorType {
     /// Execution chain exceeded MAX_CHAIN_DEPTH
     CycleLimit,
     /// A property path referenced in a condition/action does not exist
     MissingPath,
     /// A value has an incompatible type for the operation
     TypeMismatch,
-    /// Schema version drift detected (playbook compiled against older schema)
+    /// Schema version drift detected (play compiled against older schema)
     VersionConflict,
     /// CEL condition failed to compile
     CompileError,
@@ -48,7 +48,7 @@ pub enum PlaybookErrorType {
     ActionError,
 }
 
-impl fmt::Display for PlaybookErrorType {
+impl fmt::Display for PlayErrorType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::CycleLimit => write!(f, "cycle_limit"),
@@ -69,8 +69,8 @@ impl fmt::Display for PlaybookErrorType {
 ///
 /// # Arguments
 ///
-/// * `playbook_id` - The playbook that encountered the error
-/// * `rule_name` - The rule within the playbook
+/// * `play_id` - The play that encountered the error
+/// * `rule_name` - The rule within the play
 /// * `error_location_index` - Condition index or action index where the error occurred
 /// * `error_type` - The category of error
 ///
@@ -78,13 +78,13 @@ impl fmt::Display for PlaybookErrorType {
 ///
 /// A hex-encoded SHA-256 hash string (64 characters).
 pub fn error_fingerprint(
-    playbook_id: &str,
+    play_id: &str,
     rule_name: &str,
     error_location_index: usize,
-    error_type: &PlaybookErrorType,
+    error_type: &PlayErrorType,
 ) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(playbook_id.as_bytes());
+    hasher.update(play_id.as_bytes());
     hasher.update(b"|");
     hasher.update(rule_name.as_bytes());
     hasher.update(b"|");
@@ -94,7 +94,7 @@ pub fn error_fingerprint(
     format!("{:x}", hasher.finalize())
 }
 
-/// Create or update a log node for a playbook error.
+/// Create or update a log node for a play error.
 ///
 /// Uses fingerprint-based deduplication: if a log node with the same
 /// fingerprint already exists, its `occurrences` count is incremented
@@ -104,22 +104,22 @@ pub fn error_fingerprint(
 /// # Arguments
 ///
 /// * `node_service` - NodeService for creating/querying/updating nodes
-/// * `playbook_id` - The playbook that encountered the error
-/// * `rule_name` - The rule within the playbook
+/// * `play_id` - The play that encountered the error
+/// * `rule_name` - The rule within the play
 /// * `error_location_index` - Condition or action index where the error occurred
 /// * `error_type` - The category of error
 /// * `error_message` - Human-readable error description
 /// * `trigger_node_id` - The node that triggered the rule (for context)
 pub async fn create_or_update_log_node(
     node_service: &Arc<NodeService>,
-    playbook_id: &str,
+    play_id: &str,
     rule_name: &str,
     error_location_index: usize,
-    error_type: PlaybookErrorType,
+    error_type: PlayErrorType,
     error_message: &str,
     trigger_node_id: &str,
 ) -> anyhow::Result<()> {
-    let fingerprint = error_fingerprint(playbook_id, rule_name, error_location_index, &error_type);
+    let fingerprint = error_fingerprint(play_id, rule_name, error_location_index, &error_type);
     let now = Utc::now().to_rfc3339();
 
     // Query existing playbook_log nodes and search for matching fingerprint.
@@ -200,7 +200,7 @@ pub async fn create_or_update_log_node(
             "playbook_log".to_string(),
             error_message.to_string(),
             json!({
-                "playbook_id": playbook_id,
+                "play_id": play_id,
                 "rule_name": rule_name,
                 "error_type": error_type.to_string(),
                 "error_location_index": error_location_index,
@@ -215,14 +215,14 @@ pub async fn create_or_update_log_node(
         match node_service.create_node(log_node).await {
             Ok(id) => {
                 debug!(
-                    "Created log node {} for playbook {} error (fingerprint {})",
-                    id, playbook_id, fingerprint
+                    "Created log node {} for play {} error (fingerprint {})",
+                    id, play_id, fingerprint
                 );
             }
             Err(e) => {
                 warn!(
-                    "Failed to create log node for playbook {} error: {}",
-                    playbook_id, e
+                    "Failed to create log node for play {} error: {}",
+                    play_id, e
                 );
             }
         }
@@ -245,8 +245,8 @@ mod tests {
 
     #[test]
     fn fingerprint_consistent_for_same_inputs() {
-        let fp1 = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CycleLimit);
-        let fp2 = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CycleLimit);
+        let fp1 = error_fingerprint("pb-1", "rule-a", 0, &PlayErrorType::CycleLimit);
+        let fp2 = error_fingerprint("pb-1", "rule-a", 0, &PlayErrorType::CycleLimit);
         assert_eq!(
             fp1, fp2,
             "same inputs should produce identical fingerprints"
@@ -257,21 +257,21 @@ mod tests {
 
     #[test]
     fn fingerprint_differs_for_different_inputs() {
-        let fp1 = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CycleLimit);
-        let fp2 = error_fingerprint("pb-2", "rule-a", 0, &PlaybookErrorType::CycleLimit);
-        let fp3 = error_fingerprint("pb-1", "rule-b", 0, &PlaybookErrorType::CycleLimit);
-        let fp4 = error_fingerprint("pb-1", "rule-a", 1, &PlaybookErrorType::CycleLimit);
-        assert_ne!(fp1, fp2, "different playbook_id should differ");
+        let fp1 = error_fingerprint("pb-1", "rule-a", 0, &PlayErrorType::CycleLimit);
+        let fp2 = error_fingerprint("pb-2", "rule-a", 0, &PlayErrorType::CycleLimit);
+        let fp3 = error_fingerprint("pb-1", "rule-b", 0, &PlayErrorType::CycleLimit);
+        let fp4 = error_fingerprint("pb-1", "rule-a", 1, &PlayErrorType::CycleLimit);
+        assert_ne!(fp1, fp2, "different play_id should differ");
         assert_ne!(fp1, fp3, "different rule_name should differ");
         assert_ne!(fp1, fp4, "different error_location_index should differ");
     }
 
     #[test]
     fn fingerprint_differs_for_different_error_types() {
-        let fp_cycle = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CycleLimit);
-        let fp_missing = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::MissingPath);
-        let fp_type = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::TypeMismatch);
-        let fp_compile = error_fingerprint("pb-1", "rule-a", 0, &PlaybookErrorType::CompileError);
+        let fp_cycle = error_fingerprint("pb-1", "rule-a", 0, &PlayErrorType::CycleLimit);
+        let fp_missing = error_fingerprint("pb-1", "rule-a", 0, &PlayErrorType::MissingPath);
+        let fp_type = error_fingerprint("pb-1", "rule-a", 0, &PlayErrorType::TypeMismatch);
+        let fp_compile = error_fingerprint("pb-1", "rule-a", 0, &PlayErrorType::CompileError);
         assert_ne!(fp_cycle, fp_missing);
         assert_ne!(fp_cycle, fp_type);
         assert_ne!(fp_cycle, fp_compile);
@@ -309,7 +309,7 @@ mod tests {
                 serde_json::json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "playbook log schema",
+                    "description": "play log schema",
                     "fields": [],
                     "relationships": []
                 }),
@@ -321,7 +321,7 @@ mod tests {
                 "pb-1",
                 "rule-a",
                 0,
-                PlaybookErrorType::CycleLimit,
+                PlayErrorType::CycleLimit,
                 "Cycle limit exceeded",
                 "trigger-node-1",
             )
@@ -338,7 +338,7 @@ mod tests {
             let props = &logs[0].properties["playbook_log"];
             assert_eq!(props["occurrences"], 1);
             assert_eq!(props["error_type"], "cycle_limit");
-            assert_eq!(props["playbook_id"], "pb-1");
+            assert_eq!(props["play_id"], "pb-1");
             assert_eq!(props["rule_name"], "rule-a");
             assert_eq!(props["trigger_node_id"], "trigger-node-1");
         }
@@ -354,7 +354,7 @@ mod tests {
                 serde_json::json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "playbook log schema",
+                    "description": "play log schema",
                     "fields": [],
                     "relationships": []
                 }),
@@ -367,7 +367,7 @@ mod tests {
                 "pb-1",
                 "rule-a",
                 0,
-                PlaybookErrorType::MissingPath,
+                PlayErrorType::MissingPath,
                 "Path not found",
                 "trigger-node-1",
             )
@@ -380,7 +380,7 @@ mod tests {
                 "pb-1",
                 "rule-a",
                 0,
-                PlaybookErrorType::MissingPath,
+                PlayErrorType::MissingPath,
                 "Path not found (again)",
                 "trigger-node-2",
             )
@@ -409,7 +409,7 @@ mod tests {
                 serde_json::json!({
                     "isCore": false,
                     "schemaVersion": 1,
-                    "description": "playbook log schema",
+                    "description": "play log schema",
                     "fields": [],
                     "relationships": []
                 }),
@@ -422,7 +422,7 @@ mod tests {
                 "pb-1",
                 "rule-a",
                 0,
-                PlaybookErrorType::ActionError,
+                PlayErrorType::ActionError,
                 "Action failed",
                 "trigger-1",
             )
@@ -435,7 +435,7 @@ mod tests {
                 "pb-1",
                 "rule-a",
                 0,
-                PlaybookErrorType::ActionError,
+                PlayErrorType::ActionError,
                 "Action failed again",
                 "trigger-2",
             )
@@ -448,7 +448,7 @@ mod tests {
                 "pb-1",
                 "rule-a",
                 0,
-                PlaybookErrorType::ActionError,
+                PlayErrorType::ActionError,
                 "Action failed yet again",
                 "trigger-3",
             )

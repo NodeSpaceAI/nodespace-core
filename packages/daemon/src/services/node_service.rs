@@ -3552,8 +3552,8 @@ mod tests {
     }
 
     #[test]
-    fn error_mapping_playbook_validation_failed_returns_invalid_argument() {
-        let s = to_status(NodeServiceError::PlaybookValidationFailed {
+    fn error_mapping_play_validation_failed_returns_invalid_argument() {
+        let s = to_status(NodeServiceError::PlayValidationFailed {
             errors: "bad rule".into(),
         });
         assert_eq!(s.code(), tonic::Code::InvalidArgument);
