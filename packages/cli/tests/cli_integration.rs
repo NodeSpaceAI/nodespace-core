@@ -93,6 +93,74 @@ async fn spawn_test_daemon() -> (PathBuf, oneshot::Sender<()>, TempDir) {
     );
 }
 
+/// Like [`spawn_test_daemon`], but seeds the real production `skill` node
+/// registry first and also returns the `NodeService` handle, so a test can
+/// make a live edit to a seeded skill before driving the CLI at it over
+/// gRPC — needed for `nodespace skill reset`, which has no other way to get
+/// a modified `_seed.guidance_modified` flag onto a node.
+async fn spawn_test_daemon_with_seeded_skills(
+) -> (PathBuf, oneshot::Sender<()>, TempDir, Arc<CoreNodeService>) {
+    let tempdir = TempDir::new().expect("failed to create tempdir");
+    let sock_path = tempdir.path().join("test-daemon.sock");
+
+    let mut store = Arc::new(
+        SqliteStore::new(tempdir.path().join("daemon-db"))
+            .await
+            .expect("failed to open SqliteStore"),
+    );
+    let node_service = Arc::new(
+        CoreNodeService::new(&mut store)
+            .await
+            .expect("failed to build NodeService"),
+    );
+
+    let groups: Vec<_> = nodespace_agent::skill_pipeline::seed_skill_nodes()
+        .iter()
+        .map(|t| {
+            nodespace_core::markdown::prepare_nodes_from_template(t).expect("template must parse")
+        })
+        .collect();
+    node_service
+        .seed_nodes_from_templates(groups)
+        .await
+        .expect("initial seed must succeed");
+
+    let service = NodeServiceImpl::new(
+        node_service.clone(),
+        Arc::new(tokio::sync::RwLock::new(None)),
+        Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
+    );
+
+    let listener = UnixListener::bind(&sock_path).expect("failed to bind test UDS socket");
+    let incoming = UnixListenerStream::new(listener);
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(NodeServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("server crashed");
+    });
+
+    for _ in 0..50 {
+        if connect(&sock_path, DatabaseIdInterceptor::none())
+            .await
+            .is_ok()
+        {
+            return (sock_path, shutdown_tx, tempdir, node_service);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "daemon did not start accepting connections on {}",
+        sock_path.display()
+    );
+}
+
 /// A model-less build context — with `has_model = false` no embedding wiring
 /// runs, so the dropped watch sender is harmless (it is never read).
 fn routing_test_context() -> SharedContext {
@@ -2758,4 +2826,137 @@ fn collection_path_and_id_flags_are_mutually_exclusive() {
     ])
     .expect("repeated --collection must parse");
     assert_eq!(ok.args.collections, vec!["docs:rust", "reference"]);
+}
+
+/// `nodespace skill reset <key>` with none of `--guidance`/`--config`/`--all`
+/// must be a parse-time usage error, not a silent full reset (ADR-072: reset
+/// is the one destructive path in the system, so a bare invocation must
+/// never guess a scope).
+#[test]
+fn skill_reset_requires_an_explicit_scope_flag() {
+    use clap::Parser;
+
+    #[derive(Parser, Debug)]
+    struct ResetHarness {
+        #[command(flatten)]
+        args: commands::skill::ResetArgs,
+    }
+
+    let err = ResetHarness::try_parse_from(["reset", "Research & Search"])
+        .expect_err("bare `skill reset <key>` with no scope flag must be rejected");
+    assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+    // Each scope flag on its own parses.
+    for flag in ["--guidance", "--config", "--all"] {
+        let ok = ResetHarness::try_parse_from(["reset", "Research & Search", flag])
+            .unwrap_or_else(|e| panic!("{flag} alone must parse: {e}"));
+        assert_eq!(ok.args.key, "Research & Search");
+    }
+
+    // --yes doesn't count as a scope flag on its own.
+    let err = ResetHarness::try_parse_from(["reset", "Research & Search", "--yes"])
+        .expect_err("--yes alone must not satisfy the scope requirement");
+    assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+
+    // Combining --guidance and --config must parse and be equivalent to
+    // --all, not conflict -- the ArgGroup allows multiple selections
+    // (`.multiple(true)`), matching the documented "equivalent to passing
+    // both flags" behavior for --all.
+    let ok = ResetHarness::try_parse_from(["reset", "Research & Search", "--guidance", "--config"])
+        .expect("--guidance and --config together must parse, not conflict");
+    assert!(ok.args.guidance && ok.args.config);
+}
+
+/// End-to-end: `run_reset` against a real gRPC daemon, with `--yes` so it
+/// never blocks on stdin. Proves the CLI -> ResetSeedNode RPC -> core
+/// `reset_seed_node` path discards a live user edit to a seeded skill's
+/// guidance and restores the current compiled template, using the real
+/// production skill registry (not a synthetic template).
+#[tokio::test]
+async fn skill_reset_discards_modified_guidance_end_to_end() {
+    const RESEARCH_AND_SEARCH: &str = "Research & Search";
+
+    let (sock, shutdown, _tempdir, node_service) = spawn_test_daemon_with_seeded_skills().await;
+
+    let skills = node_service
+        .query_nodes_by_type("skill", None)
+        .await
+        .expect("query skills");
+    let root = skills
+        .iter()
+        .find(|n| n.content == RESEARCH_AND_SEARCH)
+        .expect("Research & Search must be seeded");
+    let children = node_service
+        .get_children(&root.id)
+        .await
+        .expect("get children");
+    let target = children.first().expect("seeded guidance must have a child");
+
+    node_service
+        .update_node(
+            &target.id,
+            target.version,
+            nodespace_core::models::NodeUpdate::new()
+                .with_content("User's own guidance override.".to_string()),
+        )
+        .await
+        .expect("user edit must succeed");
+
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    commands::skill::run_reset(
+        &mut client,
+        commands::skill::ResetArgs {
+            key: RESEARCH_AND_SEARCH.to_string(),
+            guidance: true,
+            config: false,
+            all: false,
+            yes: true,
+        },
+        true,
+    )
+    .await
+    .expect("run_reset must succeed");
+
+    let children_after = node_service
+        .get_children(&root.id)
+        .await
+        .expect("get children after reset");
+    assert!(
+        children_after
+            .iter()
+            .all(|n| n.content != "User's own guidance override."),
+        "reset over gRPC must discard the user's edit"
+    );
+
+    let _ = shutdown.send(());
+}
+
+/// A reset scope flag against a seed key that doesn't exist must report
+/// "not found" rather than erroring or silently succeeding.
+#[tokio::test]
+async fn skill_reset_reports_not_found_for_an_unknown_key() {
+    let (sock, shutdown, _tempdir, _node_service) = spawn_test_daemon_with_seeded_skills().await;
+
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    commands::skill::run_reset(
+        &mut client,
+        commands::skill::ResetArgs {
+            key: "Not A Real Skill".to_string(),
+            guidance: false,
+            config: false,
+            all: true,
+            yes: true,
+        },
+        true,
+    )
+    .await
+    .expect("run_reset must not error on an unknown key -- it should report not-found");
+
+    let _ = shutdown.send(());
 }

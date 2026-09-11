@@ -784,6 +784,14 @@ Install, remove, or check the NodeSpace skill for detected AI-agent harnesses (C
 - `<QUERY>` — Free-text description of the task at hand (e.g. "write an ADR and save it"). Matched semantically against seeded skill guidance so results are scoped to what's relevant right now rather than the whole registry. Pass an empty string (the default) to list every seeded skill's guidance
 - `--limit <LIMIT>` — Maximum number of guidance entries to return, capped at 5 regardless of a higher value. A guidance entry's whole value is its fetched markdown content, and the server never attaches markdown past the 5th result (matching `search --include-content`'s own cap) -- so unlike a plain node search, where a markdown-less result still carries a useful title/snippet, requesting more than 5 here would only return empty-content entries dressed in a full provenance banner. The cap is applied to the request itself, not just the markdown-attachment count, so that can't happen
 
+**`nodespace skill reset`** — Discard a user's customization of a seeded skill node's config (description/tool_whitelist/max_iterations) and/or guidance (procedural markdown), restoring it to the currently-compiled template. The one path in NodeSpace allowed to override a `_seed.config_modified` / `_seed.guidance_modified` durability guard (ADR-072) — reconciliation on daemon startup never discards a user-modified aspect on its own. Requires confirmation unless `--yes` is passed
+
+- `<KEY>` — The seed key to reset — a seeded skill's exact title (e.g. "Research & Search"), matching what `nodespace skill guidance` fetches under. Case-sensitive, no normalization (required)
+- `--guidance` — Reset the procedural guidance (markdown children) to the currently- compiled template, discarding any customization
+- `--config` — Reset the config (description/tool_whitelist/max_iterations) to the currently-compiled template, discarding any customization
+- `--all` — Reset both guidance and config — equivalent to passing both flags
+- `--yes` — Reset without prompting for confirmation. Required in a non-interactive context (no `--yes` there is a hard error, not an auto-proceed) — unlike `install`/`mcp enable`, this is the one destructive path in the system (ADR-072), and auto-confirming a content discard with no one watching would defeat the point of requiring confirmation at all
+
 ### `nodespace mcp`
 
 Host a stdio MCP server exposing one passthrough tool, for bash-less MCP surfaces (e.g. Claude Desktop's Chat tab) that cannot shell this CLI directly — see `commands::mcp` for the architecture and its ADR-038 trust-boundary controls. Disabled until `nodespace mcp install` explicitly turns it on. With no subcommand, hosts the stdio server itself — what a client config launches, not something a person types directly

@@ -1194,28 +1194,60 @@ impl NodeService {
             ));
         }
 
-        // A starter-tier seeded node becomes user-owned the moment its content
-        // or properties are edited through the normal update path — reseed's
-        // replace path goes through delete_node + create_node_with_parent, not
-        // here, so it never trips this. Checked before the update so a
-        // version-conflict below doesn't leave a partial flag write behind.
+        // A seeded node's config or guidance aspect becomes user-owned the
+        // moment its content or properties are edited through the normal
+        // update path — reseed's replace path goes through delete_node +
+        // create_node_with_parent (or, for a config-only replace, a direct
+        // property merge), not here, so it never trips this. Checked before
+        // the update so a version-conflict below doesn't leave a partial flag
+        // write behind.
+        //
+        // Which flag gets set depends on which node is being edited, not
+        // which field: `_seed` lives only on a seeded node's root (see
+        // `prepare_nodes_from_template`), so editing the root itself is a
+        // config edit (`config_modified`), while editing one of its markdown
+        // children — which carry no `_seed` of their own — is a guidance
+        // edit (`guidance_modified`), stamped on the child's root. This is
+        // tier-independent: `Starter` and `System` seeded nodes are guarded
+        // identically.
         let touches_content = update.content.is_some() || update.properties.is_some();
-        let mark_user_modified = if touches_content {
+        let stamp_target: Option<(String, &'static str)> = if touches_content {
             match self.store.get_node(node_id).await {
                 Ok(Some(existing)) => {
-                    let seed = existing.properties.get("_seed");
-                    let is_starter = seed.and_then(|s| s.get("tier")).and_then(|v| v.as_str())
-                        == Some("starter");
-                    let already_modified = seed
-                        .and_then(|s| s.get("user_modified"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    is_starter && !already_modified
+                    if let Some(seed) = existing.properties.get("_seed") {
+                        // Editing the seeded root itself: a config edit.
+                        let already_modified = seed
+                            .get("config_modified")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        (!already_modified).then_some((node_id.to_string(), "config_modified"))
+                    } else {
+                        // Not itself a seeded root — if some ancestor is,
+                        // this is an edit to that seed's guidance children.
+                        match self.get_root_id(node_id).await {
+                            Ok(root_id) if root_id != node_id => {
+                                match self.store.get_node(&root_id).await {
+                                    Ok(Some(root)) if root.properties.get("_seed").is_some() => {
+                                        let already_modified = root
+                                            .properties
+                                            .get("_seed")
+                                            .and_then(|s| s.get("guidance_modified"))
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false);
+                                        (!already_modified)
+                                            .then_some((root_id, "guidance_modified"))
+                                    }
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        }
+                    }
                 }
-                _ => false,
+                _ => None,
             }
         } else {
-            false
+            None
         };
 
         // NOTE: Removed redundant get_node() call here - update_with_version_check_returning_node
@@ -1227,24 +1259,27 @@ impl NodeService {
             .await?
         {
             Some(updated_node) => {
-                if mark_user_modified {
+                if let Some((stamp_node_id, flag)) = stamp_target {
                     // Best-effort, OCC-bypassing second write (see set_property_bool's
                     // doc comment). A concurrent writer landing between the update
                     // above and this stamp could have its own version bump masked
                     // by this call's WHERE-less json_set — the node's `version`
                     // column would then undercount real mutations by one. Blast
-                    // radius is limited to that bookkeeping counter: `_seed.user_modified`
-                    // itself is idempotent (setting it to `true` twice is a no-op),
-                    // so no seeded content or user edit can be lost this way.
+                    // radius is limited to that bookkeeping counter: `_seed.config_modified`
+                    // / `_seed.guidance_modified` itself is idempotent (setting it to
+                    // `true` twice is a no-op), so no seeded content or user edit can
+                    // be lost this way.
+                    let json_path = format!("$._seed.{flag}");
                     if let Err(e) = self
                         .store
-                        .set_property_bool(node_id, "$._seed.user_modified", true)
+                        .set_property_bool(&stamp_node_id, &json_path, true)
                         .await
                     {
                         tracing::warn!(
-                            node_id,
+                            node_id = %stamp_node_id,
+                            flag,
                             error = %e,
-                            "Failed to stamp seed_user_modified after edit"
+                            "Failed to stamp seed modification flag after edit"
                         );
                     }
                 }

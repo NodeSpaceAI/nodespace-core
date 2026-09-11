@@ -60,6 +60,15 @@ pub enum SkillAction {
     /// envelope in `--json` mode) so fetched content is never
     /// indistinguishable from the skill's own static instructions.
     Guidance(GuidanceArgs),
+    /// Discard a user's customization of a seeded skill node's config
+    /// (description/tool_whitelist/max_iterations) and/or guidance
+    /// (procedural markdown), restoring it to the currently-compiled
+    /// template. The one path in NodeSpace allowed to override a
+    /// `_seed.config_modified` / `_seed.guidance_modified` durability guard
+    /// (ADR-072) — reconciliation on daemon startup never discards a
+    /// user-modified aspect on its own. Requires confirmation unless `--yes`
+    /// is passed.
+    Reset(ResetArgs),
 }
 
 #[derive(Args, Debug)]
@@ -99,9 +108,47 @@ pub struct GuidanceArgs {
     pub limit: i32,
 }
 
+#[derive(Args, Debug)]
+#[command(group(
+    clap::ArgGroup::new("reset_scope")
+        .args(["guidance", "config", "all"])
+        .required(true)
+        .multiple(true)
+))]
+pub struct ResetArgs {
+    /// The seed key to reset — a seeded skill's exact title (e.g. "Research
+    /// & Search"), matching what `nodespace skill guidance` fetches under.
+    /// Case-sensitive, no normalization.
+    pub key: String,
+
+    /// Reset the procedural guidance (markdown children) to the currently-
+    /// compiled template, discarding any customization.
+    #[arg(long)]
+    pub guidance: bool,
+
+    /// Reset the config (description/tool_whitelist/max_iterations) to the
+    /// currently-compiled template, discarding any customization.
+    #[arg(long)]
+    pub config: bool,
+
+    /// Reset both guidance and config — equivalent to passing both flags.
+    #[arg(long)]
+    pub all: bool,
+
+    /// Reset without prompting for confirmation. Required in a
+    /// non-interactive context (no `--yes` there is a hard error, not an
+    /// auto-proceed) — unlike `install`/`mcp enable`, this is the one
+    /// destructive path in the system (ADR-072), and auto-confirming a
+    /// content discard with no one watching would defeat the point of
+    /// requiring confirmation at all.
+    #[arg(long)]
+    pub yes: bool,
+}
+
 /// Handles `install`/`uninstall`/`status` — the three subcommands that never
-/// touch the daemon (see [`SkillAction::Guidance`], dispatched separately by
-/// `lib.rs::run` because it needs a [`NodeClient`]).
+/// touch the daemon (see [`SkillAction::Guidance`]/[`SkillAction::Reset`],
+/// dispatched separately by `lib.rs::run` because they need a
+/// [`NodeClient`]).
 pub fn run(action: SkillAction) -> Result<()> {
     match action {
         SkillAction::Install(args) => install(args),
@@ -109,6 +156,9 @@ pub fn run(action: SkillAction) -> Result<()> {
         SkillAction::Status => status(),
         SkillAction::Guidance(_) => unreachable!(
             "SkillAction::Guidance is dispatched by lib.rs::run via run_guidance, never here"
+        ),
+        SkillAction::Reset(_) => unreachable!(
+            "SkillAction::Reset is dispatched by lib.rs::run via run_reset, never here"
         ),
     }
 }
@@ -141,6 +191,130 @@ fn build_guidance_request(args: &GuidanceArgs) -> SearchRequest {
         filters: String::new(),
         include_markdown: limit,
     }
+}
+
+/// `nodespace skill reset` — discard a user's customization of a seeded
+/// skill node's config and/or guidance, restoring it to the currently-
+/// compiled template (ADR-072). The RPC is called twice: once with
+/// `dry_run = true` to fetch the before-state summary for the confirmation
+/// prompt, then for real once the user (or `--yes`) confirms.
+pub async fn run_reset(client: &mut NodeClient, args: ResetArgs, json: bool) -> Result<()> {
+    let reset_config = args.config || args.all;
+    let reset_guidance = args.guidance || args.all;
+
+    let preview = client
+        .reset_seed_node(nodespace_daemon::nodespace::ResetSeedNodeRequest {
+            node_type: "skill".to_string(),
+            seed_key: args.key.clone(),
+            reset_config,
+            reset_guidance,
+            dry_run: true,
+        })
+        .await
+        .context("Failed to look up seed node for reset (ResetSeedNode RPC)")?
+        .into_inner();
+
+    if !preview.found {
+        println!("No seeded skill found with key \"{}\".", args.key);
+        return Ok(());
+    }
+
+    if !args.yes {
+        let summary = format_reset_summary(&args.key, reset_config, reset_guidance, &preview);
+        if !confirm_reset(&summary)? {
+            println!("Skipped.");
+            return Ok(());
+        }
+    }
+
+    let result = client
+        .reset_seed_node(nodespace_daemon::nodespace::ResetSeedNodeRequest {
+            node_type: "skill".to_string(),
+            seed_key: args.key.clone(),
+            reset_config,
+            reset_guidance,
+            dry_run: false,
+        })
+        .await
+        .context("Failed to reset seed node (ResetSeedNode RPC)")?
+        .into_inner();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "key": args.key,
+                "config_reset": result.config_reset,
+                "guidance_reset": result.guidance_reset,
+            }))?
+        );
+    } else {
+        if result.config_reset {
+            println!(
+                "✓ Config reset to the current template for \"{}\".",
+                args.key
+            );
+        }
+        if result.guidance_reset {
+            println!(
+                "✓ Guidance reset to the current template for \"{}\".",
+                args.key
+            );
+        }
+    }
+    Ok(())
+}
+
+fn format_reset_summary(
+    key: &str,
+    reset_config: bool,
+    reset_guidance: bool,
+    preview: &nodespace_daemon::nodespace::ResetSeedNodeResponse,
+) -> String {
+    let mut lines = vec![format!("About to reset seeded skill \"{key}\":")];
+    if reset_config {
+        lines.push(format!("  config:   {}", preview.config_summary));
+    }
+    if reset_guidance {
+        lines.push(format!("  guidance: {}", preview.guidance_summary));
+    }
+    lines.push(
+        "This discards any customization to the listed aspect(s) and cannot be undone.".to_string(),
+    );
+    lines.join("\n")
+}
+
+/// Prompt on a real terminal; **refuse** (not auto-proceed) when stdin or
+/// stdout isn't one. Deliberately does not mirror `confirm_install`'s /
+/// `confirm_enable`'s no-TTY auto-confirm: those guard an additive,
+/// reversible action, while this is the one explicitly destructive path in
+/// the system (ADR-072) — auto-confirming a content discard with no human
+/// watching would defeat the reason confirmation exists here at all. A
+/// script that wants this to succeed unattended must pass `--yes`.
+///
+/// The prompt itself prints to stderr, not stdout: `run_reset` may still
+/// write a `--json` result to stdout after this returns, and a caller
+/// piping stdout for that JSON must never see prompt text interleaved with
+/// it, even on a real terminal.
+fn confirm_reset(summary: &str) -> Result<bool> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        anyhow::bail!(
+            "No interactive terminal detected -- refusing to reset without confirmation. \
+             Pass --yes to reset non-interactively.\n\n{summary}"
+        );
+    }
+
+    eprintln!("{summary}");
+    eprint!("Proceed? [y/N] ");
+    use std::io::Write;
+    std::io::stderr().flush().ok();
+
+    let mut reply = String::new();
+    std::io::stdin()
+        .read_line(&mut reply)
+        .context("Failed to read confirmation from stdin")?;
+    let reply = reply.trim().to_ascii_lowercase();
+    Ok(reply == "y" || reply == "yes")
 }
 
 /// `nodespace skill guidance` — fetch procedural guidance from the graph's

@@ -22,6 +22,13 @@ service NodeService {
   rpc GetNode(GetNodeRequest) returns (NodeResponse);
   rpc UpdateNode(UpdateNodeRequest) returns (NodeResponse);
   rpc DeleteNode(DeleteNodeRequest) returns (DeleteNodeResponse);
+  // Explicitly discard a seeded node's user-modified config and/or guidance
+  // aspect, restoring it to the currently-compiled template (ADR-072). The
+  // only path allowed to override `_seed.config_modified` /
+  // `_seed.guidance_modified` — normal reconciliation on daemon startup
+  // never does this. `dry_run` returns the before-state summary without
+  // changing anything, for a CLI confirmation prompt.
+  rpc ResetSeedNode(ResetSeedNodeRequest) returns (ResetSeedNodeResponse);
   rpc GetChildren(GetChildrenRequest) returns (NodeListResponse);
   rpc GetChildrenTree(GetChildrenTreeRequest) returns (NodeTreeResponse);
   rpc SearchNodes(SearchRequest) returns (NodeListResponse);
@@ -349,6 +356,37 @@ message DeleteNodeResponse {
   string node_id = 1;
   bool existed = 2;
   uint64 deleted_count = 3;
+}
+
+// ---------------------------------------------------------------------------
+// ResetSeedNode
+// ---------------------------------------------------------------------------
+
+message ResetSeedNodeRequest {
+  // The seeded node's node_type ("skill", "prompt", "tool", ...).
+  string node_type = 1;
+  // The seeded node's `_seed.key` — the template's stable title.
+  string seed_key = 2;
+  bool reset_config = 3;
+  bool reset_guidance = 4;
+  // When true, report what would be reset without changing anything.
+  bool dry_run = 5;
+}
+
+message ResetSeedNodeResponse {
+  // False when no node with this node_type + seed_key exists — every other
+  // field is meaningless in that case.
+  bool found = 1;
+  // Whether config/guidance were (or, under dry_run, would be) reset.
+  // False when that aspect was not requested, OR the node has no content for
+  // it today (e.g. a guidance reset on a node with no children).
+  bool config_reset = 2;
+  bool guidance_reset = 3;
+  // Short before-state summary for a CLI confirmation prompt — e.g. current
+  // description/tool_whitelist for config, child count and a content preview
+  // for guidance. Empty string when that aspect was not requested.
+  string config_summary = 4;
+  string guidance_summary = 5;
 }
 
 // ---------------------------------------------------------------------------
