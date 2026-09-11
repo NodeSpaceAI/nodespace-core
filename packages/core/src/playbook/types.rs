@@ -229,6 +229,27 @@ impl ActionType {
 }
 
 // ---------------------------------------------------------------------------
+// Derived identity path (ADR-060 §3, ADR-074)
+// ---------------------------------------------------------------------------
+
+/// Ordered sequence of real node ids identifying which execution of a
+/// playbook action this is, for
+/// [`crate::playbook::actions::deterministic_action_output_id`].
+///
+/// Never a positional/loop index and never sorted -- order encodes nesting
+/// depth (the outer trigger/scanned node first, then each nested `for_each`
+/// item's own id, in nesting order), and every element must be a real,
+/// already-existing node id, so two devices that scan or iterate the same
+/// set in different orders still agree on which item produced which id:
+/// - `graph_event` trigger, no `for_each`: `[trigger_node_id]`
+/// - `scheduled` trigger scanning nodes, no `for_each`: `[scanned_node_id]`
+///   (the engine hands the scanned node to the action executor as the
+///   "trigger node" for a scheduled work item too, so this is the same slot)
+/// - nested `for_each`: `[scanned_node_id, item_node_id]`, generalizing to
+///   further nesting depth by appending one more real id per level entered
+pub type IterationPath = Vec<String>;
+
+// ---------------------------------------------------------------------------
 // ExecutionWorkItem
 // ---------------------------------------------------------------------------
 
