@@ -198,7 +198,33 @@ impl PlaybookEngine {
             _ => {}
         }
 
-        // Trigger matching for non-lifecycle events
+        // ADR-073: local-origin gating, the hard-safety part of this issue.
+        //
+        // Play lifecycle management above (install/uninstall/enable/disable,
+        // schema-drift detection) is intentionally NOT gated — a Play node
+        // authored on another device is data like any other and must still
+        // be installed locally once synced in. What IS gated is trigger
+        // evaluation against a mutation: an event whose origin is the
+        // sync-apply path (tagged with `SYNC_SERVICE_CLIENT_ID`, per
+        // ADR-027's existing `source_client_id` convention) is structurally
+        // excluded here, before any `TriggerKey` lookup, so a reconnecting
+        // device can never replay its sync backlog as live rule firings.
+        // Scheduled (cron) triggers are unaffected — `CronRunner` scans local
+        // graph state directly and never reaches this event-driven path.
+        //
+        // This does not make `RuleClass::Invariant` rules sync-safe: their
+        // fail-closed guarantee depends on ADR-060 §2/§7 mechanisms that are
+        // out of scope here. It only prevents reactive (and invariant) rules
+        // from firing against a sync-replayed event at all.
+        if is_sync_originated(&envelope) {
+            debug!(
+                node_event = ?trigger_node_id(&envelope.event),
+                "Skipping trigger evaluation for sync-originated event"
+            );
+            return;
+        }
+
+        // Trigger matching for non-lifecycle, locally-originated events
         let keys = trigger_keys_for_event(&envelope.event);
         if keys.is_empty() {
             return;
@@ -676,6 +702,22 @@ pub(crate) async fn rule_processor_loop(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// ADR-073 local-origin gate: true when `envelope` was applied via the
+/// sync-apply path rather than originating on this device.
+///
+/// Deliberately a denylist (match the reserved sync origin), not an
+/// allowlist of known local client ids: local writes arrive tagged with many
+/// different client ids (Tauri windows, MCP clients, CLI sessions, or none at
+/// all), and enumerating them would be both impractical and the wrong
+/// direction to fail in — an unrecognized *local* id would be silently
+/// dropped instead of a genuinely sync-applied one slipping through. This
+/// mirrors the existing `push_forward_allowed` precedent in
+/// `services::node_service` (`push_excluded_origin`), which excludes by
+/// origin match for the same reason.
+pub(crate) fn is_sync_originated(envelope: &EventEnvelope) -> bool {
+    envelope.metadata.source_client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
+}
 
 /// Extract the trigger node ID from a domain event.
 ///

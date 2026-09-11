@@ -57,10 +57,19 @@ impl NodeService {
             }
         }
 
-        // Call store trait to execute batch insert in transaction
+        // Call store trait to execute batch insert in transaction.
+        // Thread this instance's client_id/execution_context through, same as
+        // single-row create_node — otherwise every event this batch emits
+        // loses its source_client_id, which the play engine's ADR-073
+        // local-origin gate (and any other source_client_id-based consumer)
+        // depends on for every write path, batched or not.
         let created_nodes = self
             .store
-            .batch_create_nodes(nodes)
+            .batch_create_nodes(
+                nodes,
+                self.client_id.clone(),
+                self.execution_context.clone(),
+            )
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 

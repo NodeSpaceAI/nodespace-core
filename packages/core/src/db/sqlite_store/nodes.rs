@@ -2742,10 +2742,24 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub async fn batch_create_nodes(&self, nodes: Vec<Node>) -> Result<Vec<Node>> {
+    /// `source`/`playbook_context` are threaded through to every node's
+    /// `StoreChange` notification exactly like single-row `create_node` —
+    /// callers that need every event tagged (e.g. `NodeService::bulk_create`
+    /// passing `self.client_id.clone()`) must NOT be silently downgraded to
+    /// an untagged write. A caller that doesn't care passes `None`/`None`,
+    /// same as `create_node`'s own callers do.
+    pub async fn batch_create_nodes(
+        &self,
+        nodes: Vec<Node>,
+        source: Option<String>,
+        playbook_context: Option<crate::db::events::PlaybookExecutionContext>,
+    ) -> Result<Vec<Node>> {
         let mut created = Vec::new();
         for node in nodes {
-            created.push(self.create_node(node, None, None).await?);
+            created.push(
+                self.create_node(node, source.clone(), playbook_context.clone())
+                    .await?,
+            );
         }
         Ok(created)
     }
