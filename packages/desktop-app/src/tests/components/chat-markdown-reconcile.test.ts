@@ -40,6 +40,10 @@ vi.mock('$lib/services/shared-node-store.svelte', () => ({
     // ADR-053 epoch guard: the on-mount fetch captures currentEpoch() and
     // re-checks it before setNode. A stable value keeps the read in-epoch.
     currentEpoch: vi.fn().mockReturnValue(0),
+    // Each mounted NodeCardInline pins its nodeId reachable for as long as
+    // it's mounted (see pin-node-reachability.ts).
+    pinNodes: vi.fn(),
+    unpinAll: vi.fn(),
   },
 }));
 

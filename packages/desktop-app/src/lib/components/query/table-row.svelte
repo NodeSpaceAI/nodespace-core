@@ -7,9 +7,11 @@
 -->
 
 <script lang="ts">
+  import { v4 as uuidv4 } from 'uuid';
   import type { SchemaField } from '$lib/types/schema-node';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
+  import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
   import { TableRow as UiTableRow, TableCell } from '$lib/components/ui/table';
 
   let {
@@ -23,6 +25,16 @@
     fieldSchemaMap: Map<string, SchemaField>;
     onRowClick: (_nodeId: string) => void;
   } = $props();
+
+  // This row's node is a query match — it lives under whatever parent
+  // document it was originally created in, not as a structural child of the
+  // query node, so SharedNodeStore's structureTree-walk eviction check can't
+  // see it as reachable on its own. Pin it explicitly for as long as this
+  // row displays it, so it isn't evicted out from under a still-open board/
+  // table (which would otherwise be indistinguishable from real deletion —
+  // see `nodeExists` below).
+  const pinOwnerId = uuidv4();
+  $effect(() => pinReachableNodes(pinOwnerId, [id]));
 
   // Convert snake_case field name to camelCase for wire format lookups.
   // Schema field names are snake_case (e.g. due_date) but the API serializes

@@ -823,6 +823,284 @@ export class SharedNodeStore {
   private reconnectGeneration = 0;
   private nodeGeneration = new Map<string, number>();
 
+  // ------------------------------------------------------------------------
+  // Reachability tracking & eviction (multi-tab memory)
+  //
+  // SharedNodeStore is a single global cache shared by every open tab/pane;
+  // nothing previously removed a node once loaded, so a long session that
+  // visits many documents accumulates all of them in memory forever. These
+  // members let `navigation.svelte.ts` push the current set of open tabs'
+  // document roots on every tab-state change (open, close, content change,
+  // session restore) so a cached node that no open tab/pane can reach any
+  // longer becomes eligible for eviction after a short inactivity window —
+  // not immediately, to avoid thrashing on quick tab switches or an
+  // accidental close-and-reopen.
+  //
+  // Reachability has two channels, either of which is sufficient:
+  //
+  // 1. STRUCTURAL: a node is reachable when walking its `structureTree`
+  //    ancestor chain reaches a node id present in `openDocumentRootIds`.
+  //    This reuses the parent index every viewer's tree-loading path already
+  //    populates (loadChildrenForParent / loadChildrenTree).
+  // 2. PINNED: a node is reachable when its id is in `pinnedNodeRefCounts`
+  //    (count > 0) — reported directly by a component that displays it
+  //    WITHOUT it being a structureTree descendant of any open tab's root.
+  //    This is the common case for anything that crosses the tree, not
+  //    follows it: a query/Kanban/table view's matched rows (they live under
+  //    unrelated parent documents, not as children of the query node), an
+  //    inline `[[wikilink]]`/mention reference (resolved via `ensureNode()`,
+  //    which never touches `structureTree`), a relation-field value, a
+  //    backlink. Channel 1 alone silently evicted these out from under a
+  //    still-open, still-rendering consumer — see `pinNodes`.
+  // ------------------------------------------------------------------------
+
+  /** Root node ids of every currently open tab/pane, as last reported by
+   * `navigation.svelte.ts`. See `isReachable` and `hasOpenDocumentReport`. */
+  private openDocumentRootIds = new Set<string>();
+
+  /**
+   * True once `updateOpenDocumentRoots` has been called at least once.
+   * Distinguishes "no report yet" (eviction dormant — see `isReachable`)
+   * from "reported, and the open set happens to be empty" (e.g. every tab
+   * just closed) — both leave `openDocumentRootIds` empty, but only the
+   * latter is real information that nothing is reachable.
+   */
+  private hasOpenDocumentReport = false;
+
+  /** Owner id (one per pinning component instance) -> the node ids it is
+   * currently pinning reachable. See `pinNodes`. */
+  private pinnedByOwner = new Map<string, Set<string>>();
+
+  /** node id -> number of owners currently pinning it reachable. A node
+   * with a nonzero count here is reachable regardless of its structural
+   * position — see `isReachable`. Derived from `pinnedByOwner`, kept as a
+   * separate reverse index so a per-node reachability check is O(1) rather
+   * than a scan over every owner. */
+  private pinnedNodeRefCounts = new Map<string, number>();
+
+  /** nodeId -> scheduled eviction timer, for a node currently unreachable
+   * from every open tab/pane and waiting out `evictionInactivityMs`. */
+  private evictionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /**
+   * How long a node must stay unreachable from every open tab/pane before
+   * it is evicted. Long enough that ordinary quick tab-switching or an
+   * accidental close-and-reopen never trips it, short enough to reclaim
+   * memory well within a single working session. Overridable in tests via
+   * `__setEvictionInactivityMsForTesting` so eviction tests don't wait 30
+   * real seconds.
+   */
+  private evictionInactivityMs = 30_000;
+
+  /**
+   * Replace the set of open-tab/pane document roots and re-evaluate every
+   * cached node's reachability against it. Called by `navigation.svelte.ts`
+   * with the FULL current list (not a delta) on every tab-state mutation, so
+   * a node whose last open tab just closed drops out of reachability here,
+   * and a node reopened before its eviction timer fired has that timer
+   * cancelled by the same sweep. No-ops when the set is unchanged (the
+   * common case — most nav interactions, e.g. resizing a pane or switching
+   * the active tab, don't change which documents are open) to avoid sweeping
+   * every cached node on every such interaction.
+   */
+  updateOpenDocumentRoots(rootNodeIds: Iterable<string>): void {
+    const next = new Set(rootNodeIds);
+    const isFirstReport = !this.hasOpenDocumentReport;
+    this.hasOpenDocumentReport = true;
+
+    if (!isFirstReport && SharedNodeStore.setsEqual(next, this.openDocumentRootIds)) return;
+    this.openDocumentRootIds = next;
+    this.reconcileEvictionCandidates();
+  }
+
+  /**
+   * Declare the full set of node ids `ownerId` is currently displaying,
+   * OUTSIDE the structureTree-walk reachability model — e.g. a query/
+   * Kanban/table view's matched rows (which live under unrelated parent
+   * documents, not as children of the query node) or an inline
+   * `[[wikilink]]`/mention reference, relation-field value, or backlink
+   * (resolved via `getNode`/`ensureNode`, neither of which touches
+   * `structureTree`). A pinned node is reachable regardless of its
+   * structural position, for as long as ANY owner pins it.
+   *
+   * Replaces `ownerId`'s previous pin set wholesale (not a delta) — call
+   * again with the updated list on every change, and with an empty list (or
+   * `unpinAll`) once nothing is pinned / on unmount. Typical call site:
+   *
+   *   $effect(() => pinReachableNodes(ownerId, [id]));
+   *
+   * `$effect`'s automatic cleanup-before-rerun/unmount is what keeps a
+   * changing or ending pin set from leaking — see
+   * `$lib/utils/pin-node-reachability.ts`.
+   */
+  pinNodes(ownerId: string, nodeIds: Iterable<string>): void {
+    const next = new Set(nodeIds);
+    const previous = this.pinnedByOwner.get(ownerId);
+
+    if (previous && SharedNodeStore.setsEqual(next, previous)) return;
+
+    if (previous) {
+      for (const id of previous) {
+        if (!next.has(id)) this.decrementPinRefCount(id);
+      }
+    }
+    for (const id of next) {
+      if (!previous?.has(id)) this.incrementPinRefCount(id);
+    }
+
+    if (next.size === 0) {
+      this.pinnedByOwner.delete(ownerId);
+    } else {
+      this.pinnedByOwner.set(ownerId, next);
+    }
+
+    // A newly-pinned node may need its pending eviction cancelled; a
+    // newly-unpinned one (last owner released it) may need to be scheduled.
+    this.reconcileEvictionCandidates();
+  }
+
+  /** Remove every pin `ownerId` holds (component unmount). Equivalent to
+   * `pinNodes(ownerId, [])`. */
+  unpinAll(ownerId: string): void {
+    this.pinNodes(ownerId, []);
+  }
+
+  private incrementPinRefCount(nodeId: string): void {
+    this.pinnedNodeRefCounts.set(nodeId, (this.pinnedNodeRefCounts.get(nodeId) ?? 0) + 1);
+  }
+
+  private decrementPinRefCount(nodeId: string): void {
+    const count = this.pinnedNodeRefCounts.get(nodeId) ?? 0;
+    if (count <= 1) {
+      this.pinnedNodeRefCounts.delete(nodeId);
+    } else {
+      this.pinnedNodeRefCounts.set(nodeId, count - 1);
+    }
+  }
+
+  private static setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+    if (a.size !== b.size) return false;
+    for (const id of a) {
+      if (!b.has(id)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Sweep every currently-cached node: schedule eviction for one that just
+   * became unreachable (unless already scheduled), and cancel any pending
+   * eviction for one that just became reachable again.
+   */
+  private reconcileEvictionCandidates(): void {
+    for (const nodeId of this.nodes.keys()) {
+      if (this.isReachable(nodeId)) {
+        this.cancelPendingEviction(nodeId);
+      } else if (!this.evictionTimers.has(nodeId)) {
+        this.scheduleEviction(nodeId);
+      }
+    }
+  }
+
+  /**
+   * True when `nodeId` is explicitly pinned (see `pinNodes`), or when
+   * `nodeId` — or an ancestor reached by walking `structureTree` parent
+   * edges — is the root document of a currently open tab/pane.
+   *
+   * Before the first `updateOpenDocumentRoots` report (i.e. every caller
+   * that isn't `navigation.svelte.ts` — most unit tests included), the
+   * reachable-roots set is empty and this always returns true: eviction
+   * stays fully dormant until navigation actually starts reporting real tab
+   * state, rather than evicting nodes no caller ever declared "open".
+   */
+  private isReachable(nodeId: string): boolean {
+    if (!this.hasOpenDocumentReport) return true;
+    if (this.pinnedNodeRefCounts.has(nodeId)) return true;
+    if (!structureTree) return true;
+
+    let current: string | null = nodeId;
+    const visited = new Set<string>();
+    while (current !== null) {
+      if (this.openDocumentRootIds.has(current)) return true;
+      if (visited.has(current)) return false; // defensive cycle guard
+      visited.add(current);
+      current = structureTree.getParent(current);
+    }
+    return false;
+  }
+
+  private scheduleEviction(nodeId: string): void {
+    const timer = setTimeout(() => this.attemptEviction(nodeId), this.evictionInactivityMs);
+    this.evictionTimers.set(nodeId, timer);
+  }
+
+  private cancelPendingEviction(nodeId: string): void {
+    const timer = this.evictionTimers.get(nodeId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.evictionTimers.delete(nodeId);
+    }
+  }
+
+  /**
+   * Fires after a node has sat unreachable for `evictionInactivityMs`.
+   * Re-verifies both eviction constraints before actually dropping it, since
+   * either can have changed since the timer was scheduled:
+   *
+   * - Reachability: `updateOpenDocumentRoots` cancels this timer as soon as
+   *   a report makes the node reachable again, but re-checking here is a
+   *   cheap final guard against ordering surprises.
+   * - Pending write: never evict a node with an unflushed, in-flight, or
+   *   queued persistence operation (PersistenceCoordinator.hasPending), or
+   *   an uncommitted atomic batch (activeBatches) — losing an unsaved edit
+   *   is strictly worse than a delayed eviction. Re-schedule rather than
+   *   drop candidacy so a long-running write doesn't permanently pin the
+   *   node in memory once it finally settles.
+   */
+  private attemptEviction(nodeId: string): void {
+    this.evictionTimers.delete(nodeId);
+
+    if (this.isReachable(nodeId)) return; // reopened — nothing to do
+
+    if (PersistenceCoordinator.getInstance().hasPending(nodeId) || this.activeBatches.has(nodeId)) {
+      this.scheduleEviction(nodeId);
+      return;
+    }
+
+    this.evictNode(nodeId);
+  }
+
+  /**
+   * Drop every per-node bookkeeping entry for an unreachable, fully-settled
+   * node — from `nodes` itself plus every other per-node map this file
+   * maintains (mirrors the set `deleteNode()`/`clearAll()` already clean
+   * up). Purely a local cache decision: the node still exists in the
+   * database, just no longer cached in memory — the next `ensureNode` for
+   * it fetches fresh.
+   */
+  private evictNode(nodeId: string): void {
+    this.nodesDelete(nodeId);
+    this.versions.delete(nodeId);
+    this.pendingUpdates.delete(nodeId);
+    this.persistedNodeIds.delete(nodeId);
+    this.taskFieldWriteSeq.delete(nodeId);
+    this.resyncingNodes.delete(nodeId);
+    this.resyncQueued.delete(nodeId);
+    this.inFlightEnsures.delete(nodeId);
+    log.debug(`Evicted unreachable node from cache: ${nodeId}`);
+  }
+
+  /** Test-only: override the inactivity threshold so eviction tests don't
+   * need to wait out the real 30-second production default. */
+  __setEvictionInactivityMsForTesting(ms: number): void {
+    this.evictionInactivityMs = ms;
+  }
+
+  /** Test-only: number of nodes currently unreachable and waiting out their
+   * inactivity window before eviction. */
+  __getPendingEvictionCountForTesting(): number {
+    return this.evictionTimers.size;
+  }
+
   /**
    * Decide whether the persistence path should clear a CREATE's
    * `InsertPosition.After` hint as "stale" before talking to the backend.
@@ -2527,6 +2805,7 @@ export class SharedNodeStore {
       this.pendingUpdates.delete(nodeId);
       this.persistedNodeIds.delete(nodeId); // Remove from tracking set
       this.taskFieldWriteSeq.delete(nodeId);
+      this.cancelPendingEviction(nodeId); // Node is gone — nothing left to evict
       this.notifySubscribers(nodeId, node, source);
 
       log.debug(`Node deleted: ${nodeId}`);
@@ -3032,6 +3311,14 @@ export class SharedNodeStore {
     this.pendingTreeLoads.clear();
     this.resyncingNodes.clear();
     this.resyncQueued.clear();
+    for (const timer of this.evictionTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.evictionTimers.clear();
+    this.openDocumentRootIds.clear();
+    this.hasOpenDocumentReport = false;
+    this.pinnedByOwner.clear();
+    this.pinnedNodeRefCounts.clear();
     this.notifyAllSubscribers();
   }
 
@@ -4438,6 +4725,16 @@ export class SharedNodeStore {
       this.cancelBatch(nodeId);
     }
     this.activeBatches.clear();
+
+    for (const timer of this.evictionTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.evictionTimers.clear();
+    this.openDocumentRootIds.clear();
+    this.hasOpenDocumentReport = false;
+    this.pinnedByOwner.clear();
+    this.pinnedNodeRefCounts.clear();
+    this.evictionInactivityMs = 30_000;
 
     this.metrics = {
       updateCount: 0,

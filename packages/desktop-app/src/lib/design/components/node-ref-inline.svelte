@@ -17,12 +17,26 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { v4 as uuidv4 } from 'uuid';
   import { createLogger } from '$lib/utils/logger';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+  import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
 
   const log = createLogger('NodeRefInline');
 
   let { id }: { id: string } = $props();
+
+  // The referenced node is resolved via ensureNode() below, never through
+  // structureTree — a [[wikilink]] routinely points at a node with no
+  // structural relationship to whatever document it's rendered inside.
+  // SharedNodeStore's structureTree-walk eviction check can't see it as
+  // reachable on its own, so pin it explicitly for as long as this
+  // reference displays it: otherwise an eviction mid-display would leave
+  // `resolved`/`node` stale (this component never re-checks after its
+  // one-shot mount resolution), permanently rendering "Unknown node" for a
+  // node that still exists.
+  const pinOwnerId = uuidv4();
+  $effect(() => pinReachableNodes(pinOwnerId, [id]));
 
   // Reactive read of the store (SvelteMap): the title updates once the node is
   // present, whether it was already cached or loaded by the on-mount fetch.

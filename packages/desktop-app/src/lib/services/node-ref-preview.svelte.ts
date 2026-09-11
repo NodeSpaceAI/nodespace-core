@@ -19,6 +19,18 @@ import type { Node } from '$lib/types/node';
 
 const log = createLogger('NodeRefPreview');
 
+/**
+ * Owner key this singleton pins reachable nodes under (see
+ * SharedNodeStore.pinNodes). A previewed node is routinely resolved via
+ * ensureNode() with no structureTree relationship to whatever open tab the
+ * pointer/focus happens to be over, so it isn't reachable via the
+ * structureTree walk on its own. There's only ever one card/controller
+ * instance, so a single fixed owner key is enough — pinNodes replaces the
+ * owner's whole pin set on each call, so pinning the newly-hovered id
+ * automatically releases the previously-hovered one.
+ */
+const PIN_OWNER_ID = 'node-ref-preview';
+
 /** Delay before a hovered/focused reference reveals its preview card. */
 export const PREVIEW_DELAY_MS = 450;
 
@@ -132,6 +144,15 @@ class NodeRefPreviewController {
   }
 
   async #reveal(nodeId: string, anchor: HTMLElement): Promise<void> {
+    // Pin the node reachable for as long as the card may be showing it —
+    // see PIN_OWNER_ID's doc comment. Not strictly required for correctness
+    // today (the card's title/snippet below are a one-time snapshot, not a
+    // live store read, so an eviction after this point can't flip an
+    // already-shown card to "not found"), but it keeps this resolution
+    // consistent with every other sharedNodeStore-backed reference display
+    // and avoids a spurious re-fetch if the same id is re-hovered later.
+    sharedNodeStore.pinNodes(PIN_OWNER_ID, [nodeId]);
+
     // Show the card immediately in a loading state, anchored in place.
     this.state.nodeId = nodeId;
     this.state.anchor = anchor;
@@ -176,6 +197,7 @@ class NodeRefPreviewController {
     this.#pendingId = null;
     this.#pendingAnchor = null;
     this.#setDescribedBy(null);
+    sharedNodeStore.unpinAll(PIN_OWNER_ID);
     if (this.state.visible || this.state.anchor) {
       this.state = emptyState();
     }

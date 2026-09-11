@@ -21,13 +21,22 @@
 // CRITICAL: Import setup BEFORE anything else to ensure Svelte mocks are applied
 import '../setup-svelte-mocks';
 
-import { describe, test, expect, beforeEach, inject } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, inject } from 'vitest';
 import {
   createReactiveNodeService,
   ReactiveNodeService as NodeManager
 } from '../../lib/services/reactive-node-service.svelte.js';
 import type { NodeManagerEvents } from '../../lib/services/reactive-node-service.svelte.js';
 import { createTestNode } from '../helpers';
+import { SharedNodeStore } from '../../lib/services/shared-node-store.svelte';
+import { structureTree } from '../../lib/stores/reactive-structure-tree.svelte';
+import {
+  navigationStore,
+  resetTabState,
+  addTab,
+  closeTab,
+  DEFAULT_PANE_ID
+} from '../../lib/stores/navigation.svelte';
 
 // Performance test scaling based on environment variable
 const FULL_PERFORMANCE = process.env.TEST_FULL_PERFORMANCE === '1';
@@ -523,6 +532,208 @@ describe('Architecture Performance Benchmarks', () => {
       // All targets should be properly configured
       expect(targets.every((t) => t.validation)).toBe(true);
     });
+  });
+});
+
+/**
+ * Multi-Tab Memory Eviction - Real Measurement
+ *
+ * The single memory test above is an estimated, single-viewer figure. This
+ * describe block instead opens N simulated tabs on distinct documents
+ * through the REAL navigation store (`addTab`/`closeTab` from
+ * navigation.svelte.ts — the same path a real tab close goes through, which
+ * now signals the reachability change to SharedNodeStore), measures
+ * SharedNodeStore's node count and `process.memoryUsage().heapUsed` real
+ * heap usage before/after, closes every tab, lets the eviction inactivity
+ * threshold elapse for real, and measures again — this is both the
+ * regression guard for the eviction feature and the verification that it
+ * actually releases memory, not just holds it flat.
+ *
+ * A separate top-level describe (not nested in "Architecture Performance
+ * Benchmarks" above) so it can freely reset the SharedNodeStore/navigation
+ * singletons in its own beforeEach/afterEach without affecting — or being
+ * affected by — the single-viewer benchmarks above, which share those
+ * singletons across their own tests without resetting them.
+ */
+describe('Multi-Tab Memory Eviction - Real Measurement (process.memoryUsage)', () => {
+  // Fast mode keeps this quick for everyday `bun run test`; full mode
+  // (TEST_FULL_PERFORMANCE=1, i.e. `bun run test:perf`) matches the scale
+  // the issue's own headless probe used (10 tabs x 300 nodes = 3000 nodes).
+  const TAB_COUNT = FULL_PERFORMANCE ? 10 : 6;
+  const NODES_PER_DOCUMENT = FULL_PERFORMANCE ? 300 : 120;
+  // Real (not fake) timer wait, short enough to keep the test fast.
+  const EVICTION_TEST_MS = 40;
+
+  let store: SharedNodeStore;
+
+  beforeEach(() => {
+    SharedNodeStore.resetInstance();
+    store = SharedNodeStore.getInstance();
+    store.__setEvictionInactivityMsForTesting(EVICTION_TEST_MS);
+    structureTree.clear();
+    resetTabState();
+  });
+
+  afterEach(() => {
+    store.clearAll();
+    SharedNodeStore.resetInstance();
+    structureTree.clear();
+    resetTabState();
+  });
+
+  /** Forces a real GC pass where the runtime exposes one, so heapUsed
+   * reflects actual current reachability rather than not-yet-swept garbage.
+   * Bun exposes `Bun.gc(force)` with no special flag (this project is
+   * Bun-only); a plain Node run would need `--expose-gc`, which this suite
+   * doesn't set, so that path is a no-op fallback rather than a hard
+   * requirement — the node-count assertions below are the deterministic
+   * signal either way, and heapUsed is reported/asserted best-effort. */
+  function forceGcIfAvailable(): void {
+    const bunGlobal = (globalThis as unknown as { Bun?: { gc?: (force: boolean) => void } }).Bun;
+    if (bunGlobal?.gc) {
+      bunGlobal.gc(true);
+      return;
+    }
+    (globalThis as unknown as { gc?: () => void }).gc?.();
+  }
+
+  test(
+    `releases SharedNodeStore memory after ${TAB_COUNT} tabs x ${NODES_PER_DOCUMENT} nodes on distinct documents close and the inactivity threshold elapses`,
+    async () => {
+      forceGcIfAvailable();
+      const baselineNodeCount = store.getNodeCount();
+      const baselineHeapUsedMB = process.memoryUsage().heapUsed / 1024 / 1024;
+
+      // Open TAB_COUNT tabs, each its own distinct document (a root node plus
+      // children), through the real addTab() path — mirrors a real multi-tab
+      // session where BaseNodeViewer loads a node tree per tab and registers
+      // it with structureTree (loadChildrenForParent/loadChildrenTree).
+      const tabIds: string[] = [];
+      for (let t = 0; t < TAB_COUNT; t++) {
+        const rootId = `evict-doc-${t}-root`;
+        store.setNode(createTestNode({ id: rootId, content: `Document ${t}` }), {
+          type: 'database',
+          reason: 'test-setup'
+        });
+
+        for (let i = 0; i < NODES_PER_DOCUMENT - 1; i++) {
+          const childId = `evict-doc-${t}-node-${i}`;
+          store.setNode(createTestNode({ id: childId, content: `Content ${t}-${i}` }), {
+            type: 'database',
+            reason: 'test-setup'
+          });
+          structureTree.addInMemoryRelationship(rootId, childId, i + 1);
+        }
+
+        const tabId = `evict-tab-${t}`;
+        tabIds.push(tabId);
+        addTab(
+          {
+            id: tabId,
+            title: `Document ${t}`,
+            type: 'node',
+            content: { nodeId: rootId, nodeType: 'text' },
+            closeable: true,
+            paneId: navigationStore.state.panes[0]?.id ?? DEFAULT_PANE_ID
+          },
+          false
+        );
+      }
+
+      const openNodeCount = store.getNodeCount() - baselineNodeCount;
+      expect(openNodeCount).toBe(TAB_COUNT * NODES_PER_DOCUMENT);
+
+      forceGcIfAvailable();
+      const peakHeapUsedMB = process.memoryUsage().heapUsed / 1024 / 1024;
+
+      // Close every tab through the real closeTab() path.
+      for (const tabId of tabIds) {
+        closeTab(tabId);
+      }
+
+      // Nothing evicts yet — deferred to avoid thrashing on quick tab
+      // open/close/switch, not immediate on close.
+      expect(store.getNodeCount() - baselineNodeCount).toBe(TAB_COUNT * NODES_PER_DOCUMENT);
+
+      // Let the real inactivity threshold elapse.
+      await new Promise((resolve) => setTimeout(resolve, EVICTION_TEST_MS + 100));
+
+      forceGcIfAvailable();
+      const finalNodeCount = store.getNodeCount() - baselineNodeCount;
+      const finalHeapUsedMB = process.memoryUsage().heapUsed / 1024 / 1024;
+
+      console.log(`Multi-tab eviction (${TAB_COUNT} tabs x ${NODES_PER_DOCUMENT} nodes):`);
+      console.log(
+        `  Node count: ${openNodeCount} while open -> ${finalNodeCount} after close + eviction (baseline ${baselineNodeCount})`
+      );
+      console.log(
+        `  Heap used (process.memoryUsage): baseline ${baselineHeapUsedMB.toFixed(2)}MB, ` +
+          `peak ${peakHeapUsedMB.toFixed(2)}MB, final ${finalHeapUsedMB.toFixed(2)}MB`
+      );
+
+      // Deterministic, GC-timing-independent assertion: every node from every
+      // closed tab is actually gone from the store.
+      expect(finalNodeCount).toBe(0);
+
+      // Best-effort real memory assertion: heap should trend back down
+      // toward baseline rather than staying pinned at its peak. GC timing
+      // varies even with a forced collection attempt, so assert directional
+      // recovery (a meaningful share of the peak-over-baseline growth is
+      // reclaimed) instead of an exact byte count.
+      const grownMB = peakHeapUsedMB - baselineHeapUsedMB;
+      const recoveredMB = peakHeapUsedMB - finalHeapUsedMB;
+      if (grownMB > 0.05) {
+        expect(recoveredMB / grownMB).toBeGreaterThan(0.3);
+      }
+    },
+    15000
+  );
+
+  test('a node open in two panes simultaneously is never evicted while either pane still shows it (real navigation store)', async () => {
+    const sharedNodeId = 'evict-two-pane-doc';
+    store.setNode(createTestNode({ id: sharedNodeId, content: 'Shared document' }), {
+      type: 'database',
+      reason: 'test-setup'
+    });
+
+    addTab(
+      {
+        id: 'two-pane-tab-a',
+        title: 'Pane 1',
+        type: 'node',
+        content: { nodeId: sharedNodeId, nodeType: 'text' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      },
+      false
+    );
+
+    const secondPane = navigationStore.createPane();
+    expect(secondPane).not.toBeNull();
+    addTab(
+      {
+        id: 'two-pane-tab-b',
+        title: 'Pane 2',
+        type: 'node',
+        content: { nodeId: sharedNodeId, nodeType: 'text' },
+        closeable: true,
+        paneId: secondPane!.id
+      },
+      false
+    );
+
+    // Close only the first pane's tab.
+    closeTab('two-pane-tab-a');
+    await new Promise((resolve) => setTimeout(resolve, EVICTION_TEST_MS + 100));
+
+    // Still shown by the second pane's tab — must not be evicted.
+    expect(store.getNode(sharedNodeId)).toBeDefined();
+
+    // Close the second (last) tab showing it.
+    closeTab('two-pane-tab-b');
+    await new Promise((resolve) => setTimeout(resolve, EVICTION_TEST_MS + 100));
+
+    expect(store.getNode(sharedNodeId)).toBeUndefined();
   });
 });
 
