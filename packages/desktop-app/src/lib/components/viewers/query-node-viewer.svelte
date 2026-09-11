@@ -23,6 +23,7 @@
   import { createSchemaInstance, shouldIntegrateInstance } from '$lib/services/schema-authoring';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+  import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
   import { navigationStore, updateTabContent } from '$lib/stores/navigation.svelte';
   import TableView from '$lib/components/query/table-view.svelte';
   import ListView from '$lib/components/query/list-view.svelte';
@@ -84,6 +85,15 @@
   // which is how task-node.svelte achieves live reactivity — the lookup happens inside
   // the Svelte component's tracked context, not in a pre-computed $derived array.
   let loadedNodeIds = $state<string[]>([]);
+  // Query results routinely live under UNRELATED parent documents — they are
+  // not structureTree children of this query node — so SharedNodeStore's
+  // structureTree-walk eviction check can't see them as reachable on their
+  // own. Pin the current result set explicitly for as long as this viewer
+  // displays it; without this, a row could be silently evicted out from
+  // under a still-open view after the inactivity threshold, indistinguishable
+  // from the node having been deleted (see table-row.svelte's `nodeExists`).
+  const pinOwnerId = uuidv4();
+  $effect(() => pinReachableNodes(pinOwnerId, loadedNodeIds));
   let queryState = $state<'idle' | 'loading' | 'success' | 'error'>('idle');
   let error = $state<string | null>(null);
   // Sentinel to discard in-flight responses when nodeId changes rapidly (sidenav navigation)

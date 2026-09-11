@@ -836,12 +836,22 @@ export class SharedNodeStore {
   // not immediately, to avoid thrashing on quick tab switches or an
   // accidental close-and-reopen.
   //
-  // Reachability is computed, not separately bookkept per node: a node is
-  // reachable when walking its `structureTree` ancestor chain reaches a node
-  // id present in `openDocumentRootIds`. This reuses the parent index every
-  // viewer's data-loading path already populates (loadChildrenForParent /
-  // loadChildrenTree) instead of requiring a second, parallel per-node
-  // membership map that could drift from it.
+  // Reachability has two channels, either of which is sufficient:
+  //
+  // 1. STRUCTURAL: a node is reachable when walking its `structureTree`
+  //    ancestor chain reaches a node id present in `openDocumentRootIds`.
+  //    This reuses the parent index every viewer's tree-loading path already
+  //    populates (loadChildrenForParent / loadChildrenTree).
+  // 2. PINNED: a node is reachable when its id is in `pinnedNodeRefCounts`
+  //    (count > 0) — reported directly by a component that displays it
+  //    WITHOUT it being a structureTree descendant of any open tab's root.
+  //    This is the common case for anything that crosses the tree, not
+  //    follows it: a query/Kanban/table view's matched rows (they live under
+  //    unrelated parent documents, not as children of the query node), an
+  //    inline `[[wikilink]]`/mention reference (resolved via `ensureNode()`,
+  //    which never touches `structureTree`), a relation-field value, a
+  //    backlink. Channel 1 alone silently evicted these out from under a
+  //    still-open, still-rendering consumer — see `pinNodes`.
   // ------------------------------------------------------------------------
 
   /** Root node ids of every currently open tab/pane, as last reported by
@@ -856,6 +866,17 @@ export class SharedNodeStore {
    * latter is real information that nothing is reachable.
    */
   private hasOpenDocumentReport = false;
+
+  /** Owner id (one per pinning component instance) -> the node ids it is
+   * currently pinning reachable. See `pinNodes`. */
+  private pinnedByOwner = new Map<string, Set<string>>();
+
+  /** node id -> number of owners currently pinning it reachable. A node
+   * with a nonzero count here is reachable regardless of its structural
+   * position — see `isReachable`. Derived from `pinnedByOwner`, kept as a
+   * separate reverse index so a per-node reachability check is O(1) rather
+   * than a scan over every owner. */
+  private pinnedNodeRefCounts = new Map<string, number>();
 
   /** nodeId -> scheduled eviction timer, for a node currently unreachable
    * from every open tab/pane and waiting out `evictionInactivityMs`. */
@@ -887,18 +908,82 @@ export class SharedNodeStore {
     const isFirstReport = !this.hasOpenDocumentReport;
     this.hasOpenDocumentReport = true;
 
-    if (!isFirstReport && next.size === this.openDocumentRootIds.size) {
-      let unchanged = true;
-      for (const id of next) {
-        if (!this.openDocumentRootIds.has(id)) {
-          unchanged = false;
-          break;
-        }
-      }
-      if (unchanged) return;
-    }
+    if (!isFirstReport && SharedNodeStore.setsEqual(next, this.openDocumentRootIds)) return;
     this.openDocumentRootIds = next;
     this.reconcileEvictionCandidates();
+  }
+
+  /**
+   * Declare the full set of node ids `ownerId` is currently displaying,
+   * OUTSIDE the structureTree-walk reachability model — e.g. a query/
+   * Kanban/table view's matched rows (which live under unrelated parent
+   * documents, not as children of the query node) or an inline
+   * `[[wikilink]]`/mention reference, relation-field value, or backlink
+   * (resolved via `getNode`/`ensureNode`, neither of which touches
+   * `structureTree`). A pinned node is reachable regardless of its
+   * structural position, for as long as ANY owner pins it.
+   *
+   * Replaces `ownerId`'s previous pin set wholesale (not a delta) — call
+   * again with the updated list on every change, and with an empty list (or
+   * `unpinAll`) once nothing is pinned / on unmount. Typical call site:
+   *
+   *   $effect(() => pinReachableNodes(ownerId, [id]));
+   *
+   * `$effect`'s automatic cleanup-before-rerun/unmount is what keeps a
+   * changing or ending pin set from leaking — see
+   * `$lib/utils/pin-node-reachability.ts`.
+   */
+  pinNodes(ownerId: string, nodeIds: Iterable<string>): void {
+    const next = new Set(nodeIds);
+    const previous = this.pinnedByOwner.get(ownerId);
+
+    if (previous && SharedNodeStore.setsEqual(next, previous)) return;
+
+    if (previous) {
+      for (const id of previous) {
+        if (!next.has(id)) this.decrementPinRefCount(id);
+      }
+    }
+    for (const id of next) {
+      if (!previous?.has(id)) this.incrementPinRefCount(id);
+    }
+
+    if (next.size === 0) {
+      this.pinnedByOwner.delete(ownerId);
+    } else {
+      this.pinnedByOwner.set(ownerId, next);
+    }
+
+    // A newly-pinned node may need its pending eviction cancelled; a
+    // newly-unpinned one (last owner released it) may need to be scheduled.
+    this.reconcileEvictionCandidates();
+  }
+
+  /** Remove every pin `ownerId` holds (component unmount). Equivalent to
+   * `pinNodes(ownerId, [])`. */
+  unpinAll(ownerId: string): void {
+    this.pinNodes(ownerId, []);
+  }
+
+  private incrementPinRefCount(nodeId: string): void {
+    this.pinnedNodeRefCounts.set(nodeId, (this.pinnedNodeRefCounts.get(nodeId) ?? 0) + 1);
+  }
+
+  private decrementPinRefCount(nodeId: string): void {
+    const count = this.pinnedNodeRefCounts.get(nodeId) ?? 0;
+    if (count <= 1) {
+      this.pinnedNodeRefCounts.delete(nodeId);
+    } else {
+      this.pinnedNodeRefCounts.set(nodeId, count - 1);
+    }
+  }
+
+  private static setsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+    if (a.size !== b.size) return false;
+    for (const id of a) {
+      if (!b.has(id)) return false;
+    }
+    return true;
   }
 
   /**
@@ -917,8 +1002,9 @@ export class SharedNodeStore {
   }
 
   /**
-   * True when `nodeId` — or an ancestor reached by walking `structureTree`
-   * parent edges — is the root document of a currently open tab/pane.
+   * True when `nodeId` is explicitly pinned (see `pinNodes`), or when
+   * `nodeId` — or an ancestor reached by walking `structureTree` parent
+   * edges — is the root document of a currently open tab/pane.
    *
    * Before the first `updateOpenDocumentRoots` report (i.e. every caller
    * that isn't `navigation.svelte.ts` — most unit tests included), the
@@ -928,6 +1014,7 @@ export class SharedNodeStore {
    */
   private isReachable(nodeId: string): boolean {
     if (!this.hasOpenDocumentReport) return true;
+    if (this.pinnedNodeRefCounts.has(nodeId)) return true;
     if (!structureTree) return true;
 
     let current: string | null = nodeId;
@@ -3230,6 +3317,8 @@ export class SharedNodeStore {
     this.evictionTimers.clear();
     this.openDocumentRootIds.clear();
     this.hasOpenDocumentReport = false;
+    this.pinnedByOwner.clear();
+    this.pinnedNodeRefCounts.clear();
     this.notifyAllSubscribers();
   }
 
@@ -4643,6 +4732,8 @@ export class SharedNodeStore {
     this.evictionTimers.clear();
     this.openDocumentRootIds.clear();
     this.hasOpenDocumentReport = false;
+    this.pinnedByOwner.clear();
+    this.pinnedNodeRefCounts.clear();
     this.evictionInactivityMs = 30_000;
 
     this.metrics = {

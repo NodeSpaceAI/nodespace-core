@@ -216,4 +216,103 @@ describe('SharedNodeStore - reachability tracking & eviction', () => {
 
     expect(store.getNode('fast-evict')).toBeUndefined();
   });
+
+  describe('pinNodes — reachability for consumers outside the structureTree walk', () => {
+    // Reproduces the real bug: a node with NO structureTree parent — exactly
+    // what a query-view result row looks like (it lives under whatever
+    // parent document it was originally created in, not as a child of the
+    // query node) or what an ensureNode()-resolved [[wikilink]] reference
+    // looks like (never touches structureTree at all). Against the
+    // structureTree-only reachability check, this node is unreachable from
+    // any open tab the instant it's cached — even while a still-open query
+    // view/reference is the only thing currently displaying it. This whole
+    // describe block would fail on the pre-pin code: every node here has no
+    // parent and is never itself an open document root, so isReachable()
+    // would report it unreachable from the moment it's cached, and it would
+    // be evicted after the threshold regardless of the pin calls below.
+
+    it('a node reachable only via an explicit pin (e.g. a query-view row) is never evicted while pinned', async () => {
+      // A tab IS open (on a document this node has no structural relation
+      // to), so eviction is active — not exercising the "dormant" case.
+      store.updateOpenDocumentRoots(['some-open-tab-root']);
+
+      store.setNode(createTestNode({ id: 'query-row-1' }), databaseSource);
+      store.pinNodes('query-view-instance-1', ['query-row-1']);
+
+      await wait(TEST_INACTIVITY_MS + 40);
+
+      expect(store.getNode('query-row-1')).toBeDefined();
+    });
+
+    it('a wikilink-style reference (ensureNode, no structureTree edge) is never evicted while its component keeps it pinned', async () => {
+      store.updateOpenDocumentRoots(['some-open-tab-root']);
+      store.setNode(createTestNode({ id: 'wikilink-target' }), databaseSource);
+
+      // Mirrors node-ref-inline.svelte / node-card-inline.svelte: pin on
+      // resolve, keep pinning across re-renders (same owner id, same call).
+      store.pinNodes('node-ref-instance-1', ['wikilink-target']);
+      await wait(TEST_INACTIVITY_MS + 20);
+      expect(store.getNode('wikilink-target')).toBeDefined();
+
+      // Still pinned after another window — a long-hovering/long-open
+      // reference must not eventually lose the race with the timer.
+      await wait(TEST_INACTIVITY_MS + 20);
+      expect(store.getNode('wikilink-target')).toBeDefined();
+    });
+
+    it('unpinning (component unmount) makes the node evictable again after the threshold', async () => {
+      store.updateOpenDocumentRoots(['some-open-tab-root']);
+      store.setNode(createTestNode({ id: 'query-row-2' }), databaseSource);
+      store.pinNodes('query-view-instance-2', ['query-row-2']);
+
+      await wait(TEST_INACTIVITY_MS + 20);
+      expect(store.getNode('query-row-2')).toBeDefined(); // still pinned
+
+      store.unpinAll('query-view-instance-2'); // component unmounted / row scrolled out
+
+      await wait(TEST_INACTIVITY_MS + 40);
+      expect(store.getNode('query-row-2')).toBeUndefined();
+    });
+
+    it('a node pinned by two owners stays reachable until BOTH unpin (query view + inline reference to the same row)', async () => {
+      store.updateOpenDocumentRoots(['some-open-tab-root']);
+      store.setNode(createTestNode({ id: 'shared-cross-ref' }), databaseSource);
+
+      store.pinNodes('query-view-instance-3', ['shared-cross-ref']);
+      store.pinNodes('node-ref-instance-3', ['shared-cross-ref']);
+
+      store.unpinAll('query-view-instance-3'); // one consumer goes away
+      await wait(TEST_INACTIVITY_MS + 40);
+      expect(store.getNode('shared-cross-ref')).toBeDefined(); // the other still pins it
+
+      store.unpinAll('node-ref-instance-3'); // the last one goes away
+      await wait(TEST_INACTIVITY_MS + 40);
+      expect(store.getNode('shared-cross-ref')).toBeUndefined();
+    });
+
+    it('a changing pin set (query results updating) only keeps the CURRENT rows reachable', async () => {
+      store.updateOpenDocumentRoots(['some-open-tab-root']);
+      store.setNode(createTestNode({ id: 'stale-row' }), databaseSource);
+      store.setNode(createTestNode({ id: 'fresh-row' }), databaseSource);
+
+      store.pinNodes('query-view-instance-4', ['stale-row']);
+      // Query re-executed: 'stale-row' no longer matches, 'fresh-row' does.
+      // pinNodes replaces the owner's set wholesale, not as a delta.
+      store.pinNodes('query-view-instance-4', ['fresh-row']);
+
+      await wait(TEST_INACTIVITY_MS + 40);
+
+      expect(store.getNode('stale-row')).toBeUndefined(); // no longer pinned by anything
+      expect(store.getNode('fresh-row')).toBeDefined(); // currently pinned
+    });
+
+    it('a node with no open-document report at all stays dormant-reachable even when unpinned (baseline: pinning is additive, not a new dormancy gate)', () => {
+      // No updateOpenDocumentRoots call in this test — mirrors the existing
+      // "leaves eviction dormant until navigation ever reports open-tab
+      // state" guarantee; pinNodes must not change that default.
+      store.setNode(createTestNode({ id: 'never-reported-2' }), databaseSource);
+      store.pinNodes('some-owner', []); // no-op pin, exercises the empty-set path
+      expect(store.__getPendingEvictionCountForTesting()).toBe(0);
+    });
+  });
 });

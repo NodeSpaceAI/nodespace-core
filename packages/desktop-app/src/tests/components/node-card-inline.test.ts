@@ -19,6 +19,8 @@ const getNode = vi.fn();
 const setNode = vi.fn();
 const fetchNode = vi.fn();
 const currentEpoch = vi.fn().mockReturnValue(0);
+const pinNodes = vi.fn();
+const unpinAll = vi.fn();
 
 vi.mock('$lib/services/shared-node-store.svelte', () => ({
   sharedNodeStore: {
@@ -26,7 +28,13 @@ vi.mock('$lib/services/shared-node-store.svelte', () => ({
     setNode: (...a: unknown[]) => setNode(...a),
     // ADR-053 epoch guard: the on-mount fetch captures currentEpoch() and
     // re-checks it before setNode. A stable value keeps the read in-epoch.
-    currentEpoch: (...a: unknown[]) => currentEpoch(...a)
+    currentEpoch: (...a: unknown[]) => currentEpoch(...a),
+    // The card pins its nodeId reachable for as long as it's mounted (see
+    // pin-node-reachability.ts) — exercised by these mocks, not asserted on
+    // directly; the eviction/pin mechanism itself is unit-tested in
+    // shared-node-store-eviction.test.ts.
+    pinNodes: (...a: unknown[]) => pinNodes(...a),
+    unpinAll: (...a: unknown[]) => unpinAll(...a)
   }
 }));
 

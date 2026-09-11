@@ -8,14 +8,25 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { v4 as uuidv4 } from 'uuid';
   import { createLogger } from '$lib/utils/logger';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { backendAdapter } from '$lib/services/backend-adapter';
+  import { pinReachableNodes } from '$lib/utils/pin-node-reachability';
   import { TaskNodeHelpers, isTaskNode } from '$lib/types/task-node';
 
   const log = createLogger('NodeCardInline');
 
   let { nodeId, displayText = '' }: { nodeId: string; displayText?: string } = $props();
+
+  // The referenced node is an arbitrary cross-reference (nodespace:// URI in
+  // chat content) resolved below via a one-shot mount fetch, never through
+  // structureTree. Pin it explicitly for as long as this card displays it,
+  // so it isn't evicted out from under a still-open chat (which would
+  // otherwise silently revert `title` to the truncated-id fallback below,
+  // indistinguishable from the node having been deleted).
+  const pinOwnerId = uuidv4();
+  $effect(() => pinReachableNodes(pinOwnerId, [nodeId]));
 
   const nodeTypeIcons: Record<string, string> = {
     text: '📝',
