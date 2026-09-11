@@ -76,6 +76,11 @@ libsql-sys = { version = "0.8", features = ["rusqlite"] }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+# "test-util" enables `#[tokio::test(start_paused = true)]` + `tokio::time::advance`,
+# used to verify CronRunner's 60-second poll loop actually ticks without a real
+# 60-second wait, without weakening the runtime tokio ships in non-test builds
+# (this is a [dev-dependencies]-only feature addition).
+tokio = { workspace = true, features = ["test-util"] }
 http-body-util = "0.1"
 criterion = { workspace = true }
 tempfile = "3.0"

@@ -19,7 +19,7 @@ use nodespace_core::services::node_service::access_gate::SubtreeAccessGate;
 use nodespace_core::services::{
     EmbeddingProcessor, EmbeddingScheduler, NodeAccessor, NodeEmbeddingService,
 };
-use nodespace_core::{NodeService as CoreNodeService, SqliteStore};
+use nodespace_core::{NodeService as CoreNodeService, PlaybookEngine, SqliteStore};
 use nodespace_nlp_engine::EmbeddingService;
 use tokio::sync::{watch, RwLock};
 
@@ -134,6 +134,11 @@ pub struct DatabaseServices {
     /// (should not happen in practice — kept `Option` for symmetry with
     /// how other optional background tasks are represented here).
     conflict_sweep_shutdown: Option<watch::Sender<bool>>,
+    /// Stops this database's play (playbook) engine — event subscriber,
+    /// `RuleProcessor`, and `CronRunner` — on retirement. `None` when the
+    /// engine never started (should not happen in practice — kept `Option`
+    /// for symmetry with `conflict_sweep_shutdown`).
+    playbook_shutdown: Option<watch::Sender<bool>>,
 }
 
 impl DatabaseServices {
@@ -160,6 +165,9 @@ impl DatabaseServices {
             drop(ready.processor);
         }
         if let Some(tx) = &self.conflict_sweep_shutdown {
+            let _ = tx.send(true);
+        }
+        if let Some(tx) = &self.playbook_shutdown {
             let _ = tx.send(true);
         }
         // End every live `WatchNodes` stream on this database rather than
@@ -356,6 +364,30 @@ pub async fn build_database_services(
         conflict_sweep_shutdown_rx,
     ));
 
+    // Play (playbook) engine — event subscriber, sequential RuleProcessor,
+    // and CronRunner's 60-second poll loop, per ADR-073 hard-gated to
+    // locally-originated events until ADR-060's multi-device semantics land
+    // (see `nodespace_core::playbook::engine::is_sync_originated`). One per
+    // database, its own watch-channel shutdown signal (mirroring the
+    // conflict-journal sweep's shape above), stopped by
+    // `DatabaseServices::shutdown` alongside this database's other
+    // background tasks. `PlaybookEngine::start` subscribes to this
+    // database's domain-event broadcast channel FIRST (before loading active
+    // plays, to avoid missing an event racing the initial load) and spawns
+    // `CronRunner` itself — nothing else needs to.
+    let (playbook_shutdown_tx, playbook_shutdown_rx) = watch::channel(false);
+    let playbook_engine = Arc::new(PlaybookEngine::new(node_service.clone()));
+    let playbook_db_id = database_id.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = playbook_engine.start(playbook_shutdown_rx).await {
+            tracing::error!(
+                database_id = %playbook_db_id,
+                error = %e,
+                "Play engine exited with an error"
+            );
+        }
+    });
+
     Ok((
         DatabaseServices {
             node_service_grpc,
@@ -366,6 +398,7 @@ pub async fn build_database_services(
             embedding_state,
             shutdown_token,
             conflict_sweep_shutdown: Some(conflict_sweep_shutdown_tx),
+            playbook_shutdown: Some(playbook_shutdown_tx),
         },
         embedding_task,
     ))

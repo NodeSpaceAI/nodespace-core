@@ -128,6 +128,16 @@ pub struct PlaybookExecutionContext {
     pub source_playbook_id: String,
 }
 
+/// Reserved `source_client_id` for writes applied by the local-first sync
+/// service (ADR-027's origin-tagging convention: `NodeService::with_client
+/// ("sync-service")`).
+///
+/// Consumers that must not treat a sync-applied write as if it were a fresh
+/// local mutation — the playbook engine's local-origin gate (ADR-073) is the
+/// first such consumer — compare `EventMetadata::source_client_id` against
+/// this constant rather than hardcoding the literal string.
+pub const SYNC_SERVICE_CLIENT_ID: &str = "sync-service";
+
 /// Metadata for cross-cutting concerns on domain events
 ///
 /// Wraps `DomainEvent` in an envelope so metadata like `source_client_id` lives
