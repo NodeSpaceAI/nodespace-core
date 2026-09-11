@@ -351,6 +351,135 @@ async fn sync_originated_event_does_not_reach_trigger_evaluation() -> Result<()>
     Ok(())
 }
 
+/// Regression test: the real sync-apply shape uses `NodeService::bulk_create`
+/// (`nodespaced-pro`'s catch-up/reconnect path batches pulled pages through
+/// `bulk_create`, not one `create_node` per row), not the single-row
+/// `create_node` the test above exercises. `SqliteStore::batch_create_nodes`
+/// previously hardcoded `source: None` for every node in the batch,
+/// discarding whatever client_id the calling `NodeService` was tagged with —
+/// so a sync-tagged `bulk_create` call emitted events with
+/// `source_client_id: None`, which `is_sync_originated` (correctly) does NOT
+/// treat as sync-originated, and the ADR-073 gate let it straight through.
+/// This is exactly the "catch-up replay re-firing history" failure mode
+/// ADR-073 exists to prevent, for every device reconnecting with a backlog
+/// of a teammate's new nodes. Covers the same shape as
+/// `sync_originated_event_does_not_reach_trigger_evaluation` above, but
+/// through `bulk_create` instead of `create_node`.
+#[tokio::test]
+async fn sync_originated_bulk_create_does_not_reach_trigger_evaluation() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    create_schema(
+        &service,
+        "pb_bulk_sync_task",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    create_play(
+        &service,
+        "close-open-bulk-sync-tasks",
+        json!([{
+            "name": "auto-close-bulk-sync",
+            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pb_bulk_sync_task" },
+            "conditions": ["node.status == 'open'"],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "status": "done" }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Simulate the real sync-apply shape: a sync-tagged NodeService batching
+    // pulled rows through `bulk_create` (as `nodespaced-pro`'s catch-up path
+    // does via `apply_node_upserts_batched`), not one `create_node` call per
+    // row.
+    let sync_service = service.with_client(SYNC_SERVICE_CLIENT_ID);
+    let synced_node = Node::new(
+        "pb_bulk_sync_task".to_string(),
+        "task applied via sync bulk_create".to_string(),
+        json!({ "status": "open" }),
+    );
+    let synced_id = synced_node.id.clone();
+    sync_service.bulk_create(vec![synced_node]).await?;
+
+    // Control: a genuinely local `bulk_create` call with the identical
+    // shape, on the SAME running engine, proving the engine is alive and
+    // would have fired for this exact play/condition/action if origin
+    // hadn't gated it out.
+    let control = Node::new(
+        "pb_bulk_sync_task".to_string(),
+        "control: local bulk_create, same shape".to_string(),
+        json!({ "status": "open" }),
+    );
+    let control_id = control.id.clone();
+    service.bulk_create(vec![control]).await?;
+
+    let control_fired = wait_until(|| {
+        let service = Arc::clone(&service);
+        let id = control_id.clone();
+        async move {
+            matches!(
+                service.get_node(&id).await,
+                Ok(Some(n)) if user_field(&n, "pb_bulk_sync_task", "status").and_then(|v| v.as_str()) == Some("done")
+            )
+        }
+    })
+    .await;
+    assert!(
+        control_fired,
+        "control: a LOCAL bulk_create call with the identical trigger/condition/action \
+         shape must fire — otherwise a non-firing sync bulk_create node proves nothing \
+         about the gate"
+    );
+
+    let synced_after = service
+        .get_node(&synced_id)
+        .await?
+        .expect("sync-tagged bulk-created node must still exist (created, just not acted on)");
+
+    // The sync-tagged bulk-created node must remain untouched — its
+    // NodeCreated event must carry source_client_id = Some(SYNC_SERVICE_CLIENT_ID)
+    // (not None) and never reach trigger evaluation at all.
+    //
+    // Unlike `create_node`, `NodeService::bulk_create` does not run node
+    // properties through `normalize_flat_properties_to_namespace` before
+    // insert (a separate, pre-existing inconsistency, out of scope for this
+    // fix) — a node it creates stores properties flat at the top level
+    // (`properties.status`), not nested under the node_type key the way
+    // `create_node`/`update_node` do. If the update action HAD fired, it
+    // would have deep-merged a namespaced `{"pb_bulk_sync_task": {"status":
+    // "done"}}` alongside that flat shape (as the control assertion above
+    // relies on) — so asserting its absence, together with the untouched
+    // flat property, is the correct and shape-agnostic way to prove this
+    // node was never acted on.
+    assert_eq!(
+        user_field(&synced_after, "pb_bulk_sync_task", "status").and_then(|v| v.as_str()),
+        None,
+        "the update action's namespaced 'done' marker must be absent — the sync-tagged \
+         bulk_create event must never have reached trigger evaluation (ADR-073)"
+    );
+    assert_eq!(
+        synced_after
+            .properties
+            .get("status")
+            .and_then(|v| v.as_str()),
+        Some("open"),
+        "a sync-originated bulk_create NodeCreated event must be excluded from trigger \
+         evaluation before rule matching (ADR-073) — this node must be left exactly as created"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
 /// Acceptance criterion: "CronRunner's poll loop verifiably runs on a
 /// schedule (test or diagnostic confirms it is spawned and ticking)."
 ///
