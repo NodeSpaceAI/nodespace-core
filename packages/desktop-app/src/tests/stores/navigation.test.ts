@@ -24,7 +24,20 @@ import {
 } from '$lib/stores/navigation.svelte';
 import { TabPersistenceService } from '$lib/services/tab-persistence-service';
 import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
+import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { computeTabTitle } from '$lib/utils/tab-title';
+
+// Every tab mutation in this file now also reports the open-tab set to
+// SharedNodeStore (see navigation.svelte.ts's #syncNodeReachability). Reset
+// its singleton before every test so that side effect can neither pick up
+// leftover cached nodes from whatever other spec file shares this process
+// (vitest's `singleFork: true` runs the whole suite in one process) nor
+// leave its own eviction timers dangling for one that runs after it — a
+// fresh instance orphans any timer the previous one scheduled, and an
+// orphaned instance no test can reach again is inert once its timer fires.
+beforeEach(() => {
+  SharedNodeStore.resetInstance();
+});
 
 describe('Navigation Store - Pane Management', () => {
   beforeEach(() => {
@@ -1691,5 +1704,98 @@ describe('Navigation Store - Search tab', () => {
     const loaded = TabPersistenceService.load();
     expect(loaded).not.toBeNull();
     expect(loaded?.tabs.some((t) => t.type === 'search')).toBe(true);
+  });
+});
+
+describe('Navigation Store - SharedNodeStore reachability sync', () => {
+  beforeEach(() => {
+    resetTabState();
+  });
+
+  it('reports the open-tab document root ids to SharedNodeStore whenever a tab opens', () => {
+    const spy = vi.spyOn(SharedNodeStore.getInstance(), 'updateOpenDocumentRoots');
+
+    addTab(
+      {
+        id: 'tab-node-1',
+        title: 'Doc 1',
+        type: 'node',
+        content: { nodeId: 'doc-node-1' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      },
+      false
+    );
+
+    expect(spy).toHaveBeenCalled();
+    const lastCallArg = spy.mock.calls.at(-1)?.[0];
+    expect(Array.from(lastCallArg as Iterable<string>)).toContain('doc-node-1');
+  });
+
+  it('reports the reduced open-tab set to SharedNodeStore when a tab closes', () => {
+    addTab(
+      {
+        id: 'tab-node-1',
+        title: 'Doc 1',
+        type: 'node',
+        content: { nodeId: 'doc-node-1' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      },
+      false
+    );
+
+    const spy = vi.spyOn(SharedNodeStore.getInstance(), 'updateOpenDocumentRoots');
+    closeTab('tab-node-1');
+
+    expect(spy).toHaveBeenCalled();
+    const lastCallArg = Array.from(spy.mock.calls.at(-1)?.[0] as Iterable<string>);
+    expect(lastCallArg).not.toContain('doc-node-1');
+  });
+
+  it('does not report a non-node tab (search/settings/conflicts) as an open document root', () => {
+    const spy = vi.spyOn(SharedNodeStore.getInstance(), 'updateOpenDocumentRoots');
+
+    addTab(
+      { id: 'search', title: 'Search', type: 'search', closeable: true, paneId: DEFAULT_PANE_ID },
+      false
+    );
+
+    const lastCallArg = Array.from(spy.mock.calls.at(-1)?.[0] as Iterable<string>);
+    expect(lastCallArg).not.toContain('search');
+  });
+
+  it('keeps a node reachable when it is still open in a second tab after one referencing tab closes', () => {
+    addTab(
+      {
+        id: 'tab-a',
+        title: 'Doc A (pane 1)',
+        type: 'node',
+        content: { nodeId: 'shared-doc' },
+        closeable: true,
+        paneId: DEFAULT_PANE_ID
+      },
+      false
+    );
+    createPane();
+    const secondPaneId = navigationStore.state.panes[1].id;
+    addTab(
+      {
+        id: 'tab-b',
+        title: 'Doc A (pane 2)',
+        type: 'node',
+        content: { nodeId: 'shared-doc' },
+        closeable: true,
+        paneId: secondPaneId
+      },
+      false
+    );
+
+    const spy = vi.spyOn(SharedNodeStore.getInstance(), 'updateOpenDocumentRoots');
+    closeTab('tab-a');
+
+    const lastCallArg = Array.from(spy.mock.calls.at(-1)?.[0] as Iterable<string>);
+    // tab-b still shows shared-doc, so it must still be reported as open.
+    expect(lastCallArg).toContain('shared-doc');
   });
 });

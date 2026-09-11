@@ -2,6 +2,7 @@ import { formatDateISO } from '$lib/utils/date-formatting';
 import { clearScrollPosition, clearPaneScrollPositions } from './scroll-state';
 import { TabPersistenceService } from '$lib/services/tab-persistence-service';
 import { NodeExpansionCoordinator } from '$lib/services/node-expansion-coordinator';
+import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { createLogger } from '$lib/utils/logger';
 
 const log = createLogger('Navigation');
@@ -95,11 +96,40 @@ class NavigationStore {
   #persistenceTimer: ReturnType<typeof setTimeout> | undefined;
 
   /**
+   * Push the current set of open tabs' document root node ids to
+   * SharedNodeStore so it can evict cached nodes no open tab/pane reaches
+   * any longer (see `SharedNodeStore.updateOpenDocumentRoots`). Called on
+   * every tab-state mutation — open, close, content change, and session
+   * load/reset — with the FULL current list, so a node whose only open tab
+   * just closed becomes an eviction candidate there, and a node reopened
+   * before its eviction timer fires gets that timer cancelled.
+   *
+   * Looked up dynamically (not a module-scope singleton reference) because
+   * tests call `SharedNodeStore.resetInstance()` between runs — mirrors the
+   * same pattern `reactive-node-service.svelte.ts` uses for the same reason.
+   */
+  #syncNodeReachability(): void {
+    const rootNodeIds: string[] = [];
+    for (const tab of this.state.tabs) {
+      if (tab.type === 'node' && tab.content?.nodeId) {
+        rootNodeIds.push(tab.content.nodeId);
+      }
+    }
+    SharedNodeStore.getInstance().updateOpenDocumentRoots(rootNodeIds);
+  }
+
+  /**
    * Persist tab state (debounced). Only persists after initialization to avoid
    * overwriting loaded state during startup. Enriches tabs with expansion state
    * before saving.
    */
   #persist(): void {
+    // Reachability sync runs unconditionally (not debounced, not gated on
+    // #isInitialized like the disk save below): eviction timers are keyed
+    // off the CURRENT open-tab set, so a node closed and reopened inside the
+    // disk-persistence debounce window must still see both changes promptly.
+    this.#syncNodeReachability();
+
     if (!this.#isInitialized) return;
 
     if (this.#persistenceTimer !== undefined) {
@@ -160,12 +190,19 @@ class NavigationStore {
     // Enable persistence after load attempt (whether successful or not)
     this.#isInitialized = true;
 
+    // Establish initial reachability from the restored (or default) tab set.
+    // Bypasses #persist() (this method intentionally doesn't debounce a save
+    // of the state it just loaded), so sync explicitly rather than relying
+    // on some later mutation to report it first.
+    this.#syncNodeReachability();
+
     return !!persisted;
   }
 
   /** Test utility to reset store to initial state */
   resetTabState(): void {
     this.state = createInitialTabState();
+    this.#syncNodeReachability();
   }
 
   /** Clear all tabs and panes (used during database hot-swap) */

@@ -257,7 +257,16 @@ export default defineConfig({
     pool: 'forks',
     poolOptions: {
       forks: {
-        singleFork: true // Run all tests in a single process sequentially
+        singleFork: true, // Run all tests in a single process sequentially
+        // Exposes global.gc() to the worker process so a real memory
+        // measurement (e.g. the multi-tab eviction test in
+        // architecture-benchmarks.test.ts) can force a GC pass before
+        // reading process.memoryUsage() — without it, heapUsed reflects
+        // whatever V8 hasn't gotten around to collecting yet rather than
+        // actual current reachability, making a before/after delta
+        // unreliable. Harmless for every other test: it only exposes the
+        // function, nothing calls it unless a test opts in.
+        execArgv: ['--expose-gc']
       }
     }
   }
