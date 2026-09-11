@@ -88,6 +88,17 @@ const IMPLICIT_BROWSER_DATABASE: DatabaseInfo = {
  */
 const ACTIVE_DB_STORAGE_KEY = 'nodespace.activeDatabaseId';
 
+/**
+ * Owner key `DATABASE_SETTINGS_NODE_ID` is pinned reachable under (see
+ * SharedNodeStore.pinNodes) — never unpinned, since the singleton backs
+ * always-mounted Pro-sync chrome (pro-sync-pill.svelte, app-shell.svelte,
+ * membership.svelte.ts, collaboration-locked.svelte) that has nothing to do
+ * with which tab/pane is open. It has no structureTree relationship to any
+ * open tab and isn't itself a tab root, so without an explicit pin it's
+ * unreachable — and thus evictable — the instant it's cached.
+ */
+const DATABASE_SETTINGS_PIN_OWNER = 'database-settings-node';
+
 function rememberActiveDatabaseId(id: string): void {
   try {
     localStorage.setItem(ACTIVE_DB_STORAGE_KEY, id);
@@ -483,8 +494,19 @@ class DatabaseStore {
    *
    * Fire-and-forget: callers must not block on it, and a missing node (older
    * database not yet backfilled) simply leaves the variant at its default.
+   *
+   * Also (re-)pins the singleton reachable, unconditionally and up front —
+   * not only inside the fetch's `.then()` — so there is no window where the
+   * node is cached but not pinned regardless of fetch timing, and so a
+   * database switch's `clearAll()` (which wipes every pin along with every
+   * cached node) gets its pin re-established the moment this runs again, the
+   * same call that re-hydrates the node itself. See
+   * `DATABASE_SETTINGS_PIN_OWNER`'s doc comment for why this needs pinning
+   * at all: nothing about it is reachable via the structureTree walk.
    */
   refreshDatabaseSettings(): void {
+    sharedNodeStore.pinNodes(DATABASE_SETTINGS_PIN_OWNER, [DATABASE_SETTINGS_NODE_ID]);
+
     const epoch = sharedNodeStore.currentEpoch();
     backendAdapter
       .getNode(DATABASE_SETTINGS_NODE_ID)

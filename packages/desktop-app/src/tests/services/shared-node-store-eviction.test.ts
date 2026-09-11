@@ -25,6 +25,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { SharedNodeStore, SimplePersistenceCoordinator } from '../../lib/services/shared-node-store.svelte';
 import { structureTree } from '../../lib/stores/reactive-structure-tree.svelte';
+import { DATABASE_SETTINGS_NODE_ID } from '../../lib/plugins/ui-extensions';
 import { createTestNode } from '../helpers';
 import type { UpdateSource } from '../../lib/types/update-protocol';
 
@@ -313,6 +314,57 @@ describe('SharedNodeStore - reachability tracking & eviction', () => {
       store.setNode(createTestNode({ id: 'never-reported-2' }), databaseSource);
       store.pinNodes('some-owner', []); // no-op pin, exercises the empty-set path
       expect(store.__getPendingEvictionCountForTesting()).toBe(0);
+    });
+  });
+
+  describe('DATABASE_SETTINGS_NODE_ID — always-mounted app chrome outside any open tab', () => {
+    // Reproduces the real bug found in review: DATABASE_SETTINGS_NODE_ID
+    // (database.svelte.ts) is a global singleton read continuously by
+    // always-mounted Pro-sync chrome (pro-sync-pill.svelte, app-shell.svelte,
+    // membership.svelte.ts) — it has no structureTree relationship to any
+    // open tab and is never itself a tab root. Without a pin, it is
+    // unreachable — and thus evicted after the inactivity threshold — the
+    // instant it's cached, REGARDLESS of how often it's refreshed (setNode
+    // alone doesn't cancel a pending eviction). This exact scenario is what
+    // database.svelte.ts's refreshDatabaseSettings() now guards against by
+    // pinning it on every call — see database.test.ts's
+    // "pins DATABASE_SETTINGS_NODE_ID reachable" tests for proof that it
+    // actually does. This test proves the OTHER half: that pinning it (the
+    // real production node id, the real SharedNodeStore) is what makes it
+    // survive exactly the failure sequence the reviewer reproduced.
+    it('survives the inactivity threshold while pinned, with only an unrelated tab open', async () => {
+      store.setNode(
+        createTestNode({
+          id: DATABASE_SETTINGS_NODE_ID,
+          nodeType: 'database-settings',
+          properties: { sync_enabled: true, auth_status: 'connected' }
+        }),
+        databaseSource
+      );
+
+      // Mirrors what refreshDatabaseSettings() does on every refresh.
+      store.pinNodes('database-settings-node', [DATABASE_SETTINGS_NODE_ID]);
+
+      // A tab IS open — on some document entirely unrelated to the settings
+      // singleton — so eviction is active, not dormant.
+      store.updateOpenDocumentRoots(['some-open-document-root']);
+
+      await wait(TEST_INACTIVITY_MS + 40);
+
+      expect(store.getNode(DATABASE_SETTINGS_NODE_ID)).toBeDefined();
+    });
+
+    it('WITHOUT the pin, the same sequence evicts it — this is the bug the fix closes', async () => {
+      store.setNode(
+        createTestNode({ id: DATABASE_SETTINGS_NODE_ID, nodeType: 'database-settings' }),
+        databaseSource
+      );
+      // No pinNodes() call here, unlike the test above.
+      store.updateOpenDocumentRoots(['some-open-document-root']);
+
+      await wait(TEST_INACTIVITY_MS + 40);
+
+      expect(store.getNode(DATABASE_SETTINGS_NODE_ID)).toBeUndefined();
     });
   });
 });

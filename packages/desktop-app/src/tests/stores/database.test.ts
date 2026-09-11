@@ -23,12 +23,17 @@ vi.mock('@tauri-apps/api/core', () =>
 const flushAllPendingSaves = vi.fn((..._a: unknown[]) => Promise.resolve(new Set<string>()));
 const clearAll = vi.fn((..._a: unknown[]) => undefined);
 const setNode = vi.fn((..._a: unknown[]) => undefined);
+// refreshDatabaseSettings() pins DATABASE_SETTINGS_NODE_ID reachable on
+// every call (it backs always-mounted Pro-sync chrome with no structureTree
+// relationship to any open tab — see database.svelte.ts's doc comment).
+const pinNodes = vi.fn((..._a: unknown[]) => undefined);
 let epochValue = 0;
 vi.mock('$lib/services/shared-node-store.svelte', () => ({
   sharedNodeStore: {
     flushAllPendingSaves: (...a: unknown[]) => flushAllPendingSaves(...a),
     clearAll: (...a: unknown[]) => clearAll(...a),
     setNode: (...a: unknown[]) => setNode(...a),
+    pinNodes: (...a: unknown[]) => pinNodes(...a),
     currentEpoch: () => epochValue
   }
 }));
@@ -606,6 +611,33 @@ describe('Database Store', () => {
         { type: 'database', reason: 'refresh-database-settings' },
         true
       );
+    });
+
+    it('pins DATABASE_SETTINGS_NODE_ID reachable, unconditionally and before the fetch resolves', () => {
+      // The settings node backs always-mounted Pro-sync chrome (the sync
+      // pill, membership gating) with no structureTree relationship to any
+      // open tab, so SharedNodeStore's eviction feature can't see it as
+      // reachable on its own — without this pin call it would be evicted
+      // ~30s after the app's first tab-state report regardless of how often
+      // it's refreshed. Asserted synchronously (no await): the pin must
+      // happen up front, not only after the async fetch settles.
+      databaseStore.refreshDatabaseSettings();
+
+      expect(pinNodes).toHaveBeenCalledWith(expect.any(String), [DATABASE_SETTINGS_NODE_ID]);
+    });
+
+    it('re-pins on every refresh, so a database switch (which clears every pin) gets it back', async () => {
+      mockGetNode.mockResolvedValue(settingsNode());
+
+      databaseStore.refreshDatabaseSettings();
+      await flushMicrotasks();
+      pinNodes.mockClear();
+
+      // Simulates the pin having been wiped by clearAll() during a switch —
+      // the next refresh must re-establish it, not assume it's still there.
+      databaseStore.refreshDatabaseSettings();
+
+      expect(pinNodes).toHaveBeenCalledWith(expect.any(String), [DATABASE_SETTINGS_NODE_ID]);
     });
 
     it('load() hydrates the settings node through the same forced refetch', async () => {
