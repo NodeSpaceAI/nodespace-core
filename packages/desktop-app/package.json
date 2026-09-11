@@ -1,6 +1,6 @@
 {
   "name": "nodespace-app",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "NodeSpace AI-native knowledge management desktop application",
   "type": "module",
   "scripts": {

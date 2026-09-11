@@ -3401,7 +3401,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-agent"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3435,7 +3435,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-app"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3486,7 +3486,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-cli"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3512,7 +3512,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-core"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3549,7 +3549,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-daemon"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3583,7 +3583,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-nlp-engine"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "criterion",
@@ -3607,7 +3607,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-proto"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "prost 0.13.5",
  "protoc-bin-vendored",
@@ -3617,7 +3617,7 @@ dependencies = [
 
 [[package]]
 name = "nodespace-types"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "chrono",
  "proptest",
