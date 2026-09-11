@@ -1,10 +1,10 @@
-//! Playbook Engine Types
+//! Play Engine Types
 //!
-//! Core data structures for the playbook engine: parsed playbook representation,
+//! Core data structures for the play engine: parsed play representation,
 //! trigger keys for O(1) rule matching, and execution work items.
 //!
 //! These types are the in-memory representation used by the engine at runtime.
-//! They are parsed from the JSON properties stored on playbook nodes.
+//! They are parsed from the JSON properties stored on play nodes.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -62,27 +62,27 @@ pub enum TriggerKey {
 }
 
 // ---------------------------------------------------------------------------
-// Parsed playbook representation (in-memory)
+// Parsed play representation (in-memory)
 // ---------------------------------------------------------------------------
 
 /// A rule reference with ordering information for deterministic execution.
 ///
-/// Rules are sorted by `(playbook_created_at, rule_index)` — cross-playbook
-/// by creation time, within-playbook by array index.
+/// Rules are sorted by `(play_created_at, rule_index)` — cross-play
+/// by creation time, within-play by array index.
 #[derive(Debug, Clone)]
 pub struct OrderedRuleRef {
-    pub playbook_id: String,
-    pub playbook_created_at: DateTime<Utc>,
+    pub play_id: String,
+    pub play_created_at: DateTime<Utc>,
     pub rule_index: usize,
     pub rule: Arc<ParsedRule>,
 }
 
-/// Equality is by identity (playbook + rule index), not by ordering fields.
+/// Equality is by identity (play + rule index), not by ordering fields.
 /// This allows `sort() + dedup()` to work correctly in `lookup_rules()`:
 /// same-identity refs always share the same `created_at`, so sort groups them adjacently.
 impl PartialEq for OrderedRuleRef {
     fn eq(&self, other: &Self) -> bool {
-        self.playbook_id == other.playbook_id && self.rule_index == other.rule_index
+        self.play_id == other.play_id && self.rule_index == other.rule_index
     }
 }
 
@@ -96,30 +96,30 @@ impl PartialOrd for OrderedRuleRef {
 
 impl Ord for OrderedRuleRef {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.playbook_created_at
-            .cmp(&other.playbook_created_at)
+        self.play_created_at
+            .cmp(&other.play_created_at)
             .then_with(|| self.rule_index.cmp(&other.rule_index))
     }
 }
 
-/// A parsed playbook — the in-memory representation of a playbook node's rules.
+/// A parsed play — the in-memory representation of a play node's rules.
 #[derive(Debug, Clone)]
-pub struct ParsedPlaybook {
+pub struct ParsedPlay {
     pub id: String,
     pub created_at: DateTime<Utc>,
     pub rules: Vec<Arc<ParsedRule>>,
     /// Lifecycle status: "active" or "disabled"
-    pub status: PlaybookStatus,
+    pub status: PlayStatus,
 }
 
-/// Playbook lifecycle status
+/// Play lifecycle status
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlaybookStatus {
+pub enum PlayStatus {
     Active,
     Disabled,
 }
 
-/// Execution class of a playbook rule (ADR-060).
+/// Execution class of a play rule (ADR-060).
 ///
 /// - `Reactive` is today's behavior: the rule runs asynchronously, post-commit,
 ///   on every device that observes the triggering event.
@@ -127,7 +127,7 @@ pub enum PlaybookStatus {
 ///   fail-closed, on the originating device only. They are subject to the
 ///   save-time eligibility checks in [`crate::playbook::validation`] (ADR-060 §2).
 ///
-/// The class is a property of the rule, declared in the playbook and validated at
+/// The class is a property of the rule, declared in the play and validated at
 /// save time. It defaults to `Reactive` so every rule authored before this class
 /// existed keeps its current semantics unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -140,7 +140,7 @@ pub enum RuleClass {
     Reactive,
 }
 
-/// A single parsed rule from a playbook's `rules` array.
+/// A single parsed rule from a play's `rules` array.
 #[derive(Debug, Clone)]
 pub struct ParsedRule {
     pub name: String,
@@ -166,7 +166,7 @@ pub enum ParsedTrigger {
     },
 }
 
-/// Graph event types as stored in the playbook JSON.
+/// Graph event types as stored in the play JSON.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphEventType {
     NodeCreated,
@@ -242,7 +242,7 @@ impl ActionType {
 /// (for scheduled rules). Consumed by the single RuleProcessor tokio task.
 #[derive(Debug)]
 pub struct ExecutionWorkItem {
-    /// Matched rules to evaluate, sorted by (playbook_created_at, rule_index)
+    /// Matched rules to evaluate, sorted by (play_created_at, rule_index)
     pub rules: Vec<OrderedRuleRef>,
     /// Original event envelope (carries playbook_context for cycle detection depth)
     pub trigger_event: crate::db::events::EventEnvelope,
@@ -276,10 +276,10 @@ pub struct CronEntry {
 pub type CronRegistry = Vec<CronEntry>;
 
 // ---------------------------------------------------------------------------
-// JSON deserialization types (from playbook node properties)
+// JSON deserialization types (from play node properties)
 // ---------------------------------------------------------------------------
 
-/// Raw rule definition as stored in the playbook node's `properties.rules` JSON array.
+/// Raw rule definition as stored in the play node's `properties.rules` JSON array.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleDefinition {
     pub name: String,
@@ -327,9 +327,9 @@ pub struct ActionDefinition {
 // Parsing
 // ---------------------------------------------------------------------------
 
-/// Errors that can occur when parsing a playbook's rule definitions.
+/// Errors that can occur when parsing a play's rule definitions.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PlaybookParseError {
+pub enum PlayParseError {
     InvalidTriggerType(String),
     InvalidEventType(String),
     InvalidActionType(String),
@@ -338,7 +338,7 @@ pub enum PlaybookParseError {
     InvalidCondition(crate::playbook::cel::CelCompileError),
 }
 
-impl std::fmt::Display for PlaybookParseError {
+impl std::fmt::Display for PlayParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidTriggerType(t) => write!(f, "invalid trigger type: {}", t),
@@ -355,7 +355,7 @@ impl std::fmt::Display for PlaybookParseError {
 ///
 /// CEL conditions are compiled here, once, and the resulting `Program`s are
 /// cached on the rule for reuse across every future evaluation.
-pub fn parse_rule(def: &RuleDefinition) -> Result<ParsedRule, PlaybookParseError> {
+pub fn parse_rule(def: &RuleDefinition) -> Result<ParsedRule, PlayParseError> {
     let trigger = parse_trigger(&def.trigger)?;
     let actions = def
         .actions
@@ -365,7 +365,7 @@ pub fn parse_rule(def: &RuleDefinition) -> Result<ParsedRule, PlaybookParseError
     let conditions = def
         .conditions
         .iter()
-        .map(|expr| CompiledCondition::compile(expr).map_err(PlaybookParseError::InvalidCondition))
+        .map(|expr| CompiledCondition::compile(expr).map_err(PlayParseError::InvalidCondition))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(ParsedRule {
@@ -377,17 +377,17 @@ pub fn parse_rule(def: &RuleDefinition) -> Result<ParsedRule, PlaybookParseError
     })
 }
 
-fn parse_trigger(def: &TriggerDefinition) -> Result<ParsedTrigger, PlaybookParseError> {
+fn parse_trigger(def: &TriggerDefinition) -> Result<ParsedTrigger, PlayParseError> {
     match def.trigger_type.as_str() {
         "graph_event" => {
             let on_str = def
                 .on
                 .as_deref()
-                .ok_or_else(|| PlaybookParseError::MissingField("on".to_string()))?;
+                .ok_or_else(|| PlayParseError::MissingField("on".to_string()))?;
             let node_type = def
                 .node_type
                 .clone()
-                .ok_or_else(|| PlaybookParseError::MissingField("node_type".to_string()))?;
+                .ok_or_else(|| PlayParseError::MissingField("node_type".to_string()))?;
 
             let on = match on_str {
                 "node_created" => GraphEventType::NodeCreated,
@@ -395,7 +395,7 @@ fn parse_trigger(def: &TriggerDefinition) -> Result<ParsedTrigger, PlaybookParse
                 "relationship_added" => GraphEventType::RelationshipAdded,
                 "relationship_removed" => GraphEventType::RelationshipRemoved,
                 other => {
-                    return Err(PlaybookParseError::InvalidEventType(other.to_string()));
+                    return Err(PlayParseError::InvalidEventType(other.to_string()));
                 }
             };
 
@@ -409,26 +409,26 @@ fn parse_trigger(def: &TriggerDefinition) -> Result<ParsedTrigger, PlaybookParse
             let cron = def
                 .cron
                 .clone()
-                .ok_or_else(|| PlaybookParseError::MissingField("cron".to_string()))?;
+                .ok_or_else(|| PlayParseError::MissingField("cron".to_string()))?;
             let node_type = def
                 .node_type
                 .clone()
-                .ok_or_else(|| PlaybookParseError::MissingField("node_type".to_string()))?;
+                .ok_or_else(|| PlayParseError::MissingField("node_type".to_string()))?;
 
             Ok(ParsedTrigger::Scheduled { cron, node_type })
         }
-        other => Err(PlaybookParseError::InvalidTriggerType(other.to_string())),
+        other => Err(PlayParseError::InvalidTriggerType(other.to_string())),
     }
 }
 
-pub fn parse_action(def: &ActionDefinition) -> Result<ParsedAction, PlaybookParseError> {
+pub fn parse_action(def: &ActionDefinition) -> Result<ParsedAction, PlayParseError> {
     let action_type = match def.action_type.as_str() {
         "create_node" => ActionType::CreateNode,
         "update_node" => ActionType::UpdateNode,
         "add_relationship" => ActionType::AddRelationship,
         "remove_relationship" => ActionType::RemoveRelationship,
         other => {
-            return Err(PlaybookParseError::InvalidActionType(other.to_string()));
+            return Err(PlayParseError::InvalidActionType(other.to_string()));
         }
     };
 
@@ -439,21 +439,21 @@ pub fn parse_action(def: &ActionDefinition) -> Result<ParsedAction, PlaybookPars
     })
 }
 
-/// Parse the `rules` array from a playbook node's properties JSON.
+/// Parse the `rules` array from a play node's properties JSON.
 ///
 /// Checks both top-level `properties["rules"]` and namespace-nested
-/// `properties["playbook"]["rules"]` to support both in-memory and
+/// `properties["play"]["rules"]` to support both in-memory and
 /// DB-stored (namespace-normalized) formats.
 pub fn parse_rules_from_properties(
     properties: &serde_json::Value,
-) -> Result<Vec<RuleDefinition>, PlaybookParseError> {
+) -> Result<Vec<RuleDefinition>, PlayParseError> {
     // Try top-level first: {"rules": [...]}
     let rules_value = properties
         .get("rules")
-        // Then try inside the "playbook" namespace: {"playbook": {"rules": [...]}}
-        .or_else(|| properties.get("playbook").and_then(|pb| pb.get("rules")))
-        .ok_or_else(|| PlaybookParseError::MissingField("rules".to_string()))?;
+        // Then try inside the "play" namespace: {"play": {"rules": [...]}}
+        .or_else(|| properties.get("play").and_then(|pb| pb.get("rules")))
+        .ok_or_else(|| PlayParseError::MissingField("rules".to_string()))?;
 
     serde_json::from_value(rules_value.clone())
-        .map_err(|e| PlaybookParseError::InvalidJson(e.to_string()))
+        .map_err(|e| PlayParseError::InvalidJson(e.to_string()))
 }

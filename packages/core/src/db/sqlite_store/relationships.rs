@@ -317,7 +317,7 @@ impl SqliteStore {
     /// three `member_of` INSERT sites (`add_to_collection`,
     /// `bulk_add_to_collections`, and the generic `create_generic_relationship`
     /// when its `rel_type` is `member_of`), so every write path is covered without
-    /// a per-path check: CLI, graph import, playbook `add_relationship`, and the
+    /// a per-path check: CLI, graph import, play `add_relationship`, and the
     /// sync-apply cold-sweep (which calls `bulk_add_to_collections` directly). A
     /// batched, chunked query keeps the bulk/cold-sweep path a single round trip.
     /// Members that don't exist yet are left to the INSERT's foreign-key check.
@@ -1203,7 +1203,7 @@ impl SqliteStore {
         // ADR-059 §2 applies to a `member_of` edge no matter which API builds it.
         // This generic path carries `member_of` whenever a caller supplies an
         // explicit `order` — `NodeService::create_relationship`'s non-auto-order
-        // fork, the playbook `add_relationship` action, and the CLI
+        // fork, the play `add_relationship` action, and the CLI
         // `relationship create --edge-data` — so it must be gated too. (Auto-order
         // `member_of` goes through `add_to_collection` instead; both are guarded.)
         if rel_type == "member_of" {

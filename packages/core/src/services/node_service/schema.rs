@@ -5,7 +5,7 @@ use super::*;
 impl NodeService {
     /// Query nodes by type with optional lifecycle_status filter.
     ///
-    /// Used by the playbook engine to load all active playbooks at startup.
+    /// Used by the playbook engine to load all active plays at startup.
     /// If `lifecycle_status` is `None`, returns all lifecycle statuses.
     pub async fn query_nodes_by_type(
         &self,
@@ -24,7 +24,7 @@ impl NodeService {
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
         // In-memory filter: NodeQuery doesn't support lifecycle_status yet.
-        // Acceptable for desktop (low playbook counts). If scaling becomes
+        // Acceptable for desktop (low play counts). If scaling becomes
         // a concern, add lifecycle_status to NodeQuery/SqliteStore query.
         let filtered: Vec<Node> = if let Some(status) = lifecycle_status {
             nodes

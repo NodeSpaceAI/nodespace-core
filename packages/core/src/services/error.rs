@@ -95,9 +95,9 @@ pub enum NodeServiceError {
     #[error("Collection path exceeds maximum depth of {max_depth} levels: {path}")]
     CollectionDepthExceeded { path: String, max_depth: usize },
 
-    /// Playbook validation failed (synchronous gate before persist)
-    #[error("Playbook validation failed: {errors}")]
-    PlaybookValidationFailed { errors: String },
+    /// Play validation failed (synchronous gate before persist)
+    #[error("Play validation failed: {errors}")]
+    PlayValidationFailed { errors: String },
 
     /// Node cannot be a parent because its type does not allow children
     #[error("Node '{parent_id}' (type '{node_type}') cannot have children")]
@@ -278,16 +278,16 @@ impl NodeServiceError {
         }
     }
 
-    /// Create a playbook validation failed error from a list of validation errors
-    pub fn playbook_validation_failed(
-        errors: &[crate::playbook::validation::PlaybookValidationError],
+    /// Create a play validation failed error from a list of validation errors
+    pub fn play_validation_failed(
+        errors: &[crate::playbook::validation::PlayValidationError],
     ) -> Self {
         let msg = errors
             .iter()
             .map(|e| e.to_string())
             .collect::<Vec<_>>()
             .join("; ");
-        Self::PlaybookValidationFailed { errors: msg }
+        Self::PlayValidationFailed { errors: msg }
     }
 }
 
@@ -438,25 +438,22 @@ mod tests {
     }
 
     #[test]
-    fn test_playbook_validation_failed_error() {
-        use crate::playbook::validation::PlaybookValidationError;
+    fn test_play_validation_failed_error() {
+        use crate::playbook::validation::PlayValidationError;
         let errors = vec![
-            PlaybookValidationError::UnknownNodeType {
+            PlayValidationError::UnknownNodeType {
                 node_type: "bogus".to_string(),
                 location: "rule[0].trigger".to_string(),
             },
-            PlaybookValidationError::MissingActionParam {
+            PlayValidationError::MissingActionParam {
                 param: "node_type".to_string(),
                 location: "rule[0].action[0]".to_string(),
             },
         ];
-        let err = NodeServiceError::playbook_validation_failed(&errors);
+        let err = NodeServiceError::play_validation_failed(&errors);
         let msg = err.to_string();
-        assert!(matches!(
-            err,
-            NodeServiceError::PlaybookValidationFailed { .. }
-        ));
-        assert!(msg.contains("Playbook validation failed"));
+        assert!(matches!(err, NodeServiceError::PlayValidationFailed { .. }));
+        assert!(msg.contains("Play validation failed"));
         assert!(msg.contains("bogus"));
         assert!(msg.contains("missing required param"));
     }

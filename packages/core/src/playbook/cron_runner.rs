@@ -1,4 +1,4 @@
-//! CronRunner — 60-second polling loop for scheduled playbook triggers.
+//! CronRunner — 60-second polling loop for scheduled play triggers.
 //!
 //! A single tokio task wakes every 60 seconds, reads the `CronRegistry` from
 //! `PlaybookLifecycleManager`, parses cron expressions via the `cron` crate,
@@ -14,7 +14,7 @@
 //! - **Missed runs are skipped.** If NodeSpace was not running when a cron
 //!   expression was due, execution is not retried.
 //! - **Dynamic registration.** The registry is re-read on each wake, so
-//!   playbook activations/deactivations take effect within 60 seconds.
+//!   play activations/deactivations take effect within 60 seconds.
 //! - **Cron expressions use 7-field format** (sec min hour dom month dow year)
 //!   as required by the `cron` crate. Example: `"0 * * * * * *"` fires every
 //!   minute at second 0.
@@ -84,10 +84,10 @@ pub(crate) async fn check_and_enqueue(
     // best-effort read of whatever state existed at the panic: `active_playbooks`,
     // `trigger_index`, and `cron_registry` are plain HashMap/Vec collections with
     // no unsafe invariants, so the recovered guard can't be a type-invalid or
-    // corrupted value — but `activate_playbook` does update `trigger_index`/
-    // `cron_registry` before `active_playbooks` in a loop over a playbook's rules,
+    // corrupted value — but `activate_play` does update `trigger_index`/
+    // `cron_registry` before `active_playbooks` in a loop over a play's rules,
     // so a panic mid-activation could in principle leave a stale/partial entry
-    // for a playbook that never finished activating. That's an existing risk of
+    // for a play that never finished activating. That's an existing risk of
     // this lock (any `.expect(...)` reader hitting it mid-activation would panic
     // instead), not something this recovery path introduces — it just avoids
     // amplifying "one bad activation" into "the cron loop is dead forever."
@@ -229,8 +229,8 @@ mod tests {
             cron_expression: cron_expr.to_string(),
             node_type: node_type.to_string(),
             rules: vec![OrderedRuleRef {
-                playbook_id: "playbook-1".to_string(),
-                playbook_created_at: Utc::now(),
+                play_id: "play-1".to_string(),
+                play_created_at: Utc::now(),
                 rule_index: 0,
                 rule,
             }],
@@ -326,14 +326,14 @@ mod tests {
             node_type: "task".to_string(),
             rules: vec![
                 OrderedRuleRef {
-                    playbook_id: "pb-1".to_string(),
-                    playbook_created_at: Utc::now(),
+                    play_id: "pb-1".to_string(),
+                    play_created_at: Utc::now(),
                     rule_index: 0,
                     rule: rule_a,
                 },
                 OrderedRuleRef {
-                    playbook_id: "pb-2".to_string(),
-                    playbook_created_at: Utc::now(),
+                    play_id: "pb-2".to_string(),
+                    play_created_at: Utc::now(),
                     rule_index: 0,
                     rule: rule_b,
                 },
@@ -352,7 +352,7 @@ mod tests {
         assert_eq!(entry.cron_expression, "0 30 9 * * * *");
         assert_eq!(entry.node_type, "invoice");
         assert_eq!(entry.rules.len(), 1);
-        assert_eq!(entry.rules[0].playbook_id, "playbook-1");
+        assert_eq!(entry.rules[0].play_id, "play-1");
     }
 
     // -----------------------------------------------------------------------
@@ -384,11 +384,11 @@ mod tests {
         ) -> Arc<RwLock<PlaybookLifecycleManager>> {
             let mut lm = PlaybookLifecycleManager::new();
 
-            // Manually create a playbook node with a scheduled trigger and activate it
-            let playbook_node = Node {
+            // Manually create a play node with a scheduled trigger and activate it
+            let play_node = Node {
                 id: "pb-cron-1".to_string(),
-                node_type: "playbook".to_string(),
-                content: "cron playbook".to_string(),
+                node_type: "play".to_string(),
+                content: "cron play".to_string(),
                 version: 1,
                 created_at: chrono::Utc::now(),
                 modified_at: chrono::Utc::now(),
@@ -409,10 +409,10 @@ mod tests {
                 }),
                 mentions: vec![],
                 mentioned_in: vec![],
-                title: Some("Cron Playbook".to_string()),
+                title: Some("Cron Play".to_string()),
                 lifecycle_status: "active".to_string(),
             };
-            lm.activate_playbook(&playbook_node).unwrap();
+            lm.activate_play(&play_node).unwrap();
 
             Arc::new(RwLock::new(lm))
         }

@@ -1,6 +1,6 @@
-//! Save-Time Validation for Playbooks (Phase 7)
+//! Save-Time Validation for Plays (Phase 7)
 //!
-//! Validates playbook rule definitions before persisting. Reuses the CEL parser
+//! Validates play rule definitions before persisting. Reuses the CEL parser
 //! from `cel.rs` — no divergence between what validates and what executes.
 //!
 //! CEL condition syntax is validated earlier, by `parse_rule` — a `ParsedRule`
@@ -14,7 +14,7 @@
 //! 3. All property paths in conditions resolve against the schema graph
 //! 4. All relationship types in actions must exist on the referenced schemas
 //!
-//! If any check fails, the playbook is not saved. All errors are collected
+//! If any check fails, the play is not saved. All errors are collected
 //! (not short-circuited) so the caller can present every issue at once.
 
 use crate::models::SchemaNode;
@@ -34,7 +34,7 @@ use tracing::debug;
 
 /// A single validation error found during save-time checks.
 #[derive(Debug, Clone, PartialEq)]
-pub enum PlaybookValidationError {
+pub enum PlayValidationError {
     /// A referenced node_type does not exist as a schema node.
     UnknownNodeType {
         node_type: String,
@@ -97,7 +97,7 @@ pub enum PlaybookValidationError {
     },
 }
 
-impl std::fmt::Display for PlaybookValidationError {
+impl std::fmt::Display for PlayValidationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownNodeType {
@@ -185,14 +185,14 @@ impl std::fmt::Display for PlaybookValidationError {
     }
 }
 
-/// Result of playbook validation: either Ok or a non-empty list of errors.
-pub type ValidationResult = Result<(), Vec<PlaybookValidationError>>;
+/// Result of play validation: either Ok or a non-empty list of errors.
+pub type ValidationResult = Result<(), Vec<PlayValidationError>>;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/// Validate a set of parsed rules before saving a playbook.
+/// Validate a set of parsed rules before saving a play.
 ///
 /// Queries schema nodes via `NodeService` to verify node_type existence,
 /// schema_version matching, and relationship type existence. CEL condition
@@ -200,11 +200,11 @@ pub type ValidationResult = Result<(), Vec<PlaybookValidationError>>;
 /// only be constructed with successfully compiled conditions.
 ///
 /// Returns `Ok(())` if all checks pass, or `Err(Vec<...>)` with all errors found.
-pub async fn validate_playbook(
+pub async fn validate_play(
     rules: &[Arc<ParsedRule>],
     node_service: &NodeService,
 ) -> ValidationResult {
-    let mut errors: Vec<PlaybookValidationError> = Vec::new();
+    let mut errors: Vec<PlayValidationError> = Vec::new();
 
     // Collect all referenced node_types and fetch schemas once
     let mut schema_cache: HashMap<String, Option<SchemaNode>> = HashMap::new();
@@ -219,7 +219,7 @@ pub async fn validate_playbook(
                 .and_then(|s| s.as_ref())
                 .is_none()
             {
-                errors.push(PlaybookValidationError::UnknownNodeType {
+                errors.push(PlayValidationError::UnknownNodeType {
                     node_type: nt.clone(),
                     location: format!("rule[{}].trigger", rule_idx),
                 });
@@ -229,7 +229,7 @@ pub async fn validate_playbook(
         // -- Validate cron expression on scheduled triggers --
         if let ParsedTrigger::Scheduled { cron, .. } = &rule.trigger {
             if let Err(e) = cron::Schedule::from_str(cron) {
-                errors.push(PlaybookValidationError::InvalidCronExpression {
+                errors.push(PlayValidationError::InvalidCronExpression {
                     cron: cron.clone(),
                     message: e.to_string(),
                     location: format!("rule[{}].trigger", rule_idx),
@@ -362,7 +362,7 @@ async fn validate_schema_path(
     location: &str,
     node_service: &NodeService,
     schema_cache: &mut HashMap<String, Option<SchemaNode>>,
-    errors: &mut Vec<PlaybookValidationError>,
+    errors: &mut Vec<PlayValidationError>,
 ) {
     if segments.len() < 2 {
         return; // Single-segment paths (just "node") don't need validation
@@ -389,7 +389,7 @@ async fn validate_schema_path(
         if is_field {
             // Fields are terminal — if there are more segments after this, it's broken
             if i + 1 < segments.len() - 1 {
-                errors.push(PlaybookValidationError::BrokenPath {
+                errors.push(PlayValidationError::BrokenPath {
                     path: full_path.clone(),
                     segment: segment.clone(),
                     message: format!(
@@ -411,7 +411,7 @@ async fn validate_schema_path(
             } else {
                 // Relationship has no target_type — can't traverse further
                 if i + 1 < segments.len() - 1 {
-                    errors.push(PlaybookValidationError::BrokenPath {
+                    errors.push(PlayValidationError::BrokenPath {
                         path: full_path.clone(),
                         segment: segment.clone(),
                         message: format!(
@@ -426,7 +426,7 @@ async fn validate_schema_path(
         } else {
             // Neither a field nor a relationship — broken path
             // But only report if the schema actually exists (to avoid duplicate errors)
-            errors.push(PlaybookValidationError::BrokenPath {
+            errors.push(PlayValidationError::BrokenPath {
                 path: full_path.clone(),
                 segment: segment.clone(),
                 message: format!(
@@ -447,7 +447,7 @@ async fn validate_action(
     trigger_node_type: Option<&str>,
     node_service: &NodeService,
     schema_cache: &mut HashMap<String, Option<SchemaNode>>,
-    errors: &mut Vec<PlaybookValidationError>,
+    errors: &mut Vec<PlayValidationError>,
 ) {
     match action.action_type {
         ActionType::CreateNode => {
@@ -465,7 +465,7 @@ async fn validate_action(
             if let Some(nt) = action.params.get("node_type").and_then(|v| v.as_str()) {
                 ensure_schema_cached(nt, node_service, schema_cache).await;
                 if schema_cache.get(nt).and_then(|s| s.as_ref()).is_none() {
-                    errors.push(PlaybookValidationError::UnknownNodeType {
+                    errors.push(PlayValidationError::UnknownNodeType {
                         node_type: nt.to_string(),
                         location: location.to_string(),
                     });
@@ -492,7 +492,7 @@ async fn validate_create_node_action(
     location: &str,
     node_service: &NodeService,
     schema_cache: &mut HashMap<String, Option<SchemaNode>>,
-    errors: &mut Vec<PlaybookValidationError>,
+    errors: &mut Vec<PlayValidationError>,
 ) {
     // node_type is required
     let node_type = match params.get("node_type").and_then(|v| v.as_str()) {
@@ -502,7 +502,7 @@ async fn validate_create_node_action(
                 // Non-string node_type (e.g., number, object) — can't validate, skip
                 return;
             }
-            errors.push(PlaybookValidationError::MissingActionParam {
+            errors.push(PlayValidationError::MissingActionParam {
                 param: "node_type".to_string(),
                 location: location.to_string(),
             });
@@ -520,7 +520,7 @@ async fn validate_create_node_action(
     let schema = match schema_cache.get(node_type).and_then(|s| s.as_ref()) {
         Some(s) => s,
         None => {
-            errors.push(PlaybookValidationError::UnknownNodeType {
+            errors.push(PlayValidationError::UnknownNodeType {
                 node_type: node_type.to_string(),
                 location: location.to_string(),
             });
@@ -538,10 +538,10 @@ async fn validate_create_node_action(
                 &owned_str
             }
         };
-        // Schema version is a u32; the playbook may declare it as a string like "1" or "2"
+        // Schema version is a u32; the play may declare it as a string like "1" or "2"
         let declared_num: Option<u32> = declared.parse().ok();
         if declared_num != Some(schema.schema_version) {
-            errors.push(PlaybookValidationError::VersionMismatch {
+            errors.push(PlayValidationError::VersionMismatch {
                 node_type: node_type.to_string(),
                 declared_version: declared.to_string(),
                 actual_version: schema.schema_version,
@@ -558,12 +558,12 @@ async fn validate_relationship_action(
     trigger_node_type: Option<&str>,
     node_service: &NodeService,
     schema_cache: &mut HashMap<String, Option<SchemaNode>>,
-    errors: &mut Vec<PlaybookValidationError>,
+    errors: &mut Vec<PlayValidationError>,
 ) {
     let rel_type = match params.get("relationship_type").and_then(|v| v.as_str()) {
         Some(rt) => rt,
         None => {
-            errors.push(PlaybookValidationError::MissingActionParam {
+            errors.push(PlayValidationError::MissingActionParam {
                 param: "relationship_type".to_string(),
                 location: location.to_string(),
             });
@@ -588,7 +588,7 @@ async fn validate_relationship_action(
         let rel_exists = schema.relationships.iter().any(|r| r.name == rel_type);
 
         if !rel_exists {
-            errors.push(PlaybookValidationError::UnknownRelationshipType {
+            errors.push(PlayValidationError::UnknownRelationshipType {
                 relationship_type: rel_type.to_string(),
                 node_type: nt.to_string(),
                 location: location.to_string(),
@@ -625,20 +625,20 @@ async fn validate_relationship_action(
 /// - **Non-chaining, depth 1** — the statically decidable *self-chaining* case
 ///   is enforced here: an action that would re-satisfy the rule's **own**
 ///   trigger. The fully general form — an action output matching a *different*
-///   rule's trigger (in this or another playbook), and multi-device causal
+///   rule's trigger (in this or another play), and multi-device causal
 ///   cycles — needs whole-corpus analysis plus the causal depth carried on the
 ///   event, so it is deferred to the runtime causal-depth guard (ADR-060 §5),
-///   built in a later slice. `validate_playbook` sees only the rules of the
-///   playbook being saved, so cross-playbook chains are not even visible here.
+///   built in a later slice. `validate_play` sees only the rules of the
+///   play being saved, so cross-play chains are not even visible here.
 fn validate_invariant_eligibility(
     rule: &ParsedRule,
     rule_idx: usize,
-    errors: &mut Vec<PlaybookValidationError>,
+    errors: &mut Vec<PlayValidationError>,
 ) {
     // Local writes only.
     for (action_idx, action) in rule.actions.iter().enumerate() {
         if !action.action_type.is_local_write() {
-            errors.push(PlaybookValidationError::InvariantNonLocalAction {
+            errors.push(PlayValidationError::InvariantNonLocalAction {
                 action: action.action_type.as_str().to_string(),
                 location: format!("rule[{}].action[{}]", rule_idx, action_idx),
             });
@@ -653,7 +653,7 @@ fn validate_invariant_eligibility(
         if let Ok(functions) = path_extractor::extract_function_names(&condition.source) {
             for function in functions {
                 if crate::playbook::cel::NON_DETERMINISTIC_FUNCTIONS.contains(&function.as_str()) {
-                    errors.push(PlaybookValidationError::InvariantNonDeterministic {
+                    errors.push(PlayValidationError::InvariantNonDeterministic {
                         function,
                         location: format!("rule[{}].condition[{}]", rule_idx, cond_idx),
                     });
@@ -668,7 +668,7 @@ fn validate_invariant_eligibility(
         for param in target_id_params(&action.action_type) {
             if let Some(value) = action.params.get(param).and_then(|v| v.as_str()) {
                 if !is_binding_template(value) {
-                    errors.push(PlaybookValidationError::InvariantOutOfScopeTarget {
+                    errors.push(PlayValidationError::InvariantOutOfScopeTarget {
                         action: action.action_type.as_str().to_string(),
                         param: param.to_string(),
                         value: value.to_string(),
@@ -715,7 +715,7 @@ fn is_binding_template(value: &str) -> bool {
 fn check_invariant_self_chaining(
     rule: &ParsedRule,
     rule_idx: usize,
-    errors: &mut Vec<PlaybookValidationError>,
+    errors: &mut Vec<PlayValidationError>,
 ) {
     let ParsedTrigger::GraphEvent { on, node_type, .. } = &rule.trigger else {
         return;
@@ -747,7 +747,7 @@ fn check_invariant_self_chaining(
         };
 
         if re_satisfies {
-            errors.push(PlaybookValidationError::InvariantChaining {
+            errors.push(PlayValidationError::InvariantChaining {
                 action: action.action_type.as_str().to_string(),
                 trigger: graph_event_name(on).to_string(),
                 location: format!("rule[{}].action[{}]", rule_idx, action_idx),
@@ -791,32 +791,32 @@ fn graph_event_name(on: &GraphEventType) -> &'static str {
 // Schema Change Impact Analysis (Phase 2)
 // ---------------------------------------------------------------------------
 
-/// A playbook affected by a schema change, with the specific broken paths.
+/// A play affected by a schema change, with the specific broken paths.
 #[derive(Debug, Clone, PartialEq)]
-pub struct AffectedPlaybook {
-    /// The playbook node ID
-    pub playbook_id: String,
-    /// Human-readable playbook name (from content/title)
-    pub playbook_name: String,
+pub struct AffectedPlay {
+    /// The play node ID
+    pub play_id: String,
+    /// Human-readable play name (from content/title)
+    pub play_name: String,
     /// Dot-paths in conditions that traverse through the changed schema
     pub broken_paths: Vec<String>,
 }
 
-impl std::fmt::Display for AffectedPlaybook {
+impl std::fmt::Display for AffectedPlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "playbook '{}' ({}): paths [{}]",
-            self.playbook_name,
-            self.playbook_id,
+            "play '{}' ({}): paths [{}]",
+            self.play_name,
+            self.play_id,
             self.broken_paths.join(", ")
         )
     }
 }
 
-/// Check which active playbooks would be affected by a schema change.
+/// Check which active plays would be affected by a schema change.
 ///
-/// Queries all active playbook nodes, parses their rules, and checks whether
+/// Queries all active play nodes, parses their rules, and checks whether
 /// any trigger, condition, or action references the given schema's node_type.
 /// Specifically checks:
 /// - Trigger node_type matches
@@ -825,29 +825,29 @@ impl std::fmt::Display for AffectedPlaybook {
 /// - Relationship actions whose `relationship_type` matches the schema's node_type
 ///
 /// TODO: This is currently over-broad — any change to a schema (including adding
-/// new fields, which can't break playbooks) triggers the warning. Making this
+/// new fields, which can't break plays) triggers the warning. Making this
 /// diff-aware (only flag breaking changes like field removal/rename) requires
 /// accepting the proposed schema changes as a parameter, which is a larger
 /// refactor. The conservative approach is acceptable for v1.
 ///
-/// Returns a list of affected playbooks with their broken paths.
+/// Returns a list of affected plays with their broken paths.
 pub async fn check_schema_change_impact(
     schema_node_type: &str,
     node_service: &NodeService,
-) -> Result<Vec<AffectedPlaybook>, String> {
+) -> Result<Vec<AffectedPlay>, String> {
     use crate::playbook::types::{parse_rule, parse_rules_from_properties};
 
-    let playbook_nodes = node_service
-        .query_nodes_by_type("playbook", Some("active"))
+    let play_nodes = node_service
+        .query_nodes_by_type("play", Some("active"))
         .await
-        .map_err(|e| format!("Failed to query playbook nodes: {}", e))?;
+        .map_err(|e| format!("Failed to query play nodes: {}", e))?;
 
     let mut affected = Vec::new();
 
-    for pb_node in &playbook_nodes {
+    for pb_node in &play_nodes {
         let rule_defs = match parse_rules_from_properties(&pb_node.properties) {
             Ok(defs) => defs,
-            Err(_) => continue, // Skip unparseable playbooks
+            Err(_) => continue, // Skip unparseable plays
         };
 
         let mut broken_paths = Vec::new();
@@ -926,9 +926,9 @@ pub async fn check_schema_change_impact(
             // Deduplicate paths
             broken_paths.sort();
             broken_paths.dedup();
-            affected.push(AffectedPlaybook {
-                playbook_id: pb_node.id.clone(),
-                playbook_name: pb_node
+            affected.push(AffectedPlay {
+                play_id: pb_node.id.clone(),
+                play_name: pb_node
                     .title
                     .clone()
                     .unwrap_or_else(|| pb_node.content.clone()),
@@ -1037,7 +1037,7 @@ mod tests {
 
     #[test]
     fn test_validation_error_display() {
-        let err = PlaybookValidationError::UnknownNodeType {
+        let err = PlayValidationError::UnknownNodeType {
             node_type: "foo".to_string(),
             location: "rule[0].trigger".to_string(),
         };
@@ -1046,7 +1046,7 @@ mod tests {
             "unknown node_type 'foo' at rule[0].trigger"
         );
 
-        let err = PlaybookValidationError::VersionMismatch {
+        let err = PlayValidationError::VersionMismatch {
             node_type: "invoice".to_string(),
             declared_version: "3".to_string(),
             actual_version: 2,
@@ -1056,14 +1056,14 @@ mod tests {
         assert!(err.to_string().contains("declared '3'"));
         assert!(err.to_string().contains("schema has 2"));
 
-        let err = PlaybookValidationError::UnknownRelationshipType {
+        let err = PlayValidationError::UnknownRelationshipType {
             relationship_type: "foo_bar".to_string(),
             node_type: "task".to_string(),
             location: "rule[0].action[0]".to_string(),
         };
         assert!(err.to_string().contains("unknown relationship_type"));
 
-        let err = PlaybookValidationError::MissingActionParam {
+        let err = PlayValidationError::MissingActionParam {
             param: "node_type".to_string(),
             location: "rule[0].action[0]".to_string(),
         };
@@ -1228,7 +1228,7 @@ mod tests {
         // with core schemas seeded by NodeService::new (task, text, date, etc.)
 
         #[tokio::test]
-        async fn test_valid_playbook_passes_validation() {
+        async fn test_valid_play_passes_validation() {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "vt_widget", 1, json!([])).await;
 
@@ -1237,7 +1237,7 @@ mod tests {
                 vec!["node.status == 'open'"],
                 vec![],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
         }
 
@@ -1246,12 +1246,12 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             let rules = vec![make_rule("nonexistent_xyzzy", vec![], vec![])];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert_eq!(errors.len(), 1);
             match &errors[0] {
-                PlaybookValidationError::UnknownNodeType {
+                PlayValidationError::UnknownNodeType {
                     node_type,
                     location,
                 } => {
@@ -1272,12 +1272,12 @@ mod tests {
                 vec![],
                 vec![make_create_action("nonexistent_type_abc", None)],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert!(errors
                 .iter()
-                .any(|e| matches!(e, PlaybookValidationError::UnknownNodeType { node_type, .. } if node_type == "nonexistent_type_abc")));
+                .any(|e| matches!(e, PlayValidationError::UnknownNodeType { node_type, .. } if node_type == "nonexistent_type_abc")));
         }
 
         #[tokio::test]
@@ -1286,18 +1286,18 @@ mod tests {
             create_schema(&svc, "vt_receipt", 2, json!([])).await;
             create_schema(&svc, "vt_trigger", 1, json!([])).await;
 
-            // Playbook declares version "3" but schema is at version 2
+            // Play declares version "3" but schema is at version 2
             let rules = vec![make_rule(
                 "vt_trigger",
                 vec![],
                 vec![make_create_action("vt_receipt", Some("3"))],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert!(errors.iter().any(|e| matches!(
                 e,
-                PlaybookValidationError::VersionMismatch {
+                PlayValidationError::VersionMismatch {
                     declared_version,
                     actual_version,
                     ..
@@ -1316,7 +1316,7 @@ mod tests {
                 vec![],
                 vec![make_create_action("vt_bill", Some("2"))],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
         }
 
@@ -1345,12 +1345,12 @@ mod tests {
                 vec![],
                 vec![make_relationship_action("nonexistent_rel")],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert!(errors.iter().any(|e| matches!(
                 e,
-                PlaybookValidationError::UnknownRelationshipType {
+                PlayValidationError::UnknownRelationshipType {
                     relationship_type,
                     ..
                 } if relationship_type == "nonexistent_rel"
@@ -1381,7 +1381,7 @@ mod tests {
                 vec![],
                 vec![make_relationship_action("linked_to")],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
         }
 
@@ -1399,7 +1399,7 @@ mod tests {
                 vec![],
                 vec![make_create_action("nonexistent_bbb", None)],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert!(
@@ -1419,12 +1419,12 @@ mod tests {
                 "vt_cron_target",
                 vec![],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert!(errors
                 .iter()
-                .any(|e| matches!(e, PlaybookValidationError::UnknownNodeType { node_type, .. } if node_type == "vt_cron_target")));
+                .any(|e| matches!(e, PlayValidationError::UnknownNodeType { node_type, .. } if node_type == "vt_cron_target")));
         }
 
         #[tokio::test]
@@ -1437,13 +1437,13 @@ mod tests {
                 "vt_cron_valid_target",
                 vec![],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::InvalidCronExpression { cron, .. } if cron == "not a cron expression"
+                    PlayValidationError::InvalidCronExpression { cron, .. } if cron == "not a cron expression"
                 )),
                 "expected InvalidCronExpression error, got {:?}",
                 errors
@@ -1461,13 +1461,13 @@ mod tests {
                 "vt_cron_field_count",
                 vec![],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert!(
                 errors
                     .iter()
-                    .any(|e| matches!(e, PlaybookValidationError::InvalidCronExpression { .. })),
+                    .any(|e| matches!(e, PlayValidationError::InvalidCronExpression { .. })),
                 "expected InvalidCronExpression error for wrong field count, got {:?}",
                 errors
             );
@@ -1483,7 +1483,7 @@ mod tests {
                 "vt_cron_ok_target",
                 vec![],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok(), "valid cron should pass: {:?}", result);
         }
 
@@ -1492,7 +1492,7 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
 
             let rules: Vec<Arc<ParsedRule>> = vec![];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
         }
 
@@ -1511,7 +1511,7 @@ mod tests {
                 for_each: None,
             };
             let rules = vec![make_rule("vt_dynamic", vec![], vec![action])];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
         }
 
@@ -1521,7 +1521,7 @@ mod tests {
             // "task" is a core schema seeded by NodeService::new — should pass
 
             let rules = vec![make_rule("task", vec!["node.status == 'open'"], vec![])];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
         }
 
@@ -1554,7 +1554,7 @@ mod tests {
                 vec!["node.story.status == 'active'"],
                 vec![],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(
                 result.is_ok(),
                 "valid multi-hop path should pass: {:?}",
@@ -1573,13 +1573,13 @@ mod tests {
                 vec!["node.nonexistent.foo == 'bar'"],
                 vec![],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::BrokenPath { segment, .. } if segment == "nonexistent"
+                    PlayValidationError::BrokenPath { segment, .. } if segment == "nonexistent"
                 )),
                 "should report broken path for 'nonexistent': {:?}",
                 errors
@@ -1597,13 +1597,13 @@ mod tests {
                 vec!["node.status.deeper == 'x'"],
                 vec![],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::BrokenPath { segment, .. } if segment == "status"
+                    PlayValidationError::BrokenPath { segment, .. } if segment == "status"
                 )),
                 "should report broken path for field-as-non-terminal: {:?}",
                 errors
@@ -1618,7 +1618,7 @@ mod tests {
             // Single-hop (node.status) is handled by existing property-level evaluation
             // and should NOT be validated against the schema graph
             let rules = vec![make_rule("vp_task4", vec!["node.status == 'open'"], vec![])];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(
                 result.is_ok(),
                 "single-hop paths should skip schema validation"
@@ -1650,13 +1650,13 @@ mod tests {
                 vec!["node.linked.status == 'x'"],
                 vec![],
             )];
-            let result = validate_playbook(&rules, &svc).await;
+            let result = validate_play(&rules, &svc).await;
             assert!(result.is_err());
             let errors = result.unwrap_err();
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::BrokenPath { segment, .. } if segment == "linked"
+                    PlayValidationError::BrokenPath { segment, .. } if segment == "linked"
                 )),
                 "should report broken path for rel without target_type: {:?}",
                 errors
@@ -1667,31 +1667,27 @@ mod tests {
         // check_schema_change_impact tests (Phase 2)
         // ---------------------------------------------------------------
 
-        /// Helper: create a playbook node in the database.
-        async fn create_playbook(
-            node_service: &NodeService,
-            id: &str,
-            rules_json: serde_json::Value,
-        ) {
+        /// Helper: create a play node in the database.
+        async fn create_play(node_service: &NodeService, id: &str, rules_json: serde_json::Value) {
             let node = Node::new_with_id(
                 id.to_string(),
-                "playbook".to_string(),
-                format!("Playbook {}", id),
+                "play".to_string(),
+                format!("Play {}", id),
                 json!({ "rules": rules_json }),
             );
             node_service
                 .create_node(node)
                 .await
-                .unwrap_or_else(|_| panic!("Failed to create playbook '{}'", id));
+                .unwrap_or_else(|_| panic!("Failed to create play '{}'", id));
         }
 
         #[tokio::test]
-        async fn test_schema_impact_detects_affected_playbooks() {
+        async fn test_schema_impact_detects_affected_plays() {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "vi_task", 1, json!([])).await;
 
-            // Create a playbook that triggers on "vi_task"
-            create_playbook(
+            // Create a play that triggers on "vi_task"
+            create_play(
                 &svc,
                 "pb-impact-1",
                 json!([{
@@ -1705,7 +1701,7 @@ mod tests {
 
             let affected = check_schema_change_impact("vi_task", &svc).await.unwrap();
             assert_eq!(affected.len(), 1);
-            assert_eq!(affected[0].playbook_id, "pb-impact-1");
+            assert_eq!(affected[0].play_id, "pb-impact-1");
             assert!(
                 affected[0]
                     .broken_paths
@@ -1722,8 +1718,8 @@ mod tests {
             create_schema(&svc, "vi_order", 1, json!([])).await;
             create_schema(&svc, "vi_invoice", 1, json!([])).await;
 
-            // Create a playbook that triggers on "vi_order" only
-            create_playbook(
+            // Create a play that triggers on "vi_order" only
+            create_play(
                 &svc,
                 "pb-impact-2",
                 json!([{
@@ -1735,13 +1731,13 @@ mod tests {
             )
             .await;
 
-            // Changing "vi_invoice" should not affect the vi_order playbook
+            // Changing "vi_invoice" should not affect the vi_order play
             let affected = check_schema_change_impact("vi_invoice", &svc)
                 .await
                 .unwrap();
             assert!(
                 affected.is_empty(),
-                "unrelated schema change should not affect playbooks: {:?}",
+                "unrelated schema change should not affect plays: {:?}",
                 affected
             );
         }
@@ -1751,7 +1747,7 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             // Create vi_epic first (target of relationship)
             create_schema(&svc, "vi_epic", 1, json!([])).await;
-            // Create vi_story with a relationship to vi_epic, so the playbook passes validation
+            // Create vi_story with a relationship to vi_epic, so the play passes validation
             // Note: SchemaRelationship uses camelCase serialization
             create_schema(
                 &svc,
@@ -1768,8 +1764,8 @@ mod tests {
             )
             .await;
 
-            // Playbook triggers on vi_story but has a condition traversing through vi_epic
-            create_playbook(
+            // Play triggers on vi_story but has a condition traversing through vi_epic
+            create_play(
                 &svc,
                 "pb-impact-3",
                 json!([{
@@ -1783,7 +1779,7 @@ mod tests {
 
             let affected = check_schema_change_impact("vi_epic", &svc).await.unwrap();
             assert_eq!(affected.len(), 1);
-            assert_eq!(affected[0].playbook_id, "pb-impact-3");
+            assert_eq!(affected[0].play_id, "pb-impact-3");
             assert!(
                 affected[0]
                     .broken_paths
@@ -1837,14 +1833,14 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_invalid_playbook_rejected_on_create() {
+        async fn test_invalid_play_rejected_on_create() {
             let (svc, _tmp) = create_test_service().await;
             // Don't create a schema for "nonexistent_type" — it should be rejected
 
-            let playbook_node = Node::new_with_id(
+            let play_node = Node::new_with_id(
                 "pb-gate-1".to_string(),
-                "playbook".to_string(),
-                "Test Playbook".to_string(),
+                "play".to_string(),
+                "Test Play".to_string(),
                 json!({
                     "rules": [{
                         "name": "r1",
@@ -1855,15 +1851,12 @@ mod tests {
                 }),
             );
 
-            let result = svc.create_node(playbook_node).await;
-            assert!(
-                result.is_err(),
-                "invalid playbook should be rejected on create"
-            );
+            let result = svc.create_node(play_node).await;
+            assert!(result.is_err(), "invalid play should be rejected on create");
             let err = result.unwrap_err();
             let msg = err.to_string();
             assert!(
-                msg.contains("Playbook validation failed"),
+                msg.contains("Play validation failed"),
                 "error should indicate validation failure: {}",
                 msg
             );
@@ -1875,14 +1868,14 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn test_valid_playbook_accepted_on_create() {
+        async fn test_valid_play_accepted_on_create() {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "vg_widget", 1).await;
 
-            let playbook_node = Node::new_with_id(
+            let play_node = Node::new_with_id(
                 "pb-gate-2".to_string(),
-                "playbook".to_string(),
-                "Valid Playbook".to_string(),
+                "play".to_string(),
+                "Valid Play".to_string(),
                 json!({
                     "rules": [{
                         "name": "r1",
@@ -1893,10 +1886,10 @@ mod tests {
                 }),
             );
 
-            let result = svc.create_node(playbook_node).await;
+            let result = svc.create_node(play_node).await;
             assert!(
                 result.is_ok(),
-                "valid playbook should be accepted: {:?}",
+                "valid play should be accepted: {:?}",
                 result
             );
         }
@@ -1906,10 +1899,10 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "vg_item", 1).await;
 
-            let playbook_node = Node::new_with_id(
+            let play_node = Node::new_with_id(
                 "pb-gate-3".to_string(),
-                "playbook".to_string(),
-                "Bad CEL Playbook".to_string(),
+                "play".to_string(),
+                "Bad CEL Play".to_string(),
                 json!({
                     "rules": [{
                         "name": "r1",
@@ -1920,14 +1913,11 @@ mod tests {
                 }),
             );
 
-            let result = svc.create_node(playbook_node).await;
-            assert!(
-                result.is_err(),
-                "playbook with invalid CEL should be rejected"
-            );
+            let result = svc.create_node(play_node).await;
+            assert!(result.is_err(), "play with invalid CEL should be rejected");
             let msg = result.unwrap_err().to_string();
             assert!(
-                msg.contains("Playbook validation failed"),
+                msg.contains("Play validation failed"),
                 "error should indicate validation failure: {}",
                 msg
             );
@@ -1938,10 +1928,10 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "vg_cron_item", 1).await;
 
-            let playbook_node = Node::new_with_id(
+            let play_node = Node::new_with_id(
                 "pb-gate-6".to_string(),
-                "playbook".to_string(),
-                "Bad Cron Playbook".to_string(),
+                "play".to_string(),
+                "Bad Cron Play".to_string(),
                 json!({
                     "rules": [{
                         "name": "r1",
@@ -1952,14 +1942,14 @@ mod tests {
                 }),
             );
 
-            let result = svc.create_node(playbook_node).await;
+            let result = svc.create_node(play_node).await;
             assert!(
                 result.is_err(),
-                "playbook with invalid cron expression should be rejected"
+                "play with invalid cron expression should be rejected"
             );
             let msg = result.unwrap_err().to_string();
             assert!(
-                msg.contains("Playbook validation failed"),
+                msg.contains("Play validation failed"),
                 "error should indicate validation failure: {}",
                 msg
             );
@@ -1970,11 +1960,11 @@ mod tests {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "vg_part", 1).await;
 
-            // Create a valid playbook first
-            let playbook_node = Node::new_with_id(
+            // Create a valid play first
+            let play_node = Node::new_with_id(
                 "pb-gate-4".to_string(),
-                "playbook".to_string(),
-                "Initially Valid Playbook".to_string(),
+                "play".to_string(),
+                "Initially Valid Play".to_string(),
                 json!({
                     "rules": [{
                         "name": "r1",
@@ -1984,7 +1974,7 @@ mod tests {
                     }]
                 }),
             );
-            svc.create_node(playbook_node).await.unwrap();
+            svc.create_node(play_node).await.unwrap();
 
             // Now update it with broken rules (reference nonexistent node_type)
             let update = crate::models::NodeUpdate {
@@ -2006,7 +1996,7 @@ mod tests {
             );
             let msg = result.unwrap_err().to_string();
             assert!(
-                msg.contains("Playbook validation failed"),
+                msg.contains("Play validation failed"),
                 "error should indicate validation failure: {}",
                 msg
             );
@@ -2016,11 +2006,11 @@ mod tests {
         async fn test_parse_error_rejected_on_create() {
             let (svc, _tmp) = create_test_service().await;
 
-            // Playbook with an invalid trigger type
-            let playbook_node = Node::new_with_id(
+            // Play with an invalid trigger type
+            let play_node = Node::new_with_id(
                 "pb-gate-5".to_string(),
-                "playbook".to_string(),
-                "Bad Trigger Playbook".to_string(),
+                "play".to_string(),
+                "Bad Trigger Play".to_string(),
                 json!({
                     "rules": [{
                         "name": "r1",
@@ -2031,14 +2021,14 @@ mod tests {
                 }),
             );
 
-            let result = svc.create_node(playbook_node).await;
+            let result = svc.create_node(play_node).await;
             assert!(
                 result.is_err(),
-                "playbook with invalid trigger type should be rejected"
+                "play with invalid trigger type should be rejected"
             );
             let msg = result.unwrap_err().to_string();
             assert!(
-                msg.contains("Playbook validation failed"),
+                msg.contains("Play validation failed"),
                 "error should indicate validation failure: {}",
                 msg
             );
@@ -2103,7 +2093,7 @@ mod tests {
             }
         }
 
-        fn eligibility_errors(rule: &ParsedRule) -> Vec<PlaybookValidationError> {
+        fn eligibility_errors(rule: &ParsedRule) -> Vec<PlayValidationError> {
             let mut errors = Vec::new();
             validate_invariant_eligibility(rule, 0, &mut errors);
             errors
@@ -2166,7 +2156,7 @@ mod tests {
                 assert!(
                     errors.iter().any(|e| matches!(
                         e,
-                        PlaybookValidationError::InvariantNonDeterministic { function, .. }
+                        PlayValidationError::InvariantNonDeterministic { function, .. }
                             if function == func
                     )),
                     "expected non-deterministic '{}' error for `{}`, got {:?}",
@@ -2205,7 +2195,7 @@ mod tests {
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::InvariantOutOfScopeTarget { action, param, .. }
+                    PlayValidationError::InvariantOutOfScopeTarget { action, param, .. }
                         if action == "update_node" && param == "node_id"
                 )),
                 "expected out-of-scope node_id error, got {:?}",
@@ -2227,7 +2217,7 @@ mod tests {
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::InvariantOutOfScopeTarget { param, value, .. }
+                    PlayValidationError::InvariantOutOfScopeTarget { param, value, .. }
                         if param == "target_id" && value == "collection-hr"
                 )),
                 "expected out-of-scope target_id error, got {:?}",
@@ -2269,7 +2259,7 @@ mod tests {
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::InvariantChaining { action, trigger, .. }
+                    PlayValidationError::InvariantChaining { action, trigger, .. }
                         if action == "create_node" && trigger == "node_created"
                 )),
                 "expected chaining error, got {:?}",
@@ -2289,7 +2279,7 @@ mod tests {
             assert!(
                 !eligibility_errors(&rule)
                     .iter()
-                    .any(|e| matches!(e, PlaybookValidationError::InvariantChaining { .. })),
+                    .any(|e| matches!(e, PlayValidationError::InvariantChaining { .. })),
                 "creating a different node type must not self-chain"
             );
         }
@@ -2307,7 +2297,7 @@ mod tests {
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::InvariantChaining { action, trigger, .. }
+                    PlayValidationError::InvariantChaining { action, trigger, .. }
                         if action == "update_node" && trigger == "property_changed"
                 )),
                 "expected chaining error, got {:?}",
@@ -2331,7 +2321,7 @@ mod tests {
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::InvariantChaining { action, trigger, .. }
+                    PlayValidationError::InvariantChaining { action, trigger, .. }
                         if action == "add_relationship" && trigger == "relationship_added"
                 )),
                 "expected chaining error, got {:?}",
@@ -2339,7 +2329,7 @@ mod tests {
             );
         }
 
-        // -- End-to-end through validate_playbook: reactive bypass + invariant gate --
+        // -- End-to-end through validate_play: reactive bypass + invariant gate --
 
         async fn create_test_service() -> (Arc<crate::services::NodeService>, tempfile::TempDir) {
             let temp_dir = tempfile::TempDir::new().unwrap();
@@ -2386,7 +2376,7 @@ mod tests {
                 class: RuleClass::Reactive,
                 ..(*rule).clone()
             });
-            let result = validate_playbook(&[reactive], &svc).await;
+            let result = validate_play(&[reactive], &svc).await;
             assert!(
                 result.is_ok(),
                 "reactive rule must bypass the §2 gate: {:?}",
@@ -2395,13 +2385,13 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn invariant_rule_gated_through_validate_playbook() {
+        async fn invariant_rule_gated_through_validate_play() {
             let (svc, _tmp) = create_test_service().await;
             create_schema(&svc, "vi_inv").await;
 
             // Same rule as above, but INVARIANT → the §2 gate fires with both a
             // non-determinism and a self-chaining error, proving the gate is wired
-            // into validate_playbook.
+            // into validate_play.
             let rule = Arc::new(invariant_rule(
                 GraphEventType::NodeCreated,
                 "vi_inv",
@@ -2409,11 +2399,11 @@ mod tests {
                 vec!["days_since(node.created) > 7"],
                 vec![create_action("vi_inv")],
             ));
-            let errors = validate_playbook(&[rule], &svc).await.unwrap_err();
+            let errors = validate_play(&[rule], &svc).await.unwrap_err();
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::InvariantNonDeterministic { function, .. }
+                    PlayValidationError::InvariantNonDeterministic { function, .. }
                         if function == "days_since"
                 )),
                 "expected non-determinism error, got {:?}",
@@ -2422,7 +2412,7 @@ mod tests {
             assert!(
                 errors.iter().any(|e| matches!(
                     e,
-                    PlaybookValidationError::InvariantChaining { action, .. }
+                    PlayValidationError::InvariantChaining { action, .. }
                         if action == "create_node"
                 )),
                 "expected chaining error, got {:?}",

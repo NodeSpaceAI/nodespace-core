@@ -1,7 +1,7 @@
-//! Playbook Lifecycle Manager
+//! Play Lifecycle Manager
 //!
 //! Owns all engine state: TriggerIndex, CronRegistry, ActivePlaybooks.
-//! Handles install/uninstall/enable/disable of playbooks and builds
+//! Handles install/uninstall/enable/disable of plays and builds
 //! the trigger index for O(1) event-to-rule matching.
 
 use crate::models::Node;
@@ -10,15 +10,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
-/// Manages the lifecycle of all active playbooks in the engine.
+/// Manages the lifecycle of all active plays in the engine.
 ///
 /// Thread safety: `TriggerIndex` is behind `Arc<std::sync::RwLock<>>` for
 /// concurrent read access from the event subscriber. Write access (lifecycle
 /// operations) is infrequent and short-lived.
 #[derive(Default)]
 pub struct PlaybookLifecycleManager {
-    /// Active (and disabled) playbooks indexed by ID
-    active_playbooks: HashMap<String, ParsedPlaybook>,
+    /// Active (and disabled) plays indexed by ID
+    active_playbooks: HashMap<String, ParsedPlay>,
     /// Trigger index for O(1) event → rules lookup
     trigger_index: TriggerIndex,
     /// Cron registry for scheduled triggers
@@ -34,14 +34,14 @@ impl PlaybookLifecycleManager {
         }
     }
 
-    /// Load and activate a playbook node into the engine.
+    /// Load and activate a play node into the engine.
     ///
     /// Parses the rules from the node's properties, builds trigger keys,
     /// and inserts into the index. Idempotent — activating an already-active
-    /// playbook is a no-op (handles startup + reactive event overlap).
-    pub fn activate_playbook(&mut self, node: &Node) -> Result<(), PlaybookParseError> {
+    /// play is a no-op (handles startup + reactive event overlap).
+    pub fn activate_play(&mut self, node: &Node) -> Result<(), PlayParseError> {
         if self.active_playbooks.contains_key(&node.id) {
-            debug!("Playbook {} already active, skipping", node.id);
+            debug!("Play {} already active, skipping", node.id);
             return Ok(());
         }
 
@@ -52,18 +52,18 @@ impl PlaybookLifecycleManager {
             parsed_rules.push(Arc::new(parse_rule(def)?));
         }
 
-        let playbook = ParsedPlaybook {
+        let play = ParsedPlay {
             id: node.id.clone(),
             created_at: node.created_at,
             rules: parsed_rules.clone(),
-            status: PlaybookStatus::Active,
+            status: PlayStatus::Active,
         };
 
         // Build trigger entries for each rule
         for (idx, rule) in parsed_rules.iter().enumerate() {
             let ordered_ref = OrderedRuleRef {
-                playbook_id: node.id.clone(),
-                playbook_created_at: node.created_at,
+                play_id: node.id.clone(),
+                play_created_at: node.created_at,
                 rule_index: idx,
                 rule: Arc::clone(rule),
             };
@@ -101,61 +101,57 @@ impl PlaybookLifecycleManager {
             }
         }
 
-        info!(
-            "Activated playbook {} with {} rules",
-            node.id,
-            rule_defs.len()
-        );
-        self.active_playbooks.insert(node.id.clone(), playbook);
+        info!("Activated play {} with {} rules", node.id, rule_defs.len());
+        self.active_playbooks.insert(node.id.clone(), play);
         Ok(())
     }
 
-    /// Remove a playbook from all indexes (on deletion or permanent removal).
-    pub fn deactivate_playbook(&mut self, playbook_id: &str) {
-        if self.active_playbooks.remove(playbook_id).is_none() {
-            debug!("Playbook {} not found for deactivation", playbook_id);
+    /// Remove a play from all indexes (on deletion or permanent removal).
+    pub fn deactivate_play(&mut self, play_id: &str) {
+        if self.active_playbooks.remove(play_id).is_none() {
+            debug!("Play {} not found for deactivation", play_id);
             return;
         }
 
-        self.remove_from_trigger_index(playbook_id);
-        self.remove_from_cron_registry(playbook_id);
-        info!("Deactivated playbook {}", playbook_id);
+        self.remove_from_trigger_index(play_id);
+        self.remove_from_cron_registry(play_id);
+        info!("Deactivated play {}", play_id);
     }
 
-    /// Disable a playbook — remove from indexes but keep in active_playbooks as disabled.
+    /// Disable a play — remove from indexes but keep in active_playbooks as disabled.
     ///
     /// Called on first error or when schema version drifts.
-    pub fn disable_playbook(&mut self, playbook_id: &str) {
-        if let Some(playbook) = self.active_playbooks.get_mut(playbook_id) {
-            playbook.status = PlaybookStatus::Disabled;
-            self.remove_from_trigger_index(playbook_id);
-            self.remove_from_cron_registry(playbook_id);
-            info!("Disabled playbook {}", playbook_id);
+    pub fn disable_play(&mut self, play_id: &str) {
+        if let Some(play) = self.active_playbooks.get_mut(play_id) {
+            play.status = PlayStatus::Disabled;
+            self.remove_from_trigger_index(play_id);
+            self.remove_from_cron_registry(play_id);
+            info!("Disabled play {}", play_id);
         } else {
-            warn!("Playbook {} not found for disabling", playbook_id);
+            warn!("Play {} not found for disabling", play_id);
         }
     }
 
-    /// Re-enable a previously disabled playbook.
+    /// Re-enable a previously disabled play.
     ///
     /// Re-parses rules from the provided node and re-inserts into indexes.
-    pub fn reenable_playbook(&mut self, node: &Node) -> Result<(), PlaybookParseError> {
-        // Remove existing entry so activate_playbook isn't a no-op
+    pub fn reenable_play(&mut self, node: &Node) -> Result<(), PlayParseError> {
+        // Remove existing entry so activate_play isn't a no-op
         self.active_playbooks.remove(&node.id);
         self.remove_from_trigger_index(&node.id);
         self.remove_from_cron_registry(&node.id);
 
-        self.activate_playbook(node)
+        self.activate_play(node)
     }
 
-    /// Handle a schema update — check if any active playbooks reference the
+    /// Handle a schema update — check if any active plays reference the
     /// affected schema's node_type (either directly as a trigger or via dot-path
     /// traversal in conditions) and need to be disabled.
     ///
-    /// Uses path extraction to find playbooks whose conditions traverse
+    /// Uses path extraction to find plays whose conditions traverse
     /// through the changed schema, not just those that trigger on it directly.
     ///
-    /// Returns the list of playbook IDs that were disabled due to schema drift.
+    /// Returns the list of play IDs that were disabled due to schema drift.
     pub fn handle_schema_update(
         &mut self,
         schema_node_type: &str,
@@ -163,24 +159,24 @@ impl PlaybookLifecycleManager {
     ) -> Vec<String> {
         let mut disabled = Vec::new();
 
-        // Collect playbook IDs that reference this schema either directly or via paths
+        // Collect play IDs that reference this schema either directly or via paths
         let affected: Vec<String> = self
             .active_playbooks
             .iter()
-            .filter(|(_, pb)| pb.status == PlaybookStatus::Active)
+            .filter(|(_, pb)| pb.status == PlayStatus::Active)
             .filter(|(_, pb)| {
-                playbook_references_node_type(pb, schema_node_type)
-                    || playbook_has_paths_through_schema(pb, schema_node_type)
+                play_references_node_type(pb, schema_node_type)
+                    || play_has_paths_through_schema(pb, schema_node_type)
             })
             .map(|(id, _)| id.clone())
             .collect();
 
         for pb_id in affected {
             warn!(
-                "Schema '{}' updated to version '{}', disabling playbook {}",
+                "Schema '{}' updated to version '{}', disabling play {}",
                 schema_node_type, new_schema_version, pb_id
             );
-            self.disable_playbook(&pb_id);
+            self.disable_play(&pb_id);
             disabled.push(pb_id);
         }
 
@@ -200,14 +196,14 @@ impl PlaybookLifecycleManager {
             }
         }
 
-        // Deduplicate (same playbook + rule_index) and sort
+        // Deduplicate (same play + rule_index) and sort
         result.sort();
         result.dedup();
         result
     }
 
-    /// Get a reference to the active playbooks map.
-    pub fn active_playbooks(&self) -> &HashMap<String, ParsedPlaybook> {
+    /// Get a reference to the active plays map.
+    pub fn active_playbooks(&self) -> &HashMap<String, ParsedPlay> {
         &self.active_playbooks
     }
 
@@ -221,8 +217,8 @@ impl PlaybookLifecycleManager {
         &self.cron_registry
     }
 
-    /// Get a playbook by ID.
-    pub fn get_playbook(&self, id: &str) -> Option<&ParsedPlaybook> {
+    /// Get a play by ID.
+    pub fn get_play(&self, id: &str) -> Option<&ParsedPlay> {
         self.active_playbooks.get(id)
     }
 
@@ -230,16 +226,16 @@ impl PlaybookLifecycleManager {
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    fn remove_from_trigger_index(&mut self, playbook_id: &str) {
+    fn remove_from_trigger_index(&mut self, play_id: &str) {
         self.trigger_index.retain(|_, rules| {
-            rules.retain(|r| r.playbook_id != playbook_id);
+            rules.retain(|r| r.play_id != play_id);
             !rules.is_empty()
         });
     }
 
-    fn remove_from_cron_registry(&mut self, playbook_id: &str) {
+    fn remove_from_cron_registry(&mut self, play_id: &str) {
         for entry in &mut self.cron_registry {
-            entry.rules.retain(|r| r.playbook_id != playbook_id);
+            entry.rules.retain(|r| r.play_id != play_id);
         }
         self.cron_registry.retain(|e| !e.rules.is_empty());
     }
@@ -280,29 +276,29 @@ fn trigger_keys_for_graph_event(
     }
 }
 
-/// Check if a playbook's rules reference a given node_type.
-fn playbook_references_node_type(playbook: &ParsedPlaybook, node_type: &str) -> bool {
-    playbook.rules.iter().any(|rule| match &rule.trigger {
+/// Check if a play's rules reference a given node_type.
+fn play_references_node_type(play: &ParsedPlay, node_type: &str) -> bool {
+    play.rules.iter().any(|rule| match &rule.trigger {
         ParsedTrigger::GraphEvent { node_type: nt, .. } => nt == node_type,
         ParsedTrigger::Scheduled { node_type: nt, .. } => nt == node_type,
     })
 }
 
-/// Check if any of a playbook's conditions contain dot-paths that might traverse
+/// Check if any of a play's conditions contain dot-paths that might traverse
 /// through the given schema's node_type.
 ///
 /// This is a heuristic: we extract paths from conditions and check if any segment
 /// matches the schema name. A precise check would require walking the full schema
 /// graph, but that's expensive for a lifecycle operation. The heuristic is conservative
 /// (may produce false positives, triggering unnecessary re-validation, but never
-/// false negatives that would leave a broken playbook active).
+/// false negatives that would leave a broken play active).
 ///
 /// NOTE: Action binding templates (e.g., `{trigger.node.story.epic.title}`) are not
 /// checked here since they're template strings, not CEL expressions. If an action
 /// binding references a path through a changed schema, drift detection won't catch it.
-/// The action will fail at execution time and the playbook will be disabled then.
-fn playbook_has_paths_through_schema(playbook: &ParsedPlaybook, schema_node_type: &str) -> bool {
-    for rule in &playbook.rules {
+/// The action will fail at execution time and the play will be disabled then.
+fn play_has_paths_through_schema(play: &ParsedPlay, schema_node_type: &str) -> bool {
+    for rule in &play.rules {
         for condition in &rule.conditions {
             if let Ok(extraction) =
                 crate::playbook::path_extractor::extract_paths(&condition.source)
@@ -373,8 +369,8 @@ pub fn trigger_keys_for_event(event: &crate::db::events::DomainEvent) -> Vec<Tri
             keys
         }
         DomainEvent::NodeDeleted { .. } => {
-            // NodeDeleted doesn't trigger playbook rules via TriggerKey
-            // (handled separately for playbook lifecycle)
+            // NodeDeleted doesn't trigger play rules via TriggerKey
+            // (handled separately for play lifecycle)
             vec![]
         }
         DomainEvent::RelationshipCreated { .. } => {
@@ -384,9 +380,9 @@ pub fn trigger_keys_for_event(event: &crate::db::events::DomainEvent) -> Vec<Tri
             // relationship_added/relationship_removed triggers are indexed but not matched.
             vec![]
         }
-        DomainEvent::RelationshipUpdated { .. } => vec![], // No playbook triggers for updates
+        DomainEvent::RelationshipUpdated { .. } => vec![], // No play triggers for updates
         DomainEvent::RelationshipDeleted { .. } => vec![], // TODO(phase2): same as RelationshipCreated above
-        // Infrastructure-failure signal, not a content change — no playbook trigger keys.
+        // Infrastructure-failure signal, not a content change — no play trigger keys.
         DomainEvent::BackgroundImportFailed { .. } => vec![],
     }
 }
@@ -402,19 +398,19 @@ mod tests {
     use chrono::Utc;
     use serde_json::json;
 
-    /// Helper: create a playbook node with rules JSON.
-    fn make_playbook_node(id: &str, rules_json: serde_json::Value) -> Node {
+    /// Helper: create a play node with rules JSON.
+    fn make_play_node(id: &str, rules_json: serde_json::Value) -> Node {
         Node {
             id: id.to_string(),
-            node_type: "playbook".to_string(),
-            content: format!("playbook {}", id),
+            node_type: "play".to_string(),
+            content: format!("play {}", id),
             version: 1,
             created_at: Utc::now(),
             modified_at: Utc::now(),
             properties: json!({ "rules": rules_json }),
             mentions: vec![],
             mentioned_in: vec![],
-            title: Some(format!("Playbook {}", id)),
+            title: Some(format!("Play {}", id)),
             lifecycle_status: "active".to_string(),
         }
     }
@@ -426,7 +422,7 @@ mod tests {
     #[test]
     fn activate_and_lookup() {
         let mut lm = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb-1",
             json!([{
                 "name": "r1",
@@ -435,15 +431,15 @@ mod tests {
                 "actions": []
             }]),
         );
-        lm.activate_playbook(&node).unwrap();
+        lm.activate_play(&node).unwrap();
         assert!(lm.active_playbooks().contains_key("pb-1"));
-        assert_eq!(lm.active_playbooks()["pb-1"].status, PlaybookStatus::Active);
+        assert_eq!(lm.active_playbooks()["pb-1"].status, PlayStatus::Active);
     }
 
     #[test]
     fn deactivate_removes_from_all_indexes() {
         let mut lm = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb-2",
             json!([{
                 "name": "r1",
@@ -452,10 +448,10 @@ mod tests {
                 "actions": []
             }]),
         );
-        lm.activate_playbook(&node).unwrap();
+        lm.activate_play(&node).unwrap();
         assert!(!lm.trigger_index().is_empty());
 
-        lm.deactivate_playbook("pb-2");
+        lm.deactivate_play("pb-2");
         assert!(!lm.active_playbooks().contains_key("pb-2"));
         assert!(lm.trigger_index().is_empty());
     }
@@ -463,7 +459,7 @@ mod tests {
     #[test]
     fn disable_keeps_in_active_but_removes_from_index() {
         let mut lm = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb-3",
             json!([{
                 "name": "r1",
@@ -472,15 +468,12 @@ mod tests {
                 "actions": []
             }]),
         );
-        lm.activate_playbook(&node).unwrap();
-        lm.disable_playbook("pb-3");
+        lm.activate_play(&node).unwrap();
+        lm.disable_play("pb-3");
 
         // Still in active_playbooks but disabled
         assert!(lm.active_playbooks().contains_key("pb-3"));
-        assert_eq!(
-            lm.active_playbooks()["pb-3"].status,
-            PlaybookStatus::Disabled
-        );
+        assert_eq!(lm.active_playbooks()["pb-3"].status, PlayStatus::Disabled);
         // Removed from trigger index
         assert!(lm.trigger_index().is_empty());
     }
@@ -488,7 +481,7 @@ mod tests {
     #[test]
     fn lookup_rules_returns_matching_rules() {
         let mut lm = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb-4",
             json!([{
                 "name": "r1",
@@ -497,7 +490,7 @@ mod tests {
                 "actions": []
             }]),
         );
-        lm.activate_playbook(&node).unwrap();
+        lm.activate_play(&node).unwrap();
 
         let keys = vec![TriggerKey::NodeEvent {
             event: NodeEventType::NodeCreated,
@@ -512,7 +505,7 @@ mod tests {
     #[test]
     fn lookup_rules_no_match_returns_empty() {
         let mut lm = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb-5",
             json!([{
                 "name": "r1",
@@ -521,7 +514,7 @@ mod tests {
                 "actions": []
             }]),
         );
-        lm.activate_playbook(&node).unwrap();
+        lm.activate_play(&node).unwrap();
 
         // Wrong node type
         let keys = vec![TriggerKey::NodeEvent {
@@ -538,9 +531,9 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn schema_update_disables_directly_referencing_playbook() {
+    fn schema_update_disables_directly_referencing_play() {
         let mut lm = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb-drift-1",
             json!([{
                 "name": "r1",
@@ -549,21 +542,21 @@ mod tests {
                 "actions": []
             }]),
         );
-        lm.activate_playbook(&node).unwrap();
+        lm.activate_play(&node).unwrap();
 
         let disabled = lm.handle_schema_update("task", "2");
         assert_eq!(disabled, vec!["pb-drift-1"]);
         assert_eq!(
             lm.active_playbooks()["pb-drift-1"].status,
-            PlaybookStatus::Disabled
+            PlayStatus::Disabled
         );
     }
 
     #[test]
-    fn schema_update_disables_playbook_with_path_through_schema() {
+    fn schema_update_disables_play_with_path_through_schema() {
         let mut lm = PlaybookLifecycleManager::new();
-        // Playbook triggers on "task" but has conditions traversing through "epic"
-        let node = make_playbook_node(
+        // Play triggers on "task" but has conditions traversing through "epic"
+        let node = make_play_node(
             "pb-drift-2",
             json!([{
                 "name": "r1",
@@ -572,7 +565,7 @@ mod tests {
                 "actions": []
             }]),
         );
-        lm.activate_playbook(&node).unwrap();
+        lm.activate_play(&node).unwrap();
 
         // Updating "epic" schema should detect the path traversal
         let disabled = lm.handle_schema_update("epic", "2");
@@ -580,9 +573,9 @@ mod tests {
     }
 
     #[test]
-    fn schema_update_does_not_affect_unrelated_playbook() {
+    fn schema_update_does_not_affect_unrelated_play() {
         let mut lm = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb-drift-3",
             json!([{
                 "name": "r1",
@@ -591,21 +584,21 @@ mod tests {
                 "actions": []
             }]),
         );
-        lm.activate_playbook(&node).unwrap();
+        lm.activate_play(&node).unwrap();
 
-        // Updating "invoice" schema should not affect this playbook
+        // Updating "invoice" schema should not affect this play
         let disabled = lm.handle_schema_update("invoice", "2");
         assert!(disabled.is_empty());
         assert_eq!(
             lm.active_playbooks()["pb-drift-3"].status,
-            PlaybookStatus::Active
+            PlayStatus::Active
         );
     }
 
     #[test]
-    fn schema_update_skips_already_disabled_playbooks() {
+    fn schema_update_skips_already_disabled_plays() {
         let mut lm = PlaybookLifecycleManager::new();
-        let node = make_playbook_node(
+        let node = make_play_node(
             "pb-drift-4",
             json!([{
                 "name": "r1",
@@ -614,23 +607,23 @@ mod tests {
                 "actions": []
             }]),
         );
-        lm.activate_playbook(&node).unwrap();
-        lm.disable_playbook("pb-drift-4");
+        lm.activate_play(&node).unwrap();
+        lm.disable_play("pb-drift-4");
 
         let disabled = lm.handle_schema_update("task", "2");
         assert!(
             disabled.is_empty(),
-            "already-disabled playbooks should not appear"
+            "already-disabled plays should not appear"
         );
     }
 
     // -----------------------------------------------------------------------
-    // playbook_has_paths_through_schema
+    // play_has_paths_through_schema
     // -----------------------------------------------------------------------
 
     #[test]
     fn paths_through_schema_detects_multi_hop() {
-        let pb = ParsedPlaybook {
+        let pb = ParsedPlay {
             id: "test-pb".to_string(),
             created_at: Utc::now(),
             rules: vec![Arc::new(ParsedRule {
@@ -647,17 +640,17 @@ mod tests {
                 .unwrap()],
                 actions: vec![],
             })],
-            status: PlaybookStatus::Active,
+            status: PlayStatus::Active,
         };
 
-        assert!(playbook_has_paths_through_schema(&pb, "story"));
-        assert!(playbook_has_paths_through_schema(&pb, "epic"));
-        assert!(!playbook_has_paths_through_schema(&pb, "invoice"));
+        assert!(play_has_paths_through_schema(&pb, "story"));
+        assert!(play_has_paths_through_schema(&pb, "epic"));
+        assert!(!play_has_paths_through_schema(&pb, "invoice"));
     }
 
     #[test]
     fn paths_through_schema_no_conditions() {
-        let pb = ParsedPlaybook {
+        let pb = ParsedPlay {
             id: "test-pb".to_string(),
             created_at: Utc::now(),
             rules: vec![Arc::new(ParsedRule {
@@ -671,10 +664,10 @@ mod tests {
                 conditions: vec![],
                 actions: vec![],
             })],
-            status: PlaybookStatus::Active,
+            status: PlayStatus::Active,
         };
 
-        assert!(!playbook_has_paths_through_schema(&pb, "task"));
+        assert!(!play_has_paths_through_schema(&pb, "task"));
     }
 
     // -----------------------------------------------------------------------

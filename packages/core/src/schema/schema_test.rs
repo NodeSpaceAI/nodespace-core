@@ -695,7 +695,7 @@ async fn test_update_schema_remove_fields_allows_user_protected_field_on_core_sc
 /// A batch mixing an allowed removal with a forbidden one must reject the
 /// whole call rather than applying the allowed half before hitting the
 /// protected one — the same all-or-nothing guarantee `update_schema` already
-/// gives the namespace-prefix and playbook-impact checks.
+/// gives the namespace-prefix and play-impact checks.
 #[tokio::test]
 async fn test_update_schema_remove_fields_rejects_whole_batch_when_one_field_is_protected() {
     let (svc, _tmp) = create_test_service().await;

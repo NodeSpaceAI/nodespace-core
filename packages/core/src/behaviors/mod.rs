@@ -1750,7 +1750,7 @@ impl NodeBehavior for CollectionNodeBehavior {
 /// Built-in behavior for AI chat nodes
 ///
 /// AI chat nodes store conversations (user messages, assistant responses, tool calls)
-/// as nested properties following the same pattern as playbook `rules[]`.
+/// as nested properties following the same pattern as play `rules[]`.
 /// Conversations are stored as nodes for Stamped ACL permissions, cloud sync,
 /// and development traceability. They are deliberately NOT embedded (see below).
 ///

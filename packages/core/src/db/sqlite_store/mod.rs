@@ -379,7 +379,7 @@ impl SqliteStore {
     /// `"archived"` (local deletion is a hard delete, so there is no `"deleted"`
     /// state). Guarding here — the single point every INSERT/UPDATE of the column
     /// flows through — structurally prevents an unsupported value (e.g. from a
-    /// playbook action or API caller) from letting hidden nodes resurface in
+    /// play action or API caller) from letting hidden nodes resurface in
     /// full-text and semantic search.
     fn validate_lifecycle_status(status: &str) -> Result<()> {
         if crate::models::is_valid_lifecycle_status(status) {
@@ -784,7 +784,7 @@ mod tests {
 
         // The GENERIC relationship path is gated too. A `member_of` edge created
         // with an explicit `order` — the CLI `relationship create --edge-data`,
-        // the playbook `add_relationship` action, and
+        // the play `add_relationship` action, and
         // `NodeService::create_relationship`'s non-auto-order fork — routes through
         // `create_generic_relationship`, which must reject an interior node just as
         // `add_to_collection` does. (Regression for the bypass where adding one
