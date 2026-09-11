@@ -39,15 +39,37 @@
 //! required) and the rule's own parsed action list -- NOT a positional
 //! `rule_index`. `ParsedRule` carries no id of its own, and threading a
 //! positional index into [`execute_actions`] would require changing its only
-//! call site. Consequences worth naming:
-//! - Editing a rule's actions (reordering, adding, or changing one) changes
-//!   `rule_id`, and therefore every id derived from it, from that edit
-//!   onward -- the same trade-off ADR-060 §3 already accepts for a
-//!   positional `rule_index`.
+//! call site. Two consequences of THIS choice, neither one blessed by an
+//! existing ADR -- they are named here because they are new, not because
+//! they were already accepted elsewhere:
+//! - ADR-060 §3 names one narrow trade-off: reordering actions shifts
+//!   `action_index`, which changes the derived id of everything from the
+//!   reorder point on. Hashing the WHOLE action list into one `rule_id` (as
+//!   `rule_id_for` does) is a strictly broader trade-off than that: editing
+//!   ANY single action's params -- content, order, or nesting, anywhere in
+//!   the rule -- changes `rule_id`, and therefore changes the derived id of
+//!   EVERY action in that rule, including untouched siblings. E.g. editing a
+//!   notification action's message text silently changes a sibling
+//!   `create_node` action's derived id too, even though that action's own
+//!   params never changed. This is a real, sharper consequence than ADR-060
+//!   §3 describes and is not something the ADR already accepted -- see
+//!   [`rule_id_for`]'s own doc and the `rule_id_for_changes_when_the_rule_is_edited`
+//!   test for what actually changes and why.
 //! - Two DIFFERENT rules in the SAME play with byte-identical action lists
-//!   would collide onto the same `rule_id`. Accepted as a narrow, unlikely
-//!   gap (it requires a near-exact duplicate rule) given the alternative
-//!   requires a signature change at the engine call site.
+//!   collide onto the same `rule_id`. This is not narrow: the realistic
+//!   trigger is copy-paste rule authoring (duplicate a rule, change its
+//!   trigger/condition, leave the action list untouched), and the two rules
+//!   need not even fire from the same event -- they only need to eventually
+//!   act on the same node, e.g. rule A on `node_created` and rule B later on
+//!   `property_changed` for that same node, landing on the same
+//!   `iteration_path` and `action_index`. The failure is a SILENT INCORRECT
+//!   MERGE, not a visible duplicate or error: `execute_create_node`'s
+//!   existing-node check treats rule B's output as "already converged" and
+//!   quietly returns rule A's node. See
+//!   `two_rules_with_identical_actions_silently_share_one_output_node` for
+//!   the behavior made explicit. Not fixed here -- a save-time
+//!   `validation.rs` check that rejects or warns on two same-play rules with
+//!   byte-identical action lists is tracked as a separate follow-up.
 //!
 //! ## What this does NOT solve
 //!
@@ -1634,10 +1656,15 @@ mod tests {
     }
 
     /// A rule edit that changes action content, order, or nesting structure
-    /// changes `rule_id` -- and therefore every id derived from it -- from
-    /// that point on. This is an explicit, accepted trade-off (ADR-060 §3),
-    /// not a bug: it is the mechanism that keeps two DIFFERENT rule
-    /// revisions from silently colliding onto the same output id.
+    /// changes `rule_id` -- and therefore every id derived from it, for
+    /// EVERY action in the rule, including ones the edit didn't touch --
+    /// from that point on. This is a deliberate consequence of hashing the
+    /// whole action list into one `rule_id` (see the module doc), not a bug:
+    /// it is the mechanism that keeps two DIFFERENT rule revisions from
+    /// silently colliding onto the same output id. It is broader than what
+    /// ADR-060 §3 itself describes (reordering shifting `action_index`) --
+    /// see the module doc for why this implementation's own trade-off is
+    /// wider than the ADR's.
     #[test]
     fn rule_id_for_changes_when_the_rule_is_edited() {
         let original = vec![make_action(
@@ -2037,6 +2064,109 @@ mod tests {
                 ActionResult::Failed(ActionError::IterationPathResolutionFailed { .. }) => {}
                 other => panic!("expected IterationPathResolutionFailed, got {other:?}"),
             }
+        }
+
+        /// KNOWN GAP, made explicit rather than left implicit (see the module
+        /// doc's "rule_id" section and the tracked follow-up for a save-time
+        /// `validation.rs` guard): two DIFFERENT rules in the SAME play with
+        /// byte-identical action lists derive the SAME `rule_id`
+        /// (`rule_id_for` hashes only `(play_id, actions)`, which can't tell
+        /// two such rules apart). If they later act on the same real node --
+        /// realistic via copy-paste rule authoring, e.g. rule A on
+        /// `node_created` and rule B on `property_changed` for that same
+        /// node -- they derive the SAME output id too.
+        ///
+        /// This test proves the resulting failure mode is a SILENT INCORRECT
+        /// MERGE, not a duplicate or an error: rule B's `create_node` never
+        /// actually runs -- `execute_create_node`'s existing-node-at-derived-id
+        /// check (built for the legitimate case of the SAME rule re-firing)
+        /// can't distinguish that from a different rule colliding, so it
+        /// quietly hands back rule A's node as though it were rule B's own
+        /// converged output. Nothing here signals that two distinct rules
+        /// were involved.
+        #[tokio::test]
+        async fn two_rules_with_identical_actions_silently_share_one_output_node() {
+            let (svc, _tmp) = create_test_service().await;
+            let trigger = make_trigger_node("task-1", "task", json!({}));
+
+            // Rule A and rule B are authored independently (e.g. rule B is a
+            // copy-paste of rule A with only the trigger changed) but end up
+            // with byte-identical action lists.
+            let rule_a_actions = vec![make_action(
+                ActionType::CreateNode,
+                json!({"node_type": "text", "content": "rule A output"}),
+                None,
+            )];
+            let rule_b_actions = vec![make_action(
+                ActionType::CreateNode,
+                json!({"node_type": "text", "content": "rule A output"}),
+                None,
+            )];
+
+            // Root cause, asserted directly: same play, byte-identical
+            // actions -> same rule_id -> same derived output id, even though
+            // these are conceptually two different rules.
+            let rule_a_id = rule_id_for("play-collision", &rule_a_actions);
+            let rule_b_id = rule_id_for("play-collision", &rule_b_actions);
+            assert_eq!(
+                rule_a_id, rule_b_id,
+                "byte-identical action lists in the same play are indistinguishable to rule_id_for"
+            );
+
+            // Rule A fires first, on node_created.
+            let event_a = make_node_created_event("task-1", "task");
+            let result_a = execute_actions(
+                &rule_a_actions,
+                &trigger,
+                &event_a,
+                &svc,
+                exec_ctx("play-collision"),
+            )
+            .await;
+            assert!(matches!(result_a, ActionResult::Success), "{result_a:?}");
+
+            let all_after_a = svc.query_nodes_by_type("text", None).await.unwrap();
+            assert_eq!(all_after_a.len(), 1, "rule A creates exactly one node");
+            let rule_a_node_id = all_after_a[0].id.clone();
+
+            // Rule B fires later, on property_changed for the SAME node --
+            // a different event, a different (hypothetical) rule, but the
+            // same trigger node and byte-identical actions.
+            let event_b = make_property_changed_event(
+                "task-1",
+                "task",
+                vec![PropertyChange {
+                    key: "task.status".to_string(),
+                    old_value: Some(json!("open")),
+                    new_value: Some(json!("done")),
+                }],
+            );
+            let result_b = execute_actions(
+                &rule_b_actions,
+                &trigger,
+                &event_b,
+                &svc,
+                exec_ctx("play-collision"),
+            )
+            .await;
+
+            // No error, no duplicate -- this is the silent part.
+            assert!(
+                matches!(result_b, ActionResult::Success),
+                "rule B's execution reports success, masking that it wrote nothing of its own: {result_b:?}"
+            );
+
+            let all_after_b = svc.query_nodes_by_type("text", None).await.unwrap();
+            assert_eq!(
+                all_after_b.len(),
+                1,
+                "still exactly one node -- rule B silently 'converged' onto rule A's node \
+                 instead of producing its own"
+            );
+            assert_eq!(
+                all_after_b[0].id, rule_a_node_id,
+                "the single node is rule A's, not a merge of both rules' intent"
+            );
         }
     }
 }
