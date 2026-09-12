@@ -26,13 +26,25 @@ afterAll(async () => {
  * guaranteeing the subscription is registered before any writes fire.
  *
  * Rejects after `timeoutMs` if no matching event arrives.
+ *
+ * The budget covers connecting as well as waiting, and connecting is the
+ * expensive half: the first call in a file pays for the dev server's daemon
+ * channel coming up, while later ones reuse a warm stream and settle in tens
+ * of milliseconds. Under the pre-push gate — which runs test:all and a cargo
+ * build first — that setup alone has exceeded a 5s budget repeatedly, failing
+ * the first test in this file while every later one passes. The generous
+ * default is for that starved case; a genuinely broken stream still fails,
+ * just later.
  */
 async function waitForEvent(
   sseUrl: string,
   predicate: (event: Record<string, unknown>) => boolean,
   opts: { timeoutMs?: number; onConnected?: () => Promise<void> } = {}
 ): Promise<Record<string, unknown>> {
-  const { timeoutMs = 5000, onConnected } = opts;
+  // Below vitest's 30s testTimeout on purpose: if the two were equal, vitest
+  // could kill the test first and report a bare timeout instead of this
+  // helper's aborted-stream error, which names what actually stalled.
+  const { timeoutMs = 25_000, onConnected } = opts;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
