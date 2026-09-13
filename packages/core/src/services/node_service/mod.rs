@@ -7428,6 +7428,93 @@ mod tests {
         );
     }
 
+    /// ADR-076: `update_task_node` must reject a status string not present in
+    /// `task.status`'s `core_values` + `user_values`, closing the gap where
+    /// `TaskStatus::from_str`'s infallible `User(String)` fallback let any
+    /// string through unvalidated.
+    #[tokio::test]
+    async fn update_task_node_rejects_status_not_in_schema_vocabulary() {
+        use crate::models::{TaskNodeUpdate, TaskStatus};
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+
+        let id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Task".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let created = service.get_node(&id).await.unwrap().unwrap();
+
+        let update = TaskNodeUpdate::new().with_status(TaskStatus::User("backlog".to_string()));
+        let err = service
+            .update_task_node(&id, created.version, update)
+            .await
+            .expect_err("a status not declared in task.status's vocabulary must be rejected");
+
+        assert!(
+            err.to_string().contains("backlog"),
+            "error should name the rejected value: {err}"
+        );
+
+        // The node must be untouched by the rejected write.
+        let unchanged = service.get_node(&id).await.unwrap().unwrap();
+        assert_eq!(unchanged.version, created.version);
+    }
+
+    /// The positive-path counterpart: once `add_field_values` extends
+    /// `task.status`'s `user_values`, `update_task_node` must accept that
+    /// value — the whole point of ADR-076's extension mechanism.
+    #[tokio::test]
+    async fn update_task_node_accepts_status_added_via_add_field_values() {
+        use crate::models::{TaskNodeUpdate, TaskStatus};
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+        let service = std::sync::Arc::new(service);
+
+        crate::schema::handle_update_schema(
+            &service,
+            json!({
+                "schema_id": "task",
+                "add_field_values": [{
+                    "field": "status",
+                    "values": [{"value": "backlog", "label": "Backlog"}]
+                }]
+            }),
+        )
+        .await
+        .expect("add_field_values should succeed");
+
+        let id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Task".to_string(),
+                parent_id: None,
+                position: InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+        let created = service.get_node(&id).await.unwrap().unwrap();
+
+        let update = TaskNodeUpdate::new().with_status(TaskStatus::User("backlog".to_string()));
+        let task = service
+            .update_task_node(&id, created.version, update)
+            .await
+            .expect("a status added via add_field_values must be accepted");
+        assert_eq!(task.status, TaskStatus::User("backlog".to_string()));
+    }
+
     /// Set a `title_template` on the built-in "task" schema, preserving its other
     /// schema properties (isCore / schemaVersion / fields). Mirrors how the schema
     /// stores the template (`properties.titleTemplate`, read back by

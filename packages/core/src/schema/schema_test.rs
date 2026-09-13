@@ -4022,3 +4022,275 @@ async fn schema_declaring_an_edge_field_on_a_builtin_relationship_is_rejected() 
         "error should say the name is reserved, got: {err}"
     );
 }
+
+// ============================================================================
+// add_field_values (ADR-076)
+// ============================================================================
+
+#[tokio::test]
+async fn test_add_field_values_appends_to_extensible_core_field() {
+    let (svc, _tmp) = create_test_service().await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_field_values": [{
+                "field": "status",
+                "values": [{"value": "backlog", "label": "Backlog"}]
+            }]
+        }),
+    )
+    .await
+    .expect("add_field_values on an extensible Core field should succeed");
+
+    assert_eq!(result["fieldValuesAdded"], json!(1));
+
+    let schema = svc
+        .get_schema_node("task")
+        .await
+        .expect("get_schema_node should succeed")
+        .expect("task schema should exist");
+    let status = schema.get_field("status").expect("status field exists");
+    let user_values: Vec<&str> = status
+        .user_values
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|ev| ev.value.as_str())
+        .collect();
+    assert_eq!(user_values, vec!["backlog"]);
+    // core_values must be untouched — add_field_values never writes there.
+    let core_values: Vec<&str> = status
+        .core_values
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|ev| ev.value.as_str())
+        .collect();
+    assert_eq!(
+        core_values,
+        vec!["open", "in_progress", "done", "cancelled"]
+    );
+}
+
+#[tokio::test]
+async fn test_add_field_values_rejects_non_extensible_field() {
+    let (svc, _tmp) = create_test_service().await;
+
+    // "due_date" is a real task field but declared without extensible: true
+    // (and isn't even an enum) — the gate must reject it on extensible alone.
+    let schema = svc
+        .get_schema_node("task")
+        .await
+        .unwrap()
+        .expect("task schema should exist");
+    let due_date = schema.get_field("due_date").expect("due_date field exists");
+    assert_ne!(
+        due_date.extensible,
+        Some(true),
+        "test assumes due_date is not extensible"
+    );
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_field_values": [{
+                "field": "due_date",
+                "values": [{"value": "someday", "label": "Someday"}]
+            }]
+        }),
+    )
+    .await
+    .expect_err("add_field_values on a non-extensible field must be rejected");
+
+    assert!(
+        err.to_string().contains("due_date") && err.to_string().contains("extensible"),
+        "error should name the field and say it isn't extensible: {err}"
+    );
+
+    // Nothing should have been written.
+    let schema = svc.get_schema_node("task").await.unwrap().unwrap();
+    let due_date = schema.get_field("due_date").unwrap();
+    assert!(due_date.user_values.as_ref().is_none_or(|v| v.is_empty()));
+}
+
+#[tokio::test]
+async fn test_add_field_values_rejects_collision_with_core_values() {
+    let (svc, _tmp) = create_test_service().await;
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_field_values": [{
+                "field": "status",
+                "values": [{"value": "done", "label": "Finished"}]
+            }]
+        }),
+    )
+    .await
+    .expect_err("a value colliding with an existing core_values entry must be rejected");
+
+    assert!(
+        err.to_string().contains("done"),
+        "error should name the colliding value: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_add_field_values_rejects_collision_with_existing_user_values() {
+    let (svc, _tmp) = create_test_service().await;
+
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_field_values": [{
+                "field": "status",
+                "values": [{"value": "backlog", "label": "Backlog"}]
+            }]
+        }),
+    )
+    .await
+    .expect("first add_field_values should succeed");
+
+    // A second, independently-authored bundle tries to add the same bare
+    // value with different intended semantics — must fail loudly rather than
+    // silently merge or shadow the first bundle's entry.
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_field_values": [{
+                "field": "status",
+                "values": [{"value": "backlog", "label": "Not Started Yet"}]
+            }]
+        }),
+    )
+    .await
+    .expect_err("a value colliding with an existing user_values entry must be rejected");
+
+    assert!(
+        err.to_string().contains("backlog"),
+        "error should name the colliding value: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_add_field_values_rejects_duplicate_within_same_call() {
+    let (svc, _tmp) = create_test_service().await;
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_field_values": [{
+                "field": "status",
+                "values": [
+                    {"value": "backlog", "label": "Backlog"},
+                    {"value": "backlog", "label": "Backlog Again"}
+                ]
+            }]
+        }),
+    )
+    .await
+    .expect_err("duplicate values within one add_field_values call must be rejected");
+
+    assert!(err.to_string().contains("backlog"));
+
+    // Nothing should have been written — the whole call is rejected.
+    let schema = svc.get_schema_node("task").await.unwrap().unwrap();
+    let status = schema.get_field("status").unwrap();
+    assert!(status.user_values.as_ref().is_none_or(|v| v.is_empty()));
+}
+
+#[tokio::test]
+async fn test_add_field_values_rejects_non_enum_field_even_if_extensible() {
+    // user_values/core_values are only ever read by get_enum_values /
+    // get_enum_value_strings, which both gate on field_type == "enum" —
+    // add_field_values must reject a non-enum field even if it were somehow
+    // marked extensible: true, rather than silently writing values nothing
+    // surfaces or validates against.
+    let (svc, _tmp) = create_test_service().await;
+
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Widget",
+            "fields": [{
+                "name": "note",
+                "type": "string",
+                "protection": "user",
+                "extensible": true
+            }]
+        }),
+    )
+    .await
+    .expect("create_schema with an extensible string field should succeed");
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "widget",
+            "add_field_values": [{
+                "field": "note",
+                "values": [{"value": "x", "label": "X"}]
+            }]
+        }),
+    )
+    .await
+    .expect_err("add_field_values on a non-enum field must be rejected even if extensible");
+
+    assert!(
+        err.to_string().contains("note") && err.to_string().contains("enum"),
+        "error should name the field and say it must be an enum: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_add_field_values_rejects_unknown_field() {
+    let (svc, _tmp) = create_test_service().await;
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_field_values": [{
+                "field": "nonexistent",
+                "values": [{"value": "x", "label": "X"}]
+            }]
+        }),
+    )
+    .await
+    .expect_err("add_field_values on a nonexistent field must be rejected");
+
+    assert!(err.to_string().contains("nonexistent"));
+}
+
+#[tokio::test]
+async fn test_add_field_values_does_not_require_namespace_prefix_on_core_type() {
+    // ADR-063's field-name prefix requirement does not apply to add_field_values
+    // — it adds values to an existing field, not a new field. A bare value
+    // string like "backlog" on task.status (a core type) must be accepted.
+    let (svc, _tmp) = create_test_service().await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "task",
+            "add_field_values": [{
+                "field": "status",
+                "values": [{"value": "in_review", "label": "In Review"}]
+            }]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a bare (unprefixed) enum value on a core type's extensible field should be accepted: \
+         {result:?}"
+    );
+}
