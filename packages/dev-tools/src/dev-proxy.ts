@@ -83,6 +83,25 @@ interface ProtoNodeEvent {
   deleted?: { nodeId: string; nodeType: string };
 }
 
+// Resolves once the daemon->dev-proxy gRPC watch stream is attached and
+// broadcasting. `/api/events` awaits this before telling a browser client
+// it is connected: the dev-proxy's own HTTP server (and thus `/health`)
+// comes up before this bridge finishes connecting, so a client that arrived
+// early enough could otherwise be told `: connected` while there is no
+// upstream listener yet to relay the very write its own connection is
+// racing against. `attachedResolve` is replaced on every reconnect so a
+// client connecting during a bridge outage also waits for the new stream.
+let attachedResolve: () => void;
+let bridgeAttached: Promise<void> = new Promise((resolve) => {
+  attachedResolve = resolve;
+});
+
+function resetBridgeAttached(): void {
+  bridgeAttached = new Promise((resolve) => {
+    attachedResolve = resolve;
+  });
+}
+
 function startWatchBridge(): void {
   async function connect(): Promise<void> {
     // Gate the long-lived watch stream on the channel reaching READY too, so a
@@ -130,13 +149,21 @@ function startWatchBridge(): void {
 
     stream.on('error', (err: Error) => {
       console.error('[dev-proxy] WatchNodes stream error, reconnecting in 2s:', err.message);
+      resetBridgeAttached();
       setTimeout(connect, 2000);
     });
 
     stream.on('end', () => {
       console.log('[dev-proxy] WatchNodes stream ended, reconnecting in 1s');
+      resetBridgeAttached();
       setTimeout(connect, 1000);
     });
+
+    // All three listeners above are now wired, so this bridge will relay
+    // every event the daemon emits from here on. Signal that now, not after
+    // the first event arrives, so a client connecting between now and the
+    // first write is still told `: connected` only once delivery is real.
+    attachedResolve();
   }
 
   void connect();
@@ -249,6 +276,13 @@ async function handleRequest(req: Request): Promise<Response> {
   if (method === 'GET' && pathname === '/api/events') {
     const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
     let clientRef: SseClient;
+
+    // Wait for the daemon->dev-proxy watch bridge before registering this
+    // client or telling it `: connected` — otherwise a client that connects
+    // while the bridge is still starting (or reconnecting) is told it will
+    // receive events when nothing is relaying them yet, and a write racing
+    // that window is silently never delivered.
+    await bridgeAttached;
 
     let heartbeatTimer: ReturnType<typeof setInterval>;
     const stream = new ReadableStream({

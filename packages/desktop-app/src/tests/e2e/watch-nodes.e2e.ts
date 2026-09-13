@@ -166,3 +166,36 @@ describe('WatchNodes SSE stream', () => {
     expect(event.nodeId).toBe(id);
   });
 });
+
+describe('WatchNodes SSE stream under a slow-starting daemon', () => {
+  // `startDeferred()` returns as soon as the dev-proxy's own HTTP server is
+  // healthy, without waiting for the daemon socket — the same ordering a
+  // loaded machine produces naturally (proxy process scheduled and bound
+  // before the daemon->dev-proxy gRPC watch bridge finishes connecting).
+  // This reproduces the race deterministically instead of depending on
+  // machine load: an SSE client connecting in this window must not be told
+  // `: connected` until the bridge can actually relay events to it.
+  it('still delivers nodeCreated when the client connects before the daemon is reachable', async () => {
+    const deferred = await DaemonTestHarness.startDeferred();
+    try {
+      const id = crypto.randomUUID();
+
+      const eventPromise = waitForEvent(
+        deferred.sseUrl,
+        (ev) => ev.type === 'nodeCreated' && ev.nodeId === id,
+        {
+          timeoutMs: 20_000,
+          onConnected: () =>
+            deferred.adapter.createNode({ id, nodeType: 'text', content: 'watched create' })
+              .then(() => undefined)
+        }
+      );
+
+      const event = await eventPromise;
+      expect(event.type).toBe('nodeCreated');
+      expect(event.nodeId).toBe(id);
+    } finally {
+      await deferred.stop();
+    }
+  }, 25_000);
+});
