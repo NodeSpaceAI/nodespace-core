@@ -212,6 +212,40 @@ impl NodeService {
     /// # Ok(())
     /// # }
     /// ```
+    /// Validate a `TaskStatus` against `task.status`'s declared vocabulary
+    /// (`core_values` + `user_values`), mirroring `validate_node_with_fields`'s
+    /// enum check (`crud.rs`). `TaskStatus::from_str` is infallible by
+    /// construction — any unrecognized string becomes `TaskStatus::User(_)` —
+    /// so this is the only place `update_task_node` actually rejects a value
+    /// the schema hasn't declared.
+    async fn validate_task_status(
+        &self,
+        status: &crate::models::TaskStatus,
+    ) -> Result<(), NodeServiceError> {
+        let schema = self
+            .get_schema_node("task")
+            .await?
+            .ok_or_else(|| NodeServiceError::invalid_update("Schema 'task' not found"))?;
+
+        let valid_values = schema.get_enum_values("status").unwrap_or_default();
+        let status_str = status.as_str();
+        let is_valid = valid_values.iter().any(|ev| ev.value == status_str);
+
+        if !is_valid {
+            let valid_labels: Vec<_> = valid_values
+                .iter()
+                .map(|ev| format!("{} ({})", ev.label, ev.value))
+                .collect();
+            return Err(NodeServiceError::invalid_update(format!(
+                "Invalid value '{}' for enum field 'status'. Valid values: {}",
+                status_str,
+                valid_labels.join(", ")
+            )));
+        }
+
+        Ok(())
+    }
+
     pub async fn update_task_node(
         &self,
         id: &str,
@@ -222,6 +256,16 @@ impl NodeService {
             return Err(NodeServiceError::invalid_update(
                 "TaskNodeUpdate contains no changes",
             ));
+        }
+
+        // Enforce `status` against the schema's declared vocabulary
+        // (core_values + user_values) — the same check `validate_node_with_fields`
+        // already performs for schema-only types (ADR-076). `update_task_node`
+        // is the sole call path into the store-layer write (confirmed: no other
+        // caller reaches it directly), and the store layer trusts this having
+        // already run rather than re-validating itself.
+        if let Some(ref status) = update.status {
+            self.validate_task_status(status).await?;
         }
 
         // Sync the indexed `title` column, mirroring the generic update path's guard

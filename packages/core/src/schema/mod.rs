@@ -976,6 +976,19 @@ pub struct FieldRename {
     pub friendly_name: Option<String>,
 }
 
+/// One field's worth of `add_field_values` input: the target field and the
+/// `EnumValue` entries to append to its `user_values`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FieldValueAddition {
+    /// Name of the existing field to extend (must be `type: "enum"` and
+    /// `extensible: true`).
+    pub field: String,
+    /// Values to append to the field's `user_values`. Each `value` must not
+    /// already exist in the field's combined `core_values` + `user_values`.
+    pub values: Vec<crate::models::schema::EnumValue>,
+}
+
 /// Parameters for update_schema (batch operations)
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -988,6 +1001,11 @@ pub struct UpdateSchemaParams {
     /// Field names to remove
     #[serde(default)]
     pub remove_fields: Option<Vec<String>>,
+    /// Append values to an existing field's `user_values`. Gated on that
+    /// field's `extensible == Some(true)` — see ADR-076. Append-only: never
+    /// touches `core_values`, never removes/renames existing `user_values`.
+    #[serde(default)]
+    pub add_field_values: Option<Vec<FieldValueAddition>>,
     /// Field renames — rekeys property data on all existing nodes of this type
     /// and updates the schema definition atomically.
     #[serde(default)]
@@ -1029,6 +1047,8 @@ pub struct SchemaUpdateOutput {
     pub fields_removed: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fields_renamed: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field_values_added: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relationships_added: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1374,6 +1394,70 @@ pub async fn handle_update_schema(
         fields.extend(add_fields.clone());
     }
 
+    // --- `add_field_values`: append to an existing field's `user_values` ---
+    //
+    // A separate gate from `can_modify_field`/`can_delete_field`: those both
+    // require `protection == User`, which would permanently block exactly the
+    // field this operation exists to extend (`task.status` is `protection:
+    // Core`). `add_field_values` is gated purely on `extensible`, independent
+    // of `protection` — see ADR-076 "Why this can't reuse existing protection
+    // machinery".
+    let mut field_values_added = 0;
+    if let Some(ref additions) = params.add_field_values {
+        for addition in additions {
+            let Some(field) = fields.iter_mut().find(|f| f.name == addition.field) else {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Field '{}' not found in schema '{}'",
+                    addition.field, params.schema_id
+                )));
+            };
+
+            if field.extensible != Some(true) {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Field '{}' on schema '{}' is not extensible — add_field_values only \
+                     applies to fields declared with extensible: true.",
+                    addition.field, params.schema_id
+                )));
+            }
+
+            // Collision check on `.value` (the machine-comparable stored
+            // string), across BOTH core_values and existing user_values —
+            // never on `.label`, which is display text and may legitimately
+            // repeat. Two independently-authored methodology bundles adding
+            // the same bare value with different intended semantics must
+            // fail loudly rather than silently merge or shadow one another.
+            let mut existing_values: std::collections::HashSet<String> = field
+                .core_values
+                .iter()
+                .flatten()
+                .chain(field.user_values.iter().flatten())
+                .map(|ev| ev.value.clone())
+                .collect();
+
+            for new_value in &addition.values {
+                if existing_values.contains(&new_value.value) {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "Value '{}' already exists on field '{}' in schema '{}' — \
+                         add_field_values does not overwrite or merge colliding values. \
+                         Choose a different value string.",
+                        new_value.value, addition.field, params.schema_id
+                    )));
+                }
+                // Track within this same call too, so a caller sending the
+                // same value twice in one `values` array (or across two
+                // `add_field_values` entries targeting the same field) is
+                // rejected rather than silently deduplicated.
+                existing_values.insert(new_value.value.clone());
+            }
+
+            field
+                .user_values
+                .get_or_insert_with(Vec::new)
+                .extend(addition.values.iter().cloned());
+            field_values_added += addition.values.len();
+        }
+    }
+
     // Process relationships (`schema.relationships` arrives hydrated from the
     // relationship table; the final set is persisted back through
     // `set_schema_relationships` below)
@@ -1556,6 +1640,11 @@ pub async fn handle_update_schema(
         },
         fields_renamed: if fields_renamed > 0 {
             Some(fields_renamed)
+        } else {
+            None
+        },
+        field_values_added: if field_values_added > 0 {
+            Some(field_values_added)
         } else {
             None
         },

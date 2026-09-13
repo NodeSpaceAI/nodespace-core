@@ -29,8 +29,11 @@ pub(crate) const EXECUTION_QUEUE_CAPACITY: usize = 1024;
 
 /// The play engine — subscribes to domain events and manages play lifecycle.
 ///
-/// Runs in-process alongside NodeService. Subscribes to the broadcast channel
-/// as a second subscriber (alongside DomainEventForwarder).
+/// Runs in-process alongside NodeService. Subscribes to the domain event
+/// broadcast channel that `core` owns; other subscribers (e.g.
+/// `desktop-app`'s frontend relay) subscribe independently, and this engine
+/// has no dependency on or awareness of them, per the `core`/`desktop-app`
+/// crate boundary.
 pub struct PlaybookEngine {
     /// Lifecycle manager behind RwLock for concurrent access.
     /// Read: event subscriber (frequent). Write: lifecycle ops (infrequent).

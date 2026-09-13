@@ -1810,4 +1810,64 @@ mod tests {
             assert!(node.properties.get("isCore").unwrap().as_bool().unwrap());
         }
     }
+
+    /// ADR-076 standing check: `TaskStatus`'s named variants and `task.status`'s
+    /// seed `core_values` must stay consistent in both directions.
+    ///
+    /// A one-time audit only proves correctness at the moment it runs — this is
+    /// what catches the *next* drift, e.g. a future `TaskStatus` variant added
+    /// without a matching schema update, or vice versa, before it repeats the
+    /// `ai-chat.status` incident (enabling enum validation broke 16 daemon
+    /// tests because the schema's declared vocabulary and the code writing
+    /// status values had silently drifted apart).
+    #[test]
+    fn test_task_status_variants_match_core_values_bidirectionally() {
+        use crate::models::TaskStatus;
+
+        let schemas = get_core_schemas();
+        let task = schemas.iter().find(|s| s.id == "task").unwrap();
+        let status_field = task.get_field("status").expect("task schema has status");
+        let core_value_strings: Vec<&str> = status_field
+            .core_values
+            .as_ref()
+            .expect("status field has core_values")
+            .iter()
+            .map(|ev| ev.value.as_str())
+            .collect();
+
+        // Every named TaskStatus variant (everything but the User(_) catch-all)
+        // must have a corresponding core_values entry.
+        let named_variants = [
+            TaskStatus::Open,
+            TaskStatus::InProgress,
+            TaskStatus::Done,
+            TaskStatus::Cancelled,
+        ];
+        for variant in &named_variants {
+            assert!(
+                core_value_strings.contains(&variant.as_str()),
+                "TaskStatus::{:?} (\"{}\") has no matching entry in task.status's core_values \
+                 ({:?}) — add it to core_schemas.rs's seed definition.",
+                variant,
+                variant.as_str(),
+                core_value_strings
+            );
+        }
+
+        // Every core_values entry must round-trip through TaskStatus::from_str
+        // to a NAMED variant, not fall through to the User(_) catch-all — a
+        // core_values entry with no corresponding variant is exactly the
+        // reverse drift (schema declares a value the type doesn't know as a
+        // first-class variant).
+        for value in &core_value_strings {
+            let parsed: TaskStatus = value.parse().expect("TaskStatus::from_str is infallible");
+            assert!(
+                parsed.is_core(),
+                "task.status's core_values entry '{}' does not parse to a named TaskStatus \
+                 variant (got TaskStatus::User(_)) — add a matching variant in task_node.rs \
+                 or remove the stray core_values entry.",
+                value
+            );
+        }
+    }
 }
