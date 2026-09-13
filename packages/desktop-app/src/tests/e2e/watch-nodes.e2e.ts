@@ -167,7 +167,7 @@ describe('WatchNodes SSE stream', () => {
   });
 });
 
-describe('WatchNodes SSE stream under a slow-starting daemon', () => {
+describe('WatchNodes SSE stream reconnection ordering', () => {
   // `startDeferred()` returns as soon as the dev-proxy's own HTTP server is
   // healthy, without waiting for the daemon socket — the same ordering a
   // loaded machine produces naturally (proxy process scheduled and bound
@@ -175,7 +175,7 @@ describe('WatchNodes SSE stream under a slow-starting daemon', () => {
   // This reproduces the race deterministically instead of depending on
   // machine load: an SSE client connecting in this window must not be told
   // `: connected` until the bridge can actually relay events to it.
-  it('still delivers nodeCreated when the client connects before the daemon is reachable', async () => {
+  it('delivers a write made while the daemon was still starting up', async () => {
     const deferred = await DaemonTestHarness.startDeferred();
     try {
       const id = crypto.randomUUID();

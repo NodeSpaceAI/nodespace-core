@@ -277,11 +277,8 @@ async function handleRequest(req: Request): Promise<Response> {
     const clientId = url.searchParams.get('clientId') ?? crypto.randomUUID();
     let clientRef: SseClient;
 
-    // Wait for the daemon->dev-proxy watch bridge before registering this
-    // client or telling it `: connected` — otherwise a client that connects
-    // while the bridge is still starting (or reconnecting) is told it will
-    // receive events when nothing is relaying them yet, and a write racing
-    // that window is silently never delivered.
+    // See `bridgeAttached`'s doc comment above for why this must be
+    // awaited before registering the client or flushing `: connected`.
     await bridgeAttached;
 
     let heartbeatTimer: ReturnType<typeof setInterval>;
