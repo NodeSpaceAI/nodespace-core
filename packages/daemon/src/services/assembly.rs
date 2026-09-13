@@ -291,13 +291,21 @@ pub async fn build_database_services(
     // `node_service_grpc` has open ends instead of surviving as a zombie.
     let shutdown_token = tokio_util::sync::CancellationToken::new();
 
+    // Constructed here (ahead of node_service_grpc) so its lifecycle-manager
+    // handle can be threaded into NodeServiceImpl for get-workflow-state —
+    // `PlaybookEngine::start` is spawned later, once the rest of this
+    // database's services exist, but the engine object and its lifecycle
+    // handle are needed now.
+    let playbook_engine = Arc::new(PlaybookEngine::new(node_service.clone()));
+
     let node_service_grpc = NodeServiceImpl::new(
         node_service.clone(),
         embedding_state.clone(),
         shared.scheduler.clone(),
     )
     .with_database_id(database_id.to_string())
-    .with_shutdown_token(shutdown_token.clone());
+    .with_shutdown_token(shutdown_token.clone())
+    .with_playbook_lifecycle(playbook_engine.lifecycle().clone());
 
     // EmbeddingsService is only registered when a model file exists at startup
     // (the shared model). If the model appears later, the endpoint is absent
@@ -330,10 +338,15 @@ pub async fn build_database_services(
     // The engine and model catalog come from the process-global
     // `SharedLocalAgent`; what is built here is this database's own turn state
     // and its ai-chat event watcher, which reacts to *this* node service's bus.
-    let local_agent = LocalAgentServiceImpl::new(
+    // Wired with this database's Play engine lifecycle handle (constructed
+    // above, ahead of node_service_grpc) so the local agent's
+    // `get_workflow_state` tool shares the same live TriggerIndex/CronRegistry
+    // `node_service_grpc` does.
+    let local_agent = LocalAgentServiceImpl::new_with_playbook_lifecycle(
         shared.local_agent.clone(),
         node_service.clone(),
         embedding_svc_state.clone(),
+        playbook_engine.lifecycle().clone(),
     );
     local_agent.start_event_watcher();
 
@@ -376,7 +389,6 @@ pub async fn build_database_services(
     // plays, to avoid missing an event racing the initial load) and spawns
     // `CronRunner` itself — nothing else needs to.
     let (playbook_shutdown_tx, playbook_shutdown_rx) = watch::channel(false);
-    let playbook_engine = Arc::new(PlaybookEngine::new(node_service.clone()));
     let playbook_db_id = database_id.to_string();
     tokio::spawn(async move {
         if let Err(e) = playbook_engine.start(playbook_shutdown_rx).await {

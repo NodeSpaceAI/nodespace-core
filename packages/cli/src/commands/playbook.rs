@@ -1,0 +1,166 @@
+//! `nodespace playbook ...` — inspect and control Play automation rule-sets.
+//!
+//! Per ADR-035's capability-parity clause, four of these five operations are
+//! thin reductions to an existing generic verb rather than bespoke RPC/CLI
+//! surface:
+//! - `list` -> `ExecuteQuery` filtered to `node_type: "play"`
+//! - `logs` -> `ExecuteQuery` filtered to `node_type: "playbook_log"` with a
+//!   `play_id` property filter (log nodes carry a flat `play_id` property,
+//!   not a relationship — see `packages/core/src/playbook/logging.rs`)
+//! - `enable`/`disable` -> `UpdateNode` setting `lifecycle_status` to
+//!   `"active"`/`"archived"` (the engine's `handle_play_updated` already
+//!   treats any non-`"active"` status as disabled)
+//!
+//! `get-workflow-state` is the one operation that needs purpose-built
+//! evaluation — it runs the engine's condition logic out of band from a live
+//! trigger — and is the only new RPC this adds (`GetWorkflowState`). See
+//! `nodespace_core::playbook::workflow_state` for the evaluation design
+//! (fired-state scoping, synthetic-event substitution, typo-vs-unmet
+//! classification).
+
+use anyhow::{Context, Result};
+use clap::{Args, Subcommand};
+use nodespace_daemon::nodespace::{
+    ExecuteQueryRequest, GetWorkflowStateRequest, UpdateNodeRequest,
+};
+
+use crate::output;
+use crate::NodeClient;
+
+#[derive(Subcommand, Debug)]
+pub enum PlaybookAction {
+    /// List all installed Plays and their lifecycle status.
+    List(PlaybookListArgs),
+    /// Show execution-error history for a Play (log nodes it produced).
+    Logs(PlaybookLogsArgs),
+    /// Re-enable a disabled Play after fixing the underlying issue.
+    Enable(PlaybookIdArgs),
+    /// Manually disable a Play.
+    Disable(PlaybookIdArgs),
+    /// Evaluate a node against every active Play rule that could apply to
+    /// its type, and report which conditions are satisfied, not yet met, or
+    /// unresolvable (a likely typo in a condition's path).
+    #[command(name = "get-workflow-state")]
+    GetWorkflowState(GetWorkflowStateArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PlaybookListArgs {}
+
+#[derive(Args, Debug)]
+pub struct PlaybookLogsArgs {
+    /// Play ID to show log entries for.
+    pub play_id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct PlaybookIdArgs {
+    /// Play ID (node ID of the `play` node).
+    pub play_id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct GetWorkflowStateArgs {
+    /// ID of the node to evaluate active Play rules against.
+    pub node_id: String,
+}
+
+pub async fn run(client: &mut NodeClient, action: PlaybookAction, json: bool) -> Result<()> {
+    match action {
+        PlaybookAction::List(args) => list(client, args, json).await,
+        PlaybookAction::Logs(args) => logs(client, args, json).await,
+        PlaybookAction::Enable(args) => set_lifecycle_status(client, args, "active", json).await,
+        PlaybookAction::Disable(args) => set_lifecycle_status(client, args, "archived", json).await,
+        PlaybookAction::GetWorkflowState(args) => get_workflow_state(client, args, json).await,
+    }
+}
+
+async fn list(client: &mut NodeClient, _args: PlaybookListArgs, json: bool) -> Result<()> {
+    let response = client
+        .execute_query(ExecuteQueryRequest {
+            target_type: "play".to_string(),
+            filters_json: None,
+            sorting_json: None,
+            limit: 0,
+        })
+        .await
+        .context("ExecuteQuery RPC failed")?
+        .into_inner();
+
+    output::print_node_list(&response, json)
+}
+
+async fn logs(client: &mut NodeClient, args: PlaybookLogsArgs, json: bool) -> Result<()> {
+    let filters_json = serde_json::json!([{
+        "type": "property",
+        "operator": "equals",
+        "property": "play_id",
+        "value": args.play_id,
+    }])
+    .to_string();
+
+    let response = client
+        .execute_query(ExecuteQueryRequest {
+            target_type: "playbook_log".to_string(),
+            filters_json: Some(filters_json),
+            sorting_json: None,
+            limit: 0,
+        })
+        .await
+        .context("ExecuteQuery RPC failed")?
+        .into_inner();
+
+    output::print_node_list(&response, json)
+}
+
+/// Shared implementation for `enable`/`disable`: both are exactly a
+/// `lifecycle_status` update on the Play node — the engine's own
+/// `handle_play_updated` (packages/core/src/playbook/engine.rs) already
+/// treats any non-`"active"` status as disabled, so no Play-specific verb or
+/// validation is needed beyond the generic update path.
+async fn set_lifecycle_status(
+    client: &mut NodeClient,
+    args: PlaybookIdArgs,
+    lifecycle_status: &str,
+    json: bool,
+) -> Result<()> {
+    let response = client
+        .update_node(UpdateNodeRequest {
+            node_id: args.play_id,
+            version: None,
+            node_type: None,
+            content: None,
+            properties: None,
+            add_to_collections: vec![],
+            remove_from_collection_ids: vec![],
+            lifecycle_status: Some(lifecycle_status.to_string()),
+            add_to_collection_ids: vec![],
+        })
+        .await
+        .context("UpdateNode RPC failed")?
+        .into_inner();
+
+    output::print_node(
+        &response.node_data.context("daemon returned no node_data")?,
+        json,
+    )
+}
+
+async fn get_workflow_state(
+    client: &mut NodeClient,
+    args: GetWorkflowStateArgs,
+    _json: bool,
+) -> Result<()> {
+    let response = client
+        .get_workflow_state(GetWorkflowStateRequest {
+            node_id: args.node_id,
+        })
+        .await
+        .context("GetWorkflowState RPC failed")?
+        .into_inner();
+
+    let value: serde_json::Value = serde_json::from_str(&response.result_json)
+        .context("daemon returned malformed result_json")?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}

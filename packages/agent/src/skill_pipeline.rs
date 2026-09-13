@@ -286,6 +286,27 @@ SUCCESS: {success_no_reverify}"#,
     )
 }
 
+/// Builds the Play Workflow State skill's markdown_content.
+///
+/// Covers only `get_workflow_state` — the one Play/Playbook operation that
+/// needs its own tool (list/logs/enable/disable all reduce to `search_nodes`/
+/// `update_node`, which the model already reaches through other skills, per
+/// ADR-035's capability-parity clause).
+fn play_workflow_state_guidance() -> String {
+    r#"# Play Workflow State Guidance
+
+This skill answers "why hasn't this Play rule fired?" or "what's still missing before it will?" for a node governed by NodeSpace's Play automation system (trigger → conditions → actions).
+
+CALL get_workflow_state WITH THE NODE'S ID: it evaluates every active Play rule whose trigger could apply to that node's type against the node's current state, and reports each rule's conditions as one of: satisfied, not yet met (a real, schema-declared relationship or field that just doesn't have a value yet — normal, the Play stays active), or unresolvable (the condition references something that isn't a declared field or relationship on the node's schema at all — almost certainly a typo in how the Play was authored, and will never resolve no matter what the graph looks like).
+
+SCOPE: this reports live condition state computed right now, on this device — it is not an execution history. Whether a rule has already fired is not tracked anywhere in the system today, so never tell the user a rule "already ran" or "hasn't run yet" based on this tool; only report what conditions currently hold.
+
+UNRESOLVABLE MEANS LIKELY MISAUTHORED: if a condition comes back unresolvable, say so plainly and name the specific unresolvable path — don't describe it as "not yet met," which implies waiting will fix it. Waiting will not fix a typo.
+
+FIND THE NODE FIRST: if you don't already have the node's id, call search_semantic or search_nodes first, then call get_workflow_state with the resolved id."#
+        .to_string()
+}
+
 /// Builds the Bulk Import skill's markdown_content, interpolating the shared
 /// no-followup-search success rule.
 fn bulk_import_guidance() -> String {
@@ -597,6 +618,20 @@ SUCCESS: After create_node returns a node ID, confirm to the user what was creat
             markdown_content: node_merge_guidance(),
         },
         NodeTemplate {
+            title: "Play Workflow State".to_string(),
+            content: None,
+            root_node_type: "skill".to_string(),
+            root_properties: serde_json::json!({
+                "description": "Check why a Play automation rule hasn't fired for a node, or what conditions are still unmet, by evaluating that node against every active Play rule that could apply to it. Use when the user asks why an automation, rule, or workflow hasn't triggered, or wants to know what's missing before it will.",
+                "tool_whitelist": ["get_workflow_state", "search_semantic", "search_nodes"],
+                "max_iterations": 3,
+            }),
+            child_node_type: None,
+            child_properties: None,
+            tier: SeedTier::System,
+            markdown_content: play_workflow_state_guidance(),
+        },
+        NodeTemplate {
             title: "Bulk Import".to_string(),
             content: None,
             root_node_type: "skill".to_string(),
@@ -749,7 +784,7 @@ mod tests {
     #[test]
     fn seed_skills_have_valid_properties() {
         let seeds = seed_skill_nodes();
-        assert_eq!(seeds.len(), 10, "Should have 10 seed skills");
+        assert_eq!(seeds.len(), 11, "Should have 11 seed skills");
 
         for seed in &seeds {
             assert!(!seed.title.is_empty());

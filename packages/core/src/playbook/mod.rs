@@ -33,7 +33,9 @@ pub mod path_extractor;
 mod tests;
 pub mod types;
 pub mod validation;
+pub mod workflow_state;
 
 pub use engine::PlaybookEngine;
 pub use lifecycle::PlaybookLifecycleManager;
 pub use types::*;
+pub use workflow_state::{get_workflow_state, ConditionState, RuleWorkflowState, WorkflowState};

@@ -148,6 +148,12 @@ pub enum Command {
         #[command(subcommand)]
         action: commands::schema::SchemaAction,
     },
+    /// Inspect and control Play automation rule-sets (list, logs, enable,
+    /// disable, get-workflow-state).
+    Playbook {
+        #[command(subcommand)]
+        action: commands::playbook::PlaybookAction,
+    },
     /// Manage typed relationship edges between nodes (distinct from mentions).
     Relationship {
         #[command(subcommand)]
@@ -413,6 +419,11 @@ pub async fn run(cli: Cli) -> Result<()> {
             let (interceptor, _) = resolve_routing(&sock, selection).await?;
             let mut client = connect(&sock, interceptor).await?;
             commands::schema::run(&mut client, action, json).await
+        }
+        Command::Playbook { action } => {
+            let (interceptor, _) = resolve_routing(&sock, selection).await?;
+            let mut client = connect(&sock, interceptor).await?;
+            commands::playbook::run(&mut client, action, json).await
         }
         Command::Relationship { action } => {
             let (interceptor, _) = resolve_routing(&sock, selection).await?;
