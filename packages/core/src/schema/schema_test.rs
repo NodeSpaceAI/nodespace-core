@@ -4207,6 +4207,49 @@ async fn test_add_field_values_rejects_duplicate_within_same_call() {
 }
 
 #[tokio::test]
+async fn test_add_field_values_rejects_non_enum_field_even_if_extensible() {
+    // user_values/core_values are only ever read by get_enum_values /
+    // get_enum_value_strings, which both gate on field_type == "enum" —
+    // add_field_values must reject a non-enum field even if it were somehow
+    // marked extensible: true, rather than silently writing values nothing
+    // surfaces or validates against.
+    let (svc, _tmp) = create_test_service().await;
+
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Widget",
+            "fields": [{
+                "name": "note",
+                "type": "string",
+                "protection": "user",
+                "extensible": true
+            }]
+        }),
+    )
+    .await
+    .expect("create_schema with an extensible string field should succeed");
+
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "widget",
+            "add_field_values": [{
+                "field": "note",
+                "values": [{"value": "x", "label": "X"}]
+            }]
+        }),
+    )
+    .await
+    .expect_err("add_field_values on a non-enum field must be rejected even if extensible");
+
+    assert!(
+        err.to_string().contains("note") && err.to_string().contains("enum"),
+        "error should name the field and say it must be an enum: {err}"
+    );
+}
+
+#[tokio::test]
 async fn test_add_field_values_rejects_unknown_field() {
     let (svc, _tmp) = create_test_service().await;
 

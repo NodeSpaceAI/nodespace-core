@@ -1420,6 +1420,22 @@ pub async fn handle_update_schema(
                 )));
             }
 
+            // `user_values`/`core_values` are only ever read by
+            // `get_enum_values`/`get_enum_value_strings` (`schema_node.rs`),
+            // which both gate on `field_type == "enum"` — appending to
+            // `user_values` on a non-enum field would silently write values
+            // nothing surfaces or validates against. No seed field combines
+            // `extensible: true` with a non-enum type today, but the
+            // `extensible` check alone doesn't rule it out, so check
+            // explicitly rather than relying on that absence to hold forever.
+            if field.field_type != "enum" {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Field '{}' on schema '{}' is type '{}', not 'enum' — add_field_values \
+                     only applies to enum fields.",
+                    addition.field, params.schema_id, field.field_type
+                )));
+            }
+
             // Collision check on `.value` (the machine-comparable stored
             // string), across BOTH core_values and existing user_values —
             // never on `.label`, which is display text and may legitimately
