@@ -94,11 +94,25 @@ pub async fn get_workflow_state(
     node_service: &Arc<NodeService>,
     node: &Node,
 ) -> WorkflowState {
-    let schema = node_service
+    let schema = match node_service
         .get_schema_with_relationships(&node.node_type)
         .await
-        .ok()
-        .flatten();
+    {
+        Ok(schema) => schema,
+        Err(e) => {
+            // A real lookup failure (not "no schema for this type") — the
+            // typo-vs-unmet distinction degrades to the conservative
+            // NotYetMet classification for this node, but that degradation
+            // should be visible rather than indistinguishable from a genuine
+            // schemaless type.
+            tracing::warn!(
+                node_type = %node.node_type,
+                error = %e,
+                "get_workflow_state: schema lookup failed; typo detection degraded to NotYetMet for this node"
+            );
+            None
+        }
+    };
 
     let candidate_refs = {
         let lm = lifecycle.read().expect("lifecycle lock poisoned");
@@ -176,6 +190,7 @@ pub async fn get_workflow_state(
                 node,
                 &synthetic_event,
                 &mut resolver,
+                node_service,
                 schema.as_ref(),
             )
             .await;
@@ -220,6 +235,7 @@ async fn evaluate_one_condition(
     node: &Node,
     event: &DomainEvent,
     resolver: &mut GraphResolver,
+    node_service: &Arc<NodeService>,
     schema: Option<&crate::models::SchemaNode>,
 ) -> ConditionState {
     let result =
@@ -229,41 +245,42 @@ async fn evaluate_one_condition(
     match result {
         ConditionResult::Pass => ConditionState::Satisfied,
         ConditionResult::Fail { .. } => {
-            classify_failure(condition, node, schema).unwrap_or(ConditionState::NotYetMet {
-                condition: condition.source.clone(),
-            })
+            match classify_failure(condition, node, node_service, schema).await {
+                Some(state) => state,
+                None => ConditionState::NotYetMet {
+                    condition: condition.source.clone(),
+                },
+            }
         }
     }
 }
 
+/// Core node fields resolvable with no schema lookup at all — a condition
+/// naming one of these is never a typo regardless of what the schema declares.
+const CORE_FIELDS: &[&str] = &["id", "node_type", "content", "version", "lifecycle_status"];
+
 /// Distinguish a legitimately-unmet condition from one that can never resolve.
 ///
-/// Extracts every dot-path the condition references and checks its first
-/// segment (after the `node`/`trigger` root) against the node's schema: a
-/// name that is neither a declared field nor a declared relationship cannot
-/// possibly resolve later, however the graph evolves, and is reported as
-/// `Unresolvable`. A name that *is* a declared relationship with (for now) no
-/// target is exactly the spec's "not yet met" case.
+/// Extracts every dot-path the condition references and walks each one
+/// hop-by-hop against the schema chain it traverses: `node.story.epic.status`
+/// checks `story` against `node`'s own schema, then (if `story` is a real
+/// relationship) follows its `target_type` to fetch *that* schema and checks
+/// `epic` against it, and so on. A segment that names neither a declared
+/// field nor a declared relationship on the schema reached at that point in
+/// the walk cannot possibly resolve later, however the graph evolves, and is
+/// reported as `Unresolvable`. A walk that runs out of segments while every
+/// hop so far was a real, declared relationship is exactly the spec's "not
+/// yet met" case — the path is legitimate, the edge just doesn't exist yet.
 ///
 /// Returns `None` when extraction finds nothing conclusive, so the caller
 /// falls back to the conservative `NotYetMet` classification.
-fn classify_failure(
+async fn classify_failure(
     condition: &cel::CompiledCondition,
     node: &Node,
+    node_service: &Arc<NodeService>,
     schema: Option<&crate::models::SchemaNode>,
 ) -> Option<ConditionState> {
     let extraction = path_extractor::extract_paths(&condition.source).ok()?;
-
-    let known_fields: Vec<&str> = schema
-        .map(|s| s.fields.iter().map(|f| f.name.as_str()).collect())
-        .unwrap_or_default();
-    let known_relationships: Vec<&str> = schema
-        .map(|s| s.relationships.iter().map(|r| r.name.as_str()).collect())
-        .unwrap_or_default();
-
-    // Core node fields resolvable with no schema lookup at all — a condition
-    // naming one of these is never a typo regardless of what the schema declares.
-    const CORE_FIELDS: &[&str] = &["id", "node_type", "content", "version", "lifecycle_status"];
 
     for path in &extraction.paths {
         // Only "node.<segment>..." paths name something on this node's own
@@ -286,31 +303,85 @@ fn classify_failure(
             continue;
         }
 
-        let first_segment = path.segments[1].as_str();
-        let is_known = CORE_FIELDS.contains(&first_segment)
-            || known_fields.contains(&first_segment)
-            || known_relationships.contains(&first_segment);
+        if let Some(state) =
+            walk_path_against_schema(condition, node, node_service, schema, &path.segments[1..])
+                .await
+        {
+            return Some(state);
+        }
+    }
 
-        if !is_known {
-            return Some(ConditionState::Unresolvable {
-                condition: condition.source.clone(),
-                reason: format!(
-                    "'{first_segment}' is not a declared field or relationship on schema '{}' \
-                     — likely a typo, since no future graph state can make this resolve",
-                    node.node_type
-                ),
-            });
+    None
+}
+
+/// Walk one dot-path's segments against the schema chain it traverses,
+/// starting from `first_schema` (the node's own schema). Returns
+/// `Some(Unresolvable)` as soon as a segment names neither a field nor a
+/// relationship on the schema reached so far; returns `Some(NotYetMet)` if
+/// every segment up to the last was a real, declared relationship (the path
+/// is legitimate, just not populated yet); returns `None` if a schema lookup
+/// along the way fails or a segment is a plain field (nothing further to
+/// check — the path is fully explained without needing a verdict here).
+async fn walk_path_against_schema(
+    condition: &cel::CompiledCondition,
+    node: &Node,
+    node_service: &Arc<NodeService>,
+    first_schema: Option<&crate::models::SchemaNode>,
+    segments: &[String],
+) -> Option<ConditionState> {
+    let mut current_schema_owned: Option<crate::models::SchemaNode> = first_schema.cloned();
+    let mut current_type = node.node_type.clone();
+
+    for (i, segment) in segments.iter().enumerate() {
+        let current_schema = current_schema_owned.as_ref();
+        let known_fields: Vec<&str> = current_schema
+            .map(|s| s.fields.iter().map(|f| f.name.as_str()).collect())
+            .unwrap_or_default();
+        let relationship =
+            current_schema.and_then(|s| s.relationships.iter().find(|r| r.name == *segment));
+
+        let is_field =
+            CORE_FIELDS.contains(&segment.as_str()) || known_fields.contains(&segment.as_str());
+
+        if let Some(rel) = relationship {
+            // A declared relationship. If more segments follow, keep walking
+            // into its target schema; if this is the last segment, the path
+            // is legitimate and simply has no target yet.
+            if i == segments.len() - 1 {
+                return Some(ConditionState::NotYetMet {
+                    condition: condition.source.clone(),
+                });
+            }
+            let Some(target_type) = rel.target_type.clone() else {
+                // A relationship with no fixed target_type (accepts any node
+                // type) has no further schema to check against — nothing
+                // conclusive to say, so stop here rather than guess.
+                return None;
+            };
+            current_schema_owned = node_service
+                .get_schema_with_relationships(&target_type)
+                .await
+                .ok()
+                .flatten();
+            current_type = target_type;
+            continue;
         }
 
-        // A declared relationship with more segments after it (multi-hop) or
-        // alone (single-hop, no target yet) that failed to resolve is exactly
-        // the "not yet met" case — the name is real, the edge just doesn't
-        // exist yet.
-        if known_relationships.contains(&first_segment) {
-            return Some(ConditionState::NotYetMet {
-                condition: condition.source.clone(),
-            });
+        if is_field {
+            // A real field reached mid-path with more segments after it, or
+            // as the terminal segment — either way this segment is fully
+            // explained by the schema; nothing conclusive to add.
+            return None;
         }
+
+        // Neither a declared field nor a declared relationship at this hop.
+        return Some(ConditionState::Unresolvable {
+            condition: condition.source.clone(),
+            reason: format!(
+                "'{segment}' is not a declared field or relationship on schema '{current_type}' \
+                 — likely a typo, since no future graph state can make this resolve"
+            ),
+        });
     }
 
     None
@@ -401,7 +472,7 @@ mod tests {
             "story".to_string(),
             json!({
                 "isCore": false, "schemaVersion": 1, "description": "story",
-                "fields": [],
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
                 "relationships": []
             }),
         );
@@ -459,6 +530,84 @@ mod tests {
                 assert_eq!(condition, "node.story.status == 'active'");
             }
             other => panic!("expected NotYetMet, got {:?}", other),
+        }
+    }
+
+    /// Regression for the multi-hop typo gap: a second-hop segment that is
+    /// neither a declared field nor a declared relationship on the schema
+    /// reached at that hop must report Unresolvable, not fall through to
+    /// NotYetMet just because the first hop (`story`) was a real relationship.
+    #[tokio::test]
+    async fn multi_hop_typo_at_second_segment_reports_unresolvable() {
+        let (svc, _tmp) = test_service().await;
+
+        let story_schema = Node::new_with_id(
+            "story_mh".to_string(),
+            "schema".to_string(),
+            "story_mh".to_string(),
+            json!({
+                "isCore": false, "schemaVersion": 1, "description": "story_mh",
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
+                "relationships": []
+            }),
+        );
+        svc.create_node(story_schema).await.unwrap();
+
+        let task_schema = Node::new_with_id(
+            "wf_task_mh".to_string(),
+            "schema".to_string(),
+            "wf_task_mh".to_string(),
+            json!({
+                "isCore": false, "schemaVersion": 1, "description": "wf_task_mh",
+                "fields": [],
+                "relationships": []
+            }),
+        );
+        svc.create_node(task_schema).await.unwrap();
+        svc.set_schema_relationships(
+            "wf_task_mh",
+            &[serde_json::from_value(json!({
+                "name": "story",
+                "targetType": "story_mh",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "tasks",
+                "reverseCardinality": "many"
+            }))
+            .unwrap()],
+        )
+        .await
+        .unwrap();
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            // "story" is a real relationship on wf_task_mh, but "epic" is
+            // neither a field nor a relationship on story_mh — a typo one
+            // hop deeper than the single-hop case.
+            let play = make_play_node(
+                "pb-mh",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_task_mh" },
+                    "conditions": ["node.story.epic == 'active'"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let task = make_test_node("wf_task_mh", json!({}));
+        svc.create_node(task.clone()).await.unwrap();
+
+        let state = get_workflow_state(&lifecycle, &svc, &task).await;
+        assert_eq!(state.rules.len(), 1);
+        match &state.rules[0].conditions[0] {
+            ConditionState::Unresolvable { reason, .. } => {
+                assert!(reason.contains("epic"), "reason was: {reason}");
+                assert!(reason.contains("story_mh"), "reason was: {reason}");
+            }
+            other => panic!("expected Unresolvable, got {:?}", other),
         }
     }
 

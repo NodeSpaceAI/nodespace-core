@@ -146,6 +146,11 @@ async fn set_lifecycle_status(
     )
 }
 
+/// `_json` is unused: the response is already a structured report (rules,
+/// per-condition state, the fired-state disclaimer) rather than a node or
+/// node list, so — like `schema.rs`'s `print_schema_result` — there is no
+/// separate human-rendered form to fall back to; both modes print the same
+/// pretty JSON.
 async fn get_workflow_state(
     client: &mut NodeClient,
     args: GetWorkflowStateArgs,
