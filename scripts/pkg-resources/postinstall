@@ -83,15 +83,50 @@ chown root:wheel "${INSTALL_PREFIX}/nodespaced" || true
 # LaunchAgent: load the service for the current (GUI) user.
 # The plist was installed to /Library/LaunchAgents/ so it applies to all
 # users on the machine; we only bootstrap it for the installing user here.
+#
+# `launchctl bootstrap` returns error 5 (EIO) both when the label is already
+# registered and when the bootout above is still mid-teardown (a race) —
+# neither is a real failure. By this point in the script the binaries are
+# already installed and signed, so a registration hiccup must not fail the
+# whole package. We retry once (teardown races typically resolve within a
+# second) and, if the service ends up loaded either way, treat that as
+# success. Only a bootstrap failure that leaves the service NOT loaded after
+# the retry is reported — without aborting the install.
 # ---------------------------------------------------------------------------
+# --- BEGIN launchd-bootstrap (verified by scripts/postinstall-bootstrap.test.ts) ---
 INSTALLING_USER="${USER:-$(logname 2>/dev/null || echo "")}"
 if [[ -n "${INSTALLING_USER}" && "${INSTALLING_USER}" != "root" ]]; then
     USER_UID=$(id -u "${INSTALLING_USER}" 2>/dev/null || echo "")
     if [[ -n "${USER_UID}" ]]; then
+        SERVICE_TARGET="gui/${USER_UID}/app.nodespace.daemon"
+
         # Unload any existing registration first (ignore error if not loaded).
-        launchctl bootout "gui/${USER_UID}/app.nodespace.daemon" 2>/dev/null || true
-        launchctl bootstrap "gui/${USER_UID}" "${LAUNCHD_PLIST}"
+        launchctl bootout "${SERVICE_TARGET}" 2>/dev/null || true
+
+        if ! launchctl bootstrap "gui/${USER_UID}" "${LAUNCHD_PLIST}" 2>/dev/null; then
+            # Bootstrap failed — most likely EIO because the label is still
+            # mid-teardown from the bootout above, or was already registered
+            # by something else. Give teardown a moment and retry once.
+            sleep 1
+            if ! launchctl bootstrap "gui/${USER_UID}" "${LAUNCHD_PLIST}" 2>/dev/null; then
+                # Still failing after the retry. If the service is
+                # nonetheless loaded (e.g. it was already registered and
+                # never actually went away), that's the harmless case —
+                # treat it as success rather than a broken install.
+                if launchctl print "${SERVICE_TARGET}" &>/dev/null; then
+                    echo "Note: app.nodespace.daemon was already registered; reused the existing registration." >&2
+                else
+                    # Genuinely failed to register. Binaries are already
+                    # installed and signed at this point — do not fail the
+                    # whole package over a service-registration error the
+                    # user can recover from (log out/in, or re-run manually).
+                    echo "Warning: failed to register the app.nodespace.daemon launchd service. Installation completed, but the background service is not running." >&2
+                    echo "         Run manually: launchctl bootstrap gui/${USER_UID} ${LAUNCHD_PLIST}" >&2
+                fi
+            fi
+        fi
     fi
 fi
+# --- END launchd-bootstrap ---
 
 exit 0

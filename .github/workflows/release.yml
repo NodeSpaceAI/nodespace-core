@@ -363,6 +363,50 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/build-pkg.sh
 
+      - name: Install .pkg and verify it actually lands correctly
+        shell: bash
+        run: |
+          PKG=$(ls target/pkg-output/*.pkg | head -1)
+          echo "Installing: ${PKG}"
+
+          verify_layout() {
+            test -d /Applications/NodeSpace.app || { echo "::error::/Applications/NodeSpace.app is missing after install"; exit 1; }
+            test -x /usr/local/bin/nodespace || { echo "::error::/usr/local/bin/nodespace is missing or not executable"; exit 1; }
+            test -x /usr/local/bin/nodespaced || { echo "::error::/usr/local/bin/nodespaced is missing or not executable"; exit 1; }
+            echo "    /Applications/NodeSpace.app, nodespace, nodespaced all present"
+          }
+
+          # Install once against a clean runner (the common case), then install
+          # the SAME package again immediately. The second run is what actually
+          # exercises the failure this check exists to catch: postinstall's
+          # launchd bootstrap now runs against an already-registered daemon
+          # label, the exact condition that previously made `installer` report
+          # the whole package as failed even though the binaries were already
+          # in place.
+          echo "==> First install"
+          sudo installer -pkg "${PKG}" -target / -verbose
+          verify_layout
+
+          echo "==> Second install (daemon already registered from the first install)"
+          sudo installer -pkg "${PKG}" -target / -verbose
+          verify_layout
+
+          # Bundle relocation itself needs a Spotlight/LaunchServices-known
+          # decoy bundle elsewhere on disk to trigger — unreliable to fake
+          # deterministically on an ephemeral runner within a CI-sized time
+          # budget. What we CAN check on every run, statically, is that the
+          # built package actually carries the guard that disables relocation
+          # search in the first place, so a regression that drops
+          # --component-plist (or flips the flag back) fails here.
+          echo "==> Confirming the component package pins the bundle non-relocatable"
+          rm -rf "${RUNNER_TEMP}/pkg-expanded"
+          pkgutil --expand target/pkg-build/NodeSpace-component.pkg "${RUNNER_TEMP}/pkg-expanded"
+          if ! grep -q 'relocatable="false"' "${RUNNER_TEMP}/pkg-expanded/PackageInfo"; then
+            echo "::error::component PackageInfo does not pin relocatable=\"false\" — the bundle-relocation guard regressed"
+            exit 1
+          fi
+          echo "    PackageInfo confirms relocatable=\"false\""
+
       - name: Upload .pkg to release
         if: github.event_name == 'release'
         run: |

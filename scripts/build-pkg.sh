@@ -136,12 +136,17 @@ chmod 755 "${PAYLOAD_ROOT}/usr/local/bin/nodespaced"
 # Build component package
 # ---------------------------------------------------------------------------
 echo "==> Building component .pkg"
+# --component-plist pins BundleIsRelocatable=false for NodeSpace.app so macOS's
+# bundle-relocation logic can't redirect the install to some other on-disk copy
+# of com.nodespace.desktop — it always lands at /Applications/NodeSpace.app,
+# matching RootRelativeBundlePath in that plist.
 pkgbuild \
     --root "${PAYLOAD_ROOT}" \
     --identifier "com.nodespace.pkg" \
     --version "${PKG_VERSION}" \
     --scripts "${PKG_RESOURCES}" \
     --install-location "/" \
+    --component-plist "${PKG_RESOURCES}/component.plist" \
     "${COMPONENT_PKG}"
 
 # ---------------------------------------------------------------------------
