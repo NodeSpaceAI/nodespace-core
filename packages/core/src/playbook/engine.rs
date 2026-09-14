@@ -12,7 +12,7 @@
 //! - Phase 6: Cycle detection (max depth 10) + log node deduplication
 //! - Phase 7: Save-time validation before play activation
 
-use crate::db::events::{DomainEvent, EventEnvelope};
+use crate::db::events::{persisted_chain_depth, DomainEvent, EventEnvelope};
 use crate::playbook::lifecycle::{trigger_keys_for_event, PlaybookLifecycleManager};
 use crate::playbook::logging::{create_or_update_log_node, PlayErrorType, MAX_CHAIN_DEPTH};
 use crate::playbook::types::*;
@@ -556,13 +556,7 @@ pub(crate) async fn rule_processor_loop(
     info!("RuleProcessor started, waiting for work items...");
 
     while let Some(work_item) = rx.recv().await {
-        let depth = work_item
-            .trigger_event
-            .metadata
-            .playbook_context
-            .as_ref()
-            .map(|ctx| ctx.depth)
-            .unwrap_or(0);
+        let depth = effective_chain_depth(&work_item);
 
         // Cycle detection: if the next execution would exceed MAX_CHAIN_DEPTH,
         // skip this work item, disable offending plays, and create log nodes.
@@ -720,6 +714,34 @@ pub(crate) async fn rule_processor_loop(
 /// origin match for the same reason.
 pub(crate) fn is_sync_originated(envelope: &EventEnvelope) -> bool {
     envelope.metadata.source_client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
+}
+
+/// The chain depth to enforce `MAX_CHAIN_DEPTH` against for `work_item`
+/// (ADR-060 §5).
+///
+/// Prefers the in-process `PlaybookExecutionContext` carried on the
+/// triggering event — present whenever this hop's mutation was produced by
+/// this same running process, which covers every same-device chain today
+/// (ADR-073 currently excludes sync-applied events from trigger evaluation
+/// entirely, so a work item never reaches here with a foreign in-process
+/// context). Falls back to the depth persisted on the trigger node's own
+/// properties (`persisted_chain_depth`) when that in-process context is
+/// absent — the shape a node takes once it has crossed a device boundary via
+/// sync: sync transports the node's committed `properties`, not the
+/// transient `EventMetadata` that accompanied its creation elsewhere, so the
+/// persisted property is the only surviving record of how deep the chain
+/// already was.
+///
+/// Defaults to 0 when neither is present: a node never touched by a play
+/// action, or the first hop of a fresh chain.
+pub(crate) fn effective_chain_depth(work_item: &ExecutionWorkItem) -> u8 {
+    work_item
+        .trigger_event
+        .metadata
+        .playbook_context
+        .as_ref()
+        .map(|ctx| ctx.depth)
+        .unwrap_or_else(|| persisted_chain_depth(&work_item.trigger_node.properties).unwrap_or(0))
 }
 
 /// Extract the trigger node ID from a domain event.

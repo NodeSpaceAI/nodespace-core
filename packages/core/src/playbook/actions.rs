@@ -81,7 +81,7 @@
 //! the two devices produce the SAME NUMBER of outputs. That gap is separate,
 //! pre-existing, and not addressed here.
 
-use crate::db::events::{DomainEvent, PlaybookExecutionContext};
+use crate::db::events::{DomainEvent, PlaybookExecutionContext, PLAYBOOK_CHAIN_DEPTH_PROPERTY};
 use crate::models::{Node, NodeUpdate};
 use crate::playbook::graph_resolver::GraphResolver;
 use crate::playbook::types::{ActionType, IterationPath, ParsedAction};
@@ -614,6 +614,13 @@ pub async fn execute_actions(
     // `scoped_for_playbook` below -- it anchors `rule_id` (ADR-060 §3,
     // ADR-074; see module doc).
     let play_id = execution_context.source_playbook_id.clone();
+    // Extract the depth this rule execution runs at (already `parent_depth + 1`,
+    // computed by `rule_processor_loop` before building this context) so
+    // `execute_create_node`/`execute_update_node` can persist it onto any
+    // node they produce (ADR-060 §5). This is the value a downstream device
+    // must see if this chain hops across a sync boundary -- see
+    // `PLAYBOOK_CHAIN_DEPTH_PROPERTY`'s doc in `db::events`.
+    let depth = execution_context.depth;
 
     // Create a scoped NodeService that tags all mutations with the execution context.
     // This ensures events emitted by actions carry playbook_context for cycle detection.
@@ -688,6 +695,7 @@ pub async fn execute_actions(
                     &scoped_service,
                     &rule_id,
                     &ctx.iteration_path,
+                    depth,
                 )
                 .await;
                 ctx.iteration_path.pop();
@@ -727,6 +735,7 @@ pub async fn execute_actions(
                 &scoped_service,
                 &rule_id,
                 &ctx.iteration_path,
+                depth,
             )
             .await
             {
@@ -757,12 +766,23 @@ async fn execute_single_action(
     node_service: &Arc<NodeService>,
     rule_id: &str,
     iteration_path: &[String],
+    depth: u8,
 ) -> Result<Value, ActionError> {
     match action_type {
         ActionType::CreateNode => {
-            execute_create_node(action_index, params, node_service, rule_id, iteration_path).await
+            execute_create_node(
+                action_index,
+                params,
+                node_service,
+                rule_id,
+                iteration_path,
+                depth,
+            )
+            .await
         }
-        ActionType::UpdateNode => execute_update_node(action_index, params, node_service).await,
+        ActionType::UpdateNode => {
+            execute_update_node(action_index, params, node_service, depth).await
+        }
         ActionType::AddRelationship => {
             execute_add_relationship(action_index, params, node_service).await
         }
@@ -770,6 +790,32 @@ async fn execute_single_action(
             execute_remove_relationship(action_index, params, node_service).await
         }
     }
+}
+
+/// Merge the current chain depth into an action's output properties
+/// (ADR-060 §5).
+///
+/// Every node a play action creates or updates gets this stamp, regardless
+/// of whether the rule's own `properties` param set anything else — an
+/// `update_node` action that only changes `lifecycle_status`, for example,
+/// still needs its depth recorded, since the classic runaway-chain shape is
+/// a node repeatedly re-triggering itself through a non-`properties` field
+/// just as easily as through one. Stored under
+/// `PLAYBOOK_CHAIN_DEPTH_PROPERTY`, a `_`-prefixed key, so
+/// `NodeService::normalize_flat_properties_to_namespace` keeps it at the
+/// top level of `properties` independent of the node's type.
+///
+/// `properties` is expected to already be a JSON object (both call sites
+/// pass either the resolved `properties` param or `json!({})`); a non-object
+/// value is replaced with a fresh object carrying just the depth stamp
+/// rather than silently dropping it.
+fn stamp_chain_depth(properties: Value, depth: u8) -> Value {
+    let mut obj = match properties {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    obj.insert(PLAYBOOK_CHAIN_DEPTH_PROPERTY.to_string(), json!(depth));
+    Value::Object(obj)
 }
 
 /// Execute a `create_node` action, deriving the output node's id from
@@ -789,6 +835,7 @@ async fn execute_create_node(
     node_service: &Arc<NodeService>,
     rule_id: &str,
     iteration_path: &[String],
+    depth: u8,
 ) -> Result<Value, ActionError> {
     let node_type =
         params
@@ -800,6 +847,7 @@ async fn execute_create_node(
             })?;
     let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
     let properties = params.get("properties").cloned().unwrap_or(json!({}));
+    let properties = stamp_chain_depth(properties, depth);
 
     let node_id = deterministic_action_output_id(rule_id, action_index, iteration_path);
 
@@ -860,6 +908,7 @@ async fn execute_update_node(
     action_index: usize,
     params: &Value,
     node_service: &Arc<NodeService>,
+    depth: u8,
 ) -> Result<Value, ActionError> {
     let node_id =
         params
@@ -896,6 +945,16 @@ async fn execute_update_node(
     if let Some(node_type) = params.get("node_type").and_then(|v| v.as_str()) {
         update.node_type = Some(node_type.to_string());
     }
+
+    // Every node an update action touches carries the chain's current depth
+    // (ADR-060 §5), independent of whether the action's own params set
+    // `properties` at all -- see `stamp_chain_depth`'s doc. `NodeService`
+    // deep-merges `update.properties` into the node's existing properties
+    // rather than replacing them, so this never clobbers unrelated fields.
+    update.properties = Some(stamp_chain_depth(
+        update.properties.unwrap_or_else(|| json!({})),
+        depth,
+    ));
 
     let updated = node_service
         .update_node(node_id, current.version, update)
@@ -2167,6 +2226,167 @@ mod tests {
                 all_after_b[0].id, rule_a_node_id,
                 "the single node is rule A's, not a merge of both rules' intent"
             );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Persisted chain depth (ADR-060 §5) — integration tests against a real
+    // NodeService
+    // -----------------------------------------------------------------------
+
+    mod chain_depth_persistence_integration {
+        use super::*;
+        use crate::db::events::{PlaybookExecutionContext, PLAYBOOK_CHAIN_DEPTH_PROPERTY};
+        use crate::db::SqliteStore;
+        use crate::services::NodeService;
+        use tempfile::TempDir;
+
+        async fn create_test_service() -> (Arc<NodeService>, TempDir) {
+            let temp_dir = TempDir::new().unwrap();
+            let db_path = temp_dir.path().join("test.db");
+            let mut store: Arc<SqliteStore> = Arc::new(SqliteStore::new(db_path).await.unwrap());
+            let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+            (node_service, temp_dir)
+        }
+
+        fn make_trigger_node(id: &str, node_type: &str, properties: Value) -> Node {
+            Node {
+                id: id.to_string(),
+                node_type: node_type.to_string(),
+                content: format!("{id} content"),
+                version: 1,
+                created_at: Utc::now(),
+                modified_at: Utc::now(),
+                properties,
+                mentions: vec![],
+                mentioned_in: vec![],
+                title: Some(format!("{id} title")),
+                lifecycle_status: "active".to_string(),
+            }
+        }
+
+        fn exec_ctx(play_id: &str, depth: u8) -> PlaybookExecutionContext {
+            PlaybookExecutionContext {
+                originating_event_id: uuid::Uuid::new_v4().to_string(),
+                depth,
+                source_playbook_id: play_id.to_string(),
+            }
+        }
+
+        /// AC: a node produced by `create_node` persists the execution
+        /// context's depth under the reserved `_playbookChainDepth`
+        /// property, matching the chain's actual depth at the moment the
+        /// action ran -- not 0, not 1, whatever depth this rule fired at.
+        #[tokio::test]
+        async fn create_node_action_persists_chain_depth() {
+            let (svc, _tmp) = create_test_service().await;
+            let trigger = make_trigger_node("task-1", "task", json!({}));
+            let event = make_node_created_event("task-1", "task");
+            let actions = vec![make_action(
+                ActionType::CreateNode,
+                json!({"node_type": "text", "content": "reminder"}),
+                None,
+            )];
+
+            let result =
+                execute_actions(&actions, &trigger, &event, &svc, exec_ctx("play-1", 5)).await;
+            assert!(matches!(result, ActionResult::Success), "{result:?}");
+
+            let expected_id = deterministic_action_output_id(
+                &rule_id_for("play-1", &actions),
+                0,
+                &["task-1".to_string()],
+            );
+            let created = svc
+                .get_node(&expected_id)
+                .await
+                .unwrap()
+                .expect("output node must exist at the derived id");
+            assert_eq!(
+                created.properties[PLAYBOOK_CHAIN_DEPTH_PROPERTY],
+                json!(5),
+                "created node must carry the execution context's depth"
+            );
+        }
+
+        /// AC: `update_node` stamps the same depth onto the node it
+        /// updates, merging it alongside whatever else the action changed
+        /// rather than replacing that node's other properties.
+        #[tokio::test]
+        async fn update_node_action_persists_chain_depth_and_preserves_other_properties() {
+            let (svc, _tmp) = create_test_service().await;
+
+            let existing = Node::new_with_id(
+                "node:target-1".to_string(),
+                "text".to_string(),
+                "original".to_string(),
+                json!({"text": {"tag": "keep-me"}}),
+            );
+            svc.create_node(existing).await.unwrap();
+
+            let trigger = make_trigger_node("task-1", "task", json!({}));
+            let event = make_node_created_event("task-1", "task");
+            let actions = vec![make_action(
+                ActionType::UpdateNode,
+                json!({"node_id": "node:target-1", "content": "updated"}),
+                None,
+            )];
+
+            let result =
+                execute_actions(&actions, &trigger, &event, &svc, exec_ctx("play-1", 3)).await;
+            assert!(matches!(result, ActionResult::Success), "{result:?}");
+
+            let updated = svc.get_node("node:target-1").await.unwrap().unwrap();
+            assert_eq!(
+                updated.properties[PLAYBOOK_CHAIN_DEPTH_PROPERTY],
+                json!(3),
+                "update_node must stamp the chain depth even though the action's own params never set `properties`"
+            );
+            assert_eq!(
+                updated.properties["text"]["tag"],
+                json!("keep-me"),
+                "the depth stamp must merge in, not replace, the node's existing properties"
+            );
+            assert_eq!(updated.content, "updated");
+        }
+
+        /// AC (device-hop half): when this same device later processes a
+        /// FURTHER hop against a node that already carries a persisted
+        /// depth -- e.g. re-processing after a prior device's write synced
+        /// in -- the new stamp reflects the execution context's depth for
+        /// THIS hop, overwriting the older value rather than leaving both
+        /// around or silently ignoring the new one.
+        #[tokio::test]
+        async fn create_node_action_overwrites_a_previously_persisted_depth() {
+            let (svc, _tmp) = create_test_service().await;
+            let trigger = make_trigger_node("task-1", "task", json!({}));
+            let event = make_node_created_event("task-1", "task");
+            let actions = vec![make_action(
+                ActionType::CreateNode,
+                json!({
+                    "node_type": "text",
+                    "content": "reminder",
+                    // Simulates params that (unusually) already carry a
+                    // stale depth value from elsewhere -- the action
+                    // executor's own stamp must win. `json!` treats a bare
+                    // key as a string literal, not a variable reference, so
+                    // the constant must be parenthesized to be used as a key.
+                    "properties": {(PLAYBOOK_CHAIN_DEPTH_PROPERTY): 1}
+                }),
+                None,
+            )];
+
+            let result =
+                execute_actions(&actions, &trigger, &event, &svc, exec_ctx("play-1", 8)).await;
+            assert!(matches!(result, ActionResult::Success), "{result:?}");
+
+            let expected_id = deterministic_action_output_id(
+                &rule_id_for("play-1", &actions),
+                0,
+                &["task-1".to_string()],
+            );
+            let created = svc.get_node(&expected_id).await.unwrap().unwrap();
+            assert_eq!(created.properties[PLAYBOOK_CHAIN_DEPTH_PROPERTY], json!(8));
         }
     }
 }

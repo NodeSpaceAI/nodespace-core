@@ -128,6 +128,43 @@ pub struct PlaybookExecutionContext {
     pub source_playbook_id: String,
 }
 
+/// Reserved node-property key carrying the causal chain depth persisted onto
+/// a node produced by a play action (ADR-060 §5).
+///
+/// `PlaybookExecutionContext::depth` above is the in-process analogue of this
+/// value: it lives only in the `EventEnvelope` that accompanies a mutation,
+/// for the lifetime of the local broadcast channel. Sync transports a node's
+/// committed `properties`, not that transient envelope, so a causal chain
+/// that hops from one device to another needs its depth carried on the node
+/// itself to survive the hop — this is that carrier.
+///
+/// Follows the `_`-prefixed internal-bookkeeping convention already used for
+/// `_seed` and `_schemaVersion`: `NodeService::normalize_flat_properties_to_namespace`
+/// keeps any `_`-prefixed key at the top level of `properties`, independent
+/// of `node_type`, rather than nesting it under the node's own type
+/// namespace — required here since a play action can create or update a
+/// node of any type. The same `_` prefix also keeps it out of every
+/// flattened read surface (CEL condition bindings, frontend property
+/// lookups): it is internal engine bookkeeping, not a user- or
+/// schema-visible property.
+pub const PLAYBOOK_CHAIN_DEPTH_PROPERTY: &str = "_playbookChainDepth";
+
+/// Read the causal chain depth persisted on a node's raw `properties`, if any.
+///
+/// Returns `None` when the node was never touched by a play action (the
+/// common case) or when the stored value doesn't fit a `u8` — `MAX_CHAIN_DEPTH`
+/// is 10, so any value a real chain could have produced fits comfortably;
+/// an out-of-range value is treated as absent rather than clamped, so
+/// corrupt data can't be silently coerced into a small, cycle-permitting
+/// depth. Callers fall back to depth 0 on `None`, same as the in-process
+/// `PlaybookExecutionContext` default.
+pub fn persisted_chain_depth(properties: &serde_json::Value) -> Option<u8> {
+    properties
+        .get(PLAYBOOK_CHAIN_DEPTH_PROPERTY)
+        .and_then(|v| v.as_u64())
+        .and_then(|depth| u8::try_from(depth).ok())
+}
+
 /// Reserved `source_client_id` for writes applied by the local-first sync
 /// service (ADR-027's origin-tagging convention: `NodeService::with_client
 /// ("sync-service")`).
@@ -367,5 +404,45 @@ mod tests {
         assert_eq!(deserialized.relationship_type, "custom_type");
         assert_eq!(deserialized.properties.get("custom_prop").unwrap(), "value");
         assert_eq!(deserialized.properties.get("number").unwrap(), 42);
+    }
+
+    // -----------------------------------------------------------------------
+    // persisted_chain_depth (ADR-060 §5)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn persisted_chain_depth_reads_the_reserved_property() {
+        // `json!`'s object-literal syntax treats a bare key as a string
+        // literal, not a variable reference, so the constant must be
+        // parenthesized to be used as a key here.
+        let props = serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 6 });
+        assert_eq!(persisted_chain_depth(&props), Some(6));
+    }
+
+    #[test]
+    fn persisted_chain_depth_none_when_node_never_touched_by_a_play_action() {
+        let props = serde_json::json!({ "task": { "status": "open" } });
+        assert_eq!(persisted_chain_depth(&props), None);
+    }
+
+    #[test]
+    fn persisted_chain_depth_none_for_empty_properties() {
+        assert_eq!(persisted_chain_depth(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn persisted_chain_depth_none_for_out_of_range_value() {
+        // MAX_CHAIN_DEPTH is 10; a value that can't fit in a u8 is corrupt
+        // data, not a legitimately deep chain — treated as absent rather
+        // than clamped, so it can't silently reset a runaway chain to a
+        // small, cycle-permitting depth.
+        let props = serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 9999 });
+        assert_eq!(persisted_chain_depth(&props), None);
+    }
+
+    #[test]
+    fn persisted_chain_depth_none_for_non_numeric_value() {
+        let props = serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): "not-a-number" });
+        assert_eq!(persisted_chain_depth(&props), None);
     }
 }
