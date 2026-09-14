@@ -295,9 +295,32 @@ fn is_unconstrained_schema(schema: &Value) -> bool {
 /// punctuation that commonly appears in identifiers) so a genuinely bounded
 /// pattern (`^x-`, `^[a-z]+$`, a fixed-length cap) still correctly fails to
 /// match at least one of them.
+///
+/// Lengths matter here in a way that is easy to get wrong: since
+/// [`is_match_any_pattern`] requires a match on *every* probe, the shortest
+/// probe in this set is a hard ceiling on what a minimum-length pattern
+/// (`.{N,}`, `\w{N,}`, ...) this function can ever flag -- any `N` larger
+/// than the shortest probe's length necessarily fails to match that probe
+/// and slips through as "bounded" no matter how many longer probes are also
+/// required. An earlier version of this list included a single 1-character
+/// probe (with no probe of length 2-11), so `.{2,}` through `.{11,}` all
+/// silently passed as bounded despite being exactly as dangerous as `.*` in
+/// practice (an attacker gains nothing by being required to pick keys 2+
+/// characters long). The shortest probe here is deliberately 2 characters
+/// so `.{2,}`/`\w{2,}` -- a two-character edit away from the already-caught
+/// `.{0,}` -- are caught too. This raises the bar substantially but does
+/// not close the class in an absolute sense: `.{N,}` for `N` greater than
+/// this set's shortest probe length (currently 2) still slips through, and
+/// no *finite* probe set can ever fully close it -- there is always a
+/// larger `N` to reach for. Closing that completely would require genuine
+/// automaton-based analysis (e.g. proving the pattern's complement language
+/// is finite) rather than empirical probing, which is real work with no
+/// clear payoff against a hand-authored MCP tool schema; this is an
+/// accepted, deliberate residual gap, not an oversight.
 const MATCH_ANY_PROBES: &[&str] = &[
-    "x",
     "42",
+    "ab9",
+    "Zk_9-6",
     "Z_9-key.name",
     "the-quick-brown-fox_jumps+0123456789+ABCXYZabcdefghijklmnopqrstuvwxyz",
 ];
@@ -1136,6 +1159,40 @@ mod tests {
             "type": "object",
             "additionalProperties": false,
             "patternProperties": {".{0,}": {}},
+        });
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("patternProperties"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_schema_rejects_a_minimum_length_pattern_properties() {
+        // `.{2,}` requires only a 2-character-or-longer key -- practically
+        // as unbounded as `.*` (an attacker gains nothing from a 2-char
+        // floor) and a two-character edit away from the already-caught
+        // `.{0,}`. A previous version of MATCH_ANY_PROBES had no probe
+        // shorter than 12 characters other than a single 1-character one,
+        // so `.{2,}` through `.{11,}` all silently passed as bounded --
+        // see MATCH_ANY_PROBES's doc comment for the fix and its
+        // (deliberate, documented) residual limits.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {".{2,}": {}},
+        });
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("patternProperties"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_schema_rejects_a_minimum_length_word_character_pattern_properties() {
+        // `\w{2,}` is the same minimum-length bypass as `.{2,}` but scoped
+        // to word characters -- still matches virtually every realistic
+        // property name (letters, digits, underscores), so must be caught
+        // the same way.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {"\\w{2,}": {}},
         });
         let err = validate_tool_schema(&schema).expect_err("must reject");
         assert!(err.contains("patternProperties"), "got: {err}");
