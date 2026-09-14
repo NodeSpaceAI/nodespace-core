@@ -515,7 +515,7 @@ Every command, subcommand, and flag below is generated from the CLI's own defini
 **Global flags** (accepted on every command):
 
 - `--json` — Emit raw JSON instead of human-readable output
-- `--socket <SOCKET>` — Override the socket path. With no flag and no environment variable, the CLI dials ~/.nodespace/daemon.sock, or auto-discovers a running dev/Pro daemon's socket if that one is absent. Honors the `NODESPACED_SOCKET` environment variable when this flag is absent (env: `NODESPACED_SOCKET`)
+- `--socket <SOCKET>` — Override the socket path (macOS/Linux) or Named Pipe name (Windows). With no flag and no environment variable: on macOS/Linux the CLI dials ~/.nodespace/daemon.sock, or auto-discovers a running dev/Pro daemon's socket if that one is absent; on Windows it dials the fixed `\\.\pipe\nodespace-daemon` pipe. Honors the `NODESPACED_SOCKET` environment variable when this flag is absent (env: `NODESPACED_SOCKET`)
 - `--database <DATABASE>` — Target a specific local database by name or id (ADR-053). When omitted, requests route to the daemon's default database. Honors the `NODESPACE_DATABASE` environment variable when this flag is absent (env: `NODESPACE_DATABASE`)
 
 ### `nodespace node`

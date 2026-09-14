@@ -6,9 +6,10 @@
 //! process boundary and stdio framing are the thing under test, not
 //! incidental plumbing to route around.
 //!
-//! Unix-only: `nodespace` itself refuses to run on Windows (Unix socket
-//! transport only — see `nodespace_cli::run`'s `#[cfg(windows)]` stub), so
-//! there is nothing for this binary to do on that platform.
+//! Unix-only for now: this test's process-spawn/stdio harness has not been
+//! exercised on Windows. `nodespace` itself now supports Windows (Named Pipe
+//! transport), so enabling this test there is a matter of verifying the
+//! harness, not of the CLI's own platform support.
 #![cfg(unix)]
 
 use std::path::PathBuf;

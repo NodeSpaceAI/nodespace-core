@@ -90,7 +90,8 @@ pub type LocalAgentClient = LocalAgentServiceClient<Intercepted>;
     version,
     about = "Command-line interface for NodeSpace — talks to the local nodespaced daemon over gRPC.",
     long_about = "nodespace is a stateless gRPC client that connects to the nodespaced daemon \
-                  via Unix Domain Socket and exposes the knowledge graph as shell commands.\n\n\
+                  via Unix Domain Socket (macOS/Linux) or Named Pipe (Windows) and exposes the \
+                  knowledge graph as shell commands.\n\n\
                   Start the daemon with `nodespaced` before invoking subcommands."
 )]
 pub struct Cli {
@@ -98,9 +99,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Override the socket path. With no flag and no environment variable, the
-    /// CLI dials ~/.nodespace/daemon.sock, or auto-discovers a running dev/Pro
-    /// daemon's socket if that one is absent.
+    /// Override the socket path (macOS/Linux) or Named Pipe name (Windows).
+    /// With no flag and no environment variable: on macOS/Linux the CLI dials
+    /// ~/.nodespace/daemon.sock, or auto-discovers a running dev/Pro daemon's
+    /// socket if that one is absent; on Windows it dials the fixed
+    /// `\\.\pipe\nodespace-daemon` pipe.
     /// Honors the `NODESPACED_SOCKET` environment variable when this flag is absent.
     #[arg(long, global = true, env = "NODESPACED_SOCKET")]
     pub socket: Option<String>,
@@ -231,9 +234,30 @@ fn discover_socket_in(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join(DAEMON_SOCKET_NAMES[0])
 }
 
+/// Resolve the Named Pipe name from an explicit override or env/default.
+/// Windows counterpart of [`resolve_socket_path`] — kept as a separate
+/// function (rather than folded into one cross-platform `resolve_socket_path`)
+/// because the two transports resolve differently: Unix probes several
+/// build-variant-scoped socket files on disk, while the pipe namespace is
+/// machine-global with no per-variant scoping and nothing to probe (see
+/// `nodespace_proto::socket::DAEMON_PIPE_NAME`'s doc comment). Returns a
+/// `String` since that is what [`tokio::net::windows::named_pipe::ClientOptions::open`]
+/// takes; callers that need a `Path` (to stay call-site-compatible with the
+/// Unix side) wrap it themselves.
+#[cfg(windows)]
+pub fn resolve_pipe_name(override_: Option<&str>) -> String {
+    if let Some(p) = override_ {
+        return p.to_string();
+    }
+    if let Ok(p) = std::env::var(nodespace_proto::socket::SOCKET_ENV_VAR) {
+        return p;
+    }
+    nodespace_proto::socket::DAEMON_PIPE_NAME.to_string()
+}
+
 /// Build a tonic `Channel` connected over a Unix Domain Socket.
 #[cfg(unix)]
-async fn uds_channel(sock: &std::path::Path) -> Result<Channel> {
+async fn dial_channel(sock: &std::path::Path) -> Result<Channel> {
     use hyper_util::rt::TokioIo;
     use tokio::net::UnixStream;
     use tonic::transport::{Endpoint, Uri};
@@ -250,8 +274,38 @@ async fn uds_channel(sock: &std::path::Path) -> Result<Channel> {
     Ok(channel)
 }
 
-/// Friendly "daemon isn't running" context for a failed connect.
-#[cfg(unix)]
+/// Build a tonic `Channel` connected over a Named Pipe (Windows). Mirrors the
+/// daemon's server-side setup (`packages/daemon/src/main.rs`) and the desktop
+/// app's own client-side pipe transport
+/// (`packages/desktop-app/src-tauri/src/services/grpc_client.rs`) — same pipe
+/// name convention, same connector shape, just a CLI-local copy since this
+/// crate has no dependency on the desktop-app crate.
+///
+/// `pipe` arrives as a `Path` (matching [`dial_channel`]'s Unix signature) so
+/// every `connect*` helper below stays platform-agnostic; only its resolution
+/// (see [`resolve_pipe_name`]) and this dial step are Windows-specific.
+#[cfg(windows)]
+async fn dial_channel(pipe: &std::path::Path) -> Result<Channel> {
+    use hyper_util::rt::TokioIo;
+    use tokio::net::windows::named_pipe::ClientOptions;
+    use tonic::transport::{Endpoint, Uri};
+    use tower::service_fn;
+
+    let pipe = pipe.to_string_lossy().into_owned();
+    // The URI host is ignored for a Named Pipe — tonic needs a syntactically
+    // valid URI, same as the UDS connector above.
+    let channel = Endpoint::from_static("http://localhost")
+        .connect_with_connector(service_fn(move |_: Uri| {
+            let pipe = pipe.clone();
+            async move { ClientOptions::new().open(&pipe).map(TokioIo::new) }
+        }))
+        .await?;
+    Ok(channel)
+}
+
+/// Friendly "daemon isn't running" context for a failed connect. Shared by
+/// both transports — `sock` names either a Unix socket path or a Windows
+/// Named Pipe, `.display()` renders either correctly.
 fn connect_error_context(sock: &std::path::Path) -> String {
     format!(
         "Could not connect to nodespaced at {}.\n\
@@ -262,12 +316,11 @@ fn connect_error_context(sock: &std::path::Path) -> String {
 
 /// Connect a `NodeService` client bound to the selected database, returning a
 /// friendly error if the daemon isn't running.
-#[cfg(unix)]
 pub async fn connect(
     sock: &std::path::Path,
     interceptor: DatabaseIdInterceptor,
 ) -> Result<NodeClient> {
-    uds_channel(sock)
+    dial_channel(sock)
         .await
         .map(|channel| {
             with_message_limits!(NodeServiceClient::with_interceptor(channel, interceptor))
@@ -276,12 +329,11 @@ pub async fn connect(
 }
 
 /// Connect an `ImportService` client bound to the selected database.
-#[cfg(unix)]
 pub async fn connect_import(
     sock: &std::path::Path,
     interceptor: DatabaseIdInterceptor,
 ) -> Result<ImportClient> {
-    uds_channel(sock)
+    dial_channel(sock)
         .await
         .map(|channel| {
             with_message_limits!(ImportServiceClient::with_interceptor(channel, interceptor))
@@ -290,12 +342,11 @@ pub async fn connect_import(
 }
 
 /// Connect an `AgentSessionService` client bound to the selected database.
-#[cfg(unix)]
 pub async fn connect_session(
     sock: &std::path::Path,
     interceptor: DatabaseIdInterceptor,
 ) -> Result<SessionClient> {
-    uds_channel(sock)
+    dial_channel(sock)
         .await
         .map(|channel| {
             with_message_limits!(AgentSessionServiceClient::with_interceptor(
@@ -307,12 +358,11 @@ pub async fn connect_session(
 }
 
 /// Connect a `LocalAgentService` client bound to the selected database.
-#[cfg(unix)]
 pub async fn connect_local_agent(
     sock: &std::path::Path,
     interceptor: DatabaseIdInterceptor,
 ) -> Result<LocalAgentClient> {
-    uds_channel(sock)
+    dial_channel(sock)
         .await
         .map(|channel| {
             with_message_limits!(LocalAgentServiceClient::with_interceptor(
@@ -326,9 +376,8 @@ pub async fn connect_local_agent(
 /// Connect a `DatabaseService` client. This operates on the daemon's database
 /// registry globally, so it carries no routing header (unlike the data-plane
 /// clients above).
-#[cfg(unix)]
 pub async fn connect_database(sock: &std::path::Path) -> Result<DatabaseServiceClient<Channel>> {
-    uds_channel(sock)
+    dial_channel(sock)
         .await
         .map(|channel| with_message_limits!(DatabaseServiceClient::new(channel)))
         .with_context(|| connect_error_context(sock))
@@ -343,7 +392,6 @@ pub async fn connect_database(sock: &std::path::Path) -> Result<DatabaseServiceC
 /// daemon's default database. The returned id is `None` for the default and
 /// `Some(id)` for an explicit selection — diagnostics needs it to identify which
 /// registry entry it targeted.
-#[cfg(unix)]
 async fn resolve_routing(
     sock: &std::path::Path,
     selection: Option<&str>,
@@ -359,15 +407,18 @@ async fn resolve_routing(
     }
 }
 
-#[cfg(windows)]
-pub async fn run(_cli: Cli) -> Result<()> {
-    anyhow::bail!("The nodespace CLI is not supported on Windows (Unix socket transport only).")
-}
-
 /// Top-level dispatch — wired by `main.rs` and reused by integration tests.
-#[cfg(unix)]
+///
+/// `sock` names the daemon endpoint for whichever transport this platform
+/// uses — a Unix Domain Socket path on macOS/Linux, a Named Pipe name
+/// (wrapped as a `Path` so every downstream `connect*` helper stays
+/// platform-agnostic) on Windows. Everything below this resolution is shared.
 pub async fn run(cli: Cli) -> Result<()> {
+    #[cfg(unix)]
     let sock = resolve_socket_path(cli.socket.as_deref());
+    #[cfg(windows)]
+    let sock = std::path::PathBuf::from(resolve_pipe_name(cli.socket.as_deref()));
+
     let json = cli.json;
     let selection = cli.database.as_deref();
 
@@ -502,5 +553,66 @@ mod tests {
         // Canonical present → always preferred over the variants.
         std::fs::write(dir.join("daemon.sock"), b"").unwrap();
         assert_eq!(discover_socket_in(dir), dir.join("daemon.sock"));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::resolve_pipe_name;
+    use std::sync::Mutex;
+
+    /// Both tests below mutate `NODESPACED_SOCKET`, which is process-global —
+    /// serialize them so they don't race each other under a multi-threaded
+    /// test runner. Same shape as the equivalent lock in
+    /// `desktop-app/src-tauri/src/services/grpc_client.rs`'s `windows_tests`.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_lock_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn resolve_pipe_name_prefers_explicit_override_over_env_and_default() {
+        let _guard = env_lock_guard();
+        let prev = std::env::var_os("NODESPACED_SOCKET");
+        std::env::set_var("NODESPACED_SOCKET", r"\\.\pipe\ns-env");
+
+        assert_eq!(
+            resolve_pipe_name(Some(r"\\.\pipe\ns-flag")),
+            r"\\.\pipe\ns-flag",
+            "an explicit --socket override must win over NODESPACED_SOCKET"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("NODESPACED_SOCKET", v),
+            None => std::env::remove_var("NODESPACED_SOCKET"),
+        }
+    }
+
+    #[test]
+    fn resolve_pipe_name_honors_env_override_then_falls_back_to_default() {
+        let _guard = env_lock_guard();
+        let prev = std::env::var_os("NODESPACED_SOCKET");
+
+        std::env::set_var("NODESPACED_SOCKET", r"\\.\pipe\ns-test");
+        assert_eq!(
+            resolve_pipe_name(None),
+            r"\\.\pipe\ns-test",
+            "NODESPACED_SOCKET override must win when no --socket flag is given"
+        );
+
+        std::env::remove_var("NODESPACED_SOCKET");
+        assert_eq!(
+            resolve_pipe_name(None),
+            r"\\.\pipe\nodespace-daemon",
+            "default pipe name must match the daemon's own DAEMON_PIPE_NAME"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var("NODESPACED_SOCKET", v),
+            None => std::env::remove_var("NODESPACED_SOCKET"),
+        }
     }
 }
