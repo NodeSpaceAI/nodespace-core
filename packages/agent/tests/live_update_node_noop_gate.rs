@@ -64,6 +64,7 @@ async fn make_executor() -> (GraphToolExecutor, Arc<NodeService>, TempDir) {
         node_service: Some(ns.clone()),
         embedding_service: Arc::new(RwLock::new(None)),
         inference_engine: None,
+        playbook_lifecycle: None,
     };
     (executor, ns, tmp)
 }

@@ -381,6 +381,13 @@ struct LocalAgentServiceInner {
     /// Shared across the cheap `Arc` clones tonic hands to request handlers, so
     /// a single `shutdown()` stops the watcher spawned from any clone.
     shutdown_token: CancellationToken,
+    /// This database's Play engine lifecycle manager, for the local agent's
+    /// `get_workflow_state` tool — the same handle
+    /// `NodeServiceImpl::with_playbook_lifecycle` receives, from the same
+    /// `PlaybookEngine` instance. `None` only where this service is
+    /// constructed without a playbook engine (tests).
+    playbook_lifecycle:
+        Option<Arc<std::sync::RwLock<nodespace_core::playbook::PlaybookLifecycleManager>>>,
 }
 
 /// tonic-compatible handle. `Clone` (cheap Arc clone) so tonic can hand
@@ -409,6 +416,35 @@ impl LocalAgentServiceImpl {
                 token_tx,
                 turn_tokens: Arc::new(Mutex::new(HashMap::new())),
                 shutdown_token: CancellationToken::new(),
+                playbook_lifecycle: None,
+            }),
+        }
+    }
+
+    /// Same as [`Self::new`], additionally wiring this database's Play engine
+    /// lifecycle manager for the local agent's `get_workflow_state` tool. A
+    /// separate constructor rather than a post-hoc builder method: `inner` is
+    /// already behind the `Arc` this type shares with tonic by the time `new`
+    /// returns, so there is no cheap in-place mutation point after construction.
+    pub fn new_with_playbook_lifecycle(
+        shared: Arc<SharedLocalAgent>,
+        node_service: Arc<NodeService>,
+        embedding_service: SharedEmbeddingService,
+        playbook_lifecycle: Arc<
+            std::sync::RwLock<nodespace_core::playbook::PlaybookLifecycleManager>,
+        >,
+    ) -> Self {
+        let (token_tx, _) = broadcast::channel(512);
+
+        Self {
+            inner: Arc::new(LocalAgentServiceInner {
+                shared,
+                node_service,
+                embedding_service,
+                token_tx,
+                turn_tokens: Arc::new(Mutex::new(HashMap::new())),
+                shutdown_token: CancellationToken::new(),
+                playbook_lifecycle: Some(playbook_lifecycle),
             }),
         }
     }
@@ -492,6 +528,7 @@ impl LocalAgentServiceImpl {
             node_service: Some(self.inner.node_service.clone()),
             embedding_service: self.inner.embedding_service.clone(),
             inference_engine: Some(engine.clone()),
+            playbook_lifecycle: self.inner.playbook_lifecycle.clone(),
         });
 
         let prompt_assembler = Some(Arc::new(

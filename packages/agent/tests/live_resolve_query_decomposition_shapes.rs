@@ -387,6 +387,7 @@ async fn measure_decomposition_filter_shapes() {
             node_service: Some(ns.clone()),
             embedding_service: Arc::new(RwLock::new(None)),
             inference_engine: Some(engine.clone()),
+            playbook_lifecycle: None,
         };
 
         for (title, props) in &case.fixtures {

@@ -54,20 +54,20 @@ use crate::nodespace::{
     GetCollectionByNameRequest, GetConflictRequest, GetDaemonVersionRequest,
     GetDaemonVersionResponse, GetNodeRelationshipsRequest, GetNodeRelationshipsResponse,
     GetNodeRequest, GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest,
-    GetRelatedNodesResponse, GetRootsRequest, GetSchemaDefinitionRequest, ListConflictsRequest,
-    MentionAutocompleteRequest, MentionIdsResponse, MentionResponse, MentionTargetRequest,
-    MergeNodesRequest, MergeNodesResponse, MoveChildrenToParentRequest,
-    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
-    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
-    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
-    OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest,
-    RelationshipDeletedPayload, RelationshipPayload, RemoveNodeFromCollectionRequest,
-    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
-    ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
-    SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
-    UpdateNodesBatchResponse, UpdateRelationshipPropertiesRequest,
-    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
-    WatchRequest,
+    GetRelatedNodesResponse, GetRootsRequest, GetSchemaDefinitionRequest, GetWorkflowStateRequest,
+    GetWorkflowStateResponse, ListConflictsRequest, MentionAutocompleteRequest, MentionIdsResponse,
+    MentionResponse, MentionTargetRequest, MergeNodesRequest, MergeNodesResponse,
+    MoveChildrenToParentRequest, MoveChildrenToParentResponse, MoveNodeRequest,
+    NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse, NodeReference,
+    NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
+    OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
+    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipPayload,
+    RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
+    ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
+    SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
+    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse,
+    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
+    UpdateTaskNodeRequest, UpsertNodeWithParentRequest, WatchRequest,
 };
 
 /// gRPC adapter that owns shared handles to the core services.
@@ -108,6 +108,13 @@ pub struct NodeServiceImpl {
     /// to a token nobody ever cancels, so a caller that doesn't wire one up
     /// (tests, a directly-constructed instance) is unaffected.
     shutdown_token: tokio_util::sync::CancellationToken,
+    /// This database's Play engine lifecycle manager (`TriggerIndex`,
+    /// `CronRegistry`, active plays) — shared with the running
+    /// `PlaybookEngine` instance, not a separate copy. `None` only in tests
+    /// that construct this impl directly without a playbook engine; such a
+    /// caller gets `UNAVAILABLE` from `get_workflow_state` rather than a panic.
+    playbook_lifecycle:
+        Option<Arc<std::sync::RwLock<nodespace_core::playbook::PlaybookLifecycleManager>>>,
 }
 
 impl NodeServiceImpl {
@@ -122,7 +129,21 @@ impl NodeServiceImpl {
             database_id: String::new(),
             scheduler,
             shutdown_token: tokio_util::sync::CancellationToken::new(),
+            playbook_lifecycle: None,
         }
+    }
+
+    /// Wire this database's Play engine lifecycle manager, for
+    /// `get_workflow_state`. Set by [`crate::build_database_services`] from
+    /// the same `PlaybookEngine` instance whose `start()` is spawned as this
+    /// database's background task — this shares that engine's live
+    /// `TriggerIndex`/`CronRegistry`/active-plays state, not a second copy.
+    pub fn with_playbook_lifecycle(
+        mut self,
+        lifecycle: Arc<std::sync::RwLock<nodespace_core::playbook::PlaybookLifecycleManager>>,
+    ) -> Self {
+        self.playbook_lifecycle = Some(lifecycle);
+        self
     }
 
     /// Tag this database's `WatchNodes` events with its registry id (ADR-053).
@@ -1740,6 +1761,34 @@ impl GrpcNodeService for NodeServiceImpl {
         }))
     }
 
+    async fn get_workflow_state(
+        &self,
+        request: Request<GetWorkflowStateRequest>,
+    ) -> Result<Response<GetWorkflowStateResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let lifecycle = this.playbook_lifecycle.as_ref().ok_or_else(|| {
+            Status::unavailable("playbook engine is not available for this database")
+        })?;
+
+        let node = this
+            .node_service
+            .get_node(&req.node_id)
+            .await
+            .map_err(service_error_to_status)?
+            .ok_or_else(|| Status::not_found(format!("node {} not found", req.node_id)))?;
+
+        let state =
+            nodespace_core::playbook::get_workflow_state(lifecycle, &this.node_service, &node)
+                .await;
+
+        let result_json = serde_json::to_string(&state)
+            .map_err(|e| Status::internal(format!("failed to serialize workflow state: {e}")))?;
+
+        Ok(Response::new(GetWorkflowStateResponse { result_json }))
+    }
+
     // -- Collections ---------------------------------------------------------
 
     async fn get_all_collections(
@@ -2559,6 +2608,103 @@ mod tests {
         // the impl serves, so a caller like the Pro daemon can bind cloud-sync to
         // it without opening a second store on the same file.
         assert!(Arc::ptr_eq(&svc.node_service(), &core_svc));
+    }
+
+    /// `get_workflow_state` without a wired playbook lifecycle (the default
+    /// for `make_service()`, matching a test/tool-less construction) returns
+    /// UNAVAILABLE rather than panicking — the RPC must degrade gracefully,
+    /// not assume the engine is always present.
+    #[tokio::test]
+    async fn get_workflow_state_without_playbook_lifecycle_is_unavailable() {
+        let (svc, _tmp) = make_service().await;
+
+        let node_id = svc
+            .create_node(Request::new(crate::nodespace::CreateNodeRequest {
+                id: None,
+                node_type: "text".to_string(),
+                content: "hello".to_string(),
+                parent_id: None,
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                properties: "{}".to_string(),
+                position: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .node_id;
+
+        let status = svc
+            .get_workflow_state(Request::new(GetWorkflowStateRequest { node_id }))
+            .await
+            .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::Unavailable);
+    }
+
+    /// End-to-end: a Play activated directly on the wired lifecycle manager
+    /// is found and evaluated by the `GetWorkflowState` RPC for a real node.
+    #[tokio::test]
+    async fn get_workflow_state_rpc_evaluates_active_play_rules() {
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("test.db");
+        let mut store = Arc::new(SqliteStore::new(db_path).await.unwrap());
+        let core_svc = Arc::new(CoreNodeService::new(&mut store).await.unwrap());
+
+        let lifecycle = Arc::new(std::sync::RwLock::new(
+            nodespace_core::playbook::PlaybookLifecycleManager::new(),
+        ));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            let play = nodespace_core::models::Node::new(
+                "play".to_string(),
+                "test play".to_string(),
+                serde_json::json!({
+                    "rules": [{
+                        "name": "r1",
+                        "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
+                        "conditions": ["node.content == 'hello'"],
+                        "actions": []
+                    }]
+                }),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let svc = NodeServiceImpl::new(
+            core_svc,
+            Arc::new(tokio::sync::RwLock::new(None)),
+            Arc::new(EmbeddingScheduler::new()),
+        )
+        .with_playbook_lifecycle(lifecycle);
+
+        let node_id = svc
+            .create_node(Request::new(crate::nodespace::CreateNodeRequest {
+                id: None,
+                node_type: "text".to_string(),
+                content: "hello".to_string(),
+                parent_id: None,
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                properties: "{}".to_string(),
+                position: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .node_id;
+
+        let response = svc
+            .get_workflow_state(Request::new(GetWorkflowStateRequest { node_id }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let state: serde_json::Value = serde_json::from_str(&response.result_json).unwrap();
+        assert_eq!(state["scope"], serde_json::json!(["local"]));
+        assert_eq!(state["rules"].as_array().unwrap().len(), 1);
+        assert_eq!(state["rules"][0]["all_conditions_satisfied"], true);
     }
 
     /// The FindDuplicate RPC surfaces an existing node on a

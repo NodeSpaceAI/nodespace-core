@@ -48,6 +48,7 @@ async fn make_executor() -> (GraphToolExecutor, TempDir) {
         node_service: Some(svc),
         embedding_service: Arc::new(RwLock::new(None)),
         inference_engine: None,
+        playbook_lifecycle: None,
     };
     (executor, tmp)
 }

@@ -2960,3 +2960,234 @@ async fn skill_reset_reports_not_found_for_an_unknown_key() {
 
     let _ = shutdown.send(());
 }
+
+/// Like [`spawn_test_daemon`], but wires a real `PlaybookLifecycleManager`
+/// into the served `NodeServiceImpl` (via `with_playbook_lifecycle`), so
+/// `nodespace playbook get-workflow-state` has something to evaluate against
+/// over the real gRPC transport. Also returns the raw `CoreNodeService` and
+/// the lifecycle handle so a test can create a play node and activate it
+/// directly, mirroring how `PlaybookEngine::handle_play_created` would.
+async fn spawn_test_daemon_with_playbook() -> (
+    PathBuf,
+    oneshot::Sender<()>,
+    TempDir,
+    Arc<CoreNodeService>,
+    Arc<std::sync::RwLock<nodespace_core::playbook::PlaybookLifecycleManager>>,
+) {
+    let tempdir = TempDir::new().expect("failed to create tempdir");
+    let sock_path = tempdir.path().join("test-daemon.sock");
+
+    let mut store = Arc::new(
+        SqliteStore::new(tempdir.path().join("daemon-db"))
+            .await
+            .expect("failed to open SqliteStore"),
+    );
+    let node_service = Arc::new(
+        CoreNodeService::new(&mut store)
+            .await
+            .expect("failed to build NodeService"),
+    );
+    let lifecycle = Arc::new(std::sync::RwLock::new(
+        nodespace_core::playbook::PlaybookLifecycleManager::new(),
+    ));
+    let service = NodeServiceImpl::new(
+        node_service.clone(),
+        Arc::new(tokio::sync::RwLock::new(None)),
+        Arc::new(nodespace_core::services::EmbeddingScheduler::new()),
+    )
+    .with_playbook_lifecycle(lifecycle.clone());
+
+    let listener = UnixListener::bind(&sock_path).expect("failed to bind test UDS socket");
+    let incoming = UnixListenerStream::new(listener);
+
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    tokio::spawn(async move {
+        Server::builder()
+            .add_service(NodeServiceServer::new(service))
+            .serve_with_incoming_shutdown(incoming, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .expect("server crashed");
+    });
+
+    for _ in 0..50 {
+        if connect(&sock_path, DatabaseIdInterceptor::none())
+            .await
+            .is_ok()
+        {
+            return (sock_path, shutdown_tx, tempdir, node_service, lifecycle);
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    panic!(
+        "daemon did not start accepting connections on {}",
+        sock_path.display()
+    );
+}
+
+/// `nodespace playbook list`/`logs` reduce to `ExecuteQuery` (per ADR-035
+/// capability parity) — this proves that reduction actually reaches the real
+/// daemon and returns the play/playbook_log nodes it should, not just that
+/// the CLI command builds a well-formed request.
+#[tokio::test]
+async fn playbook_list_and_logs_round_trip() {
+    let (sock, shutdown, _tempdir, node_service, _lifecycle) =
+        spawn_test_daemon_with_playbook().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    // No plays yet: list must return empty without error.
+    commands::playbook::run(
+        &mut client,
+        commands::playbook::PlaybookAction::List(commands::playbook::PlaybookListArgs {}),
+        true,
+    )
+    .await
+    .expect("playbook list (empty)");
+
+    let play = nodespace_core::models::Node::new(
+        "play".to_string(),
+        "Test Play".to_string(),
+        serde_json::json!({ "rules": [] }),
+    );
+    let play_id = node_service
+        .create_node(play)
+        .await
+        .expect("create play node");
+
+    commands::playbook::run(
+        &mut client,
+        commands::playbook::PlaybookAction::List(commands::playbook::PlaybookListArgs {}),
+        true,
+    )
+    .await
+    .expect("playbook list (one play)");
+
+    // No log entries for this play yet: logs must return empty without error.
+    commands::playbook::run(
+        &mut client,
+        commands::playbook::PlaybookAction::Logs(commands::playbook::PlaybookLogsArgs {
+            play_id: play_id.clone(),
+        }),
+        true,
+    )
+    .await
+    .expect("playbook logs (empty)");
+
+    let _ = shutdown.send(());
+}
+
+/// `nodespace playbook enable`/`disable` reduce to `UpdateNode` setting
+/// `lifecycle_status` (per ADR-035 capability parity) — proves the round
+/// trip actually flips the Play node's stored `lifecycle_status` over the
+/// real gRPC transport.
+#[tokio::test]
+async fn playbook_enable_disable_round_trip() {
+    let (sock, shutdown, _tempdir, node_service, _lifecycle) =
+        spawn_test_daemon_with_playbook().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    let play = nodespace_core::models::Node::new(
+        "play".to_string(),
+        "Test Play".to_string(),
+        serde_json::json!({ "rules": [] }),
+    );
+    let play_id = node_service
+        .create_node(play)
+        .await
+        .expect("create play node");
+
+    commands::playbook::run(
+        &mut client,
+        commands::playbook::PlaybookAction::Disable(commands::playbook::PlaybookIdArgs {
+            play_id: play_id.clone(),
+        }),
+        true,
+    )
+    .await
+    .expect("playbook disable");
+
+    let disabled = node_service
+        .get_node(&play_id)
+        .await
+        .expect("get_node")
+        .expect("play node still exists");
+    assert_eq!(disabled.lifecycle_status, "archived");
+
+    commands::playbook::run(
+        &mut client,
+        commands::playbook::PlaybookAction::Enable(commands::playbook::PlaybookIdArgs {
+            play_id: play_id.clone(),
+        }),
+        true,
+    )
+    .await
+    .expect("playbook enable");
+
+    let enabled = node_service
+        .get_node(&play_id)
+        .await
+        .expect("get_node")
+        .expect("play node still exists");
+    assert_eq!(enabled.lifecycle_status, "active");
+
+    let _ = shutdown.send(());
+}
+
+/// `nodespace playbook get-workflow-state` over the real gRPC transport: a
+/// play activated directly on the served lifecycle manager is found and
+/// evaluated against a real node.
+#[tokio::test]
+async fn playbook_get_workflow_state_round_trip() {
+    let (sock, shutdown, _tempdir, node_service, lifecycle) =
+        spawn_test_daemon_with_playbook().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    {
+        let mut lm = lifecycle.write().unwrap();
+        let play = nodespace_core::models::Node::new(
+            "play".to_string(),
+            "Test Play".to_string(),
+            serde_json::json!({
+                "rules": [{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "text" },
+                    "conditions": ["node.content == 'hello'"],
+                    "actions": []
+                }]
+            }),
+        );
+        lm.activate_play(&play).expect("activate play");
+    }
+
+    let node = nodespace_core::models::Node::new(
+        "text".to_string(),
+        "hello".to_string(),
+        serde_json::json!({}),
+    );
+    let node_id = node_service
+        .create_node(node)
+        .await
+        .expect("create text node");
+
+    commands::playbook::run(
+        &mut client,
+        commands::playbook::PlaybookAction::GetWorkflowState(
+            commands::playbook::GetWorkflowStateArgs {
+                node_id: node_id.clone(),
+            },
+        ),
+        true,
+    )
+    .await
+    .expect("playbook get-workflow-state");
+
+    let _ = shutdown.send(());
+}

@@ -304,6 +304,30 @@ Reverse names are for *traversal*, not for `relationship create`: an edge is alw
 
 Both node IDs must already exist — search for missing IDs first (`nodespace search` / `nodespace node query`). Apart from the built-in names below, the relationship name must be defined on the source node's schema; define it there (`nodespace schema create`/`update`) if it isn't yet. `relationship create` on a node whose schema doesn't define that relationship name fails with an error naming the undefined relationship.
 
+### Play automation rule-sets
+
+A Play (`trigger → conditions → actions`) is a `node_type: "play"` node, so its lifecycle is managed with generic verbs — no bespoke enable/disable/list/logs commands exist:
+
+```bash
+nodespace query --type play                                                  # list installed Plays
+nodespace query --type playbook_log --filters '[{"type":"property","operator":"equals","property":"play_id","value":"<play-id>"}]'  # execution-error history for one Play
+nodespace node update <play-id> --lifecycle-status archived                  # disable a Play
+nodespace node update <play-id> --lifecycle-status active                    # re-enable a disabled Play
+```
+
+`get-workflow-state` is the one purpose-built verb — it runs the engine's condition evaluation out of band from a live trigger, which a generic verb cannot do:
+
+```bash
+nodespace playbook get-workflow-state <node-id>
+```
+
+Evaluates every active Play rule whose trigger could apply to the node's type against its current state, and reports each condition's state:
+- **satisfied** — the condition evaluated true right now.
+- **not_yet_met** — the condition references a real, schema-declared field or relationship that simply doesn't have a value yet. Normal; the Play stays active waiting for it.
+- **unresolvable** — the condition references something that is neither a declared field nor a declared relationship on the node's schema at all. Almost certainly a typo in how the Play was authored — no future graph state will make it resolve, so report it plainly rather than telling the user to wait.
+
+Scoped to this device only: whether a rule has already fired is not tracked anywhere in the system, so this reports live condition state, never an execution history.
+
 <!-- BEGIN GENERATED: builtin-relationships (see packages/core/src/models/schema.rs (BUILTIN_RELATIONSHIP_NAMES), packages/cli/examples/gen_skill_md.rs) -->
 **Built-in relationship names.** Four names are structural and legal between any two nodes without being declared on a schema: `member_of`, `has_child`, `mentions`, `has_role`. They have hardcoded semantics — hierarchy, mentions, collection membership, and roles — and their own UI affordances.
 
@@ -666,6 +690,28 @@ Inspect and manage node type schema definitions
 **`nodespace schema delete`** — Delete a schema definition by ID
 
 - `<ID>` — Schema ID to delete (node type identifier, e.g. `adr`, `person`) (required)
+
+### `nodespace playbook`
+
+Inspect and control Play automation rule-sets (list, logs, enable, disable, get-workflow-state)
+
+**`nodespace playbook list`** — List all installed Plays and their lifecycle status
+
+**`nodespace playbook logs`** — Show execution-error history for a Play (log nodes it produced)
+
+- `<PLAY_ID>` — Play ID to show log entries for (required)
+
+**`nodespace playbook enable`** — Re-enable a disabled Play after fixing the underlying issue
+
+- `<PLAY_ID>` — Play ID (node ID of the `play` node) (required)
+
+**`nodespace playbook disable`** — Manually disable a Play
+
+- `<PLAY_ID>` — Play ID (node ID of the `play` node) (required)
+
+**`nodespace playbook get-workflow-state`** — Evaluate a node against every active Play rule that could apply to its type, and report which conditions are satisfied, not yet met, or unresolvable (a likely typo in a condition's path)
+
+- `<NODE_ID>` — ID of the node to evaluate active Play rules against (required)
 
 ### `nodespace relationship`
 

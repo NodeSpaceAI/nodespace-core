@@ -95,6 +95,13 @@ service NodeService {
   // Structured queries
   rpc ExecuteQuery(ExecuteQueryRequest) returns (NodeListResponse);
 
+  // Playbook: get-workflow-state is the one Play lifecycle operation that
+  // needs purpose-built evaluation (it runs the engine's condition logic out
+  // of band from a live trigger) rather than reducing to a generic verb —
+  // list/logs/enable/disable reduce to ExecuteQuery/UpdateNode, so they gain
+  // no RPC of their own.
+  rpc GetWorkflowState(GetWorkflowStateRequest) returns (GetWorkflowStateResponse);
+
   // Typed relationships (distinct from mentions)
   rpc CreateRelationship(CreateRelationshipRequest) returns (CreateRelationshipResponse);
   // Remove a typed relationship edge. Idempotent; rejects removing the last edge
@@ -915,6 +922,20 @@ message SchemaResultResponse {
   // JSON-encoded result value (schema_id, fields, relationships, warnings)
   // on success; error responses use the gRPC Status channel instead of this
   // field, mirroring every other RPC in this service.
+  string result_json = 1;
+}
+
+message GetWorkflowStateRequest {
+  // ID of the node to evaluate active Play rules against.
+  string node_id = 1;
+}
+
+message GetWorkflowStateResponse {
+  // JSON-encoded nodespace_core::playbook::WorkflowState — node_id,
+  // node_type, scope (always ["local"] today, per ADR-073), a
+  // fired_state_note explaining that no fired-execution history is tracked,
+  // and each candidate rule's per-condition satisfied/not_yet_met/unresolvable
+  // state. Error responses use the gRPC Status channel, not this field.
   string result_json = 1;
 }
 

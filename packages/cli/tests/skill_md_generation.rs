@@ -339,6 +339,7 @@ fn every_seeded_skill_is_represented() {
             "Node Merge" => skill.contains("nodespace conflicts merge"),
             "Bulk Import" => skill.contains("nodespace import"),
             "Organization" => skill.contains("member_of"),
+            "Play Workflow State" => skill.contains("nodespace playbook get-workflow-state"),
             // A skill added later has no arm here and fails loudly, which is
             // the intent: someone must decide how it surfaces to an external
             // agent rather than have it silently omitted.

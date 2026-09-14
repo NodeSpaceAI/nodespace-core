@@ -269,6 +269,10 @@ nodespace conflicts merge --survivor <node-id> --conflict-id <conflict-id>  # co
 
 `merge` is the one irreversible-feeling action here — it archives the losing node and re-points its edges immediately when called. Only call it once the user has confirmed which node should survive; `dismiss` and `adopt` don't touch either node. Full options and output shape in `references/cli.md`.
 
+### Inspect or control a Play automation rule-set
+
+A Play is a node, managed with `query`/`node update`; see `references/cli.md`.
+
 ### Bulk import from markdown
 
 ```bash

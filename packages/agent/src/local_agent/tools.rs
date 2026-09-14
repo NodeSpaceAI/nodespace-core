@@ -229,6 +229,13 @@ struct GetConflictParams {
     pub conflict_id: String,
 }
 
+/// Parameters for the get_workflow_state tool
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GetWorkflowStateParams {
+    pub node_id: String,
+}
+
 /// Parameters for the dismiss_conflict tool
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1634,6 +1641,31 @@ fn def_create_nodes_from_markdown() -> ToolDefinition {
     }
 }
 
+fn def_get_workflow_state() -> ToolDefinition {
+    ToolDefinition {
+        name: "get_workflow_state".into(),
+        description: "Evaluate a node against every active Play automation rule that could \
+            apply to its type, and report which rule conditions are satisfied, which are not \
+            yet met, and which reference something unresolvable (likely a typo in the rule's \
+            condition — will never resolve no matter what the graph looks like). Use this to \
+            help a user understand why a Play rule they expect to fire hasn't, or to check \
+            what's still missing before it will. Scoped to this device only: whether a rule has \
+            previously fired is not tracked anywhere, so this reports live condition state, not \
+            execution history. Read-only."
+            .into(),
+        parameters_schema: json!({
+            "type": "object",
+            "properties": {
+                "node_id": {
+                    "type": "string",
+                    "description": "ID of the node to evaluate active Play rules against"
+                }
+            },
+            "required": ["node_id"]
+        }),
+    }
+}
+
 fn def_update_task_status() -> ToolDefinition {
     ToolDefinition {
         name: "update_task_status".into(),
@@ -1790,6 +1822,7 @@ pub enum Tool {
     DismissConflict,
     AdoptExistingConflict,
     MergeConflict,
+    GetWorkflowState,
 }
 
 impl Tool {
@@ -1822,6 +1855,7 @@ impl Tool {
         Tool::DismissConflict,
         Tool::AdoptExistingConflict,
         Tool::MergeConflict,
+        Tool::GetWorkflowState,
     ];
 
     /// The number of variants, counted by walking every one of them.
@@ -1858,7 +1892,8 @@ impl Tool {
                 Tool::GetConflict => Tool::DismissConflict,
                 Tool::DismissConflict => Tool::AdoptExistingConflict,
                 Tool::AdoptExistingConflict => Tool::MergeConflict,
-                Tool::MergeConflict => break,
+                Tool::MergeConflict => Tool::GetWorkflowState,
+                Tool::GetWorkflowState => break,
             };
         }
         n
@@ -1905,6 +1940,7 @@ impl Tool {
                 Tool::DismissConflict => 17,
                 Tool::AdoptExistingConflict => 18,
                 Tool::MergeConflict => 19,
+                Tool::GetWorkflowState => 20,
             };
             assert!(expected == i, "Tool::ALL lists a variant out of order");
             i += 1;
@@ -1938,6 +1974,7 @@ impl Tool {
             Tool::DismissConflict => "dismiss_conflict",
             Tool::AdoptExistingConflict => "adopt_existing_conflict",
             Tool::MergeConflict => "merge_conflict",
+            Tool::GetWorkflowState => "get_workflow_state",
         }
     }
 
@@ -1971,6 +2008,7 @@ impl Tool {
             Tool::DismissConflict => def_dismiss_conflict(),
             Tool::AdoptExistingConflict => def_adopt_existing_conflict(),
             Tool::MergeConflict => def_merge_conflict(),
+            Tool::GetWorkflowState => def_get_workflow_state(),
         }
     }
 
@@ -2001,6 +2039,7 @@ impl Tool {
             Tool::DismissConflict => "conflict dismissal",
             Tool::AdoptExistingConflict => "conflict resolution",
             Tool::MergeConflict => "node merge",
+            Tool::GetWorkflowState => "workflow state lookup",
         }
     }
 
@@ -2021,7 +2060,8 @@ impl Tool {
             | Tool::SearchSkills
             | Tool::RouteClarify
             | Tool::ListConflicts
-            | Tool::GetConflict => WriteSemantics::Read,
+            | Tool::GetConflict
+            | Tool::GetWorkflowState => WriteSemantics::Read,
 
             // Idempotent writes. Setting a node to the same content, or a task
             // to the same status, twice is a no-op — the second call is not a
@@ -2121,7 +2161,8 @@ impl Tool {
             | Tool::ListConflicts
             | Tool::GetConflict
             | Tool::DismissConflict
-            | Tool::AdoptExistingConflict => false,
+            | Tool::AdoptExistingConflict
+            | Tool::GetWorkflowState => false,
         }
     }
 
@@ -2149,9 +2190,11 @@ impl Tool {
             // get_conflict/list_conflicts return conflict-journal records, not
             // graph nodes — a conflict id is not the kind of entity "that" can
             // resolve against across turns.
-            Tool::SearchSkills | Tool::RouteClarify | Tool::ListConflicts | Tool::GetConflict => {
-                false
-            }
+            Tool::SearchSkills
+            | Tool::RouteClarify
+            | Tool::ListConflicts
+            | Tool::GetConflict
+            | Tool::GetWorkflowState => false,
             Tool::CreateNode
             | Tool::UpdateNode
             | Tool::CreateSchema
@@ -2203,7 +2246,8 @@ impl Tool {
             | Tool::GetConflict
             | Tool::DismissConflict
             | Tool::AdoptExistingConflict
-            | Tool::MergeConflict => false,
+            | Tool::MergeConflict
+            | Tool::GetWorkflowState => false,
         }
     }
 }
@@ -2340,6 +2384,11 @@ pub struct GraphToolExecutor {
     /// to read live. `None` only in tests that construct an executor with no
     /// engine at all. See [`SharedChatInferenceEngine`].
     pub inference_engine: SharedChatInferenceEngine,
+    /// This database's Play engine lifecycle manager, for `get_workflow_state`.
+    /// `None` only in tests that construct an executor with no playbook engine.
+    pub playbook_lifecycle: Option<
+        std::sync::Arc<std::sync::RwLock<nodespace_core::playbook::PlaybookLifecycleManager>>,
+    >,
 }
 
 impl GraphToolExecutor {
@@ -3638,6 +3687,50 @@ impl GraphToolExecutor {
         }
     }
 
+    async fn exec_get_workflow_state(
+        &self,
+        tool_call_id: &str,
+        args: Value,
+    ) -> Result<ToolResult, ToolError> {
+        let params: GetWorkflowStateParams =
+            serde_json::from_value(args).map_err(|e| ToolError::InvalidArguments {
+                tool: "get_workflow_state".to_string(),
+                reason: e.to_string(),
+            })?;
+
+        let ns = self.node_service()?;
+        let node_id = strip_node_uri(&params.node_id);
+
+        let node = match ns.get_node(node_id).await {
+            Ok(Some(n)) => n,
+            Ok(None) => {
+                return Ok(error_result(
+                    tool_call_id,
+                    "get_workflow_state",
+                    &format!("no node found with id '{node_id}'"),
+                ));
+            }
+            Err(e) => {
+                return Ok(error_result(
+                    tool_call_id,
+                    "get_workflow_state",
+                    &format!("get_workflow_state failed: {e}"),
+                ));
+            }
+        };
+
+        let Some(lifecycle) = self.playbook_lifecycle.as_ref() else {
+            return Ok(error_result(
+                tool_call_id,
+                "get_workflow_state",
+                "playbook engine is not available",
+            ));
+        };
+
+        let state = nodespace_core::playbook::get_workflow_state(lifecycle, &ns, &node).await;
+        Ok(ok_result(tool_call_id, "get_workflow_state", json!(state)))
+    }
+
     async fn exec_dismiss_conflict(
         &self,
         tool_call_id: &str,
@@ -4021,6 +4114,7 @@ impl AgentToolExecutor for GraphToolExecutor {
                 self.exec_adopt_existing_conflict(&tool_call_id, args).await
             }
             Tool::MergeConflict => self.exec_merge_conflict(&tool_call_id, args).await,
+            Tool::GetWorkflowState => self.exec_get_workflow_state(&tool_call_id, args).await,
         }
     }
 
@@ -4131,6 +4225,7 @@ mod tests {
             node_service: None,
             embedding_service: Arc::new(RwLock::new(None)),
             inference_engine: None,
+            playbook_lifecycle: None,
         }
     }
 
@@ -4440,7 +4535,7 @@ mod tests {
     fn definitions_count() {
         // Derived from the registry: one definition per `Tool::ALL` entry.
         assert_eq!(all_tool_definitions().len(), Tool::ALL.len());
-        assert_eq!(all_tool_definitions().len(), 20);
+        assert_eq!(all_tool_definitions().len(), 21);
     }
 
     #[test]
@@ -5150,6 +5245,7 @@ mod tests {
                 node_service: Some(ns),
                 embedding_service: Arc::new(RwLock::new(None)),
                 inference_engine: Some(engine),
+                playbook_lifecycle: None,
             }
         }
 
@@ -5283,8 +5379,8 @@ mod tests {
                 node_service: Some(ns),
                 embedding_service: Arc::new(RwLock::new(None)),
                 inference_engine: Some(engine),
+                playbook_lifecycle: None,
             };
-
             let _ = executor
                 .execute(
                     "resolve_query",
@@ -5355,8 +5451,8 @@ mod tests {
                 node_service: Some(ns),
                 embedding_service: Arc::new(RwLock::new(None)),
                 inference_engine: Some(engine),
+                playbook_lifecycle: None,
             };
-
             let _ = executor
                 .execute(
                     "resolve_query",
@@ -5801,8 +5897,8 @@ mod tests {
                 node_service: Some(ns),
                 embedding_service: Arc::new(RwLock::new(None)),
                 inference_engine: None,
+                playbook_lifecycle: None,
             };
-
             let result = executor
                 .execute(
                     "resolve_query",
@@ -5883,6 +5979,7 @@ mod tests {
                     node_service: Some(ns.clone()),
                     embedding_service: Arc::new(RwLock::new(None)),
                     inference_engine: Some(engine.clone()),
+                    playbook_lifecycle: None,
                 };
                 create_invoice(
                     &executor,
@@ -5925,6 +6022,7 @@ mod tests {
                     node_service: Some(ns.clone()),
                     embedding_service: Arc::new(RwLock::new(None)),
                     inference_engine: Some(engine.clone()),
+                    playbook_lifecycle: None,
                 };
                 create_invoice(&executor, "Invoice #1", json!({"amount": 500})).await;
 
@@ -5967,6 +6065,7 @@ mod tests {
                     node_service: Some(ns.clone()),
                     embedding_service: Arc::new(RwLock::new(None)),
                     inference_engine: Some(engine.clone()),
+                    playbook_lifecycle: None,
                 };
                 use chrono::Datelike;
                 let today = chrono::Utc::now();
@@ -6035,6 +6134,7 @@ mod tests {
                     node_service: Some(ns.clone()),
                     embedding_service: Arc::new(RwLock::new(None)),
                     inference_engine: Some(engine.clone()),
+                    playbook_lifecycle: None,
                 };
                 create_invoice(&executor, "Invoice #4", json!({"vendor_code": "48219"})).await;
 
@@ -6198,6 +6298,7 @@ mod tests {
                 node_service: Some(ns),
                 embedding_service: Arc::new(RwLock::new(None)),
                 inference_engine: None,
+                playbook_lifecycle: None,
             }
         }
 
@@ -6574,8 +6675,8 @@ mod tests {
             node_service: Some(ns),
             embedding_service: Arc::new(RwLock::new(None)),
             inference_engine: None,
+            playbook_lifecycle: None,
         };
-
         // The real schema id ("equipment_item") is never created — only the
         // invented display name is attempted, matching the traced failure.
         let result = executor
@@ -6821,8 +6922,8 @@ mod tests {
             node_service: None,
             embedding_service: handle.clone(),
             inference_engine: None,
+            playbook_lifecycle: None,
         };
-
         // Same lock — a write through `handle` is visible to `executor`.
         assert!(
             Arc::ptr_eq(&handle, &executor.embedding_service),
@@ -6960,8 +7061,8 @@ mod tests {
             node_service: Some(svc),
             embedding_service: Arc::new(RwLock::new(None)),
             inference_engine: None,
+            playbook_lifecycle: None,
         };
-
         let result = executor
             .execute(
                 "create_schema",
@@ -7012,8 +7113,8 @@ mod tests {
             node_service: Some(svc),
             embedding_service: Arc::new(RwLock::new(None)),
             inference_engine: None,
+            playbook_lifecycle: None,
         };
-
         let result = executor
             .execute(
                 "create_schema",
@@ -7062,8 +7163,8 @@ mod tests {
             node_service: Some(svc),
             embedding_service: Arc::new(RwLock::new(None)),
             inference_engine: None,
+            playbook_lifecycle: None,
         };
-
         let result = executor
             .execute(
                 "create_schema",
@@ -7100,8 +7201,8 @@ mod tests {
             node_service: Some(svc),
             embedding_service: Arc::new(RwLock::new(None)),
             inference_engine: None,
+            playbook_lifecycle: None,
         };
-
         let create = executor
             .execute(
                 "create_schema",
