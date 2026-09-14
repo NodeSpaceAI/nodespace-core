@@ -379,23 +379,44 @@ fn provenance_tag() -> String {
 /// characters like U+202E RIGHT-TO-LEFT OVERRIDE evaluate `is_control() ==
 /// false` and would otherwise pass [`sanitize_for_terminal`] untouched,
 /// letting fetched content reorder or hide the provenance banner exactly as
-/// a raw ESC byte could. Deliberately narrow and enumerated rather than a
-/// general "strip all Cf/non-ASCII" check: legitimate multilingual content
-/// (accented Latin, CJK, emoji, combining marks) must still pass through
-/// unmodified -- only the specific bidi-control and zero-width characters
-/// with no legitimate role in terminal-displayed guidance text are covered.
+/// a raw ESC byte could -- or, for the Unicode "Tags" block specifically,
+/// hide arbitrary content from a human *or an agent* reading the output
+/// entirely ("ASCII smuggling"), since Tags characters render as nothing at
+/// all rather than merely reordering visible text. Deliberately narrow and
+/// enumerated rather than a general "strip all Cf/non-ASCII" check:
+/// legitimate multilingual content (accented Latin, CJK, emoji, combining
+/// marks) must still pass through unmodified -- only bidi-control,
+/// zero-width/invisible-operator, and Tags-block characters, which have no
+/// legitimate role in guidance text shown to a terminal or an agent, are
+/// covered.
 fn is_bidi_or_invisible_control(c: char) -> bool {
     matches!(c,
+        // ARABIC LETTER MARK -- an implicit directional mark, same UAX #9
+        // family as LEFT-TO-RIGHT MARK / RIGHT-TO-LEFT MARK below.
+        '\u{061C}'
         // ZERO WIDTH SPACE, ZERO WIDTH NON-JOINER, ZERO WIDTH JOINER,
         // LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK.
-        '\u{200B}'..='\u{200F}'
+        | '\u{200B}'..='\u{200F}'
         // LRE, RLE, PDF, LRO, RLO -- explicit bidi embedding/override
         // controls, including U+202E RIGHT-TO-LEFT OVERRIDE itself.
         | '\u{202A}'..='\u{202E}'
+        // WORD JOINER, FUNCTION APPLICATION, INVISIBLE TIMES, INVISIBLE
+        // SEPARATOR, INVISIBLE PLUS -- the invisible-operator block; WORD
+        // JOINER is functionally near-identical to ZERO WIDTH SPACE above,
+        // the rest of the block is covered for the same reason.
+        | '\u{2060}'..='\u{2064}'
         // LRI, RLI, FSI, PDI -- bidi isolate controls.
         | '\u{2066}'..='\u{2069}'
         // ZERO WIDTH NO-BREAK SPACE / byte-order mark.
         | '\u{FEFF}'
+        // The Unicode "Tags" block -- renders as fully invisible in
+        // virtually every terminal/renderer and is the exact mechanism
+        // behind "ASCII smuggling" (hiding payload content from a human or
+        // an agent reading the output while the raw bytes remain present).
+        // The provenance banner protects content shown to an agent, not
+        // just a human at a terminal, so this range matters even where the
+        // others are more terminal-rendering-specific.
+        | '\u{E0000}'..='\u{E007F}'
     )
 }
 
@@ -1146,6 +1167,69 @@ mod tests {
         // The real closing banner (with the real tag) is present exactly
         // once, and nothing about it has been visually consumed or
         // duplicated by the override that used to precede it.
+        let real_close = "=== END GRAPH-FETCHED GUIDANCE [tag1] (node n1) ===";
+        assert_eq!(out.matches(real_close).count(), 1);
+    }
+
+    /// The same UAX #9 implicit-mark, invisible-operator, and "Tags"
+    /// characters an adversarial review of this fix found still surviving
+    /// unstripped: U+061C (same family as U+200E/U+200F above), U+2060-64
+    /// (the invisible-operator block WORD JOINER belongs to, functionally
+    /// near-identical to ZERO WIDTH SPACE), and the Tags block boundaries.
+    /// Tags characters (U+E0000-U+E007F) render as fully invisible in
+    /// virtually every terminal -- the exact mechanism behind "ASCII
+    /// smuggling" -- which matters beyond terminal rendering because the
+    /// banner also protects content an agent, not just a human, reads.
+    #[test]
+    fn sanitize_for_terminal_strips_arabic_letter_mark_invisible_operators_and_tags_block() {
+        let cases: &[(char, &str)] = &[
+            ('\u{061C}', "ARABIC LETTER MARK"),
+            ('\u{2060}', "WORD JOINER"),
+            ('\u{2061}', "FUNCTION APPLICATION"),
+            ('\u{2062}', "INVISIBLE TIMES"),
+            ('\u{2063}', "INVISIBLE SEPARATOR"),
+            ('\u{2064}', "INVISIBLE PLUS"),
+            ('\u{E0000}', "start of the Tags block"),
+            ('\u{E0001}', "LANGUAGE TAG"),
+            ('\u{E0020}', "TAG SPACE"),
+            ('\u{E007F}', "CANCEL TAG / end of the Tags block"),
+        ];
+        for (c, name) in cases {
+            assert!(
+                !c.is_control(),
+                "{name} (U+{:04X}) must be Cf, not Cc, for this test to exercise the gap \
+                 char::is_control() leaves -- if this fails, the char() itself changed category",
+                *c as u32
+            );
+            let input = format!("before{c}after");
+            let out = sanitize_for_terminal(&input);
+            assert_eq!(
+                out, "beforeafter",
+                "{name} (U+{:04X}) must be stripped, got: {out:?}",
+                *c as u32
+            );
+        }
+    }
+
+    /// The Tags-block-specific variant of the adversarial scenario above:
+    /// rather than trying to visually reorder the closing banner, the graph
+    /// node smuggles a Tags-block character in immediately before it -- a
+    /// character that renders as nothing at all in essentially every
+    /// terminal/renderer, the "ASCII smuggling" technique. Confirms it is
+    /// genuinely caught (not just the bidi-override case above).
+    #[test]
+    fn print_guidance_strips_tags_block_char_smuggled_next_to_the_closing_banner() {
+        let malicious = "legit content\u{E0001}";
+        let nodes = vec![fake_skill_node("n1", "T", "d", malicious)];
+        let mut buf = Vec::new();
+        print_guidance(&mut buf, &nodes, "q", false, "tag1").expect("must succeed");
+        let out = String::from_utf8(buf).expect("utf8 output");
+
+        assert!(
+            !out.contains('\u{E0001}'),
+            "no raw Tags-block character may reach the terminal (or an agent reading the \
+             output), got: {out:?}"
+        );
         let real_close = "=== END GRAPH-FETCHED GUIDANCE [tag1] (node n1) ===";
         assert_eq!(out.matches(real_close).count(), 1);
     }
