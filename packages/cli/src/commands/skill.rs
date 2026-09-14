@@ -371,18 +371,72 @@ fn provenance_tag() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
 }
 
-/// Strips ANSI escape sequences and other non-printable control characters
-/// (keeping `\n` and `\t`) from untrusted fetched content before it reaches
-/// a real terminal.
+/// True for Unicode General Category Cf ("format") characters that a
+/// bidi-aware terminal or renderer treats as directional or visibility
+/// controls -- the "Trojan Source" character set (CVE-2021-42574).
+///
+/// `char::is_control()` only covers Cc (the C0/C1 control codes); Cf
+/// characters like U+202E RIGHT-TO-LEFT OVERRIDE evaluate `is_control() ==
+/// false` and would otherwise pass [`sanitize_for_terminal`] untouched,
+/// letting fetched content reorder or hide the provenance banner exactly as
+/// a raw ESC byte could -- or, for the Unicode "Tags" block specifically,
+/// hide arbitrary content from a human *or an agent* reading the output
+/// entirely ("ASCII smuggling"), since Tags characters render as nothing at
+/// all rather than merely reordering visible text. Deliberately narrow and
+/// enumerated rather than a general "strip all Cf/non-ASCII" check:
+/// legitimate multilingual content (accented Latin, CJK, emoji, combining
+/// marks) must still pass through unmodified -- only bidi-control,
+/// zero-width/invisible-operator, and Tags-block characters, which have no
+/// legitimate role in guidance text shown to a terminal or an agent, are
+/// covered.
+fn is_bidi_or_invisible_control(c: char) -> bool {
+    matches!(c,
+        // ARABIC LETTER MARK -- an implicit directional mark, same UAX #9
+        // family as LEFT-TO-RIGHT MARK / RIGHT-TO-LEFT MARK below.
+        '\u{061C}'
+        // ZERO WIDTH SPACE, ZERO WIDTH NON-JOINER, ZERO WIDTH JOINER,
+        // LEFT-TO-RIGHT MARK, RIGHT-TO-LEFT MARK.
+        | '\u{200B}'..='\u{200F}'
+        // LRE, RLE, PDF, LRO, RLO -- explicit bidi embedding/override
+        // controls, including U+202E RIGHT-TO-LEFT OVERRIDE itself.
+        | '\u{202A}'..='\u{202E}'
+        // WORD JOINER, FUNCTION APPLICATION, INVISIBLE TIMES, INVISIBLE
+        // SEPARATOR, INVISIBLE PLUS -- the invisible-operator block; WORD
+        // JOINER is functionally near-identical to ZERO WIDTH SPACE above,
+        // the rest of the block is covered for the same reason.
+        | '\u{2060}'..='\u{2064}'
+        // LRI, RLI, FSI, PDI -- bidi isolate controls.
+        | '\u{2066}'..='\u{2069}'
+        // ZERO WIDTH NO-BREAK SPACE / byte-order mark.
+        | '\u{FEFF}'
+        // The Unicode "Tags" block -- renders as fully invisible in
+        // virtually every terminal/renderer and is the exact mechanism
+        // behind "ASCII smuggling" (hiding payload content from a human or
+        // an agent reading the output while the raw bytes remain present).
+        // The provenance banner protects content shown to an agent, not
+        // just a human at a terminal, so this range matters even where the
+        // others are more terminal-rendering-specific.
+        | '\u{E0000}'..='\u{E007F}'
+    )
+}
+
+/// Strips ANSI escape sequences, non-printable control characters (keeping
+/// `\n` and `\t`), and Unicode bidi-override/zero-width characters from
+/// untrusted fetched content before it reaches a real terminal.
 ///
 /// Fetched content is graph data, not this program's own output -- without
 /// this, a raw ESC byte inside a malicious or corrupted skill node's
 /// content could redraw or hide the provenance banner printed around it
 /// (e.g. a "conceal" SGR sequence, or a cursor-movement sequence overwriting
-/// the banner line), defeating the entire point of printing one. Applied
-/// only to human-mode terminal output -- `--json` output is a data
-/// structure, not rendered to a screen here, and mangling raw bytes inside
-/// it would make the JSON a lossy copy of what the graph actually holds.
+/// the banner line), defeating the entire point of printing one. The same
+/// applies to Unicode bidi-override and zero-width characters (see
+/// [`is_bidi_or_invisible_control`]): they carry no ESC byte, so they are
+/// not ANSI/CSI sequences, but a bidi-aware terminal still uses them to
+/// visually reorder or hide subsequent text -- the "Trojan Source" attack
+/// class (CVE-2021-42574). Applied only to human-mode terminal output --
+/// `--json` output is a data structure, not rendered to a screen here, and
+/// mangling raw bytes inside it would make the JSON a lossy copy of what
+/// the graph actually holds.
 fn sanitize_for_terminal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -403,6 +457,9 @@ fn sanitize_for_terminal(s: &str) -> String {
             continue;
         }
         if c.is_control() && c != '\n' && c != '\t' {
+            continue;
+        }
+        if is_bidi_or_invisible_control(c) {
             continue;
         }
         out.push(c);
@@ -1043,6 +1100,151 @@ mod tests {
             sanitize_for_terminal("line one\nline two\ttabbed"),
             "line one\nline two\ttabbed",
             "newline and tab must survive -- they are real formatting, not an attack"
+        );
+    }
+
+    /// `char::is_control()` (used above for C0/C1 control codes) returns
+    /// `false` for every one of these -- they are Unicode category Cf
+    /// ("format"), not Cc. Each must still be stripped, or fetched content
+    /// could use them to visually reorder or hide terminal output the same
+    /// way a raw ESC byte could (the "Trojan Source" class, CVE-2021-42574).
+    #[test]
+    fn sanitize_for_terminal_strips_bidi_override_and_zero_width_chars() {
+        let cases: &[(char, &str)] = &[
+            ('\u{200B}', "ZERO WIDTH SPACE"),
+            ('\u{200C}', "ZERO WIDTH NON-JOINER"),
+            ('\u{200D}', "ZERO WIDTH JOINER"),
+            ('\u{200E}', "LEFT-TO-RIGHT MARK"),
+            ('\u{200F}', "RIGHT-TO-LEFT MARK"),
+            ('\u{202A}', "LEFT-TO-RIGHT EMBEDDING"),
+            ('\u{202B}', "RIGHT-TO-LEFT EMBEDDING"),
+            ('\u{202C}', "POP DIRECTIONAL FORMATTING"),
+            ('\u{202D}', "LEFT-TO-RIGHT OVERRIDE"),
+            ('\u{202E}', "RIGHT-TO-LEFT OVERRIDE"),
+            ('\u{2066}', "LEFT-TO-RIGHT ISOLATE"),
+            ('\u{2067}', "RIGHT-TO-LEFT ISOLATE"),
+            ('\u{2068}', "FIRST STRONG ISOLATE"),
+            ('\u{2069}', "POP DIRECTIONAL ISOLATE"),
+            ('\u{FEFF}', "ZERO WIDTH NO-BREAK SPACE / BOM"),
+        ];
+        for (c, name) in cases {
+            assert!(
+                !c.is_control(),
+                "{name} (U+{:04X}) must be Cf, not Cc, for this test to exercise the gap \
+                 char::is_control() leaves -- if this fails, the char() itself changed category",
+                *c as u32
+            );
+            let input = format!("before{c}after");
+            let out = sanitize_for_terminal(&input);
+            assert_eq!(
+                out, "beforeafter",
+                "{name} (U+{:04X}) must be stripped, got: {out:?}",
+                *c as u32
+            );
+        }
+    }
+
+    /// The adversarial scenario the issue describes: a graph node embeds
+    /// U+202E (RIGHT-TO-LEFT OVERRIDE) right before text it wants a bidi-
+    /// aware terminal to visually reverse/hide, adjacent to the real closing
+    /// banner -- attempting the same visual-boundary-spoofing attack the
+    /// ANSI-stripping half of `sanitize_for_terminal` already prevents, just
+    /// without an ESC byte. After sanitization the override is gone, so the
+    /// text renders in its literal, unreordered form and the real banner
+    /// text is never visually displaced.
+    #[test]
+    fn print_guidance_strips_bidi_override_that_targets_the_closing_banner() {
+        let malicious = "legit content\u{202E}denrab gnisolc eht edih ot gniyrT";
+        let nodes = vec![fake_skill_node("n1", "T", "d", malicious)];
+        let mut buf = Vec::new();
+        print_guidance(&mut buf, &nodes, "q", false, "tag1").expect("must succeed");
+        let out = String::from_utf8(buf).expect("utf8 output");
+
+        assert!(
+            !out.contains('\u{202E}'),
+            "no raw bidi-override character may reach the terminal, got: {out:?}"
+        );
+        // The real closing banner (with the real tag) is present exactly
+        // once, and nothing about it has been visually consumed or
+        // duplicated by the override that used to precede it.
+        let real_close = "=== END GRAPH-FETCHED GUIDANCE [tag1] (node n1) ===";
+        assert_eq!(out.matches(real_close).count(), 1);
+    }
+
+    /// The same UAX #9 implicit-mark, invisible-operator, and "Tags"
+    /// characters an adversarial review of this fix found still surviving
+    /// unstripped: U+061C (same family as U+200E/U+200F above), U+2060-64
+    /// (the invisible-operator block WORD JOINER belongs to, functionally
+    /// near-identical to ZERO WIDTH SPACE), and the Tags block boundaries.
+    /// Tags characters (U+E0000-U+E007F) render as fully invisible in
+    /// virtually every terminal -- the exact mechanism behind "ASCII
+    /// smuggling" -- which matters beyond terminal rendering because the
+    /// banner also protects content an agent, not just a human, reads.
+    #[test]
+    fn sanitize_for_terminal_strips_arabic_letter_mark_invisible_operators_and_tags_block() {
+        let cases: &[(char, &str)] = &[
+            ('\u{061C}', "ARABIC LETTER MARK"),
+            ('\u{2060}', "WORD JOINER"),
+            ('\u{2061}', "FUNCTION APPLICATION"),
+            ('\u{2062}', "INVISIBLE TIMES"),
+            ('\u{2063}', "INVISIBLE SEPARATOR"),
+            ('\u{2064}', "INVISIBLE PLUS"),
+            ('\u{E0000}', "start of the Tags block"),
+            ('\u{E0001}', "LANGUAGE TAG"),
+            ('\u{E0020}', "TAG SPACE"),
+            ('\u{E007F}', "CANCEL TAG / end of the Tags block"),
+        ];
+        for (c, name) in cases {
+            assert!(
+                !c.is_control(),
+                "{name} (U+{:04X}) must be Cf, not Cc, for this test to exercise the gap \
+                 char::is_control() leaves -- if this fails, the char() itself changed category",
+                *c as u32
+            );
+            let input = format!("before{c}after");
+            let out = sanitize_for_terminal(&input);
+            assert_eq!(
+                out, "beforeafter",
+                "{name} (U+{:04X}) must be stripped, got: {out:?}",
+                *c as u32
+            );
+        }
+    }
+
+    /// The Tags-block-specific variant of the adversarial scenario above:
+    /// rather than trying to visually reorder the closing banner, the graph
+    /// node smuggles a Tags-block character in immediately before it -- a
+    /// character that renders as nothing at all in essentially every
+    /// terminal/renderer, the "ASCII smuggling" technique. Confirms it is
+    /// genuinely caught (not just the bidi-override case above).
+    #[test]
+    fn print_guidance_strips_tags_block_char_smuggled_next_to_the_closing_banner() {
+        let malicious = "legit content\u{E0001}";
+        let nodes = vec![fake_skill_node("n1", "T", "d", malicious)];
+        let mut buf = Vec::new();
+        print_guidance(&mut buf, &nodes, "q", false, "tag1").expect("must succeed");
+        let out = String::from_utf8(buf).expect("utf8 output");
+
+        assert!(
+            !out.contains('\u{E0001}'),
+            "no raw Tags-block character may reach the terminal (or an agent reading the \
+             output), got: {out:?}"
+        );
+        let real_close = "=== END GRAPH-FETCHED GUIDANCE [tag1] (node n1) ===";
+        assert_eq!(out.matches(real_close).count(), 1);
+    }
+
+    /// Guards against the sanitizer becoming overly aggressive: it targets
+    /// terminal-control-adjacent characters specifically, not "anything
+    /// non-ASCII". Legitimate multilingual/emoji content must round-trip
+    /// unmodified.
+    #[test]
+    fn sanitize_for_terminal_does_not_strip_legitimate_non_ascii_content() {
+        let legit = "café \u{2013} \u{5317}\u{4eac} \u{1F600} r\u{00e9}sum\u{00e9}";
+        assert_eq!(
+            sanitize_for_terminal(legit),
+            legit,
+            "accented Latin, CJK, emoji, and other real content must not be touched"
         );
     }
 
