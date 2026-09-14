@@ -394,18 +394,45 @@ jobs:
           # Bundle relocation itself needs a Spotlight/LaunchServices-known
           # decoy bundle elsewhere on disk to trigger — unreliable to fake
           # deterministically on an ephemeral runner within a CI-sized time
-          # budget. What we CAN check on every run, statically, is that the
-          # built package actually carries the guard that disables relocation
-          # search in the first place, so a regression that drops
-          # --component-plist (or flips the flag back) fails here.
-          echo "==> Confirming the component package pins the bundle non-relocatable"
+          # budget. What we CAN check on every run is that the built package
+          # actually disables per-bundle relocation search in the first
+          # place, so a regression that drops --component-plist (or flips
+          # the flag back) fails here.
+          #
+          # PackageInfo's top-level <pkg-info relocatable="..."> attribute is
+          # a DIFFERENT, unrelated setting (whether the whole .pkg can be
+          # installed to an alternate root) — it reads relocatable="false" on
+          # every build regardless of BundleIsRelocatable, so grepping for
+          # that string proves nothing. The real signal is the <relocate>
+          # element: it lists <bundle id="com.nodespace.desktop"/> when
+          # relocation search is enabled, and is empty when
+          # BundleIsRelocatable=false disables it — confirmed locally by
+          # building the component three ways (no --component-plist,
+          # BundleIsRelocatable=true, BundleIsRelocatable=false) and
+          # inspecting each PackageInfo.
+          echo "==> Confirming the component package disables bundle-relocation search"
           rm -rf "${RUNNER_TEMP}/pkg-expanded"
           pkgutil --expand target/pkg-build/NodeSpace-component.pkg "${RUNNER_TEMP}/pkg-expanded"
-          if ! grep -q 'relocatable="false"' "${RUNNER_TEMP}/pkg-expanded/PackageInfo"; then
-            echo "::error::component PackageInfo does not pin relocatable=\"false\" — the bundle-relocation guard regressed"
-            exit 1
-          fi
-          echo "    PackageInfo confirms relocatable=\"false\""
+          python3 - "${RUNNER_TEMP}/pkg-expanded/PackageInfo" <<'PYEOF'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          path = sys.argv[1]
+          root = ET.parse(path).getroot()
+          relocate = root.find("relocate")
+          if relocate is None:
+              print("::error::PackageInfo has no <relocate> element at all -- unexpected pkgbuild output")
+              sys.exit(1)
+
+          offending = [b.get("id") for b in relocate.findall("bundle") if b.get("id") == "com.nodespace.desktop"]
+          if offending:
+              print("::error::<relocate> still lists com.nodespace.desktop as a relocation-search candidate "
+                    "-- BundleIsRelocatable=false regressed (component.plist missing/wrong, or "
+                    "--component-plist dropped from pkgbuild)")
+              sys.exit(1)
+
+          print("    <relocate> has no com.nodespace.desktop entry -- bundle-relocation search is disabled")
+          PYEOF
 
       - name: Upload .pkg to release
         if: github.event_name == 'release'
