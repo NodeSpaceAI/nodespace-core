@@ -3500,6 +3500,7 @@ dependencies = [
  "nodespace-nlp-engine",
  "nodespace-proto",
  "nodespace-types",
+ "regex",
  "serde_json",
  "shell-words",
  "tempfile",

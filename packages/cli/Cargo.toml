@@ -21,6 +21,11 @@ tower = { version = "0.5", features = ["util"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+# Compiles/probes a `patternProperties` regex in `commands::mcp`'s tool-schema
+# validator (ADR-038 trust boundary) to determine whether it matches every
+# possible property name -- already a dependency of nodespace-core and
+# nodespace-agent elsewhere in the workspace.
+regex = "1"
 nodespace-daemon = { path = "../daemon" }
 nodespace-proto = { workspace = true }
 # For `flatten_namespaced_properties` — the single definition of the storage

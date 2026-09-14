@@ -77,6 +77,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Args, Subcommand};
 use nodespace_daemon::{read_mcp_settings, set_mcp_enabled, McpConfig};
+use regex::Regex;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command as ChildCommand;
@@ -276,22 +277,61 @@ fn is_unconstrained_schema(schema: &Value) -> bool {
     }
 }
 
+/// Representative, *ordinary* property-name probes used by
+/// [`is_match_any_pattern`] to empirically determine whether a compiled
+/// regex matches virtually every possible key, without hardcoding any
+/// particular pattern spelling. Deliberately excludes purely-degenerate
+/// edge cases like the empty string or a key containing an embedded
+/// newline: a pattern that happens to exclude only those (e.g. `.+`, which
+/// requires at least one character, or a fully-anchored `^.*$`, which -- by
+/// design, since bare `.` never matches `\n` -- can't span an embedded
+/// newline) is not meaningfully *bounded* for the "unbounded,
+/// context-flooding" risk this guards against: real property names are
+/// essentially never empty or newline-containing, so such a pattern still
+/// matches every key an attacker would actually use. Requiring a match on
+/// exotic edge cases would therefore create false negatives for patterns
+/// that are practically just as dangerous as `.*` -- these probes are
+/// chosen instead for realistic diversity (length, case, digits, and the
+/// punctuation that commonly appears in identifiers) so a genuinely bounded
+/// pattern (`^x-`, `^[a-z]+$`, a fixed-length cap) still correctly fails to
+/// match at least one of them.
+const MATCH_ANY_PROBES: &[&str] = &[
+    "x",
+    "42",
+    "Z_9-key.name",
+    "the-quick-brown-fox_jumps+0123456789+ABCXYZabcdefghijklmnopqrstuvwxyz",
+];
+
 /// Whether a `patternProperties` regex pattern matches *every* possible
 /// property name -- the key-domain equivalent of what `additionalProperties`
-/// means implicitly ("any key not already covered by `properties`"). This is
-/// deliberately a small, explicit set of the patterns someone would actually
-/// write to mean "match anything" (`.*`, `.+`, and their fully-anchored
-/// forms) rather than a general regex-universality prover: proving an
-/// arbitrary regex matches Σ* is real work with no payoff here, since a
-/// hand-authored MCP tool schema has no reason to reach for an obscure
-/// construction to smuggle a match-any pattern past this check. A
-/// narrowly-scoped pattern like `"^x-"` legitimately bounds the key domain
-/// to a real namespace and must return `false` here.
+/// means implicitly ("any key not already covered by `properties`").
+///
+/// Rather than recognizing a fixed set of "matches anything" spellings, this
+/// compiles the pattern with the `regex` crate and empirically checks
+/// whether it matches every probe in [`MATCH_ANY_PROBES`]. A fixed allowlist
+/// (`.*`, `.+`, ...) is unfixable against a determined author: `[\s\S]*`,
+/// `a|.*`, and `.{0,}` are all functionally identical to `.*` -- JSON
+/// Schema's `patternProperties` matching rule is an unanchored search (the
+/// pattern need only be found *somewhere* in the property name, not match it
+/// fully), so every one of them succeeds against any input via a
+/// zero-or-more-width match at the very first position -- yet none is a
+/// character-for-character match against such a list, and the list can
+/// always be grown around by one more spelling. Probing what the pattern
+/// actually matches catches the whole family without needing to enumerate
+/// it.
+///
+/// An invalid pattern (fails to compile) is *not* treated as match-any -- it
+/// cannot match "any key" if it cannot match at all. Both compiling and
+/// matching run through the `regex` crate's finite-automaton engine rather
+/// than backtracking, so this is linear-time in the pattern and probe
+/// lengths regardless of how an attacker spells the pattern -- no
+/// catastrophic-backtracking (ReDoS) risk from evaluating untrusted input
+/// here.
 fn is_match_any_pattern(pattern: &str) -> bool {
-    matches!(
-        pattern,
-        ".*" | ".+" | "^.*$" | "^.+$" | "^.*" | ".*$" | "^.+" | ".+$"
-    )
+    let Ok(re) = Regex::new(pattern) else {
+        return false;
+    };
+    MATCH_ANY_PROBES.iter().all(|probe| re.is_match(probe))
 }
 
 /// Finds a `patternProperties` entry that is exactly as unbounded as
@@ -1052,6 +1092,55 @@ mod tests {
         assert!(err.contains("patternProperties"), "got: {err}");
     }
 
+    // Regression tests for three concrete bypasses of an earlier,
+    // allowlist-based implementation of is_match_any_pattern (a literal
+    // string-equality check against a fixed set of spellings like `.*`):
+    // each of these is a different, non-listed spelling that is functionally
+    // identical to `.*` under JSON Schema's unanchored-search matching rule,
+    // and must be rejected the same way.
+
+    #[test]
+    fn validate_tool_schema_rejects_dotall_character_class_pattern_properties() {
+        // `[\s\S]*` is the standard ECMA-262/JS idiom for "match any
+        // character including newlines" (working around `.` excluding
+        // `\n`) -- a common, non-obscure spelling of "match anything", not
+        // a contrived one.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {"[\\s\\S]*": {}},
+        });
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("patternProperties"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_schema_rejects_alternation_match_any_pattern_properties() {
+        // `a|.*` is an alternation whose second branch alone is already
+        // match-any -- the literal pattern text has nothing in common with
+        // `.*` as a string, but matches exactly the same set of inputs.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {"a|.*": {}},
+        });
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("patternProperties"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_schema_rejects_repetition_operator_match_any_pattern_properties() {
+        // `.{0,}` is the explicit-bounds spelling of the `*` quantifier --
+        // "zero or more", identical in effect to `.*`.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {".{0,}": {}},
+        });
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("patternProperties"), "got: {err}");
+    }
+
     #[test]
     fn validate_tool_schema_rejects_anchored_match_any_pattern_properties() {
         // `^.*$` matches exactly the same set of strings as `.*` -- a
@@ -1075,6 +1164,35 @@ mod tests {
             "type": "object",
             "additionalProperties": false,
             "patternProperties": {"^x-": {}},
+        });
+        assert!(validate_tool_schema(&schema).is_ok());
+    }
+
+    #[test]
+    fn validate_tool_schema_accepts_a_character_class_restricted_pattern_properties() {
+        // `^[a-z]+$` bounds the key domain to lowercase-letter-only names --
+        // a real, meaningfully narrower restriction than "any key" (it
+        // excludes every probe containing a digit, underscore, dash, or
+        // uppercase letter), so this must NOT be rejected even paired with
+        // an unconstrained `{}` sub-schema.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {"^[a-z]+$": {}},
+        });
+        assert!(validate_tool_schema(&schema).is_ok());
+    }
+
+    #[test]
+    fn validate_tool_schema_accepts_an_uncompilable_pattern_properties_regex() {
+        // A pattern that isn't valid regex syntax cannot match "any key" --
+        // it cannot match anything at all -- so is_match_any_pattern must
+        // treat it as bounded (not flag it) rather than panicking or
+        // defaulting to the unsafe direction.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {"[unclosed": {}},
         });
         assert!(validate_tool_schema(&schema).is_ok());
     }
