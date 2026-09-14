@@ -385,7 +385,7 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     let socket_path = home.join(daemon_socket_relative());
     #[cfg(windows)]
     let socket_path = PathBuf::from(crate::services::grpc_client::resolve_pipe_name());
-    let daemon_bin = bin_dir.join(daemon_binary_name());
+    let daemon_bin = sidecar_install_path(&bin_dir, daemon_binary_name());
 
     // Ensure all directories exist before any binary checks.
     tokio::fs::create_dir_all(&bin_dir)
@@ -501,10 +501,16 @@ async fn kill_running_daemon(socket_path: &Path) {
 /// `daemon_binary_name_for()` — is directly testable on any platform, not
 /// just compile-checked against the Windows target.
 ///
-/// The `.exe` suffix mirrors the literal this replaces (`"nodespaced.exe"`);
-/// it assumes the installed daemon binary carries that extension on Windows,
-/// which — like everything else `#[cfg(windows)]` in this file — has not
-/// been confirmed by an actual Windows run.
+/// The `.exe` suffix mirrors the literal this replaces (`"nodespaced.exe"`)
+/// and assumes the installed daemon binary carries that extension on
+/// Windows. Confirmed for real on a Windows box (issue-2137 investigation):
+/// this assumption did NOT hold before `extract_sidecar_if_changed`'s `dest`
+/// was fixed to route through `bundled_sidecar_name` — with the old bare
+/// (`.exe`-less) install name, a real `taskkill /F /IM nodespaced.exe`
+/// against a real running bare-named `nodespaced` process failed outright
+/// (`ERROR: The process "nodespaced.exe" not found.`) while the process kept
+/// running. With that fix in place, `daemon_bin`'s install name and this
+/// image name agree by construction.
 #[cfg(any(windows, test))]
 fn daemon_image_name_for(is_pro: bool) -> String {
     format!("{}.exe", daemon_binary_name_for(is_pro))
@@ -622,9 +628,31 @@ pub async fn wait_for_daemon(socket_path: &Path, max_wait: Duration) -> DaemonSt
 /// then renames into place — so a concurrently-launched launchd `KeepAlive`
 /// daemon can never `mmap` a partially-written, unsigned, or quarantined
 /// image.
+///
+/// `dest` is computed via [`sidecar_install_path`], NOT a bare
+/// `bin_dir.join(name)` — confirmed on a real Windows box (issue-2137
+/// investigation) that this matters and was previously wrong: `name` here is
+/// always the bare, cross-platform `daemon_binary_name()`/`CLI_BINARY_NAME`
+/// constant, with no `.exe`. Installing under that bare name still lets
+/// `spawn_daemon_windows` launch it (a literal, existing full path resolves
+/// fine via `Command::new` even without an extension), but the resulting
+/// process then registers in the Windows process table under the bare image
+/// name (`nodespaced`, not `nodespaced.exe`) — confirmed via `tasklist`.
+/// `kill_running_daemon`'s `taskkill /IM <name>.exe` then silently fails to
+/// match it (`ERROR: The process "nodespaced.exe" not found.`, while the real
+/// process keeps running), so a binary-update restart never actually kills
+/// the old daemon before spawning a new one. Routing both this `dest` and
+/// `ensure_daemon_running`'s `daemon_bin` through the same
+/// [`sidecar_install_path`] helper (rather than each re-deriving the
+/// installed filename separately, which is exactly how this drifted apart in
+/// the first place) keeps them consistent with what `spawn_daemon_windows`
+/// spawns and what `kill_running_daemon` targets, by construction, on every
+/// platform (a no-op on macOS/Linux, where `bundled_sidecar_name` returns
+/// `name` unchanged).
 async fn extract_sidecar_if_changed(app: &AppHandle, name: &str, bin_dir: &Path) -> Result<bool> {
     let src = resolve_sidecar_path(app, name)?;
-    let dest = bin_dir.join(name);
+    let dest = sidecar_install_path(bin_dir, name);
+    let installed_name = bundled_sidecar_name(name);
 
     let src_size = tokio::fs::metadata(&src)
         .await
@@ -664,7 +692,7 @@ async fn extract_sidecar_if_changed(app: &AppHandle, name: &str, bin_dir: &Path)
         dest.display()
     );
 
-    let tmp_dest = bin_dir.join(format!("{}.tmp-{}", name, std::process::id()));
+    let tmp_dest = bin_dir.join(format!("{}.tmp-{}", installed_name, std::process::id()));
 
     tokio::fs::copy(&src, &tmp_dest)
         .await
@@ -828,6 +856,29 @@ pub(crate) fn bundled_sidecar_name(name: &str) -> String {
     } else {
         name.to_string()
     }
+}
+
+/// Where a sidecar named `name` (the bare, cross-platform
+/// `daemon_binary_name()`/`CLI_BINARY_NAME` constant) is installed under
+/// `~/.nodespace/bin/` after extraction — the single source of truth both
+/// `extract_sidecar_if_changed` (what gets written there) and
+/// `ensure_daemon_running` (what `spawn_daemon_windows` launches and
+/// `kill_running_daemon`'s `taskkill /IM` targets, via `daemon_image_name_for`)
+/// must agree on.
+///
+/// Routes through [`bundled_sidecar_name`] rather than joining `name`
+/// directly — confirmed on a real Windows box (issue-2137 investigation) that
+/// the two computing this separately, and inconsistently, is a real bug: an
+/// installed daemon binary with no `.exe` extension still spawns fine (a
+/// literal, existing full path resolves via `Command::new` even without an
+/// extension) but then registers in the Windows process table under the bare
+/// image name, so `taskkill /F /IM nodespaced.exe` — what
+/// `kill_running_daemon` actually runs — silently fails to match it
+/// (`ERROR: The process "nodespaced.exe" not found.`) while the real process
+/// keeps running. A no-op on macOS/Linux, where `bundled_sidecar_name`
+/// returns `name` unchanged.
+pub(crate) fn sidecar_install_path(bin_dir: &Path, name: &str) -> PathBuf {
+    bin_dir.join(bundled_sidecar_name(name))
 }
 
 /// Pure form of the sidecar-path computation: the installed sidecar lives
@@ -1515,6 +1566,116 @@ pub(crate) fn remove_autorun_windows() -> Result<bool> {
     }
 }
 
+/// Windows `STD_OUTPUT_HANDLE`/`STD_ERROR_HANDLE` identifiers for
+/// [`SetStdHandle`], per the WinAPI headers (`winbase.h`): `(DWORD)-11` and
+/// `(DWORD)-12` respectively.
+#[cfg(windows)]
+const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
+#[cfg(windows)]
+const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4;
+
+// No `windows`/`windows-sys` crate dependency — this crate already talks to
+// the Win32 API by shelling out (`reg.exe`, `taskkill`) rather than via FFI
+// bindings, so a single raw `extern "system"` declaration for the one
+// function actually needed stays consistent with that, rather than pulling
+// in a new dependency for it.
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn SetStdHandle(std_handle: u32, handle: std::os::windows::raw::HANDLE) -> i32;
+}
+
+/// Redirect this process's OWN `STD_OUTPUT_HANDLE`/`STD_ERROR_HANDLE` to log
+/// files under `~/.nodespace/logs/`, so `eprintln!`/`println!` output
+/// produced directly inside the GUI process — notably
+/// `nodespace_types::SchemaNode::from_node`'s fields-parse-failure
+/// diagnostic, called directly (not via the daemon child) by
+/// `commands::schemas::get_all_schemas`/`get_schema_definition` — isn't
+/// silently discarded.
+///
+/// This is a distinct problem from [`spawn_daemon_windows`]'s log-file
+/// redirection above: that fixes the daemon *child* process's stdio (routed
+/// via `Stdio` at spawn time, from the parent). This process — the GUI app
+/// itself — has no parent-supplied `Stdio` to redirect; a release build sets
+/// `windows_subsystem = "windows"` (`main.rs`), so when launched normally
+/// (Start Menu, a desktop shortcut, or the HKCU autorun entry
+/// [`register_autorun_windows`] writes — none of which pass explicit stdio
+/// handles), Windows never attaches a console or any standard handle to it
+/// at all: `eprintln!`/`println!` have nowhere to go from the moment the
+/// process starts, not just for one diagnostic. `SetStdHandle` replaces the
+/// process's OS-level standard handle directly, which is the only lever
+/// available here — there is no `Command`/`Stdio` in play for a process
+/// redirecting its own stdio.
+///
+/// Two designs were considered for the underlying diagnostic
+/// (`SchemaNode::from_node`'s `eprintln!`): restructuring it to return the
+/// diagnostic through its `Result` instead of printing internally, so each
+/// caller routes it through whatever logging fits that call site. That was
+/// already weighed once, deliberately, when the diagnostic was added: it has
+/// three call sites — this module's two direct callers plus
+/// `node_to_typed_value`, reachable from every entry point (Tauri, MCP,
+/// HTTP) via `nodes_to_typed_values`'s batch `Result` collection — and
+/// changing its signature to thread the diagnostic through all three
+/// uniformly was rejected specifically to avoid that blast radius across
+/// `nodespace-types`' shared, cross-process API. Nothing about having real
+/// Windows access now changes that trade-off: the two Tauri call sites this
+/// GUI process actually needs fixed are a two-caller problem, and this
+/// redirect fixes them (and every other diagnostic in the GUI process,
+/// present or future) with a single, self-contained, GUI-process-local
+/// change that touches neither `nodespace-types` nor its non-GUI callers.
+///
+/// Confirmed on a real Windows box (issue-2137 investigation) with a
+/// standalone `windows_subsystem = "windows"` harness launched with no
+/// inherited stdio (`cmd /c start /WAIT`, matching how the app is actually
+/// launched — a direct SSH invocation inherits sshd's own piped stdio and
+/// does not reproduce the bug): before this redirect, `eprintln!`/
+/// `println!` output is confirmed lost; after it, both streams — including
+/// the real `SchemaNode::from_node` diagnostic on a genuinely malformed
+/// schema — land correctly in the log file. This confirms `io::stdout()`/
+/// `io::stderr()` re-resolve the OS standard handle at write time rather
+/// than caching a "no console" state from before the `SetStdHandle` call, on
+/// this Rust/Windows version.
+///
+/// Best-effort, matching [`daemon_log_stdio`]'s log-file-open failure
+/// handling: a failure to create the log directory, open either log file, or
+/// a `SetStdHandle` failure, is silently ignored rather than treated as
+/// fatal. Losing this diagnostic path must never prevent the app itself from
+/// starting.
+#[cfg(windows)]
+pub fn redirect_gui_stdio_to_log_files() {
+    let Some(home) = home_dir() else { return };
+    let log_dir = home.join(DAEMON_LOG_DIR);
+    if std::fs::create_dir_all(&log_dir).is_err() {
+        return;
+    }
+    redirect_std_handle_to_file(STD_OUTPUT_HANDLE, &log_dir.join("nodespace-app.log"));
+    redirect_std_handle_to_file(STD_ERROR_HANDLE, &log_dir.join("nodespace-app-error.log"));
+}
+
+/// Open `path` for append (via [`open_daemon_log`]) and install it as the
+/// process's `std_handle` slot (`STD_OUTPUT_HANDLE` or `STD_ERROR_HANDLE`).
+/// The opened `File` is deliberately leaked (`mem::forget`) once installed —
+/// dropping it would close the OS handle out from under the standard-handle
+/// slot we just pointed at it, and it needs to stay valid for the rest of
+/// the process's life, exactly like a normal inherited std handle would.
+#[cfg(windows)]
+fn redirect_std_handle_to_file(std_handle: u32, path: &Path) {
+    use std::os::windows::io::AsRawHandle;
+    let file = match open_daemon_log(path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let handle = file.as_raw_handle();
+    // SAFETY: `handle` comes from a just-opened, valid `File`; `std_handle`
+    // is one of the two documented STD_*_HANDLE constants. `file` is leaked
+    // below on success so this handle stays valid for the rest of the
+    // process's life, matching `SetStdHandle`'s ownership contract.
+    let ok = unsafe { SetStdHandle(std_handle, handle) };
+    if ok != 0 {
+        std::mem::forget(file);
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod macos_codesign_tests {
     use super::{clear_quarantine, has_quarantine_attribute, resign_binary, verify_signature};
@@ -1997,7 +2158,7 @@ mod windows_taskkill_image_name_tests {
 /// instead of shipping silently, the way it did the first time.
 #[cfg(test)]
 mod sidecar_path_tests {
-    use super::{bundled_sidecar_name, sidecar_path_from_exe};
+    use super::{bundled_sidecar_name, sidecar_install_path, sidecar_path_from_exe};
     use std::path::Path;
 
     #[test]
@@ -2060,6 +2221,45 @@ mod sidecar_path_tests {
             assert_eq!(name, "nodespaced.exe");
         } else {
             assert_eq!(name, "nodespaced");
+        }
+    }
+
+    /// Regression guard for the real Windows bug this issue found: the
+    /// installed sidecar path MUST carry the native extension, matching
+    /// `bundled_sidecar_name` — not a bare `bin_dir.join(name)`. Confirmed on
+    /// a real Windows box that a bare-named install still spawns (so this
+    /// wasn't caught by "does the daemon start at all") but then can never be
+    /// matched by `kill_running_daemon`'s `taskkill /IM <name>.exe` on
+    /// restart. See `sidecar_install_path`'s doc comment for the full
+    /// writeup.
+    #[test]
+    fn sidecar_install_path_carries_the_native_extension() {
+        let bin_dir = Path::new("/home/user/.nodespace/bin");
+        let installed = sidecar_install_path(bin_dir, "nodespaced");
+        if cfg!(windows) {
+            assert_eq!(
+                installed,
+                Path::new("/home/user/.nodespace/bin/nodespaced.exe")
+            );
+        } else {
+            assert_eq!(installed, Path::new("/home/user/.nodespace/bin/nodespaced"));
+        }
+    }
+
+    /// Same coverage for the Pro-edition binary name and the CLI binary name
+    /// — every caller of `extract_sidecar_if_changed`/`ensure_daemon_running`
+    /// gets the same treatment, not just the community daemon.
+    #[test]
+    fn sidecar_install_path_covers_pro_daemon_and_cli_names() {
+        let bin_dir = Path::new("/home/user/.nodespace/bin");
+        for name in ["nodespaced-pro", "nodespace"] {
+            let installed = sidecar_install_path(bin_dir, name);
+            let expected = if cfg!(windows) {
+                format!("/home/user/.nodespace/bin/{name}.exe")
+            } else {
+                format!("/home/user/.nodespace/bin/{name}")
+            };
+            assert_eq!(installed, Path::new(&expected));
         }
     }
 }
