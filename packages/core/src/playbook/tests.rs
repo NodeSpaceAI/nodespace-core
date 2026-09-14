@@ -1508,6 +1508,173 @@ mod playbook_tests {
     }
 
     // -----------------------------------------------------------------------
+    // Persisted chain depth (ADR-060 §5) — `effective_chain_depth`
+    // -----------------------------------------------------------------------
+    //
+    // `effective_chain_depth` is the depth `rule_processor_loop` enforces
+    // `MAX_CHAIN_DEPTH` against. These tests exercise it directly against
+    // hand-built `ExecutionWorkItem`s, the same way `test_execution_work_item_*`
+    // above do, rather than through a running engine + NodeService.
+
+    fn node_with_properties(id: &str, properties: serde_json::Value) -> Node {
+        Node {
+            id: id.to_string(),
+            node_type: "task".to_string(),
+            content: "".to_string(),
+            version: 1,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            properties,
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        }
+    }
+
+    fn work_item_for(
+        trigger_node: Node,
+        playbook_context: Option<crate::db::events::PlaybookExecutionContext>,
+    ) -> ExecutionWorkItem {
+        let node_id = trigger_node.id.clone();
+        let node_type = trigger_node.node_type.clone();
+        ExecutionWorkItem {
+            rules: vec![],
+            trigger_event: EventEnvelope {
+                event: DomainEvent::NodeCreated { node_id, node_type },
+                metadata: EventMetadata {
+                    source_client_id: Some("tauri-main".to_string()),
+                    playbook_context,
+                },
+            },
+            trigger_node,
+        }
+    }
+
+    #[test]
+    fn effective_chain_depth_defaults_to_zero_when_neither_source_is_present() {
+        use super::super::engine::effective_chain_depth;
+
+        let work_item = work_item_for(node_with_properties("node:fresh", json!({})), None);
+        assert_eq!(effective_chain_depth(&work_item), 0);
+    }
+
+    #[test]
+    fn effective_chain_depth_prefers_in_process_context_over_persisted_property() {
+        use super::super::engine::effective_chain_depth;
+        use crate::db::events::{PlaybookExecutionContext, PLAYBOOK_CHAIN_DEPTH_PROPERTY};
+
+        // A locally-originated re-entrant firing: the in-process context
+        // (depth 6) must win even though the node also happens to carry a
+        // (stale) persisted value (2) -- single-device behavior must be
+        // unchanged by this issue.
+        let trigger_node =
+            node_with_properties("node:1", json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 2 }));
+        let work_item = work_item_for(
+            trigger_node,
+            Some(PlaybookExecutionContext {
+                originating_event_id: "evt-1".to_string(),
+                depth: 6,
+                source_playbook_id: "pb-1".to_string(),
+            }),
+        );
+
+        assert_eq!(effective_chain_depth(&work_item), 6);
+    }
+
+    /// Reproduces the device-hop failure this issue fixes: a node created on
+    /// another device carries only its persisted depth -- no in-process
+    /// `PlaybookExecutionContext` survives the hop, since sync transports
+    /// the node's committed properties, not the transient event envelope
+    /// that produced it there. Before this fix, `unwrap_or(0)` reset the
+    /// chain to depth 0 on the receiving device; the chain must instead
+    /// continue from where it left off.
+    #[test]
+    fn effective_chain_depth_continues_from_the_persisted_property_after_a_device_hop() {
+        use super::super::engine::effective_chain_depth;
+        use crate::db::events::PLAYBOOK_CHAIN_DEPTH_PROPERTY;
+
+        let trigger_node = node_with_properties(
+            "node:synced-1",
+            json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 7 }),
+        );
+        // No in-process context: this device never saw the chain's earlier
+        // hops -- exactly what a sync-applied node looks like.
+        let work_item = work_item_for(trigger_node, None);
+
+        assert_eq!(
+            effective_chain_depth(&work_item),
+            7,
+            "depth must continue from the persisted property, not reset to 0"
+        );
+    }
+
+    /// The safety property this issue restores: a chain already sitting at
+    /// MAX_CHAIN_DEPTH when it crosses a device hop must still trip the
+    /// cycle limit on the very next local hop, exactly as it would have if
+    /// the whole chain had stayed on one device.
+    #[test]
+    fn effective_chain_depth_at_persisted_max_still_trips_cycle_limit_on_next_hop() {
+        use super::super::engine::{effective_chain_depth, exceeds_max_chain_depth};
+        use crate::db::events::PLAYBOOK_CHAIN_DEPTH_PROPERTY;
+        use crate::playbook::logging::MAX_CHAIN_DEPTH;
+
+        let trigger_node = node_with_properties(
+            "node:synced-max",
+            json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): MAX_CHAIN_DEPTH }),
+        );
+        let work_item = work_item_for(trigger_node, None);
+
+        let depth = effective_chain_depth(&work_item);
+        assert_eq!(depth, MAX_CHAIN_DEPTH);
+        assert!(
+            exceeds_max_chain_depth(depth),
+            "the next hop must trip the cycle limit even though the chain just crossed a device boundary"
+        );
+    }
+
+    /// A persisted depth of exactly `u8::MAX` (255) cannot reach
+    /// `effective_chain_depth` as `Some(255)` -- `persisted_chain_depth` now
+    /// rejects anything above `MAX_CHAIN_DEPTH` -- so the device-hop fallback
+    /// lands on depth 0, not 255. Documents that outcome directly, and is a
+    /// regression guard against `persisted_chain_depth`'s bound check ever
+    /// being loosened back to "anything that fits a u8".
+    #[test]
+    fn effective_chain_depth_treats_a_255_persisted_value_as_absent_not_as_255() {
+        use super::super::engine::effective_chain_depth;
+        use crate::db::events::PLAYBOOK_CHAIN_DEPTH_PROPERTY;
+
+        let trigger_node = node_with_properties(
+            "node:corrupt-depth",
+            json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 255 }),
+        );
+        let work_item = work_item_for(trigger_node, None);
+
+        assert_eq!(effective_chain_depth(&work_item), 0);
+    }
+
+    /// Regression for the overflow this issue's review caught: before
+    /// `exceeds_max_chain_depth` used saturating arithmetic, `depth + 1` at
+    /// `u8::MAX` would overflow and silently wrap to `0` in a release build
+    /// (this repo's release profile leaves `overflow-checks` at its default
+    /// of off), making the cycle-depth guard read "not exceeded" for the
+    /// worst-case input instead of tripping. `persisted_chain_depth`'s own
+    /// bound check (previous test) already keeps 255 from reaching this
+    /// guard via the sync/device-hop path today, but `exceeds_max_chain_depth`
+    /// is deliberately defense-in-depth against `depth` being out of range
+    /// by any means, not solely reliant on that filter -- this test exercises
+    /// the arithmetic itself, independent of how `depth` got there.
+    #[test]
+    fn exceeds_max_chain_depth_does_not_wrap_at_u8_max() {
+        use super::super::engine::exceeds_max_chain_depth;
+        use crate::playbook::logging::MAX_CHAIN_DEPTH;
+
+        assert!(exceeds_max_chain_depth(u8::MAX));
+        assert!(exceeds_max_chain_depth(MAX_CHAIN_DEPTH));
+        assert!(!exceeds_max_chain_depth(MAX_CHAIN_DEPTH - 1));
+    }
+
+    // -----------------------------------------------------------------------
     // ADR-073: local-origin gating (`is_sync_originated`)
     // -----------------------------------------------------------------------
     //

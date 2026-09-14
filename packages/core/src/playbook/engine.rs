@@ -12,7 +12,7 @@
 //! - Phase 6: Cycle detection (max depth 10) + log node deduplication
 //! - Phase 7: Save-time validation before play activation
 
-use crate::db::events::{DomainEvent, EventEnvelope};
+use crate::db::events::{persisted_chain_depth, DomainEvent, EventEnvelope};
 use crate::playbook::lifecycle::{trigger_keys_for_event, PlaybookLifecycleManager};
 use crate::playbook::logging::{create_or_update_log_node, PlayErrorType, MAX_CHAIN_DEPTH};
 use crate::playbook::types::*;
@@ -545,9 +545,10 @@ fn parse_rules_for_validation(
 /// execute simultaneously, no race between condition evaluation and action
 /// execution, no concurrent modifications to the same node.
 ///
-/// Enforces cycle detection: when `depth + 1 > MAX_CHAIN_DEPTH`, the work
-/// item is skipped, offending plays are disabled, and log nodes are
-/// created with fingerprint-based deduplication.
+/// Enforces cycle detection: when `exceeds_max_chain_depth` reports the next
+/// execution would pass `MAX_CHAIN_DEPTH`, the work item is skipped,
+/// offending plays are disabled, and log nodes are created with
+/// fingerprint-based deduplication.
 pub(crate) async fn rule_processor_loop(
     mut rx: mpsc::Receiver<ExecutionWorkItem>,
     lifecycle: Arc<RwLock<PlaybookLifecycleManager>>,
@@ -556,17 +557,11 @@ pub(crate) async fn rule_processor_loop(
     info!("RuleProcessor started, waiting for work items...");
 
     while let Some(work_item) = rx.recv().await {
-        let depth = work_item
-            .trigger_event
-            .metadata
-            .playbook_context
-            .as_ref()
-            .map(|ctx| ctx.depth)
-            .unwrap_or(0);
+        let depth = effective_chain_depth(&work_item);
 
         // Cycle detection: if the next execution would exceed MAX_CHAIN_DEPTH,
         // skip this work item, disable offending plays, and create log nodes.
-        if depth + 1 > MAX_CHAIN_DEPTH {
+        if exceeds_max_chain_depth(depth) {
             warn!(
                 "Cycle limit reached (depth {}), skipping work item for node {}",
                 depth, work_item.trigger_node.id,
@@ -651,7 +646,12 @@ pub(crate) async fn rule_processor_loop(
                     .as_ref()
                     .map(|ctx| ctx.originating_event_id.clone())
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                depth: depth + 1,
+                // Saturating, not `depth + 1`: `exceeds_max_chain_depth` above
+                // already guarantees `depth <= MAX_CHAIN_DEPTH` here, so this
+                // never actually saturates in practice -- the same
+                // defense-in-depth reasoning as that guard applies (see its
+                // doc), not a claim that this path is otherwise reachable.
+                depth: depth.saturating_add(1),
                 source_playbook_id: rule_ref.play_id.clone(),
             };
 
@@ -720,6 +720,63 @@ pub(crate) async fn rule_processor_loop(
 /// origin match for the same reason.
 pub(crate) fn is_sync_originated(envelope: &EventEnvelope) -> bool {
     envelope.metadata.source_client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID)
+}
+
+/// The chain depth to enforce `MAX_CHAIN_DEPTH` against for `work_item`
+/// (ADR-060 §5).
+///
+/// Prefers the in-process `PlaybookExecutionContext` carried on the
+/// triggering event — present whenever this hop's mutation was produced by
+/// this same running process, which covers every same-device chain today
+/// (ADR-073 currently excludes sync-applied events from trigger evaluation
+/// entirely, so a work item never reaches here with a foreign in-process
+/// context). Falls back to the depth persisted on the trigger node's own
+/// properties (`persisted_chain_depth`) when that in-process context is
+/// absent — the shape a node takes once it has crossed a device boundary via
+/// sync: sync transports the node's committed `properties`, not the
+/// transient `EventMetadata` that accompanied its creation elsewhere, so the
+/// persisted property is the only surviving record of how deep the chain
+/// already was.
+///
+/// Defaults to 0 when neither is present: a node never touched by a play
+/// action, or the first hop of a fresh chain. Also the fallback for a
+/// persisted value `persisted_chain_depth` rejects as out of range —
+/// indistinguishable here from a node that was never touched, which is a
+/// known, accepted limitation of a best-effort persisted signal with no
+/// write protection (see `persisted_chain_depth`'s doc).
+///
+/// The in-process context is bounded to `0..=MAX_CHAIN_DEPTH` by
+/// construction (only ever assigned `depth.saturating_add(1)` after
+/// `exceeds_max_chain_depth` already passed), but the persisted property is
+/// not similarly trustworthy — it is ordinary node data any
+/// `create_node`/`update_node` caller can write — so `persisted_chain_depth`
+/// is bounded explicitly against `MAX_CHAIN_DEPTH` here rather than trusting
+/// the stored value's own range.
+pub(crate) fn effective_chain_depth(work_item: &ExecutionWorkItem) -> u8 {
+    work_item
+        .trigger_event
+        .metadata
+        .playbook_context
+        .as_ref()
+        .map(|ctx| ctx.depth)
+        .unwrap_or_else(|| {
+            persisted_chain_depth(&work_item.trigger_node.properties, MAX_CHAIN_DEPTH).unwrap_or(0)
+        })
+}
+
+/// Whether the next hop of a chain currently at `depth` would exceed
+/// `MAX_CHAIN_DEPTH` (ADR-060 §5).
+///
+/// Uses saturating arithmetic rather than `depth + 1 > MAX_CHAIN_DEPTH`:
+/// defense-in-depth against `depth` ever being out of range when this runs,
+/// regardless of what `effective_chain_depth`'s own bound-checking
+/// guarantees today. Unchecked addition at `u8::MAX` overflows and silently
+/// wraps to `0` in a release build (this repo's release profile leaves
+/// `overflow-checks` at its default of off), which would make an
+/// out-of-range depth read as "not exceeded" instead of tripping the guard
+/// — the opposite of fail-safe for a cycle-detection limit.
+pub(crate) fn exceeds_max_chain_depth(depth: u8) -> bool {
+    depth.saturating_add(1) > MAX_CHAIN_DEPTH
 }
 
 /// Extract the trigger node ID from a domain event.
