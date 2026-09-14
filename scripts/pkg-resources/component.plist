@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Component property list for pkgbuild --component-plist.
+
+  Without this, macOS's default bundle-relocation logic searches the whole
+  disk (via Spotlight/LaunchServices) for an existing bundle matching
+  com.nodespace.desktop and, if it finds one — a stale dev build, a prior
+  install moved by the user, etc. — installs the new version *there*
+  instead of at RootRelativeBundlePath below. That leaves
+  /Applications/NodeSpace.app missing after a "successful" install.
+
+  BundleIsRelocatable=false disables that search entirely: NodeSpace.app
+  always installs to the path this component ships it at.
+-->
+<array>
+	<dict>
+		<key>RootRelativeBundlePath</key>
+		<string>Applications/NodeSpace.app</string>
+		<key>BundleHasStrictIdentifier</key>
+		<true/>
+		<key>BundleIsRelocatable</key>
+		<false/>
+		<key>BundleIsVersionChecked</key>
+		<true/>
+		<key>BundleOverwriteAction</key>
+		<string>upgrade</string>
+	</dict>
+</array>
+</plist>

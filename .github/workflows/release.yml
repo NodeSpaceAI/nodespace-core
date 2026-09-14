@@ -363,6 +363,77 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: bash scripts/build-pkg.sh
 
+      - name: Install .pkg and verify it actually lands correctly
+        shell: bash
+        run: |
+          PKG=$(ls target/pkg-output/*.pkg | head -1)
+          echo "Installing: ${PKG}"
+
+          verify_layout() {
+            test -d /Applications/NodeSpace.app || { echo "::error::/Applications/NodeSpace.app is missing after install"; exit 1; }
+            test -x /usr/local/bin/nodespace || { echo "::error::/usr/local/bin/nodespace is missing or not executable"; exit 1; }
+            test -x /usr/local/bin/nodespaced || { echo "::error::/usr/local/bin/nodespaced is missing or not executable"; exit 1; }
+            echo "    /Applications/NodeSpace.app, nodespace, nodespaced all present"
+          }
+
+          # Install once against a clean runner (the common case), then install
+          # the SAME package again immediately. The second run is what actually
+          # exercises the failure this check exists to catch: postinstall's
+          # launchd bootstrap now runs against an already-registered daemon
+          # label, the exact condition that previously made `installer` report
+          # the whole package as failed even though the binaries were already
+          # in place.
+          echo "==> First install"
+          sudo installer -pkg "${PKG}" -target / -verbose
+          verify_layout
+
+          echo "==> Second install (daemon already registered from the first install)"
+          sudo installer -pkg "${PKG}" -target / -verbose
+          verify_layout
+
+          # Bundle relocation itself needs a Spotlight/LaunchServices-known
+          # decoy bundle elsewhere on disk to trigger — unreliable to fake
+          # deterministically on an ephemeral runner within a CI-sized time
+          # budget. What we CAN check on every run is that the built package
+          # actually disables per-bundle relocation search in the first
+          # place, so a regression that drops --component-plist (or flips
+          # the flag back) fails here.
+          #
+          # PackageInfo's top-level <pkg-info relocatable="..."> attribute is
+          # a DIFFERENT, unrelated setting (whether the whole .pkg can be
+          # installed to an alternate root) — it reads relocatable="false" on
+          # every build regardless of BundleIsRelocatable, so grepping for
+          # that string proves nothing. The real signal is the <relocate>
+          # element: it lists <bundle id="com.nodespace.desktop"/> when
+          # relocation search is enabled, and is empty when
+          # BundleIsRelocatable=false disables it — confirmed locally by
+          # building the component three ways (no --component-plist,
+          # BundleIsRelocatable=true, BundleIsRelocatable=false) and
+          # inspecting each PackageInfo.
+          echo "==> Confirming the component package disables bundle-relocation search"
+          rm -rf "${RUNNER_TEMP}/pkg-expanded"
+          pkgutil --expand target/pkg-build/NodeSpace-component.pkg "${RUNNER_TEMP}/pkg-expanded"
+          python3 - "${RUNNER_TEMP}/pkg-expanded/PackageInfo" <<'PYEOF'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          path = sys.argv[1]
+          root = ET.parse(path).getroot()
+          relocate = root.find("relocate")
+          if relocate is None:
+              print("::error::PackageInfo has no <relocate> element at all -- unexpected pkgbuild output")
+              sys.exit(1)
+
+          offending = [b.get("id") for b in relocate.findall("bundle") if b.get("id") == "com.nodespace.desktop"]
+          if offending:
+              print("::error::<relocate> still lists com.nodespace.desktop as a relocation-search candidate "
+                    "-- BundleIsRelocatable=false regressed (component.plist missing/wrong, or "
+                    "--component-plist dropped from pkgbuild)")
+              sys.exit(1)
+
+          print("    <relocate> has no com.nodespace.desktop entry -- bundle-relocation search is disabled")
+          PYEOF
+
       - name: Upload .pkg to release
         if: github.event_name == 'release'
         run: |
