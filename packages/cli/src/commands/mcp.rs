@@ -167,11 +167,13 @@ fn validate_tool_schema(schema: &Value) -> Result<(), String> {
 }
 
 /// Recursive worker for [`validate_tool_schema`]: walks every JSON Schema
-/// construct that can nest (`properties`, `items`, an object-valued
-/// `additionalProperties`, and the `anyOf`/`oneOf`/`allOf` combinators),
-/// rejecting depth beyond [`MAX_SCHEMA_NESTING_DEPTH`] and any unbounded
-/// `additionalProperties` at any level that describes a JSON object (see
-/// [`describes_object_schema`]). Per the JSON Schema spec, `true`, an
+/// construct that can nest (`properties`, `patternProperties`, `items`, an
+/// object-valued `additionalProperties`, and the `anyOf`/`oneOf`/`allOf`
+/// combinators), rejecting depth beyond [`MAX_SCHEMA_NESTING_DEPTH`], any
+/// unbounded `additionalProperties` at any level that describes a JSON
+/// object (see [`describes_object_schema`]), and any `patternProperties`
+/// entry that is exactly as unbounded as `additionalProperties: true` (see
+/// [`find_unbounded_pattern_property`]). Per the JSON Schema spec, `true`, an
 /// unconstrained `{}` schema, and an *omitted* key are all equally
 /// unbounded -- the key defaults to `true` when absent. A schema fragment
 /// that isn't a JSON object (a leaf like `{"type": "string"}`'s scalar
@@ -193,6 +195,13 @@ fn check_schema_depth(node: &Value, depth: usize) -> Result<(), String> {
             "tool schema has unbounded additionalProperties: {shown} (omitted, `true`, and `{{}}` are all unbounded)"
         ));
     }
+    if let Some(pattern) = find_unbounded_pattern_property(map) {
+        return Err(format!(
+            "tool schema has unbounded patternProperties: pattern {pattern:?} matches any \
+             property name and its sub-schema is unconstrained -- exactly as unbounded as \
+             `additionalProperties: true`, regardless of what `additionalProperties` itself says"
+        ));
+    }
     if let Some(additional) = additional {
         if additional.is_object() {
             check_schema_depth(additional, depth + 1)?;
@@ -200,6 +209,11 @@ fn check_schema_depth(node: &Value, depth: usize) -> Result<(), String> {
     }
     if let Some(props) = map.get("properties").and_then(Value::as_object) {
         for value in props.values() {
+            check_schema_depth(value, depth + 1)?;
+        }
+    }
+    if let Some(pattern_props) = map.get("patternProperties").and_then(Value::as_object) {
+        for value in pattern_props.values() {
             check_schema_depth(value, depth + 1)?;
         }
     }
@@ -239,11 +253,67 @@ fn describes_object_schema(map: &serde_json::Map<String, Value>) -> bool {
 /// recursing into it) bounds the property set.
 fn is_unbounded_additional_properties(map: &serde_json::Map<String, Value>) -> bool {
     match map.get("additionalProperties") {
-        Some(Value::Bool(unbounded)) => *unbounded,
-        Some(Value::Object(fields)) => fields.is_empty(),
-        Some(_) => false,
+        Some(value) => is_unconstrained_schema(value),
         None => describes_object_schema(map),
     }
+}
+
+/// Whether a schema fragment itself imposes no constraint at all -- an
+/// explicit `true`, or an unconstrained empty-object `{}` (per the JSON
+/// Schema spec, `{}` and `true` both accept any value). Anything else --
+/// `false`, a scalar/array JSON value (which isn't a schema at all), or a
+/// non-empty object that genuinely constrains its subject -- is not
+/// unconstrained. Shared by [`is_unbounded_additional_properties`] (for the
+/// `additionalProperties` sub-schema) and
+/// [`find_unbounded_pattern_property`] (for each `patternProperties`
+/// sub-schema): in both places this is the "accepts any value" half of what
+/// makes a keyword as unbounded as `additionalProperties: true`.
+fn is_unconstrained_schema(schema: &Value) -> bool {
+    match schema {
+        Value::Bool(unbounded) => *unbounded,
+        Value::Object(fields) => fields.is_empty(),
+        _ => false,
+    }
+}
+
+/// Whether a `patternProperties` regex pattern matches *every* possible
+/// property name -- the key-domain equivalent of what `additionalProperties`
+/// means implicitly ("any key not already covered by `properties`"). This is
+/// deliberately a small, explicit set of the patterns someone would actually
+/// write to mean "match anything" (`.*`, `.+`, and their fully-anchored
+/// forms) rather than a general regex-universality prover: proving an
+/// arbitrary regex matches Σ* is real work with no payoff here, since a
+/// hand-authored MCP tool schema has no reason to reach for an obscure
+/// construction to smuggle a match-any pattern past this check. A
+/// narrowly-scoped pattern like `"^x-"` legitimately bounds the key domain
+/// to a real namespace and must return `false` here.
+fn is_match_any_pattern(pattern: &str) -> bool {
+    matches!(
+        pattern,
+        ".*" | ".+" | "^.*$" | "^.+$" | "^.*" | ".*$" | "^.+" | ".+$"
+    )
+}
+
+/// Finds a `patternProperties` entry that is exactly as unbounded as
+/// `additionalProperties: true`: a pattern matching every property name (see
+/// [`is_match_any_pattern`]) paired with an unconstrained sub-schema (see
+/// [`is_unconstrained_schema`]). Only the combination is unbounded --
+/// mirroring how `additionalProperties: {"type": "string"}` is *not*
+/// unbounded despite covering every key, because its sub-schema genuinely
+/// constrains the value. A match-any pattern paired with a constraining
+/// sub-schema, or a narrowly-scoped pattern paired with `{}`, is exempt:
+/// `patternProperties: {"^x-": {}}` only ever opens up keys in the `x-`
+/// namespace, never "any key," so it is not the
+/// `additionalProperties: true`-class violation this guards against.
+/// Returns the first offending pattern found, for the caller's error
+/// message -- sufficient since [`validate_tool_schema`] reports the first
+/// violation found overall, not a full list.
+fn find_unbounded_pattern_property(map: &serde_json::Map<String, Value>) -> Option<&str> {
+    let pattern_properties = map.get("patternProperties")?.as_object()?;
+    pattern_properties.iter().find_map(|(pattern, schema)| {
+        (is_match_any_pattern(pattern) && is_unconstrained_schema(schema))
+            .then_some(pattern.as_str())
+    })
 }
 
 /// `nodespace mcp install`/`uninstall`/`status`.
@@ -950,6 +1020,105 @@ mod tests {
             "additionalProperties": {"type": "string"},
         });
         assert!(validate_tool_schema(&schema).is_ok());
+    }
+
+    // --- patternProperties ---------------------------------------------
+
+    #[test]
+    fn validate_tool_schema_rejects_unbounded_pattern_properties() {
+        // The exact case from the issue: additionalProperties: false claims
+        // a bounded object, but a `.*` patternProperties entry with an
+        // unconstrained sub-schema reopens it to "any key, any value" --
+        // semantically identical to `additionalProperties: true`.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {".*": {}},
+        });
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("patternProperties"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_schema_rejects_pattern_properties_with_a_true_sub_schema() {
+        // `true` is as unconstrained a sub-schema as `{}` -- see
+        // is_unconstrained_schema.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {".*": true},
+        });
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("patternProperties"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_schema_rejects_anchored_match_any_pattern_properties() {
+        // `^.*$` matches exactly the same set of strings as `.*` -- a
+        // fully-anchored spelling of "match anything" must be caught too,
+        // not just the bare unanchored form from the issue's example.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {"^.*$": {}},
+        });
+        let err = validate_tool_schema(&schema).expect_err("must reject");
+        assert!(err.contains("patternProperties"), "got: {err}");
+    }
+
+    #[test]
+    fn validate_tool_schema_accepts_a_narrowly_scoped_pattern_properties() {
+        // `^x-` bounds the key domain to a real namespace -- not equivalent
+        // to `additionalProperties: true` even paired with an unconstrained
+        // `{}` sub-schema, so this legitimate usage must NOT be rejected.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {"^x-": {}},
+        });
+        assert!(validate_tool_schema(&schema).is_ok());
+    }
+
+    #[test]
+    fn validate_tool_schema_accepts_a_match_any_pattern_with_a_bounded_sub_schema() {
+        // Mirrors validate_tool_schema_accepts_a_bounded_object_valued_additional_properties:
+        // an unbounded key domain paired with a genuinely constraining value
+        // schema is not equivalent to `additionalProperties: true` -- only
+        // the combination of "any key" and "any value" is.
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "patternProperties": {".*": {"type": "string"}},
+        });
+        assert!(validate_tool_schema(&schema).is_ok());
+    }
+
+    #[test]
+    fn validate_tool_schema_rejects_excessive_nesting_via_pattern_properties() {
+        // check_schema_depth must recurse into patternProperties sub-schemas
+        // for depth checking the same way it does for `properties` values.
+        // Each level uses a narrow, legitimately-bounded pattern so the only
+        // failure exercised here is the depth check.
+        let mut schema = json!({"type": "string"});
+        for _ in 0..(MAX_SCHEMA_NESTING_DEPTH + 2) {
+            schema = json!({
+                "type": "object",
+                "patternProperties": {"^x-": schema},
+                "additionalProperties": false,
+            });
+        }
+        let err = validate_tool_schema(&schema).expect_err("must reject excessive nesting");
+        assert!(err.contains("depth"), "got: {err}");
+    }
+
+    #[test]
+    fn tools_list_result_schema_has_no_pattern_properties_and_still_validates() {
+        // The one real shipped schema doesn't use `patternProperties` at
+        // all; pin that down explicitly so it keeps validating cleanly
+        // regardless of how the new patternProperties checks evolve.
+        let result = tools_list_result().expect("the real schema must pass validation");
+        let schema = &result["tools"][0]["inputSchema"];
+        assert!(schema.get("patternProperties").is_none());
     }
 
     #[test]
