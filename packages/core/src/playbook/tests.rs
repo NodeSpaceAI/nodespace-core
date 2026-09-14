@@ -768,13 +768,17 @@ mod playbook_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_rules_ordered_by_created_at_then_index() {
+    fn test_rules_ordered_by_play_id_then_rule_index() {
+        // ADR-060 §5: cross-play ordering keys on the play's stable id, not
+        // wall-clock created_at. Give the lexically-earlier play ("pb-a") the
+        // *later* creation time to prove created_at plays no role — if it
+        // did, this would sort the other way.
         let mut mgr = PlaybookLifecycleManager::new();
 
         let earlier = Utc::now() - chrono::Duration::hours(2);
         let later = Utc::now();
 
-        // Play A: created earlier, 2 rules
+        // Play A: created LATER, 2 rules, lexically smaller id.
         let pb_a = make_play_node_at(
             "pb-a",
             json!([
@@ -791,10 +795,10 @@ mod playbook_tests {
                     "actions": []
                 }
             ]),
-            earlier,
+            later,
         );
 
-        // Play B: created later, 1 rule
+        // Play B: created EARLIER, 1 rule, lexically larger id.
         let pb_b = make_play_node_at(
             "pb-b",
             json!([{
@@ -803,7 +807,7 @@ mod playbook_tests {
                 "conditions": [],
                 "actions": []
             }]),
-            later,
+            earlier,
         );
 
         mgr.activate_play(&pb_a).unwrap();
@@ -817,12 +821,13 @@ mod playbook_tests {
         let rules = mgr.lookup_rules(&[key]);
 
         assert_eq!(rules.len(), 3);
-        // Earlier play's rules first, in index order
+        // "pb-a" sorts first by play_id despite being created later; within
+        // it, rules stay in array (rule_index) order.
         assert_eq!(rules[0].play_id, "pb-a");
         assert_eq!(rules[0].rule_index, 0);
         assert_eq!(rules[1].play_id, "pb-a");
         assert_eq!(rules[1].rule_index, 1);
-        // Later play's rules after
+        // "pb-b" sorts after "pb-a" despite being created earlier.
         assert_eq!(rules[2].play_id, "pb-b");
         assert_eq!(rules[2].rule_index, 0);
     }

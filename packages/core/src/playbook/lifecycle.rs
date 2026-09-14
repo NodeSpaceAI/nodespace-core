@@ -63,7 +63,6 @@ impl PlaybookLifecycleManager {
         for (idx, rule) in parsed_rules.iter().enumerate() {
             let ordered_ref = OrderedRuleRef {
                 play_id: node.id.clone(),
-                play_created_at: node.created_at,
                 rule_index: idx,
                 rule: Arc::clone(rule),
             };
@@ -400,13 +399,23 @@ mod tests {
 
     /// Helper: create a play node with rules JSON.
     fn make_play_node(id: &str, rules_json: serde_json::Value) -> Node {
+        make_play_node_at(id, rules_json, Utc::now())
+    }
+
+    /// Helper: create a play node with rules JSON and an explicit `created_at`,
+    /// so tests can pit wall-clock creation order against play-id order.
+    fn make_play_node_at(
+        id: &str,
+        rules_json: serde_json::Value,
+        created_at: chrono::DateTime<Utc>,
+    ) -> Node {
         Node {
             id: id.to_string(),
             node_type: "play".to_string(),
             content: format!("play {}", id),
             version: 1,
-            created_at: Utc::now(),
-            modified_at: Utc::now(),
+            created_at,
+            modified_at: created_at,
             properties: json!({ "rules": rules_json }),
             mentions: vec![],
             mentioned_in: vec![],
@@ -524,6 +533,178 @@ mod tests {
         }];
         let rules = lm.lookup_rules(&keys);
         assert!(rules.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Cross-play ordering (ADR-060 §5) — keyed on play id, not created_at
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cross_play_ordering_keys_on_play_id_not_created_at() {
+        let mut lm = PlaybookLifecycleManager::new();
+
+        let earlier = "2024-01-01T00:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+        let later = "2024-06-01T00:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+
+        // "pb-zebra" is created FIRST (earlier wall-clock time) but sorts
+        // LAST lexically. "pb-apple" is created SECOND but sorts first.
+        // Under the old (play_created_at, rule_index) key this would order
+        // [pb-zebra, pb-apple]; under the play_id key it must order
+        // [pb-apple, pb-zebra].
+        let zebra = make_play_node_at(
+            "pb-zebra",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": [],
+                "actions": []
+            }]),
+            earlier,
+        );
+        let apple = make_play_node_at(
+            "pb-apple",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                "conditions": [],
+                "actions": []
+            }]),
+            later,
+        );
+
+        lm.activate_play(&zebra).unwrap();
+        lm.activate_play(&apple).unwrap();
+
+        let keys = vec![TriggerKey::NodeEvent {
+            event: NodeEventType::NodeCreated,
+            node_type: "task".to_string(),
+            property_key: None,
+        }];
+        let rules = lm.lookup_rules(&keys);
+
+        assert_eq!(
+            rules.iter().map(|r| r.play_id.as_str()).collect::<Vec<_>>(),
+            vec!["pb-apple", "pb-zebra"],
+            "cross-play order must follow play_id, not creation time"
+        );
+    }
+
+    #[test]
+    fn two_devices_different_install_order_produce_same_rule_order() {
+        // Simulate two devices that installed the same two plays in opposite
+        // order and whose clocks disagree about which play was created first.
+        // Per ADR-060 §5, both must evaluate a shared trigger's matched rules
+        // in the same order.
+        let t_early = "2024-01-01T00:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+        let t_late = "2024-06-01T00:00:00Z"
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap();
+
+        let rules_json = json!([{
+            "name": "r1",
+            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+            "conditions": [],
+            "actions": []
+        }]);
+
+        // Device A: clock says apple was created before zebra; installs apple then zebra.
+        let apple_device_a = make_play_node_at("pb-apple", rules_json.clone(), t_early);
+        let zebra_device_a = make_play_node_at("pb-zebra", rules_json.clone(), t_late);
+        let mut device_a = PlaybookLifecycleManager::new();
+        device_a.activate_play(&apple_device_a).unwrap();
+        device_a.activate_play(&zebra_device_a).unwrap();
+
+        // Device B: clock disagrees (zebra looks earlier here) and installs
+        // in the opposite order: zebra then apple.
+        let zebra_device_b = make_play_node_at("pb-zebra", rules_json.clone(), t_early);
+        let apple_device_b = make_play_node_at("pb-apple", rules_json, t_late);
+        let mut device_b = PlaybookLifecycleManager::new();
+        device_b.activate_play(&zebra_device_b).unwrap();
+        device_b.activate_play(&apple_device_b).unwrap();
+
+        let keys = vec![TriggerKey::NodeEvent {
+            event: NodeEventType::NodeCreated,
+            node_type: "task".to_string(),
+            property_key: None,
+        }];
+
+        let order_a: Vec<String> = device_a
+            .lookup_rules(&keys)
+            .into_iter()
+            .map(|r| r.play_id)
+            .collect();
+        let order_b: Vec<String> = device_b
+            .lookup_rules(&keys)
+            .into_iter()
+            .map(|r| r.play_id)
+            .collect();
+
+        assert_eq!(
+            order_a, order_b,
+            "devices with different install order/clocks must agree on rule order"
+        );
+        assert_eq!(
+            order_a,
+            vec!["pb-apple".to_string(), "pb-zebra".to_string()]
+        );
+    }
+
+    #[test]
+    fn within_play_rule_order_by_rule_index_is_unchanged() {
+        // A single play with three rules on the same trigger must still be
+        // evaluated in array (rule_index) order — unaffected by the switch
+        // to play_id-keyed cross-play ordering.
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_play_node(
+            "pb-multi",
+            json!([
+                {
+                    "name": "third",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                    "conditions": [],
+                    "actions": []
+                },
+                {
+                    "name": "first",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                    "conditions": [],
+                    "actions": []
+                },
+                {
+                    "name": "second",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                    "conditions": [],
+                    "actions": []
+                }
+            ]),
+        );
+        lm.activate_play(&node).unwrap();
+
+        let keys = vec![TriggerKey::NodeEvent {
+            event: NodeEventType::NodeCreated,
+            node_type: "task".to_string(),
+            property_key: None,
+        }];
+        let rules = lm.lookup_rules(&keys);
+
+        // rule_index order (array order), not name order.
+        assert_eq!(
+            rules
+                .iter()
+                .map(|r| r.rule.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["third", "first", "second"]
+        );
+        assert_eq!(
+            rules.iter().map(|r| r.rule_index).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
     }
 
     // -----------------------------------------------------------------------
