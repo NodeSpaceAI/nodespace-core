@@ -143,26 +143,44 @@ pub struct PlaybookExecutionContext {
 /// keeps any `_`-prefixed key at the top level of `properties`, independent
 /// of `node_type`, rather than nesting it under the node's own type
 /// namespace — required here since a play action can create or update a
-/// node of any type. The same `_` prefix also keeps it out of every
-/// flattened read surface (CEL condition bindings, frontend property
-/// lookups): it is internal engine bookkeeping, not a user- or
-/// schema-visible property.
+/// node of any type. The same `_` prefix keeps it out of CEL condition
+/// bindings: `playbook::cel::node_to_cel_value` filters `_`-prefixed keys in
+/// both the type-namespace branch and the top-level branch it takes (the
+/// latter is where this property actually lands, since it is never nested
+/// under a type namespace). It is internal engine bookkeeping, not a user-
+/// or schema-visible property — nothing about the `_` prefix stops an
+/// ordinary `create_node`/`update_node` call from writing or clobbering it,
+/// though (see `persisted_chain_depth`'s doc).
 pub const PLAYBOOK_CHAIN_DEPTH_PROPERTY: &str = "_playbookChainDepth";
 
-/// Read the causal chain depth persisted on a node's raw `properties`, if any.
+/// Read the causal chain depth persisted on a node's raw `properties`, if any,
+/// bounded to `0..=max_depth`.
 ///
-/// Returns `None` when the node was never touched by a play action (the
-/// common case) or when the stored value doesn't fit a `u8` — `MAX_CHAIN_DEPTH`
-/// is 10, so any value a real chain could have produced fits comfortably;
-/// an out-of-range value is treated as absent rather than clamped, so
-/// corrupt data can't be silently coerced into a small, cycle-permitting
-/// depth. Callers fall back to depth 0 on `None`, same as the in-process
-/// `PlaybookExecutionContext` default.
-pub fn persisted_chain_depth(properties: &serde_json::Value) -> Option<u8> {
-    properties
+/// This property lives in a node's ordinary `properties`, which nothing in
+/// `NodeService` restricts a non-engine caller from writing or corrupting —
+/// it is untrusted input from the engine's point of view, not a value this
+/// process necessarily produced itself (a node synced in from another
+/// device, or written directly by any `create_node`/`update_node` caller,
+/// carries whatever value was put there). Returns `None` — treated by
+/// callers the same as a node never touched by a play action, falling back
+/// to depth 0 — when the property is absent, the stored value doesn't fit a
+/// `u8`, or it falls outside `0..=max_depth`. Callers pass `MAX_CHAIN_DEPTH`
+/// as `max_depth`; nothing this engine ever writes (see `stamp_chain_depth`
+/// in `playbook::actions`) produces a value above it, so anything larger is
+/// corrupt or externally-tampered data, not a legitimately deep chain — it
+/// is rejected outright rather than clamped, so it can't be silently
+/// coerced into a valid-looking depth. This is a filter, not a guarantee:
+/// a value written or deleted to fall *within* the valid range is
+/// indistinguishable from a genuine chain at that depth. The engine's
+/// arithmetic on the returned value must still not assume it is in range on
+/// its own — see `playbook::engine::exceeds_max_chain_depth`'s use of
+/// saturating arithmetic for the defense-in-depth half of this.
+pub fn persisted_chain_depth(properties: &serde_json::Value, max_depth: u8) -> Option<u8> {
+    let depth = properties
         .get(PLAYBOOK_CHAIN_DEPTH_PROPERTY)
         .and_then(|v| v.as_u64())
-        .and_then(|depth| u8::try_from(depth).ok())
+        .and_then(|depth| u8::try_from(depth).ok())?;
+    (depth <= max_depth).then_some(depth)
 }
 
 /// Reserved `source_client_id` for writes applied by the local-first sync
@@ -416,33 +434,56 @@ mod tests {
         // literal, not a variable reference, so the constant must be
         // parenthesized to be used as a key here.
         let props = serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 6 });
-        assert_eq!(persisted_chain_depth(&props), Some(6));
+        assert_eq!(persisted_chain_depth(&props, 10), Some(6));
     }
 
     #[test]
     fn persisted_chain_depth_none_when_node_never_touched_by_a_play_action() {
         let props = serde_json::json!({ "task": { "status": "open" } });
-        assert_eq!(persisted_chain_depth(&props), None);
+        assert_eq!(persisted_chain_depth(&props, 10), None);
     }
 
     #[test]
     fn persisted_chain_depth_none_for_empty_properties() {
-        assert_eq!(persisted_chain_depth(&serde_json::json!({})), None);
+        assert_eq!(persisted_chain_depth(&serde_json::json!({}), 10), None);
     }
 
     #[test]
-    fn persisted_chain_depth_none_for_out_of_range_value() {
-        // MAX_CHAIN_DEPTH is 10; a value that can't fit in a u8 is corrupt
-        // data, not a legitimately deep chain — treated as absent rather
-        // than clamped, so it can't silently reset a runaway chain to a
-        // small, cycle-permitting depth.
+    fn persisted_chain_depth_none_for_value_too_large_to_fit_a_u8() {
         let props = serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 9999 });
-        assert_eq!(persisted_chain_depth(&props), None);
+        assert_eq!(persisted_chain_depth(&props, 10), None);
     }
 
     #[test]
     fn persisted_chain_depth_none_for_non_numeric_value() {
         let props = serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): "not-a-number" });
-        assert_eq!(persisted_chain_depth(&props), None);
+        assert_eq!(persisted_chain_depth(&props, 10), None);
+    }
+
+    /// Regression: before this bound check existed, a persisted value of
+    /// exactly `u8::MAX` (255) passed straight through as `Some(255)`. The
+    /// caller's cycle-depth guard then computed `255 + 1`, which overflows a
+    /// `u8` and silently wraps to `0` in a release build (this repo's
+    /// release profile leaves `overflow-checks` at its default of off) --
+    /// `0 > MAX_CHAIN_DEPTH` is false, so the guard would incorrectly pass
+    /// and the chain's depth tracking would be reset. A value that fits in a
+    /// `u8` but exceeds the caller's `max_depth` must now be rejected here,
+    /// not just values that don't fit the type at all.
+    #[test]
+    fn persisted_chain_depth_none_for_255_even_though_it_fits_a_u8() {
+        let props = serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 255 });
+        assert_eq!(persisted_chain_depth(&props, 10), None);
+    }
+
+    #[test]
+    fn persisted_chain_depth_accepts_a_value_exactly_at_max_depth() {
+        let props = serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 10 });
+        assert_eq!(persisted_chain_depth(&props, 10), Some(10));
+    }
+
+    #[test]
+    fn persisted_chain_depth_none_one_past_max_depth() {
+        let props = serde_json::json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 11 });
+        assert_eq!(persisted_chain_depth(&props, 10), None);
     }
 }

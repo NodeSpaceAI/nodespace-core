@@ -1615,7 +1615,7 @@ mod playbook_tests {
     /// the whole chain had stayed on one device.
     #[test]
     fn effective_chain_depth_at_persisted_max_still_trips_cycle_limit_on_next_hop() {
-        use super::super::engine::effective_chain_depth;
+        use super::super::engine::{effective_chain_depth, exceeds_max_chain_depth};
         use crate::db::events::PLAYBOOK_CHAIN_DEPTH_PROPERTY;
         use crate::playbook::logging::MAX_CHAIN_DEPTH;
 
@@ -1628,9 +1628,50 @@ mod playbook_tests {
         let depth = effective_chain_depth(&work_item);
         assert_eq!(depth, MAX_CHAIN_DEPTH);
         assert!(
-            depth + 1 > MAX_CHAIN_DEPTH,
+            exceeds_max_chain_depth(depth),
             "the next hop must trip the cycle limit even though the chain just crossed a device boundary"
         );
+    }
+
+    /// A persisted depth of exactly `u8::MAX` (255) cannot reach
+    /// `effective_chain_depth` as `Some(255)` -- `persisted_chain_depth` now
+    /// rejects anything above `MAX_CHAIN_DEPTH` -- so the device-hop fallback
+    /// lands on depth 0, not 255. Documents that outcome directly, and is a
+    /// regression guard against `persisted_chain_depth`'s bound check ever
+    /// being loosened back to "anything that fits a u8".
+    #[test]
+    fn effective_chain_depth_treats_a_255_persisted_value_as_absent_not_as_255() {
+        use super::super::engine::effective_chain_depth;
+        use crate::db::events::PLAYBOOK_CHAIN_DEPTH_PROPERTY;
+
+        let trigger_node = node_with_properties(
+            "node:corrupt-depth",
+            json!({ (PLAYBOOK_CHAIN_DEPTH_PROPERTY): 255 }),
+        );
+        let work_item = work_item_for(trigger_node, None);
+
+        assert_eq!(effective_chain_depth(&work_item), 0);
+    }
+
+    /// Regression for the overflow this issue's review caught: before
+    /// `exceeds_max_chain_depth` used saturating arithmetic, `depth + 1` at
+    /// `u8::MAX` would overflow and silently wrap to `0` in a release build
+    /// (this repo's release profile leaves `overflow-checks` at its default
+    /// of off), making the cycle-depth guard read "not exceeded" for the
+    /// worst-case input instead of tripping. `persisted_chain_depth`'s own
+    /// bound check (previous test) already keeps 255 from reaching this
+    /// guard via the sync/device-hop path today, but `exceeds_max_chain_depth`
+    /// is deliberately defense-in-depth against `depth` being out of range
+    /// by any means, not solely reliant on that filter -- this test exercises
+    /// the arithmetic itself, independent of how `depth` got there.
+    #[test]
+    fn exceeds_max_chain_depth_does_not_wrap_at_u8_max() {
+        use super::super::engine::exceeds_max_chain_depth;
+        use crate::playbook::logging::MAX_CHAIN_DEPTH;
+
+        assert!(exceeds_max_chain_depth(u8::MAX));
+        assert!(exceeds_max_chain_depth(MAX_CHAIN_DEPTH));
+        assert!(!exceeds_max_chain_depth(MAX_CHAIN_DEPTH - 1));
     }
 
     // -----------------------------------------------------------------------

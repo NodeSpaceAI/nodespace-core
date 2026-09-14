@@ -162,6 +162,11 @@ pub fn json_to_cel(json: &serde_json::Value) -> Value {
 /// - All flattened properties as additional keys
 ///
 /// Namespace prefixes on properties are stripped: `custom:status` → `status`.
+/// Internal `_`-prefixed bookkeeping keys (`_seed`, `_schemaVersion`,
+/// `_playbookChainDepth`, ...) are excluded entirely, whether they appear
+/// nested inside the type namespace or -- their actual stored shape,
+/// per `NodeService::normalize_flat_properties_to_namespace` -- at the top
+/// level alongside it.
 pub fn node_to_cel_value(node: &Node) -> Value {
     let mut map: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
 
@@ -201,7 +206,17 @@ pub fn node_to_cel_value(node: &Node) -> Value {
                         }
                     }
                 }
-            } else {
+            } else if !k.starts_with('_') {
+                // Skip internal bookkeeping fields (`_seed`, `_schemaVersion`,
+                // `_playbookChainDepth`, ...) -- same `_`-prefix convention as
+                // `NodeService::normalize_flat_properties_to_namespace`, which
+                // is what decides these keys stay unnamespaced at the top
+                // level in the first place. The check is on the raw key `k`,
+                // not a colon-stripped bare name, matching
+                // `validate_schema_field_name`'s rule that only a leading `_`
+                // on the WHOLE stored key is internal -- `custom:_internal`
+                // is a legal, visible user field, not bookkeeping.
+                //
                 // Strip colon namespace prefix: "custom:amount" → "amount"
                 let bare_key = k.find(':').map(|i| &k[i + 1..]).unwrap_or(k.as_str());
                 map.insert(key(bare_key), json_to_cel(v));
@@ -647,6 +662,40 @@ mod tests {
             .unwrap()
             .execute(&ctx);
         assert_eq!(result, Ok(Value::Bool(true)));
+    }
+
+    #[test]
+    fn node_to_cel_excludes_internal_bookkeeping_keys_at_the_top_level() {
+        // `_`-prefixed internal-bookkeeping keys (`_playbookChainDepth`,
+        // `_seed`, `_schemaVersion`, ...) are stored at the TOP level of
+        // `properties`, never nested under the node's own type namespace
+        // (`NodeService::normalize_flat_properties_to_namespace` keeps them
+        // there regardless of `node_type`). That is the `else` branch of
+        // `node_to_cel_value`'s property loop -- the one that previously had
+        // no `_`-prefix filter, unlike the type-namespace-unwrap branch.
+        let node = test_node(
+            "task",
+            json!({"status": "open", "_playbookChainDepth": 4, "_seed": {"tier": "starter"}}),
+        );
+
+        let cel = node_to_cel_value(&node);
+        let map = match cel {
+            Value::Map(m) => m,
+            other => panic!("expected Map, got {:?}", other),
+        };
+
+        assert!(
+            map.map.contains_key(&key("status")),
+            "an ordinary property must still be present"
+        );
+        assert!(
+            !map.map.contains_key(&key("_playbookChainDepth")),
+            "internal bookkeeping key must not leak into the CEL map"
+        );
+        assert!(
+            !map.map.contains_key(&key("_seed")),
+            "internal bookkeeping key must not leak into the CEL map"
+        );
     }
 
     // -- Condition evaluation tests --
