@@ -67,19 +67,21 @@ pub enum TriggerKey {
 
 /// A rule reference with ordering information for deterministic execution.
 ///
-/// Rules are sorted by `(play_created_at, rule_index)` — cross-play
-/// by creation time, within-play by array index.
+/// Rules are sorted by `(play_id, rule_index)` — cross-play by the play's
+/// stable, content-derived id (ADR-060 §5), within-play by array index.
+/// Ordering on `play_id` rather than the play's wall-clock `created_at` gives
+/// every device the same evaluation order regardless of clock skew or the
+/// order in which plays were installed/synced.
 #[derive(Debug, Clone)]
 pub struct OrderedRuleRef {
     pub play_id: String,
-    pub play_created_at: DateTime<Utc>,
     pub rule_index: usize,
     pub rule: Arc<ParsedRule>,
 }
 
 /// Equality is by identity (play + rule index), not by ordering fields.
 /// This allows `sort() + dedup()` to work correctly in `lookup_rules()`:
-/// same-identity refs always share the same `created_at`, so sort groups them adjacently.
+/// same-identity refs always share the same ordering key, so sort groups them adjacently.
 impl PartialEq for OrderedRuleRef {
     fn eq(&self, other: &Self) -> bool {
         self.play_id == other.play_id && self.rule_index == other.rule_index
@@ -96,8 +98,8 @@ impl PartialOrd for OrderedRuleRef {
 
 impl Ord for OrderedRuleRef {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.play_created_at
-            .cmp(&other.play_created_at)
+        self.play_id
+            .cmp(&other.play_id)
             .then_with(|| self.rule_index.cmp(&other.rule_index))
     }
 }
@@ -263,7 +265,7 @@ pub type IterationPath = Vec<String>;
 /// (for scheduled rules). Consumed by the single RuleProcessor tokio task.
 #[derive(Debug)]
 pub struct ExecutionWorkItem {
-    /// Matched rules to evaluate, sorted by (play_created_at, rule_index)
+    /// Matched rules to evaluate, sorted by (play_id, rule_index)
     pub rules: Vec<OrderedRuleRef>,
     /// Original event envelope (carries playbook_context for cycle detection depth)
     pub trigger_event: crate::db::events::EventEnvelope,
@@ -477,4 +479,139 @@ pub fn parse_rules_from_properties(
 
     serde_json::from_value(rules_value.clone())
         .map_err(|e| PlayParseError::InvalidJson(e.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: a minimal `OrderedRuleRef` for a given play id / rule index.
+    /// The rule content is irrelevant to ordering/identity, so every ref
+    /// shares one trivial `ParsedRule`.
+    fn make_ref(play_id: &str, rule_index: usize) -> OrderedRuleRef {
+        OrderedRuleRef {
+            play_id: play_id.to_string(),
+            rule_index,
+            rule: Arc::new(ParsedRule {
+                name: format!("{play_id}-{rule_index}"),
+                class: RuleClass::Reactive,
+                trigger: ParsedTrigger::GraphEvent {
+                    on: GraphEventType::NodeCreated,
+                    node_type: "task".to_string(),
+                    property_key: None,
+                },
+                conditions: vec![],
+                actions: vec![],
+            }),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Ord — play_id is the primary, stable key (ADR-060 §5)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn ord_orders_cross_play_by_play_id_not_rule_index() {
+        // "apple" < "zebra" lexically. Give the lexically-earlier play the
+        // *larger* rule_index to prove play_id — not rule_index — is the
+        // primary key: if rule_index leaked into the primary comparison,
+        // this would sort the other way.
+        let apple = make_ref("apple", 5);
+        let zebra = make_ref("zebra", 0);
+
+        assert!(apple < zebra, "play_id must be the primary sort key");
+
+        let mut rules = [zebra.clone(), apple.clone()];
+        rules.sort();
+        assert_eq!(
+            rules.iter().map(|r| r.play_id.as_str()).collect::<Vec<_>>(),
+            vec!["apple", "zebra"]
+        );
+    }
+
+    #[test]
+    fn ord_orders_within_play_by_rule_index() {
+        // Existing single-play behavior must be unchanged: same play_id,
+        // ties broken by rule_index ascending.
+        let r0 = make_ref("pb-1", 0);
+        let r1 = make_ref("pb-1", 1);
+        let r2 = make_ref("pb-1", 2);
+
+        let mut rules = [r2.clone(), r0.clone(), r1.clone()];
+        rules.sort();
+        assert_eq!(
+            rules.iter().map(|r| r.rule_index).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // PartialEq/Eq — identity is (play_id, rule_index), independent of Ord
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn eq_is_identity_only_ignoring_rule_content() {
+        let a = make_ref("pb-1", 0);
+        // Same identity (play_id, rule_index) but a distinct `Arc<ParsedRule>`
+        // with different content — equality must still hold, since dedup
+        // relies on identity, not rule content.
+        let b = OrderedRuleRef {
+            play_id: "pb-1".to_string(),
+            rule_index: 0,
+            rule: Arc::new(ParsedRule {
+                name: "totally-different-rule".to_string(),
+                class: RuleClass::Invariant,
+                trigger: ParsedTrigger::Scheduled {
+                    cron: "0 * * * * * *".to_string(),
+                    node_type: "task".to_string(),
+                },
+                conditions: vec![],
+                actions: vec![],
+            }),
+        };
+
+        assert_eq!(a, b);
+
+        let c = make_ref("pb-1", 1);
+        let d = make_ref("pb-2", 0);
+        assert_ne!(a, c, "different rule_index must not be equal");
+        assert_ne!(a, d, "different play_id must not be equal");
+    }
+
+    #[test]
+    fn sort_dedup_collapses_duplicate_identity_regardless_of_order() {
+        // `lookup_rules` merges matches from multiple TriggerKeys and relies
+        // on `.sort().dedup()` to collapse duplicate (play_id, rule_index)
+        // entries — e.g. the same rule matched via both an exact and a
+        // wildcard property-key lookup. Verify that behavior still holds
+        // with the play_id-keyed Ord: duplicates collapse regardless of
+        // insertion order, and distinct identities survive.
+        let mut rules = vec![
+            make_ref("zebra", 0),
+            make_ref("apple", 1),
+            make_ref("apple", 0),
+            make_ref("apple", 0), // duplicate of the entry above
+            make_ref("zebra", 0), // duplicate
+        ];
+        rules.sort();
+        rules.dedup();
+
+        assert_eq!(rules.len(), 3, "duplicates must collapse to one each");
+        let identities: Vec<(String, usize)> = rules
+            .iter()
+            .map(|r| (r.play_id.clone(), r.rule_index))
+            .collect();
+        assert_eq!(
+            identities,
+            vec![
+                ("apple".to_string(), 0),
+                ("apple".to_string(), 1),
+                ("zebra".to_string(), 0),
+            ]
+        );
+    }
 }

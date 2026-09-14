@@ -205,7 +205,6 @@ mod tests {
     use crate::playbook::types::{
         ActionType, CronEntry, OrderedRuleRef, ParsedAction, ParsedRule, ParsedTrigger, RuleClass,
     };
-    use chrono::Utc;
     use std::sync::Arc;
 
     /// Helper: create a CronEntry with the given expression, node_type, and a single rule.
@@ -230,7 +229,6 @@ mod tests {
             node_type: node_type.to_string(),
             rules: vec![OrderedRuleRef {
                 play_id: "play-1".to_string(),
-                play_created_at: Utc::now(),
                 rule_index: 0,
                 rule,
             }],
@@ -327,13 +325,11 @@ mod tests {
             rules: vec![
                 OrderedRuleRef {
                     play_id: "pb-1".to_string(),
-                    play_created_at: Utc::now(),
                     rule_index: 0,
                     rule: rule_a,
                 },
                 OrderedRuleRef {
                     play_id: "pb-2".to_string(),
-                    play_created_at: Utc::now(),
                     rule_index: 0,
                     rule: rule_b,
                 },
