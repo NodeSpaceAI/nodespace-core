@@ -25,11 +25,16 @@
 //! ambient-umask exposure window. There is currently no peer-credential check
 //! (`SO_PEERCRED` / `LOCAL_PEERCRED`) backstopping the file permission — every
 //! connection accepted by the listener is handed straight to the tonic
-//! server. On Windows the Named Pipe below does **not** yet meet this trust
-//! model: it is created with the default DACL and `first_pipe_instance(false)`,
-//! so it is reachable by other local principals and squattable (tracked
-//! separately; see ADR-052 for the full security review and remediation
-//! plan). Do not assume a peer-identity check exists anywhere in this file.
+//! server. On Windows, [`create_owner_only_pipe`] enforces the equivalent
+//! boundary: the Named Pipe is created with a DACL restricted to the current
+//! user's SID (see its doc comment for the exact SDDL and how it was
+//! verified on real hardware), and the instance that claims the pipe name
+//! uses `first_pipe_instance(true)` so startup fails loudly rather than
+//! silently serving on a name another local process pre-created/squatted.
+//! There is no equivalent of a peer-credential check on Windows either —
+//! every connection accepted by the listener is handed straight to the
+//! tonic server. Do not assume a peer-identity check exists anywhere in this
+//! file.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -197,6 +202,199 @@ fn pipe_name() -> String {
         return p;
     }
     nodespace_proto::socket::DAEMON_PIPE_NAME.to_string()
+}
+
+/// Owns a self-relative `SECURITY_DESCRIPTOR` allocated by
+/// `ConvertStringSecurityDescriptorToSecurityDescriptorW`, plus the
+/// `SECURITY_ATTRIBUTES` struct pointing at it. The descriptor is freed
+/// (`LocalFree`) on drop, per that function's documented contract; the
+/// pointer returned by [`Self::as_mut_ptr`] is only valid while `self` is
+/// alive.
+#[cfg(windows)]
+struct OwnerOnlySecurityAttributes {
+    attrs: windows_sys::Win32::Security::SECURITY_ATTRIBUTES,
+    security_descriptor: *mut std::ffi::c_void,
+}
+
+#[cfg(windows)]
+impl OwnerOnlySecurityAttributes {
+    fn as_mut_ptr(&mut self) -> *mut std::ffi::c_void {
+        &mut self.attrs as *mut windows_sys::Win32::Security::SECURITY_ATTRIBUTES
+            as *mut std::ffi::c_void
+    }
+}
+
+#[cfg(windows)]
+impl Drop for OwnerOnlySecurityAttributes {
+    fn drop(&mut self) {
+        if !self.security_descriptor.is_null() {
+            // Safety: `security_descriptor` was allocated by
+            // `ConvertStringSecurityDescriptorToSecurityDescriptorW`, which is
+            // documented to require freeing via `LocalFree`.
+            unsafe {
+                windows_sys::Win32::Foundation::LocalFree(
+                    self.security_descriptor as windows_sys::Win32::Foundation::HLOCAL,
+                );
+            }
+        }
+    }
+}
+
+/// Reads a NUL-terminated wide string starting at `ptr`.
+///
+/// # Safety
+/// `ptr` must point at a valid, NUL-terminated UTF-16 string that stays valid
+/// for the duration of this call.
+#[cfg(windows)]
+unsafe fn pwstr_to_string(ptr: *const u16) -> String {
+    let mut len = 0usize;
+    while *ptr.add(len) != 0 {
+        len += 1;
+    }
+    String::from_utf16_lossy(std::slice::from_raw_parts(ptr, len))
+}
+
+/// The current process token's user SID, formatted as an SDDL SID string
+/// (`S-1-5-21-...`) for embedding directly into an SDDL security descriptor
+/// string.
+#[cfg(windows)]
+fn current_user_sid_string() -> std::io::Result<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let result = (|| {
+            let mut needed: u32 = 0;
+            // First call is expected to fail with ERROR_INSUFFICIENT_BUFFER
+            // and report the buffer size actually needed in `needed`.
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+            if needed == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let mut buf: Vec<u8> = vec![0u8; needed as usize];
+            if GetTokenInformation(
+                token,
+                TokenUser,
+                buf.as_mut_ptr() as *mut std::ffi::c_void,
+                needed,
+                &mut needed,
+            ) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Safety: `buf` was just filled by `GetTokenInformation` for
+            // `TokenUser`, which documents its output as a `TOKEN_USER`.
+            let token_user = &*(buf.as_ptr() as *const TOKEN_USER);
+
+            let mut sid_str_ptr: *mut u16 = std::ptr::null_mut();
+            if ConvertSidToStringSidW(token_user.User.Sid, &mut sid_str_ptr) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let sid_string = pwstr_to_string(sid_str_ptr);
+            LocalFree(sid_str_ptr as HLOCAL);
+            Ok(sid_string)
+        })();
+        CloseHandle(token);
+        result
+    }
+}
+
+/// Builds a `SECURITY_ATTRIBUTES`/DACL restricting access to exactly the
+/// current user -- the Windows equivalent of the Unix `0o600` guarantee
+/// [`bind_uds_owner_only`] provides.
+///
+/// Built via SDDL rather than hand-rolled ACL/ACE byte buffers:
+/// `O:{sid}D:P(A;;GA;;;{sid})` sets the security descriptor's owner to the
+/// current user's real SID and grants that same SID -- and only that SID --
+/// `GENERIC_ALL` on the pipe; `P` marks the DACL protected so nothing can
+/// inherit extra access onto it later. No ACE is present for any other
+/// principal, so `Everyone`/`Authenticated Users`/every other local
+/// principal is implicitly denied: the same "no ACE, no access" default
+/// Windows applies to any securable object.
+///
+/// Verified on real Windows hardware against a live pipe handle: the
+/// security descriptor read back via `GetSecurityInfo` has the current
+/// user as owner and exactly one DACL ACE (granting that same user
+/// `FILE_ALL_ACCESS` -- the object-type-specific form Windows resolves
+/// `GENERIC_ALL` to for a file/pipe object), with no ACE for any other
+/// principal.
+#[cfg(windows)]
+fn owner_only_security_attributes() -> std::io::Result<OwnerOnlySecurityAttributes> {
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+
+    let sid = current_user_sid_string()?;
+    let sddl: Vec<u16> = format!("O:{sid}D:P(A;;GA;;;{sid})\0")
+        .encode_utf16()
+        .collect();
+
+    let mut security_descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // Safety: `sddl` is a NUL-terminated wide string alive for this call;
+    // `security_descriptor` is an out-param this function initializes.
+    let ok = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut security_descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(OwnerOnlySecurityAttributes {
+        attrs: SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: security_descriptor,
+            bInheritHandle: 0,
+        },
+        security_descriptor,
+    })
+}
+
+/// Creates one Named Pipe server instance restricted to the current user
+/// (ADR-052 -- the Windows equivalent of [`bind_uds_owner_only`]'s `0o600`).
+///
+/// `first_instance` must be `true` exactly once per pipe name: the call that
+/// claims it. `first_pipe_instance(true)` sets `FILE_FLAG_FIRST_PIPE_INSTANCE`,
+/// which makes pipe creation fail loudly with `ERROR_ACCESS_DENIED` if any
+/// instance of the name already exists -- including one pre-created by a
+/// malicious local process squatting the name before this daemon starts
+/// (verified on real Windows hardware: pre-creating the name and then
+/// retrying with `first_instance: true` fails with exactly that error).
+/// Every later instance, created in the accept loop to serve the next client
+/// after the current one disconnects, must pass `false`: by then the name is
+/// legitimately owned by this daemon, and `FIRST_PIPE_INSTANCE` would
+/// spuriously fail against the daemon's own earlier instance rather than an
+/// intruder's.
+#[cfg(windows)]
+fn create_owner_only_pipe(
+    name: &str,
+    first_instance: bool,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeServer> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let mut sa = owner_only_security_attributes()?;
+    // Safety: `sa.as_mut_ptr()` points at a fully-initialized
+    // `SECURITY_ATTRIBUTES` whose `lpSecurityDescriptor` is a valid
+    // self-relative security descriptor; `sa` is not dropped (so the
+    // descriptor stays valid) until after this call returns -- Windows
+    // duplicates the descriptor into the kernel object during the call and
+    // does not need it to outlive it.
+    unsafe {
+        ServerOptions::new()
+            .first_pipe_instance(first_instance)
+            .create_with_security_attributes_raw(name, sa.as_mut_ptr())
+    }
 }
 
 /// `tao`'s event loop must own the main thread on macOS (NSApplication is
@@ -988,7 +1186,6 @@ impl tokio::io::AsyncWrite for NamedPipeConn {
 /// Headless server loop for Windows — uses a Named Pipe instead of UDS.
 #[cfg(windows)]
 async fn serve_headless() -> Result<()> {
-    use tokio::net::windows::named_pipe::ServerOptions;
     use tokio_util::sync::CancellationToken;
 
     let name = pipe_name();
@@ -1006,7 +1203,18 @@ async fn serve_headless() -> Result<()> {
     let shared_model = shared.context.model.clone();
     let shutdown_manager = manager.clone();
 
-    tracing::info!(pipe = %name, "gRPC server listening (Named Pipe)");
+    // Claim the pipe name exclusively, with an owner-only DACL, before doing
+    // anything else gRPC-related (ADR-052): fails loudly right here, at
+    // startup, if another local process already owns or squatted this name,
+    // instead of silently serving on a pipe reachable by every local
+    // principal.
+    let first_instance = create_owner_only_pipe(&name, true).with_context(|| {
+        format!(
+            "Failed to claim Named Pipe {name} (already in use, or squatted by another process?)"
+        )
+    })?;
+
+    tracing::info!(pipe = %name, "gRPC server listening (Named Pipe, owner-only DACL)");
 
     // CancellationToken is cloned into the acceptor stream so that
     // `server.connect().await` races against shutdown rather than blocking
@@ -1016,22 +1224,25 @@ async fn serve_headless() -> Result<()> {
     let incoming = {
         let name = name.clone();
         async_stream::stream! {
+            // The first instance was already claimed above (with
+            // `first_pipe_instance(true)`, so pipe-squatting fails loudly at
+            // startup rather than here). Every later instance -- serving the
+            // next client after the current one disconnects -- reuses the
+            // name this daemon already owns, so it must pass `false`:
+            // `first_pipe_instance(true)` only ever succeeds for the very
+            // first instance of a name.
+            let mut next = Some(first_instance);
             loop {
-                // .first_pipe_instance(false): multiple clients connect serially
-                // to the same pipe name — each iteration creates a fresh instance.
-                // SECURITY GAP (ADR-052): this pipe is created with the default
-                // DACL and does not restrict access to the owning user,
-                // and `first_pipe_instance(false)` permits another local process to
-                // pre-create/squat the pipe name. Unlike the Unix socket path (see
-                // `bind_uds_owner_only`), the "OS permission is the authorization
-                // boundary" trust model does NOT hold here until both are fixed.
-                let server = match ServerOptions::new().first_pipe_instance(false).create(&name) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to create Named Pipe server instance");
-                        yield Err(e);
-                        return;
-                    }
+                let server = match next.take() {
+                    Some(server) => server,
+                    None => match create_owner_only_pipe(&name, false) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to create Named Pipe server instance");
+                            yield Err(e);
+                            return;
+                        }
+                    },
                 };
                 tokio::select! {
                     res = server.connect() => {
@@ -1072,7 +1283,6 @@ async fn serve_headless() -> Result<()> {
 /// Tray-driven server loop for Windows — uses a Named Pipe instead of UDS.
 #[cfg(windows)]
 async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
-    use tokio::net::windows::named_pipe::ServerOptions;
     use tokio_util::sync::CancellationToken;
 
     let name = pipe_name();
@@ -1116,23 +1326,39 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         },
     );
 
-    tracing::info!(pipe = %name, "gRPC server listening (Named Pipe)");
+    // Claim the pipe name exclusively, with an owner-only DACL, before doing
+    // anything else gRPC-related (ADR-052): fails loudly right here, at
+    // startup, if another local process already owns or squatted this name.
+    // See the doc comment on `create_owner_only_pipe` for the full guarantee
+    // and how it was verified.
+    let first_instance = create_owner_only_pipe(&name, true).with_context(|| {
+        format!(
+            "Failed to claim Named Pipe {name} (already in use, or squatted by another process?)"
+        )
+    })?;
+
+    tracing::info!(pipe = %name, "gRPC server listening (Named Pipe, owner-only DACL)");
 
     let cancel = CancellationToken::new();
     let cancel_stream = cancel.clone();
     let incoming = {
         let name = name.clone();
         async_stream::stream! {
+            // See the equivalent comment in `serve_headless`: the first
+            // instance is already claimed above; every later instance in
+            // this loop must pass `false`.
+            let mut next = Some(first_instance);
             loop {
-                // See the security-gap note on the equivalent call in `serve_headless`
-                // above (ADR-052): this pipe is not yet owner-only.
-                let server = match ServerOptions::new().first_pipe_instance(false).create(&name) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::error!(error = %e, "Failed to create Named Pipe server instance");
-                        yield Err(e);
-                        return;
-                    }
+                let server = match next.take() {
+                    Some(server) => server,
+                    None => match create_owner_only_pipe(&name, false) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::error!(error = %e, "Failed to create Named Pipe server instance");
+                            yield Err(e);
+                            return;
+                        }
+                    },
                 };
                 tokio::select! {
                     res = server.connect() => {
@@ -1349,6 +1575,168 @@ mod uds_permission_tests {
             .expect("victim dir must remain traversable/writable after a concurrent bind");
 
         drop(listener);
+    }
+}
+
+#[cfg(all(test, windows))]
+mod pipe_permission_tests {
+    use super::{create_owner_only_pipe, current_user_sid_string, owner_only_security_attributes};
+
+    /// A pipe name unique to this test run, so concurrently running tests in
+    /// this same `cargo test` process (the default) never collide on a name.
+    fn unique_pipe_name(tag: &str) -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        format!(
+            r"\\.\pipe\nodespace-daemon-test-{tag}-{}-{n}",
+            std::process::id()
+        )
+    }
+
+    #[test]
+    fn current_user_sid_string_returns_a_real_sid() {
+        let sid = current_user_sid_string().expect("must be able to read the current user's SID");
+        assert!(
+            sid.starts_with("S-1-"),
+            "expected an SDDL SID string (S-1-...), got: {sid}"
+        );
+    }
+
+    #[test]
+    fn owner_only_security_attributes_builds_a_non_null_descriptor() {
+        let mut sa = owner_only_security_attributes().expect("must build owner-only attrs");
+        assert!(
+            !sa.as_mut_ptr().is_null(),
+            "SECURITY_ATTRIBUTES pointer must be non-null"
+        );
+    }
+
+    // The instance that claims a pipe name must succeed with
+    // `first_pipe_instance(true)` -- this is the "no squatter got here first"
+    // happy path (ADR-052).
+    #[tokio::test]
+    async fn create_owner_only_pipe_claims_an_unused_name() {
+        let name = unique_pipe_name("claim");
+        let server = create_owner_only_pipe(&name, true);
+        assert!(
+            server.is_ok(),
+            "claiming a never-before-used pipe name must succeed: {:?}",
+            server.err()
+        );
+    }
+
+    // The squatting scenario from the issue: something already owns the pipe
+    // name (a malicious process, or -- as tested here -- this daemon's own
+    // earlier instance) when a `first_pipe_instance(true)` claim is
+    // attempted. That claim must fail loudly rather than silently succeed as
+    // a second instance (ADR-052).
+    #[tokio::test]
+    async fn create_owner_only_pipe_first_instance_true_fails_against_an_already_owned_name() {
+        let name = unique_pipe_name("squat");
+        let _first = create_owner_only_pipe(&name, true).expect("first claim must succeed");
+
+        let second_claim = create_owner_only_pipe(&name, true);
+        assert!(
+            second_claim.is_err(),
+            "a second first_pipe_instance(true) claim against an already-owned \
+             name must fail, not silently succeed"
+        );
+    }
+
+    // Once this daemon has legitimately claimed the name, serving the next
+    // client (the normal serial-reconnect flow) must keep working with
+    // `first_pipe_instance(false)`.
+    #[tokio::test]
+    async fn create_owner_only_pipe_first_instance_false_succeeds_after_the_name_is_claimed() {
+        let name = unique_pipe_name("reconnect");
+        let _first = create_owner_only_pipe(&name, true).expect("first claim must succeed");
+
+        let second_instance = create_owner_only_pipe(&name, false);
+        assert!(
+            second_instance.is_ok(),
+            "a subsequent instance for the next client must succeed once the \
+             name is legitimately owned: {:?}",
+            second_instance.err()
+        );
+    }
+
+    // Not just "it compiled and didn't error" -- read the security descriptor
+    // actually attached to a live pipe handle back via the same Win32 API
+    // `icacls`/`Get-Acl` are built on, and confirm it matches the intended
+    // owner-only DACL: the current user as owner, and exactly one DACL ACE
+    // (granting that same user access), with no ACE for `Everyone`,
+    // `Authenticated Users`, or any other principal.
+    #[tokio::test]
+    async fn owner_only_dacl_is_actually_attached_to_the_live_pipe_handle() {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::{LocalFree, HANDLE, HLOCAL};
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+            SE_KERNEL_OBJECT,
+        };
+        use windows_sys::Win32::Security::{
+            DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        };
+
+        let sid = current_user_sid_string().expect("must read current user SID");
+        let name = unique_pipe_name("readback");
+        let server = create_owner_only_pipe(&name, true).expect("claim must succeed");
+
+        let sddl = unsafe {
+            let handle = server.as_raw_handle() as HANDLE;
+            let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let status = GetSecurityInfo(
+                handle,
+                SE_KERNEL_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut sd,
+            );
+            assert_eq!(status, 0, "GetSecurityInfo must succeed on the live handle");
+
+            let mut sddl_ptr: *mut u16 = std::ptr::null_mut();
+            let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                sd,
+                SDDL_REVISION_1,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut sddl_ptr,
+                std::ptr::null_mut(),
+            );
+            assert_ne!(ok, 0, "converting the live descriptor to SDDL must succeed");
+            let rendered = super::pwstr_to_string(sddl_ptr);
+            if !sddl_ptr.is_null() {
+                LocalFree(sddl_ptr as HLOCAL);
+            }
+            LocalFree(sd as HLOCAL);
+            rendered
+        };
+
+        assert!(
+            sddl.starts_with(&format!("O:{sid}")),
+            "owner must be the current user, got: {sddl}"
+        );
+        // Windows resolves the GENERIC_ALL we asked for into the pipe (file)
+        // object type's specific equivalent, FILE_ALL_ACCESS, when it
+        // constructs the descriptor -- accept either spelling.
+        assert!(
+            sddl.contains(&format!("(A;;GA;;;{sid})"))
+                || sddl.contains(&format!("(A;;FA;;;{sid})")),
+            "DACL must grant the current user's SID access, got: {sddl}"
+        );
+        assert_eq!(
+            sddl.matches("(A;").count(),
+            1,
+            "DACL must contain exactly one ACE (ours), got: {sddl}"
+        );
+        assert!(
+            !sddl.contains(";;;WD)") && !sddl.contains(";;;AU)") && !sddl.contains(";;;BU)"),
+            "DACL must not grant Everyone/Authenticated Users/Builtin Users \
+             access, got: {sddl}"
+        );
     }
 }
 

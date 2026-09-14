@@ -3580,6 +3580,7 @@ dependencies = [
  "tray-icon 0.21.3",
  "ulid",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
