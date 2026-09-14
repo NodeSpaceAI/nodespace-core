@@ -44,6 +44,18 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 dirs = "5.0"
 libc = "0.2"
 
+# Named Pipe owner-only DACL construction (ADR-052 -- the Windows equivalent
+# of `bind_uds_owner_only`'s 0o600 on Unix). Version pinned to match the one
+# `tokio` itself already resolves to (see `tokio`'s own Cargo.toml), so this
+# doesn't pull in a second copy.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
 [features]
 # Build the Pro edition binary. Compile with `--features pro` to set edition() to "pro".
 # Without this flag the binary reports edition "community" and the Pro guard in
