@@ -13,6 +13,9 @@
 //!      - Windows: spawn the daemon process directly (stdout/stderr routed to
 //!        ~/.nodespace/logs/nodespaced.log and nodespaced-error.log, mirroring
 //!        launchd/systemd on the other two platforms) and write an HKCU autorun key.
+//!        `autorun_windows_present`/`remove_autorun_windows` surface a way to
+//!        check and remove that key again — reachable from Settings via
+//!        `commands::settings::windows_autorun_present`/`remove_windows_autorun`.
 //!   4. Wait for the IPC endpoint to appear (UDS on Unix, Named Pipe on Windows).
 //!
 //! On subsequent launches:
@@ -1445,6 +1448,70 @@ fn register_autorun_windows(daemon_bin: &Path) {
         Err(e) => {
             tracing::warn!("Failed to run reg.exe for autorun: {}", e);
         }
+    }
+}
+
+/// Whether the HKCU autorun entry `register_autorun_windows` writes is
+/// currently present. Backs the Settings-UI check that decides whether to
+/// surface the "remove startup entry" action at all — there is nothing to
+/// clean up on a fresh install that hasn't launched the daemon yet, or after
+/// a previous removal.
+///
+/// Uses `reg query`'s exit code rather than parsing stdout: `reg.exe` exits
+/// non-zero when the value is absent and zero when it's found, which is
+/// sufficient here since only presence/absence is needed, not the value's
+/// contents.
+#[cfg(windows)]
+pub(crate) fn autorun_windows_present() -> bool {
+    std::process::Command::new("reg")
+        .args([
+            "query",
+            &format!("HKCU\\{}", WINDOWS_AUTORUN_KEY),
+            "/v",
+            WINDOWS_AUTORUN_VALUE,
+        ])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false)
+}
+
+/// Remove the HKCU autorun entry `register_autorun_windows` writes, via the
+/// same `reg.exe` mechanism the write side uses (no registry crate
+/// dependency). Surfaces the uninstall/cleanup path that entry previously had
+/// no way to reach — see `commands::settings::remove_windows_autorun`, the
+/// Tauri command that calls this from the Settings UI.
+///
+/// Returns `Ok(true)` if an entry was found and removed, `Ok(false)` if there
+/// was nothing to remove (checked via `autorun_windows_present` first, since
+/// `reg delete` itself exits non-zero for a missing value the same way it
+/// does for a real failure — checking first lets the two be told apart
+/// without scraping reg.exe's stderr text). Errors only on an actual removal
+/// failure.
+#[cfg(windows)]
+pub(crate) fn remove_autorun_windows() -> Result<bool> {
+    if !autorun_windows_present() {
+        return Ok(false);
+    }
+
+    let out = std::process::Command::new("reg")
+        .args([
+            "delete",
+            &format!("HKCU\\{}", WINDOWS_AUTORUN_KEY),
+            "/v",
+            WINDOWS_AUTORUN_VALUE,
+            "/f",
+        ])
+        .output()
+        .context("Failed to run reg.exe to remove autorun entry")?;
+
+    if out.status.success() {
+        tracing::info!("nodespaced removed from HKCU autorun");
+        Ok(true)
+    } else {
+        anyhow::bail!(
+            "reg.exe delete failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 }
 

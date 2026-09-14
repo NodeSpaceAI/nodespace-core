@@ -273,3 +273,49 @@ pub async fn set_openai_compat_configs(
         .map(OpenAiCompatConfigResult::from)
         .collect())
 }
+
+// ---------------------------------------------------------------------------
+// Windows daemon autorun (HKCU Run key) maintenance
+// ---------------------------------------------------------------------------
+//
+// `daemon_setup::register_autorun_windows` writes an HKCU `Run` entry so the
+// daemon restarts on next login — the only platform where the app does this
+// itself rather than handing the daemon to a service manager (launchd on
+// macOS, systemd on Linux both have their own uninstall path already). That
+// write had no corresponding way for a user to discover or remove it; these
+// two commands surface one from the Settings → About screen. Both are always
+// registered (`generate_handler!` needs the item to exist unconditionally)
+// but only do anything on Windows — macOS/Linux report "nothing to do"
+// rather than the command being absent, so the frontend doesn't need its own
+// platform check.
+
+/// Whether the daemon's Windows autorun entry is currently registered.
+/// Always `false` on macOS/Linux. The Settings UI calls this to decide
+/// whether to show the "remove startup entry" action at all.
+#[tauri::command]
+pub fn windows_autorun_present() -> bool {
+    #[cfg(windows)]
+    {
+        crate::daemon_setup::autorun_windows_present()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Remove the daemon's Windows autorun entry. Returns `Ok(true)` if an entry
+/// was found and removed, `Ok(false)` if there was nothing to remove
+/// (including every non-Windows platform). Errors only on an actual removal
+/// failure.
+#[tauri::command]
+pub fn remove_windows_autorun() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        crate::daemon_setup::remove_autorun_windows().map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+}

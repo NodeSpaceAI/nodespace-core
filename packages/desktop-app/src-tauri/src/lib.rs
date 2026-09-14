@@ -771,6 +771,8 @@ pub fn run() {
             commands::settings::update_capture_settings,
             commands::settings::get_openai_compat_configs,
             commands::settings::set_openai_compat_configs,
+            commands::settings::windows_autorun_present,
+            commands::settings::remove_windows_autorun,
             // Local database registry commands (ADR-053)
             commands::database::get_daemon_version,
             commands::database::list_databases,
