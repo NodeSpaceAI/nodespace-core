@@ -106,7 +106,7 @@ impl SqliteStore {
     /// 'active'` collections, so a collision against an archived collection
     /// is never detected or journaled by any caller — archiving a collection
     /// frees up its name.
-    async fn mark_collection_name_collision(&self, new_id: &str, existing_id: &str) {
+    pub(crate) async fn mark_collection_name_collision(&self, new_id: &str, existing_id: &str) {
         use crate::models::conflict::ConflictKind;
 
         let mut node_ids = vec![new_id.to_string(), existing_id.to_string()];
@@ -350,6 +350,31 @@ impl SqliteStore {
             .context("Failed to insert parent-child relationship")?;
 
         Ok(new_order)
+    }
+
+    /// `_in_tx` twin of [`Self::get_node`] (ADR-069 §1a). Reads via `tx.conn()`
+    /// rather than `self.read()`'s pooled reader connection, so it sees this
+    /// transaction's own uncommitted writes (e.g. a node inserted earlier in
+    /// the same transaction via `create_node_in_tx`) — the pooled reader
+    /// cannot see those until commit. Needed by invariant-rule action
+    /// execution (ADR-060 §1): an invariant rule's action very often targets
+    /// the very node whose creation triggered it, which exists only inside
+    /// this transaction until commit.
+    pub(crate) async fn get_node_in_tx(tx: &Tx<'_>, id: &str) -> Result<Option<Node>> {
+        let mut rows = tx
+            .conn()
+            .query(
+                "SELECT * FROM node WHERE id = ?1 LIMIT 1",
+                libsql::params![id.to_string()],
+            )
+            .await
+            .context("Failed to query node")?;
+
+        if let Some(row) = rows.next().await? {
+            Ok(Some(Self::row_to_node(&row)?))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {
@@ -2102,6 +2127,50 @@ impl SqliteStore {
         let mut rows = self
             .read()
             .await?
+            .query(
+                r#"WITH RECURSIVE descendants(node_id, depth) AS (
+                SELECT in_node, 1 FROM relationship
+                  WHERE out_node = ?1 AND relationship_type = 'member_of'
+                UNION ALL
+                SELECT r.in_node, d.depth + 1 FROM relationship r
+                JOIN descendants d ON r.out_node = d.node_id
+                WHERE r.relationship_type = 'member_of' AND d.depth < 100
+            )
+            SELECT node_id FROM descendants WHERE node_id = ?2 LIMIT 1"#,
+                libsql::params![source_id.to_string(), target_id.to_string()],
+            )
+            .await
+            .context("Failed to check for member_of cycle")?;
+        if rows.next().await?.is_some() {
+            return Err(anyhow::anyhow!(
+                "collection_cycle: '{}' is already a descendant of '{}', so making it the parent would create a cycle",
+                target_id,
+                source_id
+            ));
+        }
+        Ok(())
+    }
+
+    /// `_in_tx` twin of [`Self::validate_no_member_of_cycle`] (ADR-069 §1a).
+    /// Needed by invariant-rule `add_relationship` actions (ADR-060 §1): a
+    /// `member_of` edge added earlier in the SAME transaction — by an
+    /// earlier action in this rule, or by a different invariant rule matched
+    /// by the same trigger — is invisible to the pooled-reader version this
+    /// mirrors, so a two-edge cycle formed entirely within one transaction
+    /// (`A member_of B` then `B member_of A`) would go undetected by it.
+    pub(crate) async fn validate_no_member_of_cycle_in_tx(
+        tx: &Tx<'_>,
+        source_id: &str,
+        target_id: &str,
+    ) -> Result<()> {
+        if source_id == target_id {
+            return Err(anyhow::anyhow!(
+                "collection_cycle: '{}' cannot be a member of itself",
+                source_id
+            ));
+        }
+        let mut rows = tx
+            .conn()
             .query(
                 r#"WITH RECURSIVE descendants(node_id, depth) AS (
                 SELECT in_node, 1 FROM relationship

@@ -298,6 +298,23 @@ pub async fn build_database_services(
     // handle are needed now.
     let playbook_engine = Arc::new(PlaybookEngine::new(node_service.clone()));
 
+    // Give this database's NodeService write path a handle onto the same
+    // live TriggerIndex the engine will build (ADR-060 §1), so
+    // `create_node`/`create_node_in_tx` can look up and dispatch
+    // `RuleClass::Invariant` rules synchronously, pre-commit.
+    //
+    // Correct regardless of exactly where this call lands relative to
+    // `seed_agent_nodes` above (which DOES already write through
+    // `node_service` — prompt/skill/tool template nodes): dispatch reads the
+    // TriggerIndex `playbook_engine.lifecycle()` exposes, and that index is
+    // empty until `PlaybookEngine::start()` (`load_active_plays`, spawned
+    // further below, after every other database service is built) runs —
+    // so no write anywhere in this function, seeding included, can match an
+    // invariant rule yet. Injecting the handle here rather than there is
+    // just convenience (the engine object already exists); it carries no
+    // ordering requirement of its own.
+    node_service.set_playbook_lifecycle(playbook_engine.lifecycle().clone());
+
     let node_service_grpc = NodeServiceImpl::new(
         node_service.clone(),
         embedding_state.clone(),

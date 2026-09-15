@@ -95,6 +95,25 @@ pub enum PlayValidationError {
         trigger: String,
         location: String,
     },
+    /// An invariant rule's trigger is not a `node_created` graph event.
+    /// Synchronous pre-commit dispatch (ADR-060 §1) is wired only into the
+    /// node-creation write path — there is no equivalent open transaction to
+    /// join for a `property_changed`/`relationship_added`/
+    /// `relationship_removed` mutation, or for a scheduled scan. Declaring a
+    /// rule `invariant` against one of those triggers would silently never
+    /// execute rather than deliver the fail-closed guarantee its class name
+    /// promises, so it is rejected here instead.
+    InvariantUnsupportedTrigger { trigger: String, location: String },
+    /// An invariant `add_relationship` action targets `member_of` or
+    /// `has_child` without an explicit `order` in `edge_data`. Both types
+    /// normally get an atomically-computed order (read current max sibling,
+    /// then write) via `add_to_collection`/`append_child_edge`; that
+    /// read-then-write has no transaction-scoped twin, so an invariant
+    /// action needs a caller-supplied order instead of relying on it.
+    InvariantRelationshipNeedsExplicitOrder {
+        relationship_type: String,
+        location: String,
+    },
 }
 
 impl std::fmt::Display for PlayValidationError {
@@ -180,6 +199,24 @@ impl std::fmt::Display for PlayValidationError {
                 "invariant rule action '{}' at {} would re-satisfy its own '{}' trigger \
                  (invariant rules must be non-chaining, depth 1)",
                 action, location, trigger
+            ),
+            Self::InvariantUnsupportedTrigger { trigger, location } => write!(
+                f,
+                "invariant rule at {} has trigger '{}', which synchronous pre-commit dispatch \
+                 does not support (only a node_created graph-event trigger runs inside a \
+                 transaction today) — declare this rule reactive, or change its trigger to \
+                 node_created",
+                location, trigger
+            ),
+            Self::InvariantRelationshipNeedsExplicitOrder {
+                relationship_type,
+                location,
+            } => write!(
+                f,
+                "invariant rule action at {} adds a '{}' relationship without an explicit \
+                 'order' in edge_data (invariant add_relationship actions cannot use the \
+                 atomic auto-order path — supply an explicit order)",
+                location, relationship_type
             ),
         }
     }
@@ -635,6 +672,26 @@ fn validate_invariant_eligibility(
     rule_idx: usize,
     errors: &mut Vec<PlayValidationError>,
 ) {
+    // Supported trigger — synchronous pre-commit dispatch is wired only into
+    // the node-creation write path (see `InvariantUnsupportedTrigger`'s doc).
+    let trigger_supported = matches!(
+        &rule.trigger,
+        ParsedTrigger::GraphEvent {
+            on: GraphEventType::NodeCreated,
+            ..
+        }
+    );
+    if !trigger_supported {
+        let trigger_desc = match &rule.trigger {
+            ParsedTrigger::GraphEvent { on, .. } => graph_event_name(on).to_string(),
+            ParsedTrigger::Scheduled { .. } => "scheduled".to_string(),
+        };
+        errors.push(PlayValidationError::InvariantUnsupportedTrigger {
+            trigger: trigger_desc,
+            location: format!("rule[{}].trigger", rule_idx),
+        });
+    }
+
     // Local writes only.
     for (action_idx, action) in rule.actions.iter().enumerate() {
         if !action.action_type.is_local_write() {
@@ -642,6 +699,38 @@ fn validate_invariant_eligibility(
                 action: action.action_type.as_str().to_string(),
                 location: format!("rule[{}].action[{}]", rule_idx, action_idx),
             });
+        }
+    }
+
+    // add_relationship to member_of/has_child needs an explicit order — the
+    // tx-scoped executor has no atomic-auto-order twin of
+    // add_to_collection/append_child_edge (see the error variant's doc).
+    for (action_idx, action) in rule.actions.iter().enumerate() {
+        if action.action_type != ActionType::AddRelationship {
+            continue;
+        }
+        let Some(rel_type) = action
+            .params
+            .get("relationship_type")
+            .and_then(|v| v.as_str())
+        else {
+            continue;
+        };
+        if rel_type != "member_of" && rel_type != "has_child" {
+            continue;
+        }
+        let has_explicit_order = action
+            .params
+            .get("edge_data")
+            .and_then(|v| v.get("order"))
+            .is_some();
+        if !has_explicit_order {
+            errors.push(
+                PlayValidationError::InvariantRelationshipNeedsExplicitOrder {
+                    relationship_type: rel_type.to_string(),
+                    location: format!("rule[{}].action[{}]", rule_idx, action_idx),
+                },
+            );
         }
     }
 
@@ -2416,6 +2505,213 @@ mod tests {
                         if action == "create_node"
                 )),
                 "expected chaining error, got {:?}",
+                errors
+            );
+        }
+
+        // -- Supported trigger (Slice B: synchronous dispatch wires only
+        // node_created into the write path) --
+
+        #[test]
+        fn invariant_node_created_trigger_accepted() {
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec!["node.status == 'open'"],
+                vec![update_action("{trigger.node.id}")],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                !errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::InvariantUnsupportedTrigger { .. })),
+                "node_created must be an accepted invariant trigger, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_property_changed_trigger_rejected() {
+            let rule = invariant_rule(
+                GraphEventType::PropertyChanged,
+                "task",
+                Some("status"),
+                vec![],
+                vec![],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantUnsupportedTrigger { trigger, .. }
+                        if trigger == "property_changed"
+                )),
+                "property_changed must be rejected as an invariant trigger, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_relationship_added_trigger_rejected() {
+            let rule = invariant_rule(
+                GraphEventType::RelationshipAdded,
+                "task",
+                None,
+                vec![],
+                vec![],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantUnsupportedTrigger { trigger, .. }
+                        if trigger == "relationship_added"
+                )),
+                "relationship_added must be rejected as an invariant trigger, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_scheduled_trigger_rejected() {
+            let rule = ParsedRule {
+                name: "inv-sched".to_string(),
+                class: RuleClass::Invariant,
+                trigger: ParsedTrigger::Scheduled {
+                    cron: "0 0 * * *".to_string(),
+                    node_type: "task".to_string(),
+                },
+                conditions: vec![],
+                actions: vec![],
+            };
+            let errors = eligibility_errors(&rule);
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantUnsupportedTrigger { trigger, .. }
+                        if trigger == "scheduled"
+                )),
+                "scheduled must be rejected as an invariant trigger, got {:?}",
+                errors
+            );
+        }
+
+        // -- add_relationship to member_of/has_child needs an explicit order --
+
+        fn add_rel_action_with_edge_data(
+            source_id: &str,
+            relationship_type: &str,
+            target_id: &str,
+            edge_data: serde_json::Value,
+        ) -> ParsedAction {
+            ParsedAction {
+                action_type: ActionType::AddRelationship,
+                params: json!({
+                    "source_id": source_id,
+                    "relationship_type": relationship_type,
+                    "target_id": target_id,
+                    "edge_data": edge_data,
+                }),
+                for_each: None,
+            }
+        }
+
+        #[test]
+        fn invariant_member_of_without_explicit_order_rejected() {
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![add_rel_action_with_edge_data(
+                    "{trigger.node.id}",
+                    "member_of",
+                    "{trigger.node.parent_collection_id}",
+                    json!({}),
+                )],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantRelationshipNeedsExplicitOrder { relationship_type, .. }
+                        if relationship_type == "member_of"
+                )),
+                "member_of without an explicit order must be rejected, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_has_child_without_explicit_order_rejected() {
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![add_rel_action_with_edge_data(
+                    "{trigger.node.parent_id}",
+                    "has_child",
+                    "{trigger.node.id}",
+                    json!({}),
+                )],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantRelationshipNeedsExplicitOrder { relationship_type, .. }
+                        if relationship_type == "has_child"
+                )),
+                "has_child without an explicit order must be rejected, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_member_of_with_explicit_order_accepted() {
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![add_rel_action_with_edge_data(
+                    "{trigger.node.id}",
+                    "member_of",
+                    "{trigger.node.parent_collection_id}",
+                    json!({ "order": 1.0 }),
+                )],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                !errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantRelationshipNeedsExplicitOrder { .. }
+                )),
+                "member_of WITH an explicit order must be accepted, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_non_auto_order_relationship_type_needs_no_explicit_order() {
+            // "linked_to" (or any non-member_of/has_child type) never goes
+            // through the atomic auto-order helpers, so no order is required.
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![add_rel_action("{trigger.node.id}", "{trigger.node.id}")],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                !errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantRelationshipNeedsExplicitOrder { .. }
+                )),
+                "a non-auto-order relationship type must not require an explicit order, got {:?}",
                 errors
             );
         }

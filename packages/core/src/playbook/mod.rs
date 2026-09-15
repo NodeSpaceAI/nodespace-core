@@ -29,6 +29,7 @@ pub mod graph_resolver;
 pub mod lifecycle;
 pub mod logging;
 pub mod path_extractor;
+pub mod seeded;
 #[cfg(test)]
 mod tests;
 pub mod types;

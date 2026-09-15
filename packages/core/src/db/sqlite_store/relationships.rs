@@ -366,6 +366,155 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// `_in_tx` twin of [`Self::assert_root_only_membership`] (ADR-069 §1a),
+    /// needed by invariant-rule `add_relationship` actions (ADR-060 §1): the
+    /// member being checked is very often the node this same transaction just
+    /// inserted, which the pooled reader connection `assert_root_only_membership`
+    /// uses cannot see until commit. Reads via `tx.conn()` instead, so a
+    /// membership edge added in the same transaction that created the member
+    /// (or gave it a parent) is checked against this transaction's own view.
+    async fn assert_root_only_membership_in_tx(tx: &Tx<'_>, member_ids: &[&str]) -> Result<()> {
+        if member_ids.is_empty() {
+            return Ok(());
+        }
+        let mut unique: Vec<&str> = member_ids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+
+        const ID_CHUNK: usize = 900;
+        for chunk in unique.chunks(ID_CHUNK) {
+            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
+            let sql = format!(
+                "SELECT n.id, n.node_type, \
+                 EXISTS(SELECT 1 FROM relationship r \
+                        WHERE r.out_node = n.id AND r.relationship_type = 'has_child') \
+                 FROM node n WHERE n.id IN ({})",
+                placeholders.join(", ")
+            );
+            let params: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|id| libsql::Value::Text(id.to_string()))
+                .collect();
+            let mut rows = tx
+                .conn()
+                .query(&sql, params)
+                .await
+                .context("Failed to validate root-only membership")?;
+            while let Some(row) = rows.next().await? {
+                let id: String = row.get(0)?;
+                let node_type: String = row.get(1)?;
+                let has_parent: i64 = row.get(2)?;
+                if has_parent != 0 && node_type != "collection" && node_type != "person" {
+                    return Err(anyhow::anyhow!(
+                        "member_of_not_root: content node '{}' (type '{}') has a parent, so it cannot be a member of a collection directly — file its root node instead",
+                        id,
+                        node_type
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `_in_tx` twin of [`Self::check_relationship_exists`] (ADR-069 §1a).
+    pub(crate) async fn check_relationship_exists_in_tx(
+        tx: &Tx<'_>,
+        source_id: &str,
+        rel_type: &str,
+    ) -> Result<i64> {
+        let mut rows = tx.conn().query(
+            "SELECT COUNT(*) as cnt FROM relationship WHERE in_node = ?1 AND relationship_type = ?2",
+            libsql::params![source_id.to_string(), rel_type.to_string()],
+        ).await.context("Failed to check relationship existence")?;
+        let row = rows
+            .next()
+            .await
+            .context("No row returned")?
+            .ok_or_else(|| anyhow::anyhow!("Empty result for relationship count"))?;
+        Ok(row.get::<i64>(0).unwrap_or(0))
+    }
+
+    /// `_in_tx` twin of [`Self::get_relationship_id`] (ADR-069 §1a).
+    pub(crate) async fn get_relationship_id_in_tx(
+        tx: &Tx<'_>,
+        source_id: &str,
+        target_id: &str,
+        rel_type: &str,
+    ) -> Result<Option<String>> {
+        let mut rows = tx.conn().query(
+            "SELECT id FROM relationship WHERE in_node = ?1 AND out_node = ?2 AND relationship_type = ?3 LIMIT 1",
+            libsql::params![source_id.to_string(), target_id.to_string(), rel_type.to_string()],
+        ).await.context("Failed to get relationship ID")?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(row.get::<String>(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// `_in_tx` twin of [`Self::relationship_exists`] (ADR-069 §1a).
+    pub(crate) async fn relationship_exists_in_tx(
+        tx: &Tx<'_>,
+        source_id: &str,
+        target_id: &str,
+        rel_type: &str,
+    ) -> Result<bool> {
+        let mut rows = tx.conn().query(
+            "SELECT 1 FROM relationship WHERE in_node = ?1 AND out_node = ?2 AND relationship_type = ?3 LIMIT 1",
+            libsql::params![source_id.to_string(), target_id.to_string(), rel_type.to_string()],
+        ).await.context("Failed to check existing relationship")?;
+        Ok(rows.next().await?.is_some())
+    }
+
+    /// `_in_tx` twin of [`Self::create_generic_relationship`] (ADR-069 §1a).
+    /// Covers the same ADR-059 §2 `member_of` root-only gate. Does not
+    /// implement the atomic-auto-order paths `add_to_collection`/
+    /// `append_child_edge` provide for `member_of`/`has_child` with no
+    /// explicit `order` — a caller needing those must supply an explicit
+    /// `order` in `properties` (enforced at save time for invariant rules by
+    /// `playbook::validation`, since the atomic read-current-max-then-write
+    /// those two helpers do has no transaction-scoped twin here).
+    pub(crate) async fn create_generic_relationship_in_tx(
+        tx: &Tx<'_>,
+        source_id: &str,
+        target_id: &str,
+        rel_type: &str,
+        properties: &serde_json::Value,
+    ) -> Result<String> {
+        if rel_type == "member_of" {
+            Self::assert_root_only_membership_in_tx(tx, &[source_id]).await?;
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let rel_id = uuid::Uuid::new_v4().to_string();
+        let props_json = serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
+        tx.conn().execute(
+            "INSERT OR IGNORE INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
+            libsql::params![rel_id.clone(), source_id.to_string(), target_id.to_string(), rel_type.to_string(), props_json, now.clone(), now],
+        ).await.context("Failed to create generic relationship")?;
+        Ok(rel_id)
+    }
+
+    /// `_in_tx` twin of [`Self::delete_generic_relationship`] (ADR-069 §1a).
+    pub(crate) async fn delete_generic_relationship_in_tx(
+        tx: &Tx<'_>,
+        source_id: &str,
+        target_id: &str,
+        rel_type: &str,
+    ) -> Result<()> {
+        tx.conn()
+            .execute(
+                "DELETE FROM relationship WHERE in_node = ?1 AND out_node = ?2 AND relationship_type = ?3",
+                libsql::params![
+                    source_id.to_string(),
+                    target_id.to_string(),
+                    rel_type.to_string()
+                ],
+            )
+            .await
+            .context("Failed to delete relationship")?;
+        Ok(())
+    }
+
     pub async fn add_to_collection(
         &self,
         member_id: &str,
