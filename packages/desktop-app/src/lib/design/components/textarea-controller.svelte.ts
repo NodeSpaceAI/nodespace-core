@@ -349,9 +349,17 @@ export class TextareaController {
       // because the positionCursor action handles all cursor positioning cases.
       // Previously only checked for 'node-type-conversion', but 'absolute', 'default', etc.
       // also need to be handled by the action, not overridden here.
-      const hasPendingCursorPosition = focusManager.cursorPosition !== null;
-      // Scope to this node (see constructor comment above) — the pending signal may
-      // belong to a different node whose component happens to mount in the same flush.
+      //
+      // Scope to this node (see constructor comment above) — like the constructor,
+      // this runs inside a Svelte $effect (base-node.svelte's element-watcher) rather
+      // than a synchronous DOM event handler, so it is subject to the same reactive-flush
+      // timing hazard: another node's component can mount (and its own initialize() run)
+      // in the same flush before the signal — set for a *different* nodeId — is cleared.
+      // An unscoped read here would let that unrelated node wrongly skip its own default
+      // cursor positioning (or schedule a premature clear of a signal meant for someone
+      // else) based on a pending position that was never actually meant for it.
+      const hasPendingCursorPosition =
+        focusManager.editingNodeId === this.nodeId && focusManager.cursorPosition !== null;
       const isTypeConversion =
         focusManager.editingNodeId === this.nodeId &&
         focusManager.cursorPosition?.type === 'node-type-conversion';

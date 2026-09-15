@@ -18,6 +18,7 @@ import {
 } from '../../lib/design/components/textarea-controller';
 import { DEFAULT_PANE_ID } from '../../lib/stores/navigation.svelte';
 import { focusManager } from '../../lib/services/focus-manager.svelte';
+import { CursorPositioningService } from '../../lib/services/cursor-positioning-service';
 
 // Type for tracking event calls in tests
 interface EventCallRecord {
@@ -417,6 +418,76 @@ describe('TextareaController', () => {
         expect(
           eventCalls.nodeTypeConversionDetected?.some((d) => d.newNodeType === 'text')
         ).toBe(true);
+      });
+    });
+
+    describe('initialize() pending-cursor-position check is scoped to the mounting node', () => {
+      // initialize() reads the same module-level focusManager.cursorPosition signal
+      // (see the constructor comment above) to decide whether to skip its own default
+      // cursor positioning - the positionCursor action applies the signal's actual
+      // position instead, so initialize() must defer to it rather than racing it with
+      // setCursorAtBeginningOfLine/setCursorAtPosition. Like the constructor, this read
+      // happens inside a Svelte $effect (base-node.svelte's element-watcher), not a
+      // synchronous DOM event handler, so it's subject to the same reactive-flush
+      // timing hazard: an unrelated node's component - and its own initialize() call -
+      // can run in the same flush before the signal (set for a *different* nodeId) is
+      // cleared. An unscoped read would let that unrelated node wrongly skip its own
+      // default positioning based on a pending position that was never meant for it.
+      let cursorService: CursorPositioningService;
+      let setCursorAtPositionSpy: ReturnType<typeof vi.spyOn>;
+      let setCursorAtBeginningOfLineSpy: ReturnType<typeof vi.spyOn>;
+
+      beforeEach(() => {
+        cursorService = CursorPositioningService.getInstance();
+        setCursorAtPositionSpy = vi.spyOn(cursorService, 'setCursorAtPosition');
+        setCursorAtBeginningOfLineSpy = vi.spyOn(cursorService, 'setCursorAtBeginningOfLine');
+      });
+
+      afterEach(() => {
+        focusManager.clearEditing();
+        setCursorAtPositionSpy.mockRestore();
+        setCursorAtBeginningOfLineSpy.mockRestore();
+      });
+
+      it('still applies its own default cursor positioning when the pending signal belongs to a different node', () => {
+        // Signal is pending for a DIFFERENT node than the one about to initialize.
+        focusManager.focusNodeFromInheritedType('some-other-node-id', 0, DEFAULT_PANE_ID);
+
+        controller.destroy();
+        controller = new TextareaController(
+          element,
+          'unrelated-node',
+          'text',
+          DEFAULT_PANE_ID,
+          mockEvents
+        );
+        // Non-empty content + autoFocus: the default-positioning branch runs unless
+        // (bugged) hasPendingCursorPosition wrongly reads this unrelated node as having
+        // a pending position and skips it.
+        controller.initialize('Hello', true);
+
+        expect(setCursorAtPositionSpy).toHaveBeenCalledWith(
+          element,
+          'Hello'.length,
+          expect.objectContaining({ focus: true })
+        );
+      });
+
+      it('defers to the positionCursor action (skips its own default positioning) when the signal is actually meant for this node', () => {
+        focusManager.focusNodeFromInheritedType('target-node', 0, DEFAULT_PANE_ID);
+
+        controller.destroy();
+        controller = new TextareaController(
+          element,
+          'target-node',
+          'text',
+          DEFAULT_PANE_ID,
+          mockEvents
+        );
+        controller.initialize('Hello', true);
+
+        expect(setCursorAtPositionSpy).not.toHaveBeenCalled();
+        expect(setCursorAtBeginningOfLineSpy).not.toHaveBeenCalled();
       });
     });
 
