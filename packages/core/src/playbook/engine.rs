@@ -245,9 +245,29 @@ impl PlaybookEngine {
             return;
         }
 
-        let matched_rules = {
+        // ADR-060 §1: `RuleClass::Invariant` rules must NEVER reach this
+        // queue. For a local write, `dispatch_invariant_rules_in_tx`
+        // (`services/node_service/invariants.rs`) already ran the invariant
+        // rule synchronously, pre-commit, inside the SAME transaction as
+        // this event's own write — by the time this event reaches the
+        // engine at all, the invariant rule has already fully executed,
+        // fail-closed, with rollback protection. If an invariant rule were
+        // left in `matched_rules` here, `rule_processor_loop` would run it a
+        // SECOND time, asynchronously and fail-open (disable-the-play, no
+        // rollback) — silently double-executing every invariant rule on
+        // every local create it matches, and turning a transient failure of
+        // that spurious second run into "the play (and its invariant) is now
+        // silently disabled for every future node," exactly the failure mode
+        // ADR-060 exists to prevent. Mirrors the same filter
+        // `dispatch_invariant_repair` already applies for the sync-apply
+        // path (via `RuleClass::Invariant` in its own lookup).
+        let matched_rules: Vec<OrderedRuleRef> = {
             let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
-            lifecycle.lookup_rules(&keys)
+            lifecycle
+                .lookup_rules(&keys)
+                .into_iter()
+                .filter(|r| r.rule.class != RuleClass::Invariant)
+                .collect()
         };
 
         if matched_rules.is_empty() {

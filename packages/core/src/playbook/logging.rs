@@ -283,13 +283,28 @@ pub fn deterministic_repair_log_id(
 /// Create or update a `playbook_log` node recording an invariant repair
 /// (ADR-060 §7).
 ///
-/// Idempotent by construction: `deterministic_repair_log_id` always derives
-/// the same id for the same `(play_id, rule_name, trigger_node_id)`, so a
-/// second call for the same violation -- whether from this device
-/// re-processing a redelivered event, or a row that already synced in from
-/// another device's independent repair of the same violation -- updates the
-/// existing row's `occurrences`/`last_seen` in place instead of creating a
-/// second log node.
+/// The convergence property this exists for -- two devices independently
+/// repairing the same violation land on ONE row, not two -- holds by
+/// construction: `deterministic_repair_log_id` always derives the same id
+/// for the same `(play_id, rule_name, trigger_node_id)`, so a row that
+/// already synced in from another device's independent repair, or that this
+/// device already wrote itself, shares an id with what THIS call would
+/// otherwise create -- ordinary sync upsert (or the `get_node` check below)
+/// converges them to one row.
+///
+/// The read-then-write sequence below is check-then-act, not a true
+/// compare-and-swap: a row can in principle land at this exact id (a sync
+/// pull applying another device's already-synced repair) in the narrow
+/// window between this call's own `get_node` check and its `create_node`
+/// call, on the SAME device. The `create_node` call then fails on the
+/// duplicate id and is logged and swallowed (see the `Err` arm below) --
+/// this repair occurrence goes uncounted, but no safety property breaks:
+/// the repair EFFECT was already applied by whichever write landed first,
+/// only the log node's `occurrences` bookkeeping undercounts in that
+/// exact window. `dispatch_invariant_repair`'s own call site is on a
+/// single-consumer sequential path, so this race is cross-task (sync
+/// ingestion vs. the engine loop), not self-inflicted by repeated
+/// engine dispatch.
 pub async fn create_or_update_repair_log_node(
     node_service: &Arc<NodeService>,
     play_id: &str,

@@ -759,10 +759,13 @@ impl NodeService {
                     .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
                     .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
                 if source.node_type == "collection" {
-                    self.store
-                        .validate_no_member_of_cycle(source_id, target_id)
-                        .await
-                        .map_err(|e| NodeServiceError::collection_cycle(e.to_string()))?;
+                    crate::db::SqliteStore::validate_no_member_of_cycle_in_tx(
+                        tx.store_tx(),
+                        source_id,
+                        target_id,
+                    )
+                    .await
+                    .map_err(|e| NodeServiceError::collection_cycle(e.to_string()))?;
                 }
             }
         } else {

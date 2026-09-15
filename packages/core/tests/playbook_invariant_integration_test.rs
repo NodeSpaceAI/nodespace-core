@@ -847,3 +847,91 @@ async fn an_invariant_action_creating_a_node_does_not_trigger_another_invariant_
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Regression: an invariant rule must not ALSO be enqueued onto the reactive
+// ExecutionQueue for the event that triggered it
+// ---------------------------------------------------------------------------
+
+/// Adversarial regression test. Requires a REAL running `PlaybookEngine`
+/// (unlike `invariant_action_executes_synchronously_in_same_transaction`,
+/// which wires the lifecycle manager directly with no engine loop) — this is
+/// specifically about what `PlaybookEngine::handle_event`'s event-subscriber
+/// path does with a LOCAL `NodeCreated` event once the synchronous in-tx
+/// dispatch has already fully handled it.
+///
+/// Before the fix, `handle_event`'s local-event branch looked up matching
+/// rules with no `RuleClass` filter and enqueued ALL of them — including
+/// `RuleClass::Invariant` ones — onto the reactive `ExecutionQueue`.
+/// `rule_processor_loop` then re-ran the SAME rule a second time,
+/// asynchronously, post-commit, fail-open (no rollback): a genuinely
+/// idempotent action (`create_node`/`add_relationship`) would mask this via
+/// derived-identity convergence, but `update_node` is not idempotent against
+/// itself here — each redundant run bumps `version` and emits a second
+/// `NodeUpdated` event. Directly asserts on `version`, which only advances
+/// via a genuine write to the row: if the invariant rule's `update_node`
+/// action ran the synchronous, correct time PLUS a second, spurious,
+/// reactive-queue time, `version` observed some time after `create_node`
+/// returns would be higher than immediately after it returns.
+#[tokio::test]
+async fn invariant_rule_does_not_also_run_via_the_reactive_queue() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_no_double_exec",
+        json!([
+            { "name": "status", "type": "string" },
+            { "name": "approved", "type": "boolean" }
+        ]),
+    )
+    .await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+    create_play(
+        &service,
+        "no-double-exec-play",
+        stamp_approved_invariant_rule("iv_no_double_exec"),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let triggering = Node::new(
+        "iv_no_double_exec".to_string(),
+        "must only be stamped once".to_string(),
+        json!({ "status": "pending" }),
+    );
+    let triggering_id = triggering.id.clone();
+    service.create_node(triggering).await?;
+
+    // Immediately after create_node returns, the synchronous in-tx stamp
+    // must already be visible (version 2: 1 for the insert, 1 for the
+    // in-tx update_node action).
+    let immediately_after = service.get_node(&triggering_id).await?.unwrap();
+    assert_eq!(
+        user_field(&immediately_after, "iv_no_double_exec", "approved"),
+        Some(&json!(true)),
+        "the synchronous invariant stamp must already be applied when create_node returns"
+    );
+    let version_immediately_after = immediately_after.version;
+
+    // Give the reactive engine's ExecutionQueue every chance to have
+    // (incorrectly) re-run the same rule if the bug were present — several
+    // multiples of the polling interval used elsewhere in this file.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    let later = service.get_node(&triggering_id).await?.unwrap();
+    assert_eq!(
+        later.version, version_immediately_after,
+        "the node's version must not advance after the synchronous in-tx stamp — a higher \
+         version here means the SAME invariant rule ran a second time via the reactive \
+         ExecutionQueue, which must never enqueue RuleClass::Invariant rules at all"
+    );
+    assert_eq!(
+        user_field(&later, "iv_no_double_exec", "approved"),
+        Some(&json!(true)),
+        "still stamped exactly once"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}

@@ -2120,6 +2120,50 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// `_in_tx` twin of [`Self::validate_no_member_of_cycle`] (ADR-069 §1a).
+    /// Needed by invariant-rule `add_relationship` actions (ADR-060 §1): a
+    /// `member_of` edge added earlier in the SAME transaction — by an
+    /// earlier action in this rule, or by a different invariant rule matched
+    /// by the same trigger — is invisible to the pooled-reader version this
+    /// mirrors, so a two-edge cycle formed entirely within one transaction
+    /// (`A member_of B` then `B member_of A`) would go undetected by it.
+    pub(crate) async fn validate_no_member_of_cycle_in_tx(
+        tx: &Tx<'_>,
+        source_id: &str,
+        target_id: &str,
+    ) -> Result<()> {
+        if source_id == target_id {
+            return Err(anyhow::anyhow!(
+                "collection_cycle: '{}' cannot be a member of itself",
+                source_id
+            ));
+        }
+        let mut rows = tx
+            .conn()
+            .query(
+                r#"WITH RECURSIVE descendants(node_id, depth) AS (
+                SELECT in_node, 1 FROM relationship
+                  WHERE out_node = ?1 AND relationship_type = 'member_of'
+                UNION ALL
+                SELECT r.in_node, d.depth + 1 FROM relationship r
+                JOIN descendants d ON r.out_node = d.node_id
+                WHERE r.relationship_type = 'member_of' AND d.depth < 100
+            )
+            SELECT node_id FROM descendants WHERE node_id = ?2 LIMIT 1"#,
+                libsql::params![source_id.to_string(), target_id.to_string()],
+            )
+            .await
+            .context("Failed to check for member_of cycle")?;
+        if rows.next().await?.is_some() {
+            return Err(anyhow::anyhow!(
+                "collection_cycle: '{}' is already a descendant of '{}', so making it the parent would create a cycle",
+                target_id,
+                source_id
+            ));
+        }
+        Ok(())
+    }
+
     /// Re-spread a parent's `has_child` order keys evenly.
     ///
     /// Takes the caller's writer connection rather than acquiring one: its only

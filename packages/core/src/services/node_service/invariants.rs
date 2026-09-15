@@ -12,7 +12,22 @@
 //! Deliberately NOT part of `playbook::engine`'s post-commit `mpsc` queue:
 //! that queue is async and after-the-fact by construction, exactly what an
 //! invariant rule must not be (see `playbook::engine`'s module doc for why
-//! the two paths are architecturally separate).
+//! the two paths are architecturally separate). Symmetrically,
+//! `playbook::engine::PlaybookEngine::handle_event` filters
+//! `RuleClass::Invariant` OUT of what it enqueues onto that mpsc queue for a
+//! local event — dispatch here has already fully handled it (or, for a
+//! sync-applied event, `handle_event`'s repair-and-log branch has) — so an
+//! invariant rule is never run twice.
+//!
+//! One scope note for `create_node_with_parent`/`create_node_with_parent_in_tx`
+//! composed creates specifically: this dispatch runs from inside
+//! `create_node_in_tx`, called BEFORE the parent/collection edge is added in
+//! that composition. A condition that inspects the trigger node's
+//! parent/collection relationship therefore always sees it as absent at
+//! evaluation time, for every node created this way — not a bug (nothing
+//! about "same-graph scope", ADR-060 §2, promises a not-yet-created edge is
+//! visible), but worth naming: it is a real constraint on what an invariant
+//! rule can usefully condition on for a node created with a parent.
 
 use super::*;
 use crate::playbook::types::{NodeEventType, RuleClass, TriggerKey};
