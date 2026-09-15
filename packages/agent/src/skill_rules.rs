@@ -129,7 +129,7 @@ pub const ENUM_FORMAT: SchemaRule = SchemaRule {
 
 pub const RELATIONSHIP_VS_FIELD: SchemaRule = SchemaRule {
     id: "relationship-vs-field",
-    imperative: "RELATIONSHIPS: Use relationships (not fields) when a field references another node type.",
+    imperative: "RELATIONSHIPS: Use relationships (not fields) when a field references another node type. RECOGNITION IS THE HARD PART: a field naming a person, team, project, or any other entity is a reference even when it reads naturally as text — a plain string has no integrity (\"M. Alibio\" and \"m alibio\" are different values to a query engine), no reverse lookup, and no rename path (renaming a person means rewriting every node that names them). Examples, from how a request is phrased: \"who signed off\" -> decided_by (targetType: person), not a deciders: array field. \"who it's assigned to\" -> assignee (targetType: person), not an assignee: text field. \"which project it affects\" -> affects_project (targetType: project). FALSE FRIENDS — field names that read as plain attributes but are usually references: deciders, assignee, owner, author, reviewer, reported_by, members. Before defaulting one of these to a text field, check whether the target type already exists in EXISTING SCHEMAS. ESCAPE HATCH: free text is fine for a one-off external party who will never be a node in this graph — use a relationship when the party is, or could become, a first-class entity here.",
     prose: "**Relationships vs. fields:** use a relationship (not a field) when a value references another node type.",
 };
 
