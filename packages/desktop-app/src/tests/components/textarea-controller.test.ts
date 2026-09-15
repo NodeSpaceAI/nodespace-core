@@ -17,6 +17,7 @@ import {
   type TextareaControllerEvents
 } from '../../lib/design/components/textarea-controller';
 import { DEFAULT_PANE_ID } from '../../lib/stores/navigation.svelte';
+import { focusManager } from '../../lib/services/focus-manager.svelte';
 
 // Type for tracking event calls in tests
 interface EventCallRecord {
@@ -349,6 +350,74 @@ describe('TextareaController', () => {
       // Header level detection is now the responsibility of HeaderNode component
       expect(eventCalls.nodeTypeConversionDetected).toBeDefined();
       expect(eventCalls.nodeTypeConversionDetected?.[0]?.newNodeType).toBe('header');
+    });
+
+    describe('creation-source inference is scoped to the mounting node', () => {
+      // focusManager.cursorPosition is a single module-level signal (not per-node).
+      // focusNodeFromInheritedType/focusNodeFromTypeConversion set it right before the
+      // target node's component mounts, but nothing guarantees no OTHER node's
+      // TextareaController constructs in between (e.g. an unrelated node re-mounting
+      // in the same reactive flush). A constructor that read the signal without
+      // checking it was actually meant for *this* nodeId would let that unrelated node
+      // wrongly infer 'inherited'/'pattern' creation source - and, for node types whose
+      // plugin has pattern.canRevert: true (header, quote-block, ...), wrongly become
+      // revertible even though it was never actually created via inheritance/pattern
+      // detection itself.
+      afterEach(() => {
+        focusManager.clearEditing();
+      });
+
+      it('does not grant revert capability to a node the pending signal was not meant for', async () => {
+        // Signal is pending for a DIFFERENT node than the one about to construct.
+        focusManager.focusNodeFromInheritedType('some-other-node-id', 0, DEFAULT_PANE_ID);
+
+        controller.destroy();
+        controller = new TextareaController(
+          element,
+          'header-node-a',
+          'header',
+          DEFAULT_PANE_ID,
+          mockEvents
+        );
+        // Empty initial content - deliberately does NOT already contain header syntax,
+        // so initialize()'s separate "content already matches own pattern" upgrade path
+        // (a legitimate, unrelated way to gain canRevert) never fires here. This isolates
+        // the creation-source-via-signal path under test.
+        controller.initialize('', true);
+
+        // Type non-matching content - if this node had (wrongly) inherited canRevert
+        // from the other node's pending signal, this would revert it to text.
+        element.value = 'plain text, no header syntax';
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        expect(
+          eventCalls.nodeTypeConversionDetected?.some((d) => d.newNodeType === 'text')
+        ).not.toBe(true);
+      });
+
+      it('still grants revert capability when the signal is actually meant for this node', async () => {
+        // Same scenario, but the pending signal correctly targets the node under construction.
+        focusManager.focusNodeFromInheritedType('header-node-b', 0, DEFAULT_PANE_ID);
+
+        controller.destroy();
+        controller = new TextareaController(
+          element,
+          'header-node-b',
+          'header',
+          DEFAULT_PANE_ID,
+          mockEvents
+        );
+        controller.initialize('', true);
+
+        element.value = 'plain text, no header syntax';
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        expect(
+          eventCalls.nodeTypeConversionDetected?.some((d) => d.newNodeType === 'text')
+        ).toBe(true);
+      });
     });
 
     it('should detect @mention triggers', () => {
