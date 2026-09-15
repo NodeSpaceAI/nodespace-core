@@ -125,6 +125,13 @@ async fn spawn_engine(
 ) {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let engine = Arc::new(PlaybookEngine::new(Arc::clone(service)));
+    // Wire the write path to the same live TriggerIndex the engine just
+    // built (ADR-060 §1), exactly as `assembly.rs` does at daemon startup —
+    // required for `RuleClass::Invariant` dispatch; a no-op for every
+    // existing reactive-only test in this file (the lookup it performs
+    // inside `create_node_in_tx` only ever matches an `Invariant`-class
+    // rule, of which none of those tests register any).
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
     let task = {
         let engine = Arc::clone(&engine);
         tokio::spawn(async move { engine.start(shutdown_rx).await })

@@ -114,6 +114,14 @@ impl From<NodeServiceError> for OpsError {
                 OpsError::InvalidParams(err.to_string())
             }
             NodeServiceError::PlayValidationFailed { errors } => OpsError::InvalidParams(errors),
+            NodeServiceError::InvariantRuleFailed {
+                play_id,
+                rule_name,
+                message,
+            } => OpsError::ValidationFailed(format!(
+                "invariant rule '{}' (play {}) failed: {} — node was not created",
+                rule_name, play_id, message
+            )),
             NodeServiceError::CollectionNotFound(name) => OpsError::NotFound { id: name },
             NodeServiceError::InvalidUpdate(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::InvalidCollectionPath(msg) => OpsError::ValidationFailed(msg),

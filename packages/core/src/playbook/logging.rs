@@ -46,6 +46,9 @@ pub enum PlayErrorType {
     CompileError,
     /// Action execution failed
     ActionError,
+    /// A seeded play carrying an invariant rule was edited or disabled
+    /// (ADR-060 §8) — advisory, not a fault in the play itself.
+    SeededPlayWarning,
 }
 
 impl fmt::Display for PlayErrorType {
@@ -57,6 +60,7 @@ impl fmt::Display for PlayErrorType {
             Self::VersionConflict => write!(f, "version_conflict"),
             Self::CompileError => write!(f, "compile_error"),
             Self::ActionError => write!(f, "action_error"),
+            Self::SeededPlayWarning => write!(f, "seeded_play_warning"),
         }
     }
 }
@@ -224,6 +228,151 @@ pub async fn create_or_update_log_node(
                     "Failed to create log node for play {} error: {}",
                     play_id, e
                 );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Repair-and-log (ADR-060 §7)
+// ---------------------------------------------------------------------------
+//
+// A device can receive an already-committed node that violates an invariant
+// it holds (the originating device ran an older play version, had the rule
+// disabled, or predates the rule). The node cannot be un-committed, so the
+// resolution is repair-and-log: apply the invariant's effect and record what
+// was repaired and why.
+//
+// Unlike `create_or_update_log_node`'s fingerprint (an app-level scan over
+// this device's own `playbook_log` nodes -- correct for a single device
+// logging its own execution errors, since only that device ever writes its
+// own fingerprint), a repair can legitimately be performed independently by
+// several devices that each received the same violating node via sync and
+// each hold the same invariant rule. Scanning this device's own nodes cannot
+// prevent that from producing N separately-created log rows that then all
+// sync to everyone. Instead the repair log node's *id itself* is derived
+// deterministically from `(play_id, rule_name, trigger_node_id)` -- the same
+// technique `deterministic_action_output_id` uses for reactive action
+// outputs (ADR-060 §3) -- so two devices repairing the same violation
+// compute the SAME id and their writes converge to one row via ordinary
+// sync upsert, without either device needing to know about the other.
+
+/// Stable namespace for playbook repair-log node ids (UUIDv5). Fixed and
+/// arbitrary -- do not change it, for the same reason
+/// `actions::ACTION_OUTPUT_ID_NAMESPACE` must not change: doing so would mint
+/// a fresh id for every existing repair log on its next occurrence, breaking
+/// the cross-device convergence this exists for. Distinct from every other
+/// UUIDv5 namespace in this codebase so the three id spaces never collide.
+const REPAIR_LOG_ID_NAMESPACE: uuid::Uuid =
+    uuid::Uuid::from_u128(0x1a7c9e3f_5d2b_4a6e_8f1c_3b9d7e2a5c4fu128);
+
+/// Derive a repair-log node's id from the violation it records. See the
+/// module section doc above for why this must be deterministic rather than
+/// randomly generated.
+pub fn deterministic_repair_log_id(
+    play_id: &str,
+    rule_name: &str,
+    trigger_node_id: &str,
+) -> String {
+    let seed = format!("{play_id}\u{1}{rule_name}\u{1}{trigger_node_id}");
+    uuid::Uuid::new_v5(&REPAIR_LOG_ID_NAMESPACE, seed.as_bytes()).to_string()
+}
+
+/// Create or update a `playbook_log` node recording an invariant repair
+/// (ADR-060 §7).
+///
+/// Idempotent by construction: `deterministic_repair_log_id` always derives
+/// the same id for the same `(play_id, rule_name, trigger_node_id)`, so a
+/// second call for the same violation -- whether from this device
+/// re-processing a redelivered event, or a row that already synced in from
+/// another device's independent repair of the same violation -- updates the
+/// existing row's `occurrences`/`last_seen` in place instead of creating a
+/// second log node.
+pub async fn create_or_update_repair_log_node(
+    node_service: &Arc<NodeService>,
+    play_id: &str,
+    rule_name: &str,
+    trigger_node_id: &str,
+    message: &str,
+) -> anyhow::Result<()> {
+    let id = deterministic_repair_log_id(play_id, rule_name, trigger_node_id);
+    let now = Utc::now().to_rfc3339();
+
+    match node_service.get_node(&id).await? {
+        Some(existing) => {
+            let current_occurrences = existing
+                .properties
+                .get("occurrences")
+                .and_then(|v| v.as_u64())
+                .or_else(|| {
+                    existing
+                        .properties
+                        .get("playbook_log")
+                        .and_then(|ns| ns.get("occurrences"))
+                        .and_then(|v| v.as_u64())
+                })
+                .unwrap_or(1);
+
+            let mut new_properties = existing.properties.clone();
+            if let Some(ns) = new_properties
+                .get_mut("playbook_log")
+                .and_then(|v| v.as_object_mut())
+            {
+                ns.insert("occurrences".to_string(), json!(current_occurrences + 1));
+                ns.insert("last_seen".to_string(), json!(now));
+            } else {
+                new_properties["occurrences"] = json!(current_occurrences + 1);
+                new_properties["last_seen"] = json!(now);
+            }
+
+            let update = crate::models::NodeUpdate::new().with_properties(new_properties);
+            if let Err(e) = node_service
+                .update_node(&id, existing.version, update)
+                .await
+            {
+                warn!(
+                    "Failed to update repair log node {} for play {} rule '{}': {}",
+                    id, play_id, rule_name, e
+                );
+            } else {
+                debug!(
+                    "Updated repair log node {} — occurrences now {}",
+                    id,
+                    current_occurrences + 1
+                );
+            }
+        }
+        None => {
+            let log_node = Node::new_with_id(
+                id.clone(),
+                "playbook_log".to_string(),
+                message.to_string(),
+                json!({
+                    "play_id": play_id,
+                    "rule_name": rule_name,
+                    "kind": "repair",
+                    "trigger_node_id": trigger_node_id,
+                    "occurrences": 1,
+                    "first_seen": now,
+                    "last_seen": now,
+                }),
+            );
+
+            match node_service.create_node(log_node).await {
+                Ok(created_id) => {
+                    debug!(
+                        "Created repair log node {} for play {} rule '{}'",
+                        created_id, play_id, rule_name
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to create repair log node for play {} rule '{}': {}",
+                        play_id, rule_name, e
+                    );
+                }
             }
         }
     }
@@ -467,6 +616,135 @@ mod tests {
             );
             // Latest trigger_node_id should be updated
             assert_eq!(props["trigger_node_id"], "trigger-3");
+        }
+
+        // -------------------------------------------------------------------
+        // Repair-and-log (ADR-060 §7) — deterministic id + idempotency
+        // -------------------------------------------------------------------
+
+        async fn create_playbook_log_schema(svc: &NodeService) {
+            let schema = crate::models::Node::new_with_id(
+                "playbook_log".to_string(),
+                "schema".to_string(),
+                "playbook_log".to_string(),
+                serde_json::json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "play log schema",
+                    "fields": [],
+                    "relationships": []
+                }),
+            );
+            svc.create_node(schema).await.unwrap();
+        }
+
+        #[test]
+        fn repair_log_id_is_deterministic_and_key_sensitive() {
+            let a = deterministic_repair_log_id("pb-1", "rule-a", "node-1");
+            let b = deterministic_repair_log_id("pb-1", "rule-a", "node-1");
+            assert_eq!(a, b, "same key must derive the same id every time");
+
+            let different_play = deterministic_repair_log_id("pb-2", "rule-a", "node-1");
+            let different_rule = deterministic_repair_log_id("pb-1", "rule-b", "node-1");
+            let different_node = deterministic_repair_log_id("pb-1", "rule-a", "node-2");
+            assert_ne!(a, different_play);
+            assert_ne!(a, different_rule);
+            assert_ne!(a, different_node);
+        }
+
+        /// Direct test of the convergence property ADR-060 §7 requires:
+        /// several devices independently repairing the SAME violation must
+        /// not each mint their own log node. Since real cross-device
+        /// concurrency can't be constructed in one process, this calls the
+        /// function twice with the identical `(play_id, rule_name,
+        /// trigger_node_id)` key — exactly what two devices computing the
+        /// same deterministic id independently amounts to from either
+        /// device's own local perspective — and asserts one row, not two.
+        #[tokio::test]
+        async fn repeated_repair_of_the_same_violation_converges_to_one_log_node() {
+            let (svc, _tmp) = create_test_service().await;
+            create_playbook_log_schema(&svc).await;
+
+            create_or_update_repair_log_node(
+                &svc,
+                "pb-privacy",
+                "default-private",
+                "node-A",
+                "Repaired invariant 'default-private' (play pb-privacy) on node received via sync",
+            )
+            .await
+            .unwrap();
+
+            // Simulates a second device (or a redelivered event on this same
+            // device) independently repairing the identical violation.
+            create_or_update_repair_log_node(
+                &svc,
+                "pb-privacy",
+                "default-private",
+                "node-A",
+                "Repaired invariant 'default-private' (play pb-privacy) on node received via sync",
+            )
+            .await
+            .unwrap();
+
+            let logs = svc
+                .query_nodes_by_type("playbook_log", Some("active"))
+                .await
+                .unwrap();
+            assert_eq!(
+                logs.len(),
+                1,
+                "two repairs of the same violation must converge to ONE log node, got {:?}",
+                logs.iter().map(|n| &n.id).collect::<Vec<_>>()
+            );
+            let props = &logs[0].properties["playbook_log"];
+            assert_eq!(
+                props["occurrences"], 2,
+                "occurrences must reflect both repair calls"
+            );
+            assert_eq!(props["kind"], "repair");
+
+            let expected_id =
+                deterministic_repair_log_id("pb-privacy", "default-private", "node-A");
+            assert_eq!(
+                logs[0].id, expected_id,
+                "the log node's id must be the deterministic id, not a random one"
+            );
+        }
+
+        #[tokio::test]
+        async fn repairs_of_different_violations_stay_as_separate_log_nodes() {
+            let (svc, _tmp) = create_test_service().await;
+            create_playbook_log_schema(&svc).await;
+
+            create_or_update_repair_log_node(
+                &svc,
+                "pb-privacy",
+                "default-private",
+                "node-A",
+                "repaired A",
+            )
+            .await
+            .unwrap();
+            create_or_update_repair_log_node(
+                &svc,
+                "pb-privacy",
+                "default-private",
+                "node-B",
+                "repaired B",
+            )
+            .await
+            .unwrap();
+
+            let logs = svc
+                .query_nodes_by_type("playbook_log", Some("active"))
+                .await
+                .unwrap();
+            assert_eq!(
+                logs.len(),
+                2,
+                "two distinct violations (different trigger nodes) must not collapse into one log node"
+            );
         }
     }
 }

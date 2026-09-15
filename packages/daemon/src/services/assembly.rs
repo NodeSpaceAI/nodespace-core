@@ -298,6 +298,15 @@ pub async fn build_database_services(
     // handle are needed now.
     let playbook_engine = Arc::new(PlaybookEngine::new(node_service.clone()));
 
+    // Give this database's NodeService write path a handle onto the same
+    // live TriggerIndex the engine just built (ADR-060 §1), so
+    // `create_node`/`create_node_in_tx` can look up and dispatch
+    // `RuleClass::Invariant` rules synchronously, pre-commit. Must happen
+    // before any local write reaches `create_node` — nothing writes through
+    // `node_service` yet at this point in startup (schema seeding below
+    // does, but that's after this call).
+    node_service.set_playbook_lifecycle(playbook_engine.lifecycle().clone());
+
     let node_service_grpc = NodeServiceImpl::new(
         node_service.clone(),
         embedding_state.clone(),

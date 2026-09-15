@@ -78,114 +78,92 @@ impl NodeService {
             }
         }
 
-        // Step 1: Core behavior validation (PROTECTED)
-        // Validates basic data integrity (non-empty content, correct types, etc.)
-        self.behaviors.validate_node(&node)?;
-        tracing::debug!(
-            "create_node: behavior validation at {}ms",
-            start.elapsed().as_millis()
-        );
+        // Collection-name-collision pre-check, mirrored here because the insert
+        // below now runs through `create_node_in_tx` (ADR-069/ADR-060 §1 — see
+        // that method's doc for why: it needs an open transaction so an
+        // invariant rule's actions can join it). `SqliteStore::create_node_in_tx`
+        // deliberately does NOT do collision detection/marking itself — the
+        // marker write is a second, OCC-bypassing write kept outside the
+        // transaction boundary by design (mirrors `mark_collection_name_collision`'s
+        // own doc) — so this caller detects before the transaction (read-only,
+        // safe before commit) and marks after it (once the node is durably
+        // committed), exactly preserving `SqliteStore::create_node`'s prior
+        // before/after timing for a plain top-level collection create.
+        let colliding_collection = if node.node_type == "collection" {
+            self.store
+                .get_collection_by_name(&node.content)
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!(
+                        "Failed to check collection name collision: {}",
+                        e
+                    ))
+                })?
+        } else {
+            None
+        };
 
-        // Step 1.5: Normalize properties, then apply schema defaults and validate.
-        //
-        // Schema nodes are excluded throughout: their properties (`fields`,
-        // `relationships`, `title_template`) are the schema itself, stored flat,
-        // and validating a schema against its own type would be circular.
-        //
-        // NOTE: We ONLY apply schema defaults, NOT behavior defaults.
-        // Behavior defaults (markdown_enabled, auto_save, etc.) are UI preferences
-        // that should be handled client-side, not stored in database properties.
-        // The properties field is for user data and schema-defined fields only.
-        if node.node_type != "schema" {
-            // Normalization needs no schema — see
-            // `normalize_flat_properties_to_namespace`.
-            node.properties =
-                Self::normalize_flat_properties_to_namespace(&node.node_type, &node.properties);
-
-            // Defaults and validation do need the schema, and every type that has
-            // one gets them — user-defined types included. The fetch is a single
-            // primary-key read (`get_schema` is `get_node(node_type)`), tens of
-            // microseconds, so there is nothing to gate on.
-            if let Some(schema_json) = self.get_schema_for_type(&node.node_type).await? {
-                if let Some(fields_json) = schema_json.get("fields") {
-                    if let Ok(fields) = serde_json::from_value::<Vec<crate::models::SchemaField>>(
-                        fields_json.clone(),
-                    ) {
-                        self.apply_schema_defaults_with_fields(&mut node, &fields)?;
-                        self.validate_node_with_fields(&node, &fields)?;
-                    }
-                }
-            }
-            tracing::debug!(
-                "create_node: schema processing complete at {}ms",
-                start.elapsed().as_millis()
-            );
-        }
-
-        // NOTE: Parent/container validation removed - now handled by NodeOperations layer
-        // The graph-native architecture uses edges for hierarchy, not fields on Node struct
-
-        // NOTE: root_id filtering removed - hierarchy now managed via relationships
-
-        // Populate title for @mention search
-        // Schema-driven title_template support
-        // Only set title if not already set (create_node_with_parent may have set it for root nodes)
-        if node.title.is_none() {
-            // For task/collection we know they're always titled; for others we need to check
-            // is_root=None will only trigger a DB lookup for non-task/collection/date/schema types
-            node.title = self.compute_title(&node, None).await?;
-        }
-
-        // Synchronous play validation gate — reject invalid plays before persist
-        if node.node_type == "play" {
-            self.validate_play_rules(&node.properties).await?;
-        }
-
-        // Schema nodes go through the normal create path
+        // All schema/behavior validation, normalization, title computation,
+        // play-rule validation, the actual insert, and — new here —
+        // synchronous invariant-rule dispatch (ADR-060 §1) happen inside
+        // `create_node_in_tx`'s pipeline, run inside one transaction via
+        // `with_transaction`. An invariant action failure fails this whole
+        // call: the node is not created.
+        let service = self.clone();
+        let service_for_tx = service.clone();
+        let node_for_tx = node.clone();
         let db_start = std::time::Instant::now();
-        self.store
-            .create_node(
-                node.clone(),
-                self.client_id.clone(),
-                self.execution_context.clone(),
-            )
-            .await
-            .map_err(|e| NodeServiceError::query_failed(format!("Failed to insert node: {}", e)))?;
+        let created_id = service
+            .with_transaction(move |tx| {
+                Box::pin(async move { service_for_tx.create_node_in_tx(tx, node_for_tx).await })
+            })
+            .await?;
         tracing::debug!(
             "create_node: database insert completed in {}ms",
             db_start.elapsed().as_millis()
         );
 
-        // NOTE: NodeCreated event is now automatically emitted by store notifier
+        if let Some(existing) = colliding_collection {
+            // Best-effort and non-blocking, same posture as
+            // `SqliteStore::create_node`'s own call site: the node above is
+            // already durably committed, so a marker-write failure must
+            // never undo it.
+            self.store
+                .mark_collection_name_collision(&created_id, &existing.id)
+                .await;
+        }
 
         // Post-commit, best-effort `UniqueFieldCollision` detection (ADR-068):
         // the node above is already durably written, so a detection failure
         // must never fail or undo this create. This is the real caller the
         // old `mark_possible_duplicates` never had — see
         // `conflicts::detect_unique_field_collisions`.
-        if let Err(e) = self.detect_unique_field_collisions(&node.id).await {
+        if let Err(e) = self.detect_unique_field_collisions(&created_id).await {
             tracing::warn!(
-                node_id = %node.id,
+                node_id = %created_id,
                 error = %e,
                 "failed to detect unique-field collisions after create_node (create unaffected)"
             );
         }
 
         tracing::debug!(
-            node_id = %node.id,
+            node_id = %created_id,
             "create_node: COMPLETE at {}ms",
             start.elapsed().as_millis()
         );
-        Ok(node.id)
+        Ok(created_id)
     }
 
-    /// `_in_tx` twin of [`Self::create_node`] (ADR-069 §1b/S2). Identical
-    /// validation/title pipeline; the insert lands on `tx.store_tx()` instead
-    /// of opening its own transaction, and the `NodeCreated` event is
-    /// buffered via `self.emit_event` (routed to the transaction buffer by
-    /// `BatchState::Transactional` — see `NodeService::with_transaction`)
-    /// instead of relying on the store notifier, since `create_node_in_tx`
-    /// (the store method) deliberately does not call `notify`.
+    /// `_in_tx` twin of [`Self::create_node`] (ADR-069 §1b/S2). Delegates the
+    /// validation/normalization/title/insert pipeline to
+    /// [`Self::insert_node_in_tx_no_invariant_dispatch`] (the insert lands on
+    /// `tx.store_tx()` instead of opening its own transaction, and the
+    /// `NodeCreated` event is buffered via `self.emit_event` — routed to the
+    /// transaction buffer by `BatchState::Transactional`, see
+    /// `NodeService::with_transaction` — instead of relying on the store
+    /// notifier, since `create_node_in_tx` the store method deliberately does
+    /// not call `notify`), then additionally runs invariant-rule dispatch
+    /// (ADR-060 §1) — the one thing that method does NOT do, by design.
     ///
     /// Does not handle the `database-settings` singleton short-circuit or
     /// collection-name-collision marking that `create_node` does — no
@@ -195,8 +173,56 @@ impl NodeService {
     pub(crate) async fn create_node_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
-        mut node: Node,
+        node: Node,
     ) -> Result<String, NodeServiceError> {
+        // Validation/normalization/title/play-rule-gate pipeline and the
+        // actual insert all live in `insert_node_in_tx_no_invariant_dispatch`
+        // now — kept in exactly one place rather than duplicated here, since
+        // this method and the invariant action executor
+        // (`playbook::actions::execute_create_node_in_tx`) both need it.
+        let node = self
+            .insert_node_in_tx_no_invariant_dispatch(tx, node)
+            .await?;
+
+        // ADR-060 §1: invariant-rule dispatch runs HERE — pre-commit, inside
+        // this same transaction, after the row lands but before
+        // `with_transaction` commits it. An action failure returns `Err`
+        // from this whole function, which propagates out through
+        // `with_transaction`'s `?` and rolls back the insert above (and its
+        // buffered `NodeCreated` event, discarded per ADR-069 §2) along with
+        // everything the invariant action(s) wrote: fail-closed, no partial
+        // state. See `invariants::dispatch_invariant_rules_in_tx`.
+        //
+        // Deliberately NOT reached when THIS insert is itself running inside
+        // an invariant action's own `execute_create_node_in_tx` (which calls
+        // `insert_node_in_tx_no_invariant_dispatch` directly, skipping this
+        // method) — ADR-060 §2 requires invariant rules to be non-chaining,
+        // depth 1: an invariant action must not itself trigger further rule
+        // evaluation, invariant or reactive. Save-time validation only
+        // proves the statically-decidable self-chaining case; this call
+        // structure is what makes the general case (a DIFFERENT invariant
+        // rule's trigger) impossible at the type level rather than relying
+        // on a runtime depth counter.
+        self.dispatch_invariant_rules_in_tx(tx, &node).await?;
+
+        Ok(node.id)
+    }
+
+    /// Insert-only half of [`Self::create_node_in_tx`]: identical
+    /// validation/normalization/title pipeline and the store insert, but
+    /// WITHOUT invariant-rule dispatch — returns the fully-resolved `Node`
+    /// (normalized properties/title/etc. applied) rather than just its id,
+    /// so a caller needing it (both callers do) never has to re-read it back
+    /// through the transaction a second time. The only callers are
+    /// `create_node_in_tx` itself and the invariant-rule action executor
+    /// (`playbook::actions::execute_create_node_in_tx`) — see
+    /// `create_node_in_tx`'s doc for why an invariant action's own
+    /// `create_node` must not recurse into dispatch.
+    pub(crate) async fn insert_node_in_tx_no_invariant_dispatch(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        mut node: Node,
+    ) -> Result<Node, NodeServiceError> {
         if is_date_node_id(&node.id) {
             node.node_type = "date".to_string();
         }
@@ -235,7 +261,7 @@ impl NodeService {
             node_type: node.node_type.clone(),
         });
 
-        Ok(node.id)
+        Ok(node)
     }
 
     /// Create a node with parent relationship in a single operation
@@ -986,6 +1012,139 @@ impl NodeService {
         });
 
         Ok(())
+    }
+
+    /// General tx-scoped node update, for invariant-rule `update_node`
+    /// actions (ADR-060 §1) and any other caller composing an update into an
+    /// existing `with_transaction` unit of work.
+    ///
+    /// Unlike [`Self::update_node_unchecked_in_tx`], reads `existing` via
+    /// [`crate::db::SqliteStore::get_node_in_tx`] rather than
+    /// `self.get_node` — this sees a node inserted **earlier in the same
+    /// transaction**, which the ordinary pooled-reader `get_node` cannot see
+    /// until commit. That case is the common one here: the canonical
+    /// invariant rule shape stamps a property onto the very node whose
+    /// creation triggered it, which exists only inside this transaction
+    /// until commit. `update_node_unchecked_in_tx` is left as-is for its one
+    /// existing caller (`rename_schema_field_in_tx`, which always targets an
+    /// already-committed schema node) rather than changed underneath it.
+    ///
+    /// No optimistic-concurrency check: within one transaction, nothing else
+    /// can observe or mutate `id` mid-transaction (SQLite serializes writers
+    /// to one connection), so there is no concurrent writer to race against —
+    /// the same reasoning `update_node_with_version_check_in_tx`'s doc gives
+    /// for why its OCC check is sound inside a transaction applies here too,
+    /// just without a caller-supplied `expected_version` to check against.
+    pub(crate) async fn update_node_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        id: &str,
+        update: NodeUpdate,
+    ) -> Result<Node, NodeServiceError> {
+        if update.is_empty() {
+            return Err(NodeServiceError::invalid_update(
+                "Update contains no changes",
+            ));
+        }
+
+        let existing = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
+
+        let mut updated = existing.clone();
+        let mut node_type_changed = false;
+        let mut content_changed = false;
+        let mut properties_changed = false;
+
+        if let Some(node_type) = update.node_type {
+            node_type_changed = updated.node_type != node_type;
+            updated.node_type = node_type;
+        }
+
+        if let Some(content) = update.content {
+            if updated.content != content {
+                content_changed = true;
+            }
+            updated.content = content;
+        }
+
+        if let Some(properties) = update.properties {
+            properties_changed = true;
+            if updated.node_type == "schema" {
+                Self::deep_merge_namespaced_properties(&mut updated.properties, properties);
+            } else {
+                let normalized_properties =
+                    Self::normalize_flat_properties_to_namespace(&updated.node_type, &properties);
+                Self::deep_merge_namespaced_properties(
+                    &mut updated.properties,
+                    normalized_properties,
+                );
+            }
+        }
+
+        if let Some(status) = update.lifecycle_status {
+            updated.lifecycle_status = status;
+        }
+
+        self.behaviors.validate_node(&updated)?;
+
+        if node_type_changed && updated.node_type != "schema" {
+            if let Some(schema_json) = self.get_schema_for_type(&updated.node_type).await? {
+                if let Some(fields_json) = schema_json.get("fields") {
+                    if let Ok(fields) = serde_json::from_value::<Vec<crate::models::SchemaField>>(
+                        fields_json.clone(),
+                    ) {
+                        self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
+                        self.validate_node_with_fields(&updated, &fields)?;
+                    }
+                }
+            }
+        } else if updated.node_type != "schema" {
+            self.validate_node_against_schema(&updated).await?;
+        }
+
+        let title_update = if content_changed || node_type_changed || properties_changed {
+            Some(self.compute_title(&updated, None).await?)
+        } else {
+            None
+        };
+        if let Some(ref new_title) = title_update {
+            updated.title = new_title.clone();
+        }
+
+        // update_node_with_version_check_in_tx re-reads `id` via `tx` itself
+        // to gate on `expected_version`, then writes the fully-resolved
+        // fields computed above. Passing `existing.version` (read above, also
+        // via `tx`) can never mismatch: nothing else can have mutated this
+        // row between that read and this call inside one transaction.
+        let result = crate::db::SqliteStore::update_node_with_version_check_in_tx(
+            tx.store_tx(),
+            id,
+            existing.version,
+            crate::models::NodeUpdate {
+                node_type: Some(updated.node_type.clone()),
+                content: Some(updated.content.clone()),
+                properties: Some(updated.properties.clone()),
+                title: title_update,
+                lifecycle_status: Some(updated.lifecycle_status.clone()),
+            },
+        )
+        .await
+        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+
+        let node = result.map_err(|actual_version| {
+            NodeServiceError::version_conflict(id, existing.version, actual_version)
+        })?;
+
+        self.emit_event(DomainEvent::NodeUpdated {
+            node_id: node.id.clone(),
+            node_type: node.node_type.clone(),
+            node: node.clone(),
+            changed_properties: vec![],
+        });
+
+        Ok(node)
     }
 
     /// Update node with optimistic concurrency control (version check)

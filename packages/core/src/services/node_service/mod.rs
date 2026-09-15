@@ -41,6 +41,7 @@ pub mod conflicts;
 pub(crate) mod crud;
 pub(crate) mod embedding;
 pub(crate) mod hierarchy;
+pub(crate) mod invariants;
 pub(crate) mod query;
 pub(crate) mod relationship;
 pub(crate) mod schema;
@@ -1035,6 +1036,20 @@ pub struct NodeService {
     /// held behind `OnceLock` so it can be set once the Pro tenant connection is established.
     pub(crate) subtree_access_gate:
         Arc<std::sync::OnceLock<Arc<dyn access_gate::SubtreeAccessGate>>>,
+
+    /// Read-only handle onto the play engine's live trigger index (ADR-060
+    /// §1), for looking up `RuleClass::Invariant` rules synchronously and
+    /// lock-free (no `.await` held across the read lock) from inside the
+    /// node-creation write path. `None` until the host wires it via
+    /// `set_playbook_lifecycle` — the play engine is constructed from an
+    /// already-built `NodeService` (see `PlaybookEngine::new`), so this
+    /// cannot be supplied at `NodeService::new` time; it is injected once,
+    /// immediately after, the same way `subtree_access_gate` is. While
+    /// unset, `create_node`/`create_node_in_tx` runs no invariant dispatch —
+    /// exactly today's behavior — so a host that never wires this (tests,
+    /// tools that construct a bare `NodeService`) is unaffected.
+    pub(crate) playbook_lifecycle:
+        Arc<std::sync::OnceLock<Arc<RwLock<crate::playbook::lifecycle::PlaybookLifecycleManager>>>>,
 }
 
 impl Clone for NodeService {
@@ -1052,6 +1067,7 @@ impl Clone for NodeService {
             #[cfg(feature = "nlp")]
             embedding_waker: self.embedding_waker.clone(),
             subtree_access_gate: self.subtree_access_gate.clone(),
+            playbook_lifecycle: self.playbook_lifecycle.clone(),
         }
     }
 }
@@ -1206,6 +1222,7 @@ impl NodeService {
             #[cfg(feature = "nlp")]
             embedding_waker: std::sync::Arc::new(std::sync::OnceLock::new()),
             subtree_access_gate: Arc::new(std::sync::OnceLock::new()),
+            playbook_lifecycle: Arc::new(std::sync::OnceLock::new()),
         };
 
         // ADR-037: every install has exactly one local PersonNode (the user).
@@ -2325,6 +2342,29 @@ impl NodeService {
             .write()
             .unwrap_or_else(|e| e.into_inner());
         *guard = Some(origin.into());
+    }
+
+    /// Inject the play engine's live trigger index (ADR-060 §1) so
+    /// `create_node`/`create_node_in_tx` can look up and dispatch
+    /// `RuleClass::Invariant` rules synchronously, pre-commit. Set once, like
+    /// `set_subtree_access_gate` — a second call is a silent no-op, since the
+    /// play engine is constructed from an already-built `NodeService` and can
+    /// only hand back its lifecycle handle afterward (see the field's own doc
+    /// comment for why this can't be supplied at construction time).
+    pub fn set_playbook_lifecycle(
+        &self,
+        lifecycle: Arc<RwLock<crate::playbook::lifecycle::PlaybookLifecycleManager>>,
+    ) {
+        let _ = self.playbook_lifecycle.set(lifecycle);
+    }
+
+    /// The injected play engine lifecycle handle, if one has been set.
+    /// `None` means no invariant-rule dispatch runs on this write path —
+    /// today's behavior, e.g. for a bare `NodeService` built in a unit test.
+    pub(crate) fn playbook_lifecycle(
+        &self,
+    ) -> Option<&Arc<RwLock<crate::playbook::lifecycle::PlaybookLifecycleManager>>> {
+        self.playbook_lifecycle.get()
     }
 
     /// Begin batched event emission for bulk operations.

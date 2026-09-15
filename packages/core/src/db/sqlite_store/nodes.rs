@@ -106,7 +106,7 @@ impl SqliteStore {
     /// 'active'` collections, so a collision against an archived collection
     /// is never detected or journaled by any caller — archiving a collection
     /// frees up its name.
-    async fn mark_collection_name_collision(&self, new_id: &str, existing_id: &str) {
+    pub(crate) async fn mark_collection_name_collision(&self, new_id: &str, existing_id: &str) {
         use crate::models::conflict::ConflictKind;
 
         let mut node_ids = vec![new_id.to_string(), existing_id.to_string()];
@@ -350,6 +350,31 @@ impl SqliteStore {
             .context("Failed to insert parent-child relationship")?;
 
         Ok(new_order)
+    }
+
+    /// `_in_tx` twin of [`Self::get_node`] (ADR-069 §1a). Reads via `tx.conn()`
+    /// rather than `self.read()`'s pooled reader connection, so it sees this
+    /// transaction's own uncommitted writes (e.g. a node inserted earlier in
+    /// the same transaction via `create_node_in_tx`) — the pooled reader
+    /// cannot see those until commit. Needed by invariant-rule action
+    /// execution (ADR-060 §1): an invariant rule's action very often targets
+    /// the very node whose creation triggered it, which exists only inside
+    /// this transaction until commit.
+    pub(crate) async fn get_node_in_tx(tx: &Tx<'_>, id: &str) -> Result<Option<Node>> {
+        let mut rows = tx
+            .conn()
+            .query(
+                "SELECT * FROM node WHERE id = ?1 LIMIT 1",
+                libsql::params![id.to_string()],
+            )
+            .await
+            .context("Failed to query node")?;
+
+        if let Some(row) = rows.next().await? {
+            Ok(Some(Self::row_to_node(&row)?))
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn get_node(&self, id: &str) -> Result<Option<Node>> {

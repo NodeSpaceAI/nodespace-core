@@ -713,6 +713,283 @@ impl NodeService {
         Ok(())
     }
 
+    /// Tx-scoped twin of [`Self::create_relationship`], for invariant-rule
+    /// `add_relationship` actions (ADR-060 §1). Covers the same validation
+    /// (built-in target-type checks, schema-declared custom relationships,
+    /// edge-field validation, cardinality-one, the ADR-059 §2 `member_of`
+    /// root-only gate) against tx-consistent reads via
+    /// `SqliteStore::get_node_in_tx`, since `source_id` is very often the
+    /// node this same transaction just inserted.
+    ///
+    /// Deliberately narrower than `create_relationship` in one way: it does
+    /// **not** implement the atomic auto-order paths `add_to_collection` /
+    /// `append_child_edge` provide for `member_of` / `has_child` when
+    /// `edge_data` omits `order` (their read-current-max-then-write has no
+    /// transaction-scoped twin here — see
+    /// `SqliteStore::create_generic_relationship_in_tx`'s doc). Save-time
+    /// validation (`playbook::validation`) rejects an invariant
+    /// `add_relationship` action for either of those two types unless
+    /// `edge_data` supplies an explicit `order`, so this method never has to
+    /// reject at execution time for that reason — an omission here would be
+    /// a validation bug, not a normal runtime outcome.
+    pub(crate) async fn create_relationship_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        source_id: &str,
+        relationship_name: &str,
+        target_id: &str,
+        edge_data: serde_json::Value,
+    ) -> Result<(), NodeServiceError> {
+        let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
+
+        if is_builtin {
+            if relationship_name == "member_of" {
+                let target = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
+                    .await
+                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+                if target.node_type != "collection" {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "member_of target must be a collection node, got '{}'",
+                        target.node_type
+                    )));
+                }
+                let source = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
+                    .await
+                    .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                    .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
+                if source.node_type == "collection" {
+                    self.store
+                        .validate_no_member_of_cycle(source_id, target_id)
+                        .await
+                        .map_err(|e| NodeServiceError::collection_cycle(e.to_string()))?;
+                }
+            }
+        } else {
+            let source = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                .ok_or_else(|| NodeServiceError::node_not_found(source_id))?;
+
+            if source.node_type == "schema" {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "'{}' is a schema node; typed relationships between schemas are declarations \
+                     — declare them via update_schema, not create_relationship",
+                    source_id
+                )));
+            }
+
+            let schema_id = &source.node_type;
+            let schema_node = self.get_schema_node(schema_id).await?.ok_or_else(|| {
+                NodeServiceError::query_failed(format!("Schema '{}' not found", schema_id))
+            })?;
+
+            let relationship = schema_node
+                .get_relationship(relationship_name)
+                .ok_or_else(|| {
+                    NodeServiceError::invalid_update(format!(
+                        "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions, has_role) are universal.",
+                        relationship_name, schema_id
+                    ))
+                })?;
+
+            let target = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
+
+            if target.node_type == "schema" {
+                return Err(NodeServiceError::invalid_update(format!(
+                    "'{}' is a schema node; typed relationships between schemas are declarations \
+                     — declare them via update_schema, not create_relationship",
+                    target_id
+                )));
+            }
+
+            if let Some(expected_type) = &relationship.target_type {
+                if target.node_type != *expected_type {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "Target node type '{}' doesn't match expected type '{}' for relationship '{}'",
+                        target.node_type, expected_type, relationship_name
+                    )));
+                }
+            }
+
+            if let Some(edge_fields) = relationship.edge_fields.as_deref() {
+                validate_edge_data_against_fields(&edge_data, edge_fields, relationship_name)?;
+            }
+
+            if relationship.cardinality == crate::models::schema::RelationshipCardinality::One {
+                let existing_count = crate::db::SqliteStore::check_relationship_exists_in_tx(
+                    tx.store_tx(),
+                    source_id,
+                    relationship_name,
+                )
+                .await
+                .map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to check cardinality: {}", e))
+                })?;
+                if existing_count > 0 {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "Relationship '{}' has cardinality 'one' but an edge already exists",
+                        relationship_name
+                    )));
+                }
+            }
+        }
+
+        // Idempotency check (mirrors `create_relationship`'s generic path;
+        // the auto-order `member_of`/`has_child` short-circuits are
+        // deliberately not reproduced here — see this method's doc).
+        let already_exists = crate::db::SqliteStore::relationship_exists_in_tx(
+            tx.store_tx(),
+            source_id,
+            target_id,
+            relationship_name,
+        )
+        .await
+        .map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to check existing relationship: {}", e))
+        })?;
+        if already_exists {
+            return Ok(());
+        }
+
+        let final_edge_data = if is_builtin {
+            serde_json::json!(edge_data.as_object().cloned().unwrap_or_default())
+        } else {
+            edge_data.clone()
+        };
+
+        let rel_id = crate::db::SqliteStore::create_generic_relationship_in_tx(
+            tx.store_tx(),
+            source_id,
+            target_id,
+            relationship_name,
+            &final_edge_data,
+        )
+        .await
+        .map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
+        })?;
+
+        self.emit_event(DomainEvent::RelationshipCreated {
+            relationship: crate::db::events::RelationshipEvent::new(
+                rel_id,
+                source_id,
+                target_id,
+                relationship_name,
+                final_edge_data,
+            ),
+        });
+
+        Ok(())
+    }
+
+    /// Tx-scoped twin of [`Self::delete_relationship`], for invariant-rule
+    /// `remove_relationship` actions (ADR-060 §1). Reproduces the
+    /// required-relationship last-edge protection via tx-consistent reads.
+    pub(crate) async fn remove_relationship_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        source_id: &str,
+        relationship_name: &str,
+        target_id: &str,
+    ) -> Result<(), NodeServiceError> {
+        let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
+        if !is_builtin {
+            if let Some(source) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), source_id)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            {
+                if source.node_type == "schema" {
+                    return Err(NodeServiceError::invalid_update(format!(
+                        "'{}' is a schema node; '{}' is a relationship declaration — \
+                         remove it via update_schema, not delete_relationship",
+                        source_id, relationship_name
+                    )));
+                }
+                if let Some(schema_node) = self.get_schema_node(&source.node_type).await? {
+                    let is_required = schema_node
+                        .relationships
+                        .iter()
+                        .find(|r| r.name == relationship_name)
+                        .map(|r| {
+                            r.required == Some(true)
+                                && r.direction == crate::models::schema::RelationshipDirection::Out
+                        })
+                        .unwrap_or(false);
+                    if is_required {
+                        let edge_exists = crate::db::SqliteStore::relationship_exists_in_tx(
+                            tx.store_tx(),
+                            source_id,
+                            target_id,
+                            relationship_name,
+                        )
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to check relationship existence: {}",
+                                e
+                            ))
+                        })?;
+                        let total = crate::db::SqliteStore::check_relationship_exists_in_tx(
+                            tx.store_tx(),
+                            source_id,
+                            relationship_name,
+                        )
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to count relationship edges: {}",
+                                e
+                            ))
+                        })?;
+                        if edge_exists && total <= 1 {
+                            return Err(NodeServiceError::invalid_update(format!(
+                                "Relationship '{}' is required and this is its last edge; add another target before removing this one",
+                                relationship_name
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+
+        let rel_id = crate::db::SqliteStore::get_relationship_id_in_tx(
+            tx.store_tx(),
+            source_id,
+            target_id,
+            relationship_name,
+        )
+        .await
+        .map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to get relationship ID: {}", e))
+        })?;
+
+        crate::db::SqliteStore::delete_generic_relationship_in_tx(
+            tx.store_tx(),
+            source_id,
+            target_id,
+            relationship_name,
+        )
+        .await
+        .map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to delete relationship: {}", e))
+        })?;
+
+        if let Some(id) = rel_id {
+            self.emit_event(DomainEvent::RelationshipDeleted {
+                id,
+                from_id: crate::db::events::node_thing(source_id),
+                to_id: crate::db::events::node_thing(target_id),
+                relationship_type: relationship_name.to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Bulk-create `member_of` edges AND emit a `RelationshipCreated` event for
     /// each newly created edge, so the cloud-sync push consumer replicates them.
     ///

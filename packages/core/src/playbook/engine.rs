@@ -14,7 +14,9 @@
 
 use crate::db::events::{persisted_chain_depth, DomainEvent, EventEnvelope};
 use crate::playbook::lifecycle::{trigger_keys_for_event, PlaybookLifecycleManager};
-use crate::playbook::logging::{create_or_update_log_node, PlayErrorType, MAX_CHAIN_DEPTH};
+use crate::playbook::logging::{
+    create_or_update_log_node, create_or_update_repair_log_node, PlayErrorType, MAX_CHAIN_DEPTH,
+};
 use crate::playbook::types::*;
 use crate::services::NodeService;
 use std::sync::{Arc, RwLock};
@@ -224,6 +226,16 @@ impl PlaybookEngine {
                 node_event = ?trigger_node_id(&envelope.event),
                 "Skipping trigger evaluation for sync-originated event"
             );
+            // ADR-060 §7: repair-and-log. This IS the mechanism that makes
+            // `RuleClass::Invariant` rules sync-safe for a node received
+            // already-committed via sync — architecturally separate from the
+            // reactive `ExecutionQueue` above (never enqueued there; run
+            // inline, here, against the already-committed node), and
+            // deliberately still reached even though trigger evaluation for
+            // reactive/invariant firing is skipped for this event.
+            if let DomainEvent::NodeCreated { node_id, node_type } = &envelope.event {
+                self.dispatch_invariant_repair(node_id, node_type).await;
+            }
             return;
         }
 
@@ -289,6 +301,141 @@ impl PlaybookEngine {
                 }
                 mpsc::error::TrySendError::Closed(_) => {
                     debug!("ExecutionQueue closed, engine shutting down");
+                }
+            }
+        }
+    }
+
+    /// Repair-and-log for a node received via sync (ADR-060 §7).
+    ///
+    /// `node_id`/`node_type` are the just-applied `NodeCreated` event's own
+    /// fields (already known from the envelope — no need to re-derive them).
+    /// Looks up active `RuleClass::Invariant` rules matching this node's
+    /// creation, and for each whose condition STILL passes against the node
+    /// as it now stands (i.e. the effect the rule would have applied is
+    /// absent — the node violates an invariant this device holds), runs the
+    /// rule's actions as an ordinary write (no transaction to join — the
+    /// node already committed on the originating device) and records a
+    /// repair log node. A rule whose condition now fails is left alone: the
+    /// node already carries the required effect (applied by whichever device
+    /// originated it, or by an earlier repair — this device's own or one
+    /// that already synced in), so re-running would be redundant at best.
+    ///
+    /// Best-effort: a failure fetching the node or evaluating/executing one
+    /// rule is logged and does not block the others, since (unlike the
+    /// pre-commit path) there is no write to roll back here — the node is
+    /// already durably committed either way.
+    async fn dispatch_invariant_repair(&self, node_id: &str, node_type: &str) {
+        let key = TriggerKey::NodeEvent {
+            event: NodeEventType::NodeCreated,
+            node_type: node_type.to_string(),
+            property_key: None,
+        };
+        let matched = {
+            let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
+            lifecycle.lookup_rules(&[key])
+        };
+        let invariant_rules: Vec<_> = matched
+            .into_iter()
+            .filter(|r| r.rule.class == RuleClass::Invariant)
+            .collect();
+        if invariant_rules.is_empty() {
+            return;
+        }
+
+        let node = match self.node_service.get_node(node_id).await {
+            Ok(Some(n)) => n,
+            Ok(None) => {
+                debug!(
+                    node_id,
+                    "Repair-and-log: node not found (deleted after sync apply?), skipping"
+                );
+                return;
+            }
+            Err(e) => {
+                error!(node_id, error = %e, "Repair-and-log: failed to fetch node");
+                return;
+            }
+        };
+
+        let event = DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: node.node_type.clone(),
+        };
+
+        for rule_ref in invariant_rules {
+            let mut resolver =
+                crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&self.node_service));
+            let condition_result = crate::playbook::cel::evaluate_conditions(
+                &rule_ref.rule.conditions,
+                &node,
+                &event,
+                Some(&mut resolver),
+            )
+            .await;
+
+            let still_violates = matches!(
+                condition_result,
+                crate::playbook::cel::ConditionResult::Pass
+            );
+            if !still_violates {
+                continue;
+            }
+
+            info!(
+                node_id = %node.id,
+                play_id = %rule_ref.play_id,
+                rule = %rule_ref.rule.name,
+                "Repairing invariant violation on node received via sync"
+            );
+
+            let execution_context = crate::db::events::PlaybookExecutionContext {
+                originating_event_id: uuid::Uuid::new_v4().to_string(),
+                depth: 0,
+                source_playbook_id: rule_ref.play_id.clone(),
+            };
+
+            let action_result = crate::playbook::actions::execute_actions(
+                &rule_ref.rule.actions,
+                &node,
+                &event,
+                &self.node_service,
+                execution_context,
+            )
+            .await;
+
+            match action_result {
+                crate::playbook::actions::ActionResult::Success => {
+                    let _ = create_or_update_repair_log_node(
+                        &self.node_service,
+                        &rule_ref.play_id,
+                        &rule_ref.rule.name,
+                        &node.id,
+                        &format!(
+                            "Repaired invariant '{}' (play {}) on node received via sync",
+                            rule_ref.rule.name, rule_ref.play_id
+                        ),
+                    )
+                    .await;
+                }
+                crate::playbook::actions::ActionResult::Failed(err) => {
+                    warn!(
+                        node_id = %node.id,
+                        play_id = %rule_ref.play_id,
+                        rule = %rule_ref.rule.name,
+                        error = %err,
+                        "Repair-and-log: invariant repair action failed"
+                    );
+                    let _ = create_or_update_log_node(
+                        &self.node_service,
+                        &rule_ref.play_id,
+                        &rule_ref.rule.name,
+                        rule_ref.rule_index,
+                        PlayErrorType::ActionError,
+                        &format!("Invariant repair action failed: {}", err),
+                        &node.id,
+                    )
+                    .await;
                 }
             }
         }
@@ -393,11 +540,59 @@ impl PlaybookEngine {
             }
         };
 
-        // Read current status (short lock)
-        let current_status = {
+        // Read current status AND the pre-edit rule set (short lock) — the
+        // latter is what ADR-060 §8's warning needs to name (the invariant
+        // rule(s) this play carried BEFORE whatever update just landed), not
+        // whatever `node` now contains.
+        let (current_status, previously_carried_invariant) = {
             let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
-            lifecycle.get_play(node_id).map(|pb| pb.status.clone())
+            match lifecycle.get_play(node_id) {
+                Some(pb) => (
+                    Some(pb.status.clone()),
+                    crate::playbook::seeded::carries_invariant(&pb.rules),
+                ),
+                None => (None, false),
+            }
         };
+
+        // ADR-060 §8: a seeded play carrying an invariant rule warns
+        // explicitly, naming the concrete consequence, on edit OR disable —
+        // both branches below reach this before doing anything else, so
+        // neither an edit-while-active nor a disable skips it. Only reached
+        // when this play was ALREADY active (a fresh first-time activation,
+        // `current_status == None`, is installation, not an edit). Best-
+        // effort: a warning-log failure must never block the underlying
+        // disable/re-activation it describes.
+        if current_status == Some(PlayStatus::Active)
+            && previously_carried_invariant
+            && crate::playbook::seeded::is_seeded_play(&node)
+        {
+            let old_rule_names = {
+                let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
+                lifecycle
+                    .get_play(node_id)
+                    .map(|pb| crate::playbook::seeded::invariant_rule_names(&pb.rules))
+                    .unwrap_or_default()
+            };
+            let action = if node.lifecycle_status == "active" {
+                "edited"
+            } else {
+                "disabled"
+            };
+            let message =
+                crate::playbook::seeded::edit_or_disable_warning(node_id, action, &old_rule_names);
+            warn!("{}", message);
+            let _ = create_or_update_log_node(
+                &self.node_service,
+                node_id,
+                "seeded-play-protection",
+                0,
+                PlayErrorType::SeededPlayWarning,
+                &message,
+                node_id,
+            )
+            .await;
+        }
 
         let needs_activation = matches!(
             (&current_status, node.lifecycle_status.as_str()),

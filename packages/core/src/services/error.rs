@@ -99,6 +99,19 @@ pub enum NodeServiceError {
     #[error("Play validation failed: {errors}")]
     PlayValidationFailed { errors: String },
 
+    /// An invariant rule's action failed inside the creating transaction
+    /// (ADR-060 §1). Fail-closed: the triggering write is NOT committed —
+    /// the caller's `with_transaction` rolls back the whole unit of work,
+    /// so the node this error is attached to was never durably created.
+    #[error(
+        "Invariant rule '{rule_name}' (play {play_id}) failed: {message} — node was not created"
+    )]
+    InvariantRuleFailed {
+        play_id: String,
+        rule_name: String,
+        message: String,
+    },
+
     /// Node cannot be a parent because its type does not allow children
     #[error("Node '{parent_id}' (type '{node_type}') cannot have children")]
     NotAContainer {
@@ -220,6 +233,19 @@ impl NodeServiceError {
     /// Create a query failed error
     pub fn query_failed(msg: impl Into<String>) -> Self {
         Self::QueryFailed(msg.into())
+    }
+
+    /// Create an invariant-rule-failed error (ADR-060 §1, fail-closed)
+    pub fn invariant_rule_failed(
+        play_id: impl Into<String>,
+        rule_name: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::InvariantRuleFailed {
+            play_id: play_id.into(),
+            rule_name: rule_name.into(),
+            message: message.into(),
+        }
     }
 
     /// Create a version conflict error

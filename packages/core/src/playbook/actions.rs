@@ -1066,6 +1066,413 @@ async fn execute_remove_relationship(
 }
 
 // ---------------------------------------------------------------------------
+// Transaction-scoped action execution (ADR-060 §1)
+// ---------------------------------------------------------------------------
+//
+// `execute_actions_in_tx` is the invariant-rule twin of `execute_actions`:
+// same binding context, `for_each` iteration, and derived-identity logic
+// (all read-only or pure with respect to the transaction, so reused
+// unchanged), but every actual graph write goes through a `NodeServiceTx`
+// `_in_tx` method instead of an ordinary `NodeService` method that would open
+// (and commit) its own transaction. An invariant action's failure returns
+// `ActionResult::Failed` exactly like the reactive path; the difference is
+// entirely in what the CALLER does with that failure — `create_node_in_tx`
+// propagates it as an `Err` that fails the whole enclosing transaction
+// (fail-closed, ADR-060 §1), where `rule_processor_loop` instead disables the
+// play and logs (fail-open, no rollback).
+//
+// Binding resolution (`resolve_bindings_in_value`, `GraphResolver`) reads via
+// ordinary (non-tx) `NodeService` calls even here. This is safe: save-time
+// eligibility (`playbook::validation`) restricts an invariant rule's actions
+// to the trigger node and nodes it already references (ADR-060 §2's
+// same-graph-scope rule), i.e. data that, if not the trigger node itself
+// (served from the in-memory `trigger_node: &Node`, no read at all), already
+// committed before this transaction began — a non-tx read sees it correctly.
+// Only a WRITE targeting the trigger node itself needs tx-consistent reads,
+// which is exactly what the `_in_tx` leaf executors below use.
+
+/// Bundles the two "where to write" parameters every tx-scoped action
+/// executor needs. Without this, `execute_single_action_in_tx` would take 8
+/// positional arguments (clippy::too_many_arguments's limit is 7); bundling
+/// `node_service` and `tx` -- always passed together, never independently --
+/// brings every tx-scoped executor below that limit without hiding anything
+/// behind a generic "context" grab-bag.
+struct TxCtx<'a> {
+    node_service: &'a Arc<NodeService>,
+    tx: &'a crate::services::node_service::NodeServiceTx<'a>,
+}
+
+/// Tx-scoped twin of [`execute_actions`]. See the module section doc above.
+pub(crate) async fn execute_actions_in_tx(
+    actions: &[ParsedAction],
+    trigger_node: &Node,
+    event: &DomainEvent,
+    node_service: &Arc<NodeService>,
+    tx: &crate::services::node_service::NodeServiceTx<'_>,
+    execution_context: PlaybookExecutionContext,
+) -> ActionResult {
+    let play_id = execution_context.source_playbook_id.clone();
+    let depth = execution_context.depth;
+
+    // Scoped so any buffered event these actions produce (flushed after this
+    // transaction commits) carries `playbook_context` like a reactive
+    // action's does -- `client_id` and everything else is preserved by
+    // `scoped_for_playbook`'s clone-and-set-one-field shape.
+    let scoped_service = Arc::new(node_service.scoped_for_playbook(execution_context));
+    let txc = TxCtx {
+        node_service: &scoped_service,
+        tx,
+    };
+    let graph_resolver = GraphResolver::new(Arc::clone(node_service));
+    let mut ctx = BindingContext::new(trigger_node, event, Some(graph_resolver));
+    let rule_id = rule_id_for(&play_id, actions);
+
+    for (i, action) in actions.iter().enumerate() {
+        if let Some(for_each_path) = &action.for_each {
+            let collection = match ctx.resolve_binding(for_each_path).await {
+                Ok(Value::Array(items)) => items,
+                Ok(_) => {
+                    return ActionResult::Failed(ActionError::ForEachResolutionFailed {
+                        path: for_each_path.clone(),
+                        message: "for_each path did not resolve to an array".to_string(),
+                    });
+                }
+                Err(msg) => {
+                    return ActionResult::Failed(ActionError::ForEachResolutionFailed {
+                        path: for_each_path.clone(),
+                        message: msg,
+                    });
+                }
+            };
+
+            debug!(
+                "action[{}] for_each (in_tx) over {} items from '{}'",
+                i,
+                collection.len(),
+                for_each_path,
+            );
+
+            for (item_idx, item) in collection.iter().enumerate() {
+                ctx.current_item = Some(item.clone());
+
+                let item_node_id = match resolve_iteration_path_item_id(item) {
+                    Ok(id) => id,
+                    Err(message) => {
+                        return ActionResult::Failed(ActionError::IterationPathResolutionFailed {
+                            action_index: i,
+                            item_index: item_idx,
+                            message,
+                        });
+                    }
+                };
+                ctx.iteration_path.push(item_node_id);
+
+                let item_params = match resolve_bindings_in_value(&action.params, &mut ctx).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        ctx.iteration_path.pop();
+                        return ActionResult::Failed(e);
+                    }
+                };
+
+                let result = execute_single_action_in_tx(
+                    i,
+                    &action.action_type,
+                    &item_params,
+                    &txc,
+                    &rule_id,
+                    &ctx.iteration_path,
+                    depth,
+                )
+                .await;
+                ctx.iteration_path.pop();
+
+                if let Err(e) = result {
+                    warn!(
+                        "action[{}] for_each (in_tx) item[{}] failed, aborting rule: {}",
+                        i, item_idx, e
+                    );
+                    return ActionResult::Failed(e);
+                }
+            }
+
+            ctx.current_item = None;
+            ctx.action_results.push(Value::Null);
+        } else {
+            let resolved_params = match resolve_bindings_in_value(&action.params, &mut ctx).await {
+                Ok(p) => p,
+                Err(e) => return ActionResult::Failed(e),
+            };
+
+            match execute_single_action_in_tx(
+                i,
+                &action.action_type,
+                &resolved_params,
+                &txc,
+                &rule_id,
+                &ctx.iteration_path,
+                depth,
+            )
+            .await
+            {
+                Ok(result_value) => {
+                    ctx.action_results.push(result_value);
+                }
+                Err(e) => {
+                    warn!("action[{}] (in_tx) failed, aborting rule: {}", i, e);
+                    return ActionResult::Failed(e);
+                }
+            }
+        }
+    }
+
+    ActionResult::Success
+}
+
+async fn execute_single_action_in_tx(
+    action_index: usize,
+    action_type: &ActionType,
+    params: &Value,
+    txc: &TxCtx<'_>,
+    rule_id: &str,
+    iteration_path: &[String],
+    depth: u8,
+) -> Result<Value, ActionError> {
+    match action_type {
+        ActionType::CreateNode => {
+            execute_create_node_in_tx(action_index, params, txc, rule_id, iteration_path, depth)
+                .await
+        }
+        ActionType::UpdateNode => execute_update_node_in_tx(action_index, params, txc, depth).await,
+        ActionType::AddRelationship => {
+            execute_add_relationship_in_tx(action_index, params, txc).await
+        }
+        ActionType::RemoveRelationship => {
+            execute_remove_relationship_in_tx(action_index, params, txc).await
+        }
+    }
+}
+
+/// Tx-scoped twin of [`execute_create_node`]. Derived identity (ADR-060 §3,
+/// ADR-074) applies identically: the existing-node check reads via
+/// `SqliteStore::get_node_in_tx` (tx-consistent, unlike the ordinary path's
+/// `NodeService::get_node`), so a duplicate `create_node` action within the
+/// same transaction — or one this rule already produced earlier in the same
+/// `for_each` iteration — converges onto the existing row instead of
+/// attempting (and failing) a second insert at the same id.
+async fn execute_create_node_in_tx(
+    action_index: usize,
+    params: &Value,
+    txc: &TxCtx<'_>,
+    rule_id: &str,
+    iteration_path: &[String],
+    depth: u8,
+) -> Result<Value, ActionError> {
+    let node_type =
+        params
+            .get("node_type")
+            .and_then(|v| v.as_str())
+            .ok_or(ActionError::MissingParam {
+                param: "node_type".to_string(),
+                action_index,
+            })?;
+    let content = params.get("content").and_then(|v| v.as_str()).unwrap_or("");
+    let properties = params.get("properties").cloned().unwrap_or(json!({}));
+    let properties = stamp_chain_depth(properties, depth);
+
+    let node_id = deterministic_action_output_id(rule_id, action_index, iteration_path);
+
+    if let Some(existing) = crate::db::SqliteStore::get_node_in_tx(txc.tx.store_tx(), &node_id)
+        .await
+        .map_err(|e| ActionError::ServiceError {
+            message: e.to_string(),
+            action_index,
+        })?
+    {
+        debug!(
+            "action[{}] create_node (in_tx) converged onto existing node '{}'",
+            action_index, node_id
+        );
+        return serde_json::to_value(&existing).map_err(|e| ActionError::ServiceError {
+            message: e.to_string(),
+            action_index,
+        });
+    }
+
+    let node = Node::new_with_id(
+        node_id.clone(),
+        node_type.to_string(),
+        content.to_string(),
+        properties,
+    );
+
+    // `insert_node_in_tx_no_invariant_dispatch`, NOT `create_node_in_tx`: an
+    // invariant action's own `create_node` must not recurse into invariant
+    // dispatch for whatever it just created — ADR-060 §2 requires invariant
+    // rules to be non-chaining, depth 1, and this is what makes a DIFFERENT
+    // rule's trigger matching this output impossible by construction rather
+    // than relying on a runtime depth counter. See
+    // `NodeService::create_node_in_tx`'s doc for the full reasoning.
+    let created = txc
+        .node_service
+        .insert_node_in_tx_no_invariant_dispatch(txc.tx, node)
+        .await
+        .map_err(|e| ActionError::ServiceError {
+            message: e.to_string(),
+            action_index,
+        })?;
+
+    serde_json::to_value(&created).map_err(|e| ActionError::ServiceError {
+        message: e.to_string(),
+        action_index,
+    })
+}
+
+async fn execute_update_node_in_tx(
+    action_index: usize,
+    params: &Value,
+    txc: &TxCtx<'_>,
+    depth: u8,
+) -> Result<Value, ActionError> {
+    let node_id =
+        params
+            .get("node_id")
+            .and_then(|v| v.as_str())
+            .ok_or(ActionError::MissingParam {
+                param: "node_id".to_string(),
+                action_index,
+            })?;
+
+    let mut update = NodeUpdate::default();
+    if let Some(content) = params.get("content").and_then(|v| v.as_str()) {
+        update.content = Some(content.to_string());
+    }
+    if let Some(properties) = params.get("properties") {
+        update.properties = Some(properties.clone());
+    }
+    if let Some(status) = params.get("lifecycle_status").and_then(|v| v.as_str()) {
+        update.lifecycle_status = Some(status.to_string());
+    }
+    if let Some(node_type) = params.get("node_type").and_then(|v| v.as_str()) {
+        update.node_type = Some(node_type.to_string());
+    }
+
+    update.properties = Some(stamp_chain_depth(
+        update.properties.unwrap_or_else(|| json!({})),
+        depth,
+    ));
+
+    let updated = txc
+        .node_service
+        .update_node_in_tx(txc.tx, node_id, update)
+        .await
+        .map_err(|e| match &e {
+            NodeServiceError::VersionConflict { .. } => ActionError::VersionConflict {
+                node_id: node_id.to_string(),
+                action_index,
+            },
+            _ => ActionError::ServiceError {
+                message: e.to_string(),
+                action_index,
+            },
+        })?;
+
+    serde_json::to_value(&updated).map_err(|e| ActionError::ServiceError {
+        message: e.to_string(),
+        action_index,
+    })
+}
+
+async fn execute_add_relationship_in_tx(
+    action_index: usize,
+    params: &Value,
+    txc: &TxCtx<'_>,
+) -> Result<Value, ActionError> {
+    let source_id =
+        params
+            .get("source_id")
+            .and_then(|v| v.as_str())
+            .ok_or(ActionError::MissingParam {
+                param: "source_id".to_string(),
+                action_index,
+            })?;
+    let relationship_type = params
+        .get("relationship_type")
+        .and_then(|v| v.as_str())
+        .ok_or(ActionError::MissingParam {
+            param: "relationship_type".to_string(),
+            action_index,
+        })?;
+    let target_id =
+        params
+            .get("target_id")
+            .and_then(|v| v.as_str())
+            .ok_or(ActionError::MissingParam {
+                param: "target_id".to_string(),
+                action_index,
+            })?;
+    let edge_data = params.get("edge_data").cloned().unwrap_or(json!({}));
+
+    txc.node_service
+        .create_relationship_in_tx(txc.tx, source_id, relationship_type, target_id, edge_data)
+        .await
+        .map_err(|e| ActionError::ServiceError {
+            message: e.to_string(),
+            action_index,
+        })?;
+
+    Ok(json!({
+        "source_id": source_id,
+        "target_id": target_id,
+        "relationship_type": relationship_type,
+    }))
+}
+
+async fn execute_remove_relationship_in_tx(
+    action_index: usize,
+    params: &Value,
+    txc: &TxCtx<'_>,
+) -> Result<Value, ActionError> {
+    let source_id =
+        params
+            .get("source_id")
+            .and_then(|v| v.as_str())
+            .ok_or(ActionError::MissingParam {
+                param: "source_id".to_string(),
+                action_index,
+            })?;
+    let relationship_type = params
+        .get("relationship_type")
+        .and_then(|v| v.as_str())
+        .ok_or(ActionError::MissingParam {
+            param: "relationship_type".to_string(),
+            action_index,
+        })?;
+    let target_id =
+        params
+            .get("target_id")
+            .and_then(|v| v.as_str())
+            .ok_or(ActionError::MissingParam {
+                param: "target_id".to_string(),
+                action_index,
+            })?;
+
+    txc.node_service
+        .remove_relationship_in_tx(txc.tx, source_id, relationship_type, target_id)
+        .await
+        .map_err(|e| ActionError::ServiceError {
+            message: e.to_string(),
+            action_index,
+        })?;
+
+    Ok(json!({
+        "source_id": source_id,
+        "target_id": target_id,
+        "relationship_type": relationship_type,
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
