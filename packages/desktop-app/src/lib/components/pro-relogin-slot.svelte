@@ -33,8 +33,9 @@
     if (reloginPending) return;
     reloginPending = true;
     try {
-      // Same PKCE flow the sync pill uses; the daemon opens the browser and the
-      // modal closes as `sync:status` transitions away from auth-required.
+      // Same PKCE flow Settings > Database's "Add synced database…" dialog uses;
+      // the daemon opens the browser and the modal closes as `sync:status`
+      // transitions away from auth-required.
       await invoke('pro_initiate_oauth');
     } catch (e) {
       log.warn('pro_initiate_oauth (relogin) failed', { error: e });

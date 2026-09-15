@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render, cleanup } from '@testing-library/svelte';
 import type { Node } from '$lib/types';
 
 // Mock the Tauri bridge so we can assert Pro-gated daemon commands are NEVER
@@ -34,6 +35,10 @@ vi.mock('@tauri-apps/api/event', () => ({
   })
 }));
 
+vi.mock('$lib/utils/logger', () => ({
+  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+}));
+
 import { proSync } from '$lib/stores/pro-sync.svelte';
 import { sharedNodeStore, SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
@@ -44,6 +49,7 @@ import {
   getActiveChromeContributions,
   getActiveViewerExtensions
 } from '$lib/plugins/ui-extensions.svelte';
+import AccountSettings from '$lib/components/settings/sections/account-settings.svelte';
 
 function testNode(id: string, content = 'community content'): Node {
   return {
@@ -72,6 +78,7 @@ describe('Free-user guardrail: Pro features stay inert in the community build', 
   });
 
   afterEach(() => {
+    cleanup();
     proSync.tier = 'unknown';
     sharedNodeStore.clearAll();
     SharedNodeStore.resetInstance();
@@ -150,6 +157,21 @@ describe('Free-user guardrail: Pro features stay inert in the community build', 
       expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       expect(getActiveChromeContributions('app-shell-modal')).toEqual([]);
       expect(getActiveViewerExtensions('collection')).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Settings > Account (unlike the removed pill, this surface is unconditionally
+  // reachable via the Settings sidebar even in community — not chrome-gated —
+  // so it needs its own explicit inert-in-community assertion here.
+  // -------------------------------------------------------------------------
+  describe('Settings > Account renders no interactive Pro controls in community', () => {
+    it('shows only the "Not available" state and never probes the daemon for identity', () => {
+      const { container } = render(AccountSettings);
+
+      expect(container.textContent).toContain('Not available');
+      expect(container.querySelectorAll('button')).toHaveLength(0);
+      expect(mockInvoke).not.toHaveBeenCalled();
     });
   });
 });

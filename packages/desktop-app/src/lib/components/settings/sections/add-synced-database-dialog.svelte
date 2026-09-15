@@ -144,8 +144,8 @@
     }
   }
 
-  /** Kick off PKCE sign-in — the same `pro_initiate_oauth` flow the sign-in
-   *  step of Settings → Account documents but doesn't itself invoke. `provider`
+  /** Kick off PKCE sign-in — the same `pro_initiate_oauth` flow
+   *  `pro-relogin-slot.svelte` uses for a re-login. `provider`
    *  empty = the Worker email/password form; 'google' = direct GoTrue OAuth. */
   async function startSignIn(provider = ''): Promise<void> {
     if (signingIn) return;
