@@ -43,6 +43,7 @@ import { pluginRegistry } from './plugin-registry';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { type SchemaNode, isSchemaNode } from '$lib/types/schema-node';
 import { createLogger } from '$lib/utils/logger';
+import { toError } from '$lib/types/errors';
 
 const log = createLogger('SchemaPluginLoader');
 
@@ -349,7 +350,7 @@ export async function initializeSchemaPluginSystem(): Promise<InitializationResu
       registeredCount: customSchemas.length
     };
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = toError(error).message;
     log.error('Failed to initialize:', error);
 
     return {

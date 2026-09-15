@@ -33,6 +33,7 @@
   import type { SchemaNode, SchemaField } from '$lib/types/schema-node';
   import type { Node } from '$lib/types';
   import { createLogger } from '$lib/utils/logger';
+  import { toError } from '$lib/types/errors';
   import {
     DEFAULT_QUERY_TITLE,
     MATERIALIZED_QUERY_TITLE,
@@ -194,7 +195,7 @@
     try {
       return await backendAdapter.getSchema(typeId);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      const message = toError(e).message;
       if (isSchemaNotFound(message)) return null;
       throw e;
     }
@@ -282,7 +283,7 @@
       log.debug('Default view loaded', { schemaId: schema.id, count: nodes.length });
     } catch (e) {
       if (loadId !== currentLoadId) return;
-      const message = e instanceof Error ? e.message : String(e);
+      const message = toError(e).message;
 
       // Schema not found on a fresh database is expected — show empty state, not error
       if (isSchemaNotFound(message)) {
@@ -386,7 +387,7 @@
       log.debug('Materialized query node from default view', { newId, targetType });
       rerouteTab(newId);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      const message = toError(e).message;
       log.error('QueryNodeViewer: failed to materialize query node', { targetType, error: message });
       saveError = `Failed to save query: ${message}`;
     } finally {
@@ -406,7 +407,7 @@
       queryNode = updated;
       sharedNodeStore.setNode(updated, { type: 'database', reason: 'query-node-viewer view config' });
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      const message = toError(e).message;
       log.error('QueryNodeViewer: failed to persist view config', { error: message });
       saveError = `Failed to save view: ${message}`;
     }
@@ -435,7 +436,7 @@
         // Re-execute with the updated definition.
         untrack(() => loadAndQuery(nodeId));
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
+        const message = toError(e).message;
         log.error('QueryNodeViewer: failed to save query definition', { error: message });
         saveError = `Failed to save query: ${message}`;
       }
@@ -518,7 +519,7 @@
         sharedNodeStore.setNode(updated, { type: 'database', reason: 'query-node-viewer rename' });
         log.debug('QueryNodeViewer: query renamed', { nodeId: updated.id });
       } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
+        const message = toError(e).message;
         log.error('QueryNodeViewer: failed to rename query', { error: message });
         saveError = `Failed to rename query: ${message}`;
       }
@@ -590,7 +591,7 @@
       // Open the new instance immediately for editing, reusing row-open behaviour.
       handleRowClick(created.id);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      const message = toError(e).message;
       log.error('QueryNodeViewer: failed to create new instance', { typeId, error: message });
       createError = `Failed to create new ${schemaNode?.content ?? 'instance'}: ${message}`;
     } finally {

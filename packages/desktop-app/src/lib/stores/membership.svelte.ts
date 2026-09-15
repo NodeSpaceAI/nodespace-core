@@ -28,6 +28,7 @@ import {
 import { isProSyncActive } from '$lib/plugins/ui-extensions.svelte';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { createLogger } from '$lib/utils/logger';
+import { toError } from '$lib/types/errors';
 
 const log = createLogger('MembershipStore');
 
@@ -205,7 +206,7 @@ class MembershipStore {
 			}
 		} catch (e) {
 			log.warn('loadCollection failed', { collectionId, error: e });
-			this.patch(collectionId, { loading: false, error: String(e) });
+			this.patch(collectionId, { loading: false, error: toError(e).message });
 		}
 	}
 
@@ -223,7 +224,7 @@ class MembershipStore {
 			this.joinableLoaded = true;
 		} catch (e) {
 			log.warn('loadJoinable failed', { error: e });
-			this.joinableError = String(e);
+			this.joinableError = toError(e).message;
 		} finally {
 			this.joinableLoading = false;
 		}

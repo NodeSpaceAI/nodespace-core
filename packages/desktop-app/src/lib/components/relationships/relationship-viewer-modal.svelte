@@ -61,6 +61,7 @@
   import * as Popover from '$lib/components/ui/popover';
   import * as Select from '$lib/components/ui/select';
   import { createLogger } from '$lib/utils/logger';
+  import { toError } from '$lib/types/errors';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { getEnumValues, enumValueLabel } from '$lib/utils/schema-enum-values';
   import {
@@ -274,7 +275,7 @@
     } catch (error) {
       if (loadedKey !== id) return;
       log.error('Failed to load relationships', error);
-      errorMessage = error instanceof Error ? error.message : String(error);
+      errorMessage = toError(error).message;
       phase = 'error';
     }
   }
@@ -287,7 +288,7 @@
       view = result;
     } catch (error) {
       log.error('Failed to reload relationships', error);
-      mutationError = error instanceof Error ? error.message : String(error);
+      mutationError = toError(error).message;
     }
   }
 
@@ -307,7 +308,7 @@
       return true;
     } catch (error) {
       log.error('Relationship mutation failed', error);
-      mutationError = error instanceof Error ? error.message : String(error);
+      mutationError = toError(error).message;
       return false;
     } finally {
       busy = false;

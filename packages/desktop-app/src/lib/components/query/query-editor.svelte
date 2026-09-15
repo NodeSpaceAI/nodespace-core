@@ -29,6 +29,7 @@
   } from './query-editor-model';
   import { untrack } from 'svelte';
   import { createLogger } from '$lib/utils/logger';
+  import { toError } from '$lib/types/errors';
 
   const log = createLogger('QueryEditor');
 
@@ -137,7 +138,7 @@
     try {
       previewCount = await onPreview(def);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
+      const message = toError(e).message;
       log.warn('QueryEditor: preview failed', { error: message });
       previewCount = null;
       errorMessage = `Preview failed: ${message}`;

@@ -69,6 +69,7 @@
   import { databaseStore } from '$lib/stores/database.svelte';
   import { backendAdapter } from '$lib/services/backend-adapter';
   import { createLogger } from '$lib/utils/logger';
+  import { toError } from '$lib/types/errors';
 
   const log = createLogger('AddSyncedDatabase');
 
@@ -139,7 +140,7 @@
       }
     } catch (err) {
       step = 'error';
-      errorMessage = err instanceof Error ? err.message : String(err);
+      errorMessage = toError(err).message;
     }
   }
 
@@ -153,7 +154,7 @@
       await invoke('pro_initiate_oauth', provider ? { provider } : {});
     } catch (err) {
       signingIn = false;
-      errorMessage = err instanceof Error ? err.message : String(err);
+      errorMessage = toError(err).message;
       return;
     }
     // The daemon's sync:status stream broadcasts globally, unscoped to any one
@@ -184,7 +185,7 @@
       }
     } catch (err) {
       step = 'error';
-      errorMessage = err instanceof Error ? err.message : String(err);
+      errorMessage = toError(err).message;
     }
   }
 
@@ -265,7 +266,7 @@
       // fresh orphan on every failed attempt.
       log.error('Failed to bind the new database to the tenant', err);
       step = 'error';
-      errorMessage = err instanceof Error ? err.message : String(err);
+      errorMessage = toError(err).message;
     }
   }
 

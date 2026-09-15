@@ -248,6 +248,32 @@ describe('AddSyncedDatabaseDialog', () => {
     expect(switchToSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('a failed bind with a plain CommandError object surfaces its real message, not "[object Object]"', async () => {
+    vi.spyOn(databaseStore, 'create').mockResolvedValue(dbEntry());
+    const switchToSpy = vi.spyOn(databaseStore, 'switchTo').mockResolvedValue(undefined);
+    vi.spyOn(backendAdapter, 'createNode').mockResolvedValue('coll-landing');
+
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === 'pro_current_person') return Promise.resolve(SIGNED_IN);
+      if (cmd === 'pro_list_tenant_memberships') return Promise.resolve(ONE_ACTIVE_TENANT);
+      // What Tauri hands back for a Rust `Result<_, CommandError>` `Err` — a
+      // plain object, never an Error instance.
+      if (cmd === 'pro_bind_tenant') {
+        return Promise.reject({ message: 'Tenant schema already bound', code: 'ALREADY_BOUND' });
+      }
+      throw new Error(`unexpected invoke: ${cmd}`);
+    });
+
+    render(AddSyncedDatabaseDialog, { props: { open: true } });
+
+    await waitFor(() => expect(screen.getByText('Create & sync')).toBeTruthy());
+    await fireEvent.click(screen.getByText('Create & sync'));
+
+    await waitFor(() => expect(screen.getByText('Tenant schema already bound')).toBeTruthy());
+    expect(screen.queryByText('[object Object]')).toBeNull();
+    expect(switchToSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('a failed collection mint leaves the dialog on an error step without calling pro_bind_tenant', async () => {
     vi.spyOn(databaseStore, 'create').mockResolvedValue(dbEntry());
     vi.spyOn(databaseStore, 'switchTo').mockResolvedValue(undefined);

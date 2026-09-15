@@ -83,4 +83,21 @@ describe('SearchPane', () => {
 
     expect(await findByText(/No results for/)).toBeTruthy();
   });
+
+  it('surfaces the real CommandError message when search_roots rejects with a plain object, not "[object Object]"', async () => {
+    // What Tauri hands back for a Rust `Result<_, CommandError>` `Err` — a
+    // plain object, never an Error instance.
+    mockInvoke.mockRejectedValue({
+      message: 'Search index is still building',
+      code: 'INDEX_NOT_READY'
+    });
+    const { getByPlaceholderText, findByText } = render(SearchPane);
+
+    const input = getByPlaceholderText('Search nodes…');
+    await fireEvent.input(input, { target: { value: 'doc' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+
+    const status = await findByText('Search index is still building');
+    expect(status.textContent).not.toContain('[object Object]');
+  });
 });

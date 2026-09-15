@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { createLogger } from '$lib/utils/logger';
+  import { toError } from '$lib/types/errors';
   import { Button } from '$lib/components/ui/button';
   import { Badge } from '$lib/components/ui/badge';
   import { Card, CardHeader, CardContent } from '$lib/components/ui/card';
@@ -57,7 +58,7 @@
       status = await invoke<IntegrationStatus>('get_integrations_status');
       pathFeedback = { ok: true, message: '~/.nodespace/bin added to PATH in your shell profiles.' };
     } catch (err) {
-      pathFeedback = { ok: false, message: err instanceof Error ? err.message : String(err) };
+      pathFeedback = { ok: false, message: toError(err).message };
     } finally {
       pathWorking = false;
     }
@@ -71,7 +72,7 @@
       status = await invoke<IntegrationStatus>('get_integrations_status');
       pathFeedback = { ok: true, message: '~/.nodespace/bin removed from PATH in your shell profiles.' };
     } catch (err) {
-      pathFeedback = { ok: false, message: err instanceof Error ? err.message : String(err) };
+      pathFeedback = { ok: false, message: toError(err).message };
     } finally {
       pathWorking = false;
     }
@@ -98,7 +99,7 @@
         skillFeedback = { ok: false, message: result.error ?? 'Skill installation failed.' };
       }
     } catch (err) {
-      skillFeedback = { ok: false, message: err instanceof Error ? err.message : String(err) };
+      skillFeedback = { ok: false, message: toError(err).message };
     } finally {
       skillWorking = false;
     }
@@ -113,7 +114,7 @@
       status = await invoke<IntegrationStatus>('get_integrations_status');
       skillFeedback = { ok: true, message: 'NodeSpace skill removed from Claude Code.' };
     } catch (err) {
-      skillFeedback = { ok: false, message: err instanceof Error ? err.message : String(err) };
+      skillFeedback = { ok: false, message: toError(err).message };
     } finally {
       skillWorking = false;
     }

@@ -137,6 +137,20 @@ describe('MembershipStore', () => {
 		expect(svc.listJoinable).not.toHaveBeenCalled();
 	});
 
+	it('loadJoinable surfaces the real CommandError message when the service rejects with a plain object, not "[object Object]"', async () => {
+		// membershipService wraps a Tauri `pro_list_joinable_collections`
+		// invoke; a Rust `Result<_, CommandError>` `Err` rejects with a plain
+		// object, never an Error instance. The old bare `String(e)` fallback
+		// here (no `instanceof Error` guard at all) stringified this to the
+		// literal "[object Object]".
+		svc.listJoinable.mockRejectedValue({
+			message: 'Pro subscription expired',
+			code: 'SUBSCRIPTION_EXPIRED'
+		});
+		await membership.loadJoinable();
+		expect(membership.joinableError).toBe('Pro subscription expired');
+	});
+
 	it('joining an open collection drops it from a loaded discovery list', async () => {
 		svc.listJoinable.mockResolvedValue([
 			{ id: 'c-open', name: 'Marketing', restricted: false },

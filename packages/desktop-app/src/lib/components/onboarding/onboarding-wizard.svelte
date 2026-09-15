@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { createLogger } from '$lib/utils/logger';
+  import { toError } from '$lib/types/errors';
   import { focusTrap } from '$lib/actions/focus-trap';
   import { splitFullName } from '$lib/utils/split-full-name';
 
@@ -215,7 +216,7 @@
       }
       stepSuccess = true;
     } catch (err) {
-      stepError = err instanceof Error ? err.message : String(err);
+      stepError = toError(err).message;
       log.error('Failed to save local identity', err);
     } finally {
       isLoading = false;
@@ -246,7 +247,7 @@
       stepSuccess = true;
       log.info('PATH configured successfully');
     } catch (err) {
-      stepError = err instanceof Error ? err.message : String(err);
+      stepError = toError(err).message;
       log.error('Failed to configure PATH', err);
     } finally {
       isLoading = false;
@@ -262,7 +263,7 @@
       stepSuccess = true;
       log.info('Skill configured successfully', { agentsInstalled: skillResult.agentsInstalled });
     } catch (err) {
-      stepError = err instanceof Error ? err.message : String(err);
+      stepError = toError(err).message;
       log.error('Failed to configure skill', err);
     } finally {
       isLoading = false;
