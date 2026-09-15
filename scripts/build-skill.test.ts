@@ -21,12 +21,14 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  bunCompileTarget,
   compileInputs,
   compileInstaller,
   isNotACompileInput,
   isOutputFresh,
   listFilesRecursive,
   newestMtimeMs,
+  parseTargetArg,
   pruneEmptyDirs,
   STAGED_ENTRIES,
   syncTreeByContent,
@@ -340,6 +342,41 @@ describe("compileInputs", () => {
     for (const runtimeOnly of ["SKILL.md", "references", "shims", "dist"]) {
       expect(inputs).not.toContain(join("/skill", runtimeOnly));
     }
+  });
+});
+
+describe("bunCompileTarget", () => {
+  test("maps the Windows cross-compile triple to Bun's target string", () => {
+    expect(bunCompileTarget("x86_64-pc-windows-msvc")).toBe("bun-windows-x64");
+  });
+
+  test("maps both macOS host triples", () => {
+    expect(bunCompileTarget("aarch64-apple-darwin")).toBe("bun-darwin-arm64");
+    expect(bunCompileTarget("x86_64-apple-darwin")).toBe("bun-darwin-x64");
+  });
+
+  test("throws on a triple with no known Bun target", () => {
+    expect(() => bunCompileTarget("aarch64-unknown-linux-gnu")).toThrow(
+      /no Bun cross-compile target known/,
+    );
+  });
+});
+
+describe("parseTargetArg", () => {
+  test("returns undefined when --target is absent", () => {
+    expect(parseTargetArg(["bun", "build-skill.ts"])).toBeUndefined();
+  });
+
+  test("returns the triple following --target", () => {
+    expect(parseTargetArg(["bun", "build-skill.ts", "--target", "x86_64-pc-windows-msvc"])).toBe(
+      "x86_64-pc-windows-msvc",
+    );
+  });
+
+  test("throws when --target has no value after it", () => {
+    expect(() => parseTargetArg(["bun", "build-skill.ts", "--target"])).toThrow(
+      /--target requires a Rust target triple/,
+    );
   });
 });
 

@@ -57,6 +57,18 @@
  *     byte-identical output and a fresh mtime; an mtime check would see churn
  *     that isn't really there. Comparing bytes and writing only what actually
  *     differs leaves unchanged files' mtimes — and the crate — untouched.
+ *
+ * ## Cross-compiling the binary (`--target <rust-triple>`)
+ *
+ * Every caller except one wants the compiled binary for `hostTriple()`
+ * (the default). The exception is scripts/build-windows-quick.ts, which
+ * cross-compiles nodespaced/nodespace for x86_64-pc-windows-msvc from a
+ * macOS host via cargo-xwin — Tauri's externalBin lookup then needs a
+ * matching `nodespace-skill-installer-x86_64-pc-windows-msvc.exe`, not the
+ * macOS one `hostTriple()` would otherwise produce. `--target <rust-triple>`
+ * overrides which triple this script stages for and, when it differs from
+ * `hostTriple()`, adds Bun's own `--target=<bun-target>` flag (see
+ * `bunCompileTarget`) to cross-compile the binary itself.
  */
 
 import { $ } from 'bun';
@@ -252,6 +264,32 @@ export function hostTriple(): string | null {
 }
 
 /**
+ * Maps a Rust target triple to the value `bun build --compile --target=`
+ * expects for that platform. Only used when cross-compiling the skill
+ * installer for a triple other than `hostTriple()` — e.g. the Tier 1 local
+ * Windows cross-compile (scripts/build-windows-quick.ts), which builds the
+ * Rust sidecars for x86_64-pc-windows-msvc from a macOS host via cargo-xwin,
+ * and needs the skill installer's compiled binary to match. CI never needs
+ * this: every release.yml leg compiles natively on a runner whose host
+ * already IS the target, so `bun build --compile` with no `--target` flag
+ * (i.e. `hostTriple()` unchanged) is correct there.
+ */
+export function bunCompileTarget(rustTriple: string): string {
+  switch (rustTriple) {
+    case 'x86_64-pc-windows-msvc':
+      return 'bun-windows-x64';
+    case 'aarch64-apple-darwin':
+      return 'bun-darwin-arm64';
+    case 'x86_64-apple-darwin':
+      return 'bun-darwin-x64';
+    default:
+      throw new Error(
+        `bunCompileTarget: no Bun cross-compile target known for Rust triple '${rustTriple}'`,
+      );
+  }
+}
+
+/**
  * What `bun build --compile` actually bundles into the standalone installer:
  * everything reachable from `src/install.ts`, plus the manifests that shape
  * how those get resolved. Deliberately NOT SKILL.md, references/ or shims/ —
@@ -349,6 +387,23 @@ export async function compileInstaller(
  */
 export const STAGED_ENTRIES = ['dist', 'shims', 'SKILL.md', 'references', 'package.json'];
 
+/**
+ * `--target <rust-triple>` override for `main()`'s compiled-binary triple,
+ * used by scripts/build-windows-quick.ts to cross-compile the skill
+ * installer for x86_64-pc-windows-msvc from a macOS host. `undefined` when
+ * the flag isn't present (the normal case — every other caller wants
+ * `hostTriple()`); throws on `--target` with no value following it, rather
+ * than silently falling back to the host triple for what was clearly meant
+ * to be an explicit override.
+ */
+export function parseTargetArg(argv: string[]): string | undefined {
+  const i = argv.indexOf('--target');
+  if (i === -1) return undefined;
+  const value = argv[i + 1];
+  if (!value) throw new Error('--target requires a Rust target triple argument (e.g. --target x86_64-pc-windows-msvc)');
+  return value;
+}
+
 async function main(): Promise<void> {
   console.log('Building packages/skill...');
   await $`bun run --cwd ${SKILL_DIR} build`;
@@ -381,20 +436,34 @@ async function main(): Promise<void> {
       : `  Updated ${stagedChanges} staged file(s).`,
   );
 
-  const triple = hostTriple();
+  const explicitTarget = parseTargetArg(process.argv);
+  const triple = explicitTarget ?? hostTriple();
 
   if (!triple) {
     console.log('Skipping compiled skill-installer binary (no Tauri desktop app on this platform).');
   } else {
     mkdirSync(BIN_DIR, { recursive: true });
-    const ext = platform() === 'win32' ? '.exe' : '';
+    // Target-triple-based, not host-`platform()`-based: with an explicit
+    // --target this binary's extension must match what it's actually being
+    // built FOR (e.g. a Windows .exe compiled cross-platform from macOS),
+    // which host platform() cannot tell us.
+    const ext = triple.includes('windows') ? '.exe' : '';
     const outfile = join(BIN_DIR, `nodespace-skill-installer-${triple}${ext}`);
 
     if (isOutputFresh(outfile, compileInputs(SKILL_DIR), isNotACompileInput)) {
       console.log(`Standalone skill installer is current -> ${outfile} (skipping compile).`);
     } else {
       console.log(`Compiling standalone skill installer -> ${outfile}`);
-      await compileInstaller(join(SKILL_DIR, 'src', 'install.ts'), outfile);
+      // Cross-compiling (explicit --target different from this host's own
+      // triple) needs Bun's own --target= flag on top of the default
+      // compile command; same-triple (the common case) keeps using
+      // compileInstaller's default compile callback unchanged.
+      const compile =
+        explicitTarget && explicitTarget !== hostTriple()
+          ? (entry: string, target: string) =>
+              $`bun build --compile --target=${bunCompileTarget(explicitTarget)} ${entry} --outfile ${target}`.quiet()
+          : undefined;
+      await compileInstaller(join(SKILL_DIR, 'src', 'install.ts'), outfile, compile);
     }
   }
 
