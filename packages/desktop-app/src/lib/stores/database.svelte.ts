@@ -17,6 +17,7 @@ import {
 } from '$lib/stores/navigation.svelte';
 import { formatDateISO } from '$lib/utils/date-formatting';
 import { DATABASE_SETTINGS_NODE_ID } from '$lib/plugins/ui-extensions';
+import { toError } from '$lib/types/errors';
 
 const log = createLogger('DatabaseStore');
 
@@ -211,7 +212,7 @@ class DatabaseStore {
         }
       }
     } catch (err) {
-      this.error = String(err);
+      this.error = toError(err).message;
       log.error('Failed to load databases', err);
     } finally {
       this.loading = false;
@@ -474,7 +475,7 @@ class DatabaseStore {
       // evicted by clearAll) so the Pro-sync variant re-resolves for it.
       this.refreshDatabaseSettings();
     } catch (err) {
-      this.error = String(err);
+      this.error = toError(err).message;
       log.error('Failed to switch database', { id, error: err });
     }
   }
@@ -567,7 +568,7 @@ class DatabaseStore {
         }
       }
     } catch (err) {
-      this.error = String(err);
+      this.error = toError(err).message;
       log.error('Failed to remove database', { id, error: err });
     }
   }
@@ -580,7 +581,7 @@ class DatabaseStore {
       await this.load();
       return result;
     } catch (err) {
-      this.error = String(err);
+      this.error = toError(err).message;
       log.error('Database registry operation failed', err);
       return null;
     }

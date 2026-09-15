@@ -13,6 +13,7 @@
 
 import { createLogger } from '$lib/utils/logger';
 import { debugChannelWrite } from '$lib/services/debug-channel';
+import { toError } from '$lib/types/errors';
 
 const log = createLogger('DiagnosticLogger');
 
@@ -219,7 +220,7 @@ export async function withDiagnosticLogging<T>(
     return result;
   } catch (error) {
     const durationMs = performance.now() - startTime;
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = toError(error).message;
 
     // Update entry with error
     updateLogEntry(entryId, {

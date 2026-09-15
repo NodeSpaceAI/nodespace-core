@@ -15,6 +15,7 @@
 	import type { Permission } from '$lib/services/membership-service';
 	import { proSync } from '$lib/stores/pro-sync.svelte';
 	import { createLogger } from '$lib/utils/logger';
+	import { toError } from '$lib/types/errors';
 
 	const log = createLogger('CollaborationView');
 
@@ -72,7 +73,7 @@
 	let myId = $derived(membership.currentPerson?.personId ?? '');
 
 	function friendly(e: unknown): string {
-		const s = String(e);
+		const s = toError(e).message;
 		// Surface the last-admin protection clearly (daemon FAILED_PRECONDITION).
 		if (/last[ _]?admin|only admin|last remaining admin/i.test(s)) {
 			return 'You can’t remove or demote the last admin of this collection.';

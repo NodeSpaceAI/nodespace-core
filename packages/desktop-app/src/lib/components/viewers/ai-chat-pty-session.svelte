@@ -25,6 +25,7 @@
     type CaptureContentLevel,
   } from '$lib/services/tauri-commands';
   import { createLogger } from '$lib/utils/logger';
+  import { toError } from '$lib/types/errors';
 
   const log = createLogger('AiChatPtySession');
 
@@ -246,7 +247,7 @@
       );
     } catch (e) {
       log.error('Failed to launch session', e);
-      error = e instanceof Error ? e.message : String(e);
+      error = toError(e).message;
     } finally {
       launching = false;
     }

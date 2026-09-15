@@ -16,6 +16,7 @@
     captureDomSnapshot,
     captureStoreDump
   } from '$lib/services/debug-channel';
+  import { toError } from '$lib/types/errors';
 
   let isInitialized = false;
   let initError: string | null = null;
@@ -81,7 +82,7 @@
     } catch (error) {
       console.error('[App Layout] Critical initialization error:', error);
       // Store error for display on screen
-      initError = error instanceof Error ? error.message : String(error);
+      initError = toError(error).message;
     }
   });
 

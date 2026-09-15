@@ -19,6 +19,7 @@
   } from '$lib/services/import-options';
   import { collectionsData } from '$lib/stores/collections.svelte';
   import { createLogger } from '$lib/utils/logger';
+  import { toError } from '$lib/types/errors';
 
   const log = createLogger('ImportOptionsModal');
 
@@ -115,7 +116,7 @@
       await collectionsData.loadCollections();
     } catch (error) {
       log.error('Folder import failed', error);
-      errorMessage = error instanceof Error ? error.message : String(error);
+      errorMessage = toError(error).message;
       teardownProgress();
       phase = 'error';
     }

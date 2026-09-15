@@ -290,6 +290,19 @@ describe('Database Store', () => {
       await databaseStore.load();
       expect(databaseStore.error).toContain('boom');
     });
+
+    it('surfaces the real CommandError message when list_databases rejects with a plain object, not "[object Object]"', async () => {
+      // What Tauri hands back for a Rust `Result<_, CommandError>` `Err` — a
+      // plain object, never an Error instance. The old bare `String(err)`
+      // fallback here (no `instanceof Error` guard at all) stringified this
+      // to the literal "[object Object]".
+      mockInvoke.mockRejectedValueOnce({
+        message: 'Database registry is locked by another process',
+        code: 'REGISTRY_LOCKED'
+      });
+      await databaseStore.load();
+      expect(databaseStore.error).toBe('Database registry is locked by another process');
+    });
   });
 
   describe('load in browser dev mode (no Tauri bridge)', () => {

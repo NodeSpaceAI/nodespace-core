@@ -5,6 +5,7 @@
   import { pluginRegistry } from '$lib/plugins/plugin-registry';
   import { createLogger } from '$lib/utils/logger';
   import type { Node } from '$lib/types/node';
+  import { toError } from '$lib/types/errors';
 
   const log = createLogger('SearchPane');
 
@@ -51,7 +52,7 @@
     } catch (e) {
       if (token !== requestToken) return;
       log.error('search_roots failed', e);
-      error = e instanceof Error ? e.message : String(e);
+      error = toError(e).message;
       results = [];
       hasSearched = true;
     } finally {

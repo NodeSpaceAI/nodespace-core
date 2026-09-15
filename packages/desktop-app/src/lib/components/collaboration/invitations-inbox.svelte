@@ -16,6 +16,7 @@
 	import { focusTrap } from '$lib/actions/focus-trap';
 	import { membership } from '$lib/stores/membership.svelte';
 	import { createLogger } from '$lib/utils/logger';
+	import { toError } from '$lib/types/errors';
 
 	const log = createLogger('InvitationsInbox');
 
@@ -68,7 +69,7 @@
 	});
 
 	function friendly(e: unknown): string {
-		return String(e).replace(/^Error:\s*/, '');
+		return toError(e).message.replace(/^Error:\s*/, '');
 	}
 
 	async function redeem() {

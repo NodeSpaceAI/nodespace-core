@@ -12,6 +12,7 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { createLogger } from '$lib/utils/logger';
+  import { toError } from '$lib/types/errors';
   import { Button } from '$lib/components/ui/button';
   import { Badge } from '$lib/components/ui/badge';
   import { Card, CardHeader, CardContent } from '$lib/components/ui/card';
@@ -63,7 +64,7 @@
       email = identity.email;
       feedback = { ok: true, message: 'Saved.' };
     } catch (err) {
-      feedback = { ok: false, message: err instanceof Error ? err.message : String(err) };
+      feedback = { ok: false, message: toError(err).message };
     } finally {
       saving = false;
     }
