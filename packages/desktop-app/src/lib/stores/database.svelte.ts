@@ -92,11 +92,12 @@ const ACTIVE_DB_STORAGE_KEY = 'nodespace.activeDatabaseId';
 /**
  * Owner key `DATABASE_SETTINGS_NODE_ID` is pinned reachable under (see
  * SharedNodeStore.pinNodes) — never unpinned, since the singleton backs
- * always-mounted Pro-sync chrome (pro-sync-pill.svelte, app-shell.svelte,
- * membership.svelte.ts, collaboration-locked.svelte) that has nothing to do
- * with which tab/pane is open. It has no structureTree relationship to any
- * open tab and isn't itself a tab root, so without an explicit pin it's
- * unreachable — and thus evictable — the instant it's cached.
+ * always-mounted Pro-sync chrome (ui-extensions.svelte.ts's
+ * resolveProSyncVariant/activeDatabaseSettings, membership.svelte.ts,
+ * collaboration-locked.svelte) that has nothing to do with which tab/pane is
+ * open. It has no structureTree relationship to any open tab and isn't
+ * itself a tab root, so without an explicit pin it's unreachable — and thus
+ * evictable — the instant it's cached.
  */
 const DATABASE_SETTINGS_PIN_OWNER = 'database-settings-node';
 

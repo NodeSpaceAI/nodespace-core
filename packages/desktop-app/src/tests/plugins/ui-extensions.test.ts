@@ -70,8 +70,9 @@ describe('UI-extension registry', () => {
   describe('registry registration', () => {
     it('registers the built-in pro-sync extension with all contributions', () => {
       expect(uiExtensionRegistry.has('pro-sync')).toBe(true);
-      // 5 overlay pills (teaser / sign-in / consent / relogin / connected).
-      expect(uiExtensionRegistry.chromeFor('app-shell-overlay')).toHaveLength(5);
+      // No overlay chrome — the top-right pill was removed; account access
+      // moved to Settings.
+      expect(uiExtensionRegistry.chromeFor('app-shell-overlay')).toEqual([]);
       // 3 modals (consent / relogin / connected) — no modal for teaser or sign-in.
       expect(uiExtensionRegistry.chromeFor('app-shell-modal')).toHaveLength(3);
       // 4 collaboration viewer extensions (sign-in / consent / relogin / connected).
@@ -164,21 +165,17 @@ describe('UI-extension registry', () => {
   });
 
   describe('active contribution filtering', () => {
-    it('teaser: only the teaser overlay pill, no modal, no collab tab', () => {
+    it('teaser: no overlay, no modal, no collab tab', () => {
       proSync.tier = 'community';
-      const overlay = getActiveChromeContributions('app-shell-overlay');
-      expect(overlay).toHaveLength(1);
-      expect(overlay[0].variant).toBe('teaser');
+      expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       expect(getActiveChromeContributions('app-shell-modal')).toEqual([]);
       expect(getActiveViewerExtensions('collection')).toEqual([]);
     });
 
-    it('sign-in: the sync pill (OAuth) + no modal + a locked collab tab', () => {
+    it('sign-in: no overlay, no modal, a locked collab tab', () => {
       proSync.tier = 'pro';
       seedSettings({ sync_enabled: false, auth_status: 'local' });
-      const overlay = getActiveChromeContributions('app-shell-overlay');
-      expect(overlay).toHaveLength(1);
-      expect(overlay[0].variant).toBe('sign-in');
+      expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       // No consent modal before sign-in.
       expect(getActiveChromeContributions('app-shell-modal')).toEqual([]);
       const viewers = getActiveViewerExtensions('collection');
@@ -187,12 +184,10 @@ describe('UI-extension registry', () => {
       expect(viewers[0].tab.id).toBe('collaboration');
     });
 
-    it('consent: the turn-on-sync pill + the consent modal + a locked collab tab', () => {
+    it('consent: no overlay, the consent modal, a locked collab tab', () => {
       proSync.tier = 'pro';
       seedSettings({ sync_enabled: false, auth_status: 'connected' });
-      const overlay = getActiveChromeContributions('app-shell-overlay');
-      expect(overlay).toHaveLength(1);
-      expect(overlay[0].variant).toBe('consent');
+      expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       const modal = getActiveChromeContributions('app-shell-modal');
       expect(modal).toHaveLength(1);
       expect(modal[0].variant).toBe('consent');
@@ -201,12 +196,10 @@ describe('UI-extension registry', () => {
       expect(viewers[0].variant).toBe('consent');
     });
 
-    it('relogin: the live pill + the relogin modal + the live collab tab', () => {
+    it('relogin: no overlay, the relogin modal, the live collab tab', () => {
       proSync.tier = 'pro';
       seedSettings({ sync_enabled: true, auth_status: 'local' });
-      const overlay = getActiveChromeContributions('app-shell-overlay');
-      expect(overlay).toHaveLength(1);
-      expect(overlay[0].variant).toBe('relogin');
+      expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       const modal = getActiveChromeContributions('app-shell-modal');
       expect(modal).toHaveLength(1);
       expect(modal[0].variant).toBe('relogin');
@@ -215,12 +208,10 @@ describe('UI-extension registry', () => {
       expect(viewers[0].variant).toBe('relogin');
     });
 
-    it('connected: the live pill + the relogin modal + the live collab tab', () => {
+    it('connected: no overlay, the relogin modal, the live collab tab', () => {
       proSync.tier = 'pro';
       seedSettings({ sync_enabled: true, auth_status: 'connected' });
-      const overlay = getActiveChromeContributions('app-shell-overlay');
-      expect(overlay).toHaveLength(1);
-      expect(overlay[0].variant).toBe('connected');
+      expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       const modal = getActiveChromeContributions('app-shell-modal');
       expect(modal).toHaveLength(1);
       expect(modal[0].variant).toBe('connected');

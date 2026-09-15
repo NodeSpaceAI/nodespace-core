@@ -671,11 +671,12 @@
           <PaneManager />
         </div>
 
-        <!-- Pro chrome overlay slot (sync pill / upgrade teaser / enable-sync
-             prompt) — registry-driven. The active variant resolves from
-             the daemon tier and the active database's DatabaseSettingsNode, so the
-             community build shows an upgrade teaser and each Pro state its own
-             pill. Floats top-right of the app-shell content. -->
+        <!-- Overlay chrome slot — registry-driven, floats top-right of the
+             app-shell content. Currently empty: the Pro sync-status pill,
+             upgrade teaser, and turn-on-sync nudge that used to render here
+             were removed (account access now lives in Settings → Account,
+             sign-in in Settings → Database). Left wired up for any future
+             `app-shell-overlay` chrome contribution. -->
         <div class="pro-sync-pill-slot">
           {#each getActiveChromeContributions('app-shell-overlay') as c (c.variant)}
             <ExtensionOutlet load={c.lazyLoad} />
@@ -781,8 +782,8 @@
     position: relative; /* anchor for .pro-sync-pill-slot */
   }
 
-  /* Pro-tier sync-status pill (floats over the content grid).
-     Hidden when the capability probe returns community-tier. */
+  /* Overlay chrome anchor (floats over the content grid, top-right).
+     Currently empty — see the template comment above. */
   .pro-sync-pill-slot {
     position: absolute;
     top: 8px;

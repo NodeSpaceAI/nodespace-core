@@ -10,8 +10,10 @@
 
   The action depends on where the user is in the sign-in-first flow: once signed
   in (`consent`) the button reopens the publish-consent modal (mounted for that
-  variant); before sign-in (`sign-in`) there is no consent slot to open, so it
-  points the user at the toolbar sync button to sign in first.
+  variant) — also the reopen path for a user who declined it on first sign-in,
+  now that the top-right enable-sync pill that used to serve that purpose is
+  gone; before sign-in (`sign-in`) there is no consent slot to open, so it
+  points the user at Settings → Database to sign in first.
 -->
 <script lang="ts">
   import { proSync } from '$lib/stores/pro-sync.svelte';
@@ -38,8 +40,8 @@
     <button class="enable-btn" type="button" onclick={openConsent}> Turn on sync </button>
   {:else}
     <p class="detail">
-      Sign in from the sync button in the toolbar, then turn on sync to invite
-      people, manage roles, and share collections.
+      Sign in from Settings → Database ("Add synced database…"), then turn on
+      sync to invite people, manage roles, and share collections.
     </p>
   {/if}
 </div>

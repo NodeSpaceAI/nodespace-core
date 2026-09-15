@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render, cleanup } from '@testing-library/svelte';
 import type { Node } from '$lib/types';
 
 // Mock the Tauri bridge so we can assert Pro-gated daemon commands are NEVER
@@ -34,6 +35,10 @@ vi.mock('@tauri-apps/api/event', () => ({
   })
 }));
 
+vi.mock('$lib/utils/logger', () => ({
+  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
+}));
+
 import { proSync } from '$lib/stores/pro-sync.svelte';
 import { sharedNodeStore, SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import * as backendAdapterModule from '$lib/services/backend-adapter';
@@ -44,6 +49,7 @@ import {
   getActiveChromeContributions,
   getActiveViewerExtensions
 } from '$lib/plugins/ui-extensions.svelte';
+import AccountSettings from '$lib/components/settings/sections/account-settings.svelte';
 
 function testNode(id: string, content = 'community content'): Node {
   return {
@@ -72,6 +78,7 @@ describe('Free-user guardrail: Pro features stay inert in the community build', 
   });
 
   afterEach(() => {
+    cleanup();
     proSync.tier = 'unknown';
     sharedNodeStore.clearAll();
     SharedNodeStore.resetInstance();
@@ -122,26 +129,21 @@ describe('Free-user guardrail: Pro features stay inert in the community build', 
   });
 
   // -------------------------------------------------------------------------
-  // Pro-UI registry — in community the only surface contributed is the
-  // static upgrade teaser (ADR-039). Every daemon-backed Pro surface (the live
-  // sync pill, the turn-on-sync prompt, the consent/re-login modals, the
-  // collaboration tab) resolves out, so nothing that talks to a Pro daemon can
-  // render.
+  // Pro-UI registry — there is no `app-shell-overlay` chrome at all anymore
+  // (the sync pill, the community-build upgrade teaser, and the turn-on-sync
+  // prompt were all removed; account access lives in Settings → Account,
+  // sign-in in Settings → Database). In community the modal slot and
+  // collaboration tab still contribute nothing, so no daemon-backed Pro
+  // surface can render.
   // -------------------------------------------------------------------------
-  describe('Pro-UI registry resolves to only the static upgrade teaser', () => {
+  describe('Pro-UI registry contributes nothing daemon-backed in community', () => {
     it("community tier resolves the variant to 'teaser' and sync is inactive", () => {
       expect(resolveProSyncVariant()).toBe('teaser');
       expect(isProSyncActive()).toBe(false);
     });
 
-    it('the overlay slot contributes exactly the teaser (no live/enable pill)', () => {
-      const overlay = getActiveChromeContributions('app-shell-overlay');
-      expect(overlay).toHaveLength(1);
-      expect(overlay[0].variant).toBe('teaser');
-      // None of the daemon-backed pill variants are active.
-      for (const v of ['sign-in', 'consent', 'relogin', 'connected'] as const) {
-        expect(overlay.some((c) => c.variant === v)).toBe(false);
-      }
+    it('the overlay slot contributes nothing, in community or otherwise', () => {
+      expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
     });
 
     it('the modal slot and the collaboration tab contribute nothing in community', () => {
@@ -152,8 +154,24 @@ describe('Free-user guardrail: Pro features stay inert in the community build', 
     it("the default 'unknown' tier (pre-probe) is teaser-only too — no Pro surface flashes", () => {
       proSync.tier = 'unknown';
       expect(resolveProSyncVariant()).toBe('teaser');
+      expect(getActiveChromeContributions('app-shell-overlay')).toEqual([]);
       expect(getActiveChromeContributions('app-shell-modal')).toEqual([]);
       expect(getActiveViewerExtensions('collection')).toEqual([]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Settings > Account (unlike the removed pill, this surface is unconditionally
+  // reachable via the Settings sidebar even in community — not chrome-gated —
+  // so it needs its own explicit inert-in-community assertion here.
+  // -------------------------------------------------------------------------
+  describe('Settings > Account renders no interactive Pro controls in community', () => {
+    it('shows only the "Not available" state and never probes the daemon for identity', () => {
+      const { container } = render(AccountSettings);
+
+      expect(container.textContent).toContain('Not available');
+      expect(container.querySelectorAll('button')).toHaveLength(0);
+      expect(mockInvoke).not.toHaveBeenCalled();
     });
   });
 });
