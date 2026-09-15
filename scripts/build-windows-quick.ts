@@ -71,10 +71,15 @@ const DESKTOP_APP_DIR = join(WORKSPACE_ROOT, 'packages', 'desktop-app');
 const BIN_DIR = join(DESKTOP_APP_DIR, 'src-tauri', 'binaries');
 const TARGET_RELEASE_DIR = join(WORKSPACE_ROOT, 'target', TARGET, 'release');
 
-const SIDECAR_BINARIES = [
-  { crate: 'nodespaced', bin: 'nodespaced' },
-  { crate: 'nodespace', bin: 'nodespace' },
-];
+// Binary names, not cargo package names -- nodespaced/nodespace are bin
+// targets built via `--bin <name>`, not `-p <name>` (those are
+// nodespace-daemon/nodespace-cli). A plain string list, not `{ crate, bin }`
+// objects: an earlier version carried an unused `crate` field seeded with
+// these same (wrong, if read as a package name) values, a footgun for
+// anyone wiring `-p ${crate}` into the cargo-xwin invocation by analogy with
+// build-sidecar-binaries.ts's actual `{ crate, bin }` pairs, which does use
+// `crate` for exactly that.
+const SIDECAR_BINARIES = ['nodespaced', 'nodespace'];
 
 async function commandExists(cmd: string): Promise<boolean> {
   try {
@@ -217,7 +222,7 @@ async function buildSidecar(bin: string, env: Record<string, string | undefined>
 
 function copySidecarBinaries(): void {
   mkdirSync(BIN_DIR, { recursive: true });
-  for (const { bin } of SIDECAR_BINARIES) {
+  for (const bin of SIDECAR_BINARIES) {
     const src = join(TARGET_RELEASE_DIR, `${bin}.exe`);
     if (!existsSync(src)) {
       throw new Error(
@@ -252,7 +257,7 @@ async function main(): Promise<void> {
   // having added it to their shell rc.
   const env = { ...process.env, PATH: `${llvmBin}:${process.env.PATH ?? ''}` };
 
-  for (const { bin } of SIDECAR_BINARIES) {
+  for (const bin of SIDECAR_BINARIES) {
     await buildSidecar(bin, env);
   }
 

@@ -4,8 +4,8 @@
 // -- no actual VM, no process spawns. There is no VM on this machine to
 // verify `runRemoteBuild`/`waitForSsh`/`copyArtifactsBack` against; this
 // tests the one part of Tier 2 that doesn't need one.
-import { describe, expect, test } from "bun:test";
-import { buildRemoteScript, buildScpSources, setupInstructions, VM_NAME } from "./build-windows";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { buildRemoteScript, buildScpSources, envOrDefault, setupInstructions, VM_NAME } from "./build-windows";
 
 describe("setupInstructions", () => {
   test("names the VM and points at the one-time setup doc", () => {
@@ -19,10 +19,59 @@ describe("setupInstructions", () => {
   });
 });
 
+describe("envOrDefault", () => {
+  const UNSET = Symbol("unset");
+  let saved: string | typeof UNSET;
+
+  beforeEach(() => {
+    saved = Object.prototype.hasOwnProperty.call(process.env, "NODESPACE_TEST_ENV_VAR")
+      ? (process.env.NODESPACE_TEST_ENV_VAR as string)
+      : UNSET;
+  });
+
+  afterEach(() => {
+    if (saved === UNSET) delete process.env.NODESPACE_TEST_ENV_VAR;
+    else process.env.NODESPACE_TEST_ENV_VAR = saved;
+  });
+
+  test("returns the fallback when the var is unset", () => {
+    delete process.env.NODESPACE_TEST_ENV_VAR;
+    expect(envOrDefault("NODESPACE_TEST_ENV_VAR", "fallback")).toBe("fallback");
+  });
+
+  // Regression coverage for a real bug caught by post-merge review:
+  // `process.env.X ?? fallback` only catches null/undefined, not an
+  // explicitly-empty-string override. `NODESPACE_WIN_VM_REPO_PATH=` (the var
+  // set but empty -- a real shell/CI misconfiguration shape) would silently
+  // produce `''` instead of falling back to the documented default.
+  test("returns the fallback when the var is set but empty, not the empty string", () => {
+    process.env.NODESPACE_TEST_ENV_VAR = "";
+    expect(envOrDefault("NODESPACE_TEST_ENV_VAR", "fallback")).toBe("fallback");
+  });
+
+  test("returns the real value when the var is set and non-empty", () => {
+    process.env.NODESPACE_TEST_ENV_VAR = "actual-value";
+    expect(envOrDefault("NODESPACE_TEST_ENV_VAR", "fallback")).toBe("actual-value");
+  });
+});
+
 describe("buildRemoteScript", () => {
   test("cds into the given repo path before anything else", () => {
     const script = buildRemoteScript("~/nodespace-core");
-    expect(script.startsWith("cd ~/nodespace-core &&")).toBe(true);
+    expect(script.startsWith("cd '~/nodespace-core' &&")).toBe(true);
+  });
+
+  // Regression coverage for a real bug caught by post-merge review: an
+  // earlier version interpolated `cd ${repoPath}` unquoted. The whole joined
+  // script is sent as one command line to the remote shell with no further
+  // escaping, so a repoPath containing a space -- a real shape, since
+  // NODESPACE_WIN_VM_REPO_PATH is operator-configurable and Git-Bash-style
+  // Windows paths like `/c/Users/Build Machine/nodespace-core` are exactly
+  // this -- would word-split into an unexpected extra `cd` argument and fail
+  // the whole build at its very first step.
+  test("quotes a repo path containing a space so it survives as one cd argument", () => {
+    const script = buildRemoteScript("/c/Users/Build Machine/nodespace-core");
+    expect(script.startsWith("cd '/c/Users/Build Machine/nodespace-core' &&")).toBe(true);
   });
 
   test("chains every step with && so a failure stops the remote build", () => {
@@ -32,7 +81,7 @@ describe("buildRemoteScript", () => {
     // first real failure and one that silently limps past it.
     const steps = script.split(" && ");
     expect(steps).toEqual([
-      "cd ~/nodespace-core",
+      "cd '~/nodespace-core'",
       "git pull",
       "bun install --frozen-lockfile",
       "bun run --cwd packages/desktop-app sync",
@@ -58,7 +107,7 @@ describe("buildRemoteScript", () => {
 
   test("respects a different repo path", () => {
     const script = buildRemoteScript("/c/Users/build/nodespace-core");
-    expect(script.startsWith("cd /c/Users/build/nodespace-core &&")).toBe(true);
+    expect(script.startsWith("cd '/c/Users/build/nodespace-core' &&")).toBe(true);
   });
 });
 
