@@ -35,16 +35,28 @@ const TARGET = 'x86_64-pc-windows-msvc';
 const WORKSPACE_ROOT = join(import.meta.dir, '..');
 const OUTPUT_DIR = join(WORKSPACE_ROOT, 'target', 'windows-release');
 
+/**
+ * `process.env.X ?? fallback` only catches null/undefined, not an
+ * explicitly-empty-string override -- `NODESPACE_WIN_VM_REPO_PATH=` (a real
+ * shell/CI misconfiguration shape: the var is set but empty) would silently
+ * produce `''` instead of the documented default. Treat empty-string the
+ * same as unset for all three of these.
+ */
+export function envOrDefault(name: string, fallback: string): string {
+  const value = process.env[name];
+  return value && value.length > 0 ? value : fallback;
+}
+
 // Overridable for a VM whose one-time setup didn't match these defaults --
 // see the local-builds development doc.
-const SSH_HOST = process.env.NODESPACE_WIN_VM_HOST ?? 'nodespace-build-win.shared';
-const SSH_USER = process.env.NODESPACE_WIN_VM_USER ?? 'nodespace';
+const SSH_HOST = envOrDefault('NODESPACE_WIN_VM_HOST', 'nodespace-build-win.shared');
+const SSH_USER = envOrDefault('NODESPACE_WIN_VM_USER', 'nodespace');
 // Assumes a POSIX-ish default shell on the OpenSSH server side (e.g. Git
 // Bash configured as the OpenSSH DefaultShell) -- the common setup for a
 // Windows box whose whole purpose is running a Unix-flavored Rust/cargo
 // toolchain. If the VM's SSH server defaults to PowerShell/cmd instead,
 // override the commands run below accordingly (see local-builds.md).
-const REPO_PATH = process.env.NODESPACE_WIN_VM_REPO_PATH ?? '~/nodespace-core';
+const REPO_PATH = envOrDefault('NODESPACE_WIN_VM_REPO_PATH', '~/nodespace-core');
 
 export function setupInstructions(): string {
   return (
@@ -98,9 +110,21 @@ async function checkPrerequisites(): Promise<boolean> {
 }
 
 async function isVmRunning(): Promise<boolean> {
-  const listing = await $`prlctl list --json`.quiet().text();
-  const running = JSON.parse(listing) as Array<{ name: string }>;
-  return running.some((vm) => vm.name === VM_NAME);
+  // Guarded the same way checkPrerequisites()'s `prlctl list -a --json` call
+  // is: an unexpected shape here shouldn't surface as a raw JSON.parse
+  // exception. Called on the common path (deciding whether to start the VM
+  // at all), so a parse failure is treated as "not confirmed running" --
+  // main() will then attempt `prlctl start`, which is the safe default.
+  try {
+    const listing = await $`prlctl list --json`.quiet().text();
+    const running = JSON.parse(listing) as Array<{ name: string }>;
+    return running.some((vm) => vm.name === VM_NAME);
+  } catch (err) {
+    console.error(
+      `warning: \`prlctl list --json\` failed while checking VM state: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
 }
 
 async function waitForSsh(timeoutMs = 120_000): Promise<void> {
@@ -137,7 +161,14 @@ async function waitForSsh(timeoutMs = 120_000): Promise<void> {
  */
 export function buildRemoteScript(repoPath: string): string {
   return [
-    `cd ${repoPath}`,
+    // Single-quoted: the whole joined script is sent as one command line to
+    // the remote shell with no further escaping applied, so an unquoted
+    // repoPath containing a space (a real shape -- NODESPACE_WIN_VM_REPO_PATH
+    // is operator-configurable, and Git-Bash-style Windows paths like
+    // `/c/Users/Build Machine/nodespace-core` are exactly this) would word-
+    // split into an unexpected extra `cd` argument and fail the whole
+    // `&&`-chained build at the very first step.
+    `cd '${repoPath}'`,
     'git pull',
     'bun install --frozen-lockfile',
     'bun run --cwd packages/desktop-app sync',
@@ -187,7 +218,11 @@ export function buildScpSources(
 
 async function copyArtifactsBack(): Promise<void> {
   await $`mkdir -p ${OUTPUT_DIR}`;
-  const remoteBundleDir = `${REPO_PATH}/target/x86_64-pc-windows-msvc/release/bundle`;
+  // TARGET, not a re-typed literal -- buildRemoteScript() already builds the
+  // remote paths this reads back from via ${TARGET} everywhere; a second,
+  // independently-typed copy here would silently drift from it if TARGET
+  // ever changes (e.g. an arm64 Windows target added).
+  const remoteBundleDir = `${REPO_PATH}/target/${TARGET}/release/bundle`;
   const { nsis, msi } = buildScpSources(SSH_USER, SSH_HOST, remoteBundleDir);
   await $`scp -r ${nsis} ${msi} ${OUTPUT_DIR}/`;
 }
@@ -205,14 +240,21 @@ async function main(): Promise<void> {
   const keepRunning = process.argv.includes('--keep-running');
   const alreadyRunning = await isVmRunning();
 
-  if (!alreadyRunning) {
-    console.log(`==> Starting VM "${VM_NAME}"...`);
-    await $`prlctl start ${VM_NAME}`;
-  } else {
-    console.log(`==> VM "${VM_NAME}" is already running.`);
-  }
-
+  // `prlctl start` runs INSIDE the try (not before it) so the `finally`
+  // below always gets a chance to attempt a stop -- including the case
+  // where `start` itself rejects after the VM has actually begun starting
+  // (a plausible prlctl failure mode: a timeout waiting for a running-state
+  // confirmation, or a post-start check failing while the VM process is
+  // already alive). A `prlctl stop` against a VM that in fact never started
+  // is a safe no-op either way (see its own `.nothrow()` below).
   try {
+    if (!alreadyRunning) {
+      console.log(`==> Starting VM "${VM_NAME}"...`);
+      await $`prlctl start ${VM_NAME}`;
+    } else {
+      console.log(`==> VM "${VM_NAME}" is already running.`);
+    }
+
     console.log(`==> Waiting for SSH on ${SSH_USER}@${SSH_HOST}...`);
     await waitForSsh();
 
@@ -228,7 +270,19 @@ async function main(): Promise<void> {
       console.log(`\n(VM left running. Stop it manually with: prlctl stop "${VM_NAME}")`);
     } else {
       console.log(`==> Stopping VM "${VM_NAME}"...`);
-      await $`prlctl stop ${VM_NAME}`.nothrow();
+      // `.nothrow()` so a failed stop doesn't mask whatever error (if any)
+      // is already propagating out of this finally -- but its exit code is
+      // still checked and reported, rather than discarded outright. Without
+      // this, a failed stop (wedged VM, Parallels hiccup) printed the exact
+      // same "Stopping VM..." message as a successful one, silently
+      // indistinguishable from success.
+      const stopResult = await $`prlctl stop ${VM_NAME}`.nothrow();
+      if (stopResult.exitCode !== 0) {
+        console.error(
+          `warning: \`prlctl stop "${VM_NAME}"\` exited with code ${stopResult.exitCode} -- ` +
+            'the VM may still be running. Check with `prlctl list -a` and stop it manually if needed.',
+        );
+      }
     }
   }
 }
