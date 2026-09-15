@@ -3672,16 +3672,21 @@ mod tests {
             .expect("child has a parent edge");
 
         // Moving the child to a new parent re-creates the has_child edge, so
-        // the edge's modified_at must advance — independent of the child
-        // node's own modified_at, which a structural move never touches.
+        // the edge's modified_at must advance. Uses the real OCC-checked
+        // `move_node` — the path the daemon's gRPC move RPC actually calls
+        // (`move_node_unchecked` has no production caller; it exists for
+        // tests/benches that don't need OCC) — so this exercises the same
+        // move the accessor's real callers will observe.
         let other_parent = Node::new("text".to_string(), "Other parent".to_string(), json!({}));
         let other_parent_id = service.create_node(other_parent).await.unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
+        let pre_move_version = service.get_node(&child_id).await.unwrap().unwrap().version;
         service
-            .move_node_unchecked(
+            .move_node(
                 &child_id,
+                pre_move_version,
                 Some(&other_parent_id),
                 crate::services::InsertPosition::End,
             )

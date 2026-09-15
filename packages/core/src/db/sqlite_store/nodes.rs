@@ -1891,11 +1891,10 @@ impl SqliteStore {
 
     /// Returns the incoming `has_child` edge's own `modified_at` — the
     /// relationship row's timestamp, distinct from either endpoint node's
-    /// `modified_at`. A move re-points or re-creates the edge (see
-    /// `move_node`) without bumping `nodes.version`, so this is the only
-    /// signal available to tell "this device moved the node" apart from "a
-    /// peer moved it" when reconciling structural state across a sync
-    /// boundary. `None` if the node currently has no parent edge.
+    /// `modified_at`. Neither `get_parent` nor `get_related_nodes_with_edges`
+    /// exposes this: the former returns the parent node's own timestamp, the
+    /// latter an edge's `properties` JSON, never `relationship.modified_at`
+    /// itself. `None` if the node currently has no parent edge.
     pub async fn get_parent_edge_modified_at(
         &self,
         child_id: &str,

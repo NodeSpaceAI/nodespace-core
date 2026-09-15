@@ -204,13 +204,14 @@ impl NodeService {
     ///
     /// This is distinct from [`get_parent`](Self::get_parent), which returns
     /// the *parent node's* `modified_at`, and from the child node's own
-    /// `modified_at`: it is the relationship row's timestamp. A move
-    /// re-points or re-creates the parent edge without ever bumping
-    /// `nodes.version` on either endpoint, so callers that need to tell
-    /// "this node's structural position changed locally" apart from "its
-    /// content changed" — or, across a sync boundary, "this device moved it"
-    /// apart from "a peer moved it" — read this instead of either node's
-    /// timestamp.
+    /// `modified_at`: it is the relationship row's timestamp, tracking only
+    /// when the parent edge itself was last written (created, re-pointed, or
+    /// reordered) — independent of either endpoint node's own edit history.
+    /// Callers that need edge-level recency specifically (e.g. comparing a
+    /// local vs. a remote parent edge to resolve which structural change is
+    /// newer) read this instead of either node's timestamp, since a node's
+    /// `modified_at` conflates content and structural changes and does not
+    /// isolate the edge's own history.
     ///
     /// Returns `None` if the node currently has no parent edge (it's a root).
     pub async fn get_parent_edge_modified_at(
