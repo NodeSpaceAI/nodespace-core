@@ -579,7 +579,19 @@
     contentChanged: (content: string, cursorPosition: number) => {
       // Clear node-type-conversion cursor after first content change
       // This allows normal blur behavior to resume after placeholder promotion is complete
-      if (focusManager.cursorPosition?.type === 'node-type-conversion') {
+      //
+      // Scope to this node: contentChanged is not exclusively driven by a synchronous
+      // native 'input' DOM event on this node's own textarea (which would make
+      // focusManager.editingNodeId === nodeId a given). TextareaController.insertNodeReference()
+      // also calls events.contentChanged() directly, and its caller
+      // (handleAutocompleteSelect's "create new node" branch) awaits a real backend round
+      // trip before invoking it. If a *different* node's node-type-conversion signal
+      // becomes pending during that await, this node's stale post-await callback must not
+      // read/clear it - it was never this node's signal to consume.
+      if (
+        focusManager.editingNodeId === nodeId &&
+        focusManager.cursorPosition?.type === 'node-type-conversion'
+      ) {
         focusManager.clearCursorPosition();
       }
       dispatch('contentChanged', { content, cursorPosition });
