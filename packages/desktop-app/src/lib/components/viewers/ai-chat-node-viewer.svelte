@@ -57,6 +57,7 @@
   import { browserSyncService } from '$lib/services/browser-sync-service';
   import { statusBar } from '$lib/stores/status-bar.svelte';
   import { createLogger } from '$lib/utils/logger';
+  import { toError } from '$lib/types/errors';
   import { aiChatsData } from '$lib/stores/ai-chats.svelte';
   import {
     aiChatDisplayTitle,
@@ -325,7 +326,7 @@
     try {
       await localAgentCancelTurn(nodeId);
     } catch (err) {
-      log.warn('Failed to cancel turn', { error: String(err) });
+      log.warn('Failed to cancel turn', { error: toError(err).message });
     }
   }
 

@@ -6,6 +6,7 @@
  */
 
 import { createLogger } from '$lib/utils/logger';
+import { toError } from '$lib/types/errors';
 import type {
   ModelInfo,
   ModelFamily,
@@ -394,7 +395,7 @@ class ModelStore {
   cancelDownload(modelId: string): void {
     if (isTauri()) {
       tauriCommands.chatModelCancelDownload(modelId).catch((err) => {
-        log.error('Failed to cancel download', { modelId, error: String(err) });
+        log.error('Failed to cancel download', { modelId, error: toError(err).message });
       });
     }
     const controller = this.downloadAbortControllers.get(modelId);
@@ -426,7 +427,7 @@ class ModelStore {
         await this.refreshModels();
         log.info('Model loaded via Tauri', { modelId });
       } catch (err) {
-        log.error('Failed to load model via Tauri', { modelId, error: String(err) });
+        log.error('Failed to load model via Tauri', { modelId, error: toError(err).message });
         throw err;
       }
     } else {
@@ -449,7 +450,7 @@ class ModelStore {
         await this.refreshModels();
         log.info('Model unloaded via Tauri');
       } catch (err) {
-        log.error('Failed to unload model via Tauri', { error: String(err) });
+        log.error('Failed to unload model via Tauri', { error: toError(err).message });
       }
     } else {
       const modelIndex = this.models.findIndex((m) => m.id === this.loadedModelId);
@@ -473,7 +474,7 @@ class ModelStore {
         await this.refreshModels();
         log.info('Model deleted via Tauri', { modelId });
       } catch (err) {
-        log.error('Failed to delete model via Tauri', { modelId, error: String(err) });
+        log.error('Failed to delete model via Tauri', { modelId, error: toError(err).message });
       }
     } else {
       const modelIndex = this.models.findIndex((m) => m.id === modelId);
