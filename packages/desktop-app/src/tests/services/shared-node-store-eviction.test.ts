@@ -320,9 +320,10 @@ describe('SharedNodeStore - reachability tracking & eviction', () => {
   describe('DATABASE_SETTINGS_NODE_ID — always-mounted app chrome outside any open tab', () => {
     // Reproduces the real bug found in review: DATABASE_SETTINGS_NODE_ID
     // (database.svelte.ts) is a global singleton read continuously by
-    // always-mounted Pro-sync chrome (pro-sync-pill.svelte, app-shell.svelte,
-    // membership.svelte.ts) — it has no structureTree relationship to any
-    // open tab and is never itself a tab root. Without a pin, it is
+    // always-mounted Pro-sync chrome (ui-extensions.svelte.ts's
+    // resolveProSyncVariant/activeDatabaseSettings, membership.svelte.ts) —
+    // it has no structureTree relationship to any open tab and is never
+    // itself a tab root. Without a pin, it is
     // unreachable — and thus evicted after the inactivity threshold — the
     // instant it's cached, REGARDLESS of how often it's refreshed (setNode
     // alone doesn't cancel a pending eviction). This exact scenario is what

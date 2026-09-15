@@ -9,8 +9,9 @@
   Sign-in has already happened by the time this slot mounts (the sign-in-first
   flow), so the modal only decides the public-workspace publish. It auto-opens
   once per fresh sign-in episode; a "Keep local" decline records that episode so
-  it doesn't immediately reopen, while the enable-sync pill can reopen it. A brief
-  status line confirms the decline registered.
+  it doesn't immediately reopen, while `collaboration-locked.svelte`'s
+  "Turn on sync" button (rendered for the `consent` variant) can reopen it. A
+  brief status line confirms the decline registered.
 
   Never rendered in the community build (that resolves to `teaser`), so invoking
   Pro commands here is safe.
@@ -59,11 +60,12 @@
   let noticeTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Auto-open once per fresh sign-in episode (unless declined), plus any manual
-  // reopen via the enable-sync pill. Derived from the episode counter rather than
-  // pushed by an effect (ADR-049). A decline is honoured two ways: in-session via
-  // `consentDeclinedEpisode`, and across reloads via a persisted per-database
-  // marker — so the modal is a one-time nudge, not a per-launch pop-up. The pill
-  // remains available to reopen it deliberately.
+  // reopen via `collaboration-locked.svelte`'s "Turn on sync" button. Derived
+  // from the episode counter rather than pushed by an effect (ADR-049). A
+  // decline is honoured two ways: in-session via `consentDeclinedEpisode`, and
+  // across reloads via a persisted per-database marker — so the modal is a
+  // one-time nudge, not a per-launch pop-up. `consentPromptOpen` remains
+  // available for any surface to reopen it deliberately.
   const autoOpen = $derived(
     proSync.signedInEpisode > 0 &&
       proSync.signedInEpisode !== proSync.consentDeclinedEpisode &&
@@ -96,8 +98,9 @@
     // Decline: leave sync disabled and share nothing, but stay signed in. Record the
     // decline for this sign-in episode (so the auto-open doesn't immediately reopen)
     // and persist it per-database (so a reload/restart doesn't re-pop the dialog), and
-    // surface a brief confirmation so the choice visibly registers. The pill remains,
-    // so the user can revisit this later.
+    // surface a brief confirmation so the choice visibly registers.
+    // `collaboration-locked.svelte`'s "Turn on sync" button remains, so the
+    // user can revisit this later from that collection's Collaboration tab.
     proSync.consentPromptOpen = false;
     proSync.consentDeclinedEpisode = proSync.signedInEpisode;
     persistDecline(databaseStore.activeDatabaseId);

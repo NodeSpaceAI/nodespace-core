@@ -3,6 +3,7 @@
     import { loadSettings, settingsStore } from '$lib/stores/settings.svelte';
     import SettingsSidebar from './settings-sidebar.svelte';
     import DatabaseSettings from './sections/database-settings.svelte';
+    import AccountSettings from './sections/account-settings.svelte';
     import DisplaySettings from './sections/display-settings.svelte';
     import ImportSettings from './sections/import-settings.svelte';
     import DiagnosticsSettings from './sections/diagnostics-settings.svelte';
@@ -25,6 +26,8 @@
     <div class="settings-content">
         {#if activeCategory === 'database'}
             <DatabaseSettings />
+        {:else if activeCategory === 'account'}
+            <AccountSettings onNavigateToDatabase={() => activeCategory = 'database'} />
         {:else if activeCategory === 'display'}
             <DisplaySettings />
         {:else if activeCategory === 'import'}
