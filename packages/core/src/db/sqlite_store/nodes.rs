@@ -1889,6 +1889,38 @@ impl SqliteStore {
         }
     }
 
+    /// Returns the incoming `has_child` edge's own `modified_at` — the
+    /// relationship row's timestamp, distinct from either endpoint node's
+    /// `modified_at`. A move re-points or re-creates the edge (see
+    /// `move_node`) without bumping `nodes.version`, so this is the only
+    /// signal available to tell "this device moved the node" apart from "a
+    /// peer moved it" when reconciling structural state across a sync
+    /// boundary. `None` if the node currently has no parent edge.
+    pub async fn get_parent_edge_modified_at(
+        &self,
+        child_id: &str,
+    ) -> Result<Option<DateTime<Utc>>> {
+        let mut rows = self.read().await?.query(
+            "SELECT modified_at FROM relationship WHERE out_node = ?1 AND relationship_type = 'has_child' LIMIT 1",
+            libsql::params![child_id.to_string()],
+        ).await.context("Failed to get parent edge modified_at")?;
+
+        if let Some(row) = rows.next().await? {
+            let modified_at_str: String = row.get(0)?;
+            let modified_at = DateTime::parse_from_rfc3339(&modified_at_str)
+                .with_context(|| {
+                    format!(
+                        "Invalid relationship modified_at timestamp: {}",
+                        modified_at_str
+                    )
+                })?
+                .with_timezone(&Utc);
+            Ok(Some(modified_at))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub async fn get_node_type(&self, node_id: &str) -> Result<Option<String>> {
         let mut rows = self
             .read()

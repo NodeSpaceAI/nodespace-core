@@ -3636,6 +3636,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_parent_edge_modified_at() {
+        let (service, _temp) = create_test_service().await;
+
+        // Root node: no parent edge at all.
+        let root = Node::new("text".to_string(), "Root".to_string(), json!({}));
+        let root_id = service.create_node(root).await.unwrap();
+        assert!(service
+            .get_parent_edge_modified_at(&root_id)
+            .await
+            .unwrap()
+            .is_none());
+
+        // Create parent + child: the edge's modified_at should be populated
+        // and distinct from "no edge".
+        let parent = Node::new("text".to_string(), "Parent".to_string(), json!({}));
+        let parent_id = service.create_node(parent).await.unwrap();
+        let child_id = service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Child".to_string(),
+                parent_id: Some(parent_id.clone()),
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        let first_edge_ts = service
+            .get_parent_edge_modified_at(&child_id)
+            .await
+            .unwrap()
+            .expect("child has a parent edge");
+
+        // Moving the child to a new parent re-creates the has_child edge, so
+        // the edge's modified_at must advance — independent of the child
+        // node's own modified_at, which a structural move never touches.
+        let other_parent = Node::new("text".to_string(), "Other parent".to_string(), json!({}));
+        let other_parent_id = service.create_node(other_parent).await.unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        service
+            .move_node_unchecked(
+                &child_id,
+                Some(&other_parent_id),
+                crate::services::InsertPosition::End,
+            )
+            .await
+            .unwrap();
+
+        let moved_edge_ts = service
+            .get_parent_edge_modified_at(&child_id)
+            .await
+            .unwrap()
+            .expect("child still has a parent edge after the move");
+        assert!(
+            moved_edge_ts > first_edge_ts,
+            "parent edge modified_at should advance after a move: {} vs {}",
+            moved_edge_ts,
+            first_edge_ts
+        );
+
+        let moved_parent = service.get_parent(&child_id).await.unwrap().unwrap();
+        assert_eq!(moved_parent.id, other_parent_id);
+    }
+
+    #[tokio::test]
     async fn test_date_auto_creation() {
         let (service, _temp) = create_test_service().await;
 

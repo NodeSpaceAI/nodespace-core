@@ -200,6 +200,29 @@ impl NodeService {
         Ok(parent)
     }
 
+    /// Get the incoming `has_child` edge's own `modified_at` timestamp.
+    ///
+    /// This is distinct from [`get_parent`](Self::get_parent), which returns
+    /// the *parent node's* `modified_at`, and from the child node's own
+    /// `modified_at`: it is the relationship row's timestamp. A move
+    /// re-points or re-creates the parent edge without ever bumping
+    /// `nodes.version` on either endpoint, so callers that need to tell
+    /// "this node's structural position changed locally" apart from "its
+    /// content changed" — or, across a sync boundary, "this device moved it"
+    /// apart from "a peer moved it" — read this instead of either node's
+    /// timestamp.
+    ///
+    /// Returns `None` if the node currently has no parent edge (it's a root).
+    pub async fn get_parent_edge_modified_at(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, NodeServiceError> {
+        self.store
+            .get_parent_edge_modified_at(node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+    }
+
     /// Get the root (root ancestor) of a node
     pub async fn get_root_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
         let mut current_id = node_id.to_string();
