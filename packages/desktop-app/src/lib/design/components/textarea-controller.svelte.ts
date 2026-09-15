@@ -252,7 +252,19 @@ export class TextareaController {
 
       // Initialize pattern state
       // If creationSource not provided, infer from focusManager for backward compatibility
-      const cursorType = focusManager.cursorPosition?.type;
+      //
+      // focusManager.cursorPosition is a SINGLE module-level signal, not scoped to any
+      // particular node. When several node components mount within the same reactive
+      // flush (e.g. an Enter-created sibling mounting around the same time as an
+      // unrelated node re-mounts for its own reasons), every constructor that runs
+      // before the signal is cleared would otherwise read it — even ones for a
+      // completely different node than the one focusNodeFromInheritedType /
+      // focusNodeFromTypeConversion was actually called for. Gate the read on
+      // editingNodeId so only the node the signal was actually set for can consume it;
+      // this mirrors the same guard base-node.svelte already applies when deriving its
+      // own cursorPosition prop (`focusManager.editingNodeId === nodeId`).
+      const cursorType =
+        focusManager.editingNodeId === nodeId ? focusManager.cursorPosition?.type : undefined;
       const isTypeConversion = cursorType === 'node-type-conversion';
       const isInheritedType = cursorType === 'inherited-type';
 
@@ -338,7 +350,11 @@ export class TextareaController {
       // Previously only checked for 'node-type-conversion', but 'absolute', 'default', etc.
       // also need to be handled by the action, not overridden here.
       const hasPendingCursorPosition = focusManager.cursorPosition !== null;
-      const isTypeConversion = focusManager.cursorPosition?.type === 'node-type-conversion';
+      // Scope to this node (see constructor comment above) — the pending signal may
+      // belong to a different node whose component happens to mount in the same flush.
+      const isTypeConversion =
+        focusManager.editingNodeId === this.nodeId &&
+        focusManager.cursorPosition?.type === 'node-type-conversion';
 
       // Clear cursor position AFTER checking type
       // The positionCursor action will handle cursor positioning
