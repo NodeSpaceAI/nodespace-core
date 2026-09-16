@@ -806,6 +806,7 @@ pub fn run() {
             commands::agent_session::check_agent_availability,
             // First-launch onboarding wizard + Settings integrations panel
             commands::onboarding::check_onboarding_status,
+            commands::onboarding::detect_agents,
             commands::onboarding::configure_path,
             commands::onboarding::remove_from_path,
             commands::onboarding::configure_skill,

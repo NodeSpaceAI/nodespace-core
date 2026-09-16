@@ -30,13 +30,16 @@ const STATUS = {
   completed: false,
   pathConfigured: false,
   skillConfigured: false,
-  claudeCodeDetected: false,
   pathAlreadyConfigured: false
 };
 
 function mockBackend(overrides: Partial<typeof STATUS> = {}) {
   mockInvoke.mockImplementation((cmd: string) => {
     if (cmd === 'check_onboarding_status') return Promise.resolve({ ...STATUS, ...overrides });
+    // Detection ran and found nothing — these scenarios have no skill step.
+    // Mocked explicitly: `detect_agents` returns `DetectedAgents` bare (not a
+    // Result), so `undefined` is a shape the real backend cannot produce.
+    if (cmd === 'detect_agents') return Promise.resolve({ agents: [], detectionFailed: false });
     return Promise.resolve();
   });
 }

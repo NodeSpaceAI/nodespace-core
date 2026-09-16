@@ -37,9 +37,15 @@ const BLANK_STATUS = {
   completed: false,
   pathConfigured: false,
   skillConfigured: false,
-  claudeCodeDetected: false,
   pathAlreadyConfigured: true // so the PATH step, once reached, shows "Next" immediately
 };
+
+// Detection ran and found nothing, so these scenarios get no skill step.
+// Mocked explicitly rather than left to fall through to the catch-all
+// `Promise.resolve()`: `detect_agents` returns `DetectedAgents` bare (not a
+// Result), so `undefined` is a shape the real backend cannot produce, and
+// letting a mock produce it would test a state that does not exist.
+const NO_AGENTS_DETECTED = { agents: [], detectionFailed: false };
 
 const BLANK_IDENTITY = {
   nodeId: 'person-1',
@@ -67,6 +73,7 @@ describe('OnboardingWizard identity step', () => {
   it('asks for identity first when the seeded person is blank', async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'check_onboarding_status') return Promise.resolve(BLANK_STATUS);
+      if (cmd === 'detect_agents') return Promise.resolve(NO_AGENTS_DETECTED);
       if (cmd === 'get_local_identity') return Promise.resolve(BLANK_IDENTITY);
       if (cmd === 'get_identity_prefill') return Promise.resolve({ name: null, email: null });
       return Promise.resolve();
@@ -80,7 +87,7 @@ describe('OnboardingWizard identity step', () => {
     expect(container.querySelector<HTMLInputElement>('#identity-first-name')).not.toBeNull();
     expect(container.querySelector<HTMLInputElement>('#identity-last-name')).not.toBeNull();
     // 3 real steps for this scenario (identity, path, summary — no skill
-    // step, claudeCodeDetected is false): the step SEQUENCE — not just the
+    // step, no agents detected): the step SEQUENCE — not just the
     // step currently rendered — must actually include 'identity', or
     // navigation (Skip/Next) later in the flow has nowhere sane to land.
     expect(container.querySelectorAll('.step-dot').length).toBe(3);
@@ -89,6 +96,7 @@ describe('OnboardingWizard identity step', () => {
   it('does not show the identity step when the seeded person already has a name/email', async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'check_onboarding_status') return Promise.resolve(BLANK_STATUS);
+      if (cmd === 'detect_agents') return Promise.resolve(NO_AGENTS_DETECTED);
       if (cmd === 'get_local_identity') return Promise.resolve(FILLED_IDENTITY);
       return Promise.resolve();
     });
@@ -106,6 +114,7 @@ describe('OnboardingWizard identity step', () => {
   it('shows a git/OS prefill for confirmation but writes nothing until Save is clicked', async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'check_onboarding_status') return Promise.resolve(BLANK_STATUS);
+      if (cmd === 'detect_agents') return Promise.resolve(NO_AGENTS_DETECTED);
       if (cmd === 'get_local_identity') return Promise.resolve(BLANK_IDENTITY);
       if (cmd === 'get_identity_prefill') {
         return Promise.resolve({ name: 'Alice Example', email: 'alice@example.com' });
@@ -132,6 +141,7 @@ describe('OnboardingWizard identity step', () => {
   it('Skip advances past the identity step without saving anything', async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'check_onboarding_status') return Promise.resolve(BLANK_STATUS);
+      if (cmd === 'detect_agents') return Promise.resolve(NO_AGENTS_DETECTED);
       if (cmd === 'get_local_identity') return Promise.resolve(BLANK_IDENTITY);
       if (cmd === 'get_identity_prefill') return Promise.resolve({ name: null, email: null });
       return Promise.resolve();
@@ -153,6 +163,7 @@ describe('OnboardingWizard identity step', () => {
   it('Save writes the trimmed name/email and advances to the next step', async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'check_onboarding_status') return Promise.resolve(BLANK_STATUS);
+      if (cmd === 'detect_agents') return Promise.resolve(NO_AGENTS_DETECTED);
       if (cmd === 'get_local_identity') return Promise.resolve(BLANK_IDENTITY);
       if (cmd === 'get_identity_prefill') return Promise.resolve({ name: null, email: null });
       if (cmd === 'set_local_identity') return Promise.resolve(FILLED_IDENTITY);
@@ -198,9 +209,11 @@ describe('OnboardingWizard identity step', () => {
     await tick();
 
     expect(container.textContent).toContain('Who are you?');
-    // No path/skill/summary machinery reachable — check_onboarding_status
-    // must never be called in this mode.
+    // No path/skill/summary machinery reachable — neither onMount probe may
+    // run in this mode. `detect_agents` especially: it costs a subprocess,
+    // and the backfill nudge has no skill step to spend it on.
     expect(mockInvoke).not.toHaveBeenCalledWith('check_onboarding_status');
+    expect(mockInvoke).not.toHaveBeenCalledWith('detect_agents');
 
     await fireEvent.click(buttonByText(container, 'Save'));
     await tick();
@@ -224,6 +237,7 @@ describe('OnboardingWizard identity step', () => {
     // so the backend can set `identity_prompt_dismissed` itself.
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'check_onboarding_status') return Promise.resolve(BLANK_STATUS);
+      if (cmd === 'detect_agents') return Promise.resolve(NO_AGENTS_DETECTED);
       if (cmd === 'get_local_identity') return Promise.resolve(BLANK_IDENTITY);
       if (cmd === 'get_identity_prefill') return Promise.resolve({ name: null, email: null });
       return Promise.resolve();
@@ -254,6 +268,7 @@ describe('OnboardingWizard identity step', () => {
   it('Save during the main wizard leaves identitySkipped false on complete_onboarding', async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'check_onboarding_status') return Promise.resolve(BLANK_STATUS);
+      if (cmd === 'detect_agents') return Promise.resolve(NO_AGENTS_DETECTED);
       if (cmd === 'get_local_identity') return Promise.resolve(BLANK_IDENTITY);
       if (cmd === 'get_identity_prefill') return Promise.resolve({ name: null, email: null });
       if (cmd === 'set_local_identity') return Promise.resolve(FILLED_IDENTITY);

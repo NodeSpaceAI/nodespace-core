@@ -43,9 +43,11 @@ describe('OnboardingWizard skill-install reporting', () => {
           completed: false,
           pathConfigured: false,
           skillConfigured: false,
-          claudeCodeDetected: true,
           pathAlreadyConfigured: true // path step auto-advances
         });
+      }
+      if (cmd === 'detect_agents') {
+        return Promise.resolve({ agents: ['claude-code'], detectionFailed: false });
       }
       if (cmd === 'configure_skill') {
         return Promise.resolve({
@@ -90,9 +92,11 @@ describe('OnboardingWizard skill-install reporting', () => {
           completed: false,
           pathConfigured: false,
           skillConfigured: false,
-          claudeCodeDetected: true,
           pathAlreadyConfigured: true
         });
+      }
+      if (cmd === 'detect_agents') {
+        return Promise.resolve({ agents: ['claude-code'], detectionFailed: false });
       }
       if (cmd === 'configure_skill') {
         return Promise.resolve({
@@ -135,9 +139,11 @@ describe('OnboardingWizard skill-install reporting', () => {
           completed: false,
           pathConfigured: false,
           skillConfigured: false,
-          claudeCodeDetected: true,
           pathAlreadyConfigured: true
         });
+      }
+      if (cmd === 'detect_agents') {
+        return Promise.resolve({ agents: ['claude-code'], detectionFailed: false });
       }
       if (cmd === 'configure_skill') {
         return Promise.resolve({
@@ -185,9 +191,11 @@ describe('OnboardingWizard skill-install reporting', () => {
           completed: false,
           pathConfigured: false,
           skillConfigured: false,
-          claudeCodeDetected: true,
           pathAlreadyConfigured: true
         });
+      }
+      if (cmd === 'detect_agents') {
+        return Promise.resolve({ agents: ['claude-code'], detectionFailed: false });
       }
       if (cmd === 'configure_skill') {
         return Promise.resolve({
@@ -214,6 +222,8 @@ describe('OnboardingWizard skill-install reporting', () => {
 
     const banner = container.querySelector('.success-banner');
     expect(banner?.textContent).not.toContain('Skill file written');
-    expect(banner?.textContent?.trim()).toBe('Claude Code integration is set up.');
+    // Deliberately agent-neutral: this branch fires precisely when the result
+    // names no agent at all, so naming one here would be a guess.
+    expect(banner?.textContent?.trim()).toBe('Agent integration is set up.');
   });
 });

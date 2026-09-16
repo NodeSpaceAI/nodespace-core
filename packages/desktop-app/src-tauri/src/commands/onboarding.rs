@@ -13,14 +13,43 @@ use tauri::State;
 use tonic::Request;
 
 /// Current onboarding status returned to the frontend on startup.
+///
+/// Deliberately cheap: a config read plus a few `.exists()` probes. The
+/// app shell invokes this on EVERY launch just to read `completed`, so
+/// nothing expensive belongs here — agent detection, which shells out to the
+/// skill installer, is its own command ([`detect_agents`]) that only the
+/// callers actually needing it pay for.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OnboardingStatus {
     pub completed: bool,
     pub path_configured: bool,
     pub skill_configured: bool,
-    pub claude_code_detected: bool,
     pub path_already_configured: bool,
+}
+
+/// Which agents the skill installer would target if run right now, as agent
+/// ids (`claude-code`, `codex`, `antigravity`, ...).
+///
+/// Sourced from the installer's own `AGENTS` config rather than a hardcoded
+/// home-directory probe here, so this can never name a different set than the
+/// install itself targets.
+///
+/// Separate from [`OnboardingStatus`] because answering it costs a subprocess
+/// (see [`skill_setup::detect_agents`]): the onboarding wizard and the
+/// Settings → Integrations panel need it, the app shell's per-launch
+/// `completed` check does not, and making that check pay for it put a Node
+/// runtime start on the startup critical path.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedAgents {
+    pub agents: Vec<String>,
+    /// True when detection could not run at all (the installer wouldn't
+    /// resolve, no runtime on `$PATH`, a non-zero exit). Distinct from an
+    /// empty `agents` list, which means detection ran and genuinely found
+    /// nothing — the caller must not present a failure as "you have no
+    /// coding agents installed".
+    pub detection_failed: bool,
 }
 
 /// Shape of `~/.nodespace/config.json` on disk.
@@ -151,8 +180,6 @@ pub async fn check_onboarding_status() -> Result<OnboardingStatus, String> {
 
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
 
-    let claude_code_detected = home.join(".claude").exists();
-
     // Check whether the PATH export is already in any shell config.
     let zshrc = home.join(".zshrc");
     let bash_profile = home.join(".bash_profile");
@@ -163,9 +190,25 @@ pub async fn check_onboarding_status() -> Result<OnboardingStatus, String> {
         completed: cfg.onboarding_completed,
         path_configured: cfg.integrations.path_configured,
         skill_configured: cfg.integrations.skill_configured,
-        claude_code_detected,
         path_already_configured,
     })
+}
+
+/// Which agents the skill installer would target right now. See
+/// [`DetectedAgents`] for why this is separate from
+/// [`check_onboarding_status`].
+#[tauri::command]
+pub async fn detect_agents(app_handle: tauri::AppHandle) -> DetectedAgents {
+    match skill_setup::detect_agents(&app_handle).await {
+        Some(agents) => DetectedAgents {
+            agents,
+            detection_failed: false,
+        },
+        None => DetectedAgents {
+            agents: vec![],
+            detection_failed: true,
+        },
+    }
 }
 
 /// Append the NodeSpace PATH export to `~/.zshrc` and/or `~/.bash_profile`
