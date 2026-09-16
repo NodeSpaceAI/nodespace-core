@@ -294,6 +294,37 @@ async fn enumerate_nodes(
 /// [`keyword_match_score`].
 const STEM_FALLBACK_SCORE: f64 = 0.8;
 
+/// Combine the keyword and semantic halves of a merged search into one ranked
+/// list: every keyword hit, then the semantic hits for nodes the keyword pass
+/// did not already surface.
+///
+/// The order is positional, not score-sorted. A keyword hit always precedes a
+/// semantic one, which is the ranking `include_title_matches` exists to
+/// produce — someone who typed a title wants that node first, even against a
+/// vector hit that happens to score higher. (A cosine similarity can reach into
+/// the keyword bands, so sorting the merged list by score would let a strong
+/// semantic match displace the exact title.) Each half arrives already ordered
+/// by its own score, and that internal order is preserved.
+///
+/// Note that `graph_boost`, when enabled downstream, re-ranks the merged set by
+/// blended score and so converts this positional guarantee into a scoring one —
+/// a well-connected semantic hit could then outrank a weak keyword hit. No
+/// caller combines the two today.
+fn merge_keyword_and_semantic(
+    keyword: Vec<(Node, f64)>,
+    semantic: Vec<(Node, f64)>,
+) -> Vec<(Node, f64)> {
+    let keyword_ids: HashSet<&str> = keyword.iter().map(|(node, _)| node.id.as_str()).collect();
+    let semantic_only: Vec<(Node, f64)> = semantic
+        .into_iter()
+        .filter(|(node, _)| !keyword_ids.contains(node.id.as_str()))
+        .collect();
+
+    let mut merged = keyword;
+    merged.extend(semantic_only);
+    merged
+}
+
 /// Score a keyword hit by how completely the query accounts for the text it
 /// matched, so an exact title outranks a title that merely contains the query.
 ///
@@ -359,6 +390,11 @@ async fn title_match_nodes(
         return Ok(Vec::new());
     }
 
+    // `%` and `_` reach the store's LIKE pattern unescaped (see the scoring
+    // match below), so their presence means a returned row may owe its match to
+    // the wildcard rather than to the query text.
+    let query_has_like_wildcard = query_lower.contains('%') || query_lower.contains('_');
+
     let per_query_limit = ENUMERATE_FETCH_CAP.min(limit.max(1) * 3);
     let node_types = filters
         .and_then(|f| f.node_types.as_ref())
@@ -410,11 +446,6 @@ async fn title_match_nodes(
                 continue;
             }
         }
-        // Score against whichever field matched better. A node surfaced by the
-        // title-stem fallback matches neither field as a literal substring, so
-        // it keeps a floor score rather than being dropped — the store already
-        // judged it a title match, and re-deciding that here would discard the
-        // fallback's whole purpose.
         let title_score = node
             .title
             .as_deref()
@@ -423,11 +454,25 @@ async fn title_match_nodes(
         let score = match (title_score, content_score) {
             (Some(t), Some(c)) => t.max(c),
             (Some(s), None) | (None, Some(s)) => s,
-            // Neither field contains the query as a literal substring, so this
-            // row came from the store's title-stem fallback (a "groceries"
-            // query resolving a "grocery store" title). It keeps the floor
-            // score: the store already judged it a title match, and dropping it
-            // here would defeat the fallback entirely.
+            // The store returned this row but neither field contains the query
+            // as a literal substring. Two very different things produce that:
+            //
+            // - The title-stem fallback matched a word variant ("groceries"
+            //   resolving a "grocery store" title). The store made a real
+            //   judgement here, so the row keeps the floor score; re-deciding
+            //   it would defeat the fallback's whole purpose.
+            // - The query contains an unescaped LIKE wildcard. `build_scalar_
+            //   conditions` interpolates the term into `LIKE '%term%'` with no
+            //   ESCAPE clause, so a bare `%` matches every row and a `_`
+            //   matches any character. Those rows are an artifact of the
+            //   pattern, not evidence of relevance, and giving them the floor
+            //   score would rank arbitrary nodes above every genuine semantic
+            //   hit (the floor sits above the whole similarity band).
+            //
+            // Only the first deserves the benefit of the doubt, so a query
+            // carrying a wildcard drops its unexplained rows instead. Rows that
+            // *do* match literally are unaffected and still score normally.
+            (None, None) if query_has_like_wildcard => continue,
             (None, None) => STEM_FALLBACK_SCORE,
         };
         scored.push((node, score));
@@ -636,18 +681,6 @@ pub async fn search_semantic(
         };
 
         if include_title_matches {
-            // Keyword hits first, then semantic hits for nodes the keyword pass
-            // did not already surface.
-            //
-            // The order is positional, not score-sorted: a keyword hit always
-            // precedes a semantic one here, which is the ranking this flag
-            // exists to produce — someone who typed a title wants that node
-            // first, even against a vector hit that happens to score higher.
-            // (A cosine similarity can reach into the keyword bands, so sorting
-            // by score would let a strong semantic match displace the exact
-            // title.) Each half is internally ordered by its own score, and
-            // `graph_boost` below re-ranks the merged set explicitly when
-            // enabled, so it composes either way.
             let keyword = title_match_nodes(
                 node_service,
                 &input.query,
@@ -655,17 +688,7 @@ pub async fn search_semantic(
                 search_filters.as_ref(),
             )
             .await?;
-
-            let keyword_ids: HashSet<String> =
-                keyword.iter().map(|(node, _)| node.id.clone()).collect();
-            keyword
-                .into_iter()
-                .chain(
-                    semantic
-                        .into_iter()
-                        .filter(|(node, _)| !keyword_ids.contains(&node.id)),
-                )
-                .collect()
+            merge_keyword_and_semantic(keyword, semantic)
         } else {
             semantic
         }
@@ -1064,6 +1087,83 @@ mod tests {
             tight > diluted,
             "expected the tighter match ({tight}) to outrank the diluted one ({diluted})"
         );
+    }
+
+    fn merge_node(id: &str) -> Node {
+        Node::new_with_id(
+            id.to_string(),
+            "text".to_string(),
+            format!("content of {id}"),
+            json!({}),
+        )
+    }
+
+    fn merge_ids(merged: &[(Node, f64)]) -> Vec<&str> {
+        merged.iter().map(|(n, _)| n.id.as_str()).collect()
+    }
+
+    /// The headline ranking: a keyword hit precedes a semantic one even when
+    /// the semantic hit carries the higher score. This is what makes an exact
+    /// title win against a strong vector match.
+    #[test]
+    fn merge_puts_every_keyword_hit_ahead_of_every_semantic_hit() {
+        let keyword = vec![(merge_node("kw-weak"), 0.81)];
+        let semantic = vec![(merge_node("sem-strong"), 0.99)];
+
+        let merged = merge_keyword_and_semantic(keyword, semantic);
+
+        assert_eq!(merge_ids(&merged), vec!["kw-weak", "sem-strong"]);
+    }
+
+    /// A node both halves found appears once, keeping its keyword score and
+    /// keyword position — otherwise an exact title match would also show up
+    /// again lower down as a semantic hit.
+    #[test]
+    fn merge_deduplicates_a_node_found_by_both_halves() {
+        let keyword = vec![(merge_node("shared"), 1.0), (merge_node("kw-only"), 0.85)];
+        let semantic = vec![(merge_node("shared"), 0.72), (merge_node("sem-only"), 0.71)];
+
+        let merged = merge_keyword_and_semantic(keyword, semantic);
+
+        assert_eq!(
+            merge_ids(&merged),
+            vec!["shared", "kw-only", "sem-only"],
+            "the shared node keeps its keyword position and appears once"
+        );
+        assert_eq!(
+            merged[0].1, 1.0,
+            "the shared node keeps its keyword score, not the semantic one"
+        );
+    }
+
+    /// Each half arrives sorted by its own score; the merge must not disturb
+    /// that internal order while concatenating.
+    #[test]
+    fn merge_preserves_each_half_internal_order() {
+        let keyword = vec![
+            (merge_node("kw-1"), 1.0),
+            (merge_node("kw-2"), 0.9),
+            (merge_node("kw-3"), 0.82),
+        ];
+        let semantic = vec![(merge_node("sem-1"), 0.95), (merge_node("sem-2"), 0.75)];
+
+        let merged = merge_keyword_and_semantic(keyword, semantic);
+
+        assert_eq!(
+            merge_ids(&merged),
+            vec!["kw-1", "kw-2", "kw-3", "sem-1", "sem-2"]
+        );
+    }
+
+    #[test]
+    fn merge_handles_an_empty_half_on_either_side() {
+        let keyword_only = merge_keyword_and_semantic(vec![(merge_node("kw"), 0.9)], Vec::new());
+        assert_eq!(merge_ids(&keyword_only), vec!["kw"]);
+
+        let semantic_only = merge_keyword_and_semantic(Vec::new(), vec![(merge_node("sem"), 0.9)]);
+        assert_eq!(merge_ids(&semantic_only), vec!["sem"]);
+
+        assert!(merge_keyword_and_semantic(Vec::new(), Vec::new()).is_empty());
     }
 
     /// A row matched only by word stem must sort below every literal keyword

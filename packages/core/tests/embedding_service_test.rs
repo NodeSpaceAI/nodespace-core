@@ -2017,3 +2017,55 @@ async fn test_title_matches_respect_default_knowledge_scope() -> Result<()> {
     );
     Ok(())
 }
+
+/// A `%` typed into the search box reaches the store's LIKE pattern unescaped
+/// (`build_scalar_conditions` has no ESCAPE clause), so it matches every row.
+/// Those rows explain nothing about the query, and scoring them at the
+/// stem-fallback floor would rank arbitrary nodes above every genuine semantic
+/// hit — the floor sits above the whole similarity band. They must be dropped.
+#[tokio::test]
+async fn test_wildcard_query_does_not_return_arbitrary_high_ranked_rows() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    create_root_node(&node_service, "task", "Draft Q3 architecture review").await?;
+    create_root_node(&node_service, "task", "Renew the TLS certificate").await?;
+    create_root_node(&node_service, "text", "Notes from the planning session").await?;
+
+    let input = title_search_input("%", Some("everything"));
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    assert!(
+        output.matched_nodes.is_empty(),
+        "a bare wildcard matched {} node(s) it cannot justify: {:?}",
+        output.matched_nodes.len(),
+        output
+            .matched_nodes
+            .iter()
+            .map(|n| &n.content)
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// The wildcard guard must not cost a literal match. A query containing `_`
+/// still resolves rows that genuinely contain that text.
+#[tokio::test]
+async fn test_wildcard_guard_keeps_literally_matching_rows() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let task = create_root_node(&node_service, "task", "Rename user_id across the schema").await?;
+    create_root_node(&node_service, "task", "Unrelated errand").await?;
+
+    let input = title_search_input("user_id", Some("everything"));
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    assert!(
+        output.matched_nodes.iter().any(|n| n.id == task.id),
+        "an underscore is an ordinary character in a search term and must still match literally"
+    );
+    Ok(())
+}
