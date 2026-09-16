@@ -735,3 +735,128 @@ async fn distinct_validation_errors_on_the_same_play_produce_separate_log_nodes(
     shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }
+
+/// `(location, kind)` alone is not always unique within a single
+/// `validate_play` pass: one condition can reference two distinct broken
+/// dot-paths, and `validate_schema_path` is called once per path with the
+/// SAME `location` string (the condition's own location, computed once by
+/// the caller) — so both `BrokenPath` errors share both `location` and
+/// `kind`. Without further disambiguation these would collide onto one
+/// `error_fingerprint`, silently discarding the second broken path's own
+/// message — exactly the bug `log_validation_errors` exists to prevent, just
+/// narrower (same-location, not just same-play). `log_validation_errors`
+/// must break the tie by ordinal so both still surface as distinct
+/// `playbook_log` nodes.
+#[tokio::test]
+async fn two_broken_paths_in_the_same_condition_produce_separate_log_nodes() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("test.db");
+    let mut store = Arc::new(SqliteStore::new(db_path).await?);
+    let service = Arc::new(NodeService::new(&mut store).await?);
+
+    create_schema(
+        &service,
+        "pb_same_loc_task",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let invalid_play = Node::new(
+        "play".to_string(),
+        "two-broken-paths-same-condition".to_string(),
+        json!({ "rules": [
+            {
+                "name": "condition-with-two-broken-paths",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pb_same_loc_task" },
+                "conditions": ["node.nonexistent_a.x == node.nonexistent_b.y"],
+                "actions": [{
+                    "action_type": "create_node",
+                    "params": {
+                        "node_type": "pb_same_loc_task",
+                        "content": "x",
+                        "properties": {}
+                    }
+                }]
+            }
+        ] }),
+    );
+    let play_id = invalid_play.id.clone();
+
+    // Bypasses NodeService::create_node's validate_play_rules gate entirely
+    // — same rationale as the test above.
+    store.create_node(invalid_play, None, None).await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    let got_both = wait_until(|| {
+        let service = Arc::clone(&service);
+        async move {
+            let logs = service
+                .query_nodes_by_type("playbook_log", Some("active"))
+                .await
+                .unwrap_or_default();
+            logs.len() >= 2
+        }
+    })
+    .await;
+    assert!(
+        got_both,
+        "expected two distinct playbook_log nodes for the two BrokenPath \
+         errors at the same rule[0].condition[0] location"
+    );
+
+    let logs = service
+        .query_nodes_by_type("playbook_log", Some("active"))
+        .await?;
+    let logs_for_play: Vec<_> = logs
+        .iter()
+        .filter(|n| {
+            n.properties
+                .get("playbook_log")
+                .and_then(|ns| ns.get("play_id"))
+                .and_then(|v| v.as_str())
+                == Some(play_id.as_str())
+        })
+        .collect();
+
+    assert_eq!(
+        logs_for_play.len(),
+        2,
+        "two BrokenPath errors sharing the same (location, kind) must still \
+         produce two separate log nodes, got: {:?}",
+        logs_for_play.iter().map(|n| &n.content).collect::<Vec<_>>()
+    );
+
+    let a_log = logs_for_play
+        .iter()
+        .find(|n| n.content.contains("nonexistent_a"))
+        .expect("one log node must be the broken path through 'nonexistent_a'");
+    let b_log = logs_for_play
+        .iter()
+        .find(|n| n.content.contains("nonexistent_b"))
+        .expect("the other log node must be the broken path through 'nonexistent_b'");
+
+    assert_ne!(
+        a_log.id, b_log.id,
+        "the two same-location BrokenPath errors must be two distinct nodes, \
+         not the same node matched twice"
+    );
+
+    for log in [a_log, b_log] {
+        let occurrences = log
+            .properties
+            .get("playbook_log")
+            .and_then(|ns| ns.get("occurrences"))
+            .and_then(|v| v.as_u64());
+        assert_eq!(
+            occurrences,
+            Some(1),
+            "each distinct same-location error must be its own fresh log \
+             node (occurrences: 1), not a dedup-incremented repeat of the \
+             other's fingerprint"
+        );
+    }
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}

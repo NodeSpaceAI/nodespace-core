@@ -156,14 +156,43 @@ impl PlaybookEngine {
     /// reject-on-Reactive-rule problem on one rule and a missing-message
     /// problem on another, say) produce two distinct fingerprints/log nodes
     /// rather than one that silently loses the second error.
+    ///
+    /// `(location, kind)` is not itself guaranteed unique within one
+    /// `validate_play` pass: a single condition or action can legitimately
+    /// produce more than one same-kind error at the same location —
+    /// e.g. `BrokenPath` for two broken dot-paths referenced by the same
+    /// condition, or `InvariantOutOfScopeTarget` for both `source_id` and
+    /// `target_id` on the same `add_relationship` action. Without further
+    /// disambiguation those would collide onto one fingerprint and silently
+    /// reproduce the exact bug this helper exists to fix. So each error's
+    /// identity is additionally suffixed with its ordinal among prior errors
+    /// sharing its `(location, kind)` in this same `errors` slice (omitted
+    /// for the first/only one, to keep the common single-error-per-location
+    /// case stable across restarts) — `validate_play` iterates rules,
+    /// conditions and paths in a fixed, deterministic order, so the ordinal
+    /// is itself deterministic and stable across repeated validation passes
+    /// over the same play.
     async fn log_validation_errors(
         &self,
         play_id: &str,
         errors: &[crate::playbook::validation::PlayValidationError],
     ) {
-        for err in errors {
+        for (i, err) in errors.iter().enumerate() {
             warn!("  Validation error: {}", err);
-            let error_identity = format!("{}:{}", err.location(), err.kind());
+            let prior_same_kind_at_location = errors[..i]
+                .iter()
+                .filter(|e| e.location() == err.location() && e.kind() == err.kind())
+                .count();
+            let error_identity = if prior_same_kind_at_location == 0 {
+                format!("{}:{}", err.location(), err.kind())
+            } else {
+                format!(
+                    "{}:{}:{}",
+                    err.location(),
+                    err.kind(),
+                    prior_same_kind_at_location
+                )
+            };
             let _ = create_or_update_log_node(
                 &self.node_service,
                 play_id,
