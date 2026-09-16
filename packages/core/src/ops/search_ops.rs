@@ -288,6 +288,12 @@ async fn enumerate_nodes(
         .collect())
 }
 
+/// Score floor for a keyword hit the store matched by word stem rather than by
+/// literal substring, so it sorts below every literal keyword hit while staying
+/// above the semantic band. Kept in step with the bands in
+/// [`keyword_match_score`].
+const STEM_FALLBACK_SCORE: f64 = 0.8;
+
 /// Score a keyword hit by how completely the query accounts for the text it
 /// matched, so an exact title outranks a title that merely contains the query.
 ///
@@ -310,6 +316,11 @@ fn keyword_match_score(text: &str, query_lower: &str) -> Option<f64> {
     // near the floor. Both tiers are compressed into bands above the semantic
     // range so keyword hits sort ahead of vector hits without any single band
     // reaching the 1.0 reserved for an exact match.
+    //
+    // `coverage` is always > 0 here (the query was found in the text and both
+    // are non-empty), so containment lands in (0.8, 0.89] and prefix in
+    // (0.9, 0.99] — both strictly above STEM_FALLBACK_SCORE, which is what
+    // keeps a literal match ahead of a stem-only one.
     let coverage = query_lower.chars().count() as f64 / text_lower.chars().count().max(1) as f64;
     if text_lower.starts_with(query_lower) {
         Some(0.9 + 0.09 * coverage)
@@ -409,11 +420,16 @@ async fn title_match_nodes(
             .as_deref()
             .and_then(|t| keyword_match_score(t, &query_lower));
         let content_score = keyword_match_score(&node.content, &query_lower);
-        let score = title_score
-            .into_iter()
-            .chain(content_score)
-            .fold(f64::NAN, f64::max);
-        let score = if score.is_nan() { 0.8 } else { score };
+        let score = match (title_score, content_score) {
+            (Some(t), Some(c)) => t.max(c),
+            (Some(s), None) | (None, Some(s)) => s,
+            // Neither field contains the query as a literal substring, so this
+            // row came from the store's title-stem fallback (a "groceries"
+            // query resolving a "grocery store" title). It keeps the floor
+            // score: the store already judged it a title match, and dropping it
+            // here would defeat the fallback entirely.
+            (None, None) => STEM_FALLBACK_SCORE,
+        };
         scored.push((node, score));
     }
 
@@ -621,11 +637,17 @@ pub async fn search_semantic(
 
         if include_title_matches {
             // Keyword hits first, then semantic hits for nodes the keyword pass
-            // did not already surface. Both are scored on the same 0..1 scale,
-            // with keyword scores banded above the similarity range
-            // (`keyword_match_score`), so the concatenation is already in
-            // descending score order for the common case and downstream
-            // `graph_boost` re-ranking (which sorts explicitly) still composes.
+            // did not already surface.
+            //
+            // The order is positional, not score-sorted: a keyword hit always
+            // precedes a semantic one here, which is the ranking this flag
+            // exists to produce — someone who typed a title wants that node
+            // first, even against a vector hit that happens to score higher.
+            // (A cosine similarity can reach into the keyword bands, so sorting
+            // by score would let a strong semantic match displace the exact
+            // title.) Each half is internally ordered by its own score, and
+            // `graph_boost` below re-ranks the merged set explicitly when
+            // enabled, so it composes either way.
             let keyword = title_match_nodes(
                 node_service,
                 &input.query,
@@ -1041,6 +1063,24 @@ mod tests {
         assert!(
             tight > diluted,
             "expected the tighter match ({tight}) to outrank the diluted one ({diluted})"
+        );
+    }
+
+    /// A row matched only by word stem must sort below every literal keyword
+    /// hit, including the weakest containment match, while still outranking
+    /// the semantic band.
+    #[test]
+    fn stem_fallback_score_sits_below_every_literal_keyword_hit() {
+        // The stem floor must still clear the semantic band; a constant, so it
+        // holds at compile time rather than being re-checked at runtime.
+        const _: () = assert!(STEM_FALLBACK_SCORE > 0.7);
+
+        let weakest_literal = keyword_match_score(&"x".repeat(10_000), "x").unwrap();
+
+        assert!(
+            weakest_literal > STEM_FALLBACK_SCORE,
+            "weakest literal hit ({weakest_literal}) must outrank the stem floor \
+             ({STEM_FALLBACK_SCORE})"
         );
     }
 
