@@ -96,6 +96,31 @@ describe('stylelint design-token rules', () => {
       // is what erodes trust in a gate.
       expect(await lintCss(code)).toEqual([]);
     });
+
+    it.each([
+      ['a URL path', '.a { background-image: url(/img/gold.png); }'],
+      ['a bare filename', '.a { background: url(red.svg) no-repeat; }'],
+      ['a custom property holding a URL', '.a { --icon: url(white.svg); }'],
+      ['a quoted string', '.a { content: "red"; }'],
+      ['a grid-area ident', '.a { grid-area: navy; }'],
+      ['a font name', ".a { font-family: 'Gill Sans', Tahoma; }"],
+      [
+        'a data: URI payload',
+        `.a { background-image: url("data:image/svg+xml,%3Csvg%3E%3Cpath stroke='white'/%3E%3C/svg%3E"); }`
+      ]
+    ])('does not read a color word inside %s as a literal', async (_label, code) => {
+      // Icon components are full of url() payloads, and `stroke='white'` inside
+      // one is a natural thing to write. Flagging it would fire on a correct
+      // change, with a message about design tokens that explains nothing.
+      expect(await lintCss(code)).toEqual([]);
+    });
+
+    it('still flags a named color inside a gradient', async () => {
+      // The URL/string boundary must not weaken real detection.
+      expect(await lintCss('.a { background: linear-gradient(white, black); }')).toContain(
+        DISALLOWED
+      );
+    });
   });
 
   describe('custom property declarations', () => {

@@ -79,10 +79,16 @@ const NAMED_COLORS = [
 const RAW_COLOR_SOURCE = [
   String.raw`#[0-9a-fA-F]{3,8}\b`,
   String.raw`\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\(\s*[\d.]`,
-  // A named color must stand alone as a value. `(?<![\w-])`/`(?![\w-])` rather
-  // than `\b` so that a token name merely *containing* one — `var(--white-
-  // overlay)`, `--surface-red` — is not mistaken for the literal.
-  String.raw`(?<![\w-])(?:${NAMED_COLORS.join('|')})(?![\w-])`
+  // A named color must stand alone as a value.
+  //
+  // The boundaries are wider than `\b` on purpose, to keep three things that
+  // merely *contain* a color word from reading as one:
+  //   - token names      `var(--white-overlay)`, `--surface-red`   → `[\w-]`
+  //   - URLs / filenames `url(gold.png)`, `url(/img/red.svg)`      → `[./]` and `(`
+  //   - quoted strings   `--label: "red"`, `content: "gold"`       → `['"]`
+  // A false positive on a correct icon change costs more than the drift it
+  // would catch, because rejecting valid work is what gets a gate switched off.
+  String.raw`(?<![\w\-./'"(])(?:${NAMED_COLORS.join('|')})(?![\w\-./'"])`
 ].join('|');
 
 // Stylelint reads a "/…/"-delimited string as a regular expression.
@@ -231,6 +237,12 @@ export default {
   // means `stylelint-disable` is not a recognized directive at all — it reads
   // as an ordinary comment and suppresses nothing. The report* options then
   // catch anyone who finds the real keyword below.
+  //
+  // A genuine spec exception is still possible, but has to be deliberate and
+  // has to say why — an unexplained one is reported, and so is a stale one:
+  //
+  //   /* stylelint-design-token-override-disable-next-line <rule> -- <reason> */
+  //
   configurationComment: 'stylelint-design-token-override',
   reportDescriptionlessDisables: true,
   reportNeedlessDisables: true,
