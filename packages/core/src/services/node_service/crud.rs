@@ -2,6 +2,23 @@
 
 use super::*;
 
+/// Result of [`NodeService::update_with_version_check_returning_node_in_tx`]:
+/// either the update landed (carrying what the caller's post-commit side
+/// effects need — `content_changed` and the pre-update content, so
+/// `sync_mentions` never has to re-fetch), or the OCC check failed. Not an
+/// `Err` for the conflict case — see that method's own doc.
+pub(crate) enum VersionCheckedUpdateOutcome {
+    VersionConflict,
+    Updated {
+        // Boxed: `Node` is large enough that an unboxed field here would make
+        // every `VersionCheckedUpdateOutcome` (including the zero-data
+        // `VersionConflict` variant) pay for the biggest variant's size.
+        node: Box<Node>,
+        content_changed: bool,
+        existing_content: String,
+    },
+}
+
 impl NodeService {
     /// Create a new node
     ///
@@ -1149,7 +1166,16 @@ impl NodeService {
 
     /// Update node with optimistic concurrency control (version check)
     ///
-    /// Internal method that returns the updated node directly to avoid redundant fetches.
+    /// Internal method that returns the updated node directly to avoid
+    /// redundant fetches. Delegates the validation/normalization/title/write
+    /// pipeline to [`Self::update_with_version_check_returning_node_in_tx`]
+    /// (runs inside one transaction via `with_transaction`, mirroring
+    /// `create_node`'s own wrapping of `create_node_in_tx` — see that
+    /// method's doc), then performs the same post-commit, best-effort side
+    /// effects this method always has: embedding-queue-on-content-change and
+    /// mentions sync. Both stay outside the transaction, unchanged from
+    /// before — a failure in either must never undo an already-committed
+    /// update.
     pub(crate) async fn update_with_version_check_returning_node(
         &self,
         id: &str,
@@ -1162,10 +1188,149 @@ impl NodeService {
             ));
         }
 
-        // Get existing node to validate update and build new state
-        let existing = self
-            .get_node(id)
-            .await?
+        // Collection-name-collision pre-check, mirrored here for the same
+        // reason `create_node`'s own pre-check exists (see that method's
+        // doc): the write below now runs through
+        // `update_with_version_check_returning_node_in_tx`, and
+        // `SqliteStore::update_node_with_version_check_in_tx` deliberately
+        // does NOT do collision detection/marking itself — same posture as
+        // `create_node_in_tx`, the marker write is a second,
+        // OCC-bypassing write kept outside the transaction boundary by
+        // design. Read-only and safe before the transaction opens; if the
+        // node doesn't exist or changes underneath this read before the real
+        // write lands, the OCC check inside the transaction is the actual
+        // correctness guard — this pre-check only decides whether a
+        // best-effort marker write happens afterward, never whether the
+        // update itself succeeds.
+        let previous = self.get_node(id).await?;
+        let colliding_collection = match &previous {
+            Some(previous) => {
+                let updated_content = update
+                    .content
+                    .clone()
+                    .unwrap_or_else(|| previous.content.clone());
+                let updated_node_type = update
+                    .node_type
+                    .clone()
+                    .unwrap_or_else(|| previous.node_type.clone());
+                if updated_node_type == "collection" && updated_content != previous.content {
+                    self.store
+                        .get_collection_by_name(&updated_content)
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to check collection name collision: {}",
+                                e
+                            ))
+                        })?
+                        .filter(|existing| existing.id != id)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+
+        let service = self.clone();
+        let service_for_tx = service.clone();
+        let id_for_tx = id.to_string();
+        let outcome = service
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    service_for_tx
+                        .update_with_version_check_returning_node_in_tx(
+                            tx,
+                            &id_for_tx,
+                            expected_version,
+                            update,
+                        )
+                        .await
+                })
+            })
+            .await?;
+
+        let (updated_node, content_changed, existing_content) = match outcome {
+            VersionCheckedUpdateOutcome::VersionConflict => return Ok(None),
+            VersionCheckedUpdateOutcome::Updated {
+                node,
+                content_changed,
+                existing_content,
+            } => (node, content_changed, existing_content),
+        };
+
+        if let Some(existing) = colliding_collection {
+            // Best-effort and non-blocking, same posture as `create_node`'s
+            // own call site: the node above is already durably committed
+            // (we're past the `VersionConflict` early-return, so the OCC
+            // check genuinely passed and the write landed), so a
+            // marker-write failure must never undo it.
+            self.store
+                .mark_collection_name_collision(id, &existing.id)
+                .await;
+        }
+
+        // Queue root for embedding regeneration if content changed (root-aggregate model)
+        // Fire-and-forget: don't block the update response on embedding queue operations
+        #[cfg(feature = "nlp")]
+        if content_changed {
+            let store = self.store.clone();
+            let behaviors = self.behaviors.clone();
+            let node_id = id.to_string();
+            let embedding_waker = self.embedding_waker.clone();
+            tokio::spawn(async move {
+                Self::queue_root_for_embedding_async(
+                    &store,
+                    &behaviors,
+                    &node_id,
+                    embedding_waker.get(),
+                )
+                .await;
+            });
+        }
+
+        // Sync mentions if content changed
+        if content_changed {
+            if let Err(e) = self
+                .sync_mentions(id, &existing_content, &updated_node.content)
+                .await
+            {
+                // Log warning but don't fail the update
+                tracing::warn!("Failed to sync mentions for node {}: {}", id, e);
+            }
+        }
+
+        Ok(Some(*updated_node))
+    }
+
+    /// Tx-scoped twin of [`Self::update_with_version_check_returning_node`]
+    /// (ADR-060 §2). Same validation/normalization/title pipeline as before,
+    /// but reading `existing` and writing the version-checked update through
+    /// `tx` instead of the pooled reader / the store's own transaction —
+    /// which is what makes it possible to run synchronous invariant-rule
+    /// dispatch (`dispatch_invariant_rules_for_update_in_tx`) inside the
+    /// SAME transaction as the write, after it lands but before
+    /// `with_transaction` commits: a rejecting invariant rule returns `Err`
+    /// here, which rolls back the version-checked update above it AND
+    /// discards the `NodeUpdated` event buffered by `emit_event` below
+    /// (never flushed on rollback — see `NodeService::with_transaction`'s
+    /// own doc) — no partial write, no broadcast, for a rejected update.
+    ///
+    /// Returns [`VersionCheckedUpdateOutcome::VersionConflict`] on an OCC
+    /// mismatch rather than an `Err` — an expected, common outcome the
+    /// caller maps to `NodeServiceError::VersionConflict` itself (mirrors
+    /// `update_node_with_version_check_in_tx`'s own `Ok(Err(actual_version))`
+    /// convention, ADR-069 §2a: a version mismatch is not a transaction
+    /// failure).
+    pub(crate) async fn update_with_version_check_returning_node_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        id: &str,
+        expected_version: i64,
+        update: NodeUpdate,
+    ) -> Result<VersionCheckedUpdateOutcome, NodeServiceError> {
+        let existing = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
             .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
         // Build updated node state
@@ -1213,7 +1378,10 @@ impl NodeService {
         // Step 2: Schema validation (USER-EXTENSIBLE)
         // Every type that declares a schema is validated, user-defined types
         // included; `validate_node_against_schema` no-ops for types without one.
-        // The lookup behind it is a single primary-key read.
+        // The lookup behind it is a single primary-key read. Non-tx reads
+        // like this one are safe from inside a write transaction — same
+        // precedent as `insert_node_in_tx_no_invariant_dispatch`'s own
+        // schema/title/play-validation calls.
         if updated.node_type != "schema" {
             self.validate_node_against_schema(&updated).await?;
         }
@@ -1242,59 +1410,68 @@ impl NodeService {
             lifecycle_status: update.lifecycle_status,
         };
 
-        // Perform atomic update with version check
-        let result = self
-            .store
-            .update_node_with_version_check(
-                id,
-                expected_version,
-                node_update,
-                self.client_id.clone(),
-                self.execution_context.clone(),
-            )
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        // Perform atomic update with version check, tx-scoped.
+        let result = crate::db::SqliteStore::update_node_with_version_check_in_tx(
+            tx.store_tx(),
+            id,
+            expected_version,
+            node_update,
+        )
+        .await
+        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-        // Check if update succeeded (version matched)
-        // If None, version mismatch occurred - return None for caller to handle
         let updated_node = match result {
-            Some(node) => node,
-            None => return Ok(None),
+            Ok(node) => node,
+            Err(_actual_version) => return Ok(VersionCheckedUpdateOutcome::VersionConflict),
         };
 
-        // NOTE: NodeUpdated event is now automatically emitted by store notifier
+        // Real changed_properties — the same diff the store's own notifier
+        // closure computes for the non-tx path (`compute_property_changes`,
+        // this module's own helper); `_in_tx` store methods bypass that
+        // notifier entirely (see its doc), so this is required here to keep
+        // property_changed-triggered plays (reactive or invariant) and
+        // WatchNodes consumers seeing accurate diffs, not an empty vec.
+        let changed_properties =
+            compute_property_changes(&existing.properties, &updated_node.properties);
 
-        // Queue root for embedding regeneration if content changed (root-aggregate model)
-        // Fire-and-forget: don't block the update response on embedding queue operations
-        #[cfg(feature = "nlp")]
-        if content_changed {
-            let store = self.store.clone();
-            let behaviors = self.behaviors.clone();
-            let node_id = id.to_string();
-            let embedding_waker = self.embedding_waker.clone();
-            tokio::spawn(async move {
-                Self::queue_root_for_embedding_async(
-                    &store,
-                    &behaviors,
-                    &node_id,
-                    embedding_waker.get(),
-                )
-                .await;
-            });
-        }
+        // Buffered, not broadcast yet (`BatchState::Transactional`) — only
+        // flushed if this whole transaction commits. See this method's own
+        // doc for why emitting before dispatch below is safe.
+        self.emit_event(DomainEvent::NodeUpdated {
+            node_id: updated_node.id.clone(),
+            node_type: updated_node.node_type.clone(),
+            node: updated_node.clone(),
+            changed_properties: changed_properties.clone(),
+        });
 
-        // Sync mentions if content changed
-        if content_changed {
-            if let Err(e) = self
-                .sync_mentions(id, &existing.content, &updated.content)
-                .await
-            {
-                // Log warning but don't fail the update
-                tracing::warn!("Failed to sync mentions for node {}: {}", id, e);
-            }
-        }
+        // ADR-060 §2: synchronous invariant-rule dispatch for
+        // property_changed triggers, inside this same transaction. A
+        // rejecting rule's `Err` propagates out through the `?` below,
+        // through this whole function, and through the caller's
+        // `with_transaction`, rolling back everything above — including the
+        // buffered event.
+        self.dispatch_invariant_rules_for_update_in_tx(tx, &updated_node, &changed_properties)
+            .await?;
 
-        Ok(Some(updated_node))
+        // Re-read the trigger node's final state, tx-consistent, rather than
+        // returning the `updated_node` snapshot captured above: an invariant
+        // rule's own action can be a self-referential `update_node` on the
+        // SAME node (the canonical shape — stamp a derived property on the
+        // node whose change just triggered the rule), which writes a second
+        // time inside this same transaction. Returning the pre-dispatch
+        // snapshot would silently omit that second write from what the
+        // caller (and ultimately the RPC response) sees, even though it is
+        // genuinely, durably part of what this transaction committed.
+        let final_node = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
+
+        Ok(VersionCheckedUpdateOutcome::Updated {
+            node: Box::new(final_node),
+            content_changed,
+            existing_content: existing.content,
+        })
     }
 
     /// Update a node with OCC and return the updated node

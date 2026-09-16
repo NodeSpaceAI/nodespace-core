@@ -95,14 +95,15 @@ pub enum PlayValidationError {
         trigger: String,
         location: String,
     },
-    /// An invariant rule's trigger is not a `node_created` graph event.
-    /// Synchronous pre-commit dispatch (ADR-060 §1) is wired only into the
-    /// node-creation write path — there is no equivalent open transaction to
-    /// join for a `property_changed`/`relationship_added`/
-    /// `relationship_removed` mutation, or for a scheduled scan. Declaring a
-    /// rule `invariant` against one of those triggers would silently never
-    /// execute rather than deliver the fail-closed guarantee its class name
-    /// promises, so it is rejected here instead.
+    /// An invariant rule's trigger is not a `node_created` or
+    /// `property_changed` graph event. Synchronous pre-commit dispatch
+    /// (ADR-060 §1) is wired into the node-creation and update write paths —
+    /// there is no equivalent open transaction to join for a
+    /// `relationship_added`/`relationship_removed` mutation, or for a
+    /// scheduled scan. Declaring a rule `invariant` against one of those
+    /// triggers would silently never execute rather than deliver the
+    /// fail-closed guarantee its class name promises, so it is rejected here
+    /// instead.
     InvariantUnsupportedTrigger { trigger: String, location: String },
     /// An invariant `add_relationship` action targets `member_of` or
     /// `has_child` without an explicit `order` in `edge_data`. Both types
@@ -218,9 +219,9 @@ impl std::fmt::Display for PlayValidationError {
             Self::InvariantUnsupportedTrigger { trigger, location } => write!(
                 f,
                 "invariant rule at {} has trigger '{}', which synchronous pre-commit dispatch \
-                 does not support (only a node_created graph-event trigger runs inside a \
-                 transaction today) — declare this rule reactive, or change its trigger to \
-                 node_created",
+                 does not support (only node_created and property_changed graph-event triggers \
+                 run inside a transaction today) — declare this rule reactive, or change its \
+                 trigger to node_created or property_changed",
                 location, trigger
             ),
             Self::InvariantRelationshipNeedsExplicitOrder {
@@ -814,12 +815,14 @@ fn validate_invariant_eligibility(
     rule_idx: usize,
     errors: &mut Vec<PlayValidationError>,
 ) {
-    // Supported trigger — synchronous pre-commit dispatch is wired only into
-    // the node-creation write path (see `InvariantUnsupportedTrigger`'s doc).
+    // Supported trigger — synchronous pre-commit dispatch is wired into the
+    // node-creation and update write paths (see `InvariantUnsupportedTrigger`'s
+    // doc). `relationship_added`/`relationship_removed` and scheduled triggers
+    // have no equivalent synchronous dispatch point and remain unsupported.
     let trigger_supported = matches!(
         &rule.trigger,
         ParsedTrigger::GraphEvent {
-            on: GraphEventType::NodeCreated,
+            on: GraphEventType::NodeCreated | GraphEventType::PropertyChanged,
             ..
         }
     );
@@ -2756,22 +2759,23 @@ mod tests {
         }
 
         #[test]
-        fn invariant_property_changed_trigger_rejected() {
+        fn invariant_property_changed_trigger_accepted() {
+            // Synchronous pre-commit dispatch is now wired into update_node's
+            // write path too, so property_changed is an accepted invariant
+            // trigger — the same class of check as node_created above.
             let rule = invariant_rule(
                 GraphEventType::PropertyChanged,
                 "task",
                 Some("status"),
-                vec![],
-                vec![],
+                vec!["node.status == 'open'"],
+                vec![update_action("{trigger.node.id}")],
             );
             let errors = eligibility_errors(&rule);
             assert!(
-                errors.iter().any(|e| matches!(
-                    e,
-                    PlayValidationError::InvariantUnsupportedTrigger { trigger, .. }
-                        if trigger == "property_changed"
-                )),
-                "property_changed must be rejected as an invariant trigger, got {:?}",
+                !errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::InvariantUnsupportedTrigger { .. })),
+                "property_changed must be an accepted invariant trigger, got {:?}",
                 errors
             );
         }
