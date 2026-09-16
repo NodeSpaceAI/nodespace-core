@@ -61,7 +61,7 @@ fn node_from_proto(data: nodespace_proto::NodeData) -> Option<Node> {
         modified_at,
         mentions: Vec::new(),
         mentioned_in: Vec::new(),
-        title: None,
+        title: data.title,
     })
 }
 
@@ -294,6 +294,40 @@ pub async fn batch_generate_embeddings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_node_data(title: Option<String>) -> nodespace_proto::NodeData {
+        nodespace_proto::NodeData {
+            id: "n1".to_string(),
+            node_type: "person".to_string(),
+            content: String::new(),
+            properties: "{}".to_string(),
+            version: 1,
+            lifecycle_status: "active".to_string(),
+            created_at: "2026-09-13T00:00:00Z".to_string(),
+            modified_at: "2026-09-13T00:00:00Z".to_string(),
+            markdown: String::new(),
+            title,
+        }
+    }
+
+    /// Regression test for #2547: search-result nodes go through this
+    /// separate proto→`Node` conversion (distinct from
+    /// `commands::nodes::proto_node_data_to_node`), which independently
+    /// hardcoded `title: None` — the same class of bug, a second call site.
+    #[test]
+    fn node_from_proto_carries_a_present_title_through() {
+        let node = node_from_proto(sample_node_data(Some("Michael Libio".to_string())))
+            .expect("valid timestamps must convert");
+
+        assert_eq!(node.title.as_deref(), Some("Michael Libio"));
+    }
+
+    #[test]
+    fn node_from_proto_carries_an_absent_title_through() {
+        let node = node_from_proto(sample_node_data(None)).expect("valid timestamps must convert");
+
+        assert_eq!(node.title, None);
+    }
 
     #[test]
     fn test_search_params_defaults() {

@@ -29,6 +29,7 @@
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { createLogger } from '$lib/utils/logger';
+  import { evaluateTitleTemplate } from '$lib/utils/title-template';
   import type { Node } from '$lib/types';
   import RelationshipViewerModal from '$lib/components/relationships/relationship-viewer-modal.svelte';
   import { loadNodeRelationshipsView } from '$lib/services/relationship-viewer-service';
@@ -107,12 +108,11 @@
 
   // Routed through sharedNodeStore.updateNode (ADR-049), matching every
   // other property form — NOT backendAdapter.updateNode directly. The store
-  // applies the change optimistically and synchronously (so the title,
-  // recomputed from title_template, reaches every reader — including
-  // BaseNodeViewer — immediately once persistence resolves) and owns
+  // applies the change optimistically and synchronously, and owns
   // persistence + error reporting itself; callers don't need their own
   // try/catch around it, matching generic-schema-form.svelte /
-  // task-schema-form.svelte.
+  // task-schema-form.svelte. The title itself does NOT wait on this —
+  // see updateTitlePreview below (ADR-077).
   function updateField(field: 'first_name' | 'last_name' | 'email', value: string) {
     if (!node) return;
     const updatedProperties = {
@@ -124,6 +124,75 @@
       { properties: updatedProperties },
       { type: 'viewer', viewerId: 'person-schema-form' }
     );
+  }
+
+  // Mirrors the person schema's real title_template ("{first_name}
+  // {last_name}", core_schemas.rs) so the preview below matches what the
+  // backend will independently compute and persist. PersonSchemaForm is
+  // deliberately hardcoded rather than schema-driven (see the file header),
+  // so this is a literal, not a schema lookup — keep in sync with
+  // core_schemas.rs's person schema if that template ever changes.
+  const PERSON_TITLE_TEMPLATE = '{first_name} {last_name}';
+
+  // Live, in-progress values for the title preview below — NOT the same as
+  // `firstName`/`lastName` above, which only track the last COMMITTED
+  // (blurred/persisted) value. Tracking both fields' in-progress values
+  // independently (rather than pairing "this field's fresh keystroke" with
+  // "the other field's last commit") matters because a user can tab from
+  // one name field straight into the other and keep typing before either
+  // ever blurs — pairing against the stale committed value would silently
+  // drop the first field's not-yet-blurred edit from the preview.
+  //
+  // Resynced from the committed values whenever those actually change
+  // (`$effect` below) — covers both the nodeId-changes-to-a-different-person
+  // case and this form's own blur-commit landing (a same-value, harmless
+  // no-op resync) and a remote update to this same node's name fields
+  // arriving from elsewhere while this form is open.
+  let firstNameDraft = $state('');
+  let lastNameDraft = $state('');
+  $effect(() => {
+    firstNameDraft = firstName;
+  });
+  $effect(() => {
+    lastNameDraft = lastName;
+  });
+
+  /**
+   * Per ADR-077: the editing client computes its own title instantly from
+   * in-progress field values, with no dependency on a completed round trip
+   * or a `NodeUpdated` echo. Pushed into the store via `isComputedField`
+   * (skips persistence and OCC entirely — this is a pure, synchronous local
+   * UI echo) so every reader of the store (header, tab, inline row) reflects
+   * it in the same tick, not just this form. The backend still
+   * independently computes and persists the authoritative title on save;
+   * once that response lands, the store's existing reconciliation logic
+   * (shared-node-store.svelte.ts) reapplies it — which should already match
+   * this preview exactly, since both sides evaluate the same template over
+   * the same field values.
+   */
+  function pushTitlePreview() {
+    if (!node) return;
+    const title = evaluateTitleTemplate(PERSON_TITLE_TEMPLATE, {
+      first_name: firstNameDraft,
+      last_name: lastNameDraft
+    });
+    if (title === (node.title ?? '')) return;
+    sharedNodeStore.updateNode(
+      nodeId,
+      { title },
+      { type: 'viewer', viewerId: 'person-schema-form' },
+      { isComputedField: true }
+    );
+  }
+
+  function handleFirstNameInput(e: Event) {
+    firstNameDraft = (e.currentTarget as HTMLInputElement).value;
+    pushTitlePreview();
+  }
+
+  function handleLastNameInput(e: Event) {
+    lastNameDraft = (e.currentTarget as HTMLInputElement).value;
+    pushTitlePreview();
   }
 
   function handleFirstNameBlur(e: FocusEvent) {
@@ -229,6 +298,7 @@
       type="text"
       value={firstName}
       placeholder="Jane"
+      oninput={handleFirstNameInput}
       onblur={handleFirstNameBlur}
     />
   </div>
@@ -239,6 +309,7 @@
       type="text"
       value={lastName}
       placeholder="Doe"
+      oninput={handleLastNameInput}
       onblur={handleLastNameBlur}
     />
   </div>

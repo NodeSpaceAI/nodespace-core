@@ -30,6 +30,7 @@
 <script lang="ts">
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { resolveFieldValue, buildFieldWrite } from '$lib/components/schema/schema-field-resolution';
+  import { evaluateTitleTemplate } from '$lib/utils/title-template';
   import type { SchemaNode, SchemaField } from '$lib/types/schema-node';
   import type { Node } from '$lib/types';
   import { labelForField } from '$lib/utils/schema-field-label';
@@ -74,6 +75,39 @@
       nodeId,
       { properties: buildFieldWrite(node, fieldName, value) },
       { type: 'viewer', viewerId: 'generic-schema-form' }
+    );
+    updateTitlePreview(fieldName, value);
+  }
+
+  /**
+   * Per ADR-077: for a title_template-bearing schema, the editing client
+   * computes its own title instantly from in-progress field values — no
+   * dependency on the backend round trip or a `NodeUpdated` echo. A separate
+   * `updateNode` call, gated behind `isComputedField` (skips persistence and
+   * OCC entirely — a pure, synchronous local UI echo), so every reader of
+   * the store (header, tab, inline row) reflects it immediately, not just
+   * this form's own fields. No-op for a schema with no `titleTemplate` (the
+   * overwhelming majority of schemas today).
+   *
+   * `fieldName`/`value` are this call's OWN edit, read fresh off the event
+   * rather than through `getFieldValue` (which would still see the
+   * pre-write store value) — every OTHER field's value comes from the
+   * current store snapshot via `getFieldValue`.
+   */
+  function updateTitlePreview(fieldName: string, value: unknown) {
+    if (!node || !schema.titleTemplate) return;
+    const fieldValues: Record<string, unknown> = { [fieldName]: value };
+    for (const field of schema.fields) {
+      if (field.name === fieldName) continue;
+      fieldValues[field.name] = getFieldValue(field.name);
+    }
+    const title = evaluateTitleTemplate(schema.titleTemplate, fieldValues);
+    if (title === (node.title ?? '')) return;
+    sharedNodeStore.updateNode(
+      nodeId,
+      { title },
+      { type: 'viewer', viewerId: 'generic-schema-form' },
+      { isComputedField: true }
     );
   }
 </script>

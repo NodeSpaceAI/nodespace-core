@@ -2227,6 +2227,7 @@ pub(crate) fn node_to_proto(node: Node) -> NodeData {
         created_at: node.created_at.to_rfc3339(),
         modified_at: node.modified_at.to_rfc3339(),
         markdown: String::new(),
+        title: node.title,
     }
 }
 
@@ -2990,6 +2991,157 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(people_after.len(), 1);
+    }
+
+    /// Regression test for #2547: `node_to_proto` is a hand-written
+    /// field-by-field mapping between `Node` (which has `title`) and
+    /// `NodeData` (whose proto message previously had no `title` field at
+    /// all) — this is the direct, cheapest test for the actual bug, pinned
+    /// at the conversion function itself rather than through a full RPC.
+    #[test]
+    fn node_to_proto_maps_a_present_title_onto_the_wire_message() {
+        let mut node = Node::new("person".to_string(), String::new(), serde_json::json!({}));
+        node.title = Some("Michael Libio".to_string());
+
+        let proto = node_to_proto(node);
+
+        assert_eq!(proto.title.as_deref(), Some("Michael Libio"));
+    }
+
+    /// The other half of the same mapping: a node type that never gets a
+    /// title (per `compute_title`'s early return for `date`/`schema`, or any
+    /// node with no title computed at all) must map to `None` — an ABSENT
+    /// proto field, not a present-but-empty string. `optional string` on the
+    /// wire is what makes this distinction possible; a plain `string` field
+    /// could not represent "no title" at all.
+    #[test]
+    fn node_to_proto_maps_an_absent_title_to_none_not_empty_string() {
+        let node = Node::new("date".to_string(), String::new(), serde_json::json!({}));
+        assert_eq!(
+            node.title, None,
+            "sanity: a freshly constructed Node has no title"
+        );
+
+        let proto = node_to_proto(node);
+
+        assert_eq!(proto.title, None);
+    }
+
+    /// A title_template whose referenced fields are all still empty
+    /// legitimately computes to `Some("")`, not `None` (`compute_title`
+    /// returns whatever `interpolate_title_template_with_schema` produces
+    /// without normalizing an empty result away). The proto mapping must
+    /// preserve that distinction too — `Some("")` on the wire, not silently
+    /// coerced to absent.
+    #[test]
+    fn node_to_proto_preserves_a_present_but_empty_title() {
+        let mut node = Node::new("person".to_string(), String::new(), serde_json::json!({}));
+        node.title = Some(String::new());
+
+        let proto = node_to_proto(node);
+
+        assert_eq!(proto.title.as_deref(), Some(""));
+    }
+
+    /// Integration test closing the actual coverage gap the issue describes:
+    /// the existing service-layer title-recompute test (core's
+    /// `NodeService` test suite) asserts against the `Node` struct returned
+    /// from the store layer directly — it never crosses the daemon's gRPC
+    /// serialization boundary where `title` was actually being dropped. This
+    /// test goes through the real `NodeServiceImpl` RPC handlers
+    /// (`SetLocalPersonIdentity` then `GetNode`, the exact handlers a real
+    /// CLI/Tauri/MCP client calls), so it fails pre-fix and passes post-fix.
+    #[tokio::test]
+    async fn get_node_rpc_returns_the_title_for_the_seeded_person() {
+        let (svc, _tmp) = make_service().await;
+
+        let seeded = svc
+            .node_service
+            .query_nodes_by_type("person", None)
+            .await
+            .unwrap();
+        let seeded_id = seeded[0].id.clone();
+
+        svc.set_local_person_identity(Request::new(SetLocalPersonIdentityRequest {
+            first_name: "Michael".to_string(),
+            last_name: "Libio".to_string(),
+            email: "michael@example.com".to_string(),
+        }))
+        .await
+        .unwrap();
+
+        let fetched = svc
+            .get_node(Request::new(GetNodeRequest { node_id: seeded_id }))
+            .await
+            .unwrap()
+            .into_inner();
+        let data = fetched.node_data.expect("get_node must return node_data");
+
+        assert_eq!(
+            data.title.as_deref(),
+            Some("Michael Libio"),
+            "the daemon's gRPC NodeData must carry the title_template-computed \
+             title — every client (CLI, Tauri, MCP) reads nodes through this \
+             exact RPC"
+        );
+    }
+
+    /// The same round trip as above, but for a title_template-bearing type
+    /// OTHER than the built-in `person` schema — the issue explicitly calls
+    /// out person-specific coverage as insufficient, since the bug (and the
+    /// fix) is general to every `title_template` schema, not particular to
+    /// person's fields. Exercises `CreateSchema`, `CreateNode`, and `GetNode`
+    /// as real RPCs, mirroring how a client actually drives this end-to-end.
+    #[tokio::test]
+    async fn get_node_rpc_returns_the_title_for_a_non_person_title_templated_type() {
+        let (svc, _tmp) = make_service().await;
+
+        let schema_params = serde_json::json!({
+            "name": "Ticket",
+            "fields": [
+                { "name": "severity", "type": "string" },
+                { "name": "subject", "type": "string" }
+            ],
+            "title_template": "{severity}: {subject}"
+        });
+        svc.create_schema(Request::new(SchemaParamsRequest {
+            params_json: schema_params.to_string(),
+        }))
+        .await
+        .expect("creating the Ticket schema must succeed");
+
+        let create_req = Request::new(CreateNodeRequest {
+            id: None,
+            node_type: "ticket".to_string(),
+            content: String::new(),
+            parent_id: None,
+            collections: Vec::new(),
+            collection_ids: Vec::new(),
+            lifecycle_status: None,
+            properties: serde_json::json!({
+                "severity": "P1",
+                "subject": "Disk full"
+            })
+            .to_string(),
+            position: None,
+        });
+        let created = svc.create_node(create_req).await.unwrap().into_inner();
+
+        let fetched = svc
+            .get_node(Request::new(GetNodeRequest {
+                node_id: created.node_id,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let data = fetched.node_data.expect("get_node must return node_data");
+
+        assert_eq!(
+            data.title.as_deref(),
+            Some("P1: Disk full"),
+            "a non-person title_template type's computed title must also \
+             survive the proto boundary, not just person's"
+        );
     }
 
     /// A model-less shared build context for constructing a `DatabaseManager`
