@@ -33,9 +33,19 @@
     completed: boolean;
     pathConfigured: boolean;
     skillConfigured: boolean;
-    /** Agent ids the skill installer would target — see agent-names.ts. */
-    detectedAgents: string[];
     pathAlreadyConfigured: boolean;
+  }
+
+  interface DetectedAgents {
+    /** Agent ids the skill installer would target — see agent-names.ts. */
+    agents: string[];
+    /**
+     * True when detection could not run at all, as opposed to running and
+     * finding nothing. The skill step is still offered in that case (with
+     * generic wording) rather than silently vanishing — the install attempt
+     * itself then surfaces a real, actionable error.
+     */
+    detectionFailed: boolean;
   }
 
   interface LocalIdentity {
@@ -102,8 +112,8 @@
   // Which agents the install will actually target, known BEFORE the install
   // runs — so the question the skill step asks ("Add NodeSpace to ...?") names
   // the same agents the success message afterwards confirms. Empty until
-  // check_onboarding_status resolves, and whenever detection failed; the
-  // wording falls back to a generic form in that case rather than guessing.
+  // detect_agents resolves, and whenever detection failed; the wording falls
+  // back to a generic form in that case rather than guessing.
   let detectedAgents = $state<string[]>([]);
 
   // What was actually configured (for summary)
@@ -153,17 +163,35 @@
     } else {
       invoke<OnboardingStatus>('check_onboarding_status')
         .then((status) => {
-          detectedAgents = status.detectedAgents ?? [];
-          showSkill = detectedAgents.length > 0;
           pathWasAlreadyConfigured = status.pathAlreadyConfigured;
           log.debug('Onboarding status loaded', {
-            showSkill,
-            detectedAgents,
             pathAlreadyConfigured: status.pathAlreadyConfigured,
           });
         })
         .catch((err) => {
           log.warn('Could not load onboarding status', err);
+        });
+
+      // Separate from the status call above: answering this costs a
+      // subprocess, and only the skill step needs it.
+      invoke<DetectedAgents>('detect_agents')
+        .then((result) => {
+          detectedAgents = result?.agents ?? [];
+          // Offer the step when agents were found, and also when detection
+          // could not run — the user may well have an agent installed, and a
+          // question with generic wording beats silently dropping the step.
+          showSkill = detectedAgents.length > 0 || result?.detectionFailed === true;
+          log.debug('Agent detection complete', {
+            detectedAgents,
+            detectionFailed: result?.detectionFailed,
+            showSkill,
+          });
+        })
+        .catch((err) => {
+          // The command itself failing is the same situation as detection
+          // failing inside it: offer the step with generic wording.
+          showSkill = true;
+          log.warn('Could not detect agents', err);
         });
     }
     loadIdentity();
@@ -591,7 +619,7 @@
               </span>
               <span>
                 {#if skillDone && skillResult && skillResult.agentsInstalled.length > 0}
-                  NodeSpace skill — {skillResult.agentsInstalled.map(displayAgentName).join(', ')}
+                  NodeSpace skill — {formatAgentList(skillResult.agentsInstalled)}
                 {:else}
                   NodeSpace skill
                 {/if}

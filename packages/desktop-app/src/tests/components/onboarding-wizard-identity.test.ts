@@ -37,7 +37,6 @@ const BLANK_STATUS = {
   completed: false,
   pathConfigured: false,
   skillConfigured: false,
-  detectedAgents: [],
   pathAlreadyConfigured: true // so the PATH step, once reached, shows "Next" immediately
 };
 

@@ -93,10 +93,11 @@ Commands:
   status [agent]         Report which (of the specified, or every configured) agents
                           actually have SKILL.md on disk right now -- a pure
                           filesystem check, no install/uninstall side effects
-  detect                 Report which configured agents are present on this
-                          machine at all (their config dir exists), whether or
-                          not the skill is installed into them -- what \`install\`
-                          would target if run now. Also side-effect free
+  detect [agent]         Report which (of the specified, or every configured)
+                          agents are present on this machine at all (their
+                          config dir exists), whether or not the skill is
+                          installed into them -- what \`install\` would target
+                          if run now. Also side-effect free
   mcp-install [client]   Configure a detected (or specified) bash-less MCP
                           client to launch \`nodespace mcp\`
   mcp-uninstall [client] Remove NodeSpace's entry from a detected (or
@@ -232,7 +233,8 @@ Examples:
     // `status`, so skill_setup.rs's parse_installer_output covers this
     // command too rather than needing a third parser.
     const detected = new Set(detectAgents());
-    for (const name of validAgents) {
+    const checked = targetAgents ?? validAgents;
+    for (const name of checked) {
       if (detected.has(name)) {
         console.log(`✓ ${name}: detected`);
       } else {

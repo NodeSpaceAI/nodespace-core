@@ -12,9 +12,14 @@
   const log = createLogger('IntegrationsSettings');
 
   interface IntegrationStatus {
-    /** Agent ids the skill installer would target — see agent-names.ts. */
-    detectedAgents: string[];
     pathAlreadyConfigured: boolean;
+  }
+
+  interface DetectedAgents {
+    /** Agent ids the skill installer would target — see agent-names.ts. */
+    agents: string[];
+    /** True when detection could not run at all (vs. finding nothing). */
+    detectionFailed: boolean;
   }
 
   interface SkippedAgent {
@@ -32,6 +37,10 @@
   }
 
   let status = $state<IntegrationStatus | null>(null);
+  // Fetched once on mount, separately from `status`: answering it costs a
+  // subprocess, and nothing on this panel changes which agents exist on the
+  // machine (installing the skill INTO an agent does not create one).
+  let detected = $state<DetectedAgents | null>(null);
   let skillResult = $state<SkillSetupResult | null>(null);
 
   let pathWorking = $state(false);
@@ -43,6 +52,7 @@
     try {
       status = await invoke<IntegrationStatus>('get_integrations_status');
       skillResult = await invoke<SkillSetupResult>('get_skill_setup_status');
+      detected = await invoke<DetectedAgents>('detect_agents');
     } catch (err) {
       log.warn('Could not load integration status', err);
     }
@@ -124,9 +134,13 @@
 
   const pathIsConfigured = $derived(status?.pathAlreadyConfigured ?? false);
   const skillIsInstalled = $derived(skillResult?.success ?? false);
-  const detectedAgents = $derived(status?.detectedAgents ?? []);
-  const anyAgentDetected = $derived(detectedAgents.length > 0);
-  const detectedAgentsLabel = $derived(formatAgentList(detectedAgents));
+  const detectedAgents = $derived(detected?.agents ?? []);
+  // A detection failure must not present as "no agents installed" — the
+  // controls stay enabled so the install attempt can surface a real error.
+  const anyAgentDetected = $derived(detectedAgents.length > 0 || detected?.detectionFailed === true);
+  const detectedAgentsLabel = $derived(
+    detectedAgents.length > 0 ? formatAgentList(detectedAgents) : 'your coding agents'
+  );
 </script>
 
 <div class="max-w-[640px]">
@@ -181,10 +195,10 @@
     <CardHeader class="p-5 pb-4">
       <div class="mb-1.5 flex items-center gap-2.5">
         <span class="text-foreground text-[0.9375rem] font-semibold">Agent Skill</span>
-        {#if !anyAgentDetected}
-          <Badge variant="secondary">No agents detected</Badge>
-        {:else if status === null}
+        {#if status === null || detected === null}
           <Badge variant="secondary">Checking…</Badge>
+        {:else if !anyAgentDetected}
+          <Badge variant="secondary">No agents detected</Badge>
         {:else if skillIsInstalled}
           <Badge class="border-green-500/25 bg-green-500/10 text-green-700">Installed</Badge>
         {:else}

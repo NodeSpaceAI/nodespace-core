@@ -128,14 +128,14 @@ pub struct SkippedAgent {
 /// from both — which weren't present at all (not tracked here; "not
 /// present" needs no representation beyond simply not appearing).
 ///
-/// `installed` is really "the ✓-marked agents", and every subcommand sharing
-/// this parser means something slightly different by that mark: `install`
-/// means got files, `status` means has SKILL.md on disk, `detect` means is
-/// present at all. The field keeps the `install` name because that is the
-/// primary caller; read it as whatever ✓ meant for the subcommand that ran.
+/// `marked` is named for the ✓ marker itself rather than for any one
+/// subcommand's meaning, because every subcommand sharing this parser means
+/// something different by that mark: `install` means got files, `status`
+/// means has SKILL.md on disk, `detect` means is present at all. Naming it
+/// `installed` made two of those three readings a lie at the call site.
 #[derive(Debug, Default, PartialEq)]
 struct InstallOutcome {
-    installed: Vec<String>,
+    marked: Vec<String>,
     skipped: Vec<SkippedAgent>,
 }
 
@@ -342,8 +342,7 @@ async fn revalidate_agents_installed_inner(
 
     match result {
         Ok(Ok(outcome)) => {
-            let present: std::collections::HashSet<String> =
-                outcome.installed.into_iter().collect();
+            let present: std::collections::HashSet<String> = outcome.marked.into_iter().collect();
             agents_installed
                 .into_iter()
                 .filter(|agent| present.contains(agent))
@@ -371,15 +370,21 @@ async fn revalidate_agents_installed_inner(
 /// the two lists are entirely different (everything detected, nothing
 /// installed).
 ///
-/// Best-effort: any resolution/execution failure yields an empty list rather
-/// than erroring the caller, so a transient installer problem degrades the
-/// wizard's wording to its generic form instead of failing status entirely.
-pub async fn detect_agents(app: &AppHandle) -> Vec<String> {
+/// `None` when detection could not run at all (the installer wouldn't
+/// resolve, no runtime on `$PATH`, a non-zero exit, a panic) — deliberately
+/// distinct from `Some(vec![])`, which means detection ran and genuinely
+/// found nothing. Collapsing the two would let a packaged app with no usable
+/// runtime silently tell the user they have no coding agents installed, and
+/// would silently drop the wizard's skill step with no indication why.
+///
+/// Logged at `warn!` rather than `debug!` for the same reason: a failure here
+/// removes a user-facing step, so it should be visible in a normal log.
+pub async fn detect_agents(app: &AppHandle) -> Option<Vec<String>> {
     let installer = match resolve_installer(app) {
         Ok(installer) => installer,
         Err(e) => {
-            tracing::debug!("Skipping agent detection: {e}");
-            return Vec::new();
+            tracing::warn!("Agent detection unavailable — could not resolve installer: {e}");
+            return None;
         }
     };
 
@@ -389,15 +394,15 @@ pub async fn detect_agents(app: &AppHandle) -> Vec<String> {
 
     match result {
         // `detect` marks a present agent with ✓, which the shared parser
-        // collects into `installed` — here that reads "detected".
-        Ok(Ok(outcome)) => outcome.installed,
+        // collects into `marked`.
+        Ok(Ok(outcome)) => Some(outcome.marked),
         Ok(Err(e)) => {
-            tracing::debug!("agent detection failed: {e}");
-            Vec::new()
+            tracing::warn!("Agent detection failed: {e}");
+            None
         }
         Err(join_err) => {
-            tracing::debug!("agent detection panicked: {join_err}");
-            Vec::new()
+            tracing::warn!("Agent detection panicked: {join_err}");
+            None
         }
     }
 }
@@ -491,14 +496,14 @@ pub async fn install_skill(force: bool, app: &AppHandle) -> SkillSetupResult {
             let state = SetupState {
                 skill_installed: true,
                 skill_install_failed: false,
-                agents_installed: outcome.installed.clone(),
+                agents_installed: outcome.marked.clone(),
             };
             if let Err(e) = write_setup_state(&state).await {
                 tracing::warn!("Failed to persist setup state: {:#}", e);
             }
             SkillSetupResult {
                 success: true,
-                agents_installed: outcome.installed,
+                agents_installed: outcome.marked,
                 agents_skipped: outcome.skipped,
                 cli_on_path,
                 cli_warning: cli_warning(cli_on_path),
@@ -815,8 +820,9 @@ fn parse_installer_output(output: std::process::Output) -> Result<InstallOutcome
     }
 
     // "✓ claude-code: installed 2 file(s)" -- filtered on the original line
-    // first so file-path sub-lines ("  → /path/...") don't also match.
-    let installed = stdout
+    // first so file-path sub-lines ("  → /path/...") don't also match. What
+    // the ✓ asserts depends on the subcommand that ran; see `InstallOutcome`.
+    let marked = stdout
         .lines()
         .filter_map(|line| agent_after_marker(line, '✓'))
         .map(str::to_string)
@@ -841,7 +847,7 @@ fn parse_installer_output(output: std::process::Output) -> Result<InstallOutcome
         })
         .collect();
 
-    Ok(InstallOutcome { installed, skipped })
+    Ok(InstallOutcome { marked, skipped })
 }
 
 pub(crate) fn cli_warning(cli_on_path: bool) -> Option<String> {
@@ -1115,7 +1121,7 @@ mod tests {
             .expect("compiled binary must run standalone");
         let outcome = parse_installer_output(output).expect("install succeeds with zero runtime");
 
-        assert_eq!(outcome.installed, vec!["claude-code".to_string()]);
+        assert_eq!(outcome.marked, vec!["claude-code".to_string()]);
         assert!(outcome.skipped.is_empty());
         let installed_skill = fake_home.path().join(".claude/skills/nodespace/SKILL.md");
         assert!(
@@ -1193,7 +1199,7 @@ mod tests {
         assert_eq!(
             result,
             Ok(InstallOutcome {
-                installed: vec!["claude-code".to_string()],
+                marked: vec!["claude-code".to_string()],
                 skipped: vec![],
             }),
             "expected the fallback runtime to run and report success"
@@ -1225,7 +1231,7 @@ mod tests {
         let outcome = parse_installer_output(output).expect("both agents installed cleanly");
 
         assert_eq!(
-            outcome.installed,
+            outcome.marked,
             vec!["claude-code".to_string(), "antigravity".to_string()]
         );
         assert!(outcome.skipped.is_empty());
@@ -1241,7 +1247,7 @@ mod tests {
         );
         let outcome = parse_installer_output(output).expect("a skip is not a failure");
 
-        assert_eq!(outcome.installed, vec!["claude-code".to_string()]);
+        assert_eq!(outcome.marked, vec!["claude-code".to_string()]);
         assert_eq!(outcome.skipped.len(), 1);
         assert_eq!(outcome.skipped[0].agent, "codex");
         assert_eq!(
@@ -1259,7 +1265,7 @@ mod tests {
         let output = fake_output("'✓ claude-code: installed 1 file(s)' '  opencode: not detected'");
         let outcome = parse_installer_output(output).expect("one real agent installed");
 
-        assert_eq!(outcome.installed, vec!["claude-code".to_string()]);
+        assert_eq!(outcome.marked, vec!["claude-code".to_string()]);
         assert!(outcome.skipped.is_empty());
     }
 
@@ -1395,7 +1401,7 @@ mod tests {
             .expect("a skipped agent is not a failure -- the installer still exits 0");
 
         assert!(
-            outcome.installed.is_empty(),
+            outcome.marked.is_empty(),
             "nothing should have been installed from a package with no SKILL.md"
         );
         assert_eq!(outcome.skipped.len(), 1);
@@ -1502,7 +1508,7 @@ mod tests {
         let install_outcome =
             parse_installer_output(install_output).expect("install succeeds for both agents");
         assert_eq!(
-            install_outcome.installed,
+            install_outcome.marked,
             vec!["claude-code".to_string(), "antigravity".to_string()],
             "both agents must actually be installed before this test deletes one by hand"
         );
@@ -1523,7 +1529,7 @@ mod tests {
         let status_outcome = parse_installer_output(status_output).expect("status succeeds");
 
         assert_eq!(
-            status_outcome.installed,
+            status_outcome.marked,
             vec!["claude-code".to_string()],
             "antigravity was deleted by hand and must no longer be reported as installed"
         );
@@ -1560,7 +1566,7 @@ mod tests {
         let detect_outcome = parse_installer_output(detect_output).expect("detect succeeds");
 
         assert_eq!(
-            detect_outcome.installed,
+            detect_outcome.marked,
             vec!["claude-code".to_string(), "antigravity".to_string()],
             "both present agents must be detected with nothing yet installed"
         );
@@ -1575,9 +1581,26 @@ mod tests {
         let status_outcome = parse_installer_output(status_output).expect("status succeeds");
 
         assert!(
-            status_outcome.installed.is_empty(),
+            status_outcome.marked.is_empty(),
             "nothing is installed yet, so status must report an empty list: {:?}",
-            status_outcome.installed
+            status_outcome.marked
+        );
+
+        // An explicit agent argument narrows the report, the same way
+        // `status`'s does -- rather than being accepted by the shared
+        // validation and then silently ignored.
+        let scoped_output = installer_command(&installer_path, "bun", "detect")
+            .arg("antigravity")
+            .env("HOME", fake_home.path())
+            .env("CLAUDE_CONFIG_DIR", fake_home.path().join(".claude"))
+            .output()
+            .expect("bun must be on $PATH to run this test");
+        let scoped_outcome = parse_installer_output(scoped_output).expect("scoped detect succeeds");
+
+        assert_eq!(
+            scoped_outcome.marked,
+            vec!["antigravity".to_string()],
+            "an explicit agent argument must scope the report to just that agent"
         );
     }
 

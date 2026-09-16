@@ -43,9 +43,11 @@ describe('OnboardingWizard skill-install reporting', () => {
           completed: false,
           pathConfigured: false,
           skillConfigured: false,
-          detectedAgents: ['claude-code'],
           pathAlreadyConfigured: true // path step auto-advances
         });
+      }
+      if (cmd === 'detect_agents') {
+        return Promise.resolve({ agents: ['claude-code'], detectionFailed: false });
       }
       if (cmd === 'configure_skill') {
         return Promise.resolve({
@@ -90,9 +92,11 @@ describe('OnboardingWizard skill-install reporting', () => {
           completed: false,
           pathConfigured: false,
           skillConfigured: false,
-          detectedAgents: ['claude-code'],
           pathAlreadyConfigured: true
         });
+      }
+      if (cmd === 'detect_agents') {
+        return Promise.resolve({ agents: ['claude-code'], detectionFailed: false });
       }
       if (cmd === 'configure_skill') {
         return Promise.resolve({
@@ -135,9 +139,11 @@ describe('OnboardingWizard skill-install reporting', () => {
           completed: false,
           pathConfigured: false,
           skillConfigured: false,
-          detectedAgents: ['claude-code'],
           pathAlreadyConfigured: true
         });
+      }
+      if (cmd === 'detect_agents') {
+        return Promise.resolve({ agents: ['claude-code'], detectionFailed: false });
       }
       if (cmd === 'configure_skill') {
         return Promise.resolve({
@@ -185,9 +191,11 @@ describe('OnboardingWizard skill-install reporting', () => {
           completed: false,
           pathConfigured: false,
           skillConfigured: false,
-          detectedAgents: ['claude-code'],
           pathAlreadyConfigured: true
         });
+      }
+      if (cmd === 'detect_agents') {
+        return Promise.resolve({ agents: ['claude-code'], detectionFailed: false });
       }
       if (cmd === 'configure_skill') {
         return Promise.resolve({

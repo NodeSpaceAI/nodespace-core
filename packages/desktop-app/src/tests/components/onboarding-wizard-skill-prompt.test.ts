@@ -33,17 +33,19 @@ function buttonByText(root: HTMLElement, text: string): HTMLElement {
   return btn;
 }
 
-/** Render the wizard with `detectedAgents`, and advance to the skill step. */
-async function renderAtSkillStep(detectedAgents: string[]) {
+/** Render the wizard with `agents` detected, and advance to the skill step. */
+async function renderAtSkillStep(agents: string[], detectionFailed = false) {
   mockInvoke.mockImplementation((cmd: string) => {
     if (cmd === 'check_onboarding_status') {
       return Promise.resolve({
         completed: false,
         pathConfigured: false,
         skillConfigured: false,
-        detectedAgents,
         pathAlreadyConfigured: true // path step auto-advances
       });
+    }
+    if (cmd === 'detect_agents') {
+      return Promise.resolve({ agents, detectionFailed });
     }
     return Promise.resolve();
   });
@@ -52,6 +54,7 @@ async function renderAtSkillStep(detectedAgents: string[]) {
     props: { open: true, onClose: vi.fn() }
   });
   await tick();
+  await tick(); // status and detect_agents resolve independently
   await fireEvent.click(buttonByText(container, 'Next')); // -> skill step
   await tick();
   return container;
@@ -120,32 +123,50 @@ describe('OnboardingWizard skill-step prompt', () => {
   });
 
   /**
-   * Detection is best-effort on the Rust side (an installer that won't
-   * resolve yields an empty list rather than an error), and the step can
-   * still be reached in that window. The wording must stay truthful rather
-   * than fall back to guessing at one specific agent -- which is the exact
-   * failure mode this whole change exists to remove.
+   * Detection can fail outright on the Rust side (the installer won't
+   * resolve, no runtime on $PATH). That is NOT the same as "this machine has
+   * no coding agents", and must not silently drop the step: the user may
+   * well have an agent installed, and letting them try surfaces a real
+   * installer error instead of nothing at all.
    */
-  it('falls back to generic wording rather than guessing when detection is empty', async () => {
+  it('still offers the step, with generic wording, when detection failed', async () => {
+    const container = await renderAtSkillStep([], true);
+
+    expect(container.querySelector('h2')?.textContent).toBe(
+      'Add NodeSpace to your coding agents?'
+    );
+    // Generic, but never wrong -- which a guess at one specific agent, the
+    // bug this whole change removes, would not be.
+    expect(container.querySelector('.onboarding-header p')?.textContent).toContain(
+      'your coding agents know how to interact'
+    );
+  });
+
+  /**
+   * The genuinely-nothing-detected case is different from the failure above:
+   * there is nothing to install into, so the step is skipped entirely rather
+   * than asking a question with no possible answer.
+   */
+  it('skips the step entirely when detection ran and found no agents', async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'check_onboarding_status') {
         return Promise.resolve({
           completed: false,
           pathConfigured: false,
           skillConfigured: false,
-          detectedAgents: [],
           pathAlreadyConfigured: true
         });
+      }
+      if (cmd === 'detect_agents') {
+        return Promise.resolve({ agents: [], detectionFailed: false });
       }
       return Promise.resolve();
     });
 
-    // Rendered directly at the skill step is not reachable with an empty
-    // list (showSkill is false), so assert the label logic via the summary
-    // path instead: the step is simply absent, which is the correct outcome.
     const { container } = render(OnboardingWizard, {
       props: { open: true, onClose: vi.fn() }
     });
+    await tick();
     await tick();
     await fireEvent.click(buttonByText(container, 'Next'));
     await tick();
