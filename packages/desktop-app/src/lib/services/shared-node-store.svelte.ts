@@ -20,7 +20,7 @@ import { requiresAtomicBatching } from '$lib/utils/placeholder-detection';
 import { shouldLogDatabaseErrors, isTestEnvironment } from '$lib/utils/test-environment';
 import { backendAdapter } from './backend-adapter';
 import { pluginRegistry } from '$lib/plugins/plugin-registry';
-import { isVersionConflict, isSubtreeAccessDenied } from '$lib/types/errors';
+import { isVersionConflict, isSubtreeAccessDenied, isPlayRuleRejected } from '$lib/types/errors';
 import { showSubtreeAccessDenied } from './subtree-access-denied.svelte';
 import { isValidDateId } from '$lib/types/date-node';
 import { createLogger } from '$lib/utils/logger';
@@ -54,7 +54,11 @@ const CONFLICT_MESSAGE: Record<ConflictNotification['conflictType'], string> = {
   // Surfaced by the app-shell startup check (ADR-068 conflict journal) with
   // its own count-aware message; this entry only keeps the map exhaustive
   // over the union.
-  'conflict-journal': 'An unresolved conflict is waiting for review'
+  'conflict-journal': 'An unresolved conflict is waiting for review',
+  // Fallback only — the real call site (isPlayRuleRejected branch) always
+  // passes the rejecting rule's own author-supplied message instead of this
+  // generic text; this entry only keeps the map exhaustive over the union.
+  'play-rule-rejected': "Your change wasn't allowed"
 };
 
 const log = createLogger('SharedNodeStore');
@@ -1999,6 +2003,14 @@ export class SharedNodeStore {
 
                 // Check if this is a VERSION_CONFLICT error (daemon OCC)
                 const occError = isVersionConflict(dbError) ? dbError : null;
+                // Check if this is a PLAY_RULE_REJECTED error (ADR-060 §2
+                // invariant reject action) — structurally the same "this
+                // specific write did not take effect" category as OCC, but
+                // with no server-side state to hydrate from (unlike OCC,
+                // nothing changed server-side — the write was vetoed before
+                // it ever committed), so it needs none of the OCC branch's
+                // resync machinery, just the rule's own message surfaced.
+                const playRuleRejectedError = isPlayRuleRejected(dbError) ? dbError : null;
 
                 // Suppress expected errors in in-memory test mode
                 if (shouldLogDatabaseErrors()) {
@@ -2142,6 +2154,26 @@ export class SharedNodeStore {
                     nodeId,
                     message: CONFLICT_MESSAGE['version-mismatch'],
                     conflictType: 'version-mismatch'
+                  });
+                  occConflictAlreadyNotified = true;
+                } else if (playRuleRejectedError) {
+                  // A synchronous invariant rule vetoed this write (ADR-060
+                  // §2). Nothing changed server-side — `rollbackUpdate()`
+                  // above already restores this write's own bookkeeping, and
+                  // that alone is sufficient here (unlike OCC, there is no
+                  // authoritative `current_node` to hydrate from, and none
+                  // is needed: the pre-write local state IS the correct
+                  // state). Only the toast differs from the generic
+                  // write-failure case: the rejecting rule's own
+                  // author-supplied message, not a generic one.
+                  log.warn(
+                    `Play rule rejected update for node ${nodeId}: ` +
+                      playRuleRejectedError.conflictData.message
+                  );
+                  conflictNotifications.add({
+                    nodeId,
+                    message: playRuleRejectedError.conflictData.message,
+                    conflictType: 'play-rule-rejected'
                   });
                   occConflictAlreadyNotified = true;
                 } else if (onPersistError) {

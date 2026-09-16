@@ -88,6 +88,63 @@ impl NodeService {
             .await
     }
 
+    /// Dispatch invariant rules matching `node`'s update, inside `tx`. The
+    /// `update_node` twin of [`Self::dispatch_invariant_rules_in_tx`] — same
+    /// three no-op cases (non-local write, no lifecycle handle, no matching
+    /// rule), same execution core (`execute_matched_invariant_rules_in_tx`),
+    /// different trigger matching: a `property_changed` event, not
+    /// `node_created`, and `changed_properties` genuinely drives WHICH rules
+    /// match, not just what a condition can read.
+    ///
+    /// `changed_properties` must already reflect the real pre/post diff (see
+    /// `compute_property_changes`, called by the caller before this) — an
+    /// empty diff matches nothing (mirrors `trigger_keys_for_event`'s own
+    /// short-circuit: a title/lifecycle-only update with no property change
+    /// cannot match a `property_changed` trigger, exact or wildcard, and
+    /// building keys for it would be wasted work). Reuses
+    /// `playbook::lifecycle::trigger_keys_for_event` — the exact same
+    /// exact-key/wildcard-key dual lookup the reactive engine's event
+    /// subscriber already performs for a live `NodeUpdated` event — so save-
+    /// and dispatch-time matching can never silently diverge into two
+    /// different implementations of "which rules does this update match."
+    pub(crate) async fn dispatch_invariant_rules_for_update_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        node: &Node,
+        changed_properties: &[crate::db::events::PropertyChange],
+    ) -> Result<(), NodeServiceError> {
+        if self.client_id.as_deref() == Some(crate::db::events::SYNC_SERVICE_CLIENT_ID) {
+            return Ok(());
+        }
+
+        let Some(lifecycle) = self.playbook_lifecycle() else {
+            return Ok(());
+        };
+
+        if changed_properties.is_empty() {
+            return Ok(());
+        }
+
+        let event = DomainEvent::NodeUpdated {
+            node_id: node.id.clone(),
+            node_type: node.node_type.clone(),
+            node: node.clone(),
+            changed_properties: changed_properties.to_vec(),
+        };
+
+        let keys = crate::playbook::lifecycle::trigger_keys_for_event(&event);
+        let matched = {
+            let lm = lifecycle.read().unwrap_or_else(|e| e.into_inner());
+            lm.lookup_rules(&keys)
+        };
+        if matched.is_empty() {
+            return Ok(());
+        }
+
+        self.execute_matched_invariant_rules_in_tx(tx, node, &event, matched)
+            .await
+    }
+
     /// Shared execution core for every synchronous invariant-rule dispatch
     /// path (today: [`Self::dispatch_invariant_rules_in_tx`] for
     /// `create_node`/`create_node_in_tx`; ADR-060 §2's `update_node` wiring

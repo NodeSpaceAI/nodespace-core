@@ -21,9 +21,9 @@
 //! - Reactive rules are unaffected by any of the above.
 
 use anyhow::Result;
-use nodespace_core::db::events::SYNC_SERVICE_CLIENT_ID;
+use nodespace_core::db::events::{DomainEvent, SYNC_SERVICE_CLIENT_ID};
 use nodespace_core::db::SqliteStore;
-use nodespace_core::models::Node;
+use nodespace_core::models::{Node, NodeUpdate};
 use nodespace_core::services::{NodeService, NodeServiceError};
 use nodespace_core::PlaybookEngine;
 use serde_json::json;
@@ -1367,5 +1367,477 @@ async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -
         "the augmenting action's write must not be durably visible after rollback"
     );
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// update_node's synchronous invariant dispatch (ADR-060 §2)
+// ---------------------------------------------------------------------------
+//
+// `create_node`'s dispatch (above) reuses the same `execute_matched_invariant_rules_in_tx`
+// core, so reject+augment ordering and rollback atomicity are not
+// re-proven here — they hold identically by construction. What's new and
+// specific to update_node: the property_changed trigger-key matching
+// (exact + wildcard, and that an UNRELATED property change must NOT match
+// a property-key-scoped rule), and that update_node's caller — unlike
+// create_node's, which has no prior state to diff against — must broadcast
+// a real `NodeUpdated` event with accurate `changed_properties` on success
+// and NONE at all on rejection.
+
+/// The canonical UPDATE-triggered invariant rule: on a `property_key` change
+/// of `node_type`, stamp `verified: true` on the trigger node itself, inside
+/// the same transaction as the triggering update. `field` is the BARE
+/// property name (e.g. "status") — `compute_property_changes` diffs a
+/// node's own top-level namespace object (`{node_type: {field: ...}}`) and
+/// reports the change under the namespaced key `"{node_type}.{field}"`, so
+/// that is what a play's `property_key` must match against, not the bare
+/// field name.
+fn stamp_verified_on_update_invariant_rule(node_type: &str, field: &str) -> serde_json::Value {
+    let property_key = format!("{node_type}.{field}");
+    json!([{
+        "name": "stamp-verified-on-update",
+        "class": "invariant",
+        "trigger": { "type": "graph_event", "on": "property_changed", "node_type": node_type, "property_key": property_key },
+        "conditions": [],
+        "actions": [{
+            "action_type": "update_node",
+            "params": {
+                "node_id": "{trigger.node.id}",
+                "properties": { "verified": true }
+            }
+        }]
+    }])
+}
+
+fn properties_update(properties: serde_json::Value) -> NodeUpdate {
+    NodeUpdate {
+        properties: Some(properties),
+        ..Default::default()
+    }
+}
+
+/// An invariant rule triggered by `property_changed` executes synchronously,
+/// inside the SAME transaction as `update_node`'s own write — checked
+/// immediately, no `wait_until`/polling, exactly like the `create_node` case.
+#[tokio::test]
+async fn invariant_update_rule_executes_synchronously_in_same_transaction() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_update_task",
+        json!([
+            { "name": "status", "type": "string" },
+            { "name": "verified", "type": "boolean" }
+        ]),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "stamp-verified-play".to_string(),
+        json!({ "rules": stamp_verified_on_update_invariant_rule("iv_update_task", "status") }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let node = Node::new(
+        "iv_update_task".to_string(),
+        "task".to_string(),
+        json!({ "status": "open" }),
+    );
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    let updated = service
+        .update_node(
+            &node_id,
+            version,
+            properties_update(json!({ "status": "in_progress" })),
+        )
+        .await?;
+
+    // No wait_until: check the RETURN VALUE of update_node itself.
+    assert_eq!(
+        user_field(&updated, "iv_update_task", "verified"),
+        Some(&json!(true)),
+        "invariant action must have already run by the time update_node returned"
+    );
+    assert_eq!(
+        user_field(&updated, "iv_update_task", "status"),
+        Some(&json!("in_progress")),
+        "the triggering update itself must still have applied"
+    );
+
+    Ok(())
+}
+
+/// Adversarial: a reject firing on an update-triggered invariant rule
+/// prevents the triggering update from taking effect at all — the node's
+/// property stays at its pre-update value, not a mix of "some fields
+/// updated, some not".
+#[tokio::test]
+async fn invariant_update_rule_reject_prevents_partial_write() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_update_reject",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "reject-on-update-play".to_string(),
+        json!({ "rules": [{
+            "name": "reject-blocked-transition",
+            "class": "invariant",
+            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "iv_update_reject", "property_key": "iv_update_reject.status" },
+            "conditions": ["node.status == 'blocked'"],
+            "actions": [{
+                "action_type": "reject",
+                "params": { "message": "cannot transition to blocked" }
+            }]
+        }] }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let node = Node::new(
+        "iv_update_reject".to_string(),
+        "task".to_string(),
+        json!({ "status": "open" }),
+    );
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let before = service.get_node(&node_id).await?.unwrap();
+
+    let err = service
+        .update_node(
+            &node_id,
+            before.version,
+            properties_update(json!({ "status": "blocked" })),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, NodeServiceError::PlayRuleRejected { .. }),
+        "expected PlayRuleRejected, got {:?}",
+        err
+    );
+
+    let after = service.get_node(&node_id).await?.unwrap();
+    assert_eq!(
+        after.version, before.version,
+        "a rejected update must not bump the node's version at all"
+    );
+    assert_eq!(
+        user_field(&after, "iv_update_reject", "status"),
+        Some(&json!("open")),
+        "a rejected update must leave the property at its pre-update value"
+    );
+
+    Ok(())
+}
+
+/// No `DomainEvent` is broadcast for a rejected update — the buffered
+/// `NodeUpdated` event `update_with_version_check_returning_node_in_tx`
+/// emits before dispatch is discarded on rollback, never flushed.
+#[tokio::test]
+async fn invariant_update_rule_reject_emits_no_domain_event() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_update_no_broadcast",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "reject-no-broadcast-play".to_string(),
+        json!({ "rules": [{
+            "name": "reject-always",
+            "class": "invariant",
+            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "iv_update_no_broadcast", "property_key": "iv_update_no_broadcast.status" },
+            "conditions": [],
+            "actions": [{
+                "action_type": "reject",
+                "params": { "message": "never allowed" }
+            }]
+        }] }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let node = Node::new(
+        "iv_update_no_broadcast".to_string(),
+        "task".to_string(),
+        json!({ "status": "open" }),
+    );
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    // Subscribe AFTER the create (so its own NodeCreated event isn't sitting
+    // in the channel) and BEFORE the rejected update.
+    let mut rx = service.subscribe_to_events();
+
+    let result = service
+        .update_node(
+            &node_id,
+            version,
+            properties_update(json!({ "status": "closed" })),
+        )
+        .await;
+    assert!(result.is_err(), "expected the update to be rejected");
+
+    match rx.try_recv() {
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
+        other => panic!(
+            "expected no event to have been broadcast for a rejected update, got {:?}",
+            other
+        ),
+    }
+
+    Ok(())
+}
+
+/// Successful path, the mirror of the rejection test above: an invariant
+/// rule's augmenting action commits atomically with the triggering update
+/// AND a real `NodeUpdated` broadcast for the triggering update itself goes
+/// out normally, since that write genuinely succeeded.
+#[tokio::test]
+async fn invariant_update_rule_augmenting_action_commits_and_broadcasts_normally() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_update_broadcast",
+        json!([
+            { "name": "status", "type": "string" },
+            { "name": "verified", "type": "boolean" }
+        ]),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "augment-on-update-play".to_string(),
+        json!({ "rules": stamp_verified_on_update_invariant_rule("iv_update_broadcast", "status") }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let node = Node::new(
+        "iv_update_broadcast".to_string(),
+        "task".to_string(),
+        json!({ "status": "open" }),
+    );
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    let mut rx = service.subscribe_to_events();
+
+    let updated = service
+        .update_node(
+            &node_id,
+            version,
+            properties_update(json!({ "status": "in_progress" })),
+        )
+        .await?;
+    assert_eq!(
+        user_field(&updated, "iv_update_broadcast", "verified"),
+        Some(&json!(true)),
+        "augmenting action must have run"
+    );
+
+    let envelope = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("timed out waiting for a broadcast")
+        .expect("channel must not have closed");
+    match envelope.event {
+        DomainEvent::NodeUpdated { node_id: id, .. } => {
+            assert_eq!(
+                id, node_id,
+                "the broadcast must be for the triggering update"
+            );
+        }
+        other => panic!("expected NodeUpdated, got {:?}", other),
+    }
+
+    Ok(())
+}
+
+/// A `property_changed` invariant rule scoped to a specific `property_key`
+/// must not fire when a DIFFERENT property changes — proves
+/// `dispatch_invariant_rules_for_update_in_tx` reuses the real exact/wildcard
+/// trigger-key matching (`trigger_keys_for_event`), not a blanket "any
+/// update to this node_type" match.
+#[tokio::test]
+async fn invariant_update_rule_scoped_to_one_property_ignores_a_different_property_change(
+) -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_update_scoped",
+        json!([
+            { "name": "status", "type": "string" },
+            { "name": "priority", "type": "string" },
+            { "name": "verified", "type": "boolean" }
+        ]),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "scoped-property-play".to_string(),
+        // Scoped to "status" only.
+        json!({ "rules": stamp_verified_on_update_invariant_rule("iv_update_scoped", "status") }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let node = Node::new(
+        "iv_update_scoped".to_string(),
+        "task".to_string(),
+        json!({ "status": "open", "priority": "low" }),
+    );
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    // Change ONLY "priority" — must not match a rule scoped to "status".
+    let updated = service
+        .update_node(
+            &node_id,
+            version,
+            properties_update(json!({ "priority": "high" })),
+        )
+        .await?;
+
+    assert_eq!(
+        user_field(&updated, "iv_update_scoped", "verified"),
+        None,
+        "a property-key-scoped invariant rule must not fire for an unrelated property change"
+    );
+    assert_eq!(
+        user_field(&updated, "iv_update_scoped", "priority"),
+        Some(&json!("high")),
+        "the unrelated update itself must still have applied"
+    );
+
+    Ok(())
+}
+
+/// `RuleClass::Reactive` rules triggered by `property_changed` remain
+/// completely unaffected by the new synchronous wiring: still async,
+/// post-commit, requiring the real engine loop (unlike the invariant tests
+/// above, which never spawn one).
+#[tokio::test]
+async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_update_reactive",
+        json!([
+            { "name": "status", "type": "string" },
+            { "name": "notified", "type": "boolean" }
+        ]),
+    )
+    .await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+    create_play(
+        &service,
+        "reactive-on-update-play",
+        json!([{
+            "name": "notify-on-status-change",
+            // No "class" -> defaults to reactive.
+            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "iv_update_reactive", "property_key": "iv_update_reactive.status" },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "notified": true }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let node = Node::new(
+        "iv_update_reactive".to_string(),
+        "task".to_string(),
+        json!({ "status": "open" }),
+    );
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    let updated = service
+        .update_node(
+            &node_id,
+            version,
+            properties_update(json!({ "status": "in_progress" })),
+        )
+        .await?;
+    // Must NOT be synchronous for a reactive rule.
+    assert_eq!(
+        user_field(&updated, "iv_update_reactive", "notified"),
+        None,
+        "a reactive rule's effect must not be visible synchronously"
+    );
+
+    let fired = wait_until(|| {
+        let service = Arc::clone(&service);
+        let node_id = node_id.clone();
+        async move {
+            service
+                .get_node(&node_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|n| {
+                    user_field(&n, "iv_update_reactive", "notified") == Some(&json!(true))
+                })
+        }
+    })
+    .await;
+    assert!(fired, "reactive rule must eventually fire post-commit");
+
+    shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }

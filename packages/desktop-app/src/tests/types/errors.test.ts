@@ -15,12 +15,15 @@ import {
   type VersionConflictCommandError,
   type SubtreeAccessDeniedData,
   type SubtreeAccessDeniedCommandError,
+  type PlayRuleRejectedData,
+  type PlayRuleRejectedCommandError,
   isCommandError,
   toError,
   DatabaseInitializationError,
   NodeOperationError,
   isVersionConflict,
-  isSubtreeAccessDenied
+  isSubtreeAccessDenied,
+  isPlayRuleRejected
 } from '$lib/types/errors';
 import type { Node } from '$lib/types/node';
 
@@ -534,6 +537,99 @@ describe('isSubtreeAccessDenied Type Guard (gRPC shape)', () => {
 
   it('rejects Error instances', () => {
     expect(isSubtreeAccessDenied(new Error('test'))).toBe(false);
+  });
+});
+
+describe('isPlayRuleRejected Type Guard (gRPC shape)', () => {
+  const makeRejection = (
+    overrides?: Partial<PlayRuleRejectedData>
+  ): PlayRuleRejectedCommandError => ({
+    message: "Play rule 'reject-rule' (play play-1) rejected the write to node node-1: no",
+    code: 'PLAY_RULE_REJECTED',
+    details: 'FailedPrecondition',
+    conflictData: {
+      node_id: 'node-1',
+      play_id: 'play-1',
+      rule_id: 'reject-rule',
+      message: 'cannot close while children are open',
+      ...overrides
+    }
+  });
+
+  it('identifies a valid PLAY_RULE_REJECTED error', () => {
+    expect(isPlayRuleRejected(makeRejection())).toBe(true);
+  });
+
+  it('narrows to expose the rejecting rule fields', () => {
+    const err = makeRejection({ rule_id: 'other-rule', message: 'custom text' });
+    if (isPlayRuleRejected(err)) {
+      expect(err.conflictData.rule_id).toBe('other-rule');
+      expect(err.conflictData.message).toBe('custom text');
+    } else {
+      throw new Error('type guard should have matched');
+    }
+  });
+
+  it('rejects a VERSION_CONFLICT error (distinct refusal)', () => {
+    expect(
+      isPlayRuleRejected({
+        message: 'err',
+        code: 'VERSION_CONFLICT',
+        conflictData: { node_id: 'x', expected: 1, actual: 2 }
+      })
+    ).toBe(false);
+  });
+
+  it('rejects a SUBTREE_ACCESS_DENIED error (distinct refusal, same status code)', () => {
+    expect(
+      isPlayRuleRejected({
+        message: 'err',
+        code: 'SUBTREE_ACCESS_DENIED',
+        conflictData: { inaccessibleCount: 3 }
+      })
+    ).toBe(false);
+  });
+
+  it('rejects error with wrong code string', () => {
+    expect(
+      isPlayRuleRejected({
+        message: 'err',
+        code: 'INVALID_ARGUMENT',
+        conflictData: { message: 'no' }
+      })
+    ).toBe(false);
+  });
+
+  it('rejects error without conflictData', () => {
+    expect(isPlayRuleRejected({ message: 'err', code: 'PLAY_RULE_REJECTED' })).toBe(false);
+  });
+
+  it('rejects error with null conflictData', () => {
+    expect(
+      isPlayRuleRejected({ message: 'err', code: 'PLAY_RULE_REJECTED', conflictData: null })
+    ).toBe(false);
+  });
+
+  it('rejects error with non-string message in conflictData', () => {
+    expect(
+      isPlayRuleRejected({
+        message: 'err',
+        code: 'PLAY_RULE_REJECTED',
+        conflictData: { message: 5 }
+      })
+    ).toBe(false);
+  });
+
+  it('rejects null', () => {
+    expect(isPlayRuleRejected(null)).toBe(false);
+  });
+
+  it('rejects undefined', () => {
+    expect(isPlayRuleRejected(undefined)).toBe(false);
+  });
+
+  it('rejects Error instances', () => {
+    expect(isPlayRuleRejected(new Error('test'))).toBe(false);
   });
 });
 

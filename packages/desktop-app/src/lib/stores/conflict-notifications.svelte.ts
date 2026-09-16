@@ -13,7 +13,8 @@ export interface ConflictNotification {
     | 'deleted-node'
     | 'child-transfer-failure'
     | 'write-failure'
-    | 'conflict-journal';
+    | 'conflict-journal'
+    | 'play-rule-rejected';
   createdAt: number;
 }
 

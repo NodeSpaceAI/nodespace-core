@@ -122,10 +122,12 @@ pub struct CommandError {
 
 pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
     // A cascade delete refused by the ADR-041 subtree access gate carries the
-    // inaccessible-node count in `x-subtree-inaccessible-count` metadata. Only a
-    // FailedPrecondition WITH that metadata is an access refusal — the daemon
+    // inaccessible-node count in `x-subtree-inaccessible-count` metadata, and a
+    // Play-rule rejection (ADR-060 §2) carries its own structured payload in
+    // `x-play-rule-rejected`. Both are only meaningful gated on
+    // FailedPrecondition WITH the matching metadata present — the daemon
     // returns FailedPrecondition from unrelated paths too (node-create/schema
-    // failures), which must not be branded as a security refusal.
+    // failures), which must not be mis-branded as either of these.
     let subtree_inaccessible_count: Option<u64> =
         if status.code() == tonic::Code::FailedPrecondition {
             status
@@ -133,6 +135,16 @@ pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
                 .get("x-subtree-inaccessible-count")
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
+        } else {
+            None
+        };
+    let play_rule_rejected_payload: Option<serde_json::Value> =
+        if status.code() == tonic::Code::FailedPrecondition {
+            status
+                .metadata()
+                .get("x-play-rule-rejected")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| serde_json::from_str(s).ok())
         } else {
             None
         };
@@ -147,6 +159,12 @@ pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
         tonic::Code::FailedPrecondition if subtree_inaccessible_count.is_some() => {
             "SUBTREE_ACCESS_DENIED"
         }
+        // Distinct from ordinary validation and from SUBTREE_ACCESS_DENIED so
+        // the frontend can roll back the optimistic write and show the
+        // rejecting rule's own message, not a generic write-failure toast.
+        tonic::Code::FailedPrecondition if play_rule_rejected_payload.is_some() => {
+            "PLAY_RULE_REJECTED"
+        }
         _ => "GRPC_ERROR",
     }
     .to_string();
@@ -157,6 +175,8 @@ pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
             .get("x-version-conflict")
             .and_then(|v| v.to_str().ok())
             .and_then(|s| serde_json::from_str(s).ok())
+    } else if let Some(payload) = play_rule_rejected_payload {
+        Some(payload)
     } else {
         // Present only for a genuine subtree refusal (count metadata parsed above).
         subtree_inaccessible_count.map(
@@ -1102,5 +1122,44 @@ mod tests {
         assert!(json.contains("Simple error"));
         // Details field should be omitted when None
         assert!(!json.contains("details"));
+    }
+
+    #[test]
+    fn status_to_command_error_maps_play_rule_rejected() {
+        // Mirrors the daemon's `OpsError::PlayRuleRejected` mapping
+        // (FAILED_PRECONDITION + x-play-rule-rejected metadata, ADR-060 §2):
+        // the Tauri layer must brand it distinctly from SUBTREE_ACCESS_DENIED
+        // (which shares the same status code but a different metadata key)
+        // and from an ordinary FailedPrecondition with neither key present.
+        let mut status = tonic::Status::failed_precondition("Play rule 'r' rejected the write");
+        let payload = serde_json::json!({
+            "node_id": "n1",
+            "play_id": "p1",
+            "rule_id": "r1",
+            "message": "cannot close while children are open",
+        });
+        status.metadata_mut().insert(
+            "x-play-rule-rejected",
+            serde_json::to_string(&payload).unwrap().parse().unwrap(),
+        );
+
+        let err = status_to_command_error(status);
+        assert_eq!(err.code, "PLAY_RULE_REJECTED");
+        let conflict_data = err.conflict_data.expect("conflict_data must be present");
+        assert_eq!(conflict_data["rule_id"], "r1");
+        assert_eq!(
+            conflict_data["message"],
+            "cannot close while children are open"
+        );
+    }
+
+    #[test]
+    fn status_to_command_error_plain_failed_precondition_is_generic() {
+        // No x-play-rule-rejected or x-subtree-inaccessible-count metadata
+        // present — must not be mis-branded as either specific refusal.
+        let status = tonic::Status::failed_precondition("some unrelated failure");
+        let err = status_to_command_error(status);
+        assert_eq!(err.code, "GRPC_ERROR");
+        assert!(err.conflict_data.is_none());
     }
 }

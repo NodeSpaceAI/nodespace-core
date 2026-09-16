@@ -162,3 +162,53 @@ export function isSubtreeAccessDenied(
   const cd = err.conflictData as Record<string, unknown>;
   return typeof cd.inaccessibleCount === 'number';
 }
+
+/**
+ * Structured payload carried by PLAY_RULE_REJECTED CommandErrors.
+ * Mirrors the JSON emitted by the daemon's x-play-rule-rejected metadata
+ * header when a `RuleClass::Invariant` rule's `reject` action (ADR-060 §2)
+ * vetoes a write.
+ */
+export interface PlayRuleRejectedData {
+  /** Node ID the write targeted */
+  node_id: string;
+
+  /** ID of the play whose rule rejected the write */
+  play_id: string;
+
+  /** Name of the specific rule that rejected the write */
+  rule_id: string;
+
+  /** The rejecting rule's own author-supplied violation text */
+  message: string;
+}
+
+/**
+ * A CommandError that carries a structured play-rule-rejection payload.
+ * Produced by the daemon → Tauri command → frontend pipeline when a
+ * synchronous invariant rule's `reject` action vetoes a `create_node` or
+ * `update_node` call — structurally the same category of outcome as a
+ * VERSION_CONFLICT (the write did not take effect), just discovered inside
+ * invariant-rule evaluation rather than the OCC check.
+ */
+export interface PlayRuleRejectedCommandError extends CommandError {
+  code: 'PLAY_RULE_REJECTED';
+  conflictData: PlayRuleRejectedData;
+}
+
+/**
+ * Type guard: returns true when the thrown value is a PLAY_RULE_REJECTED
+ * CommandError carrying the daemon's structured rejection payload.
+ *
+ * Matches the gRPC/Tauri shape: { code: "PLAY_RULE_REJECTED", conflictData: { node_id, play_id, rule_id, message } }
+ */
+export function isPlayRuleRejected(error: unknown): error is PlayRuleRejectedCommandError {
+  if (typeof error !== 'object' || error === null) return false;
+
+  const err = error as Record<string, unknown>;
+  if (err.code !== 'PLAY_RULE_REJECTED') return false;
+  if (typeof err.conflictData !== 'object' || err.conflictData === null) return false;
+
+  const cd = err.conflictData as Record<string, unknown>;
+  return typeof cd.message === 'string';
+}
