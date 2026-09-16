@@ -1547,29 +1547,6 @@ impl SqliteStore {
     /// handling (early-return / id-chunking / join) in both callers. Returns
     /// the SQL condition fragments plus their positional bind values,
     /// numbered from `?1`.
-    /// Build a lowercased `%term%` LIKE pattern in which every character of
-    /// `term` matches literally.
-    ///
-    /// `%` and `_` are LIKE wildcards, so a search term containing either
-    /// silently changes the query's meaning: a bare `%` matches every row, and
-    /// `user_id` matches `userXid`. Both are ordinary characters someone may
-    /// search for (`50%`, `snake_case`), so they are escaped here and the
-    /// caller pairs this with an `ESCAPE '\'` clause. The escape character
-    /// itself is escaped first, or a term containing a backslash would consume
-    /// the escape of whatever followed it.
-    ///
-    /// Unlike `QueryService::escape_string_for_like`, this does not escape
-    /// single quotes: the result is passed as a bound parameter rather than
-    /// interpolated into SQL, so quote handling is the driver's job.
-    pub(super) fn like_contains_pattern(term: &str) -> String {
-        let escaped = term
-            .to_lowercase()
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        format!("%{}%", escaped)
-    }
-
     fn build_scalar_conditions(query: &NodeQuery) -> (Vec<String>, Vec<libsql::Value>) {
         let mut conditions = Vec::new();
         let mut bind_values: Vec<libsql::Value> = Vec::new();
@@ -1607,6 +1584,29 @@ impl SqliteStore {
         }
 
         (conditions, bind_values)
+    }
+
+    /// Build a lowercased `%term%` LIKE pattern in which every character of
+    /// `term` matches literally.
+    ///
+    /// `%` and `_` are LIKE wildcards, so a search term containing either
+    /// silently changes the query's meaning: a bare `%` matches every row, and
+    /// `user_id` matches `userXid`. Both are ordinary characters someone may
+    /// search for (`50%`, `snake_case`), so they are escaped here and the
+    /// caller pairs this with an `ESCAPE '\'` clause. The escape character
+    /// itself is escaped first, or a term containing a backslash would consume
+    /// the escape of whatever followed it.
+    ///
+    /// Unlike `QueryService::escape_string_for_like`, this does not escape
+    /// single quotes: the result is passed as a bound parameter rather than
+    /// interpolated into SQL, so quote handling is the driver's job.
+    pub(super) fn like_contains_pattern(term: &str) -> String {
+        let escaped = term
+            .to_lowercase()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        format!("%{}%", escaped)
     }
 
     /// Count nodes matching `query` without materializing full records — the
@@ -3731,8 +3731,14 @@ mod title_contains_stem_fallback_tests {
         Ok(())
     }
 
-    /// Guards the ESCAPE clause itself: a term containing a backslash must not
-    /// break the pattern or escape an adjacent character.
+    /// Pins the builder's `\` doubling against the SQL's `ESCAPE '\'` clause.
+    ///
+    /// Unlike the `%`/`_` cases, this does not fail if escaping is removed
+    /// wholesale — with no ESCAPE clause a backslash is an ordinary character
+    /// either way. What it catches is the two halves drifting apart: doubling
+    /// without the clause, or the clause without the doubling, each of which
+    /// would make a backslashed term match the wrong rows. Windows paths make
+    /// that worth guarding.
     #[tokio::test]
     async fn backslash_in_a_search_term_matches_literally() -> Result<()> {
         let (store, _t) = bare_store().await?;
