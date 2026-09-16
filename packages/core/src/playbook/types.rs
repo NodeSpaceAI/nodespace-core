@@ -186,13 +186,24 @@ pub struct ParsedAction {
     pub for_each: Option<String>,
 }
 
-/// Action types supported by the engine (v1 — graph operations only).
+/// Action types supported by the engine (v1 — graph operations only, plus
+/// `Reject` (ADR-060 §2) — the one non-graph-mutating action, whose entire
+/// effect is vetoing the triggering write rather than augmenting it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionType {
     CreateNode,
     UpdateNode,
     AddRelationship,
     RemoveRelationship,
+    /// Deterministically fails the enclosing transaction with an
+    /// author-supplied message (`params.message`), instead of writing
+    /// anything. Meaningful only on a `RuleClass::Invariant` rule — there is
+    /// no transaction left to fail once a rule's actions run asynchronously,
+    /// post-commit (`Reactive`, ADR-060's default class), so save-time
+    /// validation (`playbook::validation::validate_reject_action_class`)
+    /// rejects a `Reject` action declared on a `Reactive` rule. See
+    /// `playbook::actions::execute_reject` for the execution-time contract.
+    Reject,
 }
 
 impl ActionType {
@@ -204,6 +215,7 @@ impl ActionType {
             Self::UpdateNode => "update_node",
             Self::AddRelationship => "add_relationship",
             Self::RemoveRelationship => "remove_relationship",
+            Self::Reject => "reject",
         }
     }
 
@@ -214,18 +226,22 @@ impl ActionType {
     /// or any external service, and holding a write transaction across an
     /// unbounded wait is a correctness and liveness hazard.
     ///
-    /// Every v1 action type is a pure local graph mutation, so this returns
-    /// `true` for all current variants. It is written as an exhaustive `match`
-    /// rather than a blanket `true` deliberately: adding a non-local action type
-    /// later (LLM/network/PTY/external) will fail to compile until it is
-    /// classified here, so such an action can never silently become eligible for
-    /// an invariant rule.
+    /// Every v1 graph-mutation action type is a pure local graph mutation, so
+    /// this returns `true` for all of them. `Reject` also returns `true`: it
+    /// performs no I/O of any kind — deterministically returning an error is
+    /// pure computation — so it can never violate the local-writes-only
+    /// guarantee this check exists to enforce. It is written as an exhaustive
+    /// `match` rather than a blanket `true` deliberately: adding a non-local
+    /// action type later (LLM/network/PTY/external) will fail to compile
+    /// until it is classified here, so such an action can never silently
+    /// become eligible for an invariant rule.
     pub fn is_local_write(&self) -> bool {
         match self {
             Self::CreateNode
             | Self::UpdateNode
             | Self::AddRelationship
-            | Self::RemoveRelationship => true,
+            | Self::RemoveRelationship
+            | Self::Reject => true,
         }
     }
 }
@@ -450,6 +466,7 @@ pub fn parse_action(def: &ActionDefinition) -> Result<ParsedAction, PlayParseErr
         "update_node" => ActionType::UpdateNode,
         "add_relationship" => ActionType::AddRelationship,
         "remove_relationship" => ActionType::RemoveRelationship,
+        "reject" => ActionType::Reject,
         other => {
             return Err(PlayParseError::InvalidActionType(other.to_string()));
         }
@@ -488,6 +505,33 @@ pub fn parse_rules_from_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // ActionType::Reject (ADR-060 §2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reject_parses_from_json_action_type() {
+        let def = ActionDefinition {
+            action_type: "reject".to_string(),
+            params: serde_json::json!({ "message": "no" }),
+            for_each: None,
+        };
+        assert_eq!(parse_action(&def).unwrap().action_type, ActionType::Reject);
+    }
+
+    #[test]
+    fn reject_as_str_round_trips() {
+        assert_eq!(ActionType::Reject.as_str(), "reject");
+    }
+
+    #[test]
+    fn reject_is_a_local_write() {
+        // No I/O of any kind — deterministically failing is pure
+        // computation — so it must never be excluded from an invariant
+        // rule's action list on locality grounds.
+        assert!(ActionType::Reject.is_local_write());
+    }
 
     /// Helper: a minimal `OrderedRuleRef` for a given play id / rule index.
     /// The rule content is irrelevant to ordering/identity, so every ref

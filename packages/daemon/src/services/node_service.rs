@@ -2465,6 +2465,41 @@ fn ops_error_to_status(err: OpsError) -> Status {
         }
         OpsError::InvalidParams(msg) => Status::invalid_argument(msg),
         OpsError::Internal(msg) => Status::internal(msg),
+        OpsError::PlayRuleRejected {
+            node_id,
+            play_id,
+            rule_id,
+            message,
+        } => {
+            // FAILED_PRECONDITION, not ABORTED (which VersionConflict uses):
+            // unlike an OCC race, retrying this exact write is not expected
+            // to succeed — the rule's condition still holds against
+            // unchanged state. Mirrors `SubtreeAccessDenied`'s reasoning
+            // above: a well-formed request, refused because of current
+            // graph state. Structured `x-play-rule-rejected` metadata lets a
+            // caller distinguish this from every other FAILED_PRECONDITION
+            // this daemon returns, the same way `x-subtree-inaccessible-count`
+            // does for the access-gate refusal.
+            let status_message = format!(
+                "Play rule '{}' (play {}) rejected the write to node {}: {}",
+                rule_id, play_id, node_id, message
+            );
+            let mut status = Status::failed_precondition(status_message);
+            let payload = serde_json::json!({
+                "node_id": node_id,
+                "play_id": play_id,
+                "rule_id": rule_id,
+                "message": message,
+            });
+            if let Ok(json) = serde_json::to_string(&payload) {
+                if let Ok(val) =
+                    json.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+                {
+                    status.metadata_mut().insert("x-play-rule-rejected", val);
+                }
+            }
+            status
+        }
     }
 }
 

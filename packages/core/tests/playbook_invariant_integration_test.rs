@@ -24,7 +24,7 @@ use anyhow::Result;
 use nodespace_core::db::events::SYNC_SERVICE_CLIENT_ID;
 use nodespace_core::db::SqliteStore;
 use nodespace_core::models::Node;
-use nodespace_core::services::NodeService;
+use nodespace_core::services::{NodeService, NodeServiceError};
 use nodespace_core::PlaybookEngine;
 use serde_json::json;
 use std::sync::Arc;
@@ -933,5 +933,376 @@ async fn invariant_rule_does_not_also_run_via_the_reactive_queue() -> Result<()>
     );
 
     shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// #2642: the `reject` action type
+// ---------------------------------------------------------------------------
+//
+// `reject`'s save-time class gate (only usable on `RuleClass::Invariant`
+// rules) and its "message" param requirement are covered as unit/integration
+// tests of `validate_play` in `playbook::validation`'s own test module, not
+// here — these tests are specifically about the EXECUTION-time contract:
+// does a reject action, once reached, genuinely veto the write with zero
+// partial state, using `create_node`'s already-existing synchronous
+// invariant path (the only real caller today; #2643 wires the equivalent
+// path for `update_node`). Like the rollback tests above, these activate the
+// play directly against the lifecycle manager (bypassing
+// `validate_play_rules`) since they are about the write-path hook, not play
+// installation.
+
+/// An invariant rule whose sole action is `reject`, gated by `condition` on
+/// the trigger node.
+fn reject_invariant_rule(node_type: &str, condition: &str, message: &str) -> serde_json::Value {
+    json!([{
+        "name": "reject-rule",
+        "class": "invariant",
+        "trigger": { "type": "graph_event", "on": "node_created", "node_type": node_type },
+        "conditions": [condition],
+        "actions": [{
+            "action_type": "reject",
+            "params": { "message": message }
+        }]
+    }])
+}
+
+/// The baseline case: a reject action, once its condition is met, prevents
+/// the triggering node from ever existing — the same "no partial write"
+/// guarantee an ordinary action failure already gets, but reached
+/// deliberately (via the rule's own condition) rather than incidentally (a
+/// service error).
+#[tokio::test]
+async fn reject_action_prevents_node_creation_with_no_partial_write() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_reject_basic",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "reject-basic-play".to_string(),
+        json!({ "rules": reject_invariant_rule(
+            "iv_reject_basic",
+            "node.status == 'blocked'",
+            "cannot create a blocked iv_reject_basic node",
+        ) }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let doomed = Node::new(
+        "iv_reject_basic".to_string(),
+        "should never exist".to_string(),
+        json!({ "status": "blocked" }),
+    );
+    let doomed_id = doomed.id.clone();
+
+    let result = service.create_node(doomed).await;
+    assert!(
+        result.is_err(),
+        "create_node must fail when its invariant rule rejects the write"
+    );
+
+    let after = service.get_node(&doomed_id).await?;
+    assert!(
+        after.is_none(),
+        "the triggering node must not exist at all after a reject — got {after:?}"
+    );
+
+    Ok(())
+}
+
+/// The error returned is specifically `NodeServiceError::PlayRuleRejected`
+/// (modeled on `VersionConflict`), not the generic `InvariantRuleFailed`
+/// every other action failure produces, and it carries the rule's own
+/// author-supplied message verbatim.
+#[tokio::test]
+async fn reject_action_error_is_play_rule_rejected_with_the_rule_s_message() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_reject_msg",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "reject-msg-play".to_string(),
+        json!({ "rules": reject_invariant_rule(
+            "iv_reject_msg",
+            "node.status == 'blocked'",
+            "custom violation text",
+        ) }),
+    );
+    let play_node_id = play_node.id.clone();
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let doomed = Node::new(
+        "iv_reject_msg".to_string(),
+        "x".to_string(),
+        json!({ "status": "blocked" }),
+    );
+    let doomed_id = doomed.id.clone();
+    let err = service.create_node(doomed).await.unwrap_err();
+    match err {
+        NodeServiceError::PlayRuleRejected {
+            node_id,
+            play_id,
+            rule_id,
+            message,
+        } => {
+            assert_eq!(message, "custom violation text");
+            assert_eq!(
+                play_id, play_node_id,
+                "play_id must be the play node's own id"
+            );
+            assert_eq!(
+                rule_id, "reject-rule",
+                "rule_id carries the rule's author-given name"
+            );
+            assert_eq!(
+                node_id, doomed_id,
+                "node_id must be the triggering node's id"
+            );
+        }
+        other => panic!("expected PlayRuleRejected, got {:?}", other),
+    }
+
+    Ok(())
+}
+
+/// The rule's condition is a genuine gate: when it does not hold, the
+/// reject action is never reached at all and creation proceeds normally.
+/// Distinguishes "the reject action correctly fires only when its condition
+/// matches" from an implementation that rejects unconditionally.
+#[tokio::test]
+async fn reject_action_condition_not_met_allows_normal_creation() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_reject_gated",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "reject-gated-play".to_string(),
+        json!({ "rules": reject_invariant_rule(
+            "iv_reject_gated",
+            "node.status == 'blocked'",
+            "should never fire",
+        ) }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let allowed = Node::new(
+        "iv_reject_gated".to_string(),
+        "fine".to_string(),
+        json!({ "status": "open" }),
+    );
+    let allowed_id = allowed.id.clone();
+    service.create_node(allowed).await?;
+
+    let after = service.get_node(&allowed_id).await?;
+    assert!(
+        after.is_some(),
+        "creation must succeed when the reject rule's condition does not hold"
+    );
+
+    Ok(())
+}
+
+/// Adversarial: `reject` as the FIRST action in a rule, with an augmenting
+/// action after it. The augmenting action (updating a separate,
+/// already-existing node) must never run at all — proven via that node's
+/// `version`, which only advances on a genuine write.
+#[tokio::test]
+async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_reject_order_a",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    // Pre-existing node the (never-reached) augmenting action would target.
+    let other = Node::new(
+        "iv_reject_order_a".to_string(),
+        "bystander".to_string(),
+        json!({ "status": "untouched" }),
+    );
+    let other_id = other.id.clone();
+    service.create_node(other).await?;
+    let other_version_before = service.get_node(&other_id).await?.unwrap().version;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "reject-before-augment-play".to_string(),
+        json!({ "rules": [{
+            "name": "reject-then-augment",
+            "class": "invariant",
+            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_reject_order_a" },
+            "conditions": [],
+            "actions": [
+                {
+                    "action_type": "reject",
+                    "params": { "message": "vetoed before the augment runs" }
+                },
+                {
+                    "action_type": "update_node",
+                    "params": {
+                        "node_id": other_id,
+                        "properties": { "status": "should never be set" }
+                    }
+                }
+            ]
+        }] }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let doomed = Node::new(
+        "iv_reject_order_a".to_string(),
+        "trigger".to_string(),
+        json!({ "status": "pending" }),
+    );
+    let doomed_id = doomed.id.clone();
+    let result = service.create_node(doomed).await;
+    assert!(result.is_err(), "expected the write to be rejected");
+
+    assert!(
+        service.get_node(&doomed_id).await?.is_none(),
+        "the triggering node must not exist"
+    );
+
+    let other_after = service.get_node(&other_id).await?.unwrap();
+    assert_eq!(
+        other_after.version, other_version_before,
+        "the augmenting action after reject must never have run"
+    );
+    assert_eq!(
+        user_field(&other_after, "iv_reject_order_a", "status"),
+        Some(&json!("untouched")),
+        "the augmenting action's write must not be visible"
+    );
+
+    Ok(())
+}
+
+/// Adversarial, the other ordering: an augmenting action that succeeds
+/// FIRST, followed by `reject`. Whole-transaction rollback must undo the
+/// already-applied augmenting write too, not just prevent the triggering
+/// node from existing — proving `reject`'s veto is not merely "stop before
+/// doing more" but a genuine transaction-wide abort.
+#[tokio::test]
+async fn augmenting_action_before_reject_in_the_same_rule_is_rolled_back_too() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    create_schema(
+        &service,
+        "iv_reject_order_b",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let other = Node::new(
+        "iv_reject_order_b".to_string(),
+        "bystander".to_string(),
+        json!({ "status": "untouched" }),
+    );
+    let other_id = other.id.clone();
+    service.create_node(other).await?;
+    let other_version_before = service.get_node(&other_id).await?.unwrap().version;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "augment-before-reject-play".to_string(),
+        json!({ "rules": [{
+            "name": "augment-then-reject",
+            "class": "invariant",
+            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_reject_order_b" },
+            "conditions": [],
+            "actions": [
+                {
+                    "action_type": "update_node",
+                    "params": {
+                        "node_id": other_id,
+                        "properties": { "status": "applied then must be undone" }
+                    }
+                },
+                {
+                    "action_type": "reject",
+                    "params": { "message": "vetoed after the augment already ran" }
+                }
+            ]
+        }] }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let doomed = Node::new(
+        "iv_reject_order_b".to_string(),
+        "trigger".to_string(),
+        json!({ "status": "pending" }),
+    );
+    let doomed_id = doomed.id.clone();
+    let result = service.create_node(doomed).await;
+    assert!(result.is_err(), "expected the write to be rejected");
+
+    assert!(
+        service.get_node(&doomed_id).await?.is_none(),
+        "the triggering node must not exist"
+    );
+
+    let other_after = service.get_node(&other_id).await?.unwrap();
+    assert_eq!(
+        other_after.version, other_version_before,
+        "the augmenting action's already-applied write must be rolled back \
+         when a LATER action in the same rule rejects"
+    );
+    assert_eq!(
+        user_field(&other_after, "iv_reject_order_b", "status"),
+        Some(&json!("untouched")),
+        "the augmenting action's write must not be durably visible after rollback"
+    );
+
     Ok(())
 }

@@ -124,6 +124,19 @@ pub enum ActionError {
         item_index: usize,
         message: String,
     },
+    /// A `reject` action (ADR-060 §2) was reached and executed. Distinct from
+    /// every other variant here: those describe something going WRONG
+    /// (a binding failing to resolve, a service call erroring); this
+    /// describes an invariant rule doing exactly what it was authored to do
+    /// — deliberately vetoing the triggering write. Callers that need to
+    /// distinguish "the rule rejected this write" from "the rule itself
+    /// malfunctioned" (see `services::node_service::invariants`) match on
+    /// this variant specifically rather than treating it as a generic
+    /// execution failure.
+    Rejected {
+        message: String,
+        action_index: usize,
+    },
 }
 
 impl std::fmt::Display for ActionError {
@@ -170,6 +183,16 @@ impl std::fmt::Display for ActionError {
                     f,
                     "action[{}] for_each item[{}]: could not resolve a real node id for iteration_path: {}",
                     action_index, item_index, message
+                )
+            }
+            Self::Rejected {
+                message,
+                action_index,
+            } => {
+                write!(
+                    f,
+                    "action[{}] rejected the write: {}",
+                    action_index, message
                 )
             }
         }
@@ -789,7 +812,33 @@ async fn execute_single_action(
         ActionType::RemoveRelationship => {
             execute_remove_relationship(action_index, params, node_service).await
         }
+        ActionType::Reject => execute_reject(action_index, params),
     }
+}
+
+/// Execute a `reject` action (ADR-060 §2): deterministically fails with
+/// [`ActionError::Rejected`], carrying the author-supplied `message` param
+/// (already binding-resolved by the caller via `resolve_bindings_in_value`,
+/// same as every other action's params). Performs no I/O and never succeeds
+/// — reaching this function at all IS the rejection; the rule's `conditions`
+/// are what gate whether it is reached, not anything in this executor. One
+/// implementation shared by both the reactive (`execute_single_action`) and
+/// transaction-scoped (`execute_single_action_in_tx`) executors below: unlike
+/// `create_node`/`update_node`/relationship actions, `reject` touches no
+/// store state, so there is nothing for a `_in_tx` twin to do differently.
+fn execute_reject(action_index: usize, params: &Value) -> Result<Value, ActionError> {
+    let message =
+        params
+            .get("message")
+            .and_then(|v| v.as_str())
+            .ok_or(ActionError::MissingParam {
+                param: "message".to_string(),
+                action_index,
+            })?;
+    Err(ActionError::Rejected {
+        message: message.to_string(),
+        action_index,
+    })
 }
 
 /// Merge the current chain depth into an action's output properties
@@ -1250,6 +1299,7 @@ async fn execute_single_action_in_tx(
         ActionType::RemoveRelationship => {
             execute_remove_relationship_in_tx(action_index, params, txc).await
         }
+        ActionType::Reject => execute_reject(action_index, params),
     }
 }
 
@@ -1562,6 +1612,96 @@ mod tests {
         let value = json!({"a": {"b": 1}});
         let err = navigate_json(&value, &["a", "c"]).unwrap_err();
         assert!(err.contains("path segment 'c' not found"));
+    }
+
+    // -----------------------------------------------------------------------
+    // execute_reject (ADR-060 §2, #2642)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn execute_reject_returns_rejected_with_the_message() {
+        let params = json!({ "message": "cannot close while children are open" });
+        let err = execute_reject(0, &params).unwrap_err();
+        match err {
+            ActionError::Rejected {
+                message,
+                action_index,
+            } => {
+                assert_eq!(message, "cannot close while children are open");
+                assert_eq!(action_index, 0);
+            }
+            other => panic!("expected Rejected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn execute_reject_never_returns_ok() {
+        // Reaching this executor at all IS the rejection — there is no
+        // success path, unlike every other action executor.
+        let params = json!({ "message": "no" });
+        assert!(execute_reject(0, &params).is_err());
+    }
+
+    #[test]
+    fn execute_reject_without_message_is_missing_param_not_rejected() {
+        // Defensive: save-time validation (`playbook::validation`) already
+        // requires `message`, but a raw executor must still handle its
+        // absence explicitly rather than panicking or fabricating a message
+        // — and it must be reported as `MissingParam`, not silently treated
+        // as a (message-less) rejection.
+        let params = json!({});
+        let err = execute_reject(0, &params).unwrap_err();
+        assert!(matches!(
+            err,
+            ActionError::MissingParam { param, .. } if param == "message"
+        ));
+    }
+
+    #[tokio::test]
+    async fn execute_actions_short_circuits_on_reject_before_a_later_action() {
+        // Reject as action[0] of a two-action list: action[1] must never run
+        // — proven here by action_results only ever growing on success, so a
+        // `Failed` result with no way to observe action[1]'s effects is the
+        // whole point of this test at the `execute_actions` entry-point
+        // level (the loop-level short-circuit, not just `execute_reject`'s
+        // own return value in isolation).
+        let actions = vec![
+            ParsedAction {
+                action_type: ActionType::Reject,
+                params: json!({ "message": "vetoed" }),
+                for_each: None,
+            },
+            ParsedAction {
+                action_type: ActionType::CreateNode,
+                params: json!({ "node_type": "text", "content": "should never be created" }),
+                for_each: None,
+            },
+        ];
+
+        let trigger = make_test_node("trigger-1", "task");
+        let event = make_node_created_event("trigger-1", "task");
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let mut store: Arc<crate::db::SqliteStore> =
+            Arc::new(crate::db::SqliteStore::new(db_path).await.unwrap());
+        let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+
+        let execution_context = PlaybookExecutionContext {
+            originating_event_id: "evt-1".to_string(),
+            depth: 0,
+            source_playbook_id: "play-1".to_string(),
+        };
+
+        let result =
+            execute_actions(&actions, &trigger, &event, &node_service, execution_context).await;
+
+        match result {
+            ActionResult::Failed(ActionError::Rejected { message, .. }) => {
+                assert_eq!(message, "vetoed");
+            }
+            other => panic!("expected Failed(Rejected), got {:?}", other),
+        }
     }
 
     // -----------------------------------------------------------------------
