@@ -2018,11 +2018,10 @@ async fn test_title_matches_respect_default_knowledge_scope() -> Result<()> {
     Ok(())
 }
 
-/// A `%` typed into the search box reaches the store's LIKE pattern unescaped
-/// (`build_scalar_conditions` has no ESCAPE clause), so it matches every row.
-/// Those rows explain nothing about the query, and scoring them at the
-/// stem-fallback floor would rank arbitrary nodes above every genuine semantic
-/// hit — the floor sits above the whole similarity band. They must be dropped.
+/// A `%` typed into the search box must not match every row. Before
+/// `build_scalar_conditions` escaped LIKE metacharacters, it did: each row
+/// reached the scoring pass matching neither title nor content, took the
+/// stem-fallback floor, and so ranked above every genuine semantic hit.
 #[tokio::test]
 async fn test_wildcard_query_does_not_return_arbitrary_high_ranked_rows() -> Result<()> {
     let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
@@ -2049,10 +2048,10 @@ async fn test_wildcard_query_does_not_return_arbitrary_high_ranked_rows() -> Res
     Ok(())
 }
 
-/// The wildcard guard must not cost a literal match. A query containing `_`
-/// still resolves rows that genuinely contain that text.
+/// Escaping must not cost a literal match: a query containing `_` still
+/// resolves rows that genuinely contain that text.
 #[tokio::test]
-async fn test_wildcard_guard_keeps_literally_matching_rows() -> Result<()> {
+async fn test_wildcard_escaping_keeps_literally_matching_rows() -> Result<()> {
     let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
     let node_service = Arc::new(node_service);
     let embedding_service = Arc::new(embedding_service);

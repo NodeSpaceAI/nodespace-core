@@ -390,11 +390,6 @@ async fn title_match_nodes(
         return Ok(Vec::new());
     }
 
-    // `%` and `_` reach the store's LIKE pattern unescaped (see the scoring
-    // match below), so their presence means a returned row may owe its match to
-    // the wildcard rather than to the query text.
-    let query_has_like_wildcard = query_lower.contains('%') || query_lower.contains('_');
-
     let per_query_limit = ENUMERATE_FETCH_CAP.min(limit.max(1) * 3);
     let node_types = filters
         .and_then(|f| f.node_types.as_ref())
@@ -454,25 +449,18 @@ async fn title_match_nodes(
         let score = match (title_score, content_score) {
             (Some(t), Some(c)) => t.max(c),
             (Some(s), None) | (None, Some(s)) => s,
-            // The store returned this row but neither field contains the query
-            // as a literal substring. Two very different things produce that:
+            // Neither field contains the query as a literal substring, so this
+            // row came from the store's title-stem fallback matching a word
+            // variant ("groceries" resolving a "grocery store" title). It keeps
+            // the floor score: the store made a real judgement here, and
+            // re-deciding it would defeat the fallback's whole purpose.
             //
-            // - The title-stem fallback matched a word variant ("groceries"
-            //   resolving a "grocery store" title). The store made a real
-            //   judgement here, so the row keeps the floor score; re-deciding
-            //   it would defeat the fallback's whole purpose.
-            // - The query contains an unescaped LIKE wildcard. `build_scalar_
-            //   conditions` interpolates the term into `LIKE '%term%'` with no
-            //   ESCAPE clause, so a bare `%` matches every row and a `_`
-            //   matches any character. Those rows are an artifact of the
-            //   pattern, not evidence of relevance, and giving them the floor
-            //   score would rank arbitrary nodes above every genuine semantic
-            //   hit (the floor sits above the whole similarity band).
-            //
-            // Only the first deserves the benefit of the doubt, so a query
-            // carrying a wildcard drops its unexplained rows instead. Rows that
-            // *do* match literally are unaffected and still score normally.
-            (None, None) if query_has_like_wildcard => continue,
+            // A LIKE wildcard in the query used to land here too, which made
+            // this arm dangerous — `%` matched every row and each one took the
+            // floor score, ranking arbitrary nodes above every genuine semantic
+            // hit. `build_scalar_conditions` now escapes `%`/`_`, so the store
+            // only returns rows it can justify and the stem fallback is once
+            // again the sole way to reach this arm.
             (None, None) => STEM_FALLBACK_SCORE,
         };
         scored.push((node, score));
