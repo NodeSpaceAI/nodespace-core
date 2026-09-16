@@ -3,8 +3,8 @@
  *
  * The ids are the installer's own agent names (`packages/skill/src/agents.ts`'s
  * `AGENTS[].name`), which arrive verbatim from every backend surface that
- * reports agents: `check_onboarding_status`'s `detectedAgents`, and
- * `SkillSetupResult`'s `agentsInstalled` / `agentsSkipped`.
+ * reports agents: `detect_agents`'s `agents`, and `SkillSetupResult`'s
+ * `agentsInstalled` / `agentsSkipped`.
  *
  * Shared rather than duplicated per component so the onboarding wizard's
  * pre-install question and its post-install confirmation cannot drift apart —

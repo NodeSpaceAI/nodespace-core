@@ -54,7 +54,6 @@ async function renderAtSkillStep(agents: string[], detectionFailed = false) {
     props: { open: true, onClose: vi.fn() }
   });
   await tick();
-  await tick(); // status and detect_agents resolve independently
   await fireEvent.click(buttonByText(container, 'Next')); // -> skill step
   await tick();
   return container;
@@ -166,7 +165,6 @@ describe('OnboardingWizard skill-step prompt', () => {
     const { container } = render(OnboardingWizard, {
       props: { open: true, onClose: vi.fn() }
     });
-    await tick();
     await tick();
     await fireEvent.click(buttonByText(container, 'Next'));
     await tick();

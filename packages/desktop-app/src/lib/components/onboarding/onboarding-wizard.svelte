@@ -176,14 +176,14 @@
       // subprocess, and only the skill step needs it.
       invoke<DetectedAgents>('detect_agents')
         .then((result) => {
-          detectedAgents = result?.agents ?? [];
+          detectedAgents = result.agents;
           // Offer the step when agents were found, and also when detection
           // could not run — the user may well have an agent installed, and a
           // question with generic wording beats silently dropping the step.
-          showSkill = detectedAgents.length > 0 || result?.detectionFailed === true;
+          showSkill = detectedAgents.length > 0 || result.detectionFailed;
           log.debug('Agent detection complete', {
             detectedAgents,
-            detectionFailed: result?.detectionFailed,
+            detectionFailed: result.detectionFailed,
             showSkill,
           });
         })
