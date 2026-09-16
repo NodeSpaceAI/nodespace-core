@@ -124,10 +124,15 @@ pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
     // A cascade delete refused by the ADR-041 subtree access gate carries the
     // inaccessible-node count in `x-subtree-inaccessible-count` metadata, and a
     // Play-rule rejection (ADR-060 §2) carries its own structured payload in
-    // `x-play-rule-rejected`. Both are only meaningful gated on
-    // FailedPrecondition WITH the matching metadata present — the daemon
-    // returns FailedPrecondition from unrelated paths too (node-create/schema
-    // failures), which must not be mis-branded as either of these.
+    // the BINARY `x-play-rule-rejected-bin` metadata key (not a plain ASCII
+    // one — the payload embeds an author-supplied rejection message, which
+    // routinely contains non-ASCII bytes; gRPC's `-bin` metadata convention
+    // transports it as raw bytes, base64-encoded on the wire, so it can never
+    // be silently dropped the way an ASCII-only key would be). Both are only
+    // meaningful gated on FailedPrecondition WITH the matching metadata
+    // present — the daemon returns FailedPrecondition from unrelated paths
+    // too (node-create/schema failures), which must not be mis-branded as
+    // either of these.
     let subtree_inaccessible_count: Option<u64> =
         if status.code() == tonic::Code::FailedPrecondition {
             status
@@ -142,9 +147,9 @@ pub(crate) fn status_to_command_error(status: tonic::Status) -> CommandError {
         if status.code() == tonic::Code::FailedPrecondition {
             status
                 .metadata()
-                .get("x-play-rule-rejected")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| serde_json::from_str(s).ok())
+                .get_bin("x-play-rule-rejected-bin")
+                .and_then(|v| v.to_bytes().ok())
+                .and_then(|b| serde_json::from_slice(&b).ok())
         } else {
             None
         };
@@ -1127,30 +1132,61 @@ mod tests {
     #[test]
     fn status_to_command_error_maps_play_rule_rejected() {
         // Mirrors the daemon's `OpsError::PlayRuleRejected` mapping
-        // (FAILED_PRECONDITION + x-play-rule-rejected metadata, ADR-060 §2):
-        // the Tauri layer must brand it distinctly from SUBTREE_ACCESS_DENIED
-        // (which shares the same status code but a different metadata key)
-        // and from an ordinary FailedPrecondition with neither key present.
+        // (FAILED_PRECONDITION + BINARY x-play-rule-rejected-bin metadata,
+        // ADR-060 §2): the Tauri layer must brand it distinctly from
+        // SUBTREE_ACCESS_DENIED (which shares the same status code but a
+        // different metadata key) and from an ordinary FailedPrecondition
+        // with neither key present. Binary, not ASCII — the payload embeds
+        // an author-supplied rejection message, which can contain non-ASCII
+        // bytes an ASCII metadata value would silently drop.
         let mut status = tonic::Status::failed_precondition("Play rule 'r' rejected the write");
         let payload = serde_json::json!({
             "node_id": "n1",
             "play_id": "p1",
-            "rule_id": "r1",
+            "rule_name": "r1",
             "message": "cannot close while children are open",
         });
-        status.metadata_mut().insert(
-            "x-play-rule-rejected",
-            serde_json::to_string(&payload).unwrap().parse().unwrap(),
-        );
+        let json = serde_json::to_string(&payload).unwrap();
+        let val =
+            tonic::metadata::MetadataValue::<tonic::metadata::Binary>::from_bytes(json.as_bytes());
+        status
+            .metadata_mut()
+            .insert_bin("x-play-rule-rejected-bin", val);
 
         let err = status_to_command_error(status);
         assert_eq!(err.code, "PLAY_RULE_REJECTED");
         let conflict_data = err.conflict_data.expect("conflict_data must be present");
-        assert_eq!(conflict_data["rule_id"], "r1");
+        assert_eq!(conflict_data["rule_name"], "r1");
         assert_eq!(
             conflict_data["message"],
             "cannot close while children are open"
         );
+    }
+
+    #[test]
+    fn status_to_command_error_preserves_non_ascii_play_rule_rejected_message() {
+        // Regression guard: the old ASCII-only metadata key silently
+        // dropped conflict_data for any non-ASCII byte in the rejection
+        // message. The binary key must carry it through intact.
+        let message = "cannot close — \u{201c}Renew\u{201d} needs café review \u{1F6AB}";
+        let mut status = tonic::Status::failed_precondition("rejected");
+        let payload = serde_json::json!({
+            "node_id": "n1",
+            "play_id": "p1",
+            "rule_name": "r1",
+            "message": message,
+        });
+        let json = serde_json::to_string(&payload).unwrap();
+        let val =
+            tonic::metadata::MetadataValue::<tonic::metadata::Binary>::from_bytes(json.as_bytes());
+        status
+            .metadata_mut()
+            .insert_bin("x-play-rule-rejected-bin", val);
+
+        let err = status_to_command_error(status);
+        assert_eq!(err.code, "PLAY_RULE_REJECTED");
+        let conflict_data = err.conflict_data.expect("conflict_data must be present");
+        assert_eq!(conflict_data["message"], message);
     }
 
     #[test]

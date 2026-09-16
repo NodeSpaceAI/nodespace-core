@@ -165,9 +165,11 @@ export function isSubtreeAccessDenied(
 
 /**
  * Structured payload carried by PLAY_RULE_REJECTED CommandErrors.
- * Mirrors the JSON emitted by the daemon's x-play-rule-rejected metadata
- * header when a `RuleClass::Invariant` rule's `reject` action (ADR-060 §2)
- * vetoes a write.
+ * Mirrors the JSON emitted by the daemon's binary x-play-rule-rejected-bin
+ * metadata header when a `RuleClass::Invariant` rule's `reject` action
+ * (ADR-060 §2) vetoes a write. Binary, not ASCII — the payload embeds an
+ * author-supplied rejection message, which can contain non-ASCII bytes an
+ * ASCII metadata value would silently drop.
  */
 export interface PlayRuleRejectedData {
   /** Node ID the write targeted */
@@ -176,8 +178,8 @@ export interface PlayRuleRejectedData {
   /** ID of the play whose rule rejected the write */
   play_id: string;
 
-  /** Name of the specific rule that rejected the write */
-  rule_id: string;
+  /** Author-given name of the specific rule that rejected the write */
+  rule_name: string;
 
   /** The rejecting rule's own author-supplied violation text */
   message: string;
@@ -200,7 +202,7 @@ export interface PlayRuleRejectedCommandError extends CommandError {
  * Type guard: returns true when the thrown value is a PLAY_RULE_REJECTED
  * CommandError carrying the daemon's structured rejection payload.
  *
- * Matches the gRPC/Tauri shape: { code: "PLAY_RULE_REJECTED", conflictData: { node_id, play_id, rule_id, message } }
+ * Matches the gRPC/Tauri shape: { code: "PLAY_RULE_REJECTED", conflictData: { node_id, play_id, rule_name, message } }
  */
 export function isPlayRuleRejected(error: unknown): error is PlayRuleRejectedCommandError {
   if (typeof error !== 'object' || error === null) return false;

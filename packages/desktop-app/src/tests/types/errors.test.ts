@@ -550,7 +550,7 @@ describe('isPlayRuleRejected Type Guard (gRPC shape)', () => {
     conflictData: {
       node_id: 'node-1',
       play_id: 'play-1',
-      rule_id: 'reject-rule',
+      rule_name: 'reject-rule',
       message: 'cannot close while children are open',
       ...overrides
     }
@@ -561,9 +561,9 @@ describe('isPlayRuleRejected Type Guard (gRPC shape)', () => {
   });
 
   it('narrows to expose the rejecting rule fields', () => {
-    const err = makeRejection({ rule_id: 'other-rule', message: 'custom text' });
+    const err = makeRejection({ rule_name: 'other-rule', message: 'custom text' });
     if (isPlayRuleRejected(err)) {
-      expect(err.conflictData.rule_id).toBe('other-rule');
+      expect(err.conflictData.rule_name).toBe('other-rule');
       expect(err.conflictData.message).toBe('custom text');
     } else {
       throw new Error('type guard should have matched');
