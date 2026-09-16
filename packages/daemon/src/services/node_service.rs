@@ -51,23 +51,24 @@ use crate::nodespace::{
     DeleteRelationshipResponse, Empty, ExecuteQueryRequest, ExportMarkdownRequest,
     ExportMarkdownResponse, FindCollectionByPathRequest, FindDuplicateRequest,
     GetAllCollectionsRequest, GetAllSchemasRequest, GetChildrenRequest, GetChildrenTreeRequest,
-    GetCollectionByNameRequest, GetConflictRequest, GetDaemonVersionRequest,
-    GetDaemonVersionResponse, GetNodeRelationshipsRequest, GetNodeRelationshipsResponse,
-    GetNodeRequest, GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest,
-    GetRelatedNodesResponse, GetRootsRequest, GetSchemaDefinitionRequest, GetWorkflowStateRequest,
-    GetWorkflowStateResponse, ListConflictsRequest, MentionAutocompleteRequest, MentionIdsResponse,
-    MentionResponse, MentionTargetRequest, MergeNodesRequest, MergeNodesResponse,
-    MoveChildrenToParentRequest, MoveChildrenToParentResponse, MoveNodeRequest,
-    NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse, NodeReference,
-    NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
-    OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
-    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipPayload,
-    RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
-    ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
-    SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
-    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse,
-    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
-    UpdateTaskNodeRequest, UpsertNodeWithParentRequest, WatchRequest,
+    GetCollectionByNameRequest, GetConflictRequest, GetDaemonMemoryRequest,
+    GetDaemonMemoryResponse, GetDaemonVersionRequest, GetDaemonVersionResponse,
+    GetNodeRelationshipsRequest, GetNodeRelationshipsResponse, GetNodeRequest,
+    GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest, GetRelatedNodesResponse,
+    GetRootsRequest, GetSchemaDefinitionRequest, GetWorkflowStateRequest, GetWorkflowStateResponse,
+    ListConflictsRequest, MentionAutocompleteRequest, MentionIdsResponse, MentionResponse,
+    MentionTargetRequest, MergeNodesRequest, MergeNodesResponse, MoveChildrenToParentRequest,
+    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
+    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
+    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
+    OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest,
+    RelationshipDeletedPayload, RelationshipPayload, RemoveNodeFromCollectionRequest,
+    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
+    ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
+    SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
+    UpdateNodesBatchResponse, UpdateRelationshipPropertiesRequest,
+    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
+    WatchRequest,
 };
 
 /// gRPC adapter that owns shared handles to the core services.
@@ -1227,6 +1228,40 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(GetDaemonVersionResponse {
             version: env!("CARGO_PKG_VERSION").to_string(),
         }))
+    }
+
+    async fn get_daemon_memory(
+        &self,
+        _request: Request<GetDaemonMemoryRequest>,
+    ) -> Result<Response<GetDaemonMemoryResponse>, Status> {
+        // The daemon's own process footprint — not tenant-scoped, so no routing.
+        //
+        // Refresh only this PID rather than the whole process table: the figure
+        // we want is one process's, and a full refresh walks every process on
+        // the machine for nothing.
+        //
+        // The `System` is built per call rather than cached on `self`: it
+        // refreshes through `&mut`, so keeping one would need a mutex, would
+        // hold this process's `stat` handle open for the daemon's lifetime on
+        // Linux, and would retain stale state between infrequent diagnostics
+        // runs. `System::new()` allocates an empty struct — unlike
+        // `new_all()`, it walks nothing.
+        //
+        // `remove_dead_processes: false` because it can only ever drop
+        // processes included in this update — here, the live process asking
+        // the question. `true` would be equivalent; `false` says so.
+        let pid = sysinfo::get_current_pid().ok();
+        let rss_bytes = pid.and_then(|pid| {
+            let mut sys = sysinfo::System::new();
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), false);
+            // `memory()` is the resident set size; `virtual_memory()` would be
+            // VSZ, which is not what the report means by "memory".
+            sys.process(pid).map(|proc| proc.memory())
+        });
+
+        // Left unset when the platform would not report it, so the CLI can say
+        // "unknown" instead of printing a 0 no live process could ever have.
+        Ok(Response::new(GetDaemonMemoryResponse { rss_bytes }))
     }
 
     async fn create_relationship(
@@ -3595,6 +3630,25 @@ mod tests {
             .into_inner();
         assert_eq!(resp.version, env!("CARGO_PKG_VERSION"));
         assert!(!resp.version.is_empty(), "daemon must report a version");
+    }
+
+    #[tokio::test]
+    async fn get_daemon_memory_reports_a_live_process_footprint() {
+        let (svc, _tmp) = make_service().await;
+        let resp = svc
+            .get_daemon_memory(Request::new(crate::nodespace::GetDaemonMemoryRequest {}))
+            .await
+            .unwrap()
+            .into_inner();
+
+        // The reading is this test binary's own RSS (the handler measures the
+        // process it runs in), so assert only what must hold for any live
+        // process: a figure was obtained, and it is not the 0 that would mean
+        // we had reported a failed probe as a real measurement.
+        let rss = resp
+            .rss_bytes
+            .expect("a running process must report its own RSS");
+        assert!(rss > 0, "a live process cannot occupy 0 bytes of RSS");
     }
 
     // -- Error mapping parity tests ------------------------------------------

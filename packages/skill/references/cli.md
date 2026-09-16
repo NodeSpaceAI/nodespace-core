@@ -619,7 +619,7 @@ Structured property query with comparison operators (equals/contains/gt/lt/gte/l
 
 ### `nodespace diagnostics`
 
-Developer diagnostics: database path, size, node counts, schema count
+Developer diagnostics: database path, size, node counts, schema count, daemon process memory
 
 ### `nodespace import`
 

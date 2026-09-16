@@ -134,7 +134,8 @@ pub enum Command {
     Search(commands::search::SearchArgs),
     /// Structured property query with comparison operators (equals/contains/gt/lt/gte/lte/in/exists).
     Query(commands::query::QueryArgs),
-    /// Developer diagnostics: database path, size, node counts, schema count.
+    /// Developer diagnostics: database path, size, node counts, schema count,
+    /// daemon process memory.
     Diagnostics(commands::diagnostics::DiagnosticsArgs),
     /// Import markdown files into NodeSpace.
     Import {

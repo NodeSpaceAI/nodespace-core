@@ -558,6 +558,14 @@ async fn diagnostics_collect_reports_counts_and_recency() {
         report.database_size_bytes.unwrap_or(0) > 0,
         "targeted database file should have a nonzero size after writes"
     );
+    // The daemon under test runs in-process, so this is the test binary's own
+    // RSS. Assert only what holds for any live process — a reading exists and
+    // is nonzero — never a specific figure.
+    assert!(
+        report.daemon_rss_bytes.unwrap_or(0) > 0,
+        "a running daemon must report a nonzero RSS, got {:?}",
+        report.daemon_rss_bytes
+    );
     assert_eq!(
         report
             .recent_node_ids
@@ -2426,6 +2434,22 @@ async fn diagnostics_reports_unknown_counts_when_the_node_query_fails() {
     assert!(
         report.recent_node_ids.is_none(),
         "recency is derived from the failed query and must be unknown too"
+    );
+    // The clamped client starves the memory RPC as well. The figure must go
+    // unknown rather than fall back to a 0 that would read as "the daemon uses
+    // no memory".
+    assert!(
+        report.daemon_rss_bytes.is_none(),
+        "a failed memory query must report unknown, not a number: {:?}",
+        report.daemon_rss_bytes
+    );
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|e| e.contains("GetDaemonMemory failed")),
+        "the memory RPC failure must be surfaced: {:?}",
+        report.errors
     );
     assert!(
         report
