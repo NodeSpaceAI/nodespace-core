@@ -8,6 +8,12 @@
 //! An action failure returns `Err`, which propagates out through
 //! `create_node_in_tx` and `with_transaction`'s `?`, rolling back the whole
 //! transaction — the node this dispatch ran for was never durably created.
+//! A `reject` action (ADR-060 §2) firing is reported as a distinct
+//! `NodeServiceError::PlayRuleRejected`, not the generic
+//! `InvariantRuleFailed` every other action failure produces — see
+//! `execute_matched_invariant_rules_in_tx`, the shared execution core every
+//! synchronous dispatch path (this one and, eventually, `update_node`'s) runs
+//! through.
 //!
 //! Deliberately NOT part of `playbook::engine`'s post-commit `mpsc` queue:
 //! that queue is async and after-the-fact by construction, exactly what an
@@ -78,8 +84,34 @@ impl NodeService {
             node_type: node.node_type.clone(),
         };
 
-        // Rules already come back sorted by (play_id, rule_index) — the same
-        // stable order the reactive path uses (`lookup_rules`'s own doc).
+        self.execute_matched_invariant_rules_in_tx(tx, node, &event, matched)
+            .await
+    }
+
+    /// Shared execution core for every synchronous invariant-rule dispatch
+    /// path (today: [`Self::dispatch_invariant_rules_in_tx`] for
+    /// `create_node`/`create_node_in_tx`; ADR-060 §2's `update_node` wiring
+    /// reuses this identically). Filters `matched` down to `RuleClass::Invariant`
+    /// rules, evaluates each one's conditions, and executes its actions inside
+    /// `tx`. Rules already come back sorted by (play_id, rule_index) — the
+    /// same stable order the reactive path uses (`lookup_rules`'s own doc).
+    ///
+    /// Keeping exactly one execution loop for every synchronous caller — rather
+    /// than each caller re-implementing "evaluate conditions, run actions,
+    /// interpret the result" — is deliberate: the reject-action
+    /// distinction below (an `ActionError::Rejected` becomes
+    /// `NodeServiceError::PlayRuleRejected`, everything else becomes
+    /// `NodeServiceError::InvariantRuleFailed`) needs to hold identically for
+    /// every trigger kind an invariant rule can run from, and a single shared
+    /// implementation is what makes that true by construction instead of by
+    /// convention.
+    pub(crate) async fn execute_matched_invariant_rules_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        node: &Node,
+        event: &DomainEvent,
+        matched: Vec<crate::playbook::types::OrderedRuleRef>,
+    ) -> Result<(), NodeServiceError> {
         for rule_ref in matched {
             if rule_ref.rule.class != RuleClass::Invariant {
                 continue;
@@ -90,7 +122,7 @@ impl NodeService {
             let condition_result = crate::playbook::cel::evaluate_conditions(
                 &rule_ref.rule.conditions,
                 node,
-                &event,
+                event,
                 Some(&mut resolver),
             )
             .await;
@@ -118,7 +150,7 @@ impl NodeService {
             let result = crate::playbook::actions::execute_actions_in_tx(
                 &rule_ref.rule.actions,
                 node,
-                &event,
+                event,
                 &scoped,
                 tx,
                 execution_context,
@@ -126,6 +158,21 @@ impl NodeService {
             .await;
 
             if let crate::playbook::actions::ActionResult::Failed(err) = result {
+                // A `reject` action (ADR-060 §2) firing is a distinct
+                // outcome from every other action failure: the rule did
+                // exactly what it was authored to do, deliberately vetoing
+                // this write, rather than malfunctioning. Surfaced as its own
+                // error variant — modeled on `VersionConflict` — so a caller
+                // (and eventually the frontend) can tell "your write was
+                // rejected by a rule" apart from "a rule's action errored."
+                if let crate::playbook::actions::ActionError::Rejected { message, .. } = &err {
+                    return Err(NodeServiceError::play_rule_rejected(
+                        node.id.clone(),
+                        rule_ref.play_id.clone(),
+                        rule_ref.rule.name.clone(),
+                        message.clone(),
+                    ));
+                }
                 return Err(NodeServiceError::invariant_rule_failed(
                     rule_ref.play_id.clone(),
                     rule_ref.rule.name.clone(),

@@ -112,6 +112,24 @@ pub enum NodeServiceError {
         message: String,
     },
 
+    /// A `RuleClass::Invariant` rule's `reject` action (ADR-060 §2) fired
+    /// against this write. Structurally the same category of outcome as
+    /// [`Self::VersionConflict`] — the caller's write did not take effect,
+    /// and the message here is the complete explanation — modeled on it
+    /// deliberately: returned as a plain `Err` directly from the failing
+    /// `create_node`/`update_node` call, no `DomainEvent` involved. `message`
+    /// is the rejecting rule's own author-supplied text (see
+    /// `playbook::types::ActionType::Reject`), not a generic description.
+    #[error(
+        "Play rule '{rule_id}' (play {play_id}) rejected the write to node {node_id}: {message}"
+    )]
+    PlayRuleRejected {
+        node_id: String,
+        play_id: String,
+        rule_id: String,
+        message: String,
+    },
+
     /// Node cannot be a parent because its type does not allow children
     #[error("Node '{parent_id}' (type '{node_type}') cannot have children")]
     NotAContainer {
@@ -244,6 +262,21 @@ impl NodeServiceError {
         Self::InvariantRuleFailed {
             play_id: play_id.into(),
             rule_name: rule_name.into(),
+            message: message.into(),
+        }
+    }
+
+    /// Create a play-rule-rejected error (ADR-060 §2 `reject` action)
+    pub fn play_rule_rejected(
+        node_id: impl Into<String>,
+        play_id: impl Into<String>,
+        rule_id: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::PlayRuleRejected {
+            node_id: node_id.into(),
+            play_id: play_id.into(),
+            rule_id: rule_id.into(),
             message: message.into(),
         }
     }

@@ -114,6 +114,21 @@ pub enum PlayValidationError {
         relationship_type: String,
         location: String,
     },
+    /// A `reject` action (ADR-060 §2) is declared on a non-`Invariant` rule.
+    /// `reject`'s entire meaning is "fail the enclosing transaction" — there
+    /// is no transaction left to fail once a rule's actions run
+    /// asynchronously, post-commit (`Reactive`, ADR-060's default class), so
+    /// this is caught at save time rather than silently no-op'd (or errored
+    /// generically) at runtime.
+    RejectActionOnReactiveRule { location: String },
+    /// A `reject` action declares a `for_each`. `reject`'s condition
+    /// (evaluated against the trigger node, not a collection item) is
+    /// already the gate for whether it fires — iterating it over a
+    /// collection adds nothing but a real correctness hazard: if the
+    /// resolved collection is empty, the loop body never runs and the
+    /// action silently no-ops, vetoing nothing, with no save-time or
+    /// runtime warning. Rejected outright rather than accepted-with-a-caveat.
+    RejectActionHasForEach { location: String },
 }
 
 impl std::fmt::Display for PlayValidationError {
@@ -217,6 +232,22 @@ impl std::fmt::Display for PlayValidationError {
                  'order' in edge_data (invariant add_relationship actions cannot use the \
                  atomic auto-order path — supply an explicit order)",
                 location, relationship_type
+            ),
+            Self::RejectActionOnReactiveRule { location } => write!(
+                f,
+                "reject action at {} is declared on a reactive rule (reject is only meaningful \
+                 on an invariant rule — there is no transaction left to fail once a rule's \
+                 actions run asynchronously, post-commit; declare this rule invariant, or \
+                 remove the reject action)",
+                location
+            ),
+            Self::RejectActionHasForEach { location } => write!(
+                f,
+                "reject action at {} declares a for_each (reject's condition already gates \
+                 whether it fires — iterating it adds a correctness hazard: an empty \
+                 collection would silently no-op instead of vetoing the write; remove the \
+                 for_each)",
+                location
             ),
         }
     }
@@ -339,6 +370,14 @@ pub async fn validate_play(
         if rule.class == RuleClass::Invariant {
             validate_invariant_eligibility(rule, rule_idx, &mut errors);
         }
+
+        // -- Validate reject-action class (ADR-060 §2) --
+        //
+        // Unlike the invariant-eligibility checks above, this runs for EVERY
+        // rule regardless of class: it exists specifically to catch a
+        // `reject` action declared on the WRONG (reactive) class, so it
+        // cannot itself be gated behind `rule.class == RuleClass::Invariant`.
+        validate_reject_action_class(rule, rule_idx, &mut errors);
     }
 
     if errors.is_empty() {
@@ -520,6 +559,33 @@ async fn validate_action(
             )
             .await;
         }
+        ActionType::Reject => {
+            validate_reject_action(action, location, errors);
+        }
+    }
+}
+
+/// Validate a `reject` action: `message` is required (either a literal
+/// string or a `{binding}` template — both resolve to a string at execution
+/// time, see `playbook::actions::execute_reject`), and `for_each` is
+/// disallowed (see [`PlayValidationError::RejectActionHasForEach`]).
+fn validate_reject_action(
+    action: &ParsedAction,
+    location: &str,
+    errors: &mut Vec<PlayValidationError>,
+) {
+    let has_message =
+        matches!(action.params.get("message"), Some(serde_json::Value::String(s)) if !s.is_empty());
+    if !has_message {
+        errors.push(PlayValidationError::MissingActionParam {
+            param: "message".to_string(),
+            location: location.to_string(),
+        });
+    }
+    if action.for_each.is_some() {
+        errors.push(PlayValidationError::RejectActionHasForEach {
+            location: location.to_string(),
+        });
     }
 }
 
@@ -667,6 +733,27 @@ async fn validate_relationship_action(
 ///   event, so it is deferred to the runtime causal-depth guard (ADR-060 §5),
 ///   built in a later slice. `validate_play` sees only the rules of the
 ///   play being saved, so cross-play chains are not even visible here.
+///
+/// # `reject` (ADR-060 §2) against each check
+///
+/// `reject`'s own class restriction (invariant-only) is a separate,
+/// unconditional check — [`validate_reject_action_class`], not this function —
+/// since it must fire on the WRONG class, which `validate_invariant_eligibility`
+/// never even looks at. Once a `reject` action IS on an eligible invariant
+/// rule, every check above applies to it exactly like any other action type,
+/// with two automatic exemptions rather than special-cased ones:
+/// - **Local writes only**: `reject` performs no I/O — deterministically
+///   failing is pure computation — so [`ActionType::is_local_write`] returns
+///   `true` for it, same as every graph-mutation action type.
+/// - **Same-graph scope**: `reject` addresses no node (its only param is an
+///   author-supplied message), so [`target_id_params`] returns an empty slice
+///   for it, exactly like `create_node`'s existing exemption — there is no
+///   target id to check.
+///
+/// No case in [`check_invariant_self_chaining`]'s match matches
+/// `ActionType::Reject`, so it always falls to that match's `_ => false` arm:
+/// a `reject` action can never re-satisfy a trigger, since it creates or
+/// updates nothing.
 fn validate_invariant_eligibility(
     rule: &ParsedRule,
     rule_idx: usize,
@@ -775,12 +862,36 @@ fn validate_invariant_eligibility(
 /// The action params that name an *existing* node the action addresses.
 ///
 /// `create_node` addresses no existing node (it makes one), so it contributes no
-/// target and cannot violate same-graph scope through a target id.
+/// target and cannot violate same-graph scope through a target id. `reject`
+/// addresses no node at all — its only param is an author-supplied message —
+/// so it is exempt for the same reason.
 fn target_id_params(action_type: &ActionType) -> &'static [&'static str] {
     match action_type {
-        ActionType::CreateNode => &[],
+        ActionType::CreateNode | ActionType::Reject => &[],
         ActionType::UpdateNode => &["node_id"],
         ActionType::AddRelationship | ActionType::RemoveRelationship => &["source_id", "target_id"],
+    }
+}
+
+/// Validate that a `reject` action (ADR-060 §2) only appears on an
+/// `Invariant`-class rule. Runs for every rule (not gated behind
+/// `rule.class == RuleClass::Invariant`, unlike
+/// [`validate_invariant_eligibility`]'s checks) because its entire purpose is
+/// to catch the rule being the WRONG class.
+fn validate_reject_action_class(
+    rule: &ParsedRule,
+    rule_idx: usize,
+    errors: &mut Vec<PlayValidationError>,
+) {
+    if rule.class == RuleClass::Invariant {
+        return;
+    }
+    for (action_idx, action) in rule.actions.iter().enumerate() {
+        if action.action_type == ActionType::Reject {
+            errors.push(PlayValidationError::RejectActionOnReactiveRule {
+                location: format!("rule[{}].action[{}]", rule_idx, action_idx),
+            });
+        }
     }
 }
 
@@ -1007,6 +1118,10 @@ pub async fn check_schema_change_impact(
                             }
                         }
                     }
+                    // `reject`'s only param is an author-supplied message —
+                    // no node_type/relationship_type/target_type to
+                    // reference a schema through.
+                    ActionType::Reject => {}
                 }
             }
         }
@@ -2182,9 +2297,23 @@ mod tests {
             }
         }
 
+        fn reject_action(message: &str) -> ParsedAction {
+            ParsedAction {
+                action_type: ActionType::Reject,
+                params: json!({ "message": message }),
+                for_each: None,
+            }
+        }
+
         fn eligibility_errors(rule: &ParsedRule) -> Vec<PlayValidationError> {
             let mut errors = Vec::new();
             validate_invariant_eligibility(rule, 0, &mut errors);
+            errors
+        }
+
+        fn reject_class_errors(rule: &ParsedRule) -> Vec<PlayValidationError> {
+            let mut errors = Vec::new();
+            validate_reject_action_class(rule, 0, &mut errors);
             errors
         }
 
@@ -2202,6 +2331,7 @@ mod tests {
                 ActionType::UpdateNode,
                 ActionType::AddRelationship,
                 ActionType::RemoveRelationship,
+                ActionType::Reject,
             ] {
                 assert!(at.is_local_write(), "{:?} should be a local write", at);
             }
@@ -2714,6 +2844,236 @@ mod tests {
                 "a non-auto-order relationship type must not require an explicit order, got {:?}",
                 errors
             );
+        }
+
+        // -- reject action (ADR-060 §2) --
+
+        #[test]
+        fn reject_action_on_invariant_rule_has_no_eligibility_errors() {
+            // A `reject` action on an otherwise-eligible invariant rule must
+            // not trip ANY of §2's existing checks: it is a local write
+            // (trivially — no I/O), addresses no node (exempt from
+            // same-graph-scope), and can never re-satisfy a trigger (exempt
+            // from non-chaining).
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec!["node.status == 'open'"],
+                vec![reject_action("no")],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(errors.is_empty(), "expected no errors, got {:?}", errors);
+        }
+
+        #[test]
+        fn reject_action_has_no_out_of_scope_target_error() {
+            // `reject` addresses no node (unlike `update_node`/relationship
+            // actions), so it must never be flagged as targeting an
+            // out-of-scope literal node id — there is no target param to
+            // check in the first place.
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![reject_action("no")],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                !errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::InvariantOutOfScopeTarget { .. })),
+                "reject must never trip the out-of-scope-target check, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn reject_action_on_invariant_rule_passes_the_class_check() {
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![reject_action("no")],
+            );
+            let errors = reject_class_errors(&rule);
+            assert!(
+                errors.is_empty(),
+                "reject on an invariant rule must pass the class check, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn reject_action_on_reactive_rule_fails_the_class_check() {
+            // `reject`'s entire meaning is "fail the enclosing transaction" —
+            // meaningless once a rule's actions run asynchronously,
+            // post-commit (the reactive default), so this must be caught
+            // regardless of anything else about the rule.
+            let rule = ParsedRule {
+                class: RuleClass::Reactive,
+                ..invariant_rule(
+                    GraphEventType::NodeCreated,
+                    "task",
+                    None,
+                    vec![],
+                    vec![reject_action("no")],
+                )
+            };
+            let errors = reject_class_errors(&rule);
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::RejectActionOnReactiveRule { .. })),
+                "reject on a reactive rule must be caught, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn reactive_rule_with_no_reject_action_passes_the_class_check() {
+            // The class check must not false-positive on ordinary reactive
+            // rules — every rule authored before `reject` existed.
+            let rule = ParsedRule {
+                class: RuleClass::Reactive,
+                ..invariant_rule(
+                    GraphEventType::NodeCreated,
+                    "task",
+                    None,
+                    vec![],
+                    vec![update_action("{trigger.node.id}")],
+                )
+            };
+            let errors = reject_class_errors(&rule);
+            assert!(
+                errors.is_empty(),
+                "a reactive rule with no reject action must pass, got {:?}",
+                errors
+            );
+        }
+
+        #[tokio::test]
+        async fn reject_action_on_reactive_rule_fails_validate_play() {
+            // End-to-end through the same entry point `create_node`'s
+            // play-node validation gate uses, proving the class check is
+            // actually wired into `validate_play`, not just unit-testable in
+            // isolation.
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vi_reject_reactive").await;
+
+            let rule = Arc::new(ParsedRule {
+                class: RuleClass::Reactive,
+                ..invariant_rule(
+                    GraphEventType::NodeCreated,
+                    "vi_reject_reactive",
+                    None,
+                    vec![],
+                    vec![reject_action("no")],
+                )
+            });
+            let errors = validate_play(&[rule], &svc).await.unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::RejectActionOnReactiveRule { .. })),
+                "expected RejectActionOnReactiveRule, got {:?}",
+                errors
+            );
+        }
+
+        #[tokio::test]
+        async fn reject_action_without_message_fails_validate_play() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vi_reject_no_message").await;
+
+            let rule = Arc::new(invariant_rule(
+                GraphEventType::NodeCreated,
+                "vi_reject_no_message",
+                None,
+                vec![],
+                vec![ParsedAction {
+                    action_type: ActionType::Reject,
+                    params: json!({}),
+                    for_each: None,
+                }],
+            ));
+            let errors = validate_play(&[rule], &svc).await.unwrap_err();
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::MissingActionParam { param, .. } if param == "message"
+                )),
+                "expected MissingActionParam(\"message\"), got {:?}",
+                errors
+            );
+        }
+
+        #[tokio::test]
+        async fn reject_action_with_message_passes_validate_play() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vi_reject_ok").await;
+
+            let rule = Arc::new(invariant_rule(
+                GraphEventType::NodeCreated,
+                "vi_reject_ok",
+                None,
+                vec!["node.status == 'blocked'"],
+                vec![reject_action("cannot proceed while blocked")],
+            ));
+            let result = validate_play(&[rule], &svc).await;
+            assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        }
+
+        #[tokio::test]
+        async fn reject_action_with_for_each_fails_validate_play() {
+            // reject's condition already gates whether it fires; iterating
+            // it over a (possibly empty) collection adds a silent-no-op
+            // hazard with no corresponding benefit, so it is rejected
+            // outright rather than accepted. This check lives in
+            // `validate_action` (via `validate_reject_action`), reached
+            // through `validate_play` — not `validate_invariant_eligibility`
+            // — so it is exercised end-to-end here, not through
+            // `eligibility_errors`.
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vi_reject_for_each").await;
+
+            let rule = Arc::new(invariant_rule(
+                GraphEventType::NodeCreated,
+                "vi_reject_for_each",
+                None,
+                vec![],
+                vec![ParsedAction {
+                    action_type: ActionType::Reject,
+                    params: json!({ "message": "no" }),
+                    for_each: Some("{trigger.node.items}".to_string()),
+                }],
+            ));
+            let errors = validate_play(&[rule], &svc).await.unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::RejectActionHasForEach { .. })),
+                "expected RejectActionHasForEach, got {:?}",
+                errors
+            );
+        }
+
+        #[tokio::test]
+        async fn reject_action_without_for_each_passes_validate_play() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vi_reject_no_for_each").await;
+
+            let rule = Arc::new(invariant_rule(
+                GraphEventType::NodeCreated,
+                "vi_reject_no_for_each",
+                None,
+                vec![],
+                vec![reject_action("no")],
+            ));
+            let result = validate_play(&[rule], &svc).await;
+            assert!(result.is_ok(), "expected Ok, got {:?}", result);
         }
     }
 }

@@ -48,6 +48,22 @@ pub enum OpsError {
     #[error("Validation failed: {0}")]
     ValidationFailed(String),
 
+    /// A `RuleClass::Invariant` rule's `reject` action (ADR-060 §2) vetoed
+    /// this write. Modeled on `VersionConflict` above — the caller's write
+    /// did not take effect and `message` is the complete, author-supplied
+    /// explanation — so the daemon layer can give it the same kind of
+    /// structured, client-distinguishable treatment rather than folding it
+    /// into a generic `ValidationFailed` string.
+    #[error(
+        "Play rule '{rule_id}' (play {play_id}) rejected the write to node {node_id}: {message}"
+    )]
+    PlayRuleRejected {
+        node_id: String,
+        play_id: String,
+        rule_id: String,
+        message: String,
+    },
+
     #[error("Invalid parameters: {0}")]
     InvalidParams(String),
 
@@ -122,6 +138,17 @@ impl From<NodeServiceError> for OpsError {
                 "invariant rule '{}' (play {}) failed: {} — node was not created",
                 rule_name, play_id, message
             )),
+            NodeServiceError::PlayRuleRejected {
+                node_id,
+                play_id,
+                rule_id,
+                message,
+            } => OpsError::PlayRuleRejected {
+                node_id,
+                play_id,
+                rule_id,
+                message,
+            },
             NodeServiceError::CollectionNotFound(name) => OpsError::NotFound { id: name },
             NodeServiceError::InvalidUpdate(msg) => OpsError::ValidationFailed(msg),
             NodeServiceError::InvalidCollectionPath(msg) => OpsError::ValidationFailed(msg),
