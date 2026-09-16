@@ -1,0 +1,1260 @@
+{
+  "readme": "Known design-token violations, recorded so the quality gate fails only on NEW drift. Do not add entries by hand and do not re-run --update to silence a new violation: fix it instead. Regenerate only after legitimately removing violations, which shrinks this list. Entries are keyed by file, rule and message with no line number, so edits elsewhere in a file do not churn them — but renaming a file does report its violations as both added and fixed, and legitimately needs a re-record. See packages/desktop-app/stylelint.config.js.",
+  "violations": [
+    {
+      "file": "src/app.css",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/app.css",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/app.css",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/agent/pty-terminal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(222 47% 8%)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/autocomplete-modal.svelte",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/autocomplete-modal.svelte",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/autocomplete-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"modalSlideIn 0.2s ease-out\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/autocomplete-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"overlayFadeIn 0.15s ease-out\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/chat/chat-input.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/chat/chat-message.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s, border-color 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/chat/chat-message.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"color 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/chat/chat-message.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"transform 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/collaboration-locked.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#1d4ed8\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/collaboration-locked.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#2563eb\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/collaboration-locked.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#ffffff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/collaboration-view.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#fff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 4px 16px rgba(0, 0, 0, 0.2)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#166534\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#16a34a\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#2563eb\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#2563eb\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#92400e\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#dc2626\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#dc2626\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#dcfce7\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#fef3c7\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#fff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 4px 16px rgba(0, 0, 0, 0.2)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid var(--border-color, #d1d5db)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid var(--border-color, #eceef1)\" in \"border-bottom\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--border-color, #d1d5db)\" in \"border-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--surface-1, #fff)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--surface-1, #ffffff)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--surface-2, #e5e7eb)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--text-primary, #1f2937)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--text-primary, #1f2937)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--text-primary, #1f2937)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--text-secondary, #6b7280)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--text-secondary, #6b7280)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/collaboration/invitations-inbox.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--text-secondary, #6b7280)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 2px 8px rgba(0, 0, 0, 0.3)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 2px 8px rgba(0, 0, 0, 0.3)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid var(--color-warning, #f59e0b)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-surface-2, #2a2a2a)\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-muted, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-warning, #f59e0b)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"none\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/conflict-toast.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"toast-in 0.2s ease-out\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 8px 32px rgba(0, 0, 0, 0.4)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#a93226\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#c0392b\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#fff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 8px 32px rgba(0, 0, 0, 0.4)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid var(--color-border, #333)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-surface-elevated, #2a2a2a)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-surface-hover, #333)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-surface, #1e1e1e)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/delete-confirmation-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-secondary, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/dev/version-badge.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#e5a50a\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/dev/version-badge.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"rgba(127, 127, 127, 0.55)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/first-pro-consent-modal.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 4px 16px rgba(0, 0, 0, 0.2)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/first-pro-consent-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#ffffff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/first-pro-consent-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 4px 16px rgba(0, 0, 0, 0.2)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/first-pro-consent-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/first-pro-consent-slot.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 4px 16px rgba(0, 0, 0, 0.18)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/first-pro-consent-slot.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 4px 16px rgba(0, 0, 0, 0.18)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/collection-sub-panel.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"2px 0 8px rgba(0, 0, 0, 0.1)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/collection-sub-panel.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/collection-sub-panel.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/collection-sub-panel.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/collection-sub-panel.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"transform 250ms ease-out,\n      opacity 250ms ease-out\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/collection-sub-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"2px 0 8px rgba(0, 0, 0, 0.1)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/database-switcher.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      border-color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/navigation-sidebar.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/navigation-sidebar.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/navigation-sidebar.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/navigation-sidebar.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/navigation-sidebar.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/navigation-sidebar.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/navigation-sidebar.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.2s ease-out\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/navigation-sidebar.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"transform 0.15s ease-out\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/pane-manager.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/tab-system.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"all 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/tab-system.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"all 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/tab-system.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease-in-out\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/layout/tab-system.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/node-tree.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"all var(--ns-duration-fast, 0.15s) var(--ns-easing-easeInOut, ease-in-out)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/node-tree.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"margin-left var(--ns-duration-normal, 0.3s) var(--ns-easing-easeInOut, ease-in-out)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/node-tree.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"transform var(--ns-duration-fast) var(--ns-easing-easeInOut)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 12px 40px hsl(0 0% 0% / 0.15)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 12px 40px hsl(0 0% 0% / 0.15)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid hsl(142 76% 36% / 0.25)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(0 0% 0% / 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(142 76% 30%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(142 76% 36% / 0.1)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(142 76% 36% / 0.12)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(142 76% 36%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/pro-relogin-modal.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 4px 16px rgba(0, 0, 0, 0.2)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/pro-relogin-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#1d4ed8\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/pro-relogin-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#2563eb\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/pro-relogin-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#ffffff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/pro-relogin-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 4px 16px rgba(0, 0, 0, 0.2)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/pro-relogin-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/query/kanban-view.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease, border-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/query/list-view.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"color 0.15s ease, background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/query/query-editor.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/query/query-editor.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/query/query-editor.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"color 0.15s ease, border-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/query/query-editor.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/references/base-node-reference.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"all 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/references/node-ref-preview.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity var(--transition-fast, 120ms) ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background 0.15s, opacity 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"color 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"width 0.2s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid hsl(38 92% 50% / 0.2)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(142 76% 36% / 0.1)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(142 76% 36%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(142 76% 36%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(32 95% 44%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(38 92% 50% / 0.08)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(45 93% 47% / 0.1)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(45 93% 47%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/settings/model-manager.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"spin 1s linear infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/status-bar.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"width 0.2s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/subtree-access-denied-modal.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 8px 32px rgba(0, 0, 0, 0.4)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/subtree-access-denied-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 8px 32px rgba(0, 0, 0, 0.4)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/subtree-access-denied-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid var(--color-border, #333)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/subtree-access-denied-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/subtree-access-denied-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-surface-elevated, #2a2a2a)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/subtree-access-denied-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-surface-hover, #333)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/subtree-access-denied-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-surface, #1e1e1e)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/subtree-access-denied-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/subtree-access-denied-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/subtree-access-denied-modal.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-secondary, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/ui/node-autocomplete/node-autocomplete.svelte",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/ui/slash-command-dropdown/slash-command-dropdown.svelte",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/ui/slash-command-dropdown/slash-command-dropdown.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"spin 1s linear infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 6px 20px rgba(0, 0, 0, 0.28)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#fff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 6px 20px rgba(0, 0, 0, 0.28)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid var(--color-border, #333b47)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-accent, #3b82f6)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-border, #333b47)\" in \"border-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-surface-raised, #1f242c)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-muted, #9aa4b2)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-muted, #9aa4b2)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text, #e6e9ef)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/update-banner.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text, #e6e9ef)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 8px 32px hsl(0 0% 0% / 0.12)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 8px 32px hsl(0 0% 0% / 0.12)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid hsl(0 72% 51% / 0.3)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(0 72% 51% / 0.1)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(0 72% 51%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"spin 0.75s linear infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"typing-bounce 1.2s ease-in-out infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"border-color 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid hsl(0 72% 51% / 0.3)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid hsl(142 71% 45% / 0.3)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid hsl(38 92% 50% / 0.35)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(0 72% 51% / 0.1)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(0 72% 51%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(142 71% 35%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(142 71% 45% / 0.1)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(222 47% 8%)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(32 95% 44%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"hsl(38 92% 50% / 0.1)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"spin 0.7s linear infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/collection-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/collection-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/collection-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease,\n      color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/collection-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/date-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"all 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/query-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease, border-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/query-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease, color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/query-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/query-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/components/viewers/query-node-viewer.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/backlinks-panel.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/code-block-node.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Disallowed shadow \"0 4px 6px rgba(0, 0, 0, 0.1)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/code-block-node.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"0 4px 6px rgba(0, 0, 0, 0.1)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#238636\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#3fb950\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#d29922\" in \"border-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#da3633\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#da3633\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#f85149\" in \"border-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#f85149\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#f85149\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid var(--color-border, #444)\" in \"border-bottom\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid var(--color-border, #444)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid var(--color-border, #444)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid var(--color-border, #444)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"2px solid var(--color-border, #444)\" in \"border-top\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-bg-hover, #333)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-bg-hover, #333)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-bg-secondary, #1e1e1e)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-bg-secondary, #1e1e1e)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-bg-tertiary, #252525)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-bg-tertiary, #252525)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-bg-tertiary, #252525)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-bg-tertiary, #252525)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-primary, #58a6ff)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-muted, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-muted, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-muted, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-muted, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text-muted, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"var(--color-text, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"white\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"white\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"white\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/node-row.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"fill 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/node-row.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease-in-out\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/theme-provider.svelte",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"background-color 300ms cubic-bezier(0.4, 0, 0.2, 1),\n      color 300ms cubic-bezier(0.4, 0, 0.2, 1)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "at-rule-disallowed-list",
+      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"all var(--transition-fast)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"color var(--transition-fast), text-decoration-color var(--transition-fast)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-allowed-list",
+      "text": "Unauthorized transition on \"transition\": \"opacity var(--transition-fast)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#000\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#999\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid #000\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"3px solid #0891b2\" in \"border-left\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"3px solid #7c3aed\" in \"border-left\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"3px solid #dc2626\" in \"border-left\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"3px solid #ea580c\" in \"border-left\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"none\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"pulse 2s infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/styles/noderef.css",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Unauthorized animation on \"animation\": \"shimmer 1.5s infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/routes/+layout.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#1a1a1a\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/routes/+layout.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#2d1f1f\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/routes/+layout.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#888\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/routes/+layout.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#f85149\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/routes/+layout.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"#fff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/routes/+layout.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"1px solid #f85149\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    }
+  ]
+}
