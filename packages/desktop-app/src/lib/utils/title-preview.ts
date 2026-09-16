@@ -25,6 +25,16 @@ import type { Node } from '$lib/types';
  * in the same tick. No-op when `title` already matches the store's current
  * value, so an unrelated keystroke that doesn't change the interpolated
  * result never issues a redundant store write or subscriber notification.
+ *
+ * KNOWN GAP: this write has no rollback. If the real field write that
+ * triggered it (the enum/text change the template reads from) fails to
+ * persist — offline, an OCC conflict — the speculative title stays showing
+ * whatever this call last set, with nothing to revert it back once the
+ * failed field write's own resync-from-server settles. The two writes are
+ * independent `updateNode()` calls, so the field write's failure handling
+ * has no reference back to this one. Left unaddressed pending a follow-up:
+ * fixing it well needs the failure path to also recompute-and-repush (or
+ * resync) the title, not just something scoped to this function.
  */
 export function pushComputedTitle(
   nodeId: string,
