@@ -1401,8 +1401,17 @@ fn open_daemon_log(path: &Path) -> std::io::Result<std::fs::File> {
 const DAEMON_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 
 /// How many rotated generations to keep per log file (`.1` … `.3`). Older
-/// generations are deleted, bounding total on-disk log usage per stream to
-/// roughly `DAEMON_LOG_MAX_BYTES * (DAEMON_LOG_KEEP + 1)`.
+/// generations are deleted.
+///
+/// The rotated generations are therefore bounded at roughly
+/// `DAEMON_LOG_MAX_BYTES * DAEMON_LOG_KEEP`. The *live* file is not: the
+/// threshold is only ever evaluated at daemon start, so a session that stays
+/// up for weeks under launchd's `KeepAlive` can push `nodespaced.log` past the
+/// threshold by an arbitrary margin before anything checks it. That is a
+/// deliberate trade-off rather than an oversight — continuous enforcement
+/// would require the daemon to own these files, which the inherited-stdio
+/// design documented on `rotate_log_file` rules out — and it is still a strict
+/// improvement on growing without bound forever.
 const DAEMON_LOG_KEEP: u32 = 3;
 
 /// Roll `path` to `path.1` if it has grown past `DAEMON_LOG_MAX_BYTES`,
@@ -1455,10 +1464,11 @@ fn rotate_log_file(path: &Path) {
 
     // Drop the oldest generation, then shift the rest down: .2 -> .3, .1 -> .2.
     // Walking downwards keeps each destination free before it is written to.
-    if let Err(e) = std::fs::remove_file(generation(DAEMON_LOG_KEEP)) {
+    let oldest = generation(DAEMON_LOG_KEEP);
+    if let Err(e) = std::fs::remove_file(&oldest) {
         if e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!(
-                path = %generation(DAEMON_LOG_KEEP).display(),
+                path = %oldest.display(),
                 error = %e,
                 "Could not remove oldest rotated daemon log"
             );
