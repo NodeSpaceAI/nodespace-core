@@ -166,20 +166,27 @@
 {/if}
 
 <style>
+  /*
+    Surface palette is deliberately a fixed dark console (#1e1e1e/#252525/#333
+    surfaces, #e0e0e0/#888 text, #444 borders) in BOTH themes, matching the
+    monospace developer-tool affordance — it is not theme-tracking chrome, so it
+    does not use --background/--foreground. Status colors below DO use the
+    semantic tokens, which stay legible against this dark surface in either theme.
+  */
   .diagnostic-panel {
     position: fixed;
     bottom: 0;
     left: 0;
     right: 0;
     height: 50vh;
-    background: var(--color-bg-secondary, #1e1e1e);
-    border-top: 2px solid var(--color-border, #444);
+    background: #1e1e1e;
+    border-top: 2px solid #444;
     z-index: 10000;
     display: flex;
     flex-direction: column;
     font-family: monospace;
     font-size: 12px;
-    color: var(--color-text, #e0e0e0);
+    color: #e0e0e0;
   }
 
   .panel-header {
@@ -187,8 +194,8 @@
     justify-content: space-between;
     align-items: center;
     padding: 8px 12px;
-    background: var(--color-bg-tertiary, #252525);
-    border-bottom: 1px solid var(--color-border, #444);
+    background: #252525;
+    border-bottom: 1px solid #444;
   }
 
   .panel-header h2 {
@@ -204,26 +211,32 @@
   }
 
   .shortcut-hint {
-    color: var(--color-text-muted, #888);
+    color: #888;
     font-size: 11px;
   }
 
   .close-button {
     background: transparent;
-    border: 1px solid var(--color-border, #444);
-    color: var(--color-text, #e0e0e0);
+    border: 1px solid #444;
+    color: #e0e0e0;
     padding: 4px 8px;
     cursor: pointer;
     border-radius: 4px;
   }
 
   .close-button:hover {
-    background: var(--color-bg-hover, #333);
+    background: #333;
   }
 
+  /*
+    Tinted for the same reason as the .status badges: white on a solid
+    --destructive fill is 4.57:1 in light but only 2.86:1 in dark, and the
+    inverse foreground fails in light — no single solid pairing works for both.
+  */
   .init-error-banner {
-    background: #da3633;
-    color: white;
+    background: hsl(var(--destructive) / 0.2);
+    color: hsl(var(--destructive));
+    border-left: 3px solid hsl(var(--destructive));
     padding: 12px 16px;
     margin: 0;
     font-weight: 500;
@@ -255,15 +268,15 @@
 
   .toolbar button {
     padding: 4px 12px;
-    background: var(--color-bg-tertiary, #252525);
-    border: 1px solid var(--color-border, #444);
-    color: var(--color-text, #e0e0e0);
+    background: #252525;
+    border: 1px solid #444;
+    color: #e0e0e0;
     border-radius: 4px;
     cursor: pointer;
   }
 
   .toolbar button:hover:not(:disabled) {
-    background: var(--color-bg-hover, #333);
+    background: #333;
   }
 
   .toolbar button:disabled {
@@ -275,24 +288,24 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    color: var(--color-text-muted, #888);
+    color: #888;
   }
 
   .stats-bar {
     display: flex;
     gap: 16px;
     padding: 8px 12px;
-    background: var(--color-bg-tertiary, #252525);
+    background: #252525;
     border-radius: 4px;
     margin-bottom: 12px;
   }
 
   .stats-bar .success {
-    color: #3fb950;
+    color: hsl(var(--success));
   }
 
   .stats-bar .error {
-    color: #f85149;
+    color: hsl(var(--destructive));
   }
 
   .log-list {
@@ -302,18 +315,18 @@
   }
 
   .log-entry {
-    background: var(--color-bg-tertiary, #252525);
-    border: 1px solid var(--color-border, #444);
+    background: #252525;
+    border: 1px solid #444;
     border-radius: 4px;
     padding: 8px;
   }
 
   .log-entry.error {
-    border-color: #f85149;
+    border-color: hsl(var(--destructive));
   }
 
   .log-entry.pending {
-    border-color: #d29922;
+    border-color: hsl(var(--warning));
   }
 
   .entry-header {
@@ -325,7 +338,7 @@
 
   .method {
     font-weight: 600;
-    color: var(--color-primary, #58a6ff);
+    color: hsl(var(--primary));
   }
 
   .status {
@@ -335,22 +348,28 @@
     text-transform: uppercase;
   }
 
+  /*
+    Badges tint the background and use the state color as text, rather than white
+    on a solid fill: --success-foreground/--destructive-foreground are white in
+    both themes, which lands at ~2.5-2.8:1 on the solid mid-tone fills. Tinting
+    keeps the state legible against this dark console surface in either theme.
+  */
   .status.success {
-    background: #238636;
-    color: white;
+    background: hsl(var(--success) / 0.2);
+    color: hsl(var(--success));
   }
 
   .status.error {
-    background: #da3633;
-    color: white;
+    background: hsl(var(--destructive) / 0.2);
+    color: hsl(var(--destructive));
   }
 
   .duration {
-    color: var(--color-text-muted, #888);
+    color: #888;
   }
 
   .timestamp {
-    color: var(--color-text-muted, #888);
+    color: #888;
     margin-left: auto;
   }
 
@@ -360,7 +379,7 @@
 
   .entry-details code {
     display: block;
-    background: var(--color-bg-secondary, #1e1e1e);
+    background: #1e1e1e;
     padding: 4px 8px;
     border-radius: 3px;
     overflow-x: auto;
@@ -377,11 +396,11 @@
   }
 
   .error-msg {
-    color: #f85149;
+    color: hsl(var(--destructive));
   }
 
   .empty-message {
-    color: var(--color-text-muted, #888);
+    color: #888;
     text-align: center;
     padding: 20px;
   }
