@@ -1506,13 +1506,6 @@
     --font-size: 1rem;
     --line-height: 1.6;
     /* Note: --icon-vertical-position is defined globally in app.css */
-
-    /* NodeSpace Extension Colors - Subtle Tint System (Scheme 3) */
-    --node-text: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
-    --node-task: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
-    --node-ai-chat: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
-    --node-entity: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
-    --node-query: 200 40% 45%; /* Blue-gray for all nodes (Scheme 3) */
   }
 
   .node-container {

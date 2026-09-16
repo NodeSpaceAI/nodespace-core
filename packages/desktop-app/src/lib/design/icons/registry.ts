@@ -74,7 +74,7 @@ class IconRegistry {
     this.register('text', {
       component: CircleIcon,
       semanticClass: 'node-icon',
-      colorVar: 'currentColor',
+      colorVar: 'hsl(var(--node-text))',
       hasState: false,
       hasRingEffect: true
     });
@@ -83,7 +83,7 @@ class IconRegistry {
     this.register('header', {
       component: CircleIcon,
       semanticClass: 'node-icon',
-      colorVar: 'currentColor',
+      colorVar: 'hsl(var(--node-text))',
       hasState: false,
       hasRingEffect: true
     });
@@ -92,7 +92,7 @@ class IconRegistry {
     this.register('document', {
       component: CircleIcon,
       semanticClass: 'node-icon',
-      colorVar: 'currentColor',
+      colorVar: 'hsl(var(--node-document))',
       hasState: false,
       hasRingEffect: true
     });
@@ -101,7 +101,7 @@ class IconRegistry {
     this.register('task', {
       component: TaskIcon,
       semanticClass: 'task-icon',
-      colorVar: 'hsl(var(--node-task, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-task))',
       hasState: true,
       hasRingEffect: true // Tasks show ring effects when they have children
     });
@@ -112,7 +112,7 @@ class IconRegistry {
     this.register('project', {
       component: CircleIcon,
       semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-project, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-project))',
       hasState: false,
       hasRingEffect: true // Projects contain child tasks/notes
     });
@@ -121,7 +121,7 @@ class IconRegistry {
     this.register('ai-chat', {
       component: AIIcon,
       semanticClass: 'ai-icon',
-      colorVar: 'hsl(var(--node-ai-chat, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-ai-chat))',
       hasState: false,
       hasRingEffect: false
     });
@@ -130,7 +130,7 @@ class IconRegistry {
     this.register('user', {
       component: CircleIcon,
       semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-text, 200 40% 45%))', // Blue-gray (Scheme 3)
+      colorVar: 'hsl(var(--node-user))',
       hasState: false,
       hasRingEffect: true
     });
@@ -139,7 +139,7 @@ class IconRegistry {
     this.register('entity', {
       component: CircleIcon,
       semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-entity, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-entity))',
       hasState: false,
       hasRingEffect: true
     });
@@ -148,7 +148,7 @@ class IconRegistry {
     this.register('query', {
       component: QueryIcon,
       semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-query, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-query))',
       hasState: false,
       hasRingEffect: false // Query nodes are leaf nodes (no children)
     });
@@ -157,7 +157,7 @@ class IconRegistry {
     this.register('code-block', {
       component: CodeBlockIcon,
       semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-text, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-text))',
       hasState: false,
       hasRingEffect: false // Code blocks are leaf nodes (no children)
     });
@@ -166,7 +166,7 @@ class IconRegistry {
     this.register('quote-block', {
       component: QuoteBlockIcon,
       semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-text, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-text))',
       hasState: false,
       hasRingEffect: true // Quote blocks can have children
     });
@@ -175,7 +175,7 @@ class IconRegistry {
     this.register('ordered-list', {
       component: OrderedListIcon,
       semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-text, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-text))',
       hasState: false,
       hasRingEffect: false // Ordered lists are leaf nodes (no children)
     });
@@ -184,7 +184,7 @@ class IconRegistry {
     this.register('horizontal-line', {
       component: HorizontalLineIcon,
       semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-text, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-text))',
       hasState: false,
       hasRingEffect: false
     });
@@ -193,7 +193,7 @@ class IconRegistry {
     this.register('table', {
       component: TableIcon,
       semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-text, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-text))',
       hasState: false,
       hasRingEffect: false
     });
@@ -203,7 +203,7 @@ class IconRegistry {
     this.register('checkbox', {
       component: CheckboxIcon,
       semanticClass: 'task-icon',
-      colorVar: 'hsl(var(--node-task, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-task))',
       hasState: true,
       hasRingEffect: true
     });
@@ -212,7 +212,7 @@ class IconRegistry {
     this.register('date', {
       component: CircleIcon,
       semanticClass: 'node-icon',
-      colorVar: 'hsl(var(--node-date, 200 40% 45%))',
+      colorVar: 'hsl(var(--node-date))',
       hasState: false,
       hasRingEffect: true // Dates can have children (journal entries, notes, etc.)
     });

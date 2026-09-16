@@ -659,26 +659,6 @@
     {
       "file": "src/lib/styles/noderef.css",
       "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"3px solid #0891b2\" in \"border-left\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"3px solid #7c3aed\" in \"border-left\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"3px solid #dc2626\" in \"border-left\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"3px solid #ea580c\" in \"border-left\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-disallowed-list",
       "text": "Unauthorized animation on \"animation\": \"none\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
     },
     {

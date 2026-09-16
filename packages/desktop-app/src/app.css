@@ -567,28 +567,26 @@
   font-weight: 600;
 }
 
-/* NodeSpace Extensions - node type colors (all map to primary) */
+/* NodeSpace Extensions - node type colors.
+ *
+ * This block is the ONLY place --node-* variables may be defined. Every node
+ * type deliberately shares the single --primary accent so the node list stays
+ * visually quiet; deriving from --primary rather than repeating its literal
+ * value means light/dark switching is automatic and the two cannot drift apart.
+ * Do not give a node type its own color, and do not redefine these elsewhere.
+ */
 :root {
-  --node-text: 174 67% 35%;
-  --node-task: 174 67% 35%;
-  --node-ai-chat: 174 67% 35%;
-  --node-entity: 174 67% 35%;
-  --node-query: 174 67% 35%;
-  --node-user: 174 67% 35%;
-  --node-date: 174 67% 35%;
-  --node-document: 174 67% 35%;
+  --node-default: var(--primary);
+  --node-text: var(--primary);
+  --node-task: var(--primary);
+  --node-ai-chat: var(--primary);
+  --node-entity: var(--primary);
+  --node-query: var(--primary);
+  --node-project: var(--primary);
+  --node-user: var(--primary);
+  --node-date: var(--primary);
+  --node-document: var(--primary);
   --processing-opacity: 0.7;
-}
-
-.dark {
-  --node-text: 173 50% 41%;
-  --node-task: 173 50% 41%;
-  --node-ai-chat: 173 50% 41%;
-  --node-entity: 173 50% 41%;
-  --node-query: 173 50% 41%;
-  --node-user: 173 50% 41%;
-  --node-date: 173 50% 41%;
-  --node-document: 173 50% 41%;
 }
 
 /* =============================================================================

@@ -29,16 +29,13 @@
 >
   {#if hasChildren}
     <!-- Parent node with ring effect: 16px background ring + 11px inner circle -->
-    <!-- Background ring: consistent blue-gray color for all parent nodes -->
-    <circle cx="8" cy="8" r="8" fill="hsl(200 40% 45%)" opacity="0.3" />
-    <!-- Inner circle: consistent blue-gray color -->
-    <circle cx="8" cy="8" r="5.5" fill="hsl(200 40% 45%)" />
+    <circle cx="8" cy="8" r="8" fill={color} opacity="0.3" />
+    <circle cx="8" cy="8" r="5.5" fill={color} />
   {:else}
     <!-- Simple child/leaf node: single filled circle -->
     <!-- Transparent background ring maintains consistent sizing -->
-    <circle cx="8" cy="8" r="8" fill="hsl(200 40% 45%)" opacity="0" />
-    <!-- Main circle: consistent blue-gray color -->
-    <circle cx="8" cy="8" r="5.5" fill="hsl(200 40% 45%)" />
+    <circle cx="8" cy="8" r="8" fill={color} opacity="0" />
+    <circle cx="8" cy="8" r="5.5" fill={color} />
   {/if}
 </svg>
 
