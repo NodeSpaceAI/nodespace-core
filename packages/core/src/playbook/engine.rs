@@ -141,6 +141,42 @@ impl PlaybookEngine {
         result
     }
 
+    /// Log each error from a failed `validate_play` call as a `playbook_log`
+    /// node, shared by `load_active_plays`/`handle_play_created`/
+    /// `handle_play_updated` (all three re-run the same save-time validation
+    /// and need identical error-reporting behavior).
+    ///
+    /// `error_fingerprint`'s dedup key deliberately excludes the error
+    /// message, so two errors that share a fingerprint collapse into one log
+    /// node (`occurrences` incremented, the second error's own text
+    /// discarded). Each `PlayValidationError`'s own `(location, kind)` —
+    /// e.g. `"rule[1].action[0]:reject_action_on_reactive_rule"` — is passed
+    /// as the fingerprint identity here instead of a constant placeholder,
+    /// so two structurally different errors on the same play (a
+    /// reject-on-Reactive-rule problem on one rule and a missing-message
+    /// problem on another, say) produce two distinct fingerprints/log nodes
+    /// rather than one that silently loses the second error.
+    async fn log_validation_errors(
+        &self,
+        play_id: &str,
+        errors: &[crate::playbook::validation::PlayValidationError],
+    ) {
+        for err in errors {
+            warn!("  Validation error: {}", err);
+            let error_identity = format!("{}:{}", err.location(), err.kind());
+            let _ = create_or_update_log_node(
+                &self.node_service,
+                play_id,
+                &error_identity,
+                0,
+                PlayErrorType::CompileError,
+                &err.to_string(),
+                "n/a",
+            )
+            .await;
+        }
+    }
+
     /// Load all active play nodes from the database and activate them.
     ///
     /// Phase 7: save-time validation (belt-and-suspenders — primary gate is
@@ -181,19 +217,7 @@ impl PlaybookEngine {
                     node.id,
                     errors.len()
                 );
-                for err in &errors {
-                    warn!("  Validation error: {}", err);
-                    let _ = create_or_update_log_node(
-                        &self.node_service,
-                        &node.id,
-                        "validation",
-                        0,
-                        PlayErrorType::CompileError,
-                        &err.to_string(),
-                        "n/a",
-                    )
-                    .await;
-                }
+                self.log_validation_errors(&node.id, &errors).await;
                 continue;
             }
 
@@ -547,19 +571,7 @@ impl PlaybookEngine {
                         node_id,
                         errors.len()
                     );
-                    for err in &errors {
-                        warn!("  Validation error: {}", err);
-                        let _ = create_or_update_log_node(
-                            &self.node_service,
-                            node_id,
-                            "validation",
-                            0,
-                            PlayErrorType::CompileError,
-                            &err.to_string(),
-                            "n/a",
-                        )
-                        .await;
-                    }
+                    self.log_validation_errors(node_id, &errors).await;
                     // Disable the play — do not activate
                     let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
                     lifecycle.disable_play(node_id);
@@ -690,19 +702,7 @@ impl PlaybookEngine {
                         node_id,
                         errors.len()
                     );
-                    for err in &errors {
-                        warn!("  Validation error: {}", err);
-                        let _ = create_or_update_log_node(
-                            &self.node_service,
-                            node_id,
-                            "validation",
-                            0,
-                            PlayErrorType::CompileError,
-                            &err.to_string(),
-                            "n/a",
-                        )
-                        .await;
-                    }
+                    self.log_validation_errors(node_id, &errors).await;
                     let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
                     lifecycle.disable_play(node_id);
                     return;

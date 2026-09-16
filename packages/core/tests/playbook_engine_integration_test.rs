@@ -582,3 +582,156 @@ async fn cron_runner_ticks_and_fires_a_scheduled_play() -> Result<()> {
     shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }
+
+/// Regression test for a log-node fingerprint collision in the validation-
+/// error logging path shared by `load_active_plays`/`handle_play_created`/
+/// `handle_play_updated`: it used to pass a constant `rule_name="validation"`
+/// and `error_location_index=0` into `create_or_update_log_node` for every
+/// error on a play, so `error_fingerprint` (which deliberately excludes the
+/// error message from its hash) collapsed any two validation errors on the
+/// SAME play onto the SAME fingerprint — the second error's text was
+/// silently discarded and the surviving log node's `occurrences` count
+/// misleadingly implied a repeat of one issue rather than two distinct ones.
+///
+/// This play has two rules with two structurally DIFFERENT validation
+/// errors: a `reject` action declared on a (default) `Reactive` rule
+/// (`RejectActionOnReactiveRule`), and a second rule whose action references
+/// a schema type that does not exist (`UnknownNodeType`). Both errors surface
+/// through `load_active_plays` (`PlaybookEngine::start()`'s startup load) —
+/// not `handle_play_created`, because `NodeService::create_node`'s own
+/// primary validation gate would refuse to persist a play this invalid in
+/// the first place (`validate_play_rules` runs there too, ahead of the
+/// engine's belt-and-suspenders re-validation). Exactly like
+/// `reject_on_reactive_rule_bypassing_save_time_validation_is_not_activated_at_load`
+/// in `playbook_invariant_integration_test.rs`, this test writes the invalid
+/// play directly through the store, bypassing that gate, to reach the real
+/// production scenario `load_active_plays`'s re-validation guards against: a
+/// play that reached the DB without going through this build's create/update
+/// validation (a replicated write from another device, or one written before
+/// a check existed). With the fix, each error's own `(location, kind)` is
+/// folded into the fingerprint, so both must surface as separate
+/// `playbook_log` nodes with their own distinct message text — not one node
+/// with `occurrences: 2`.
+#[tokio::test]
+async fn distinct_validation_errors_on_the_same_play_produce_separate_log_nodes() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("test.db");
+    let mut store = Arc::new(SqliteStore::new(db_path).await?);
+    let service = Arc::new(NodeService::new(&mut store).await?);
+
+    create_schema(
+        &service,
+        "pb_log_dedup_task",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let invalid_play = Node::new(
+        "play".to_string(),
+        "two-distinct-validation-errors".to_string(),
+        json!({ "rules": [
+            {
+                "name": "reject-on-reactive",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pb_log_dedup_task" },
+                "conditions": ["node.status == 'blocked'"],
+                "actions": [{
+                    "action_type": "reject",
+                    "params": { "message": "blocked tasks may not be created" }
+                }]
+            },
+            {
+                "name": "create-unknown-type",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pb_log_dedup_task" },
+                "conditions": [],
+                "actions": [{
+                    "action_type": "create_node",
+                    "params": {
+                        "node_type": "pb_log_dedup_nonexistent_type",
+                        "content": "x",
+                        "properties": {}
+                    }
+                }]
+            }
+        ] }),
+    );
+    let play_id = invalid_play.id.clone();
+
+    // Bypasses NodeService::create_node's validate_play_rules gate entirely
+    // — the point of this test (see the doc comment above).
+    store.create_node(invalid_play, None, None).await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    // Both errors are logged as `playbook_log` nodes for the SAME play_id —
+    // this is exactly the case that used to collide onto one fingerprint.
+    let got_both = wait_until(|| {
+        let service = Arc::clone(&service);
+        async move {
+            let logs = service
+                .query_nodes_by_type("playbook_log", Some("active"))
+                .await
+                .unwrap_or_default();
+            logs.len() >= 2
+        }
+    })
+    .await;
+    assert!(
+        got_both,
+        "expected two distinct playbook_log nodes for the two structurally \
+         different validation errors on this play"
+    );
+
+    let logs = service
+        .query_nodes_by_type("playbook_log", Some("active"))
+        .await?;
+    let logs_for_play: Vec<_> = logs
+        .iter()
+        .filter(|n| {
+            n.properties
+                .get("playbook_log")
+                .and_then(|ns| ns.get("play_id"))
+                .and_then(|v| v.as_str())
+                == Some(play_id.as_str())
+        })
+        .collect();
+
+    assert_eq!(
+        logs_for_play.len(),
+        2,
+        "two structurally different validation errors on the same play must \
+         produce two separate log nodes (fingerprint collision would collapse \
+         them into one with occurrences: 2), got: {:?}",
+        logs_for_play.iter().map(|n| &n.content).collect::<Vec<_>>()
+    );
+
+    let reject_log = logs_for_play
+        .iter()
+        .find(|n| n.content.contains("reject action"))
+        .expect("one log node must be the RejectActionOnReactiveRule error");
+    let unknown_type_log = logs_for_play
+        .iter()
+        .find(|n| n.content.contains("pb_log_dedup_nonexistent_type"))
+        .expect("the other log node must be the UnknownNodeType error");
+
+    assert_ne!(
+        reject_log.id, unknown_type_log.id,
+        "the two errors must be two distinct nodes, not the same node matched twice"
+    );
+
+    for log in [reject_log, unknown_type_log] {
+        let occurrences = log
+            .properties
+            .get("playbook_log")
+            .and_then(|ns| ns.get("occurrences"))
+            .and_then(|v| v.as_u64());
+        assert_eq!(
+            occurrences,
+            Some(1),
+            "each distinct error must be its own fresh log node (occurrences: 1), \
+             not a dedup-incremented repeat of the other's fingerprint"
+        );
+    }
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
