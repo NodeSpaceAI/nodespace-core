@@ -2691,6 +2691,22 @@ export class SharedNodeStore {
           // duplicating.) Every failure this write can produce, OCC
           // conflicts included, surfaces through the generic notification
           // below — confirmed by test, not just this comment.
+          //
+          // PlayRuleRejected audit: this closure DOES call
+          // `backendAdapter.updateNode` (for an already-persisted node) and
+          // `backendAdapter.createNode` (for a new one), so a PlayRuleRejected
+          // error is structurally reachable here — same as OCC. Deliberately
+          // NOT given its own branch, for the identical reason OCC isn't: the
+          // closure's own `catch (dbError)` re-wraps whatever it re-throws
+          // via `dbError instanceof Error ? dbError : new Error(String(dbError))`,
+          // stripping `.code`/`.conflictData` before it ever reaches here, so
+          // there would be nothing left to branch on even if this were
+          // special-cased. Fixing that would mean restructuring this
+          // closure's own catch (mirroring `updateNode()`'s/`updateTaskNode()`'s),
+          // which is a larger, separately-scoped change than this generic
+          // fallback warrants — a PlayRuleRejected failure through this path
+          // still surfaces visibly, just with the generic write-failure text
+          // rather than the rule's own message.
           conflictNotifications.add({
             nodeId,
             message: CONFLICT_MESSAGE['write-failure'],
@@ -2962,6 +2978,17 @@ export class SharedNodeStore {
           // surfaced to the user either way) would mean the node stays
           // gone locally while the deletion never actually reaches the
           // server.
+          //
+          // PlayRuleRejected audit: this closure's only backend call is
+          // `backendAdapter.deleteNode` (above). A synchronous invariant
+          // rule's `reject` action only ever fires from `create_node`'s and
+          // `update_node`'s write paths (see `dispatch_invariant_rules_in_tx`/
+          // `dispatch_invariant_rules_for_update_in_tx`, the only two
+          // callers) — `delete_node` never runs that dispatch, so a
+          // PlayRuleRejected error is structurally unreachable here. No
+          // branch needed; this generic write-failure fallback (and the
+          // SUBTREE_ACCESS_DENIED branch above it) already cover every
+          // failure this closure can actually produce.
           conflictNotifications.add({
             nodeId,
             message: CONFLICT_MESSAGE['write-failure'],
@@ -3168,6 +3195,17 @@ export class SharedNodeStore {
         } catch (dbError) {
           const error = dbError instanceof Error ? dbError : new Error(String(dbError));
           const occError = isVersionConflict(dbError) ? dbError : null;
+          // Check if this is a PLAY_RULE_REJECTED error (ADR-060 §2 invariant
+          // reject action) — see `updateNode()`'s sibling catch handler for
+          // why this needs no server-side hydration. Note: the backend's
+          // synchronous invariant dispatch (`dispatch_invariant_rules_for_update_in_tx`)
+          // is currently only wired into the generic `update_node` write
+          // path, not `update_task_node`'s dedicated store-layer path — so
+          // this branch is not reachable through a real daemon today. It is
+          // added anyway, matching `updateNode()`'s handling, so this method
+          // degrades correctly the moment that backend wiring lands, and so
+          // the type stays handled defensively regardless of transport.
+          const playRuleRejectedError = isPlayRuleRejected(dbError) ? dbError : null;
 
           // Suppress expected errors in in-memory test mode
           if (shouldLogDatabaseErrors()) {
@@ -3273,6 +3311,26 @@ export class SharedNodeStore {
               nodeId,
               message: CONFLICT_MESSAGE['version-mismatch'],
               conflictType: 'version-mismatch'
+            });
+            occConflictAlreadyNotified = true;
+          } else if (playRuleRejectedError) {
+            // A synchronous invariant rule vetoed this task-field write.
+            // Same reasoning as `updateNode()`'s sibling branch: nothing
+            // changed server-side, so no resync/hydration is needed — only
+            // the rejecting rule's own message needs surfacing. This method
+            // has no `rollbackUpdate()`-equivalent bookkeeping to unwind (see
+            // the comment above `nodeAfterFailure`), so the notification is
+            // the entire recovery here, same as this method's non-OCC
+            // fallback below would otherwise provide, just with the rule's
+            // own message instead of the generic one.
+            log.warn(
+              `Play rule rejected update for task node ${nodeId}: ` +
+                playRuleRejectedError.conflictData.message
+            );
+            conflictNotifications.add({
+              nodeId,
+              message: playRuleRejectedError.conflictData.message,
+              conflictType: 'play-rule-rejected'
             });
             occConflictAlreadyNotified = true;
           }
@@ -4630,6 +4688,19 @@ export class SharedNodeStore {
     // silently swallowed the way it is at those other call sites (where it's
     // already been handled internally): every non-cancellation failure,
     // including OCC, falls through to the write-failure notification below.
+    //
+    // PlayRuleRejected audit: the closure above calls both
+    // `backendAdapter.updateNode` and `backendAdapter.createNode`, so a
+    // PlayRuleRejected error is structurally reachable here — same as OCC,
+    // and deliberately given the same generic treatment for the same reason:
+    // its own `catch (dbError)` re-wraps whatever it re-throws via
+    // `dbError instanceof Error ? dbError : new Error(String(dbError))`
+    // before it gets here, stripping `.code`/`.conflictData`, so there is
+    // nothing left to branch on without restructuring this closure's catch
+    // the way `updateNode()`'s/`updateTaskNode()`'s already are — a
+    // PlayRuleRejected failure through this path still surfaces visibly,
+    // just with the generic write-failure text rather than the rule's own
+    // message.
     handle.promise.catch((err) => {
       if (err instanceof OperationCancelledError) {
         // Operation was cancelled by a newer operation - this is expected
