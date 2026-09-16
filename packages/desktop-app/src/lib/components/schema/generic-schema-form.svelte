@@ -30,6 +30,8 @@
 <script lang="ts">
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
   import { resolveFieldValue, buildFieldWrite } from '$lib/components/schema/schema-field-resolution';
+  import { evaluateTitleTemplate } from '$lib/utils/title-template';
+  import { pushComputedTitle } from '$lib/utils/title-preview';
   import type { SchemaNode, SchemaField } from '$lib/types/schema-node';
   import type { Node } from '$lib/types';
   import { labelForField } from '$lib/utils/schema-field-label';
@@ -75,6 +77,41 @@
       { properties: buildFieldWrite(node, fieldName, value) },
       { type: 'viewer', viewerId: 'generic-schema-form' }
     );
+    updateTitlePreview(fieldName, value);
+  }
+
+  /**
+   * Per ADR-077: for a title_template-bearing schema, the editing client
+   * computes its own title instantly from in-progress field values — no
+   * dependency on the backend round trip or a `NodeUpdated` echo. Pushed via
+   * `pushComputedTitle` (isComputedField — skips persistence/OCC entirely, a
+   * pure, synchronous local UI echo), so every reader of the store (header,
+   * tab, inline row) reflects it immediately, not just this form's own
+   * fields. No-op for a schema with no `titleTemplate` (the overwhelming
+   * majority of schemas today).
+   *
+   * Passes `schema.fields` through to `evaluateTitleTemplate` so an enum
+   * field referenced by the template resolves to its label — matching
+   * `compute_title()`'s actual backend behavior (`interpolate_title_template
+   * _with_schema`), which does the same enum resolution. Skipping this would
+   * show the raw stored value (e.g. "p1") in the instant preview while the
+   * backend's own persisted title shows the label ("P1 - Critical") once its
+   * round trip lands — a visible flash from one to the other.
+   *
+   * `fieldName`/`value` are this call's OWN edit, read fresh off the event
+   * rather than through `getFieldValue` (which would still see the
+   * pre-write store value) — every OTHER field's value comes from the
+   * current store snapshot via `getFieldValue`.
+   */
+  function updateTitlePreview(fieldName: string, value: unknown) {
+    if (!node || !schema.titleTemplate) return;
+    const fieldValues: Record<string, unknown> = { [fieldName]: value };
+    for (const field of schema.fields) {
+      if (field.name === fieldName) continue;
+      fieldValues[field.name] = getFieldValue(field.name);
+    }
+    const title = evaluateTitleTemplate(schema.titleTemplate, fieldValues, schema.fields);
+    pushComputedTitle(nodeId, node, title, 'generic-schema-form');
   }
 </script>
 

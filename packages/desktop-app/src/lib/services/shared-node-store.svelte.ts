@@ -1611,11 +1611,20 @@ export class SharedNodeStore {
       this.nodesSet(nodeId, updatedNode);
       this.versions.set(nodeId, update.version!);
 
-      // Track pending update for potential rollback
-      if (!this.pendingUpdates.has(nodeId)) {
-        this.pendingUpdates.set(nodeId, []);
+      // Track pending update for potential rollback — but NOT for a
+      // computed-field write (e.g. `pushComputedTitle`'s title preview):
+      // `determinePersistenceBehavior` short-circuits skipPersistence writes
+      // (Priority 2, above the real persist block below), so this entry
+      // would never reach the success/failure cleanup that removes it —
+      // fired on every keystroke, that's an unbounded leak, not a rollback
+      // candidate. Every other skipPersistence write is comparatively rare
+      // (initial placeholders, database-sourced sets), so it's left as-is.
+      if (!options.isComputedField) {
+        if (!this.pendingUpdates.has(nodeId)) {
+          this.pendingUpdates.set(nodeId, []);
+        }
+        this.pendingUpdates.get(nodeId)!.push(update);
       }
-      this.pendingUpdates.get(nodeId)!.push(update);
 
       // Notify subscribers
       this.notifySubscribers(nodeId, updatedNode, source);

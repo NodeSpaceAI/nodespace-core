@@ -376,10 +376,12 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
     // Exercise the REAL sharedNodeStore (not the spy the rest of this file
     // uses) so this test proves the actual store-mediated round trip, not
     // just that the component calls the right method name. Only the network
-    // boundary (backendAdapter.updateNode) is stubbed, standing in for a
-    // backend that correctly recomputes the title from title_template —
-    // exactly what the issue's own root-cause analysis says is not in
-    // question.
+    // boundary (backendAdapter.updateNode) is stubbed — and deliberately
+    // returns NO `title` field at all, matching the real daemon's
+    // previously-broken wire contract, which never sent one. The title must
+    // still resolve correctly without it: per ADR-077 the editing client
+    // computes its own title locally (see the "client-side title preview"
+    // block below) rather than depending on this response.
     (sharedNodeStore.updateNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
     (sharedNodeStore.getNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
 
@@ -393,12 +395,18 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
       const patched = (update as { properties?: { person?: Record<string, unknown> } })
         .properties?.person;
       const merged = { first_name: '', last_name: '', email: '', ...patched };
+      // Deliberately omit `title` from the response — `...seeded` would
+      // otherwise leak `seeded.title` ("Untitled") back in, which is exactly
+      // the stale-response-fighting-the-preview failure mode this test
+      // exists to rule out. The real daemon previously never sent a
+      // `title` at all; the fixed daemon's own title (once it lands) must
+      // AGREE with, not fight, the value the client already computed below.
+      const { title: _seededTitle, ...seededWithoutTitle } = seeded;
       return {
-        ...seeded,
+        ...seededWithoutTitle,
         id,
         version: (version as number) + 1,
-        properties: { person: merged },
-        title: `${merged.first_name} ${merged.last_name}`.trim() || 'Untitled'
+        properties: { person: merged }
       } as Node;
     });
 
@@ -406,11 +414,92 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
 
     const firstName = screen.getByLabelText('First name') as HTMLInputElement;
     const lastName = screen.getByLabelText('Last name') as HTMLInputElement;
+    await fireEvent.input(firstName, { target: { value: 'Jane' } });
     await fireEvent.blur(firstName, { target: { value: 'Jane' } });
+    await fireEvent.input(lastName, { target: { value: 'Doe' } });
     await fireEvent.blur(lastName, { target: { value: 'Doe' } });
 
     await waitFor(() => expect(sharedNodeStore.getNode('person-1')?.title).toBe('Jane Doe'));
     // No manual reload/re-fetch performed above — the assertion above already
     // covers "no reload required".
+  });
+});
+
+/**
+ * Client-side reactive title preview (ADR-077).
+ *
+ * Per the ADR, the editing client computes its own title INSTANTLY from
+ * in-progress field values — via `evaluateTitleTemplate`, wired to the
+ * first/last name inputs' `oninput` — with no dependency on a completed
+ * round trip or a `NodeUpdated` echo. The backend still independently
+ * computes and persists the authoritative title on save (unchanged), but
+ * this form's own UI (and every other reader of the store: header, tab,
+ * inline row) must never need to wait for that response.
+ */
+describe('PersonSchemaForm — client-side title preview (ADR-077)', () => {
+  it('computes and displays the title as the user types, before any blur and with the backend write never resolving', async () => {
+    (sharedNodeStore.updateNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+    (sharedNodeStore.getNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+
+    const seeded = personNode({
+      title: '',
+      properties: { person: { first_name: '', last_name: '', email: '' } }
+    });
+    sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
+
+    // Never resolves — proves the preview does not wait on this at all.
+    vi.spyOn(backendAdapter, 'updateNode').mockImplementation(() => new Promise(() => {}));
+
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    const firstName = screen.getByLabelText('First name') as HTMLInputElement;
+    const lastName = screen.getByLabelText('Last name') as HTMLInputElement;
+
+    await fireEvent.input(firstName, { target: { value: 'Jane' } });
+    expect(sharedNodeStore.getNode('person-1')?.title).toBe('Jane');
+
+    await fireEvent.input(lastName, { target: { value: 'Doe' } });
+    expect(sharedNodeStore.getNode('person-1')?.title).toBe('Jane Doe');
+
+    // No blur fired at all above — no persisted write, and no RPC response,
+    // was needed for the title preview to be correct.
+  });
+
+  it('a server-provided title from a normal fetch/first-load is displayed correctly and untouched by merely mounting the form', async () => {
+    // ADR-077 point 6 / regression check: a server-provided title on a
+    // normal read must never be ignored or clobbered.
+    (sharedNodeStore.updateNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+    (sharedNodeStore.getNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+
+    const seeded = personNode({
+      title: 'Server Computed Title',
+      properties: { person: { first_name: 'Server', last_name: 'Computed', email: '' } }
+    });
+    sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
+
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    expect(sharedNodeStore.getNode('person-1')?.title).toBe('Server Computed Title');
+  });
+
+  it('does not push a redundant store update when the computed title already matches', async () => {
+    (sharedNodeStore.updateNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+    (sharedNodeStore.getNode as unknown as ReturnType<typeof vi.fn>).mockRestore();
+
+    const seeded = personNode({
+      title: 'Jane Doe',
+      properties: { person: { first_name: 'Jane', last_name: 'Doe', email: '' } }
+    });
+    sharedNodeStore.setNode(seeded, { type: 'database', reason: 'test-seed' }, true);
+
+    const realUpdateNodeSpy = vi.spyOn(sharedNodeStore, 'updateNode');
+    render(PersonSchemaForm, { props: { nodeId: 'person-1' } });
+
+    const firstName = screen.getByLabelText('First name') as HTMLInputElement;
+    // Retyping the value the store already resolves to: the preview
+    // recomputes to an identical string, so no update should fire at all.
+    await fireEvent.input(firstName, { target: { value: 'Jane' } });
+
+    expect(realUpdateNodeSpy).not.toHaveBeenCalled();
   });
 });

@@ -75,6 +75,10 @@ interface ProtoNodeData {
   createdAt: string;
   modifiedAt: string;
   collectionId: string;
+  // Server-computed display title (node_service.proto's NodeData.title) —
+  // absent for a node type that never gets one (e.g. date/schema), so
+  // optional like `parentId` above.
+  title?: string;
 }
 
 interface ProtoNodeEvent {
@@ -250,7 +254,14 @@ function nodeDataToApiNode(n: ProtoNodeData): Record<string, unknown> {
     lifecycleStatus: n.lifecycleStatus,
     createdAt: n.createdAt,
     modifiedAt: n.modifiedAt,
-    collectionId: n.collectionId && n.collectionId !== '' ? n.collectionId : null
+    collectionId: n.collectionId && n.collectionId !== '' ? n.collectionId : null,
+    // Unlike parentId/collectionId above (relationship references, where ""
+    // and absent are the same "no relationship"), an empty title is a real,
+    // distinct value from an absent one — a title_template whose fields are
+    // all still blank legitimately computes to "" (see NodeData.title's own
+    // doc comment in node_service.proto). Only true absence collapses to
+    // null; an empty string passes through unchanged.
+    title: n.title === undefined ? null : n.title
   };
 }
 

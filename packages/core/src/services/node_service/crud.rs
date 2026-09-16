@@ -2145,8 +2145,16 @@ impl NodeService {
             NodeServiceError::query_failed(format!("Failed to check node existence: {}", e))
         })? {
             // Update existing node
+            // Recompute title from the new content — this node is always
+            // attached to a parent by the end of this call, so it's never
+            // root (mirrors `create_node`'s `Some(params.parent_id.is_none())`).
+            let mut node_for_title = existing.clone();
+            node_for_title.content = content.to_string();
+            let new_title = self.compute_title(&node_for_title, Some(false)).await?;
+
             let update = NodeUpdate {
                 content: Some(content.to_string()),
+                title: Some(new_title),
                 // NOTE: Sibling ordering now handled via has_child relationship order field
                 ..Default::default()
             };
