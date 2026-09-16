@@ -335,14 +335,21 @@ nodespace-core/
 ├── packages/
 │   ├── desktop-app/              # Tauri desktop shell (thin command bindings)
 │   │   ├── src/                  # Frontend source (Svelte 5)
+│   │   │   ├── lib/design/       # Design system: components, tokens.ts, theme.ts
+│   │   │   └── app.css           # Semantic color tokens (light + dark)
 │   │   ├── src-tauri/            # Tauri backend
 │   │   └── [configs]             # App-specific configurations
+│   ├── nodespace-types/          # Shared wire types (core + Tauri command layer)
 │   ├── core/                     # Knowledge graph data layer (NodeService, ops/)
-│   ├── agent/                    # AI agent orchestration (ReAct loop, ACP client)
 │   ├── nlp-engine/               # LLM inference and embedding (llama.cpp)
-│   ├── dev-tools/                # Development utilities
-│   └── design-system/            # Design system package (Svelte)
-├── scripts/                      # Build and GitHub utilities
+│   ├── agent/                    # AI agent orchestration (ReAct loop, ACP client)
+│   ├── proto/                    # Generated gRPC proto types (client stubs only)
+│   ├── daemon/                   # gRPC daemon (nodespaced) — service definitions
+│   ├── cli/                      # `nodespace` CLI — a gRPC client for nodespaced
+│   ├── skill/                    # Skill package: installs NodeSpace tools into PTY agents
+│   └── dev-tools/                # Bun dev-proxy
+├── scripts/                      # Build and GitHub utilities (TypeScript, run via `bun run`)
+├── assets/                       # Static assets (screenshots)
 ├── CLAUDE.md                     # Agent guide (this file)
 ├── README.md                     # Project overview
 ├── package.json                  # Bun workspace root

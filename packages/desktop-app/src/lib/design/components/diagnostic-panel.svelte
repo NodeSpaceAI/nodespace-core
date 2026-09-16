@@ -166,20 +166,27 @@
 {/if}
 
 <style>
+  /*
+    Chrome uses the --console-* tokens: a deliberately theme-invariant dark
+    surface (see their definition in app.css), not --background/--foreground,
+    because this is a monospace developer tool that stays a console in both
+    themes. Status colors below DO use the semantic tokens, which stay legible
+    against that surface in either theme.
+  */
   .diagnostic-panel {
     position: fixed;
     bottom: 0;
     left: 0;
     right: 0;
     height: 50vh;
-    background: var(--color-bg-secondary, #1e1e1e);
-    border-top: 2px solid var(--color-border, #444);
+    background: hsl(var(--console-surface));
+    border-top: 2px solid hsl(var(--console-border));
     z-index: 10000;
     display: flex;
     flex-direction: column;
     font-family: monospace;
     font-size: 12px;
-    color: var(--color-text, #e0e0e0);
+    color: hsl(var(--console-foreground));
   }
 
   .panel-header {
@@ -187,8 +194,8 @@
     justify-content: space-between;
     align-items: center;
     padding: 8px 12px;
-    background: var(--color-bg-tertiary, #252525);
-    border-bottom: 1px solid var(--color-border, #444);
+    background: hsl(var(--console-surface-raised));
+    border-bottom: 1px solid hsl(var(--console-border));
   }
 
   .panel-header h2 {
@@ -204,26 +211,32 @@
   }
 
   .shortcut-hint {
-    color: var(--color-text-muted, #888);
+    color: hsl(var(--console-foreground-muted));
     font-size: 11px;
   }
 
   .close-button {
     background: transparent;
-    border: 1px solid var(--color-border, #444);
-    color: var(--color-text, #e0e0e0);
+    border: 1px solid hsl(var(--console-border));
+    color: hsl(var(--console-foreground));
     padding: 4px 8px;
     cursor: pointer;
     border-radius: 4px;
   }
 
   .close-button:hover {
-    background: var(--color-bg-hover, #333);
+    background: hsl(var(--console-surface-hover));
   }
 
+  /*
+    Tinted for the same reason as the .status badges: white on a solid
+    --destructive fill is 4.57:1 in light but only 2.86:1 in dark, and the
+    inverse foreground fails in light — no single solid pairing works for both.
+  */
   .init-error-banner {
-    background: #da3633;
-    color: white;
+    background: hsl(var(--destructive) / 0.2);
+    color: hsl(var(--destructive));
+    border-left: 3px solid hsl(var(--destructive));
     padding: 12px 16px;
     margin: 0;
     font-weight: 500;
@@ -255,15 +268,15 @@
 
   .toolbar button {
     padding: 4px 12px;
-    background: var(--color-bg-tertiary, #252525);
-    border: 1px solid var(--color-border, #444);
-    color: var(--color-text, #e0e0e0);
+    background: hsl(var(--console-surface-raised));
+    border: 1px solid hsl(var(--console-border));
+    color: hsl(var(--console-foreground));
     border-radius: 4px;
     cursor: pointer;
   }
 
   .toolbar button:hover:not(:disabled) {
-    background: var(--color-bg-hover, #333);
+    background: hsl(var(--console-surface-hover));
   }
 
   .toolbar button:disabled {
@@ -275,24 +288,24 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    color: var(--color-text-muted, #888);
+    color: hsl(var(--console-foreground-muted));
   }
 
   .stats-bar {
     display: flex;
     gap: 16px;
     padding: 8px 12px;
-    background: var(--color-bg-tertiary, #252525);
+    background: hsl(var(--console-surface-raised));
     border-radius: 4px;
     margin-bottom: 12px;
   }
 
   .stats-bar .success {
-    color: #3fb950;
+    color: hsl(var(--success));
   }
 
   .stats-bar .error {
-    color: #f85149;
+    color: hsl(var(--destructive));
   }
 
   .log-list {
@@ -302,18 +315,18 @@
   }
 
   .log-entry {
-    background: var(--color-bg-tertiary, #252525);
-    border: 1px solid var(--color-border, #444);
+    background: hsl(var(--console-surface-raised));
+    border: 1px solid hsl(var(--console-border));
     border-radius: 4px;
     padding: 8px;
   }
 
   .log-entry.error {
-    border-color: #f85149;
+    border-color: hsl(var(--destructive));
   }
 
   .log-entry.pending {
-    border-color: #d29922;
+    border-color: hsl(var(--warning));
   }
 
   .entry-header {
@@ -325,7 +338,7 @@
 
   .method {
     font-weight: 600;
-    color: var(--color-primary, #58a6ff);
+    color: hsl(var(--primary));
   }
 
   .status {
@@ -335,22 +348,29 @@
     text-transform: uppercase;
   }
 
+  /*
+    Badges tint the background and use the state color as text. A solid fill is
+    not an option: --success-foreground and --destructive-foreground are white
+    in both themes, which drops to 2.55-2.86:1 in dark mode. Tinting clears
+    AA-large in every combination but one — .status.error is 2.88:1 in light,
+    accepted for a 10px uppercase label in a developer-only tool.
+  */
   .status.success {
-    background: #238636;
-    color: white;
+    background: hsl(var(--success) / 0.2);
+    color: hsl(var(--success));
   }
 
   .status.error {
-    background: #da3633;
-    color: white;
+    background: hsl(var(--destructive) / 0.2);
+    color: hsl(var(--destructive));
   }
 
   .duration {
-    color: var(--color-text-muted, #888);
+    color: hsl(var(--console-foreground-muted));
   }
 
   .timestamp {
-    color: var(--color-text-muted, #888);
+    color: hsl(var(--console-foreground-muted));
     margin-left: auto;
   }
 
@@ -360,7 +380,7 @@
 
   .entry-details code {
     display: block;
-    background: var(--color-bg-secondary, #1e1e1e);
+    background: hsl(var(--console-surface));
     padding: 4px 8px;
     border-radius: 3px;
     overflow-x: auto;
@@ -377,11 +397,11 @@
   }
 
   .error-msg {
-    color: #f85149;
+    color: hsl(var(--destructive));
   }
 
   .empty-message {
-    color: var(--color-text-muted, #888);
+    color: hsl(var(--console-foreground-muted));
     text-align: center;
     padding: 20px;
   }

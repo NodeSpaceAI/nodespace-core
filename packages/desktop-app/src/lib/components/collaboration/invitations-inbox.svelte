@@ -241,12 +241,11 @@
 		z-index: 1000;
 	}
 	.modal {
-		background: var(--surface-1, #ffffff);
-		color: var(--text-primary, #1f2937);
+		background: hsl(var(--card));
+		color: hsl(var(--card-foreground));
 		border-radius: 8px;
 		padding: 24px;
 		width: min(460px, calc(100vw - 48px));
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 	}
 	h2 {
 		margin: 0 0 4px;
@@ -256,7 +255,7 @@
 	.lead {
 		margin: 0 0 16px;
 		font-size: 0.85rem;
-		color: var(--text-secondary, #6b7280);
+		color: hsl(var(--muted-foreground));
 	}
 	section {
 		margin-bottom: 16px;
@@ -269,7 +268,7 @@
 	.hint {
 		margin: -2px 0 8px;
 		font-size: 0.78rem;
-		color: var(--text-secondary, #6b7280);
+		color: hsl(var(--muted-foreground));
 	}
 	.head {
 		display: flex;
@@ -283,7 +282,7 @@
 		padding: 0;
 		font-size: 0.78rem;
 		font-weight: 600;
-		color: #2563eb;
+		color: hsl(var(--primary));
 		cursor: pointer;
 	}
 	.link:disabled {
@@ -293,7 +292,7 @@
 	.muted {
 		margin: 4px 0 0;
 		font-size: 0.82rem;
-		color: var(--text-secondary, #6b7280);
+		color: hsl(var(--muted-foreground));
 	}
 	.list {
 		list-style: none;
@@ -307,7 +306,7 @@
 		align-items: center;
 		gap: 8px;
 		padding: 6px 0;
-		border-bottom: 1px solid var(--border-color, #eceef1);
+		border-bottom: 1px solid hsl(var(--border));
 	}
 	.item:last-child {
 		border-bottom: none;
@@ -327,13 +326,20 @@
 		padding: 2px 6px;
 		border-radius: 4px;
 	}
+	/*
+	  State tags use a transparent tint of the state color rather than the solid
+	  --*-light tokens. Those have no paired --*-light-foreground, and their
+	  lightness differs sharply between themes (69%/78% light vs 35%/47% dark),
+	  so no single foreground stays legible on both. Tinting over the card keeps
+	  --foreground contrast above 12:1 in either theme.
+	*/
 	.tag-restricted {
-		background: #fef3c7;
-		color: #92400e;
+		background: hsl(var(--warning) / 0.15);
+		color: hsl(var(--foreground));
 	}
 	.tag-open {
-		background: #dcfce7;
-		color: #166534;
+		background: hsl(var(--success) / 0.15);
+		color: hsl(var(--foreground));
 	}
 	.row {
 		display: flex;
@@ -344,10 +350,10 @@
 		min-width: 0;
 		padding: 8px 10px;
 		font-size: 0.875rem;
-		border: 1px solid var(--border-color, #d1d5db);
+		border: 1px solid hsl(var(--border));
 		border-radius: 6px;
-		background: var(--surface-1, #fff);
-		color: var(--text-primary, #1f2937);
+		background: hsl(var(--background));
+		color: hsl(var(--foreground));
 	}
 	.btn {
 		padding: 8px 14px;
@@ -362,27 +368,27 @@
 		cursor: default;
 	}
 	.btn-primary {
-		background: #2563eb;
-		color: #fff;
+		background: hsl(var(--primary));
+		color: hsl(var(--primary-foreground));
 	}
 	.btn-ghost {
-		background: var(--surface-2, #e5e7eb);
-		color: var(--text-primary, #1f2937);
+		background: hsl(var(--muted));
+		color: hsl(var(--foreground));
 	}
 	.btn-logout {
 		background: transparent;
-		border-color: var(--border-color, #d1d5db);
-		color: #dc2626;
+		border-color: hsl(var(--border));
+		color: hsl(var(--destructive));
 	}
 	.ok {
 		margin: 8px 0 0;
 		font-size: 0.8rem;
-		color: #16a34a;
+		color: hsl(var(--success));
 	}
 	.err {
 		margin: 8px 0 0;
 		font-size: 0.8rem;
-		color: #dc2626;
+		color: hsl(var(--destructive));
 	}
 	.actions {
 		display: flex;

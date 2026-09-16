@@ -97,6 +97,22 @@
     --z-dropdown: 50; /* Dropdown menus and popovers */
     --z-modal: 100; /* Modal dialogs */
     --z-toast: 1000; /* Toast notifications (highest) */
+
+    /*
+      Developer-console surface — deliberately theme-invariant, so these are
+      defined once here and NOT redefined under .dark. The diagnostic panel is a
+      fixed-position monospace developer tool that stays a dark console in both
+      themes; mapping it to --background/--foreground would turn it white in
+      light mode and destroy the console affordance. Status colors inside that
+      panel still use the semantic tokens (--success/--destructive/--warning),
+      which stay legible against these surfaces in either theme.
+    */
+    --console-surface: 0 0% 11.8%; /* Panel background */
+    --console-surface-raised: 0 0% 14.5%; /* Header, toolbar, log entries */
+    --console-surface-hover: 0 0% 20%; /* Button hover */
+    --console-border: 0 0% 26.7%; /* Dividers and outlines */
+    --console-foreground: 0 0% 88%; /* Primary text */
+    --console-foreground-muted: 0 0% 53.3%; /* Timestamps, hints, empty states */
   }
 
   .dark {
