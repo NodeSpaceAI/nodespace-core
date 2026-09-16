@@ -433,9 +433,23 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     // on Unix its fd follows the inode, so it would keep writing into
     // `nodespaced.log.1` while the live path stayed missing until the next
     // restart, and on Windows the rename would simply fail with a sharing
-    // violation. Here the daemon is either already dead (`kill_running_daemon`)
-    // or not running, so the files are closed and the service manager recreates
-    // them at their original paths when it opens the new daemon's stdio.
+    // violation. Below it, the file is normally closed: the daemon has either
+    // been reaped (`kill_running_daemon` polls until the socket goes away) or
+    // was never running.
+    //
+    // Two paths can still reach here with a process briefly alive — a
+    // `Starting` daemon (socket present but not yet answering), and a SIGTERM'd
+    // one that outlives `kill_running_daemon`'s 5s grace period. Both are
+    // benign, and for a structural reason worth stating: what made the original
+    // ordering destructive was never the rename itself but that *nothing
+    // followed it*, leaving the live path missing until the next restart. Here
+    // a spawn always follows in this same function, so the service manager
+    // recreates `nodespaced.log` immediately. The worst case is a few
+    // dying-process lines interleaved into `.1`, not lost diagnostics.
+    //
+    // That is why the guarantee this call site needs is "a spawn is certain to
+    // follow", not "no process holds the file" — the latter cannot be
+    // guaranteed here, and does not need to be.
     rotate_daemon_logs(&log_dir);
 
     // Register and/or start the daemon user service.
