@@ -80,7 +80,7 @@
     "quality:scripts:fix": "bunx eslint --fix 'scripts/**/*.ts' && bunx tsc --noEmit -p scripts/tsconfig.json",
     "quality:scripts:check": "bunx eslint 'scripts/**/*.ts' && bunx tsc --noEmit -p scripts/tsconfig.json",
     "quality:fix": "bun run quality:scripts:fix && bun run --cwd packages/desktop-app quality:fix && bun run --cwd packages/skill quality:fix && bun run rust:quality:fix",
-    "quality:check": "bun run quality:scripts:check && bun run --cwd packages/desktop-app quality && bun run --cwd packages/skill quality:fix && bun run rust:quality",
+    "quality:check": "bun run quality:scripts:check && bun run --cwd packages/desktop-app quality:check && bun run --cwd packages/skill quality:fix && bun run rust:quality",
     "container:build": "bun run scripts/container.ts build",
     "container:run": "bun run scripts/container.ts run",
     "container:run:setup": "bun run scripts/container.ts run:setup",
