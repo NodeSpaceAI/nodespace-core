@@ -21,12 +21,14 @@
 import { $ } from "bun";
 import { reportBranchBehind } from "./check-branch-behind";
 import { classifyFailure, extractFailureOutput, formatAbortNote } from "./classify-test-failure";
+import { reportUpstreamFixes } from "./correlate-upstream-fixes";
 
 async function run(label: string, cmd: () => Promise<unknown>) {
   console.log(`\n▶ ${label}`);
   try {
     await cmd();
   } catch (err) {
+    const failureOutput = extractFailureOutput(err);
     // A load-induced process abort (e.g. a SIGSEGV under parallel-test
     // resource contention) and a genuine regression both surface here
     // identically otherwise — see classify-test-failure.ts. This does not
@@ -34,8 +36,19 @@ async function run(label: string, cmd: () => Promise<unknown>) {
     // tells the person which kind of failure they're looking at, so they
     // don't burn a multi-minute rerun to find out, or reach for
     // --no-verify out of frustration with a flake that looked real.
-    if (classifyFailure(extractFailureOutput(err)) === "abort") {
+    if (classifyFailure(failureOutput) === "abort") {
       console.error(formatAbortNote(label));
+    }
+    // Same intent one step further: if a commit on origin/main already
+    // touches the code that just failed, this failure may be stale code
+    // rather than a live regression, and no amount of local debugging can
+    // fix it. Advisory only — it never changes whether the push is blocked.
+    // Its own errors are swallowed: the staleness check is the last thing
+    // that should be able to obscure a real test failure.
+    try {
+      await reportUpstreamFixes(failureOutput);
+    } catch {
+      // Intentionally silent — reporting must not mask the failure below.
     }
     console.error(`\n✗ ${label} failed — push blocked.`);
     console.error("  Fix the failure, or if this is a WIP Handoff Commit (see CLAUDE.md),");
