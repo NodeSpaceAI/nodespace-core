@@ -23,7 +23,7 @@ import type {
   CreateContainerInput
 } from '$lib/services/backend-adapter';
 import type { SchemaNode } from '$lib/types/schema-node';
-import { isSubtreeAccessDenied, isVersionConflict } from '$lib/types/errors';
+import { isSubtreeAccessDenied, isVersionConflict, isPlayRuleRejected } from '$lib/types/errors';
 
 // Declare globals for eslint (these are available in Happy-DOM/browser environment)
 declare const Headers: typeof globalThis.Headers;
@@ -1014,6 +1014,41 @@ describe('Backend Adapter - HttpAdapter (Browser Dev Mode)', () => {
       expect(isSubtreeAccessDenied(caught)).toBe(true);
       if (isSubtreeAccessDenied(caught)) {
         expect(caught.conflictData.inaccessibleCount).toBe(3);
+      }
+    });
+
+    it('lets isPlayRuleRejected resolve correctly through the HTTP adapter', async () => {
+      const { getBackendAdapter } = await import('$lib/services/backend-adapter');
+      const adapter = getBackendAdapter();
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 412,
+        statusText: 'Precondition Failed',
+        json: async () => ({
+          message: "Play rule 'No closing with open sub-issues' (play play-1) rejected the write to node node-1: Can't close with open sub-issues",
+          code: 'PLAY_RULE_REJECTED',
+          conflictData: {
+            node_id: 'node-1',
+            play_id: 'play-1',
+            rule_name: 'No closing with open sub-issues',
+            message: "Can't close with open sub-issues"
+          }
+        })
+      });
+
+      let caught: unknown;
+      try {
+        await adapter.updateNode('node-1', 1, { content: 'x' });
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(isPlayRuleRejected(caught)).toBe(true);
+      if (isPlayRuleRejected(caught)) {
+        expect(caught.conflictData.message).toBe("Can't close with open sub-issues");
+        expect(caught.conflictData.rule_name).toBe('No closing with open sub-issues');
+        expect(caught.conflictData.play_id).toBe('play-1');
       }
     });
 
