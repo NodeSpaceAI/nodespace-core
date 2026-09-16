@@ -55,12 +55,12 @@ pub enum OpsError {
     /// structured, client-distinguishable treatment rather than folding it
     /// into a generic `ValidationFailed` string.
     #[error(
-        "Play rule '{rule_id}' (play {play_id}) rejected the write to node {node_id}: {message}"
+        "Play rule '{rule_name}' (play {play_id}) rejected the write to node {node_id}: {message}"
     )]
     PlayRuleRejected {
         node_id: String,
         play_id: String,
-        rule_id: String,
+        rule_name: String,
         message: String,
     },
 
@@ -141,12 +141,12 @@ impl From<NodeServiceError> for OpsError {
             NodeServiceError::PlayRuleRejected {
                 node_id,
                 play_id,
-                rule_id,
+                rule_name,
                 message,
             } => OpsError::PlayRuleRejected {
                 node_id,
                 play_id,
-                rule_id,
+                rule_name,
                 message,
             },
             NodeServiceError::CollectionNotFound(name) => OpsError::NotFound { id: name },

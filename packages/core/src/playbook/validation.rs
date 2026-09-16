@@ -253,6 +253,61 @@ impl std::fmt::Display for PlayValidationError {
     }
 }
 
+impl PlayValidationError {
+    /// The `location` string every variant carries (e.g. `"rule[1].action[2]"`,
+    /// `"rule[0].trigger"`), identifying which rule/trigger/condition/action
+    /// produced this error.
+    ///
+    /// Callers that log or fingerprint validation errors (e.g. the play
+    /// engine's `load_active_plays`/`handle_play_created`/`handle_play_updated`)
+    /// need this: two structurally different errors on the same play must
+    /// not collapse onto the same identity just because both happen to be
+    /// `PlayValidationError`s.
+    pub fn location(&self) -> &str {
+        match self {
+            Self::UnknownNodeType { location, .. }
+            | Self::VersionMismatch { location, .. }
+            | Self::UnknownRelationshipType { location, .. }
+            | Self::MissingActionParam { location, .. }
+            | Self::BrokenPath { location, .. }
+            | Self::InvalidCronExpression { location, .. }
+            | Self::InvariantNonLocalAction { location, .. }
+            | Self::InvariantNonDeterministic { location, .. }
+            | Self::InvariantOutOfScopeTarget { location, .. }
+            | Self::InvariantChaining { location, .. }
+            | Self::InvariantUnsupportedTrigger { location, .. }
+            | Self::InvariantRelationshipNeedsExplicitOrder { location, .. }
+            | Self::RejectActionOnReactiveRule { location }
+            | Self::RejectActionHasForEach { location } => location,
+        }
+    }
+
+    /// A short, stable tag identifying which variant this is. Paired with
+    /// `location()` so two different error *kinds* at the exact same
+    /// location (e.g. a missing param and a broken path on the same action)
+    /// still produce distinct identities, not just two different locations.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::UnknownNodeType { .. } => "unknown_node_type",
+            Self::VersionMismatch { .. } => "version_mismatch",
+            Self::UnknownRelationshipType { .. } => "unknown_relationship_type",
+            Self::MissingActionParam { .. } => "missing_action_param",
+            Self::BrokenPath { .. } => "broken_path",
+            Self::InvalidCronExpression { .. } => "invalid_cron_expression",
+            Self::InvariantNonLocalAction { .. } => "invariant_non_local_action",
+            Self::InvariantNonDeterministic { .. } => "invariant_non_deterministic",
+            Self::InvariantOutOfScopeTarget { .. } => "invariant_out_of_scope_target",
+            Self::InvariantChaining { .. } => "invariant_chaining",
+            Self::InvariantUnsupportedTrigger { .. } => "invariant_unsupported_trigger",
+            Self::InvariantRelationshipNeedsExplicitOrder { .. } => {
+                "invariant_relationship_needs_explicit_order"
+            }
+            Self::RejectActionOnReactiveRule { .. } => "reject_action_on_reactive_rule",
+            Self::RejectActionHasForEach { .. } => "reject_action_has_for_each",
+        }
+    }
+}
+
 /// Result of play validation: either Ok or a non-empty list of errors.
 pub type ValidationResult = Result<(), Vec<PlayValidationError>>;
 
@@ -1155,6 +1210,45 @@ mod tests {
     use crate::playbook::types::{
         ActionType, GraphEventType, ParsedAction, ParsedRule, ParsedTrigger, RuleClass,
     };
+
+    #[test]
+    fn play_validation_error_location_and_kind_distinguish_errors() {
+        // The play engine's validation-error logging folds `location()` and
+        // `kind()` into its log-node fingerprint identity (in place of a
+        // constant placeholder) so two structurally different errors on the
+        // same play don't collapse onto the same fingerprint. Lock in both
+        // accessors directly against the enum.
+        let broken_path = PlayValidationError::BrokenPath {
+            path: "node.status".to_string(),
+            segment: "status".to_string(),
+            message: "no such field".to_string(),
+            location: "rule[0].condition[0]".to_string(),
+        };
+        assert_eq!(broken_path.location(), "rule[0].condition[0]");
+        assert_eq!(broken_path.kind(), "broken_path");
+
+        let reject_on_reactive = PlayValidationError::RejectActionOnReactiveRule {
+            location: "rule[1].action[0]".to_string(),
+        };
+        assert_eq!(reject_on_reactive.location(), "rule[1].action[0]");
+        assert_eq!(reject_on_reactive.kind(), "reject_action_on_reactive_rule");
+
+        // Different locations -> different (location, kind) pairs, even for
+        // the same error kind.
+        let missing_param_a = PlayValidationError::MissingActionParam {
+            param: "message".to_string(),
+            location: "rule[0].action[0]".to_string(),
+        };
+        let missing_param_b = PlayValidationError::MissingActionParam {
+            param: "message".to_string(),
+            location: "rule[2].action[1]".to_string(),
+        };
+        assert_ne!(missing_param_a.location(), missing_param_b.location());
+        assert_eq!(missing_param_a.kind(), missing_param_b.kind());
+
+        // Same location, different kind -> `kind()` alone still tells them apart.
+        assert_ne!(broken_path.kind(), reject_on_reactive.kind());
+    }
 
     // -- CEL condition validation tests (no NodeService needed) --
 
