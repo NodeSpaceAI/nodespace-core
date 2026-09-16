@@ -255,10 +255,13 @@ function nodeDataToApiNode(n: ProtoNodeData): Record<string, unknown> {
     createdAt: n.createdAt,
     modifiedAt: n.modifiedAt,
     collectionId: n.collectionId && n.collectionId !== '' ? n.collectionId : null,
-    // Same absent-or-empty-string-collapses-to-null treatment as parentId/
-    // collectionId above, for consistency with how this function already
-    // handles every other optional proto string field.
-    title: n.title && n.title !== '' ? n.title : null
+    // Unlike parentId/collectionId above (relationship references, where ""
+    // and absent are the same "no relationship"), an empty title is a real,
+    // distinct value from an absent one — a title_template whose fields are
+    // all still blank legitimately computes to "" (see NodeData.title's own
+    // doc comment in node_service.proto). Only true absence collapses to
+    // null; an empty string passes through unchanged.
+    title: n.title === undefined ? null : n.title
   };
 }
 
