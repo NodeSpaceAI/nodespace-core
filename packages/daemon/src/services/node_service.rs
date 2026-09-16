@@ -2469,7 +2469,7 @@ fn ops_error_to_status(err: OpsError) -> Status {
         OpsError::PlayRuleRejected {
             node_id,
             play_id,
-            rule_id,
+            rule_name,
             message,
         } => {
             // FAILED_PRECONDITION, not ABORTED (which VersionConflict uses):
@@ -2477,27 +2477,41 @@ fn ops_error_to_status(err: OpsError) -> Status {
             // to succeed — the rule's condition still holds against
             // unchanged state. Mirrors `SubtreeAccessDenied`'s reasoning
             // above: a well-formed request, refused because of current
-            // graph state. Structured `x-play-rule-rejected` metadata lets a
-            // caller distinguish this from every other FAILED_PRECONDITION
-            // this daemon returns, the same way `x-subtree-inaccessible-count`
-            // does for the access-gate refusal.
+            // graph state. Structured `x-play-rule-rejected-bin` metadata
+            // lets a caller distinguish this from every other
+            // FAILED_PRECONDITION this daemon returns, the same way
+            // `x-subtree-inaccessible-count` does for the access-gate
+            // refusal.
+            //
+            // The `-bin` suffix (and `MetadataValue<Binary>`, not `Ascii`)
+            // is deliberate: `message` is author-supplied rejection text and
+            // routinely contains non-ASCII bytes (em dashes, curly quotes,
+            // accents, emoji). Parsing the JSON payload as
+            // `MetadataValue<Ascii>` fails for any such byte and there is no
+            // way to recover — the metadata would silently vanish for
+            // exactly the messages most likely in real playbooks. gRPC's
+            // binary-metadata convention (a key ending in `-bin`, whose
+            // value tonic transports as raw bytes and base64-encodes on the
+            // wire) sidesteps that: `MetadataValue::<Binary>::from_bytes` is
+            // infallible, so the payload can never be dropped here.
             let status_message = format!(
                 "Play rule '{}' (play {}) rejected the write to node {}: {}",
-                rule_id, play_id, node_id, message
+                rule_name, play_id, node_id, message
             );
             let mut status = Status::failed_precondition(status_message);
             let payload = serde_json::json!({
                 "node_id": node_id,
                 "play_id": play_id,
-                "rule_id": rule_id,
+                "rule_name": rule_name,
                 "message": message,
             });
             if let Ok(json) = serde_json::to_string(&payload) {
-                if let Ok(val) =
-                    json.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-                {
-                    status.metadata_mut().insert("x-play-rule-rejected", val);
-                }
+                let val = tonic::metadata::MetadataValue::<tonic::metadata::Binary>::from_bytes(
+                    json.as_bytes(),
+                );
+                status
+                    .metadata_mut()
+                    .insert_bin("x-play-rule-rejected-bin", val);
             }
             status
         }
@@ -3847,7 +3861,7 @@ mod tests {
         // must map to a DISTINCT status from an ordinary OCC conflict
         // (FAILED_PRECONDITION, not ABORTED — retrying this exact write is
         // not expected to succeed, unlike a VersionConflict race) carrying
-        // node_id/play_id/rule_id/message in metadata so a caller can
+        // node_id/play_id/rule_name/message in metadata so a caller can
         // distinguish this from every other FAILED_PRECONDITION this daemon
         // returns, exercised through the full NodeServiceError -> OpsError ->
         // Status chain (`service_error_to_status`), the same seam
@@ -3864,17 +3878,46 @@ mod tests {
 
         let header = s
             .metadata()
-            .get("x-play-rule-rejected")
-            .expect("x-play-rule-rejected header missing")
-            .to_str()
-            .unwrap()
-            .to_string();
-        let payload: serde_json::Value =
-            serde_json::from_str(&header).expect("x-play-rule-rejected header must be valid JSON");
+            .get_bin("x-play-rule-rejected-bin")
+            .expect("x-play-rule-rejected-bin header missing")
+            .to_bytes()
+            .expect("x-play-rule-rejected-bin header must decode as bytes");
+        let payload: serde_json::Value = serde_json::from_slice(&header)
+            .expect("x-play-rule-rejected-bin header must be valid JSON");
         assert_eq!(payload["node_id"], "node-1");
         assert_eq!(payload["play_id"], "play-1");
-        assert_eq!(payload["rule_id"], "reject-rule");
+        assert_eq!(payload["rule_name"], "reject-rule");
         assert_eq!(payload["message"], "cannot close while children are open");
+    }
+
+    #[test]
+    fn error_mapping_play_rule_rejected_preserves_non_ascii_message() {
+        // Regression test: the rejection `message` is author-supplied text
+        // from a playbook rule and realistically contains non-ASCII bytes
+        // (em dash, curly quotes, accents, emoji). Parsing the JSON payload
+        // as `MetadataValue<Ascii>` fails for any such byte, and the old
+        // `if let Ok(...)` swallowed that failure — silently dropping the
+        // structured metadata for exactly the messages most likely in
+        // practice. The binary (`-bin`) metadata key must carry it intact.
+        let message = "cannot close — \u{201c}Renew\u{201d} needs café review \u{1F6AB}";
+        let s = to_status(NodeServiceError::play_rule_rejected(
+            "node-1",
+            "play-1",
+            "reject-rule",
+            message,
+        ));
+        assert_eq!(s.code(), tonic::Code::FailedPrecondition);
+        assert!(s.message().contains(message));
+
+        let header = s
+            .metadata()
+            .get_bin("x-play-rule-rejected-bin")
+            .expect("x-play-rule-rejected-bin header missing for non-ASCII message")
+            .to_bytes()
+            .expect("x-play-rule-rejected-bin header must decode as bytes");
+        let payload: serde_json::Value = serde_json::from_slice(&header)
+            .expect("x-play-rule-rejected-bin header must be valid JSON");
+        assert_eq!(payload["message"], message);
     }
 
     #[test]
@@ -3891,7 +3934,10 @@ mod tests {
             .is_none());
 
         let denied = to_status(NodeServiceError::subtree_access_denied(1));
-        assert!(denied.metadata().get("x-play-rule-rejected").is_none());
+        assert!(denied
+            .metadata()
+            .get_bin("x-play-rule-rejected-bin")
+            .is_none());
     }
 
     #[test]

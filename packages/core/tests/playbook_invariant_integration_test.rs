@@ -1066,7 +1066,7 @@ async fn reject_action_error_is_play_rule_rejected_with_the_rule_s_message() -> 
         NodeServiceError::PlayRuleRejected {
             node_id,
             play_id,
-            rule_id,
+            rule_name,
             message,
         } => {
             assert_eq!(message, "custom violation text");
@@ -1075,8 +1075,8 @@ async fn reject_action_error_is_play_rule_rejected_with_the_rule_s_message() -> 
                 "play_id must be the play node's own id"
             );
             assert_eq!(
-                rule_id, "reject-rule",
-                "rule_id carries the rule's author-given name"
+                rule_name, "reject-rule",
+                "rule_name carries the rule's author-given name"
             );
             assert_eq!(
                 node_id, doomed_id,

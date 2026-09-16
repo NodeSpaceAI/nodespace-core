@@ -121,12 +121,12 @@ pub enum NodeServiceError {
     /// is the rejecting rule's own author-supplied text (see
     /// `playbook::types::ActionType::Reject`), not a generic description.
     #[error(
-        "Play rule '{rule_id}' (play {play_id}) rejected the write to node {node_id}: {message}"
+        "Play rule '{rule_name}' (play {play_id}) rejected the write to node {node_id}: {message}"
     )]
     PlayRuleRejected {
         node_id: String,
         play_id: String,
-        rule_id: String,
+        rule_name: String,
         message: String,
     },
 
@@ -270,13 +270,13 @@ impl NodeServiceError {
     pub fn play_rule_rejected(
         node_id: impl Into<String>,
         play_id: impl Into<String>,
-        rule_id: impl Into<String>,
+        rule_name: impl Into<String>,
         message: impl Into<String>,
     ) -> Self {
         Self::PlayRuleRejected {
             node_id: node_id.into(),
             play_id: play_id.into(),
-            rule_id: rule_id.into(),
+            rule_name: rule_name.into(),
             message: message.into(),
         }
     }
