@@ -18,11 +18,13 @@
 //!        `commands::settings::windows_autorun_present`/`remove_windows_autorun`.
 //!   4. Wait for the IPC endpoint to appear (UDS on Unix, Named Pipe on Windows).
 //!
-//! On every launch, before the daemon is spawned, `rotate_daemon_logs` rolls
+//! Whenever the daemon is about to be (re)spawned — and only then, never on a
+//! launch that leaves a healthy daemon running — `rotate_daemon_logs` rolls
 //! either log file past `DAEMON_LOG_MAX_BYTES` to `<name>.1` and keeps
 //! `DAEMON_LOG_KEEP` generations, so the two files cannot grow without bound
 //! for the life of an install. See `rotate_log_file` for why rotation lives
-//! here rather than inside the daemon.
+//! here rather than inside the daemon, and its call site in
+//! `ensure_daemon_running` for why it must not run any earlier.
 //!
 //! On subsequent launches:
 //!   - Check if the socket exists and the daemon responds (cheap path).
@@ -400,12 +402,6 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
     tokio::fs::create_dir_all(&log_dir)
         .await
         .context("Failed to create ~/.nodespace/logs")?;
-
-    // Roll oversized logs before the daemon (re)opens them. This is the single
-    // platform-independent point that precedes all three spawn paths —
-    // launchd, systemd and the Windows direct spawn — and the files are
-    // guaranteed closed here, so the rename is safe on every platform.
-    rotate_daemon_logs(&log_dir);
     tokio::fs::create_dir_all(&db_dir)
         .await
         .context("Failed to create ~/.nodespace/database")?;
@@ -427,6 +423,20 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
             return Ok(DaemonStatus::Healthy);
         }
     }
+
+    // Roll oversized logs, now that every "leave the running daemon alone" exit
+    // is behind us and a fresh spawn is certain to follow.
+    //
+    // This must NOT move earlier: above this point `ensure_daemon_running` can
+    // return with a healthy daemon still holding these files as its inherited
+    // stdio. Renaming them out from under that process does not redirect it —
+    // on Unix its fd follows the inode, so it would keep writing into
+    // `nodespaced.log.1` while the live path stayed missing until the next
+    // restart, and on Windows the rename would simply fail with a sharing
+    // violation. Here the daemon is either already dead (`kill_running_daemon`)
+    // or not running, so the files are closed and the service manager recreates
+    // them at their original paths when it opens the new daemon's stdio.
+    rotate_daemon_logs(&log_dir);
 
     // Register and/or start the daemon user service.
     #[cfg(target_os = "macos")]
@@ -1483,12 +1493,13 @@ fn rotate_log_file(path: &Path) {
 
 /// Rotate both daemon log files if they have outgrown the size threshold.
 ///
-/// Called from `ensure_daemon_running` after the log directory is created and
-/// before any of the three platform spawn paths run, so the rename always
-/// happens while the files are closed. The service manager (or
-/// `spawn_daemon_windows`) then recreates the log at its original path when it
-/// opens the freshly started daemon's stdio, so no config references a rotated
-/// name and all three platforms are covered by this one call site.
+/// Called from `ensure_daemon_running` once a (re)spawn is certain — past
+/// every exit that would leave an existing daemon running — and before any of
+/// the three platform spawn paths run, so the rename always happens while the
+/// files are closed. The service manager (or `spawn_daemon_windows`) then
+/// recreates the log at its original path when it opens the freshly started
+/// daemon's stdio, so no config references a rotated name and all three
+/// platforms are covered by this one call site.
 fn rotate_daemon_logs(log_dir: &Path) {
     let (stdout_log, stderr_log) = daemon_log_paths(log_dir);
     rotate_log_file(&stdout_log);
@@ -2663,6 +2674,51 @@ mod daemon_log_rotation_tests {
         assert!(
             rotated(&path, 1).exists(),
             "prior history still readable as .1"
+        );
+    }
+
+    // Unix-only: this pins the *inode-following* half of the hazard. Windows
+    // fails the rename outright with a sharing violation instead — a different
+    // symptom of the same mistake, and one `rotate_log_file` already swallows
+    // as a warning.
+    #[cfg(unix)]
+    #[test]
+    fn rotating_a_log_held_open_strands_output_in_the_rotated_file() {
+        // Documents WHY `rotate_daemon_logs` is called only after
+        // `ensure_daemon_running`'s healthy-daemon early return, never before
+        // it. A running daemon holds these files as inherited stdio; on Unix a
+        // rename keeps its fd pointed at the same inode, so the daemon goes on
+        // writing into the rotated generation while the live path simply does
+        // not exist until something reopens it. Rotating on every app launch —
+        // including the launches that leave a healthy daemon alone — would
+        // therefore hide the daemon's output rather than bound it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+
+        // Push it past the threshold so rotation actually fires, then stand in
+        // for the running daemon's inherited stdio handle.
+        write_sized(&path, DAEMON_LOG_MAX_BYTES + 1);
+        let mut daemon_stdio = open_daemon_log(&path).unwrap();
+        writeln!(daemon_stdio, "before rotation").unwrap();
+        daemon_stdio.flush().unwrap();
+
+        rotate_log_file(&path);
+        // ... and it keeps writing to the fd it already had.
+        writeln!(daemon_stdio, "after rotation").unwrap();
+        daemon_stdio.flush().unwrap();
+        drop(daemon_stdio);
+
+        assert!(
+            !path.exists(),
+            "the live log path is left missing — nothing reopens it until the \
+             daemon restarts, which is exactly why rotation must wait until a \
+             spawn is certain to follow"
+        );
+        assert!(
+            std::fs::read_to_string(rotated(&path, 1))
+                .unwrap()
+                .ends_with("before rotation\nafter rotation\n"),
+            "post-rotation output follows the inode into the rotated file"
         );
     }
 
