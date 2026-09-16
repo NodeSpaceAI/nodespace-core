@@ -18,10 +18,8 @@
    ============================================================================ */
 
 :root {
-  /* Node type colors - extend existing NodeSpace palette */
-  --node-user: 200 100% 45%;
-  --node-date: 45 100% 45%;
-  --node-document: 270 75% 50%;
+  /* Node type colors (--node-*) are defined once in app.css and all map to
+     --primary; consume them via var() here, never redefine them. */
 
   /* Status colors */
   --status-online: 120 100% 35%;
@@ -506,21 +504,13 @@ a[href*="nodespace://"][href*="deleted=true"]:hover::after {
   color: hsl(var(--muted-foreground));
 }
 
-/* Document type variations */
-.ns-noderef--document-pdf {
-  border-left: 3px solid #dc2626;
-}
-
-.ns-noderef--document-image {
-  border-left: 3px solid #7c3aed;
-}
-
-.ns-noderef--document-video {
-  border-left: 3px solid #ea580c;
-}
-
+/* Document type variations - all share the single node accent; the file type is
+   conveyed by the icon and label, not by colour. */
+.ns-noderef--document-pdf,
+.ns-noderef--document-image,
+.ns-noderef--document-video,
 .ns-noderef--document-audio {
-  border-left: 3px solid #0891b2;
+  border-left: 3px solid hsl(var(--node-document));
 }
 
 /* ============================================================================
