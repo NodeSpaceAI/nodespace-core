@@ -177,8 +177,8 @@
     backdrop and are too dark to read on this one — using them would put
     .stats-bar .success at 2.87:1 and the .pending border at 2.92:1, under even
     the 3:1 threshold for non-text UI. Pinning keeps every status color at
-    4.29-7.68:1 in both themes, which is what the --console-* comment in
-    app.css promises.
+    3.97-7.68:1 in both themes — above the 3:1 floor throughout, with the
+    tinted badges at the low end (see the .status comment below).
   */
   .diagnostic-panel {
     --success: 96 96% 37%;

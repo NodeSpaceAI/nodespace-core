@@ -68,7 +68,6 @@
     --warning: 38 97% 30%; /* 5.26:1 on --background, 4.60:1 on a 0.1 tint */
     --warning-foreground: 0 0% 100%; /* 5.26:1 on the fill */
 
-
     --radius: 0.5rem;
 
     /* Sidebar tokens - Figma canonical */
@@ -120,9 +119,13 @@
       defined once here and NOT redefined under .dark. The diagnostic panel is a
       fixed-position monospace developer tool that stays a dark console in both
       themes; mapping it to --background/--foreground would turn it white in
-      light mode and destroy the console affordance. Status colors inside that
-      panel still use the semantic tokens (--success/--destructive/--warning),
-      which stay legible against these surfaces in either theme.
+      light mode and destroy the console affordance.
+
+      Because this surface never lightens, the theme-tracking state tokens do
+      NOT work on it unmodified: the light-theme values are tuned for a white
+      backdrop and land at 2.86-2.92:1 here. Any component built on --console-*
+      must pin --success/--warning/--destructive/--primary to their .dark
+      values, as .diagnostic-panel does.
     */
     --console-surface: 0 0% 11.8%; /* Panel background */
     --console-surface-raised: 0 0% 14.5%; /* Header, toolbar, log entries */
@@ -177,7 +180,6 @@
 
     --warning: 38 100% 51%;
     --warning-foreground: 240 11% 4%; /* 9.96:1 on the fill */
-
 
     /* Sidebar tokens - Figma canonical */
     --sidebar-background: 240 4% 10%;
