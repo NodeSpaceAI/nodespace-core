@@ -30,6 +30,23 @@ function stringField(name: string, friendlyName: string): SchemaField {
   return { name, friendlyName, type: 'string', protection: 'user', indexed: false, required: false };
 }
 
+function enumField(
+  name: string,
+  friendlyName: string,
+  coreValues: Array<{ value: string; label: string }>
+): SchemaField {
+  return {
+    name,
+    friendlyName,
+    type: 'enum',
+    protection: 'user',
+    indexed: false,
+    required: false,
+    coreValues,
+    userValues: []
+  };
+}
+
 const TICKET_SCHEMA: SchemaNode = {
   id: 'ticket',
   content: 'Ticket',
@@ -40,6 +57,21 @@ const TICKET_SCHEMA: SchemaNode = {
   schemaVersion: 1,
   fields: [stringField('severity', 'Severity'), stringField('subject', 'Subject')],
   titleTemplate: '{severity}: {subject}'
+};
+
+// A variant with `severity` as an enum instead of a plain string, for the
+// enum-label-resolution test below. Kept separate from TICKET_SCHEMA so the
+// other tests above (which type directly into Severity as a text input)
+// are unaffected — an enum field renders as a Select, not an Input.
+const TICKET_SCHEMA_ENUM_SEVERITY: SchemaNode = {
+  ...TICKET_SCHEMA,
+  fields: [
+    enumField('severity', 'Severity', [
+      { value: 'p1', label: 'P1 - Critical' },
+      { value: 'p2', label: 'P2 - High' }
+    ]),
+    stringField('subject', 'Subject')
+  ]
 };
 
 function ticketNode(overrides: Partial<Node> = {}): Node {
@@ -108,6 +140,33 @@ describe('GenericSchemaForm — title_template client-side preview (ADR-077), no
     await fireEvent.input(severity, { target: { value: 'P1' } });
 
     expect(sharedNodeStore.getNode('ticket-1')?.title).toBeUndefined();
+  });
+
+  it('resolves an enum field referenced by the title template to its label, not the raw stored value', async () => {
+    // severity is pre-seeded as an enum value ('p1') rather than driven
+    // through the Select control (Happy-DOM interaction with a portalled
+    // listbox is unreliable — see generic-schema-form-project.test.ts's
+    // note on the same trade-off); only `subject`, a plain text field, is
+    // edited to trigger the recompute this test actually checks.
+    sharedNodeStore.setNode(
+      ticketNode({
+        title: '',
+        properties: { ticket: { severity: 'p1', subject: '' } }
+      }),
+      { type: 'database', reason: 'test-seed' },
+      true
+    );
+    vi.spyOn(backendAdapter, 'updateNode').mockImplementation(() => new Promise(() => {}));
+
+    render(GenericSchemaForm, {
+      props: { nodeId: 'ticket-1', schema: TICKET_SCHEMA_ENUM_SEVERITY, autoOpen: true }
+    });
+
+    await waitFor(() => expect(screen.getByLabelText('Subject')).toBeTruthy());
+    const subject = screen.getByLabelText('Subject') as HTMLInputElement;
+    await fireEvent.input(subject, { target: { value: 'Disk full' } });
+
+    expect(sharedNodeStore.getNode('ticket-1')?.title).toBe('P1 - Critical: Disk full');
   });
 
   it('a server-provided title from a normal fetch/first-load is displayed correctly and untouched by merely mounting the form', async () => {

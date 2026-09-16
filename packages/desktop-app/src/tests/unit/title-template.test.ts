@@ -63,6 +63,77 @@ describe('evaluateTitleTemplate', () => {
   it('handles empty template string', () => {
     expect(evaluateTitleTemplate('', { first_name: 'Alice' })).toBe('');
   });
+
+  // Mirrors interpolate_title_template_with_schema (packages/core/src/utils/markdown.rs),
+  // which compute_title() actually calls — that function resolves an enum
+  // field's stored value to its label, so the client-side preview must too,
+  // or it flashes the raw value ("p1") before the backend's round trip
+  // replaces it with the label ("P1 - Critical").
+  describe('enum resolution (fields argument)', () => {
+    const severityField: SchemaField = {
+      name: 'severity',
+      friendlyName: 'Severity',
+      type: 'enum',
+      protection: 'user',
+      indexed: false,
+      coreValues: [
+        { value: 'p1', label: 'P1 - Critical' },
+        { value: 'p2', label: 'P2 - High' }
+      ],
+      userValues: [{ value: 'custom', label: 'Custom Severity' }]
+    };
+
+    it('resolves an enum core value to its label when fields is given', () => {
+      expect(
+        evaluateTitleTemplate('{severity}: Disk full', { severity: 'p1' }, [severityField])
+      ).toBe('P1 - Critical: Disk full');
+    });
+
+    it('resolves an enum user value to its label', () => {
+      expect(
+        evaluateTitleTemplate('{severity}', { severity: 'custom' }, [severityField])
+      ).toBe('Custom Severity');
+    });
+
+    it('falls back to the raw value for an enum entry not in coreValues/userValues', () => {
+      expect(
+        evaluateTitleTemplate('{severity}', { severity: 'unknown_val' }, [severityField])
+      ).toBe('unknown_val');
+    });
+
+    it('leaves a non-enum field raw even when fields is given', () => {
+      const subjectField: SchemaField = {
+        name: 'subject',
+        friendlyName: 'Subject',
+        type: 'string',
+        protection: 'user',
+        indexed: false
+      };
+      expect(
+        evaluateTitleTemplate('{subject}', { subject: 'Disk full' }, [subjectField])
+      ).toBe('Disk full');
+    });
+
+    it('falls back to the raw value when fields is omitted (backward compatible)', () => {
+      expect(evaluateTitleTemplate('{severity}', { severity: 'p1' })).toBe('p1');
+    });
+
+    // Unlike evaluateSummaryTemplate, title interpolation never reformats a
+    // date — the backend's title computation doesn't either, so doing so
+    // here would make the client preview disagree with the persisted title.
+    it('does not reformat a date field, unlike evaluateSummaryTemplate', () => {
+      const dueDateField: SchemaField = {
+        name: 'due_date',
+        friendlyName: 'Due date',
+        type: 'date',
+        protection: 'user',
+        indexed: false
+      };
+      expect(
+        evaluateTitleTemplate('{due_date}', { due_date: '2026-06-30' }, [dueDateField])
+      ).toBe('2026-06-30');
+    });
+  });
 });
 
 describe('evaluateSummaryTemplate', () => {

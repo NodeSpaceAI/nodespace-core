@@ -30,6 +30,7 @@
   import { getNavigationService } from '$lib/services/navigation-service';
   import { createLogger } from '$lib/utils/logger';
   import { evaluateTitleTemplate } from '$lib/utils/title-template';
+  import { pushComputedTitle } from '$lib/utils/title-preview';
   import type { Node } from '$lib/types';
   import RelationshipViewerModal from '$lib/components/relationships/relationship-viewer-modal.svelte';
   import { loadNodeRelationshipsView } from '$lib/services/relationship-viewer-service';
@@ -172,17 +173,15 @@
    */
   function pushTitlePreview() {
     if (!node) return;
+    // No `fields` arg: neither first_name nor last_name is an enum (both
+    // are plain "string" per core_schemas.rs), so there is nothing for
+    // evaluateTitleTemplate to resolve — see generic-schema-form.svelte's
+    // equivalent call for the case where that matters.
     const title = evaluateTitleTemplate(PERSON_TITLE_TEMPLATE, {
       first_name: firstNameDraft,
       last_name: lastNameDraft
     });
-    if (title === (node.title ?? '')) return;
-    sharedNodeStore.updateNode(
-      nodeId,
-      { title },
-      { type: 'viewer', viewerId: 'person-schema-form' },
-      { isComputedField: true }
-    );
+    pushComputedTitle(nodeId, node, title, 'person-schema-form');
   }
 
   function handleFirstNameInput(e: Event) {
