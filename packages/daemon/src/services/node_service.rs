@@ -3144,6 +3144,81 @@ mod tests {
         );
     }
 
+    /// `UpdateNodesBatch` must recompute `title` when a batch item changes
+    /// content, exactly like the single-node `UpdateNode` path — it routes
+    /// through the same `NodeService::update_node`, whose internal
+    /// `compute_title` recompute is driven by the merged node state, not by
+    /// whatever the RPC handler happens to put in its own `NodeUpdate.title`
+    /// (that field is discarded either way). This pins the DB/wire title
+    /// staying in sync with content for the batch path specifically, since
+    /// it wasn't covered by any existing test.
+    #[tokio::test]
+    async fn update_nodes_batch_recomputes_title_from_new_content() {
+        let (svc, _tmp) = make_service().await;
+
+        let created = svc
+            .create_node(Request::new(CreateNodeRequest {
+                id: None,
+                node_type: "task".to_string(),
+                content: "Buy milk".to_string(),
+                parent_id: None,
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                properties: "{}".to_string(),
+                position: None,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let node_id = created.node_id;
+
+        let before = svc
+            .get_node(Request::new(GetNodeRequest {
+                node_id: node_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .node_data
+            .expect("get_node must return node_data");
+        assert_eq!(before.title.as_deref(), Some("Buy milk"));
+
+        let batch_response = svc
+            .update_nodes_batch(Request::new(UpdateNodesBatchRequest {
+                updates: vec![crate::nodespace::BatchUpdateItem {
+                    node_id: node_id.clone(),
+                    version: Some(before.version),
+                    content: Some("Buy eggs".to_string()),
+                    node_type: None,
+                    properties: None,
+                }],
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            batch_response.failed.is_empty(),
+            "batch update must succeed: {:?}",
+            batch_response.failed
+        );
+
+        let after = svc
+            .get_node(Request::new(GetNodeRequest { node_id }))
+            .await
+            .unwrap()
+            .into_inner()
+            .node_data
+            .expect("get_node must return node_data");
+
+        assert_eq!(
+            after.title.as_deref(),
+            Some("Buy eggs"),
+            "a batch content update must recompute the DB title, not leave \
+             it describing the node's old content"
+        );
+    }
+
     /// A model-less shared build context for constructing a `DatabaseManager`
     /// in tests (`has_model = false` skips all embedding wiring).
     fn test_context() -> SharedContext {
