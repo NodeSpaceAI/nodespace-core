@@ -740,9 +740,9 @@
   /* Banners */
   .success-banner {
     font-size: 0.875rem;
-    color: hsl(142 76% 30%);
-    background: hsl(142 76% 36% / 0.1);
-    border: 1px solid hsl(142 76% 36% / 0.25);
+    color: hsl(var(--success));
+    background: hsl(var(--success) / 0.1);
+    border: 1px solid hsl(var(--success) / 0.25);
     border-radius: 0.375rem;
     padding: 0.625rem 0.875rem;
     margin-bottom: 1.25rem;
@@ -769,7 +769,10 @@
 
   .error-banner {
     font-size: 0.875rem;
-    color: hsl(var(--destructive-foreground));
+    /* The state color itself, not --destructive-foreground: that token is the
+       text color for a SOLID fill, and on a tint it renders near-invisible
+       (1.18:1). Against the tint, --destructive is 4.55:1. */
+    color: hsl(var(--destructive));
     background: hsl(var(--destructive) / 0.1);
     border: 1px solid hsl(var(--destructive) / 0.3);
     border-radius: 0.375rem;

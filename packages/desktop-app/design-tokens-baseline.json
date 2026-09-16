@@ -259,22 +259,7 @@
     {
       "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
       "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"1px solid hsl(142 76% 36% / 0.25)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
-      "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"hsl(0 0% 0% / 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"hsl(142 76% 30%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"hsl(142 76% 36% / 0.1)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
       "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
