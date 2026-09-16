@@ -2248,12 +2248,13 @@ export class SharedNodeStore {
               // Operation was cancelled by a newer operation - this is expected
               return;
             }
-            // An OCC error already raised its own specific version-mismatch
-            // notification inside the persistence closure's own catch above
-            // (see `occConflictAlreadyNotified`'s declaration for why this is
-            // a captured flag rather than re-deriving it from `err` via
-            // `isVersionConflict` — the re-thrown `err` has already lost the
-            // shape that check needs).
+            // An OCC error or a PlayRuleRejected error already raised its own
+            // specific notification (version-mismatch / play-rule-rejected)
+            // inside the persistence closure's own catch above (see
+            // `occConflictAlreadyNotified`'s declaration for why this is a
+            // captured flag rather than re-deriving it from `err` via
+            // `isVersionConflict`/`isPlayRuleRejected` — the re-thrown `err`
+            // has already lost the shape those checks need).
             if (occConflictAlreadyNotified) return;
             // Surface non-OCC write failures visibly so users know their change didn't save
             conflictNotifications.add({
@@ -3349,12 +3350,13 @@ export class SharedNodeStore {
         // Operation was cancelled by a newer operation - this is expected
         return;
       }
-      // An OCC error already raised its own specific version-mismatch
-      // notification inside the persistence closure's own catch above (see
+      // An OCC error or a PlayRuleRejected error already raised its own
+      // specific notification (version-mismatch / play-rule-rejected) inside
+      // the persistence closure's own catch above (see
       // `occConflictAlreadyNotified`'s declaration for why this is a
       // captured flag rather than re-deriving it from `err` via
-      // `isVersionConflict` — the re-thrown `err` has already lost the shape
-      // that check needs).
+      // `isVersionConflict`/`isPlayRuleRejected` — the re-thrown `err` has
+      // already lost the shape those checks need).
       if (occConflictAlreadyNotified) return;
       // Surface non-OCC write failures visibly so users know their change
       // didn't save — matches updateNode()'s/deleteNode()'s/setNode()'s
