@@ -33,11 +33,24 @@ function styleBearingFiles(dir: string): string[] {
 }
 
 /**
- * Matches a *declaration* of a --node-* custom property (`--node-foo: value;`),
- * not a var() reference to one. --node-indent and other non-color node vars are
- * excluded: the single-accent rule is about color only.
+ * Matches a *declaration* of a --node-* custom property (`--node-foo: value`),
+ * not a var() reference to one.
+ *
+ * Anchored to `{`, `;`, `"` or a line start rather than only a line start, so a
+ * declaration sharing a line with a brace, a second declaration, or an inline
+ * `style="--node-x: ..."` attribute is still seen — that attribute form is
+ * house style in seven icon components, so it is a realistic way to set a node
+ * color. The value stops at `;` or a closing `}`/quote so the last declaration
+ * in a block still matches without one.
  */
-const NODE_COLOR_DECLARATION = /^\s*(--node-[a-z-]+)\s*:\s*([^;]+);/gm;
+const NODE_COLOR_DECLARATION = /(?:^|[{;"'])\s*(--node-[a-z0-9-]+)\s*:\s*([^;}"']+)/gim;
+
+/**
+ * Non-color --node-* vars, exempt from the "derives from --primary" rule. The
+ * single-accent rule is about color only. Anything --node-* is treated as a
+ * color unless it is listed here: add a new non-color var to this set, or
+ * better, name it so it reads as non-color (--node-spacing-*).
+ */
 const NON_COLOR_NODE_VARS = new Set(['--node-indent']);
 
 function nodeColorDeclarations(source: string): Array<{ name: string; value: string }> {
@@ -69,10 +82,7 @@ describe('node accent colors', () => {
   });
 
   it('defines every node color variable the icon registry references', () => {
-    const registry = fs.readFileSync(
-      path.join(srcRoot, 'lib/design/icons/registry.ts'),
-      'utf8'
-    );
+    const registry = fs.readFileSync(path.join(srcRoot, 'lib/design/icons/registry.ts'), 'utf8');
     const defined = new Set(
       nodeColorDeclarations(fs.readFileSync(appCssPath, 'utf8')).map((d) => d.name)
     );
