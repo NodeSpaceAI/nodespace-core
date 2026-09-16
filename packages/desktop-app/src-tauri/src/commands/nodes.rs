@@ -1119,10 +1119,10 @@ mod tests {
         }
     }
 
-    /// Regression test for #2547: this conversion used to hardcode
-    /// `title: None` regardless of what the daemon sent, silently dropping
-    /// the title a second time even after the proto/wire fix — every Tauri
-    /// command that returns a node goes through this function.
+    /// This conversion used to hardcode `title: None` regardless of what the
+    /// daemon sent, silently dropping the title a second time even after the
+    /// proto/wire fix — every Tauri command that returns a node goes through
+    /// this function.
     #[test]
     fn proto_node_data_to_node_carries_a_present_title_through() {
         let node = proto_node_data_to_node(sample_node_data(Some("Michael Libio".to_string())))

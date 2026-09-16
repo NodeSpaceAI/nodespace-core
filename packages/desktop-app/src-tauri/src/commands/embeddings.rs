@@ -310,10 +310,10 @@ mod tests {
         }
     }
 
-    /// Regression test for #2547: search-result nodes go through this
-    /// separate proto→`Node` conversion (distinct from
-    /// `commands::nodes::proto_node_data_to_node`), which independently
-    /// hardcoded `title: None` — the same class of bug, a second call site.
+    /// Search-result nodes go through this separate proto→`Node` conversion
+    /// (distinct from `commands::nodes::proto_node_data_to_node`), which
+    /// independently hardcoded `title: None` — the same class of bug, a
+    /// second call site.
     #[test]
     fn node_from_proto_carries_a_present_title_through() {
         let node = node_from_proto(sample_node_data(Some("Michael Libio".to_string())))

@@ -418,9 +418,9 @@ mod tests {
         assert_eq!(json["version"], 7);
     }
 
-    /// Regression test for #2547: `NodeData.title` must reach `nodespace node
-    /// get --json` / `nodespace query --json` output, not be silently
-    /// dropped the way it was when `NodeData` carried no `title` field at all.
+    /// `NodeData.title` must reach `nodespace node get --json` /
+    /// `nodespace query --json` output, not be silently dropped the way it
+    /// was when `NodeData` carried no `title` field at all.
     #[test]
     fn node_to_json_includes_title_when_present() {
         let node = NodeData {

@@ -377,8 +377,8 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
     // uses) so this test proves the actual store-mediated round trip, not
     // just that the component calls the right method name. Only the network
     // boundary (backendAdapter.updateNode) is stubbed — and deliberately
-    // returns NO `title` field at all, matching the real (pre-#2547-fix)
-    // daemon's actual wire contract, which never sent one. The title must
+    // returns NO `title` field at all, matching the real daemon's
+    // previously-broken wire contract, which never sent one. The title must
     // still resolve correctly without it: per ADR-077 the editing client
     // computes its own title locally (see the "client-side title preview"
     // block below) rather than depending on this response.
@@ -398,7 +398,7 @@ describe('PersonSchemaForm — save path routes through the store (title-update 
       // Deliberately omit `title` from the response — `...seeded` would
       // otherwise leak `seeded.title` ("Untitled") back in, which is exactly
       // the stale-response-fighting-the-preview failure mode this test
-      // exists to rule out. The real (pre-#2547-fix) daemon never sent a
+      // exists to rule out. The real daemon previously never sent a
       // `title` at all; the fixed daemon's own title (once it lands) must
       // AGREE with, not fight, the value the client already computed below.
       const { title: _seededTitle, ...seededWithoutTitle } = seeded;

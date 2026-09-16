@@ -2993,11 +2993,11 @@ mod tests {
         assert_eq!(people_after.len(), 1);
     }
 
-    /// Regression test for #2547: `node_to_proto` is a hand-written
-    /// field-by-field mapping between `Node` (which has `title`) and
-    /// `NodeData` (whose proto message previously had no `title` field at
-    /// all) — this is the direct, cheapest test for the actual bug, pinned
-    /// at the conversion function itself rather than through a full RPC.
+    /// `node_to_proto` is a hand-written field-by-field mapping between
+    /// `Node` (which has `title`) and `NodeData` (whose proto message
+    /// previously had no `title` field at all) — this is the direct,
+    /// cheapest test for the actual bug, pinned at the conversion function
+    /// itself rather than through a full RPC.
     #[test]
     fn node_to_proto_maps_a_present_title_onto_the_wire_message() {
         let mut node = Node::new("person".to_string(), String::new(), serde_json::json!({}));

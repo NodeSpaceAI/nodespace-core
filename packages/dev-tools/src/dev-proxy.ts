@@ -75,6 +75,10 @@ interface ProtoNodeData {
   createdAt: string;
   modifiedAt: string;
   collectionId: string;
+  // Server-computed display title (node_service.proto's NodeData.title) —
+  // absent for a node type that never gets one (e.g. date/schema), so
+  // optional like `parentId` above.
+  title?: string;
 }
 
 interface ProtoNodeEvent {
@@ -250,7 +254,11 @@ function nodeDataToApiNode(n: ProtoNodeData): Record<string, unknown> {
     lifecycleStatus: n.lifecycleStatus,
     createdAt: n.createdAt,
     modifiedAt: n.modifiedAt,
-    collectionId: n.collectionId && n.collectionId !== '' ? n.collectionId : null
+    collectionId: n.collectionId && n.collectionId !== '' ? n.collectionId : null,
+    // Same absent-or-empty-string-collapses-to-null treatment as parentId/
+    // collectionId above, for consistency with how this function already
+    // handles every other optional proto string field.
+    title: n.title && n.title !== '' ? n.title : null
   };
 }
 
