@@ -48,11 +48,10 @@
     gap: 14px;
     max-width: calc(100vw - 32px);
     padding: 8px 12px;
-    border-radius: 8px;
-    background: var(--color-surface-raised, #1f242c);
-    color: var(--color-text, #e6e9ef);
-    border: 1px solid var(--color-border, #333b47);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28);
+    border-radius: var(--radius);
+    background: hsl(var(--popover));
+    color: hsl(var(--popover-foreground));
+    border: 1px solid hsl(var(--border));
     font-size: 13px;
   }
   .msg {
@@ -61,7 +60,7 @@
     text-overflow: ellipsis;
   }
   .cur {
-    color: var(--color-text-muted, #9aa4b2);
+    color: hsl(var(--muted-foreground));
   }
   .actions {
     display: flex;
@@ -76,8 +75,8 @@
     border: 1px solid transparent;
   }
   .download {
-    background: var(--color-accent, #3b82f6);
-    color: #fff;
+    background: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
   }
   .download:hover:not(:disabled) {
     filter: brightness(1.08);
@@ -88,10 +87,10 @@
   }
   .dismiss {
     background: transparent;
-    color: var(--color-text-muted, #9aa4b2);
-    border-color: var(--color-border, #333b47);
+    color: hsl(var(--muted-foreground));
+    border-color: hsl(var(--border));
   }
   .dismiss:hover {
-    color: var(--color-text, #e6e9ef);
+    color: hsl(var(--foreground));
   }
 </style>

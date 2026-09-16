@@ -45,26 +45,26 @@
   }
 
   .modal {
-    background: var(--color-surface, #1e1e1e);
-    border: 1px solid var(--color-border, #333);
-    border-radius: 8px;
+    background: hsl(var(--popover));
+    color: hsl(var(--popover-foreground));
+    border: 1px solid hsl(var(--border));
+    border-radius: var(--radius);
     padding: 24px;
     max-width: 360px;
     width: 100%;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   }
 
   h2 {
     margin: 0 0 8px;
     font-size: 16px;
     font-weight: 600;
-    color: var(--color-text-primary, #e0e0e0);
+    color: hsl(var(--foreground));
   }
 
   p {
     margin: 0 0 20px;
     font-size: 13px;
-    color: var(--color-text-secondary, #888);
+    color: hsl(var(--muted-foreground));
   }
 
   .actions {
@@ -83,11 +83,11 @@
   }
 
   .btn-ok {
-    background: var(--color-surface-elevated, #2a2a2a);
-    color: var(--color-text-primary, #e0e0e0);
+    background: hsl(var(--muted));
+    color: hsl(var(--foreground));
   }
 
   .btn-ok:hover {
-    background: var(--color-surface-hover, #333);
+    background: hsl(var(--hover-background));
   }
 </style>

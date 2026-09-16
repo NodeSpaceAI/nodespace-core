@@ -108,7 +108,6 @@
     border-radius: 8px;
     padding: 24px;
     width: min(480px, calc(100vw - 48px));
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   }
 
   .consent-content h2 {
@@ -181,7 +180,7 @@
 
   .btn-danger {
     background-color: hsl(var(--destructive));
-    color: #ffffff;
+    color: hsl(var(--destructive-foreground));
   }
 
   .btn-danger:hover:not(:disabled) {
