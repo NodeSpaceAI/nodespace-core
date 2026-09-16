@@ -73,6 +73,66 @@ describe('stylelint design-token rules', () => {
     ])('accepts %s', async (_label, code) => {
       expect(await lintCss(code)).toEqual([]);
     });
+
+    it.each([
+      ['white', '.a { color: white; }'],
+      ['black', '.a { background-color: black; }'],
+      ['rebeccapurple', '.a { border-color: rebeccapurple; }'],
+      ['red', '.a { fill: red; }']
+    ])('rejects the named color %s', async (_label, code) => {
+      // A named color is as much a hardcoded palette decision as a hex is, and
+      // it is the form drift takes once the obvious literals are blocked.
+      expect(await lintCss(code)).toContain(DISALLOWED);
+    });
+
+    it.each([
+      ['a leading color word', '.a { color: var(--white-overlay); }'],
+      ['a trailing color word', '.a { background: var(--surface-red); }'],
+      ['an embedded color word', '.a { fill: var(--btn-teal-hover); }'],
+      ['a custom property named after a color', '.a { --tan-surface: hsl(var(--card)); }']
+    ])('does not mistake %s for a literal', async (_label, code) => {
+      // `\b` would match inside an identifier, so a token merely containing a
+      // color word would be rejected — a false positive on correct code, which
+      // is what erodes trust in a gate.
+      expect(await lintCss(code)).toEqual([]);
+    });
+  });
+
+  describe('custom property declarations', () => {
+    it.each([
+      ['hex', '.a { --brand: #ff00aa; }'],
+      ['rgb', '.a { --accent: rgb(1 2 3); }'],
+      ['named', '.a { --surface: white; }']
+    ])('rejects a raw %s color declared as a custom property', async (_label, code) => {
+      // Otherwise `--brand: #ff00aa` then `color: var(--brand)` launders the
+      // literal past every other rule, and reads as more idiomatic than the
+      // thing being blocked.
+      expect(await lintCss(code)).toContain(DISALLOWED);
+    });
+
+    it.each([
+      ['a length', '.a { --spacing: 4px; }'],
+      ['a calc()', '.a { --radius-custom: calc(var(--radius) * 2); }'],
+      ['a token reference', '.a { --surface: hsl(var(--card)); }']
+    ])('accepts a custom property holding %s', async (_label, code) => {
+      expect(await lintCss(code)).toEqual([]);
+    });
+  });
+
+  describe('suppression comments', () => {
+    // CLAUDE.md forbids lint suppression. `configurationComment` is renamed so
+    // `stylelint-disable` is not a recognized directive — a gate that a comment
+    // can switch off is a convention, not a gate.
+    it.each([
+      ['a bare disable', '/* stylelint-disable */\n.a { color: #ff00aa; }'],
+      ['a described disable', '/* stylelint-disable -- reason */\n.a { color: #ff00aa; }'],
+      [
+        'a next-line disable',
+        '/* stylelint-disable-next-line declaration-property-value-disallowed-list */\n.a { color: #ff00aa; }'
+      ]
+    ])('still reports the violation under %s', async (_label, code) => {
+      expect(await lintCss(code)).toContain(DISALLOWED);
+    });
   });
 
   describe('box-shadow', () => {
@@ -117,9 +177,18 @@ describe('stylelint design-token rules', () => {
     it.each([
       ['sidebar collapse', '.a { transition: width 0.25s ease-out; }'],
       ['code-block button fade', '.a { transition: opacity 0.2s ease; }'],
-      ['explicitly disabled', '.a { transition: none; }']
+      ['explicitly disabled', '.a { transition: none; }'],
+      // `transition` takes a comma list, so two individually-approved values
+      // combined on one element must not be rejected for being combined.
+      ['both approved, combined', '.a { transition: width 0.25s ease-out, opacity 0.2s ease; }']
     ])('accepts the approved %s', async (_label, code) => {
       expect(await lintCss(code)).toEqual([]);
+    });
+
+    it('rejects a comma list mixing an approved and an unapproved transition', async () => {
+      expect(await lintCss('.a { transition: width 0.25s ease-out, color 0.3s linear; }')).toContain(
+        ALLOWED
+      );
     });
 
     it.each([
@@ -134,9 +203,14 @@ describe('stylelint design-token rules', () => {
       expect(await lintCss('.a { animation: spin 1s linear infinite; }')).toContain(DISALLOWED);
     });
 
-    it('rejects @keyframes', async () => {
-      const rules = await lintCss('@keyframes spin { to { transform: rotate(360deg); } }');
-      expect(rules).toContain('at-rule-disallowed-list');
+    it.each([
+      ['@keyframes', '@keyframes spin { to { transform: rotate(360deg); } }'],
+      // This app ships on WebKit (Tauri), so the prefixed form is the
+      // plausible spelling here, not an exotic edge case.
+      ['@-webkit-keyframes', '@-webkit-keyframes spin { to { opacity: 0; } }'],
+      ['@-moz-keyframes', '@-moz-keyframes spin { to { opacity: 0; } }']
+    ])('rejects %s', async (_label, code) => {
+      expect(await lintCss(code)).toContain('at-rule-disallowed-list');
     });
   });
 

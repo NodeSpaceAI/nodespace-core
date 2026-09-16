@@ -71,6 +71,15 @@ try {
 // every required path up front and names the command that produces each.
 await run("bun run build:skill (stage bundled skill installer resource)", () => $`bun run build:skill`);
 await run("bun run quality:scripts:check (scripts/ lint + typecheck)", () => $`bun run quality:scripts:check`);
+// The design-token gate (Stylelint over CSS and Svelte <style> blocks). It is
+// wired into the desktop-app quality scripts, but nothing automated runs those
+// and this repo has no CI, so without this line the gate depends on someone
+// remembering to run it — documentation rather than enforcement. Seconds to
+// run, unlike the Rust steps below.
+await run(
+  "bun run quality:design-tokens (design-token drift)",
+  () => $`bun run --cwd packages/desktop-app quality:design-tokens`
+);
 await run("bun run test:all (frontend + skill + Rust)", () => $`bun run test:all`);
 await run("cargo build --bin nodespaced (e2e harness daemon)", () => $`cargo build --bin nodespaced`);
 await run("bun run test:e2e (headless daemon round-trip)", () => {

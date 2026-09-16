@@ -102,11 +102,48 @@ async function collectViolations(): Promise<Violation[]> {
   return violations.sort((a, b) => key(a).localeCompare(key(b)));
 }
 
+/**
+ * Reads the baseline, validating its shape. A malformed baseline already fails
+ * the gate (closed, which is right), but as an unhandled TypeError deep inside
+ * the diff — so check here and say what is actually wrong instead.
+ */
+function malformed(problem: string): never {
+  throw new Error(
+    `${path.basename(baselineFile)} is malformed: ${problem}.\n` +
+      'Re-record it with: bun run --cwd packages/desktop-app quality:design-tokens --update'
+  );
+}
+
+function isViolation(value: unknown): value is Violation {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.file === 'string' && typeof v.rule === 'string' && typeof v.text === 'string';
+}
+
 function readBaseline(): Baseline {
   if (!existsSync(baselineFile)) {
     return { readme: '', violations: [] };
   }
-  return JSON.parse(readFileSync(baselineFile, 'utf8'));
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(baselineFile, 'utf8'));
+  } catch (error) {
+    malformed(`not valid JSON (${error instanceof Error ? error.message : String(error)})`);
+  }
+
+  if (typeof parsed !== 'object' || parsed === null) malformed('not a JSON object');
+
+  const { readme, violations } = parsed as { readme?: unknown; violations?: unknown };
+  if (!Array.isArray(violations)) malformed('missing a "violations" array');
+
+  const bad = violations.findIndex((v) => !isViolation(v));
+  if (bad !== -1) malformed(`violations[${bad}] is missing a string file, rule, or text`);
+
+  return {
+    readme: typeof readme === 'string' ? readme : '',
+    violations: violations as Violation[]
+  };
 }
 
 async function main(): Promise<number> {
@@ -125,7 +162,10 @@ async function main(): Promise<number> {
         'Known design-token violations, recorded so the quality gate fails only on NEW drift. ' +
         'Do not add entries by hand and do not re-run --update to silence a new violation: ' +
         'fix it instead. Regenerate only after legitimately removing violations, which shrinks ' +
-        'this list. See packages/desktop-app/stylelint.config.js.',
+        'this list. Entries are keyed by file, rule and message with no line number, so edits ' +
+        'elsewhere in a file do not churn them — but renaming a file does report its violations ' +
+        'as both added and fixed, and legitimately needs a re-record. ' +
+        'See packages/desktop-app/stylelint.config.js.',
       violations
     };
     writeFileSync(baselineFile, `${JSON.stringify(baseline, null, 2)}\n`);
@@ -133,7 +173,15 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  const baseline = readBaseline();
+  let baseline: Baseline;
+  try {
+    baseline = readBaseline();
+  } catch (error) {
+    // A stack trace here would bury the one line that says what to do.
+    console.error(`\n✗ ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
+
   const { added, fixed } = diffAgainstBaseline(violations, baseline.violations);
 
   if (added.length > 0) {

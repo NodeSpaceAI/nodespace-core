@@ -62,6 +62,10 @@ describe('diffAgainstBaseline', () => {
     expect(diffAgainstBaseline([RED, BLUE], [])).toEqual({ added: [RED, BLUE], fixed: 0 });
   });
 
+  it('treats an empty baseline and an empty current set as agreement', () => {
+    expect(diffAgainstBaseline([], [])).toEqual({ added: [], fixed: 0 });
+  });
+
   it('ignores line numbers, so unrelated edits do not churn the baseline', () => {
     // Entries deliberately carry no position: adding a line at the top of a
     // file must not invalidate every violation below it.

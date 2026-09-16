@@ -1,5 +1,5 @@
 {
-  "readme": "Known design-token violations, recorded so the quality gate fails only on NEW drift. Do not add entries by hand and do not re-run --update to silence a new violation: fix it instead. Regenerate only after legitimately removing violations, which shrinks this list. See packages/desktop-app/stylelint.config.js.",
+  "readme": "Known design-token violations, recorded so the quality gate fails only on NEW drift. Do not add entries by hand and do not re-run --update to silence a new violation: fix it instead. Regenerate only after legitimately removing violations, which shrinks this list. Entries are keyed by file, rule and message with no line number, so edits elsewhere in a file do not churn them — but renaming a file does report its violations as both added and fixed, and legitimately needs a re-record. See packages/desktop-app/stylelint.config.js.",
   "violations": [
     {
       "file": "src/app.css",
@@ -1120,6 +1120,21 @@
       "file": "src/lib/design/components/diagnostic-panel.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"var(--color-text, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"white\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"white\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
+    },
+    {
+      "file": "src/lib/design/components/diagnostic-panel.svelte",
+      "rule": "declaration-property-value-disallowed-list",
+      "text": "Raw color literal \"white\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
       "file": "src/lib/design/components/node-row.svelte",
