@@ -213,46 +213,6 @@
     },
     {
       "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Disallowed shadow \"0 2px 8px rgba(0, 0, 0, 0.3)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"0 2px 8px rgba(0, 0, 0, 0.3)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"1px solid var(--color-warning, #f59e0b)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-surface-2, #2a2a2a)\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-muted, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-warning, #f59e0b)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Unauthorized animation on \"animation\": \"none\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
     },
@@ -263,68 +223,8 @@
     },
     {
       "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Disallowed shadow \"0 8px 32px rgba(0, 0, 0, 0.4)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#a93226\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#c0392b\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#fff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"0 8px 32px rgba(0, 0, 0, 0.4)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"1px solid var(--color-border, #333)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-surface-elevated, #2a2a2a)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-surface-hover, #333)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-surface, #1e1e1e)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/delete-confirmation-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-secondary, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
       "file": "src/lib/components/dev/version-badge.svelte",
@@ -338,33 +238,8 @@
     },
     {
       "file": "src/lib/components/first-pro-consent-modal.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Disallowed shadow \"0 4px 16px rgba(0, 0, 0, 0.2)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/first-pro-consent-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#ffffff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/first-pro-consent-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"0 4px 16px rgba(0, 0, 0, 0.2)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/first-pro-consent-modal.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/first-pro-consent-slot.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Disallowed shadow \"0 4px 16px rgba(0, 0, 0, 0.18)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/first-pro-consent-slot.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"0 4px 16px rgba(0, 0, 0, 0.18)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
       "file": "src/lib/components/layout/collection-sub-panel.svelte",
@@ -533,31 +408,6 @@
     },
     {
       "file": "src/lib/components/pro-relogin-modal.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Disallowed shadow \"0 4px 16px rgba(0, 0, 0, 0.2)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/pro-relogin-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#1d4ed8\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/pro-relogin-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#2563eb\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/pro-relogin-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#ffffff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/pro-relogin-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"0 4px 16px rgba(0, 0, 0, 0.2)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/pro-relogin-modal.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
@@ -673,53 +523,8 @@
     },
     {
       "file": "src/lib/components/subtree-access-denied-modal.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Disallowed shadow \"0 8px 32px rgba(0, 0, 0, 0.4)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/subtree-access-denied-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"0 8px 32px rgba(0, 0, 0, 0.4)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/subtree-access-denied-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"1px solid var(--color-border, #333)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/subtree-access-denied-modal.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/subtree-access-denied-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-surface-elevated, #2a2a2a)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/subtree-access-denied-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-surface-hover, #333)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/subtree-access-denied-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-surface, #1e1e1e)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/subtree-access-denied-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/subtree-access-denied-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-primary, #e0e0e0)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/subtree-access-denied-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-secondary, #888)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
       "file": "src/lib/components/ui/node-autocomplete/node-autocomplete.svelte",
@@ -735,61 +540,6 @@
       "file": "src/lib/components/ui/slash-command-dropdown/slash-command-dropdown.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Unauthorized animation on \"animation\": \"spin 1s linear infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Disallowed shadow \"0 6px 20px rgba(0, 0, 0, 0.28)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#fff\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"0 6px 20px rgba(0, 0, 0, 0.28)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"1px solid var(--color-border, #333b47)\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-accent, #3b82f6)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-border, #333b47)\" in \"border-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-surface-raised, #1f242c)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-muted, #9aa4b2)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text-muted, #9aa4b2)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text, #e6e9ef)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/update-banner.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"var(--color-text, #e6e9ef)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
       "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",

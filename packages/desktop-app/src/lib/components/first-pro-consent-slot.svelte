@@ -136,7 +136,6 @@
     background: hsl(var(--popover));
     color: hsl(var(--popover-foreground));
     border: 1px solid hsl(var(--border));
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
     font-size: 13px;
     font-weight: 500;
   }

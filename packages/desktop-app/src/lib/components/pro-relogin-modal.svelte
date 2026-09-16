@@ -86,7 +86,6 @@
     border-radius: 8px;
     padding: 24px;
     width: min(440px, calc(100vw - 48px));
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   }
 
   .relogin-content h2 {
@@ -133,12 +132,12 @@
   }
 
   .btn-primary {
-    background-color: #2563eb;
-    color: #ffffff;
+    background-color: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
   }
 
   .btn-primary:hover:not(:disabled) {
-    background-color: #1d4ed8;
+    background-color: hsl(var(--primary) / 0.85);
   }
 
   .btn-secondary {
