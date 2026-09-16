@@ -557,9 +557,10 @@
  * type deliberately shares the single --primary accent so the node list stays
  * visually quiet; deriving from --primary rather than repeating its literal
  * value means light/dark switching is automatic and the two cannot drift apart.
- * Do not give a node type its own colour, and do not redefine these elsewhere.
+ * Do not give a node type its own color, and do not redefine these elsewhere.
  */
 :root {
+  --node-default: var(--primary);
   --node-text: var(--primary);
   --node-task: var(--primary);
   --node-ai-chat: var(--primary);

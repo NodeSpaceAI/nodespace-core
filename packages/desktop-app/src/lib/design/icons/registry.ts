@@ -74,7 +74,7 @@ class IconRegistry {
     this.register('text', {
       component: CircleIcon,
       semanticClass: 'node-icon',
-      colorVar: 'currentColor',
+      colorVar: 'hsl(var(--node-text))',
       hasState: false,
       hasRingEffect: true
     });
@@ -83,7 +83,7 @@ class IconRegistry {
     this.register('header', {
       component: CircleIcon,
       semanticClass: 'node-icon',
-      colorVar: 'currentColor',
+      colorVar: 'hsl(var(--node-text))',
       hasState: false,
       hasRingEffect: true
     });
@@ -92,7 +92,7 @@ class IconRegistry {
     this.register('document', {
       component: CircleIcon,
       semanticClass: 'node-icon',
-      colorVar: 'currentColor',
+      colorVar: 'hsl(var(--node-document))',
       hasState: false,
       hasRingEffect: true
     });

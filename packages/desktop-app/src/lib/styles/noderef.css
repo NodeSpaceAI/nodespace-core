@@ -505,7 +505,7 @@ a[href*="nodespace://"][href*="deleted=true"]:hover::after {
 }
 
 /* Document type variations - all share the single node accent; the file type is
-   conveyed by the icon and label, not by colour. */
+   conveyed by the icon and label, not by color. */
 .ns-noderef--document-pdf,
 .ns-noderef--document-image,
 .ns-noderef--document-video,
