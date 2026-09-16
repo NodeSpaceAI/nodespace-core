@@ -189,7 +189,8 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    bun run test:watch        # TDD watch mode
    bun run test:browser      # Real browser tests (focus/blur, Playwright/Chromium)
    bun run test:browser:watch
-   bun run test:all          # Unit + browser + Rust — REQUIRED before PR
+   bun run test:all          # Unit + scripts + skill + Rust — what the pre-push gate runs
+   bun run test:all:coverage # Same, with coverage instrumentation (reporting only)
    bun run test:db           # Full SQLite integration (before merging critical changes)
    bun run test:perf         # Full performance validation (large datasets)
    bun run test:coverage
@@ -202,12 +203,16 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
 
 4. **Quality Checks & PR**
    ```bash
-   bun run test:all          # MANDATORY — no new failures vs baseline
    bun run quality:fix       # MANDATORY — fix all lint/format issues
    git add . && git commit -m "Fix linting and formatting"
    git push origin HEAD:issue-<number>-brief-desc
    bun run gh:pr <number>    # Creates PR, updates status to "In Review"
    ```
+
+   > Do **not** run `bun run test:all` by hand here — the pre-push gate runs it (and more) on
+   > every push, so a manual run duplicates the entire pyramid. Run the narrower `bun run test`
+   > during development for fast feedback; let the gate be the gate. `quality:fix` stays manual
+   > because it rewrites files, which you want done before you commit.
 
    > ⚠️ **`bun run gh:pr` infers the head branch from the LOCAL branch name**, which `EnterWorktree` prefixes with `worktree-`. It therefore fails with `Validation Failed: {"field":"head","code":"invalid"}` against a remote branch pushed without that prefix. Create the PR directly instead, then set status:
    > ```bash
@@ -239,7 +244,7 @@ IMPORTANT SUB-AGENT INSTRUCTIONS:
    ```
    `discard_changes: true` is safe — the squash merge supersedes local branch commits. Always ExitWorktree first: `gh pr merge --delete-branch` fails noisily if you're still inside the worktree.
 
-**TodoWrite — NEW tasks:** First item must be the full startup sequence as a single step. Last items: "Run test:all", "Run quality:fix and commit", "Create PR", "ExitWorktree + merge".
+**TodoWrite — NEW tasks:** First item must be the full startup sequence as a single step. Last items: "Run quality:fix and commit", "Push (pre-push gate runs the full pyramid)", "Create PR", "ExitWorktree + merge".
 
 **TodoWrite — WIP continuation:** First item: "WIP continuation sequence: git status, pull branch, review WIP commit, resume from Remaining Work". Last items same as above.
 
@@ -253,7 +258,7 @@ Every plan MUST include:
    > `git status` and `git pull origin main` on primary checkout, `EnterWorktree({name: "issue-<N>-brief-desc"})` (the tool owns the location and branch name — accept them), then inside the worktree: `bun install`, `bun run test` (baseline), `bun run gh:comment <N> "..."`, `bun run gh:assign <N> "@me"`, `bun run gh:status <N> "In Progress"`
 
 2. **Final steps:**
-   > `bun run test:all` (no new failures), `bun run quality:fix` + commit, `git push origin HEAD:issue-<N>-brief-desc`, then `gh pr create --head issue-<N>-brief-desc` (not `bun run gh:pr` — it fails on the `worktree-` branch prefix). After approval: `gh pr view <PR#>`, `ExitWorktree({action: "remove", discard_changes: true})`, `gh pr merge <PR#> --squash --delete-branch`.
+   > `bun run quality:fix` + commit, `git push origin HEAD:issue-<N>-brief-desc` (the pre-push gate runs the full test pyramid — don't run `test:all` by hand first), then `gh pr create --head issue-<N>-brief-desc` (not `bun run gh:pr` — it fails on the `worktree-` branch prefix). After approval: `gh pr view <PR#>`, `ExitWorktree({action: "remove", discard_changes: true})`, `gh pr merge <PR#> --squash --delete-branch`.
 
 3. **Inline standards** the implementation agent needs: e.g. "use `createLogger` not `console.log`", "mock Tauri with `vi.mock('@tauri-apps/api/core')`", "use `bun run test` not `bun test`".
 

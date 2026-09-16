@@ -1,7 +1,7 @@
 {
   "name": "@nodespaceai/skill",
   "version": "0.2.0",
-  "description": "NodeSpace skill package — install NodeSpace tools into PTY agents (Claude Code, Codex, Antigravity CLI, OpenCode, Pi)",
+  "description": "NodeSpace skill package \u2014 install NodeSpace tools into PTY agents (Claude Code, Codex, Antigravity CLI, OpenCode, Pi)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,6 +28,7 @@
     "build": "tsc",
     "test": "bunx vitest run",
     "test:watch": "bunx vitest",
+    "quality:check": "bunx tsc --noEmit",
     "quality:fix": "bunx tsc --noEmit"
   },
   "dependencies": {},
