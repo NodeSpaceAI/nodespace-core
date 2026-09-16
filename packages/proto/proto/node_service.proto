@@ -1137,9 +1137,22 @@ message EmbeddingStatusResponse {
 
 message SearchSemanticRequest {
   string query = 1;
-  float threshold = 2;       // 0.0 = use server default (0.7)
+  // unset = use server default (0.7). Optional rather than a bare float so a
+  // caller asking for 0.0 (admit every match) is distinguishable from one that
+  // left the threshold alone — a bare float collapses both to the default,
+  // leaving no way to widen the floor from the wire.
+  optional float threshold = 2;
   int32 limit = 3;           // 0 = use server default (20)
-  bool exact = 4;            // reserved for future use
+  // Search the title/content keyword index alongside embeddings and merge both
+  // into one ranked list. Human-facing search (the desktop search box) sets
+  // this so exact-title matches on non-embeddable types (task/date/person —
+  // ADR-029) resolve at all; the agent/CLI paths leave it false for
+  // meaning-based retrieval only.
+  bool include_title_matches = 4;
+  // Node-type scope for the search, as parsed by ops::search_semantic:
+  // "knowledge" (default), "conversations", "everything". Human-facing search
+  // sends "everything" so a task or person node is reachable by title.
+  optional string scope = 5;
 }
 
 message SearchSemanticResponse {

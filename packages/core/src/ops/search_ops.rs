@@ -4,7 +4,7 @@
 //! Handles collection resolution, scope filtering, lifecycle filtering,
 //! over-fetching, and optional markdown inlining.
 
-use crate::models::{Node, NodeFilter};
+use crate::models::{Node, NodeFilter, NodeQuery};
 use crate::ops::OpsError;
 use crate::services::{
     CollectionService, NodeEmbeddingService, NodeService, NodeServiceError, SearchNodeFilters,
@@ -104,6 +104,19 @@ pub struct SearchSemanticInput {
     /// Surfaces well-connected, central knowledge nodes over isolated but textually similar ones.
     /// Default: false (pure similarity ranking)
     pub graph_boost: Option<bool>,
+
+    /// When true, also run a title/content keyword search and merge its hits
+    /// into the ranked result set ahead of the embedding hits.
+    ///
+    /// Embeddings only cover the embeddable types (text/header/code-block/
+    /// schema/table — ADR-029), so a `task` named "Draft Q3 architecture
+    /// review" has no vector to match and is unreachable by meaning-based
+    /// search at any threshold. A human typing a title into a search box
+    /// expects to find it regardless, which is what this flag is for; the
+    /// agent/CLI meaning-based paths leave it off. See [`title_match_nodes`]
+    /// for the matching and ranking rules.
+    /// Default: false.
+    pub include_title_matches: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -275,6 +288,189 @@ async fn enumerate_nodes(
         .collect())
 }
 
+/// Score floor for a keyword hit the store matched by word stem rather than by
+/// literal substring, so it sorts below every literal keyword hit while staying
+/// above the semantic band. Kept in step with the bands in
+/// [`keyword_match_score`].
+const STEM_FALLBACK_SCORE: f64 = 0.8;
+
+/// Combine the keyword and semantic halves of a merged search into one ranked
+/// list: every keyword hit, then the semantic hits for nodes the keyword pass
+/// did not already surface.
+///
+/// The order is positional, not score-sorted. A keyword hit always precedes a
+/// semantic one, which is the ranking `include_title_matches` exists to
+/// produce — someone who typed a title wants that node first, even against a
+/// vector hit that happens to score higher. (A cosine similarity can reach into
+/// the keyword bands, so sorting the merged list by score would let a strong
+/// semantic match displace the exact title.) Each half arrives already ordered
+/// by its own score, and that internal order is preserved.
+///
+/// Note that `graph_boost`, when enabled downstream, re-ranks the merged set by
+/// blended score and so converts this positional guarantee into a scoring one —
+/// a well-connected semantic hit could then outrank a weak keyword hit. No
+/// caller combines the two today.
+fn merge_keyword_and_semantic(
+    keyword: Vec<(Node, f64)>,
+    semantic: Vec<(Node, f64)>,
+) -> Vec<(Node, f64)> {
+    let keyword_ids: HashSet<&str> = keyword.iter().map(|(node, _)| node.id.as_str()).collect();
+    let semantic_only: Vec<(Node, f64)> = semantic
+        .into_iter()
+        .filter(|(node, _)| !keyword_ids.contains(node.id.as_str()))
+        .collect();
+
+    let mut merged = keyword;
+    merged.extend(semantic_only);
+    merged
+}
+
+/// Score a keyword hit by how completely the query accounts for the text it
+/// matched, so an exact title outranks a title that merely contains the query.
+///
+/// Returns a value in `(0.0, 1.0]`, or `None` when `text` does not contain
+/// `query_lower` at all. The tiers are deliberately coarse — exact match,
+/// prefix match, then containment — because the underlying store match is a
+/// plain `LIKE` with no relevance signal of its own to refine. Within the
+/// containment tier, shorter matched text scores higher: a query that is most
+/// of a short title is a better hit than the same query buried in a long one.
+fn keyword_match_score(text: &str, query_lower: &str) -> Option<f64> {
+    let text_lower = text.trim().to_lowercase();
+    if text_lower.is_empty() || !text_lower.contains(query_lower) {
+        return None;
+    }
+    if text_lower == query_lower {
+        return Some(1.0);
+    }
+    // Ratio of query length to matched-text length, so a near-complete match
+    // lands just under an exact one and a small fragment of a long text lands
+    // near the floor. Both tiers are compressed into bands above the semantic
+    // range so keyword hits sort ahead of vector hits without any single band
+    // reaching the 1.0 reserved for an exact match.
+    //
+    // `coverage` is always > 0 here (the query was found in the text and both
+    // are non-empty), so containment lands in (0.8, 0.89] and prefix in
+    // (0.9, 0.99] — both strictly above STEM_FALLBACK_SCORE, which is what
+    // keeps a literal match ahead of a stem-only one.
+    let coverage = query_lower.chars().count() as f64 / text_lower.chars().count().max(1) as f64;
+    if text_lower.starts_with(query_lower) {
+        Some(0.9 + 0.09 * coverage)
+    } else {
+        Some(0.8 + 0.09 * coverage)
+    }
+}
+
+/// Keyword (title/content substring) retrieval for human-facing search.
+///
+/// Runs two store queries rather than one because `NodeQuery`'s
+/// `title_contains` and `content_contains` are AND-chained into a single
+/// `WHERE` (see `build_scalar_conditions` in `sqlite_store/nodes.rs`) — what
+/// search needs is their union: a node whose *title* matches, or whose
+/// *content* does. Setting both on one query would instead demand the term
+/// appear in both fields, which almost never holds for a node whose title is
+/// derived from its content.
+///
+/// The title query is issued first and its hits kept on a tie, because
+/// `query_nodes` applies a title-stem fallback (a "groceries" query resolving
+/// a "grocery store" title) that has no content-side equivalent. Results are
+/// scored by [`keyword_match_score`] against the better of the node's title
+/// and content, deduplicated by id, and returned highest-scoring first.
+///
+/// `node_types` from `filters` is pushed down to the store per type, matching
+/// [`enumerate_nodes`]; `property_filters` has no pushdown and is applied as a
+/// post-filter via [`SearchNodeFilters::matches`].
+async fn title_match_nodes(
+    node_service: &Arc<NodeService>,
+    query: &str,
+    limit: usize,
+    filters: Option<&SearchNodeFilters>,
+) -> Result<Vec<(Node, f64)>, OpsError> {
+    let query_lower = query.trim().to_lowercase();
+    if query_lower.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let per_query_limit = ENUMERATE_FETCH_CAP.min(limit.max(1) * 3);
+    let node_types = filters
+        .and_then(|f| f.node_types.as_ref())
+        .filter(|types| !types.is_empty());
+
+    // (query-builder, applies-to) pairs: title first so its stem-fallback hits
+    // win ties against a plain content substring match for the same node.
+    let mut candidates: Vec<Node> = Vec::new();
+    for by_title in [true, false] {
+        let base = || {
+            let mut q = NodeQuery::new();
+            if by_title {
+                q.title_contains = Some(query.trim().to_string());
+            } else {
+                q.content_contains = Some(query.trim().to_string());
+            }
+            q.limit = Some(per_query_limit);
+            q
+        };
+
+        match node_types {
+            Some(types) => {
+                for node_type in types {
+                    let mut q = base();
+                    q.node_type = Some(node_type.clone());
+                    let mut matched = node_service.query_nodes_simple(q).await.map_err(|e| {
+                        OpsError::Internal(format!("Failed to run title search: {}", e))
+                    })?;
+                    candidates.append(&mut matched);
+                }
+            }
+            None => {
+                let mut matched = node_service.query_nodes_simple(base()).await.map_err(|e| {
+                    OpsError::Internal(format!("Failed to run title search: {}", e))
+                })?;
+                candidates.append(&mut matched);
+            }
+        }
+    }
+
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut scored: Vec<(Node, f64)> = Vec::new();
+    for node in candidates {
+        if !seen.insert(node.id.clone()) {
+            continue;
+        }
+        if let Some(f) = filters {
+            if !f.matches(&node.node_type, &node.properties) {
+                continue;
+            }
+        }
+        let title_score = node
+            .title
+            .as_deref()
+            .and_then(|t| keyword_match_score(t, &query_lower));
+        let content_score = keyword_match_score(&node.content, &query_lower);
+        let score = match (title_score, content_score) {
+            (Some(t), Some(c)) => t.max(c),
+            (Some(s), None) | (None, Some(s)) => s,
+            // Neither field contains the query as a literal substring, so this
+            // row came from the store's title-stem fallback matching a word
+            // variant ("groceries" resolving a "grocery store" title). It keeps
+            // the floor score: the store made a real judgement here, and
+            // re-deciding it would defeat the fallback's whole purpose.
+            //
+            // A LIKE wildcard in the query used to land here too, which made
+            // this arm dangerous — `%` matched every row and each one took the
+            // floor score, ranking arbitrary nodes above every genuine semantic
+            // hit. `build_scalar_conditions` now escapes `%`/`_`, so the store
+            // only returns rows it can justify and the stem fallback is once
+            // again the sole way to reach this arm.
+            (None, None) => STEM_FALLBACK_SCORE,
+        };
+        scored.push((node, score));
+    }
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit);
+    Ok(scored)
+}
+
 // ============================================================================
 // Operation
 // ============================================================================
@@ -427,10 +623,12 @@ pub async fn search_semantic(
         || scope_filters;
     let effective_limit = if has_post_filters { limit * 3 } else { limit };
 
+    let include_title_matches = input.include_title_matches.unwrap_or(false);
+
     let results = if is_enumerate {
         enumerate_nodes(node_service, effective_limit, search_filters.as_ref()).await?
     } else {
-        embedding_service
+        let semantic = embedding_service
             .semantic_search_nodes(
                 &input.query,
                 effective_limit,
@@ -452,7 +650,36 @@ pub async fn search_semantic(
                 } else {
                     OpsError::Internal(format!("Search failed: {}", e))
                 }
-            })?
+            });
+
+        // With keyword search in play, an unusable embedding index degrades the
+        // search instead of failing it: the keyword half is independent of
+        // embeddings and is the half that answers a title query. Without the
+        // flag there is no second half to fall back on, so the error stands.
+        let semantic = match semantic {
+            Ok(results) => results,
+            Err(e) if include_title_matches => {
+                tracing::warn!(
+                    error = %e,
+                    "semantic search unavailable; serving keyword matches only"
+                );
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        };
+
+        if include_title_matches {
+            let keyword = title_match_nodes(
+                node_service,
+                &input.query,
+                effective_limit,
+                search_filters.as_ref(),
+            )
+            .await?;
+            merge_keyword_and_semantic(keyword, semantic)
+        } else {
+            semantic
+        }
     };
 
     let skip_scope_filter = should_skip_scope_filter(
@@ -778,8 +1005,192 @@ mod tests {
             property_filters: None,
             include_edges: None,
             graph_boost: None,
+            include_title_matches: None,
         };
         assert!(!input.include_edges.unwrap_or(false));
+    }
+
+    #[test]
+    fn keyword_score_ranks_exact_above_prefix_above_containment() {
+        let exact = keyword_match_score("Migration plan", "migration plan").unwrap();
+        let prefix = keyword_match_score("Migration plan draft", "migration plan").unwrap();
+        let contained =
+            keyword_match_score("Revisit the migration plan later", "migration plan").unwrap();
+
+        assert_eq!(exact, 1.0, "an exact title match is the strongest hit");
+        assert!(
+            exact > prefix && prefix > contained,
+            "expected exact ({exact}) > prefix ({prefix}) > contained ({contained})"
+        );
+    }
+
+    #[test]
+    fn keyword_score_is_case_insensitive_and_ignores_surrounding_space() {
+        assert_eq!(
+            keyword_match_score("  MIGRATION PLAN  ", "migration plan"),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn keyword_score_rejects_text_without_the_query() {
+        assert_eq!(
+            keyword_match_score("Vendor security questionnaire", "migration plan"),
+            None
+        );
+        assert_eq!(keyword_match_score("", "migration plan"), None);
+    }
+
+    /// Every keyword tier has to outrank any similarity a vector hit can carry,
+    /// or a merged list would interleave a weak semantic match above the exact
+    /// title the person typed. Similarity is a cosine score in 0..=1, and the
+    /// weakest keyword tier (a one-character query buried in a long text) still
+    /// has to clear the strongest plausible similarity.
+    #[test]
+    fn keyword_scores_outrank_the_semantic_similarity_range() {
+        let weakest_containment = keyword_match_score(&"x".repeat(1000), "x").unwrap();
+
+        assert!(
+            weakest_containment > 0.8,
+            "weakest keyword hit ({weakest_containment}) must stay above the semantic band"
+        );
+        assert!(
+            weakest_containment <= 1.0,
+            "no keyword hit may exceed the 1.0 reserved for an exact match"
+        );
+    }
+
+    /// A longer title dilutes the same query: the query accounts for less of
+    /// what it matched, so it is the weaker hit of the two.
+    #[test]
+    fn keyword_score_prefers_the_shorter_matched_text() {
+        let tight = keyword_match_score("migration plan v2", "migration plan").unwrap();
+        let diluted = keyword_match_score(
+            "migration plan plus every other open workstream we tracked",
+            "migration plan",
+        )
+        .unwrap();
+
+        assert!(
+            tight > diluted,
+            "expected the tighter match ({tight}) to outrank the diluted one ({diluted})"
+        );
+    }
+
+    fn merge_node(id: &str) -> Node {
+        Node::new_with_id(
+            id.to_string(),
+            "text".to_string(),
+            format!("content of {id}"),
+            json!({}),
+        )
+    }
+
+    fn merge_ids(merged: &[(Node, f64)]) -> Vec<&str> {
+        merged.iter().map(|(n, _)| n.id.as_str()).collect()
+    }
+
+    /// The headline ranking: a keyword hit precedes a semantic one even when
+    /// the semantic hit carries the higher score. This is what makes an exact
+    /// title win against a strong vector match.
+    #[test]
+    fn merge_puts_every_keyword_hit_ahead_of_every_semantic_hit() {
+        let keyword = vec![(merge_node("kw-weak"), 0.81)];
+        let semantic = vec![(merge_node("sem-strong"), 0.99)];
+
+        let merged = merge_keyword_and_semantic(keyword, semantic);
+
+        assert_eq!(merge_ids(&merged), vec!["kw-weak", "sem-strong"]);
+    }
+
+    /// A node both halves found appears once, keeping its keyword score and
+    /// keyword position — otherwise an exact title match would also show up
+    /// again lower down as a semantic hit.
+    #[test]
+    fn merge_deduplicates_a_node_found_by_both_halves() {
+        let keyword = vec![(merge_node("shared"), 1.0), (merge_node("kw-only"), 0.85)];
+        let semantic = vec![(merge_node("shared"), 0.72), (merge_node("sem-only"), 0.71)];
+
+        let merged = merge_keyword_and_semantic(keyword, semantic);
+
+        assert_eq!(
+            merge_ids(&merged),
+            vec!["shared", "kw-only", "sem-only"],
+            "the shared node keeps its keyword position and appears once"
+        );
+        assert_eq!(
+            merged[0].1, 1.0,
+            "the shared node keeps its keyword score, not the semantic one"
+        );
+    }
+
+    /// Each half arrives sorted by its own score; the merge must not disturb
+    /// that internal order while concatenating.
+    #[test]
+    fn merge_preserves_each_half_internal_order() {
+        let keyword = vec![
+            (merge_node("kw-1"), 1.0),
+            (merge_node("kw-2"), 0.9),
+            (merge_node("kw-3"), 0.82),
+        ];
+        let semantic = vec![(merge_node("sem-1"), 0.95), (merge_node("sem-2"), 0.75)];
+
+        let merged = merge_keyword_and_semantic(keyword, semantic);
+
+        assert_eq!(
+            merge_ids(&merged),
+            vec!["kw-1", "kw-2", "kw-3", "sem-1", "sem-2"]
+        );
+    }
+
+    #[test]
+    fn merge_handles_an_empty_half_on_either_side() {
+        let keyword_only = merge_keyword_and_semantic(vec![(merge_node("kw"), 0.9)], Vec::new());
+        assert_eq!(merge_ids(&keyword_only), vec!["kw"]);
+
+        let semantic_only = merge_keyword_and_semantic(Vec::new(), vec![(merge_node("sem"), 0.9)]);
+        assert_eq!(merge_ids(&semantic_only), vec!["sem"]);
+
+        assert!(merge_keyword_and_semantic(Vec::new(), Vec::new()).is_empty());
+    }
+
+    /// A row matched only by word stem must sort below every literal keyword
+    /// hit, including the weakest containment match, while still outranking
+    /// the semantic band.
+    #[test]
+    fn stem_fallback_score_sits_below_every_literal_keyword_hit() {
+        // The stem floor must still clear the semantic band; a constant, so it
+        // holds at compile time rather than being re-checked at runtime.
+        const _: () = assert!(STEM_FALLBACK_SCORE > 0.7);
+
+        let weakest_literal = keyword_match_score(&"x".repeat(10_000), "x").unwrap();
+
+        assert!(
+            weakest_literal > STEM_FALLBACK_SCORE,
+            "weakest literal hit ({weakest_literal}) must outrank the stem floor \
+             ({STEM_FALLBACK_SCORE})"
+        );
+    }
+
+    #[test]
+    fn test_include_title_matches_defaults_false() {
+        let input = SearchSemanticInput {
+            query: "test".to_string(),
+            threshold: None,
+            limit: None,
+            collection_id: None,
+            collection: None,
+            exclude_collections: None,
+            include_markdown: None,
+            include_archived: None,
+            scope: None,
+            node_types: None,
+            property_filters: None,
+            include_edges: None,
+            graph_boost: None,
+            include_title_matches: None,
+        };
+        assert!(!input.include_title_matches.unwrap_or(false));
     }
 
     #[test]
@@ -798,6 +1209,7 @@ mod tests {
             property_filters: None,
             include_edges: None,
             graph_boost: None,
+            include_title_matches: None,
         };
         assert!(!input.graph_boost.unwrap_or(false));
     }

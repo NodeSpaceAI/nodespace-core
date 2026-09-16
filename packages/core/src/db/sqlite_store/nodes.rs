@@ -1552,15 +1552,18 @@ impl SqliteStore {
         let mut bind_values: Vec<libsql::Value> = Vec::new();
 
         if let Some(ref search_q) = query.content_contains {
-            let search_lower = format!("%{}%", search_q.to_lowercase());
-            conditions.push(format!("LOWER(content) LIKE ?{}", bind_values.len() + 1));
+            let search_lower = Self::like_contains_pattern(search_q);
+            conditions.push(format!(
+                "LOWER(content) LIKE ?{} ESCAPE '\\'",
+                bind_values.len() + 1
+            ));
             bind_values.push(libsql::Value::Text(search_lower));
         }
 
         if let Some(ref search_q) = query.title_contains {
-            let search_lower = format!("%{}%", search_q.to_lowercase());
+            let search_lower = Self::like_contains_pattern(search_q);
             conditions.push(format!(
-                "title IS NOT NULL AND LOWER(title) LIKE ?{}",
+                "title IS NOT NULL AND LOWER(title) LIKE ?{} ESCAPE '\\'",
                 bind_values.len() + 1
             ));
             bind_values.push(libsql::Value::Text(search_lower));
@@ -1581,6 +1584,29 @@ impl SqliteStore {
         }
 
         (conditions, bind_values)
+    }
+
+    /// Build a lowercased `%term%` LIKE pattern in which every character of
+    /// `term` matches literally.
+    ///
+    /// `%` and `_` are LIKE wildcards, so a search term containing either
+    /// silently changes the query's meaning: a bare `%` matches every row, and
+    /// `user_id` matches `userXid`. Both are ordinary characters someone may
+    /// search for (`50%`, `snake_case`), so they are escaped here and the
+    /// caller pairs this with an `ESCAPE '\'` clause. The escape character
+    /// itself is escaped first, or a term containing a backslash would consume
+    /// the escape of whatever followed it.
+    ///
+    /// Unlike `QueryService::escape_string_for_like`, this does not escape
+    /// single quotes: the result is passed as a bound parameter rather than
+    /// interpolated into SQL, so quote handling is the driver's job.
+    pub(super) fn like_contains_pattern(term: &str) -> String {
+        let escaped = term
+            .to_lowercase()
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        format!("%{}%", escaped)
     }
 
     /// Count nodes matching `query` without materializing full records — the
@@ -3640,6 +3666,115 @@ mod title_contains_stem_fallback_tests {
         let id = node.id.clone();
         store.create_node(node, None, None).await?;
         Ok(id)
+    }
+
+    #[test]
+    fn like_contains_pattern_escapes_wildcards_but_not_the_surrounding_ones() {
+        // The term's own metacharacters are escaped; the %…% the helper adds
+        // around it stays live, or the pattern would match nothing.
+        assert_eq!(SqliteStore::like_contains_pattern("50%"), "%50\\%%");
+        assert_eq!(SqliteStore::like_contains_pattern("user_id"), "%user\\_id%");
+        // The escape character is escaped first, so a trailing backslash can't
+        // consume the escape of whatever follows it.
+        assert_eq!(SqliteStore::like_contains_pattern("a\\b"), "%a\\\\b%");
+        assert_eq!(SqliteStore::like_contains_pattern("Plain"), "%plain%");
+    }
+
+    /// A `%` is a search for the literal character, not a wildcard.
+    ///
+    /// The decoy title shares the term's non-wildcard text ("50" … "capacity")
+    /// but has no literal `%`, so an unescaped `LIKE '%50% capacity%'` matches
+    /// both rows while the escaped pattern matches only the first. A decoy
+    /// without that shared text would let this pass unescaped and prove
+    /// nothing.
+    #[tokio::test]
+    async fn percent_in_a_search_term_matches_literally() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        let with_percent = make_task(&store, "Battery at 50% capacity").await?;
+        make_task(&store, "Battery at 50 units capacity").await?;
+
+        let nodes = store
+            .query_nodes(NodeQuery {
+                title_contains: Some("50% capacity".to_string()),
+                ..Default::default()
+            })
+            .await?;
+
+        assert_eq!(
+            nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+            vec![with_percent.as_str()],
+            "only the title actually containing a literal '%' should match"
+        );
+        Ok(())
+    }
+
+    /// `_` is a single-character LIKE wildcard; unescaped, `user_id` would also
+    /// match `userXid`.
+    #[tokio::test]
+    async fn underscore_in_a_search_term_matches_literally() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        let literal = make_task(&store, "Rename user_id across the schema").await?;
+        make_task(&store, "Rename userXid across the schema").await?;
+
+        let nodes = store
+            .query_nodes(NodeQuery {
+                title_contains: Some("user_id".to_string()),
+                ..Default::default()
+            })
+            .await?;
+
+        assert_eq!(
+            nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+            vec![literal.as_str()],
+            "an underscore must not act as a single-character wildcard"
+        );
+        Ok(())
+    }
+
+    /// Pins the builder's `\` doubling against the SQL's `ESCAPE '\'` clause.
+    ///
+    /// Unlike the `%`/`_` cases, this does not fail if escaping is removed
+    /// wholesale — with no ESCAPE clause a backslash is an ordinary character
+    /// either way. What it catches is the two halves drifting apart: doubling
+    /// without the clause, or the clause without the doubling, each of which
+    /// would make a backslashed term match the wrong rows. Windows paths make
+    /// that worth guarding.
+    #[tokio::test]
+    async fn backslash_in_a_search_term_matches_literally() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        let literal = make_task(&store, "Path C:\\Users\\shared").await?;
+        make_task(&store, "Unrelated errand").await?;
+
+        let nodes = store
+            .query_nodes(NodeQuery {
+                content_contains: Some("C:\\Users".to_string()),
+                ..Default::default()
+            })
+            .await?;
+
+        assert_eq!(
+            nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(),
+            vec![literal.as_str()]
+        );
+        Ok(())
+    }
+
+    /// The same escaping must hold for the @-mention picker, which builds its
+    /// own LIKE query rather than going through `build_scalar_conditions`.
+    #[tokio::test]
+    async fn mention_autocomplete_treats_wildcards_literally() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+        make_task(&store, "Quarterly planning").await?;
+        make_task(&store, "Budget review").await?;
+
+        let matches = store.mention_autocomplete("%", None).await?;
+
+        assert!(
+            matches.is_empty(),
+            "a bare % must not surface every titled node in the mention picker; got {:?}",
+            matches.iter().map(|n| &n.title).collect::<Vec<_>>()
+        );
+        Ok(())
     }
 
     #[tokio::test]

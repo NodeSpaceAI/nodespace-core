@@ -816,6 +816,7 @@ impl GrpcNodeService for NodeServiceImpl {
             property_filters,
             include_edges: None,
             graph_boost: None,
+            include_title_matches: None,
         };
 
         let output = search_ops::search_semantic(&this.node_service, &embedding_service, input)
@@ -2417,7 +2418,7 @@ fn resolve_seed_template(
     first
 }
 
-fn ops_error_to_status(err: OpsError) -> Status {
+pub(crate) fn ops_error_to_status(err: OpsError) -> Status {
     match err {
         OpsError::NotFound { id } => Status::not_found(format!("Not found: {}", id)),
         OpsError::AlreadyExists { id } => Status::already_exists(format!("Already exists: {}", id)),

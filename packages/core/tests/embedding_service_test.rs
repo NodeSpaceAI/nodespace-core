@@ -1726,6 +1726,7 @@ fn empty_search_input(
         property_filters: None,
         include_edges: None,
         graph_boost: None,
+        include_title_matches: None,
     }
 }
 
@@ -1878,3 +1879,192 @@ async fn test_search_semantic_enumerate_multi_type_counts_every_type_past_fetch_
 // — is instead pinned directly and exhaustively at the unit level by
 // `search_ops::tests::test_should_skip_scope_filter_only_for_enumerate_with_explicit_node_types_and_default_scope`,
 // which asserts the predicate's value for all 4 boolean combinations.
+
+// ============================================================================
+// search_ops::search_semantic — include_title_matches (merged keyword+semantic)
+// ============================================================================
+//
+// Embeddings only cover the embeddable types (ADR-029), so a `task` has no
+// vector and is unreachable by meaning-based search at any threshold. The
+// desktop search box sets `include_title_matches` so the keyword half of the
+// merged search finds it by title/content; these tests pin that behavior and
+// the guarantee that the flag stays off for the agent/CLI retrieval paths.
+
+fn title_search_input(query: &str, scope: Option<&str>) -> search_ops::SearchSemanticInput {
+    search_ops::SearchSemanticInput {
+        query: query.to_string(),
+        threshold: None,
+        limit: None,
+        collection_id: None,
+        collection: None,
+        exclude_collections: None,
+        include_markdown: Some(0),
+        include_archived: None,
+        scope: scope.map(|s| s.to_string()),
+        node_types: None,
+        property_filters: None,
+        include_edges: None,
+        graph_boost: None,
+        include_title_matches: Some(true),
+    }
+}
+
+/// The issue's headline scenario: a task whose content is exactly the query.
+/// Scoped to `everything` the way the desktop search box scopes it, because
+/// the default `knowledge` scope excludes `task` by design.
+#[tokio::test]
+async fn test_search_semantic_finds_non_embeddable_task_by_title() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let task = create_root_node(&node_service, "task", "Draft Q3 architecture review").await?;
+
+    let input = title_search_input("Draft Q3 architecture review", Some("everything"));
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    assert!(
+        output.matched_nodes.iter().any(|n| n.id == task.id),
+        "expected the task to be found by title; got {:?}",
+        output
+            .matched_nodes
+            .iter()
+            .map(|n| (&n.id, &n.content))
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// With no usable embedding index, the keyword half still answers the query
+/// instead of the whole search failing — the flag turns an unavailable
+/// embedding service into a degraded search rather than an error. Without the
+/// flag there is no second half to fall back on, so the same call errors.
+///
+/// This test env has no loaded model, which is exactly that condition.
+#[tokio::test]
+async fn test_title_matches_degrade_instead_of_failing_without_embeddings() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let task = create_root_node(&node_service, "task", "Draft Q3 architecture review").await?;
+
+    // Flag off: the unusable embedding service is fatal.
+    let mut without = title_search_input("Draft Q3 architecture review", Some("everything"));
+    without.include_title_matches = None;
+    assert!(
+        search_ops::search_semantic(&node_service, &embedding_service, without)
+            .await
+            .is_err(),
+        "meaning-based search alone has nothing to fall back on"
+    );
+
+    // Flag on: the keyword half still returns the task.
+    let with = title_search_input("Draft Q3 architecture review", Some("everything"));
+    let output = search_ops::search_semantic(&node_service, &embedding_service, with).await?;
+    assert!(
+        output.matched_nodes.iter().any(|n| n.id == task.id),
+        "keyword matching must survive an unavailable embedding service"
+    );
+    Ok(())
+}
+
+/// An archived node stays out of the keyword half too. The whole point of
+/// routing the GUI through this op is that its ADR-029 lifecycle/scope
+/// filtering applies to every result, not just the semantic ones.
+#[tokio::test]
+async fn test_title_matches_still_respect_archived_filtering() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let task = create_root_node(&node_service, "task", "Draft Q3 architecture review").await?;
+    node_service
+        .update_node(
+            &task.id,
+            task.version,
+            nodespace_core::models::NodeUpdate::new().with_lifecycle_status("archived".to_string()),
+        )
+        .await?;
+
+    let input = title_search_input("Draft Q3 architecture review", Some("everything"));
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    assert!(
+        !output.matched_nodes.iter().any(|n| n.id == task.id),
+        "an archived node must not surface through the keyword half either"
+    );
+    Ok(())
+}
+
+/// The default `knowledge` scope excludes `task`, so a keyword hit on one is
+/// filtered out exactly as a semantic hit would be — the scope guard applies
+/// to both halves of the merge.
+#[tokio::test]
+async fn test_title_matches_respect_default_knowledge_scope() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let task = create_root_node(&node_service, "task", "Draft Q3 architecture review").await?;
+
+    let input = title_search_input("Draft Q3 architecture review", None);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    assert!(
+        !output.matched_nodes.iter().any(|n| n.id == task.id),
+        "the default knowledge scope excludes task, for keyword hits as well"
+    );
+    Ok(())
+}
+
+/// A `%` typed into the search box must not match every row. Before
+/// `build_scalar_conditions` escaped LIKE metacharacters, it did: each row
+/// reached the scoring pass matching neither title nor content, took the
+/// stem-fallback floor, and so ranked above every genuine semantic hit.
+#[tokio::test]
+async fn test_wildcard_query_does_not_return_arbitrary_high_ranked_rows() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    create_root_node(&node_service, "task", "Draft Q3 architecture review").await?;
+    create_root_node(&node_service, "task", "Renew the TLS certificate").await?;
+    create_root_node(&node_service, "text", "Notes from the planning session").await?;
+
+    let input = title_search_input("%", Some("everything"));
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    assert!(
+        output.matched_nodes.is_empty(),
+        "a bare wildcard matched {} node(s) it cannot justify: {:?}",
+        output.matched_nodes.len(),
+        output
+            .matched_nodes
+            .iter()
+            .map(|n| &n.content)
+            .collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+/// Escaping must not cost a literal match: a query containing `_` still
+/// resolves rows that genuinely contain that text.
+#[tokio::test]
+async fn test_wildcard_escaping_keeps_literally_matching_rows() -> Result<()> {
+    let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let task = create_root_node(&node_service, "task", "Rename user_id across the schema").await?;
+    create_root_node(&node_service, "task", "Unrelated errand").await?;
+
+    let input = title_search_input("user_id", Some("everything"));
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+
+    assert!(
+        output.matched_nodes.iter().any(|n| n.id == task.id),
+        "an underscore is an ordinary character in a search term and must still match literally"
+    );
+    Ok(())
+}

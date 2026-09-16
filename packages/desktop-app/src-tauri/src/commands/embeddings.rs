@@ -81,7 +81,7 @@ pub async fn generate_root_embedding(
     Ok(())
 }
 
-/// Search parameters for topic/root similarity search
+/// Search parameters for the human-facing node search
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchRootsParams {
@@ -90,11 +90,22 @@ pub struct SearchRootsParams {
     pub threshold: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exact: Option<bool>,
 }
 
-/// Search root nodes by semantic similarity using vector embeddings
+/// Search nodes for a person typing into the UI: title/keyword matches merged
+/// with semantic matches, in one round trip.
+///
+/// Both halves are needed because they cover disjoint ground. Embeddings only
+/// exist for the embeddable types (ADR-029), so a `task` called "Draft Q3 architecture review" has
+/// no vector and no similarity score at any threshold — only the keyword half
+/// finds it. Conversely the keyword half is a literal substring match, so only
+/// the semantic half answers a query phrased differently from the text it is
+/// looking for. The merge happens server-side in `ops::search_semantic`; the
+/// frontend makes one call and renders one ranked list.
+///
+/// Scoped to `everything` rather than the default `knowledge` scope: a person
+/// searching their own notes expects to find a task or a person node, not just
+/// the five embeddable knowledge types the agent's retrieval path is limited to.
 #[tauri::command]
 pub async fn search_roots(
     grpc: State<'_, GrpcClient>,
@@ -125,9 +136,13 @@ pub async fn search_roots(
     let response = client
         .search_semantic(SearchSemanticRequest {
             query: params.query,
-            threshold: params.threshold.unwrap_or(0.0),
+            // Passed through as-is: `None` leaves the server default in place,
+            // and an explicit 0.0 now survives the wire as a real request to
+            // admit every match rather than collapsing back to the default.
+            threshold: params.threshold,
             limit: params.limit.map(|l| l as i32).unwrap_or(0),
-            exact: params.exact.unwrap_or(false),
+            include_title_matches: true,
+            scope: Some("everything".to_string()),
         })
         .await
         .map_err(|e| grpc_err(e.message()))?;
@@ -335,12 +350,10 @@ mod tests {
             query: "test".to_string(),
             threshold: None,
             limit: None,
-            exact: None,
         };
 
         assert_eq!(params.threshold.unwrap_or(0.7), 0.7);
         assert_eq!(params.limit.unwrap_or(20), 20);
-        assert!(!params.exact.unwrap_or(false));
     }
 
     #[test]
@@ -349,12 +362,32 @@ mod tests {
             query: "test".to_string(),
             threshold: Some(0.8),
             limit: Some(50),
-            exact: Some(true),
         };
 
         assert_eq!(params.threshold.unwrap(), 0.8);
         assert_eq!(params.limit.unwrap(), 50);
-        assert!(params.exact.unwrap());
+    }
+
+    /// An unset threshold and an explicit 0.0 must stay distinguishable all the
+    /// way to the wire. The previous `threshold.unwrap_or(0.0)` collapsed them
+    /// into the same value, which the daemon then read back as "unset" — so a
+    /// caller asking to admit every match silently got the 0.7 default instead.
+    #[test]
+    fn explicit_zero_threshold_is_distinguishable_from_unset() {
+        let unset = SearchRootsParams {
+            query: "test".to_string(),
+            threshold: None,
+            limit: None,
+        };
+        let explicit_zero = SearchRootsParams {
+            query: "test".to_string(),
+            threshold: Some(0.0),
+            limit: None,
+        };
+
+        assert_eq!(unset.threshold, None);
+        assert_eq!(explicit_zero.threshold, Some(0.0));
+        assert_ne!(unset.threshold, explicit_zero.threshold);
     }
 
     /// Regression guard: a daemon with no

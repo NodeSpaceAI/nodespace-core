@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use nodespace_core::models::EmbeddingConfig;
+use nodespace_core::ops::search_ops::{self, SearchSemanticInput};
 use nodespace_core::services::{EmbeddingProcessor, NodeEmbeddingService, NodeService};
 use tokio::sync::RwLock;
 use tonic::{Request, Response, Status};
@@ -26,7 +27,7 @@ use crate::nodespace::{
     SearchSemanticRequest, SearchSemanticResponse, TriggerBatchEmbedRequest,
     TriggerBatchEmbedResponse,
 };
-use crate::services::node_service::node_to_proto;
+use crate::services::node_service::{node_to_proto, ops_error_to_status};
 
 /// Live embedding state once the model has finished loading.
 pub struct EmbeddingReady {
@@ -140,45 +141,53 @@ impl GrpcEmbeddingsService for EmbeddingsServiceImpl {
 
         let guard = this.state.read().await;
         let state = guard.as_ref().ok_or_else(|| this.unavailable())?;
+        let embedding_service = Arc::clone(&state.embedding_service);
 
-        let threshold = if req.threshold == 0.0 {
-            None
-        } else {
-            Some(req.threshold as f64)
+        // Route through the same guarded op the NodeService.SearchNodes RPC and
+        // the agent tool-calling loop use, rather than reaching into
+        // `store.search_embeddings` directly. That direct call was a second,
+        // parallel implementation of semantic search that silently skipped
+        // enumerate-query handling and the ADR-029 archived/scope filtering the
+        // guarded path applies, so the desktop GUI — its only caller — got
+        // different results from every other caller for the same query.
+        let input = SearchSemanticInput {
+            query: req.query,
+            // `None` here means "use the op's default", which is now reachable
+            // separately from an explicit 0.0 (admit every match) thanks to the
+            // optional wire field.
+            threshold: req.threshold,
+            limit: if req.limit == 0 {
+                None
+            } else {
+                Some(req.limit as usize)
+            },
+            collection_id: None,
+            collection: None,
+            exclude_collections: None,
+            // The GUI renders result rows from node fields alone, so attaching
+            // subtree markdown would be per-result subtree reads nothing displays.
+            include_markdown: Some(0),
+            include_archived: None,
+            scope: req.scope,
+            node_types: None,
+            property_filters: None,
+            include_edges: None,
+            graph_boost: None,
+            include_title_matches: Some(req.include_title_matches),
         };
-        let limit = if req.limit == 0 {
-            20i64
-        } else {
-            req.limit as i64
-        };
 
-        let query_embedding = state
-            .embedding_service
-            .nlp_engine()
-            .generate_embedding(&req.query)
-            .map_err(|e| Status::internal(format!("Failed to generate query embedding: {}", e)))?;
-
-        let store = this.node_service.store();
-        let search_results = store
-            .search_embeddings(&query_embedding, limit, threshold)
+        let output = search_ops::search_semantic(&this.node_service, &embedding_service, input)
             .await
-            .map_err(|e| Status::internal(format!("Vector search failed: {}", e)))?;
+            .map_err(ops_error_to_status)?;
 
-        // `search_embeddings` hydrates each result it returns, so re-reading the
-        // nodes by id here would be a query per result for rows already in hand.
-        // A result without its node is a hydration bug rather than a missing row,
-        // so it surfaces as an error instead of being dropped from the response —
-        // the previous `if let Ok(Some(..))` silently shortened the result set.
-        let mut nodes = Vec::with_capacity(search_results.len());
-        for result in search_results {
-            let Some(node) = result.node else {
-                return Err(Status::internal(format!(
-                    "search result {} arrived without its node",
-                    result.node_id
-                )));
-            };
-            nodes.push(node_to_proto(node));
-        }
+        // `matched_nodes` is the same ranked set as `output.nodes`, already
+        // hydrated by search — mapping it straight onto the wire type avoids a
+        // re-read per result.
+        let nodes = output
+            .matched_nodes
+            .into_iter()
+            .map(node_to_proto)
+            .collect();
 
         Ok(Response::new(SearchSemanticResponse { nodes }))
     }
