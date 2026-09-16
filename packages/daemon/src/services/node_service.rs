@@ -1239,10 +1239,23 @@ impl GrpcNodeService for NodeServiceImpl {
         // Refresh only this PID rather than the whole process table: the figure
         // we want is one process's, and a full refresh walks every process on
         // the machine for nothing.
+        //
+        // The `System` is built per call rather than cached on `self`: it
+        // refreshes through `&mut`, so keeping one would need a mutex, would
+        // hold this process's `stat` handle open for the daemon's lifetime on
+        // Linux, and would retain stale state between infrequent diagnostics
+        // runs. `System::new()` allocates an empty struct — unlike
+        // `new_all()`, it walks nothing.
+        //
+        // `remove_dead_processes: false` because it can only ever drop
+        // processes included in this update — here, the live process asking
+        // the question. `true` would be equivalent; `false` says so.
         let pid = sysinfo::get_current_pid().ok();
         let rss_bytes = pid.and_then(|pid| {
             let mut sys = sysinfo::System::new();
-            sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
+            sys.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), false);
+            // `memory()` is the resident set size; `virtual_memory()` would be
+            // VSZ, which is not what the report means by "memory".
             sys.process(pid).map(|proc| proc.memory())
         });
 
