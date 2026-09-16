@@ -13,13 +13,16 @@
  *     (ADR-041). `FailedPrecondition` also fires from unrelated paths
  *     (node-create/schema validation), so the metadata key's presence — not
  *     the status code alone — is what marks a genuine subtree-access refusal.
- *   - `FailedPrecondition` + `x-play-rule-rejected` — a JSON payload
- *     `{ node_id, play_id, rule_id, message }` describing a synchronous
+ *   - `FailedPrecondition` + `x-play-rule-rejected-bin` — a JSON payload
+ *     `{ node_id, play_id, rule_name, message }` describing a synchronous
  *     `RuleClass::Invariant` rule's `reject` action (ADR-060 §2) vetoing a
- *     `create_node`/`update_node` call. Same `FailedPrecondition`-is-shared
- *     caveat as the subtree case above — gated on the metadata key, not the
- *     status code alone, and checked independently of it (the two never
- *     both appear on one status, but neither implies the other's absence).
+ *     `create_node`/`update_node` call. Binary, not ASCII — the payload
+ *     embeds an author-supplied rejection message, which can contain
+ *     non-ASCII bytes an ASCII metadata value would silently drop. Same
+ *     `FailedPrecondition`-is-shared caveat as the subtree case above —
+ *     gated on the metadata key, not the status code alone, and checked
+ *     independently of it (the two never both appear on one status, but
+ *     neither implies the other's absence).
  *
  * `status_to_command_error` (packages/desktop-app/src-tauri/src/commands/nodes.rs)
  * reads those same trailers over tonic on the Tauri path to build
@@ -66,9 +69,9 @@ function safeJsonParse(raw: string): unknown {
  *  - `FAILED_PRECONDITION` with a parseable `x-subtree-inaccessible-count`
  *    metadata value → code `SUBTREE_ACCESS_DENIED`, `conflictData` =
  *    `{ inaccessibleCount }`.
- *  - `FAILED_PRECONDITION` with a parseable `x-play-rule-rejected` metadata
- *    value → code `PLAY_RULE_REJECTED`, `conflictData` = the parsed JSON
- *    payload (`{ node_id, play_id, rule_id, message }`).
+ *  - `FAILED_PRECONDITION` with a parseable `x-play-rule-rejected-bin`
+ *    binary metadata value → code `PLAY_RULE_REJECTED`, `conflictData` =
+ *    the parsed JSON payload (`{ node_id, play_id, rule_name, message }`).
  *  - A `FAILED_PRECONDITION` matching neither metadata key falls through to
  *    the generic mapping below — it is neither kind of refusal.
  *  - Everything else keeps the pre-existing dev-proxy behavior: the generic
@@ -100,7 +103,10 @@ export function mapGrpcError(err: grpc.ServiceError): MappedGrpcError {
       }
     }
 
-    const rejectedRaw = firstMetadataString(metadata, 'x-play-rule-rejected');
+    // Binary metadata ('-bin'-suffixed keys) — gRPC-js requires this and
+    // hands back Buffer values, which firstMetadataString already decodes
+    // via toString('utf8').
+    const rejectedRaw = firstMetadataString(metadata, 'x-play-rule-rejected-bin');
     if (rejectedRaw !== undefined) {
       const conflictData = safeJsonParse(rejectedRaw);
       if (conflictData !== undefined) {
