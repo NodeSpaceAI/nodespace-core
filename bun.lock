@@ -82,7 +82,7 @@
         "postcss-html": "^2.0.0",
         "prettier": "^3.6.2",
         "prettier-plugin-svelte": "^3.4.0",
-        "stylelint": "^17",
+        "stylelint": "^17.15.0",
         "svelte": "^5.39.4",
         "svelte-check": "^4.3.5",
         "svelte-eslint-parser": "^1.6.0",
