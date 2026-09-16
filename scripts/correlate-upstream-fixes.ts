@@ -21,6 +21,7 @@
 // annotates already blocks the push on its own.
 
 import { $ } from "bun";
+import { readdirSync } from "node:fs";
 
 export interface UpstreamCommit {
   sha: string;
@@ -100,11 +101,40 @@ export function packageScopeFor(path: string): string | null {
   return segments.length >= 2 ? segments[0] : null;
 }
 
-// Packages whose vitest config sets cwd to the package, so their reporters
-// print package-relative paths (`src/tests/...`) while git needs
-// repo-relative ones (`packages/desktop-app/src/tests/...`). Cargo's
-// `-->` paths are already repo-relative and need no prefixing.
-const PACKAGE_PREFIXES = ["packages/desktop-app", "packages/skill"];
+/**
+ * Packages whose vitest config sets cwd to the package, so their reporters
+ * print package-relative paths (`src/tests/...`) while git needs
+ * repo-relative ones (`packages/desktop-app/src/tests/...`). Cargo's `-->`
+ * paths are already repo-relative and need no prefixing.
+ *
+ * Derived from the filesystem rather than hardcoded: a hardcoded list is
+ * correct until someone adds a vitest config, at which point this check
+ * goes quiet for that package's failures without anything failing to say
+ * so. Falls back to the known two if the scan cannot run, so a sandbox
+ * without directory access degrades instead of breaking.
+ */
+export function vitestPackagePrefixes(readPackages: () => string[] = defaultReadPackages): string[] {
+  try {
+    const found = readPackages();
+    return found.length > 0 ? found : FALLBACK_PACKAGE_PREFIXES;
+  } catch {
+    return FALLBACK_PACKAGE_PREFIXES;
+  }
+}
+
+const FALLBACK_PACKAGE_PREFIXES = ["packages/desktop-app", "packages/skill"];
+
+function defaultReadPackages(): string[] {
+  const packagesDir = new URL("../packages/", import.meta.url);
+  return readdirSync(packagesDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .filter((entry) =>
+      readdirSync(new URL(`${entry.name}/`, packagesDir)).some(
+        (file) => file.startsWith("vitest") && file.endsWith(".config.ts")
+      )
+    )
+    .map((entry) => `packages/${entry.name}`);
+}
 
 /**
  * Expands a reporter path into the candidate repo-relative paths it could
@@ -117,9 +147,9 @@ const PACKAGE_PREFIXES = ["packages/desktop-app", "packages/skill"];
  * pathspec that matches nothing is not an error — so guessing wide is safe
  * and cheap, while guessing narrow loses the warning entirely.
  */
-export function candidatePathsFor(path: string): string[] {
+export function candidatePathsFor(path: string, prefixes = vitestPackagePrefixes()): string[] {
   if (path.startsWith("packages/") || path.startsWith("scripts/")) return [path];
-  return PACKAGE_PREFIXES.map((prefix) => `${prefix}/${path}`);
+  return prefixes.map((prefix) => `${prefix}/${path}`);
 }
 
 /**

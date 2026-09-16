@@ -14,6 +14,7 @@ import {
   parseFailingPaths,
   reportUpstreamFixes,
   scopesForPaths,
+  vitestPackagePrefixes,
 } from "./correlate-upstream-fixes";
 
 // Captured from real vitest reporter output (see the issue's probe run),
@@ -76,6 +77,35 @@ describe("packageScopeFor", () => {
   });
 });
 
+describe("vitestPackagePrefixes", () => {
+  test("uses the packages discovered on disk", () => {
+    expect(vitestPackagePrefixes(() => ["packages/a", "packages/b"])).toEqual([
+      "packages/a",
+      "packages/b",
+    ]);
+  });
+
+  test("falls back to the known packages when the scan finds nothing", () => {
+    // An empty result means the scan ran but matched nothing (a moved
+    // directory, a sandbox). Returning [] would silence the check entirely.
+    expect(vitestPackagePrefixes(() => [])).toContain("packages/desktop-app");
+  });
+
+  test("falls back, rather than throwing, when the directory cannot be read", () => {
+    expect(
+      vitestPackagePrefixes(() => {
+        throw new Error("EACCES");
+      })
+    ).toContain("packages/desktop-app");
+  });
+
+  test("discovers the real repo's vitest packages", () => {
+    // Guards the derivation itself: if this stops finding desktop-app, the
+    // package-relative path resolution below silently stops working.
+    expect(vitestPackagePrefixes()).toContain("packages/desktop-app");
+  });
+});
+
 describe("candidatePathsFor", () => {
   test("leaves an already repo-relative path alone", () => {
     expect(candidatePathsFor("packages/core/src/db/mod.rs")).toEqual([
@@ -91,7 +121,7 @@ describe("candidatePathsFor", () => {
     // vitest runs with --cwd packages/<pkg>, so it prints `src/tests/...`
     // while git needs `packages/<pkg>/src/tests/...`. Without this the
     // pathspec matches nothing and the warning silently never fires.
-    const candidates = candidatePathsFor("src/tests/e2e/watch-nodes.e2e.ts");
+    const candidates = candidatePathsFor("src/tests/e2e/watch-nodes.e2e.ts", ["packages/desktop-app"]);
     expect(candidates).toContain("packages/desktop-app/src/tests/e2e/watch-nodes.e2e.ts");
     expect(candidates.every((c) => c.startsWith("packages/"))).toBe(true);
   });
