@@ -18,6 +18,14 @@
 //!        `commands::settings::windows_autorun_present`/`remove_windows_autorun`.
 //!   4. Wait for the IPC endpoint to appear (UDS on Unix, Named Pipe on Windows).
 //!
+//! Whenever the daemon is about to be (re)spawned — and only then, never on a
+//! launch that leaves a healthy daemon running — `rotate_daemon_logs` rolls
+//! either log file past `DAEMON_LOG_MAX_BYTES` to `<name>.1` and keeps
+//! `DAEMON_LOG_KEEP` generations, so the two files cannot grow without bound
+//! for the life of an install. See `rotate_log_file` for why rotation lives
+//! here rather than inside the daemon, and its call site in
+//! `ensure_daemon_running` for why it must not run any earlier.
+//!
 //! On subsequent launches:
 //!   - Check if the socket exists and the daemon responds (cheap path).
 //!   - If already healthy: no-op.
@@ -415,6 +423,34 @@ pub async fn ensure_daemon_running(app: &AppHandle) -> Result<DaemonStatus> {
             return Ok(DaemonStatus::Healthy);
         }
     }
+
+    // Roll oversized logs, now that every "leave the running daemon alone" exit
+    // is behind us and a fresh spawn is certain to follow.
+    //
+    // This must NOT move earlier: above this point `ensure_daemon_running` can
+    // return with a healthy daemon still holding these files as its inherited
+    // stdio. Renaming them out from under that process does not redirect it —
+    // on Unix its fd follows the inode, so it would keep writing into
+    // `nodespaced.log.1` while the live path stayed missing until the next
+    // restart, and on Windows the rename would simply fail with a sharing
+    // violation. Below it, the file is normally closed: the daemon has either
+    // been reaped (`kill_running_daemon` polls until the socket goes away) or
+    // was never running.
+    //
+    // Two paths can still reach here with a process briefly alive — a
+    // `Starting` daemon (socket present but not yet answering), and a SIGTERM'd
+    // one that outlives `kill_running_daemon`'s 5s grace period. Both are
+    // benign, and for a structural reason worth stating: what made the original
+    // ordering destructive was never the rename itself but that *nothing
+    // followed it*, leaving the live path missing until the next restart. Here
+    // a spawn always follows in this same function, so the service manager
+    // recreates `nodespaced.log` immediately. The worst case is a few
+    // dying-process lines interleaved into `.1`, not lost diagnostics.
+    //
+    // That is why the guarantee this call site needs is "a spawn is certain to
+    // follow", not "no process holds the file" — the latter cannot be
+    // guaranteed here, and does not need to be.
+    rotate_daemon_logs(&log_dir);
 
     // Register and/or start the daemon user service.
     #[cfg(target_os = "macos")]
@@ -1346,10 +1382,10 @@ const WINDOWS_AUTORUN_VALUE: &str = "NodeSpaceDaemon";
 /// `systemd` unit (`write_systemd_service`'s `StandardOutput=`/`StandardError=`)
 /// already write to, so support/debugging habits transfer across platforms.
 ///
-/// Kept as a plain, platform-independent function (no `#[cfg(windows)]`) so
-/// it can be exercised by an ordinary `#[test]` on any development machine,
-/// even though only the Windows direct-spawn path calls it today.
-#[cfg(any(windows, test))]
+/// Kept as a plain, platform-independent function (no `#[cfg(windows)]`) —
+/// `rotate_daemon_logs` calls it on every platform to find the files it may
+/// need to roll, and it can be exercised by an ordinary `#[test]` on any
+/// development machine.
 fn daemon_log_paths(log_dir: &Path) -> (PathBuf, PathBuf) {
     (
         log_dir.join("nodespaced.log"),
@@ -1373,6 +1409,125 @@ fn open_daemon_log(path: &Path) -> std::io::Result<std::fs::File> {
         .create(true)
         .append(true)
         .open(path)
+}
+
+/// Size at which a daemon log file is rolled to `<name>.1` on next startup.
+const DAEMON_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
+
+/// How many rotated generations to keep per log file (`.1` … `.3`). Older
+/// generations are deleted.
+///
+/// The rotated generations are therefore bounded at roughly
+/// `DAEMON_LOG_MAX_BYTES * DAEMON_LOG_KEEP`. The *live* file is not: the
+/// threshold is only ever evaluated at daemon start, so a session that stays
+/// up for weeks under launchd's `KeepAlive` can push `nodespaced.log` past the
+/// threshold by an arbitrary margin before anything checks it. That is a
+/// deliberate trade-off rather than an oversight — continuous enforcement
+/// would require the daemon to own these files, which the inherited-stdio
+/// design documented on `rotate_log_file` rules out — and it is still a strict
+/// improvement on growing without bound forever.
+const DAEMON_LOG_KEEP: u32 = 3;
+
+/// Roll `path` to `path.1` if it has grown past `DAEMON_LOG_MAX_BYTES`,
+/// shifting any existing generations down (`.2` -> `.3`) and dropping the
+/// oldest.
+///
+/// Rotation happens here — in the app, at daemon-startup time — rather than
+/// inside the daemon, because on all three platforms these files are the
+/// daemon's *inherited stdio*, not something the daemon itself opens:
+/// `launchd`'s `StandardOutPath`/`StandardErrorPath`, `systemd`'s
+/// `StandardOutput=append:`, and `spawn_daemon_windows`'s `Stdio::from(File)`.
+/// Everything the process writes to fd 1/2 lands there, including `eprintln!`
+/// diagnostics and panic messages that never pass through `tracing`. An
+/// in-process rolling appender (e.g. `tracing-appender`) would therefore
+/// rotate only the `tracing` subset while the service manager kept the
+/// original, still-unbounded file open for the rest — so the file is rolled
+/// while no daemon holds it instead.
+///
+/// Renaming (rather than truncating) preserves the append-across-restarts
+/// property `open_daemon_log` documents: an ordinary restart under the size
+/// threshold leaves the file untouched and keeps appending, and even a restart
+/// that does rotate keeps the previous history readable as `<name>.1`.
+///
+/// Best-effort: every failure is logged and swallowed, since a log-rotation
+/// problem must never block daemon startup.
+fn rotate_log_file(path: &Path) {
+    let size = match std::fs::metadata(path) {
+        Ok(meta) => meta.len(),
+        // Missing file (first run) is the normal case, not an error.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "Could not stat daemon log file — skipping rotation"
+            );
+            return;
+        }
+    };
+
+    if size <= DAEMON_LOG_MAX_BYTES {
+        return;
+    }
+
+    let generation = |n: u32| -> PathBuf {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(format!(".{n}"));
+        path.with_file_name(name)
+    };
+
+    // Drop the oldest generation, then shift the rest down: .2 -> .3, .1 -> .2.
+    // Walking downwards keeps each destination free before it is written to.
+    let oldest = generation(DAEMON_LOG_KEEP);
+    if let Err(e) = std::fs::remove_file(&oldest) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(
+                path = %oldest.display(),
+                error = %e,
+                "Could not remove oldest rotated daemon log"
+            );
+        }
+    }
+    for n in (1..DAEMON_LOG_KEEP).rev() {
+        let from = generation(n);
+        if from.exists() {
+            if let Err(e) = std::fs::rename(&from, generation(n + 1)) {
+                tracing::warn!(
+                    from = %from.display(),
+                    error = %e,
+                    "Could not shift rotated daemon log generation"
+                );
+            }
+        }
+    }
+
+    match std::fs::rename(path, generation(1)) {
+        Ok(()) => tracing::info!(
+            path = %path.display(),
+            size_bytes = size,
+            "Rotated daemon log past size threshold"
+        ),
+        Err(e) => tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "Could not rotate daemon log — it will keep growing"
+        ),
+    }
+}
+
+/// Rotate both daemon log files if they have outgrown the size threshold.
+///
+/// Called from `ensure_daemon_running` once a (re)spawn is certain — past
+/// every exit that would leave an existing daemon running — and before any of
+/// the three platform spawn paths run, so the rename always happens while the
+/// files are closed. The service manager (or `spawn_daemon_windows`) then
+/// recreates the log at its original path when it opens the freshly started
+/// daemon's stdio, so no config references a rotated name and all three
+/// platforms are covered by this one call site.
+fn rotate_daemon_logs(log_dir: &Path) {
+    let (stdout_log, stderr_log) = daemon_log_paths(log_dir);
+    rotate_log_file(&stdout_log);
+    rotate_log_file(&stderr_log);
 }
 
 /// Open a daemon log file for the spawned child's stdio, falling back to
@@ -2376,5 +2531,250 @@ mod unix_quit_signal_tests {
             relative.starts_with(".nodespace/ui") && relative.ends_with(".pid"),
             "unexpected UI pid-file path: {relative}"
         );
+    }
+}
+
+/// Rotation policy tests. These run on any platform because `rotate_log_file`
+/// is pure `std::fs` — the same code runs ahead of all three spawn paths.
+#[cfg(test)]
+mod daemon_log_rotation_tests {
+    use super::{
+        daemon_log_paths, open_daemon_log, rotate_daemon_logs, rotate_log_file, DAEMON_LOG_KEEP,
+        DAEMON_LOG_MAX_BYTES,
+    };
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+
+    /// Write a file of exactly `size` bytes at `path`.
+    fn write_sized(path: &Path, size: u64) {
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(&vec![b'x'; size as usize]).unwrap();
+    }
+
+    fn rotated(path: &Path, n: u32) -> PathBuf {
+        let mut name = path.file_name().unwrap().to_os_string();
+        name.push(format!(".{n}"));
+        path.with_file_name(name)
+    }
+
+    #[test]
+    fn under_threshold_log_is_left_untouched() {
+        // The append-across-restarts property: an ordinary restart with a
+        // small log must not rotate, so history keeps accumulating in place.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+        write_sized(&path, 128);
+
+        rotate_log_file(&path);
+
+        assert!(path.exists(), "log under the threshold must stay in place");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 128);
+        assert!(
+            !rotated(&path, 1).exists(),
+            "no rotated generation should be created under the threshold"
+        );
+    }
+
+    #[test]
+    fn missing_log_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+
+        rotate_log_file(&path); // first run — nothing to rotate
+
+        assert!(!path.exists());
+        assert!(!rotated(&path, 1).exists());
+    }
+
+    #[test]
+    fn oversized_log_is_rolled_to_generation_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+        write_sized(&path, DAEMON_LOG_MAX_BYTES + 1);
+
+        rotate_log_file(&path);
+
+        assert!(
+            !path.exists(),
+            "the oversized file is renamed away; the service manager recreates it on spawn"
+        );
+        assert_eq!(
+            std::fs::metadata(rotated(&path, 1)).unwrap().len(),
+            DAEMON_LOG_MAX_BYTES + 1,
+            "history must be preserved in .1, not truncated away"
+        );
+    }
+
+    #[test]
+    fn rotation_preserves_previous_history_rather_than_discarding_it() {
+        // Rotating must not lose what was logged before — the whole point of
+        // renaming instead of truncating.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"important-earlier-diagnostic\n").unwrap();
+        f.write_all(&vec![b'x'; DAEMON_LOG_MAX_BYTES as usize])
+            .unwrap();
+        drop(f);
+
+        rotate_log_file(&path);
+
+        let contents = std::fs::read_to_string(rotated(&path, 1)).unwrap();
+        assert!(
+            contents.starts_with("important-earlier-diagnostic\n"),
+            "pre-rotation content must survive in the rotated generation"
+        );
+    }
+
+    #[test]
+    fn generations_shift_down_and_oldest_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+
+        // Seed distinguishable existing generations .1 .. .KEEP
+        for n in 1..=DAEMON_LOG_KEEP {
+            std::fs::write(rotated(&path, n), format!("generation-{n}")).unwrap();
+        }
+        write_sized(&path, DAEMON_LOG_MAX_BYTES + 1);
+
+        rotate_log_file(&path);
+
+        // The live file became .1; each old generation shifted down by one.
+        assert_eq!(
+            std::fs::metadata(rotated(&path, 1)).unwrap().len(),
+            DAEMON_LOG_MAX_BYTES + 1
+        );
+        for n in 2..=DAEMON_LOG_KEEP {
+            assert_eq!(
+                std::fs::read_to_string(rotated(&path, n)).unwrap(),
+                format!("generation-{}", n - 1),
+                "generation {} should hold what {} held before rotation",
+                n,
+                n - 1
+            );
+        }
+        assert!(
+            !rotated(&path, DAEMON_LOG_KEEP + 1).exists(),
+            "retention must be bounded at {DAEMON_LOG_KEEP} generations"
+        );
+    }
+
+    #[test]
+    fn repeated_rotations_stay_bounded() {
+        // The actual storage guarantee: however many times the daemon restarts
+        // with an oversized log, on-disk generations never exceed the cap.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+
+        for _ in 0..(DAEMON_LOG_KEEP + 5) {
+            write_sized(&path, DAEMON_LOG_MAX_BYTES + 1);
+            rotate_log_file(&path);
+        }
+
+        let surviving = (1..=DAEMON_LOG_KEEP + 3)
+            .filter(|n| rotated(&path, *n).exists())
+            .count() as u32;
+        assert_eq!(
+            surviving, DAEMON_LOG_KEEP,
+            "exactly {DAEMON_LOG_KEEP} generations should remain regardless of restart count"
+        );
+    }
+
+    #[test]
+    fn reopening_after_rotation_starts_a_fresh_live_file() {
+        // End-to-end of the restart contract: rotate, then the spawn path
+        // reopens the original path (as launchd/systemd/spawn_daemon_windows
+        // do) and logging continues there.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+        write_sized(&path, DAEMON_LOG_MAX_BYTES + 1);
+
+        rotate_log_file(&path);
+        let mut f = open_daemon_log(&path).expect("spawn path reopens the original name");
+        writeln!(f, "after restart").unwrap();
+        drop(f);
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "after restart\n");
+        assert!(
+            rotated(&path, 1).exists(),
+            "prior history still readable as .1"
+        );
+    }
+
+    // Unix-only: this pins the *inode-following* half of the hazard. Windows
+    // fails the rename outright with a sharing violation instead — a different
+    // symptom of the same mistake, and one `rotate_log_file` already swallows
+    // as a warning.
+    #[cfg(unix)]
+    #[test]
+    fn rotating_a_log_held_open_strands_output_in_the_rotated_file() {
+        // Documents WHY `rotate_daemon_logs` is called only after
+        // `ensure_daemon_running`'s healthy-daemon early return, never before
+        // it. A running daemon holds these files as inherited stdio; on Unix a
+        // rename keeps its fd pointed at the same inode, so the daemon goes on
+        // writing into the rotated generation while the live path simply does
+        // not exist until something reopens it. Rotating on every app launch —
+        // including the launches that leave a healthy daemon alone — would
+        // therefore hide the daemon's output rather than bound it.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+
+        // Push it past the threshold so rotation actually fires, then stand in
+        // for the running daemon's inherited stdio handle.
+        write_sized(&path, DAEMON_LOG_MAX_BYTES + 1);
+        let mut daemon_stdio = open_daemon_log(&path).unwrap();
+        writeln!(daemon_stdio, "before rotation").unwrap();
+        daemon_stdio.flush().unwrap();
+
+        rotate_log_file(&path);
+        // ... and it keeps writing to the fd it already had.
+        writeln!(daemon_stdio, "after rotation").unwrap();
+        daemon_stdio.flush().unwrap();
+        drop(daemon_stdio);
+
+        assert!(
+            !path.exists(),
+            "the live log path is left missing — nothing reopens it until the \
+             daemon restarts, which is exactly why rotation must wait until a \
+             spawn is certain to follow"
+        );
+        assert!(
+            std::fs::read_to_string(rotated(&path, 1))
+                .unwrap()
+                .ends_with("before rotation\nafter rotation\n"),
+            "post-rotation output follows the inode into the rotated file"
+        );
+    }
+
+    #[test]
+    fn rotate_daemon_logs_covers_both_streams() {
+        // One call site serves all three platforms, so it must handle stdout
+        // and stderr together.
+        let dir = tempfile::tempdir().unwrap();
+        let (stdout_log, stderr_log) = daemon_log_paths(dir.path());
+        write_sized(&stdout_log, DAEMON_LOG_MAX_BYTES + 1);
+        write_sized(&stderr_log, DAEMON_LOG_MAX_BYTES + 1);
+
+        rotate_daemon_logs(dir.path());
+
+        assert!(rotated(&stdout_log, 1).exists(), "stdout log must rotate");
+        assert!(rotated(&stderr_log, 1).exists(), "stderr log must rotate");
+    }
+
+    #[test]
+    fn rotate_daemon_logs_rotates_only_the_oversized_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let (stdout_log, stderr_log) = daemon_log_paths(dir.path());
+        write_sized(&stdout_log, DAEMON_LOG_MAX_BYTES + 1);
+        write_sized(&stderr_log, 64); // error log usually stays small
+
+        rotate_daemon_logs(dir.path());
+
+        assert!(rotated(&stdout_log, 1).exists());
+        assert!(
+            !rotated(&stderr_log, 1).exists(),
+            "a small stderr log must not be rotated just because stdout was"
+        );
+        assert_eq!(std::fs::metadata(&stderr_log).unwrap().len(), 64);
     }
 }
