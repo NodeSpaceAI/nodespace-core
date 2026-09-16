@@ -349,13 +349,11 @@
   }
 
   /*
-    Badges tint the background and use the state color as text, rather than white
-    on a solid fill. --success-foreground/--destructive-foreground are white in
-    both themes, so a solid fill gives 2.83:1 (success, light) and 2.55:1/2.86:1
-    in dark; only white-on---destructive in light mode clears AA, at 4.57:1.
-    Tinting keeps the state legible against this dark console surface in either
-    theme, at the cost of .status.error sitting at 2.88:1 in light — acceptable
-    for a 10px uppercase label in a developer-only tool.
+    Badges tint the background and use the state color as text. A solid fill is
+    not an option: --success-foreground and --destructive-foreground are white
+    in both themes, which drops to 2.55-2.86:1 in dark mode. Tinting clears
+    AA-large in every combination but one — .status.error is 2.88:1 in light,
+    accepted for a 10px uppercase label in a developer-only tool.
   */
   .status.success {
     background: hsl(var(--success) / 0.2);
