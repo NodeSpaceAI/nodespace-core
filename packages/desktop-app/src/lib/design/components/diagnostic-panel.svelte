@@ -167,11 +167,11 @@
 
 <style>
   /*
-    Surface palette is deliberately a fixed dark console (#1e1e1e/#252525/#333
-    surfaces, #e0e0e0/#888 text, #444 borders) in BOTH themes, matching the
-    monospace developer-tool affordance — it is not theme-tracking chrome, so it
-    does not use --background/--foreground. Status colors below DO use the
-    semantic tokens, which stay legible against this dark surface in either theme.
+    Chrome uses the --console-* tokens: a deliberately theme-invariant dark
+    surface (see their definition in app.css), not --background/--foreground,
+    because this is a monospace developer tool that stays a console in both
+    themes. Status colors below DO use the semantic tokens, which stay legible
+    against that surface in either theme.
   */
   .diagnostic-panel {
     position: fixed;
@@ -179,14 +179,14 @@
     left: 0;
     right: 0;
     height: 50vh;
-    background: #1e1e1e;
-    border-top: 2px solid #444;
+    background: hsl(var(--console-surface));
+    border-top: 2px solid hsl(var(--console-border));
     z-index: 10000;
     display: flex;
     flex-direction: column;
     font-family: monospace;
     font-size: 12px;
-    color: #e0e0e0;
+    color: hsl(var(--console-foreground));
   }
 
   .panel-header {
@@ -194,8 +194,8 @@
     justify-content: space-between;
     align-items: center;
     padding: 8px 12px;
-    background: #252525;
-    border-bottom: 1px solid #444;
+    background: hsl(var(--console-surface-raised));
+    border-bottom: 1px solid hsl(var(--console-border));
   }
 
   .panel-header h2 {
@@ -211,21 +211,21 @@
   }
 
   .shortcut-hint {
-    color: #888;
+    color: hsl(var(--console-foreground-muted));
     font-size: 11px;
   }
 
   .close-button {
     background: transparent;
-    border: 1px solid #444;
-    color: #e0e0e0;
+    border: 1px solid hsl(var(--console-border));
+    color: hsl(var(--console-foreground));
     padding: 4px 8px;
     cursor: pointer;
     border-radius: 4px;
   }
 
   .close-button:hover {
-    background: #333;
+    background: hsl(var(--console-surface-hover));
   }
 
   /*
@@ -268,15 +268,15 @@
 
   .toolbar button {
     padding: 4px 12px;
-    background: #252525;
-    border: 1px solid #444;
-    color: #e0e0e0;
+    background: hsl(var(--console-surface-raised));
+    border: 1px solid hsl(var(--console-border));
+    color: hsl(var(--console-foreground));
     border-radius: 4px;
     cursor: pointer;
   }
 
   .toolbar button:hover:not(:disabled) {
-    background: #333;
+    background: hsl(var(--console-surface-hover));
   }
 
   .toolbar button:disabled {
@@ -288,14 +288,14 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    color: #888;
+    color: hsl(var(--console-foreground-muted));
   }
 
   .stats-bar {
     display: flex;
     gap: 16px;
     padding: 8px 12px;
-    background: #252525;
+    background: hsl(var(--console-surface-raised));
     border-radius: 4px;
     margin-bottom: 12px;
   }
@@ -315,8 +315,8 @@
   }
 
   .log-entry {
-    background: #252525;
-    border: 1px solid #444;
+    background: hsl(var(--console-surface-raised));
+    border: 1px solid hsl(var(--console-border));
     border-radius: 4px;
     padding: 8px;
   }
@@ -350,9 +350,12 @@
 
   /*
     Badges tint the background and use the state color as text, rather than white
-    on a solid fill: --success-foreground/--destructive-foreground are white in
-    both themes, which lands at ~2.5-2.8:1 on the solid mid-tone fills. Tinting
-    keeps the state legible against this dark console surface in either theme.
+    on a solid fill. --success-foreground/--destructive-foreground are white in
+    both themes, so a solid fill gives 2.83:1 (success, light) and 2.55:1/2.86:1
+    in dark; only white-on---destructive in light mode clears AA, at 4.57:1.
+    Tinting keeps the state legible against this dark console surface in either
+    theme, at the cost of .status.error sitting at 2.88:1 in light — acceptable
+    for a 10px uppercase label in a developer-only tool.
   */
   .status.success {
     background: hsl(var(--success) / 0.2);
@@ -365,11 +368,11 @@
   }
 
   .duration {
-    color: #888;
+    color: hsl(var(--console-foreground-muted));
   }
 
   .timestamp {
-    color: #888;
+    color: hsl(var(--console-foreground-muted));
     margin-left: auto;
   }
 
@@ -379,7 +382,7 @@
 
   .entry-details code {
     display: block;
-    background: #1e1e1e;
+    background: hsl(var(--console-surface));
     padding: 4px 8px;
     border-radius: 3px;
     overflow-x: auto;
@@ -400,7 +403,7 @@
   }
 
   .empty-message {
-    color: #888;
+    color: hsl(var(--console-foreground-muted));
     text-align: center;
     padding: 20px;
   }

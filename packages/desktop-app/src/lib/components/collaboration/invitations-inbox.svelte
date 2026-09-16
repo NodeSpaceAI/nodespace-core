@@ -246,7 +246,6 @@
 		border-radius: 8px;
 		padding: 24px;
 		width: min(460px, calc(100vw - 48px));
-		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 	}
 	h2 {
 		margin: 0 0 4px;
@@ -329,9 +328,10 @@
 	}
 	/*
 	  State tags use a transparent tint of the state color rather than the solid
-	  --*-light tokens: those flip lightness between themes (pale in light, dark in
-	  dark), so no single foreground stays legible on them. A tint over the card
-	  keeps --foreground contrast well above 4.5:1 in both themes.
+	  --*-light tokens. Those have no paired --*-light-foreground, and their
+	  lightness differs sharply between themes (69%/78% light vs 35%/47% dark),
+	  so no single foreground stays legible on both. Tinting over the card keeps
+	  --foreground contrast above 12:1 in either theme.
 	*/
 	.tag-restricted {
 		background: hsl(var(--warning) / 0.15);
