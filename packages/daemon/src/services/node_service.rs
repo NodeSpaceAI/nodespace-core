@@ -3615,6 +3615,59 @@ mod tests {
     }
 
     #[test]
+    fn error_mapping_play_rule_rejected_returns_failed_precondition_with_metadata() {
+        // A RuleClass::Invariant rule's `reject` action (ADR-060 §2)
+        // must map to a DISTINCT status from an ordinary OCC conflict
+        // (FAILED_PRECONDITION, not ABORTED — retrying this exact write is
+        // not expected to succeed, unlike a VersionConflict race) carrying
+        // node_id/play_id/rule_id/message in metadata so a caller can
+        // distinguish this from every other FAILED_PRECONDITION this daemon
+        // returns, exercised through the full NodeServiceError -> OpsError ->
+        // Status chain (`service_error_to_status`), the same seam
+        // `error_mapping_subtree_access_denied_returns_failed_precondition`
+        // above tests.
+        let s = to_status(NodeServiceError::play_rule_rejected(
+            "node-1",
+            "play-1",
+            "reject-rule",
+            "cannot close while children are open",
+        ));
+        assert_eq!(s.code(), tonic::Code::FailedPrecondition);
+        assert!(s.message().contains("cannot close while children are open"));
+
+        let header = s
+            .metadata()
+            .get("x-play-rule-rejected")
+            .expect("x-play-rule-rejected header missing")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let payload: serde_json::Value =
+            serde_json::from_str(&header).expect("x-play-rule-rejected header must be valid JSON");
+        assert_eq!(payload["node_id"], "node-1");
+        assert_eq!(payload["play_id"], "play-1");
+        assert_eq!(payload["rule_id"], "reject-rule");
+        assert_eq!(payload["message"], "cannot close while children are open");
+    }
+
+    #[test]
+    fn error_mapping_play_rule_rejected_is_distinguishable_from_subtree_access_denied() {
+        // Both map to FAILED_PRECONDITION, but the Tauri-layer
+        // `status_to_command_error` (packages/desktop-app/src-tauri) must be
+        // able to tell them apart by which metadata KEY is present, the same
+        // way it already does for `x-subtree-inaccessible-count`. Guard
+        // against the two headers ever colliding on the same name.
+        let rejected = to_status(NodeServiceError::play_rule_rejected("n", "p", "r", "msg"));
+        assert!(rejected
+            .metadata()
+            .get("x-subtree-inaccessible-count")
+            .is_none());
+
+        let denied = to_status(NodeServiceError::subtree_access_denied(1));
+        assert!(denied.metadata().get("x-play-rule-rejected").is_none());
+    }
+
+    #[test]
     fn error_mapping_tree_too_large_returns_resource_exhausted() {
         // GetChildrenTree refusing an oversized subtree must surface as a distinct,
         // actionable status (RESOURCE_EXHAUSTED) carrying the concrete count/max in

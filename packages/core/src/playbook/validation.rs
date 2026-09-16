@@ -121,6 +121,14 @@ pub enum PlayValidationError {
     /// this is caught at save time rather than silently no-op'd (or errored
     /// generically) at runtime.
     RejectActionOnReactiveRule { location: String },
+    /// A `reject` action declares a `for_each`. `reject`'s condition
+    /// (evaluated against the trigger node, not a collection item) is
+    /// already the gate for whether it fires — iterating it over a
+    /// collection adds nothing but a real correctness hazard: if the
+    /// resolved collection is empty, the loop body never runs and the
+    /// action silently no-ops, vetoing nothing, with no save-time or
+    /// runtime warning. Rejected outright rather than accepted-with-a-caveat.
+    RejectActionHasForEach { location: String },
 }
 
 impl std::fmt::Display for PlayValidationError {
@@ -231,6 +239,14 @@ impl std::fmt::Display for PlayValidationError {
                  on an invariant rule — there is no transaction left to fail once a rule's \
                  actions run asynchronously, post-commit; declare this rule invariant, or \
                  remove the reject action)",
+                location
+            ),
+            Self::RejectActionHasForEach { location } => write!(
+                f,
+                "reject action at {} declares a for_each (reject's condition already gates \
+                 whether it fires — iterating it adds a correctness hazard: an empty \
+                 collection would silently no-op instead of vetoing the write; remove the \
+                 for_each)",
                 location
             ),
         }
@@ -544,24 +560,30 @@ async fn validate_action(
             .await;
         }
         ActionType::Reject => {
-            validate_reject_action(&action.params, location, errors);
+            validate_reject_action(action, location, errors);
         }
     }
 }
 
-/// Validate a `reject` action's params: `message` is required (either a
-/// literal string or a `{binding}` template — both resolve to a string at
-/// execution time, see `playbook::actions::execute_reject`).
+/// Validate a `reject` action: `message` is required (either a literal
+/// string or a `{binding}` template — both resolve to a string at execution
+/// time, see `playbook::actions::execute_reject`), and `for_each` is
+/// disallowed (see [`PlayValidationError::RejectActionHasForEach`]).
 fn validate_reject_action(
-    params: &serde_json::Value,
+    action: &ParsedAction,
     location: &str,
     errors: &mut Vec<PlayValidationError>,
 ) {
     let has_message =
-        matches!(params.get("message"), Some(serde_json::Value::String(s)) if !s.is_empty());
+        matches!(action.params.get("message"), Some(serde_json::Value::String(s)) if !s.is_empty());
     if !has_message {
         errors.push(PlayValidationError::MissingActionParam {
             param: "message".to_string(),
+            location: location.to_string(),
+        });
+    }
+    if action.for_each.is_some() {
+        errors.push(PlayValidationError::RejectActionHasForEach {
             location: location.to_string(),
         });
     }
@@ -2824,7 +2846,7 @@ mod tests {
             );
         }
 
-        // -- reject action (ADR-060 §2, #2642) --
+        // -- reject action (ADR-060 §2) --
 
         #[test]
         fn reject_action_on_invariant_rule_has_no_eligibility_errors() {
@@ -2999,6 +3021,56 @@ mod tests {
                 None,
                 vec!["node.status == 'blocked'"],
                 vec![reject_action("cannot proceed while blocked")],
+            ));
+            let result = validate_play(&[rule], &svc).await;
+            assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        }
+
+        #[tokio::test]
+        async fn reject_action_with_for_each_fails_validate_play() {
+            // reject's condition already gates whether it fires; iterating
+            // it over a (possibly empty) collection adds a silent-no-op
+            // hazard with no corresponding benefit, so it is rejected
+            // outright rather than accepted. This check lives in
+            // `validate_action` (via `validate_reject_action`), reached
+            // through `validate_play` — not `validate_invariant_eligibility`
+            // — so it is exercised end-to-end here, not through
+            // `eligibility_errors`.
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vi_reject_for_each").await;
+
+            let rule = Arc::new(invariant_rule(
+                GraphEventType::NodeCreated,
+                "vi_reject_for_each",
+                None,
+                vec![],
+                vec![ParsedAction {
+                    action_type: ActionType::Reject,
+                    params: json!({ "message": "no" }),
+                    for_each: Some("{trigger.node.items}".to_string()),
+                }],
+            ));
+            let errors = validate_play(&[rule], &svc).await.unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::RejectActionHasForEach { .. })),
+                "expected RejectActionHasForEach, got {:?}",
+                errors
+            );
+        }
+
+        #[tokio::test]
+        async fn reject_action_without_for_each_passes_validate_play() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vi_reject_no_for_each").await;
+
+            let rule = Arc::new(invariant_rule(
+                GraphEventType::NodeCreated,
+                "vi_reject_no_for_each",
+                None,
+                vec![],
+                vec![reject_action("no")],
             ));
             let result = validate_play(&[rule], &svc).await;
             assert!(result.is_ok(), "expected Ok, got {:?}", result);

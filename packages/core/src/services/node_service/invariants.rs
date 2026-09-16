@@ -8,11 +8,11 @@
 //! An action failure returns `Err`, which propagates out through
 //! `create_node_in_tx` and `with_transaction`'s `?`, rolling back the whole
 //! transaction — the node this dispatch ran for was never durably created.
-//! A `reject` action (ADR-060 §2, #2642) firing is reported as a distinct
+//! A `reject` action (ADR-060 §2) firing is reported as a distinct
 //! `NodeServiceError::PlayRuleRejected`, not the generic
 //! `InvariantRuleFailed` every other action failure produces — see
 //! `execute_matched_invariant_rules_in_tx`, the shared execution core every
-//! synchronous dispatch path (this one and, per #2643, `update_node`'s) runs
+//! synchronous dispatch path (this one and, eventually, `update_node`'s) runs
 //! through.
 //!
 //! Deliberately NOT part of `playbook::engine`'s post-commit `mpsc` queue:
@@ -98,7 +98,7 @@ impl NodeService {
     ///
     /// Keeping exactly one execution loop for every synchronous caller — rather
     /// than each caller re-implementing "evaluate conditions, run actions,
-    /// interpret the result" — is deliberate: the #2642/#2643 reject-action
+    /// interpret the result" — is deliberate: the reject-action
     /// distinction below (an `ActionError::Rejected` becomes
     /// `NodeServiceError::PlayRuleRejected`, everything else becomes
     /// `NodeServiceError::InvariantRuleFailed`) needs to hold identically for
@@ -158,7 +158,7 @@ impl NodeService {
             .await;
 
             if let crate::playbook::actions::ActionResult::Failed(err) = result {
-                // A `reject` action (ADR-060 §2, #2642) firing is a distinct
+                // A `reject` action (ADR-060 §2) firing is a distinct
                 // outcome from every other action failure: the rule did
                 // exactly what it was authored to do, deliberately vetoing
                 // this write, rather than malfunctioning. Surfaced as its own

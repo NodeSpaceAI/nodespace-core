@@ -142,15 +142,62 @@ impl PlaybookEngine {
     }
 
     /// Load all active play nodes from the database and activate them.
+    ///
+    /// Phase 7: save-time validation (belt-and-suspenders — primary gate is
+    /// in `NodeService`), same as `handle_play_created`/`handle_play_updated`.
+    /// A persisted play must not bypass this just because it is reaching
+    /// activation via the startup load path rather than the create/update
+    /// path: ADR-060 is explicitly about multi-device sync, so a play row
+    /// here may have been written by another device (or an earlier build)
+    /// whose validation rules differ, and the store layer does not
+    /// re-validate business rules on replicated writes. Without this check,
+    /// e.g. a `reject` action (ADR-060 §2) on a `Reactive` rule — invalid,
+    /// but only caught at save time — would reactivate unvalidated on every
+    /// restart and then, on first trigger, disable its *entire* play (not
+    /// just the offending rule): the async reactive dispatch loop treats any
+    /// `ActionResult::Failed` the same, and `execute_reject` always fails.
     async fn load_active_plays(&self) -> anyhow::Result<()> {
         let nodes = self
             .node_service
             .query_nodes_by_type("play", Some("active"))
             .await?;
 
-        let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
         let mut loaded = 0;
         for node in &nodes {
+            let parsed_rules = match parse_rules_for_validation(node) {
+                Ok(rules) => rules,
+                Err(e) => {
+                    warn!("Failed to parse play {}: {}", node.id, e);
+                    continue;
+                }
+            };
+
+            if let Err(errors) =
+                crate::playbook::validation::validate_play(&parsed_rules, &self.node_service).await
+            {
+                warn!(
+                    "Play {} failed save-time validation with {} error(s) at load time, \
+                     skipping activation",
+                    node.id,
+                    errors.len()
+                );
+                for err in &errors {
+                    warn!("  Validation error: {}", err);
+                    let _ = create_or_update_log_node(
+                        &self.node_service,
+                        &node.id,
+                        "validation",
+                        0,
+                        PlayErrorType::CompileError,
+                        &err.to_string(),
+                        "n/a",
+                    )
+                    .await;
+                }
+                continue;
+            }
+
+            let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
             match lifecycle.activate_play(node) {
                 Ok(()) => loaded += 1,
                 Err(e) => {
@@ -888,10 +935,41 @@ pub(crate) async fn rule_processor_loop(
                     );
                 }
                 crate::playbook::actions::ActionResult::Failed(err) => {
-                    warn!(
-                        "Rule '{}' (play {}) action failed: {}",
-                        rule_ref.rule.name, rule_ref.play_id, err,
-                    );
+                    // A `reject` action (ADR-060 §2) is only meaningful on an
+                    // `Invariant`-class rule — `validate_reject_action_class`
+                    // rejects it at save time on a `Reactive` rule. Reaching
+                    // it here at all means that gate was bypassed (e.g. a
+                    // play loaded from disk without re-validation, or an
+                    // already-active play whose class changed underneath
+                    // it) — and unlike every other action, `execute_reject`
+                    // ALWAYS errors when reached, so this rule would disable
+                    // its whole play on its very first trigger. Logged with
+                    // a distinct, actionable message rather than the generic
+                    // "action failed" one, so this misconfiguration reads as
+                    // what it is instead of looking like a transient bug.
+                    let log_message =
+                        if let crate::playbook::actions::ActionError::Rejected { message, .. } =
+                            &err
+                        {
+                            warn!(
+                                "Rule '{}' (play {}) uses a 'reject' action on a Reactive-class \
+                             rule -- reject is only meaningful on Invariant rules and should \
+                             have been caught at save time. Disabling the play. Reject's own \
+                             message was: {}",
+                                rule_ref.rule.name, rule_ref.play_id, message,
+                            );
+                            format!(
+                                "'reject' action on a Reactive-class rule (should have been \
+                             caught at save time): {}",
+                                message
+                            )
+                        } else {
+                            warn!(
+                                "Rule '{}' (play {}) action failed: {}",
+                                rule_ref.rule.name, rule_ref.play_id, err,
+                            );
+                            format!("Action execution failed: {}", err)
+                        };
                     // Disable the play on action failure (per spec)
                     {
                         let mut lm = lifecycle.write().expect("lifecycle lock poisoned");
@@ -903,7 +981,7 @@ pub(crate) async fn rule_processor_loop(
                         &rule_ref.rule.name,
                         rule_ref.rule_index,
                         PlayErrorType::ActionError,
-                        &format!("Action execution failed: {}", err),
+                        &log_message,
                         &work_item.trigger_node.id,
                     )
                     .await;

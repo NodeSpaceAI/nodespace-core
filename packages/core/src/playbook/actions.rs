@@ -827,16 +827,29 @@ async fn execute_single_action(
 /// `create_node`/`update_node`/relationship actions, `reject` touches no
 /// store state, so there is nothing for a `_in_tx` twin to do differently.
 fn execute_reject(action_index: usize, params: &Value) -> Result<Value, ActionError> {
-    let message =
-        params
-            .get("message")
-            .and_then(|v| v.as_str())
-            .ok_or(ActionError::MissingParam {
+    // `message` is normally a plain string, but when it's a single
+    // `{binding}` template, `resolve_bindings_in_string`'s fast path
+    // preserves the resolved value's own JSON type instead of stringifying
+    // it (same as every other action's params) -- e.g. `"message":
+    // "{trigger.node.priority}"` against a numeric `priority` resolves to a
+    // JSON number, not a string. Accepting any scalar here (not just
+    // `Value::String`) and rendering it the same way
+    // `resolve_bindings_in_string`'s own mixed-text branch does keeps the
+    // author's message intact instead of silently losing it to a
+    // `MissingParam` for a binding that resolved successfully, just not to
+    // a string.
+    let message = match params.get("message") {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Null) | None => {
+            return Err(ActionError::MissingParam {
                 param: "message".to_string(),
                 action_index,
-            })?;
+            });
+        }
+        Some(other) => other.to_string(),
+    };
     Err(ActionError::Rejected {
-        message: message.to_string(),
+        message,
         action_index,
     })
 }
@@ -1615,7 +1628,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // execute_reject (ADR-060 §2, #2642)
+    // execute_reject (ADR-060 §2)
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1650,6 +1663,38 @@ mod tests {
         // — and it must be reported as `MissingParam`, not silently treated
         // as a (message-less) rejection.
         let params = json!({});
+        let err = execute_reject(0, &params).unwrap_err();
+        assert!(matches!(
+            err,
+            ActionError::MissingParam { param, .. } if param == "message"
+        ));
+    }
+
+    #[test]
+    fn execute_reject_accepts_a_message_binding_that_resolves_to_a_non_string() {
+        // When `message` is a single `{binding}` template,
+        // `resolve_bindings_in_string`'s fast path preserves the resolved
+        // value's own JSON type rather than stringifying it -- a param like
+        // `"message": "{trigger.node.priority}"` against a numeric priority
+        // resolves to `Value::Number`, not `Value::String`, before this
+        // executor ever sees it. It must still be treated as a genuine
+        // rejection (the message rendered as text), not misclassified as a
+        // missing param -- losing the author's message and reporting the
+        // wrong error kind to the caller.
+        let params = json!({ "message": 5 });
+        let err = execute_reject(0, &params).unwrap_err();
+        match err {
+            ActionError::Rejected { message, .. } => assert_eq!(message, "5"),
+            other => panic!("expected Rejected, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn execute_reject_treats_null_message_as_missing_not_rejected() {
+        // `Value::Null` is the resolved shape of a binding to a genuinely
+        // absent/undefined value -- treated the same as the param being
+        // entirely absent, not stringified to the literal text "null".
+        let params = json!({ "message": null });
         let err = execute_reject(0, &params).unwrap_err();
         assert!(matches!(
             err,

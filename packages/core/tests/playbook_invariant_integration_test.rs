@@ -937,7 +937,7 @@ async fn invariant_rule_does_not_also_run_via_the_reactive_queue() -> Result<()>
 }
 
 // ---------------------------------------------------------------------------
-// #2642: the `reject` action type
+// The `reject` action type (ADR-060 §2)
 // ---------------------------------------------------------------------------
 //
 // `reject`'s save-time class gate (only usable on `RuleClass::Invariant`
@@ -946,8 +946,8 @@ async fn invariant_rule_does_not_also_run_via_the_reactive_queue() -> Result<()>
 // here — these tests are specifically about the EXECUTION-time contract:
 // does a reject action, once reached, genuinely veto the write with zero
 // partial state, using `create_node`'s already-existing synchronous
-// invariant path (the only real caller today; #2643 wires the equivalent
-// path for `update_node`). Like the rollback tests above, these activate the
+// invariant path (the only real caller today; a planned follow-up wires the
+// equivalent path for `update_node`). Like the rollback tests above, these activate the
 // play directly against the lifecycle manager (bypassing
 // `validate_play_rules`) since they are about the write-path hook, not play
 // installation.
@@ -1219,6 +1219,69 @@ async fn reject_before_augmenting_action_in_the_same_rule_prevents_the_augment()
         "the augmenting action's write must not be visible"
     );
 
+    Ok(())
+}
+
+/// Adversarial: a play whose rule declares `reject` on a `Reactive` class —
+/// invalid per `validate_reject_action_class`, but persisted here via a
+/// direct `SqliteStore::create_node` call that bypasses `NodeService`'s
+/// `validate_play_rules` save-time gate entirely, simulating a play row that
+/// reached the DB before this validation existed (an earlier build) or from
+/// a device running different validation rules (ADR-060 is explicitly about
+/// multi-device sync). `PlaybookEngine::start()`'s `load_active_plays()`
+/// re-validates at load time specifically to catch this: without it, this
+/// play would activate unvalidated on every restart and then disable itself
+/// entirely (not just the offending rule) the first time its trigger fired,
+/// since `execute_reject` always errors when reached.
+#[tokio::test]
+async fn reject_on_reactive_rule_bypassing_save_time_validation_is_not_activated_at_load(
+) -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("test.db");
+    let mut store = Arc::new(SqliteStore::new(db_path).await?);
+    let service = Arc::new(NodeService::new(&mut store).await?);
+
+    create_schema(
+        &service,
+        "iv_reject_bypass",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let invalid_play = Node::new(
+        "play".to_string(),
+        "invalid-reject-on-reactive".to_string(),
+        json!({ "rules": [{
+            "name": "reject-on-reactive",
+            "class": "reactive",
+            "trigger": { "type": "graph_event", "on": "node_created", "node_type": "iv_reject_bypass" },
+            "conditions": [],
+            "actions": [{
+                "action_type": "reject",
+                "params": { "message": "should never reach a caller — this play must not activate" }
+            }]
+        }] }),
+    );
+    let invalid_play_id = invalid_play.id.clone();
+
+    // Bypasses NodeService::create_node's validate_play_rules gate entirely —
+    // the point of this test.
+    store.create_node(invalid_play, None, None).await?;
+
+    let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    let is_active = {
+        let lifecycle = engine.lifecycle();
+        let lm = lifecycle.read().unwrap();
+        lm.get_play(&invalid_play_id).is_some()
+    };
+    assert!(
+        !is_active,
+        "a play whose rule fails save-time validation must not be activated at load time, \
+         even when it reached the DB by bypassing the normal save path"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }
 
