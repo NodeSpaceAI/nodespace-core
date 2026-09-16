@@ -53,12 +53,23 @@ export interface CorrelationResult {
 //   FAIL  src/tests/unit/foo.test.ts > suite > case
 //   ❯ src/tests/unit/foo.test.ts:5:15
 //   error[E0425]: ... --> packages/core/src/db/mod.rs:12:9
+//   thread 'mod::tests::case' (36545869) panicked at packages/core/src/lib.rs:57:18:
+//
+// The last two are distinct Rust shapes, and both are needed: `-->` is the
+// compiler's, so it appears only when the code fails to BUILD, while a test
+// that builds and then fails an assertion emits `panicked at` and no `-->`
+// at all. Two of the gate's stages run cargo tests, so matching only the
+// compiler form would leave correlation silent for the most common Rust
+// failure — quiet in a way nothing reports, which is the exact hazard this
+// check exists to remove.
 //
 // Each pattern must capture the path in group 1.
 const PATH_PATTERNS: RegExp[] = [
   /^\s*(?:❯|×|✗)\s+(\S+\.(?:test|spec|e2e)\.[cm]?[jt]sx?)/gm,
   /^\s*FAIL\s+(\S+\.(?:test|spec|e2e)\.[cm]?[jt]sx?)/gm,
   /-->\s+(\S+\.rs):\d+:\d+/gm,
+  // `[^\s:]+` stops at the trailing `:line:col` without swallowing it.
+  /panicked at\s+([^\s:]+\.rs):\d+:\d+/gm,
 ];
 
 /**
@@ -70,8 +81,10 @@ const PATH_PATTERNS: RegExp[] = [
 export function parseFailingPaths(output: string): string[] {
   const found = new Set<string>();
   for (const pattern of PATH_PATTERNS) {
-    // Patterns are module-level and /g, so lastIndex persists between calls.
-    pattern.lastIndex = 0;
+    // matchAll clones the regex, so these module-level /g patterns are safe
+    // to reuse across calls without resetting lastIndex — unlike an
+    // exec()/test() loop, which would advance it. The /g flags stay because
+    // matchAll requires them.
     for (const match of output.matchAll(pattern)) {
       const path = match[1]?.trim();
       if (path) found.add(path);

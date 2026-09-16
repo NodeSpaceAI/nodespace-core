@@ -35,6 +35,24 @@ error[E0425]: cannot find value \`foo\` in this scope
 12 |         foo();
 `;
 
+// Captured from a real `cargo test` run (a deliberately failing assertion),
+// including the thread id cargo prints. A test that BUILDS and then fails
+// emits this and no \`-->\` line at all, so it is a distinct shape from the
+// compiler output above rather than a variant of it.
+const CARGO_PANIC = `
+running 1 test
+test zzz_panic_probe::probe ... FAILED
+
+failures:
+
+---- zzz_panic_probe::probe stdout ----
+
+thread 'zzz_panic_probe::probe' (36545869) panicked at packages/core/src/lib.rs:57:18:
+assertion \`left == right\` failed
+  left: 1
+ right: 2
+`;
+
 describe("parseFailingPaths", () => {
   test("extracts the failing test file from vitest output, de-duplicated across shapes", () => {
     // The same path appears three times (❯ summary, FAIL line, stack frame).
@@ -45,6 +63,19 @@ describe("parseFailingPaths", () => {
     expect(parseFailingPaths(CARGO_FAILURE)).toEqual(["packages/core/src/db/mod.rs"]);
   });
 
+  test("extracts the panicking file from a cargo test assertion failure", () => {
+    // Two of the gate's stages run cargo tests. A test that compiles and
+    // then fails an assertion emits `panicked at` and never `-->`, so
+    // without this the check stays silent for the most common Rust failure.
+    expect(parseFailingPaths(CARGO_PANIC)).toEqual(["packages/core/src/lib.rs"]);
+  });
+
+  test("stops the panic path at the trailing line:col rather than swallowing it", () => {
+    const paths = parseFailingPaths(CARGO_PANIC);
+    expect(paths[0]).not.toContain(":57");
+    expect(paths[0]?.endsWith(".rs")).toBe(true);
+  });
+
   test("returns nothing for output that names no failing file", () => {
     expect(parseFailingPaths("Finished dev profile in 1m 00s")).toEqual([]);
   });
@@ -53,9 +84,11 @@ describe("parseFailingPaths", () => {
     expect(parseFailingPaths("")).toEqual([]);
   });
 
-  test("is repeatable — module-level /g patterns do not carry lastIndex between calls", () => {
-    // A /g regex reused across calls keeps its lastIndex; without an
-    // explicit reset the second call would silently find nothing.
+  test("returns the same paths when called repeatedly on the same output", () => {
+    // The patterns are module-level and /g, so this guards against state
+    // leaking between calls. matchAll clones the regex so it does not today,
+    // but an edit to an exec()/test() loop would reintroduce the hazard and
+    // this is what would catch it.
     const first = parseFailingPaths(VITEST_FAILURE);
     const second = parseFailingPaths(VITEST_FAILURE);
     expect(second).toEqual(first);
