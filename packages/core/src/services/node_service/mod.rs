@@ -4286,6 +4286,46 @@ mod tests {
         );
     }
 
+    /// `upsert_node_with_parent` is the transactional auto-save upsert (the
+    /// gRPC `UpsertNodeWithParent` / desktop autosave path). Its "update
+    /// existing node" branch must recompute `title` from the new content —
+    /// the same class of gap `update_node_unchecked` already closes for
+    /// schema updates — otherwise an ordinary content edit through autosave
+    /// leaves the DB `title` column (and therefore every subsequent
+    /// `GetNode`) describing the node's OLD content.
+    #[tokio::test]
+    async fn test_upsert_node_with_parent_recomputes_title_on_content_change() {
+        let (service, _temp) = create_test_service().await;
+
+        let parent = Node::new("text".to_string(), "a parent".to_string(), json!({}));
+        let parent_id = service.create_node(parent).await.unwrap();
+
+        let task = Node::new("task".to_string(), "Buy milk".to_string(), json!({}));
+        let task_id = task.id.clone();
+        service.create_node(task).await.unwrap();
+        service
+            .upsert_node_with_parent(&task_id, "Buy milk", "task", &parent_id, &task_id, None)
+            .await
+            .unwrap();
+
+        let before = service.get_node(&task_id).await.unwrap().unwrap();
+        assert_eq!(before.title.as_deref(), Some("Buy milk"));
+
+        // Autosave-style content edit through the SAME upsert path.
+        service
+            .upsert_node_with_parent(&task_id, "Buy eggs", "task", &parent_id, &task_id, None)
+            .await
+            .unwrap();
+
+        let after = service.get_node(&task_id).await.unwrap().unwrap();
+        assert_eq!(
+            after.title.as_deref(),
+            Some("Buy eggs"),
+            "upsert_node_with_parent must recompute title from the new content, \
+             not leave the DB title stale"
+        );
+    }
+
     #[tokio::test]
     async fn test_create_node_with_parent_rejects_non_container() {
         let (service, _temp) = create_test_service().await;

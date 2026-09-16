@@ -34,19 +34,47 @@ const templateTokenRe = () => /\{([^}]*)\}/g;
 /**
  * Interpolates a title template with the given field values.
  *
+ * Resolves an enum field's stored value to its label when `fields` is
+ * given, mirroring `interpolate_title_template_with_schema`
+ * (`packages/core/src/utils/markdown.rs`) exactly — that function is what
+ * `compute_title()` actually calls, so it (not the plain-substitution
+ * `interpolate_title_template` its name suggests) is the real backend
+ * counterpart. It resolves enum labels but does NOT reformat dates —
+ * neither does this function, unlike `evaluateSummaryTemplate` below, which
+ * does both and is evaluated for a different, display-only template. Using
+ * `evaluateSummaryTemplate` here instead would introduce its own drift
+ * (human-formatted dates in the client preview vs. the raw value the
+ * backend persists as the title).
+ *
  * @param template - Template string with `{fieldName}` tokens
  * @param fieldValues - Flat map of field names to their current values
+ * @param fields - Optional schema field definitions, for enum label
+ *   resolution. Omit when the template's fields are known not to include an
+ *   enum (e.g. person's hardcoded `{first_name} {last_name}`) or when no
+ *   field list is available to the caller; every token then falls back to
+ *   its raw stored value, unresolved.
  * @returns Interpolated title with whitespace normalised and trimmed.
  *          Returns an empty string when all tokens resolve to empty values.
  */
 export function evaluateTitleTemplate(
   template: string,
-  fieldValues: Record<string, unknown>
+  fieldValues: Record<string, unknown>,
+  fields?: SchemaField[]
 ): string {
+  const fieldMap = fields ? new Map(fields.map((f) => [f.name, f])) : undefined;
   const interpolated = template.replace(templateTokenRe(), (_, fieldName) => {
     const val = fieldValues[fieldName];
     if (val === null || val === undefined) return '';
-    return String(val);
+    const raw = String(val);
+
+    const field = fieldMap?.get(fieldName);
+    if (field?.type === 'enum') {
+      const allValues = [...(field.coreValues ?? []), ...(field.userValues ?? [])];
+      const enumEntry = allValues.find((ev) => ev.value === raw);
+      if (enumEntry) return enumEntry.label;
+    }
+
+    return raw;
   });
   // Normalize whitespace and trim (mirrors Rust WHITESPACE_RE + .trim())
   return interpolated.replace(/\s+/g, ' ').trim();

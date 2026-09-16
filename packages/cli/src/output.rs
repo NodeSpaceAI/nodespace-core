@@ -65,6 +65,13 @@ pub fn print_node_list(response: &NodeListResponse, json: bool) -> Result<()> {
 fn write_human_node(node: &NodeData) {
     println!("id:              {}", node.id);
     println!("type:            {}", node.node_type);
+    // Absent (this node type never gets one, e.g. `date`/`schema`) is
+    // distinct from present-but-empty (a title_template whose fields are all
+    // still blank) — only the former omits the line; the latter still prints,
+    // just with nothing after the label.
+    if let Some(title) = &node.title {
+        println!("title:           {}", title);
+    }
     println!("version:         {}", node.version);
     println!("lifecycle:       {}", node.lifecycle_status);
     println!("created_at:      {}", node.created_at);
@@ -239,6 +246,16 @@ pub fn node_to_json(node: &NodeData) -> serde_json::Value {
         "created_at": node.created_at,
         "modified_at": node.modified_at,
     });
+    // Only present when this node type actually gets a title (see
+    // `NodeData.title`'s doc comment in node_service.proto) — omitted rather
+    // than emitted `null`, matching `nodespace_types::Node`'s own
+    // `skip_serializing_if = "Option::is_none"` so the CLI's JSON shape and
+    // the Tauri app's JSON shape agree on presence, not just on the value
+    // when present. A present-but-empty title (a title_template whose fields
+    // are all still blank) DOES appear, as `""` — only absence is omitted.
+    if let Some(title) = &node.title {
+        value["title"] = json!(title);
+    }
     // Only present when the request opted in (e.g. `search --include-content`)
     // — omitted rather than emitted empty, so scripts that don't ask for it
     // see the same node shape as every other command.
@@ -385,6 +402,7 @@ mod tests {
             created_at: "2026-05-17T12:00:00Z".into(),
             modified_at: "2026-05-17T12:00:01Z".into(),
             markdown: String::new(),
+            title: None,
         }
     }
 
@@ -398,6 +416,46 @@ mod tests {
         assert_eq!(json["properties"]["n"], 42);
         assert_eq!(json["id"], "abc-123");
         assert_eq!(json["version"], 7);
+    }
+
+    /// `NodeData.title` must reach `nodespace node get --json` /
+    /// `nodespace query --json` output, not be silently dropped the way it
+    /// was when `NodeData` carried no `title` field at all.
+    #[test]
+    fn node_to_json_includes_title_when_present() {
+        let node = NodeData {
+            title: Some("Michael Libio".into()),
+            ..sample_node()
+        };
+
+        let json = node_to_json(&node);
+
+        assert_eq!(json["title"], "Michael Libio");
+    }
+
+    /// Absence (this node type never gets a title) omits the key entirely —
+    /// matching `nodespace_types::Node`'s own `skip_serializing_if =
+    /// "Option::is_none"`, so a consumer scripting against either the CLI's
+    /// JSON or the Tauri app's JSON sees the same presence rule.
+    #[test]
+    fn node_to_json_omits_title_when_absent() {
+        let json = node_to_json(&sample_node());
+
+        assert!(json.get("title").is_none());
+    }
+
+    /// A present-but-empty title (title_template fields all still blank) is a
+    /// real, distinct value from absence and must not be collapsed into it.
+    #[test]
+    fn node_to_json_includes_an_empty_title_when_present_but_blank() {
+        let node = NodeData {
+            title: Some(String::new()),
+            ..sample_node()
+        };
+
+        let json = node_to_json(&node);
+
+        assert_eq!(json["title"], "");
     }
 
     #[test]

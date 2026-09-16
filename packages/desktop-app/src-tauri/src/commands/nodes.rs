@@ -204,7 +204,7 @@ pub(crate) fn proto_node_data_to_node(nd: NodeData) -> Result<Node, CommandError
         lifecycle_status: nd.lifecycle_status,
         mentions: vec![],
         mentioned_in: vec![],
-        title: None,
+        title: nd.title,
     })
 }
 
@@ -1102,5 +1102,41 @@ mod tests {
         assert!(json.contains("Simple error"));
         // Details field should be omitted when None
         assert!(!json.contains("details"));
+    }
+
+    fn sample_node_data(title: Option<String>) -> NodeData {
+        NodeData {
+            id: "n1".to_string(),
+            node_type: "person".to_string(),
+            content: String::new(),
+            properties: "{}".to_string(),
+            version: 1,
+            lifecycle_status: "active".to_string(),
+            created_at: "2026-09-13T00:00:00Z".to_string(),
+            modified_at: "2026-09-13T00:00:00Z".to_string(),
+            markdown: String::new(),
+            title,
+        }
+    }
+
+    /// This conversion used to hardcode `title: None` regardless of what the
+    /// daemon sent, silently dropping the title a second time even after the
+    /// proto/wire fix — every Tauri command that returns a node goes through
+    /// this function.
+    #[test]
+    fn proto_node_data_to_node_carries_a_present_title_through() {
+        let node = proto_node_data_to_node(sample_node_data(Some("Michael Libio".to_string())))
+            .expect("valid timestamps must convert");
+
+        assert_eq!(node.title.as_deref(), Some("Michael Libio"));
+    }
+
+    /// Absence must stay absence, not turn into `Some("")` or similar.
+    #[test]
+    fn proto_node_data_to_node_carries_an_absent_title_through() {
+        let node =
+            proto_node_data_to_node(sample_node_data(None)).expect("valid timestamps must convert");
+
+        assert_eq!(node.title, None);
     }
 }

@@ -1624,6 +1624,27 @@ describe('SharedNodeStore', () => {
       expect(node?.mentions).toEqual(['node-1', 'node-2']);
     });
 
+    it('does not leak a pendingUpdates entry per isComputedField write (title preview, one per keystroke)', () => {
+      store.setNode(mockNode, viewerSource);
+
+      // A computed-field write (e.g. the client-side title preview) skips
+      // persistence entirely, so it never reaches the success/failure path
+      // that would otherwise remove its pendingUpdates entry. Simulating
+      // several — one per keystroke of an edit burst — must not grow that
+      // bookkeeping map, since nothing else will ever clean these up.
+      for (let i = 0; i < 5; i++) {
+        store.updateNode(mockNode.id, { title: `Draft ${i}` }, viewerSource, {
+          isComputedField: true
+        });
+      }
+
+      const pendingUpdates = (
+        store as unknown as { pendingUpdates: Map<string, unknown[]> }
+      ).pendingUpdates;
+      expect(pendingUpdates.get(mockNode.id) ?? []).toHaveLength(0);
+      expect(store.getNode(mockNode.id)?.title).toBe('Draft 4');
+    });
+
     it('should handle batch updates with commitImmediately option', () => {
       store.setNode(mockNode, viewerSource);
 

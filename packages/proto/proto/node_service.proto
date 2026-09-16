@@ -171,6 +171,13 @@ message NodeData {
   // populated when the request that produced this NodeData opted in (e.g.
   // SearchRequest.include_markdown); empty on every other read path.
   string markdown = 11;
+  // Server-computed display title (NodeService::compute_title), mirroring
+  // the `Node.title` field it is dropped from without this. `optional` (not
+  // plain `string`) because presence is meaningful: unset means this node
+  // type never gets a title (e.g. `date`/`schema`), while present-but-empty
+  // ("") is a legitimate value — a title_template whose referenced fields are
+  // all still empty. A plain `string` cannot distinguish those two cases.
+  optional string title = 12;
 }
 
 // ---------------------------------------------------------------------------
