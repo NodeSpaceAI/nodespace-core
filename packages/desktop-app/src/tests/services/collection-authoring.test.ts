@@ -106,6 +106,31 @@ describe('searchAddableNodes', () => {
     });
   });
 
+  it('keeps a task matched by title, which the embeddings-only search could not return', async () => {
+    // `search_roots` now merges keyword and semantic hits server-side, so
+    // "add existing" can offer a non-embeddable node (ADR-029) whose title the
+    // user typed. `task` is a content type, so nothing downstream filters it.
+    invokeMock.mockResolvedValue([makeNode('task-1', 'task')]);
+
+    const found = await searchAddableNodes('Draft Q3 architecture review', 'col-1', new Set());
+
+    expect(found.map((n) => n.id)).toEqual(['task-1']);
+  });
+
+  it('preserves the backend ranking of the merged result list', async () => {
+    // One already-ranked list arrives from the backend; the filter step may
+    // only drop rows, never reorder the ones it keeps.
+    invokeMock.mockResolvedValue([
+      makeNode('keyword-hit', 'task'),
+      makeNode('person-1', 'person'), // dropped: non-content
+      makeNode('semantic-hit', 'text')
+    ]);
+
+    const found = await searchAddableNodes('Draft Q3 architecture review', 'col-1', new Set());
+
+    expect(found.map((n) => n.id)).toEqual(['keyword-hit', 'semantic-hit']);
+  });
+
   it('filters out the collection itself, excluded ids, and non-content node types', async () => {
     const results: Node[] = [
       makeNode('text-1', 'text'),

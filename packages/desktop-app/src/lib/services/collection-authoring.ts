@@ -45,6 +45,11 @@ export async function createNodeInCollection(collectionId: string): Promise<stri
  * meaningfully added: the collection itself, ids already present (or otherwise
  * excluded), and non-content node types (person/schema/database-settings/
  * collection/horizontal-line).
+ *
+ * `search_roots` merges title/keyword and semantic matches server-side into one
+ * ranked list, so a non-embeddable node (a `task`, say — ADR-029) is offered
+ * here when its title matches. The filtering below only ever drops rows; the
+ * backend's ranking of the rows it keeps is preserved.
  */
 export async function searchAddableNodes(
   query: string,

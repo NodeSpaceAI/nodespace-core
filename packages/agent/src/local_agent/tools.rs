@@ -2914,6 +2914,9 @@ impl GraphToolExecutor {
             property_filters: params.property_filters,
             include_edges: params.include_edges,
             graph_boost: params.graph_boost,
+            // Meaning-based retrieval: the agent reaches title/keyword matching
+            // through its own `search_nodes` tool instead.
+            include_title_matches: None,
         };
 
         let output = search_ops::search_semantic(&ns, &emb, input)
@@ -7270,6 +7273,7 @@ mod tests {
             property_filters: params.property_filters,
             include_edges: params.include_edges,
             graph_boost: params.graph_boost,
+            include_title_matches: None,
         };
         assert_eq!(input.scope, Some("conversations".to_string()));
     }

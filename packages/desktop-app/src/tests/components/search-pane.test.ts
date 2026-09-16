@@ -2,8 +2,10 @@
  * search-pane component.
  *
  * The Search view opened from the sidebar's Search nav item. Queries the
- * daemon's semantic root search (`search_roots`) and opens a node tab when a
- * result is clicked. Regression coverage for the dead-Search-nav bug.
+ * daemon's merged node search (`search_roots` — title/keyword matches and
+ * semantic matches combined server-side into one ranked list) and opens a node
+ * tab when a result is clicked. Regression coverage for the dead-Search-nav
+ * bug.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, cleanup } from '@testing-library/svelte';
@@ -56,6 +58,49 @@ describe('SearchPane', () => {
     expect(mockInvoke).toHaveBeenCalledWith('search_roots', {
       params: { query: 'doc', limit: 25 }
     });
+  });
+
+  it('surfaces a task node matched by title, which no embedding could have ranked', async () => {
+    // Tasks are non-embeddable (ADR-029), so this row can only have come from
+    // the keyword half of the merged search. Before the merge, the search box
+    // reached an embeddings-only path and an exact task title returned nothing.
+    mockInvoke.mockResolvedValue([
+      { id: 'task-1', nodeType: 'task', content: 'Draft Q3 architecture review' },
+      { id: 'n2', nodeType: 'text', content: 'Notes from the Q3 planning session' }
+    ]);
+    const { getByPlaceholderText, findByText } = render(SearchPane);
+
+    const input = getByPlaceholderText('Search nodes…');
+    await fireEvent.input(input, { target: { value: 'Draft Q3 architecture review' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(await findByText('Draft Q3 architecture review')).toBeTruthy();
+    expect(await findByText('Notes from the Q3 planning session')).toBeTruthy();
+  });
+
+  it('renders the merged list in the order the backend ranked it', async () => {
+    // The backend returns one already-ranked list (keyword hits banded above
+    // semantic hits). The pane must not re-sort or regroup it.
+    mockInvoke.mockResolvedValue([
+      { id: 'exact', nodeType: 'task', content: 'Migration plan' },
+      { id: 'partial', nodeType: 'text', content: 'Migration plan review notes' },
+      { id: 'semantic', nodeType: 'text', content: 'Cutover sequencing decisions' }
+    ]);
+    const { getByPlaceholderText, findByText, container } = render(SearchPane);
+
+    const input = getByPlaceholderText('Search nodes…');
+    await fireEvent.input(input, { target: { value: 'Migration plan' } });
+    await fireEvent.keyDown(input, { key: 'Enter' });
+
+    await findByText('Migration plan');
+    const rendered = [...container.querySelectorAll('.result-list .result-title')].map((el) =>
+      el.textContent?.trim()
+    );
+    expect(rendered).toEqual([
+      'Migration plan',
+      'Migration plan review notes',
+      'Cutover sequencing decisions'
+    ]);
   });
 
   it('opens a node tab when a result is clicked', async () => {
