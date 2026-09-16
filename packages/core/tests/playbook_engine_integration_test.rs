@@ -860,3 +860,280 @@ async fn two_broken_paths_in_the_same_condition_produce_separate_log_nodes() -> 
     shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }
+
+/// A second same-`(location, kind)` collision case: `validate_invariant_eligibility`'s
+/// same-graph-scope check walks `target_id_params` (`["source_id", "target_id"]`
+/// for `add_relationship`) in a loop over ONE action, so a single `add_relationship`
+/// whose `source_id` AND `target_id` are both literal (non-binding) node ids pushes
+/// two `InvariantOutOfScopeTarget` errors that share both `location`
+/// (`rule[0].action[0]`) and `kind` (`invariant_out_of_scope_target`) — the same
+/// shape of collision as the two-broken-paths case above, just through a different
+/// validator.
+#[tokio::test]
+async fn two_out_of_scope_targets_on_the_same_action_produce_separate_log_nodes() -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("test.db");
+    let mut store = Arc::new(SqliteStore::new(db_path).await?);
+    let service = Arc::new(NodeService::new(&mut store).await?);
+
+    create_schema(
+        &service,
+        "pb_oos_task",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    // Declare the relationship the invalid rule below references, so the
+    // ONLY error it produces is the out-of-scope-target one under test —
+    // an undeclared relationship_type would additionally fail
+    // `UnknownRelationshipType` validation and inflate the log-node count
+    // for reasons unrelated to this test.
+    let relationships: Vec<nodespace_core::models::schema::SchemaRelationship> =
+        serde_json::from_value(json!([{
+            "name": "linked_to",
+            "direction": "out",
+            "cardinality": "many",
+            "reverseName": "linked_from",
+            "reverseCardinality": "many"
+        }]))?;
+    service
+        .set_schema_relationships("pb_oos_task", &relationships)
+        .await?;
+
+    let invalid_play = Node::new(
+        "play".to_string(),
+        "both-ends-out-of-scope".to_string(),
+        json!({ "rules": [
+            {
+                "name": "invariant-both-ends-out-of-scope",
+                "class": "invariant",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pb_oos_task" },
+                "conditions": [],
+                "actions": [{
+                    "action_type": "add_relationship",
+                    "params": {
+                        "source_id": "literal-source-node",
+                        "relationship_type": "linked_to",
+                        "target_id": "literal-target-node"
+                    }
+                }]
+            }
+        ] }),
+    );
+    let play_id = invalid_play.id.clone();
+
+    // Bypasses NodeService::create_node's validate_play_rules gate entirely
+    // — same rationale as the tests above.
+    store.create_node(invalid_play, None, None).await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    let got_both = wait_until(|| {
+        let service = Arc::clone(&service);
+        async move {
+            let logs = service
+                .query_nodes_by_type("playbook_log", Some("active"))
+                .await
+                .unwrap_or_default();
+            logs.len() >= 2
+        }
+    })
+    .await;
+    assert!(
+        got_both,
+        "expected two distinct playbook_log nodes for the two \
+         InvariantOutOfScopeTarget errors at the same rule[0].action[0] location"
+    );
+
+    let logs = service
+        .query_nodes_by_type("playbook_log", Some("active"))
+        .await?;
+    let logs_for_play: Vec<_> = logs
+        .iter()
+        .filter(|n| {
+            n.properties
+                .get("playbook_log")
+                .and_then(|ns| ns.get("play_id"))
+                .and_then(|v| v.as_str())
+                == Some(play_id.as_str())
+        })
+        .collect();
+
+    assert_eq!(
+        logs_for_play.len(),
+        2,
+        "two InvariantOutOfScopeTarget errors sharing the same (location, kind) \
+         must still produce two separate log nodes, got: {:?}",
+        logs_for_play.iter().map(|n| &n.content).collect::<Vec<_>>()
+    );
+
+    let source_log = logs_for_play
+        .iter()
+        .find(|n| n.content.contains("literal-source-node"))
+        .expect("one log node must be the out-of-scope source_id error");
+    let target_log = logs_for_play
+        .iter()
+        .find(|n| n.content.contains("literal-target-node"))
+        .expect("the other log node must be the out-of-scope target_id error");
+
+    assert_ne!(
+        source_log.id, target_log.id,
+        "the two same-location InvariantOutOfScopeTarget errors must be two \
+         distinct nodes, not the same node matched twice"
+    );
+
+    for log in [source_log, target_log] {
+        let occurrences = log
+            .properties
+            .get("playbook_log")
+            .and_then(|ns| ns.get("occurrences"))
+            .and_then(|v| v.as_u64());
+        assert_eq!(
+            occurrences,
+            Some(1),
+            "each distinct same-location error must be its own fresh log \
+             node (occurrences: 1), not a dedup-incremented repeat of the \
+             other's fingerprint"
+        );
+    }
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// A third same-`(location, kind)` collision case: `validate_invariant_eligibility`'s
+/// determinism check calls `extract_function_names` once per condition and pushes
+/// one `InvariantNonDeterministic` error per matched non-deterministic function
+/// name, all at that SAME condition's location. A single condition referencing
+/// two different non-deterministic functions (`days_since` and `days_until`) — as
+/// opposed to two broken paths or two out-of-scope action params — therefore
+/// collides the same way, through yet another one of the three loops
+/// `validate_invariant_eligibility` runs.
+#[tokio::test]
+async fn two_non_deterministic_functions_in_the_same_condition_produce_separate_log_nodes(
+) -> Result<()> {
+    let temp_dir = TempDir::new()?;
+    let db_path = temp_dir.path().join("test.db");
+    let mut store = Arc::new(SqliteStore::new(db_path).await?);
+    let service = Arc::new(NodeService::new(&mut store).await?);
+
+    create_schema(
+        &service,
+        "pb_nondet_task",
+        json!([
+            { "name": "created_at", "type": "string" },
+            { "name": "due_at", "type": "string" }
+        ]),
+    )
+    .await?;
+    // A distinct node type for the rule's action to create — reusing the
+    // trigger's own type would additionally trip the self-chaining check
+    // (`create_node` of the trigger's own type re-satisfies `node_created`),
+    // inflating the log-node count for reasons unrelated to this test.
+    create_schema(
+        &service,
+        "pb_nondet_other",
+        json!([{ "name": "status", "type": "string" }]),
+    )
+    .await?;
+
+    let invalid_play = Node::new(
+        "play".to_string(),
+        "two-non-deterministic-functions-same-condition".to_string(),
+        json!({ "rules": [
+            {
+                "name": "invariant-two-non-deterministic-functions",
+                "class": "invariant",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": "pb_nondet_task" },
+                "conditions": ["days_since(node.created_at) > 5 && days_until(node.due_at) < 2"],
+                "actions": [{
+                    "action_type": "create_node",
+                    "params": {
+                        "node_type": "pb_nondet_other",
+                        "content": "x",
+                        "properties": {}
+                    }
+                }]
+            }
+        ] }),
+    );
+    let play_id = invalid_play.id.clone();
+
+    // Bypasses NodeService::create_node's validate_play_rules gate entirely
+    // — same rationale as the tests above.
+    store.create_node(invalid_play, None, None).await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    let got_both = wait_until(|| {
+        let service = Arc::clone(&service);
+        async move {
+            let logs = service
+                .query_nodes_by_type("playbook_log", Some("active"))
+                .await
+                .unwrap_or_default();
+            logs.len() >= 2
+        }
+    })
+    .await;
+    assert!(
+        got_both,
+        "expected two distinct playbook_log nodes for the two \
+         InvariantNonDeterministic errors at the same rule[0].condition[0] location"
+    );
+
+    let logs = service
+        .query_nodes_by_type("playbook_log", Some("active"))
+        .await?;
+    let logs_for_play: Vec<_> = logs
+        .iter()
+        .filter(|n| {
+            n.properties
+                .get("playbook_log")
+                .and_then(|ns| ns.get("play_id"))
+                .and_then(|v| v.as_str())
+                == Some(play_id.as_str())
+        })
+        .collect();
+
+    assert_eq!(
+        logs_for_play.len(),
+        2,
+        "two InvariantNonDeterministic errors sharing the same (location, kind) \
+         must still produce two separate log nodes, got: {:?}",
+        logs_for_play.iter().map(|n| &n.content).collect::<Vec<_>>()
+    );
+
+    let days_since_log = logs_for_play
+        .iter()
+        .find(|n| n.content.contains("days_since"))
+        .expect("one log node must be the 'days_since' non-determinism error");
+    let days_until_log = logs_for_play
+        .iter()
+        .find(|n| n.content.contains("days_until"))
+        .expect("the other log node must be the 'days_until' non-determinism error");
+
+    assert_ne!(
+        days_since_log.id, days_until_log.id,
+        "the two same-location InvariantNonDeterministic errors must be two \
+         distinct nodes, not the same node matched twice"
+    );
+
+    for log in [days_since_log, days_until_log] {
+        let occurrences = log
+            .properties
+            .get("playbook_log")
+            .and_then(|ns| ns.get("occurrences"))
+            .and_then(|v| v.as_u64());
+        assert_eq!(
+            occurrences,
+            Some(1),
+            "each distinct same-location error must be its own fresh log \
+             node (occurrences: 1), not a dedup-incremented repeat of the \
+             other's fingerprint"
+        );
+    }
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
