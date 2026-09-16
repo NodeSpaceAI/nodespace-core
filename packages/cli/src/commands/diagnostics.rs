@@ -10,7 +10,8 @@
 use anyhow::Result;
 use clap::Args;
 use nodespace_daemon::nodespace::{
-    Empty, GetAllSchemasRequest, ListDatabasesRequest, NodeSortOrder, QueryNodesSimpleRequest,
+    Empty, GetAllSchemasRequest, GetDaemonMemoryRequest, ListDatabasesRequest, NodeSortOrder,
+    QueryNodesSimpleRequest,
 };
 use nodespace_daemon::DatabaseServiceClient;
 use serde_json::json;
@@ -47,6 +48,13 @@ pub struct DiagnosticsReport {
     pub targeted_database_path: String,
     /// Size on disk of the targeted database, `None` when the file is absent.
     pub database_size_bytes: Option<u64>,
+    /// Resident set size of the *daemon* process, not of this CLI process.
+    /// `None` when the RPC failed or the daemon could not read its own
+    /// footprint. See [`total_node_count`] — a missing reading is "unknown",
+    /// never 0.
+    ///
+    /// [`total_node_count`]: DiagnosticsReport::total_node_count
+    pub daemon_rss_bytes: Option<u64>,
     /// `None` when the query that would produce the count failed — the count
     /// is unknown, which is not the same fact as "the database is empty".
     pub total_node_count: Option<usize>,
@@ -250,11 +258,38 @@ pub async fn collect(
         }
     };
 
+    // Memory is the daemon's, so only the daemon can measure it — this CLI
+    // process's own RSS would be a different and useless number. An unset
+    // `rss_bytes` means the daemon could not read its own footprint; record
+    // that as an error so the figure reads "unknown" rather than passing for
+    // a measurement.
+    let daemon_rss_bytes = match node_client
+        .get_daemon_memory(GetDaemonMemoryRequest {})
+        .await
+    {
+        Ok(response) => {
+            let rss = response.into_inner().rss_bytes;
+            if rss.is_none() {
+                errors.push(
+                    "GetDaemonMemory returned no reading: the daemon could not \
+                     determine its own process memory"
+                        .to_string(),
+                );
+            }
+            rss
+        }
+        Err(e) => {
+            errors.push(format!("GetDaemonMemory failed: {e}"));
+            None
+        }
+    };
+
     DiagnosticsReport {
         databases,
         targeted_database_id,
         targeted_database_path,
         database_size_bytes,
+        daemon_rss_bytes,
         total_node_count,
         root_node_count,
         schema_count,
@@ -392,6 +427,13 @@ fn print_human(r: &DiagnosticsReport) {
         Some(bytes) => println!("Database size:     {}", format_size(bytes)),
         None => println!("Database size:     n/a"),
     }
+    // Unlike the database file (which can be legitimately absent, hence "n/a"),
+    // a live daemon always has an RSS — a missing figure here is only ever a
+    // failure, so it gets the louder UNKNOWN treatment.
+    match r.daemon_rss_bytes {
+        Some(bytes) => println!("Daemon memory:     {}", format_size(bytes)),
+        None => println!("Daemon memory:     {UNKNOWN}"),
+    }
     println!("Total nodes:       {}", or_unknown(r.total_node_count));
     println!("Root nodes:        {}", or_unknown(r.root_node_count));
     println!("Schemas:           {}", or_unknown(r.schema_count));
@@ -428,6 +470,7 @@ fn print_json(r: &DiagnosticsReport) -> Result<()> {
         "targeted_database_id": r.targeted_database_id,
         "targeted_database_path": r.targeted_database_path,
         "database_size_bytes": r.database_size_bytes,
+        "daemon_rss_bytes": r.daemon_rss_bytes,
         "total_node_count": r.total_node_count,
         "root_node_count": r.root_node_count,
         "schema_count": r.schema_count,

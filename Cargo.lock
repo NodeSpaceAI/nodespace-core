@@ -3567,6 +3567,7 @@ dependencies = [
  "prost 0.13.5",
  "serde",
  "serde_json",
+ "sysinfo",
  "tao 0.31.1",
  "tempfile",
  "tokio",

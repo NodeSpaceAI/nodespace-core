@@ -17,6 +17,12 @@ service NodeService {
   // a matching build. Reads the daemon binary's compiled `CARGO_PKG_VERSION`.
   rpc GetDaemonVersion(GetDaemonVersionRequest) returns (GetDaemonVersionResponse);
 
+  // Report the running daemon's own process memory usage. Must be answered
+  // from inside the daemon process: a caller cannot read another process's
+  // RSS portably, and the daemon is the process whose footprint the
+  // `nodespace diagnostics` report is about.
+  rpc GetDaemonMemory(GetDaemonMemoryRequest) returns (GetDaemonMemoryResponse);
+
   // Core CRUD
   rpc CreateNode(CreateNodeRequest) returns (NodeResponse);
   rpc GetNode(GetNodeRequest) returns (NodeResponse);
@@ -651,6 +657,18 @@ message GetDaemonVersionRequest {}
 message GetDaemonVersionResponse {
   // The daemon binary's semver (its compiled CARGO_PKG_VERSION).
   string version = 1;
+}
+
+message GetDaemonMemoryRequest {}
+
+message GetDaemonMemoryResponse {
+  // Resident set size of the daemon process, in bytes.
+  //
+  // Optional rather than a plain uint64 so "the platform would not tell us"
+  // stays distinguishable from a real reading. A process can never actually
+  // occupy 0 bytes of RSS, so an unset field is the only honest way to say
+  // the figure is unknown — the CLI renders it as "unknown", never as 0.
+  optional uint64 rss_bytes = 1;
 }
 
 message CreateRelationshipRequest {

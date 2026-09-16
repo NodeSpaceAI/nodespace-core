@@ -44,6 +44,11 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 dirs = "5.0"
 libc = "0.2"
 
+# Reading the daemon's own process RSS for `nodespace diagnostics`. Only a
+# process can portably read its own memory footprint, so this has to live in
+# the daemon rather than in the CLI that renders the figure.
+sysinfo = "0.33"
+
 # Named Pipe owner-only DACL construction (ADR-052 -- the Windows equivalent
 # of `bind_uds_owner_only`'s 0o600 on Unix). Version pinned to match the one
 # `tokio` itself already resolves to (see `tokio`'s own Cargo.toml), so this
