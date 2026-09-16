@@ -170,10 +170,22 @@
     Chrome uses the --console-* tokens: a deliberately theme-invariant dark
     surface (see their definition in app.css), not --background/--foreground,
     because this is a monospace developer tool that stays a console in both
-    themes. Status colors below DO use the semantic tokens, which stay legible
-    against that surface in either theme.
+    themes.
+
+    Because the surface never lightens, the state colors are pinned to their
+    dark-theme values here too. The light-theme values are tuned for a white
+    backdrop and are too dark to read on this one — using them would put
+    .stats-bar .success at 2.87:1 and the .pending border at 2.92:1, under even
+    the 3:1 threshold for non-text UI. Pinning keeps every status color at
+    4.29-7.68:1 in both themes, which is what the --console-* comment in
+    app.css promises.
   */
   .diagnostic-panel {
+    --success: 96 96% 37%;
+    --warning: 38 100% 51%;
+    --destructive: 0 100% 70%;
+    --primary: 173 50% 41%;
+
     position: fixed;
     bottom: 0;
     left: 0;
@@ -229,9 +241,8 @@
   }
 
   /*
-    Tinted for the same reason as the .status badges: white on a solid
-    --destructive fill is 4.57:1 in light but only 2.86:1 in dark, and the
-    inverse foreground fails in light — no single solid pairing works for both.
+    Tinted for the same reason as the .status badges — the state color reads as
+    text against this dark surface (4.31:1) where a solid fill would not.
   */
   .init-error-banner {
     background: hsl(var(--destructive) / 0.2);
@@ -349,11 +360,10 @@
   }
 
   /*
-    Badges tint the background and use the state color as text. A solid fill is
-    not an option: --success-foreground and --destructive-foreground are white
-    in both themes, which drops to 2.55-2.86:1 in dark mode. Tinting clears
-    AA-large in every combination but one — .status.error is 2.88:1 in light,
-    accepted for a 10px uppercase label in a developer-only tool.
+    Badges tint the background and use the state color as text, which reads
+    against this dark surface at 3.97-4.29:1 — above the 3:1 needed for a 10px
+    uppercase label. A solid fill would need --*-foreground, whose value is
+    chosen for a theme-matched backdrop rather than this pinned dark one.
   */
   .status.success {
     background: hsl(var(--success) / 0.2);

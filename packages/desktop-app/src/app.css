@@ -61,17 +61,13 @@
     */
     --destructive: 345 77% 46%; /* 5.36:1 on --background, 4.55:1 on a 0.1 tint */
     --destructive-foreground: 0 0% 100%; /* 5.36:1 on the fill */
-    --destructive-light: 357 74% 76%;
 
     --success: 97 45% 32%; /* 5.35:1 on --background, 4.69:1 on a 0.1 tint */
     --success-foreground: 0 0% 100%; /* 5.35:1 on the fill */
-    --success-light: 96 64% 69%;
 
     --warning: 38 97% 30%; /* 5.26:1 on --background, 4.60:1 on a 0.1 tint */
     --warning-foreground: 0 0% 100%; /* 5.26:1 on the fill */
-    --warning-light: 43 100% 78%;
 
-    --info-light: 213 82% 80%;
 
     --radius: 0.5rem;
 
@@ -170,22 +166,18 @@
     /*
       Dark-mode fills are bright, so their foreground is near-black rather than
       the white used in light mode — white lands at 2.00-2.86:1 on these fills.
-      The state colors themselves already clear AA as text here (5.44-8.98:1 on
+      The state colors themselves already clear AA as text here (6.27-8.98:1 on
       --background) and are unchanged.
     */
     --destructive: 0 100% 70%;
     --destructive-foreground: 240 11% 4%; /* 6.95:1 on the fill */
-    --destructive-light: 354 100% 59%;
 
     --success: 96 96% 37%;
     --success-foreground: 240 11% 4%; /* 7.81:1 on the fill */
-    --success-light: 101 73% 35%;
 
     --warning: 38 100% 51%;
     --warning-foreground: 240 11% 4%; /* 9.96:1 on the fill */
-    --warning-light: 38 98% 47%;
 
-    --info-light: 213 68% 57%;
 
     /* Sidebar tokens - Figma canonical */
     --sidebar-background: 240 4% 10%;

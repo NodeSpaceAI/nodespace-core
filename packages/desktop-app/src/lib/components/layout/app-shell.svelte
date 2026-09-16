@@ -730,7 +730,7 @@
     border-bottom: 1px solid hsl(var(--destructive) / 0.4);
     /* The state color itself, not --destructive-foreground: that token is the
        text color for a SOLID fill, and on a tint it renders near-invisible
-       (1.28:1). Against the tint, --destructive is 4.55:1. */
+       (1.26:1). Against the tint, --destructive is 4.55:1. */
     color: hsl(var(--destructive));
     font-size: 0.875rem;
     z-index: 100;
