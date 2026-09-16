@@ -21,6 +21,7 @@ const {
   install,
   uninstall,
   checkInstalled,
+  detectAgents,
   isNodespaceBinaryOnPath,
   claudeCodePluginManagedSkillExists,
 } = await import('../installer.js');
@@ -475,6 +476,40 @@ describe('uninstall', () => {
     uninstall([config.name]);
 
     expect(existsSync(config.installDir)).toBe(false);
+  });
+});
+
+describe('detectAgents', () => {
+  it('returns empty array when no agent is present', () => {
+    expect(detectAgents()).toEqual([]);
+  });
+
+  it('reports an agent whose config dir exists, before anything is installed', () => {
+    const config = AGENTS.find(a => a.name === 'claude-code')!;
+    mkdirSync(config.detectionDir, { recursive: true });
+
+    // The whole point of this being separate from checkInstalled: detected,
+    // but nothing installed into it yet. This is the state the onboarding
+    // wizard asks its question in.
+    expect(detectAgents()).toEqual(['claude-code']);
+    expect(checkInstalled()).toEqual([]);
+  });
+
+  it('reports every present agent, in AGENTS order', () => {
+    for (const name of ['claude-code', 'antigravity', 'codex']) {
+      mkdirSync(AGENTS.find(a => a.name === name)!.detectionDir, { recursive: true });
+    }
+
+    // AGENTS order (claude-code, codex, antigravity, ...), not the order
+    // the dirs were created in -- so the wizard's wording is stable rather
+    // than dependent on filesystem incidentals.
+    expect(detectAgents()).toEqual(['claude-code', 'codex', 'antigravity']);
+  });
+
+  it('does not report an agent that is absent', () => {
+    mkdirSync(AGENTS.find(a => a.name === 'opencode')!.detectionDir, { recursive: true });
+
+    expect(detectAgents()).toEqual(['opencode']);
   });
 });
 

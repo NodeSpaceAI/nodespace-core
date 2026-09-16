@@ -13,7 +13,7 @@
 // stays behind `import.meta.main` so this module is safely importable for
 // unit tests (of `extractResourceRoot`) without triggering the CLI's own
 // argv parsing and `process.exit` calls as a side effect of the import.
-import { install, uninstall, checkInstalled } from './installer.js';
+import { install, uninstall, checkInstalled, detectAgents } from './installer.js';
 import type { AgentName, InstallResult } from './types.js';
 import { AGENTS } from './agents.js';
 import { installMcp, uninstallMcp, checkMcpInstalled } from './mcp-installer.js';
@@ -93,6 +93,10 @@ Commands:
   status [agent]         Report which (of the specified, or every configured) agents
                           actually have SKILL.md on disk right now -- a pure
                           filesystem check, no install/uninstall side effects
+  detect                 Report which configured agents are present on this
+                          machine at all (their config dir exists), whether or
+                          not the skill is installed into them -- what \`install\`
+                          would target if run now. Also side-effect free
   mcp-install [client]   Configure a detected (or specified) bash-less MCP
                           client to launch \`nodespace mcp\`
   mcp-uninstall [client] Remove NodeSpace's entry from a detected (or
@@ -215,6 +219,24 @@ Examples:
         console.log(`✓ ${name}: present`);
       } else {
         console.log(`  ${name}: not present`);
+      }
+    }
+  } else if (command === 'detect') {
+    // Which agents `install` would target if run right now -- deliberately
+    // distinct from `status`, which reports where the skill already IS.
+    // The desktop app asks this *before* installing, so its onboarding
+    // wizard can name the real targets in the question it puts to the user
+    // instead of guessing at one hardcoded agent.
+    //
+    // Same "✓ agent: ..." / "  agent: ..." line format as `install` and
+    // `status`, so skill_setup.rs's parse_installer_output covers this
+    // command too rather than needing a third parser.
+    const detected = new Set(detectAgents());
+    for (const name of validAgents) {
+      if (detected.has(name)) {
+        console.log(`✓ ${name}: detected`);
+      } else {
+        console.log(`  ${name}: not detected`);
       }
     }
   } else if (command === 'mcp-install') {

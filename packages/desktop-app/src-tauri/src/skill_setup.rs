@@ -127,6 +127,12 @@ pub struct SkippedAgent {
 /// were detected but had nothing to install, and — implicitly, by omission
 /// from both — which weren't present at all (not tracked here; "not
 /// present" needs no representation beyond simply not appearing).
+///
+/// `installed` is really "the ✓-marked agents", and every subcommand sharing
+/// this parser means something slightly different by that mark: `install`
+/// means got files, `status` means has SKILL.md on disk, `detect` means is
+/// present at all. The field keeps the `install` name because that is the
+/// primary caller; read it as whatever ✓ meant for the subcommand that ran.
 #[derive(Debug, Default, PartialEq)]
 struct InstallOutcome {
     installed: Vec<String>,
@@ -350,6 +356,48 @@ async fn revalidate_agents_installed_inner(
         Err(join_err) => {
             tracing::debug!("agents_installed status check panicked: {join_err}");
             agents_installed
+        }
+    }
+}
+
+/// Which agents are present on this machine and would be targeted by an
+/// install, by delegating to `install.ts`'s own `detect` command — the same
+/// `AGENTS`-driven detection `install` itself uses, so the question the
+/// onboarding wizard asks ("Add NodeSpace to <these>?") can never name a
+/// different set than the install that follows actually touches.
+///
+/// Distinct from [`revalidate_agents_installed`], which answers where the
+/// skill already *is*; this is the pre-install question, and on a first run
+/// the two lists are entirely different (everything detected, nothing
+/// installed).
+///
+/// Best-effort: any resolution/execution failure yields an empty list rather
+/// than erroring the caller, so a transient installer problem degrades the
+/// wizard's wording to its generic form instead of failing status entirely.
+pub async fn detect_agents(app: &AppHandle) -> Vec<String> {
+    let installer = match resolve_installer(app) {
+        Ok(installer) => installer,
+        Err(e) => {
+            tracing::debug!("Skipping agent detection: {e}");
+            return Vec::new();
+        }
+    };
+
+    let result =
+        tokio::task::spawn_blocking(move || run_skill_installer_subcommand(&installer, "detect"))
+            .await;
+
+    match result {
+        // `detect` marks a present agent with ✓, which the shared parser
+        // collects into `installed` — here that reads "detected".
+        Ok(Ok(outcome)) => outcome.installed,
+        Ok(Err(e)) => {
+            tracing::debug!("agent detection failed: {e}");
+            Vec::new()
+        }
+        Err(join_err) => {
+            tracing::debug!("agent detection panicked: {join_err}");
+            Vec::new()
         }
     }
 }
@@ -1478,6 +1526,58 @@ mod tests {
             status_outcome.installed,
             vec!["claude-code".to_string()],
             "antigravity was deleted by hand and must no longer be reported as installed"
+        );
+    }
+
+    /// End-to-end proof that the `detect` subcommand answers the
+    /// *pre-install* question `detect_agents` asks on the wizard's behalf:
+    /// which agents are present, with nothing installed yet. This is exactly
+    /// where `status` gives the wrong answer (it reports an empty list until
+    /// something has been installed), which is why the wizard could not have
+    /// been fixed by reusing `status`.
+    ///
+    /// Runs the real installer against an isolated `$HOME`, via the same
+    /// `installer_command` + `parse_installer_output` path production uses.
+    #[test]
+    fn detect_subcommand_reports_present_agents_before_anything_is_installed() {
+        let app = tauri::test::mock_app();
+        let installer_path = resolve_installer_path(&app.handle().clone())
+            .expect("dist/install.js must exist — run `bun run build:skill` first");
+
+        let fake_home = tempfile::tempdir().expect("create isolated fake $HOME");
+        std::fs::create_dir_all(fake_home.path().join(".claude"))
+            .expect("create fake .claude dir so the installer detects claude-code");
+        std::fs::create_dir_all(fake_home.path().join(".gemini/antigravity-cli"))
+            .expect("create fake .gemini/antigravity-cli dir so the installer detects antigravity");
+
+        let detect_output = installer_command(&installer_path, "bun", "detect")
+            .env("HOME", fake_home.path())
+            // claude-code detection honors $CLAUDE_CONFIG_DIR, so an inherited
+            // value would point at a real directory outside the fake $HOME.
+            .env("CLAUDE_CONFIG_DIR", fake_home.path().join(".claude"))
+            .output()
+            .expect("bun must be on $PATH to run this test");
+        let detect_outcome = parse_installer_output(detect_output).expect("detect succeeds");
+
+        assert_eq!(
+            detect_outcome.installed,
+            vec!["claude-code".to_string(), "antigravity".to_string()],
+            "both present agents must be detected with nothing yet installed"
+        );
+
+        // The contrast that makes `detect` necessary: at this same moment,
+        // `status` reports nothing at all.
+        let status_output = installer_command(&installer_path, "bun", "status")
+            .env("HOME", fake_home.path())
+            .env("CLAUDE_CONFIG_DIR", fake_home.path().join(".claude"))
+            .output()
+            .expect("bun must be on $PATH to run this test");
+        let status_outcome = parse_installer_output(status_output).expect("status succeeds");
+
+        assert!(
+            status_outcome.installed.is_empty(),
+            "nothing is installed yet, so status must report an empty list: {:?}",
+            status_outcome.installed
         );
     }
 

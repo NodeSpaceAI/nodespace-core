@@ -30,7 +30,7 @@ const STATUS = {
   completed: false,
   pathConfigured: false,
   skillConfigured: false,
-  claudeCodeDetected: false,
+  detectedAgents: [],
   pathAlreadyConfigured: false
 };
 

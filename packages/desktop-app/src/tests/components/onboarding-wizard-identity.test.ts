@@ -37,7 +37,7 @@ const BLANK_STATUS = {
   completed: false,
   pathConfigured: false,
   skillConfigured: false,
-  claudeCodeDetected: false,
+  detectedAgents: [],
   pathAlreadyConfigured: true // so the PATH step, once reached, shows "Next" immediately
 };
 
@@ -80,7 +80,7 @@ describe('OnboardingWizard identity step', () => {
     expect(container.querySelector<HTMLInputElement>('#identity-first-name')).not.toBeNull();
     expect(container.querySelector<HTMLInputElement>('#identity-last-name')).not.toBeNull();
     // 3 real steps for this scenario (identity, path, summary — no skill
-    // step, claudeCodeDetected is false): the step SEQUENCE — not just the
+    // step, detectedAgents is empty): the step SEQUENCE — not just the
     // step currently rendered — must actually include 'identity', or
     // navigation (Skip/Next) later in the flow has nowhere sane to land.
     expect(container.querySelectorAll('.step-dot').length).toBe(3);

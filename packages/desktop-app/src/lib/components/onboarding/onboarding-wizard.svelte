@@ -5,6 +5,7 @@
   import { toError } from '$lib/types/errors';
   import { focusTrap } from '$lib/actions/focus-trap';
   import { splitFullName } from '$lib/utils/split-full-name';
+  import { displayAgentName, formatAgentList } from '$lib/utils/agent-names';
 
   const log = createLogger('OnboardingWizard');
 
@@ -32,7 +33,8 @@
     completed: boolean;
     pathConfigured: boolean;
     skillConfigured: boolean;
-    claudeCodeDetected: boolean;
+    /** Agent ids the skill installer would target — see agent-names.ts. */
+    detectedAgents: string[];
     pathAlreadyConfigured: boolean;
   }
 
@@ -97,6 +99,13 @@
   // Which steps are active (some may be skipped if prerequisites missing)
   let showSkill = $state(false);
 
+  // Which agents the install will actually target, known BEFORE the install
+  // runs — so the question the skill step asks ("Add NodeSpace to ...?") names
+  // the same agents the success message afterwards confirms. Empty until
+  // check_onboarding_status resolves, and whenever detection failed; the
+  // wording falls back to a generic form in that case rather than guessing.
+  let detectedAgents = $state<string[]>([]);
+
   // What was actually configured (for summary)
   let pathDone = $state(false);
   let skillDone = $state(false);
@@ -144,10 +153,12 @@
     } else {
       invoke<OnboardingStatus>('check_onboarding_status')
         .then((status) => {
-          showSkill = status.claudeCodeDetected;
+          detectedAgents = status.detectedAgents ?? [];
+          showSkill = detectedAgents.length > 0;
           pathWasAlreadyConfigured = status.pathAlreadyConfigured;
           log.debug('Onboarding status loaded', {
             showSkill,
+            detectedAgents,
             pathAlreadyConfigured: status.pathAlreadyConfigured,
           });
         })
@@ -270,16 +281,18 @@
     }
   }
 
-  /** "Claude Code" from "claude-code", "OpenCode" from "opencode", etc. */
-  function displayAgentName(agent: string): string {
-    const names: Record<string, string> = {
-      'claude-code': 'Claude Code',
-      codex: 'Codex',
-      antigravity: 'Antigravity CLI',
-      opencode: 'OpenCode',
-    };
-    return names[agent] ?? agent;
-  }
+  // The agent list as it appears in the skill step's question. Falls back to
+  // "your coding agents" when detection came back empty (a failed or
+  // not-yet-resolved probe) — vague, but never wrong, which a guess at one
+  // specific agent would not be.
+  const detectedAgentsLabel = $derived(
+    detectedAgents.length > 0 ? formatAgentList(detectedAgents) : 'your coding agents'
+  );
+
+  // Whether Claude Code is among the targets — the plugin-marketplace caveat
+  // in the body below is specific to it (no other harness has one), so it is
+  // shown only when it can actually apply.
+  const claudeCodeTargeted = $derived(detectedAgents.includes('claude-code'));
 
   function skipCurrentStep() {
     log.debug('Skipped step', { step: currentStep });
@@ -463,25 +476,28 @@
       <!-- ── Skill step ─────────────────────────────────────────────────── -->
       {#if currentStep === 'skill'}
         <div class="onboarding-header">
-          <h2>Add NodeSpace to Claude Code?</h2>
+          <h2>Add NodeSpace to {detectedAgentsLabel}?</h2>
           <p>
-            Installs a skill file at <code>~/.claude/skills/nodespace/SKILL.md</code> so Claude
-            Code knows how to interact with your knowledge graph. This copy updates each time
-            NodeSpace itself updates. If you already have the skill via
-            <code>/plugin install nodespace@...</code>, that copy stays in charge — it tracks its
-            own marketplace updates, and this step won't overwrite it.
+            Installs a <code>SKILL.md</code> file into each agent's skills directory so
+            {detectedAgentsLabel} know{detectedAgents.length === 1 ? 's' : ''} how to interact with
+            your knowledge graph. This copy updates each time NodeSpace itself updates.
+            {#if claudeCodeTargeted}
+              If you already have the skill in Claude Code via
+              <code>/plugin install nodespace@...</code>, that copy stays in charge — it tracks its
+              own marketplace updates, and this step won't overwrite it.
+            {/if}
           </p>
         </div>
 
         {#if stepSuccess}
           <div class="success-banner">
             {#if skillResult && skillResult.agentsInstalled.length > 0}
-              Skill installed into: {skillResult.agentsInstalled.map(displayAgentName).join(', ')}.
-              Picked up automatically on each agent's next session.
+              Skill installed into: {formatAgentList(skillResult.agentsInstalled)}. Picked up
+              automatically on each agent's next session.
             {:else if skillResult && skillResult.agentsSkipped.length > 0}
               Nothing new to install — see below.
             {:else}
-              Claude Code integration is set up.
+              Agent integration is set up.
             {/if}
           </div>
           {#if skillResult && skillResult.agentsSkipped.length > 0}

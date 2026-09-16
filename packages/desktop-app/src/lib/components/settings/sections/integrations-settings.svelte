@@ -7,11 +7,13 @@
   import { Badge } from '$lib/components/ui/badge';
   import { Card, CardHeader, CardContent } from '$lib/components/ui/card';
   import { cn } from '$lib/utils';
+  import { formatAgentList } from '$lib/utils/agent-names';
 
   const log = createLogger('IntegrationsSettings');
 
   interface IntegrationStatus {
-    claudeCodeDetected: boolean;
+    /** Agent ids the skill installer would target — see agent-names.ts. */
+    detectedAgents: string[];
     pathAlreadyConfigured: boolean;
   }
 
@@ -89,7 +91,7 @@
       status = await invoke<IntegrationStatus>('get_integrations_status');
       if (result.success) {
         const installed = result.agentsInstalled.length > 0
-          ? `Installed into: ${result.agentsInstalled.join(', ')}.`
+          ? `Installed into: ${formatAgentList(result.agentsInstalled)}.`
           : 'Already up to date — no changes needed.';
         const skipped = result.agentsSkipped.length > 0
           ? ` ${result.agentsSkipped.map((s) => `${s.agent}: ${s.reason}`).join('; ')}.`
@@ -112,7 +114,7 @@
       await invoke('remove_skill');
       skillResult = await invoke<SkillSetupResult>('get_skill_setup_status');
       status = await invoke<IntegrationStatus>('get_integrations_status');
-      skillFeedback = { ok: true, message: 'NodeSpace skill removed from Claude Code.' };
+      skillFeedback = { ok: true, message: 'NodeSpace skill removed from every agent it was installed into.' };
     } catch (err) {
       skillFeedback = { ok: false, message: toError(err).message };
     } finally {
@@ -122,7 +124,9 @@
 
   const pathIsConfigured = $derived(status?.pathAlreadyConfigured ?? false);
   const skillIsInstalled = $derived(skillResult?.success ?? false);
-  const claudeDetected = $derived(status?.claudeCodeDetected ?? false);
+  const detectedAgents = $derived(status?.detectedAgents ?? []);
+  const anyAgentDetected = $derived(detectedAgents.length > 0);
+  const detectedAgentsLabel = $derived(formatAgentList(detectedAgents));
 </script>
 
 <div class="max-w-[640px]">
@@ -172,13 +176,13 @@
     </CardContent>
   </Card>
 
-  <!-- Claude Code Skill -->
-  <Card class={cn('mb-4 gap-0 rounded-lg py-0', !claudeDetected && 'opacity-60')}>
+  <!-- Agent Skill -->
+  <Card class={cn('mb-4 gap-0 rounded-lg py-0', !anyAgentDetected && 'opacity-60')}>
     <CardHeader class="p-5 pb-4">
       <div class="mb-1.5 flex items-center gap-2.5">
-        <span class="text-foreground text-[0.9375rem] font-semibold">Claude Code Skill</span>
-        {#if !claudeDetected}
-          <Badge variant="secondary">Claude Code not detected</Badge>
+        <span class="text-foreground text-[0.9375rem] font-semibold">Agent Skill</span>
+        {#if !anyAgentDetected}
+          <Badge variant="secondary">No agents detected</Badge>
         {:else if status === null}
           <Badge variant="secondary">Checking…</Badge>
         {:else if skillIsInstalled}
@@ -188,16 +192,18 @@
         {/if}
       </div>
       <p class="text-muted-foreground m-0 text-sm leading-relaxed">
-        {#if !claudeDetected}
-          Claude Code is not installed. Install it to enable NodeSpace tools in Claude Code CLI sessions.
+        {#if !anyAgentDetected}
+          No supported coding agent is installed. Install one to enable NodeSpace tools in its CLI
+          sessions.
         {:else}
-          NodeSpace tools available in Claude Code CLI sessions via
-          <code class="bg-muted text-foreground rounded px-1 py-0.5 text-[0.8125rem]">~/.claude/skills/nodespace/SKILL.md</code>.
+          NodeSpace tools available in {detectedAgentsLabel} sessions via a
+          <code class="bg-muted text-foreground rounded px-1 py-0.5 text-[0.8125rem]">SKILL.md</code>
+          in each agent's skills directory.
         {/if}
       </p>
     </CardHeader>
     <CardContent class="px-5 pb-5">
-      {#if claudeDetected && skillResult?.cliWarning}
+      {#if anyAgentDetected && skillResult?.cliWarning}
         <div class="mb-4 flex items-start gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3.5 py-2.5 text-sm leading-relaxed text-amber-700">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15" class="mt-0.5 shrink-0" aria-hidden="true">
             <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
@@ -218,7 +224,7 @@
       {/if}
 
       <div class="flex gap-3">
-        {#if !claudeDetected}
+        {#if !anyAgentDetected}
           <Button size="sm" disabled>Add Skill</Button>
         {:else if skillIsInstalled}
           <Button size="sm" onclick={addSkill} disabled={skillWorking}>

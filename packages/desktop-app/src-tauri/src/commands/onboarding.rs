@@ -19,7 +19,13 @@ pub struct OnboardingStatus {
     pub completed: bool,
     pub path_configured: bool,
     pub skill_configured: bool,
-    pub claude_code_detected: bool,
+    /// Every agent the skill installer would target if run right now, as
+    /// agent ids (`claude-code`, `codex`, `antigravity`, ...). Sourced from
+    /// the installer's own `AGENTS` config rather than a hardcoded
+    /// home-directory probe here, so this can never name a different set
+    /// than the install itself targets. Empty means nothing detected — the
+    /// skill step is skipped entirely in that case.
+    pub detected_agents: Vec<String>,
     pub path_already_configured: bool,
 }
 
@@ -146,12 +152,14 @@ async fn remove_path_from_file(path: &PathBuf) -> Result<bool, String> {
 
 /// Read persisted onboarding state and detect installed integrations.
 #[tauri::command]
-pub async fn check_onboarding_status() -> Result<OnboardingStatus, String> {
+pub async fn check_onboarding_status(
+    app_handle: tauri::AppHandle,
+) -> Result<OnboardingStatus, String> {
     let cfg = read_config().await?;
 
     let home = dirs::home_dir().ok_or("Could not determine home directory")?;
 
-    let claude_code_detected = home.join(".claude").exists();
+    let detected_agents = skill_setup::detect_agents(&app_handle).await;
 
     // Check whether the PATH export is already in any shell config.
     let zshrc = home.join(".zshrc");
@@ -163,7 +171,7 @@ pub async fn check_onboarding_status() -> Result<OnboardingStatus, String> {
         completed: cfg.onboarding_completed,
         path_configured: cfg.integrations.path_configured,
         skill_configured: cfg.integrations.skill_configured,
-        claude_code_detected,
+        detected_agents,
         path_already_configured,
     })
 }
@@ -255,8 +263,10 @@ pub async fn remove_from_path() -> Result<(), String> {
 
 /// Return live integration status (path + skill) without running any installer.
 #[tauri::command]
-pub async fn get_integrations_status() -> Result<OnboardingStatus, String> {
-    check_onboarding_status().await
+pub async fn get_integrations_status(
+    app_handle: tauri::AppHandle,
+) -> Result<OnboardingStatus, String> {
+    check_onboarding_status(app_handle).await
 }
 
 /// Remove the NodeSpace skill files from every installed-into agent's skill

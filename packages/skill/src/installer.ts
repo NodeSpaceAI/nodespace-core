@@ -9,7 +9,15 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // Walk up past dist/ if running from compiled output; src/ stays at package root.
 const PACKAGE_ROOT = join(__dirname, '..');
 
-function detectAgents(): AgentName[] {
+/**
+ * Which configured agents are present on this machine, by the existence of
+ * their `detectionDir` alone -- the same check `install` uses to decide what
+ * to target, exported so a caller can ask that question *before* installing
+ * anything. `checkInstalled` is the deliberately different question ("which
+ * already have SKILL.md on disk"), and answers it only after an install has
+ * happened; neither substitutes for the other.
+ */
+export function detectAgents(): AgentName[] {
   return AGENTS
     .filter(agent => existsSync(agent.detectionDir))
     .map(agent => agent.name);
