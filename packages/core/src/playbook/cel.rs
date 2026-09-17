@@ -167,6 +167,99 @@ pub fn json_to_cel(json: &serde_json::Value) -> Value {
 /// nested inside the type namespace or -- their actual stored shape,
 /// per `NodeService::normalize_flat_properties_to_namespace` -- at the top
 /// level alongside it.
+/// The scope a Play's conditions are evaluated at (ADR-078).
+///
+/// Built once per rule dispatch by the engine, which has store access; CEL
+/// evaluation itself stays synchronous and schema-free. Carries the trigger's
+/// registered type, the buckets visible at it, and the field definitions both
+/// scopes declare — the latter two being what `maps_to` resolution needs.
+#[derive(Debug, Clone)]
+pub struct CelScope {
+    /// The `node_type` the rule's trigger was registered against.
+    pub scope_type: String,
+    /// That type's own chain, nearest-first — the buckets in scope.
+    pub chain: Vec<String>,
+    /// Effective fields at the trigger's scope: the vocabulary a condition
+    /// authored against it can refer to.
+    pub scope_fields: Vec<crate::models::SchemaField>,
+    /// Effective fields at the concrete node's scope, where `maps_to` lives.
+    pub node_fields: Vec<crate::models::SchemaField>,
+}
+
+impl CelScope {
+    /// Whether this scope differs from the node's own, i.e. whether values
+    /// could need resolving. False for a node of exactly the registered type,
+    /// which is already reading natively.
+    fn resolves(&self, node_type: &str) -> bool {
+        node_type != self.scope_type
+    }
+}
+
+/// A node's CEL value, projected and value-resolved at `scope`.
+///
+/// Projection picks which fields exist; `maps_to` decides what a surviving
+/// field reads as. A value that cannot be expressed at the scope is dropped
+/// rather than surfaced raw — handing a base-scoped condition a value it has
+/// never heard of is the hazard `maps_to` exists to prevent, and an absent key
+/// makes the condition simply not match.
+fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value {
+    let Some(scope) = scope else {
+        return node_to_cel_value(node);
+    };
+
+    let chain: Vec<&str> = scope.chain.iter().map(String::as_str).collect();
+    let projected = node_to_cel_value_at_scope(node, &chain);
+
+    if !scope.resolves(&node.node_type) {
+        return projected;
+    }
+
+    let Value::Map(map) = &projected else {
+        return projected;
+    };
+
+    let mut out: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
+    for (k, v) in map.map.iter() {
+        let cel_interpreter::objects::Key::String(field) = k else {
+            out.insert(k.clone(), v.clone());
+            continue;
+        };
+        // Only string values carry an enum vocabulary to resolve through.
+        let Value::String(stored) = v else {
+            out.insert(k.clone(), v.clone());
+            continue;
+        };
+        match crate::schema::extends_chain::resolve_value_at_scope(
+            field,
+            stored,
+            &scope.node_fields,
+            &scope.scope_fields,
+        ) {
+            Some(resolved) => {
+                out.insert(k.clone(), Value::String(Arc::new(resolved)));
+            }
+            None => {
+                // Unresolvable at this scope. Non-enum fields resolve to
+                // themselves via `resolve_value_at_scope`'s first check, so
+                // reaching here means the field IS an enum whose value has no
+                // meaning at the reading scope — drop the key.
+                if !field_is_enum(&scope.scope_fields, field) {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+
+    Value::Map(cel_interpreter::objects::Map { map: Arc::new(out) })
+}
+
+/// Whether the named field is an enum at this scope.
+fn field_is_enum(fields: &[crate::models::SchemaField], name: &str) -> bool {
+    fields
+        .iter()
+        .any(|f| f.name == name && f.field_type == "enum")
+}
+
 pub fn node_to_cel_value(node: &Node) -> Value {
     node_to_cel_value_at_scope(node, std::slice::from_ref(&node.node_type.as_str()))
 }
@@ -285,7 +378,7 @@ pub fn key(s: &str) -> cel_interpreter::objects::Key {
 /// - `today()`: Current date as ISO 8601 string
 /// - `add_days(date_string, n)`: A new ISO 8601 date, `n` days offset from `date_string`
 pub fn build_condition_context<'a>(node: &Node, event: &DomainEvent) -> Context<'a> {
-    build_condition_context_with_resolved(node, event, &HashMap::new())
+    build_condition_context_with_resolved(node, event, &HashMap::new(), None)
 }
 
 /// Build a CEL evaluation context with pre-resolved graph paths injected.
@@ -297,11 +390,12 @@ fn build_condition_context_with_resolved<'a>(
     node: &Node,
     event: &DomainEvent,
     resolved_values: &HashMap<Vec<String>, Value>,
+    scope: Option<&CelScope>,
 ) -> Context<'a> {
     let mut ctx = Context::default();
 
     // `node` variable — the trigger node in wire format, enriched with resolved paths
-    let base_node = node_to_cel_value(node);
+    let base_node = scoped_node_value(node, scope);
     let enriched_node = inject_resolved_paths(&base_node, resolved_values);
     ctx.add_variable_from_value("node", enriched_node);
 
@@ -309,7 +403,7 @@ fn build_condition_context_with_resolved<'a>(
     let mut trigger_map: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
 
     // Add trigger.node as an alias (also enriched with resolved paths)
-    let trigger_node_value = inject_resolved_paths(&node_to_cel_value(node), resolved_values);
+    let trigger_node_value = inject_resolved_paths(&scoped_node_value(node, scope), resolved_values);
     trigger_map.insert(key("node"), trigger_node_value);
 
     // For PropertyChanged events, add trigger.property with old/new values
@@ -526,6 +620,30 @@ pub async fn evaluate_conditions(
     event: &DomainEvent,
     resolver: Option<&mut GraphResolver>,
 ) -> ConditionResult {
+    evaluate_conditions_at_scope(conditions, node, event, resolver, None).await
+}
+
+/// [`evaluate_conditions`], evaluated at an explicit trigger scope (ADR-078).
+///
+/// `scope` is the `node_type` the rule's trigger was registered against, with
+/// the effective field sets needed to read at it. A Play registered on `task`
+/// firing against an `issue` sees task's fields only — `node.severity` does
+/// not resolve there — and an extended enum value reads as the base-scope
+/// value it maps to, so `node.status == 'todo'` matches a node storing
+/// `backlog`.
+///
+/// That is the point of scoping rather than a limitation of it: a base-scoped
+/// Play then behaves identically whether it fired on a plain task or a
+/// subtype, and cannot come to depend on a field only some of its matches
+/// carry. `None` evaluates at the node's own scope, which is every Play in a
+/// database where nothing declares `extends`.
+pub async fn evaluate_conditions_at_scope(
+    conditions: &[CompiledCondition],
+    node: &Node,
+    event: &DomainEvent,
+    resolver: Option<&mut GraphResolver>,
+    scope: Option<&CelScope>,
+) -> ConditionResult {
     if conditions.is_empty() {
         return ConditionResult::Pass;
     }
@@ -554,7 +672,7 @@ pub async fn evaluate_conditions(
         HashMap::new()
     };
 
-    let ctx = build_condition_context_with_resolved(node, event, &resolved_values);
+    let ctx = build_condition_context_with_resolved(node, event, &resolved_values, scope);
 
     for (i, condition) in conditions.iter().enumerate() {
         match condition.program.execute(&ctx) {

@@ -232,6 +232,46 @@ impl PlaybookEngine {
     /// Rebuilt wholesale rather than diffed: `extends` edits are rare,
     /// administrative operations, and the map holds one entry per extending
     /// type.
+    /// Build the CEL evaluation scope for a rule firing on a node (ADR-078).
+    ///
+    /// A rule registered against a base type evaluates its conditions at that
+    /// type's scope, so it sees the field set and enum vocabulary it was
+    /// authored against whatever concrete subtype fired it. Returns `None`
+    /// when there is nothing to scope — the node is already the registered
+    /// type, or the trigger is not type-scoped — which is every rule until
+    /// something declares `extends`.
+    pub(crate) async fn cel_scope_for(
+        node_service: &Arc<NodeService>,
+        rule: &ParsedRule,
+        node: &crate::models::Node,
+    ) -> Option<crate::playbook::cel::CelScope> {
+        let scope_type = match &rule.trigger {
+            ParsedTrigger::GraphEvent { node_type, .. } => node_type,
+            ParsedTrigger::Scheduled { node_type, .. } => node_type,
+        };
+
+        // A node of exactly the registered type reads natively; nothing to
+        // project or resolve.
+        if scope_type == &node.node_type || scope_type == "*" {
+            return None;
+        }
+
+        let chain = node_service.resolve_type_chain(scope_type).await.ok()?;
+        let scope_fields = node_service.resolve_field_owners(scope_type).await.ok()?.0;
+        let node_fields = node_service
+            .resolve_field_owners(&node.node_type)
+            .await
+            .ok()?
+            .0;
+
+        Some(crate::playbook::cel::CelScope {
+            scope_type: scope_type.clone(),
+            chain,
+            scope_fields,
+            node_fields,
+        })
+    }
+
     pub(crate) async fn refresh_ancestor_cache(&self) {
         let parent_map = match self.node_service.store().get_extends_parent_map().await {
             Ok(map) => map,
@@ -542,11 +582,14 @@ impl PlaybookEngine {
         for rule_ref in invariant_rules {
             let mut resolver =
                 crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&self.node_service));
-            let condition_result = crate::playbook::cel::evaluate_conditions(
+            let cel_scope =
+                PlaybookEngine::cel_scope_for(&self.node_service, &rule_ref.rule, &node).await;
+            let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 &node,
                 &event,
                 Some(&mut resolver),
+                cel_scope.as_ref(),
             )
             .await;
 
@@ -977,11 +1020,21 @@ pub(crate) async fn rule_processor_loop(
                 rule_ref.rule.name, rule_ref.play_id, rule_ref.rule_index,
             );
 
-            let condition_result = crate::playbook::cel::evaluate_conditions(
+            // Evaluate at the rule's registered trigger scope (ADR-078), so
+            // a Play on a base type sees that type's fields and vocabulary
+            // whatever concrete subtype fired it.
+            let cel_scope = PlaybookEngine::cel_scope_for(
+                &node_service,
+                &rule_ref.rule,
+                &work_item.trigger_node,
+            )
+            .await;
+            let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 &work_item.trigger_node,
                 &work_item.trigger_event.event,
                 Some(&mut resolver),
+                cel_scope.as_ref(),
             )
             .await;
 

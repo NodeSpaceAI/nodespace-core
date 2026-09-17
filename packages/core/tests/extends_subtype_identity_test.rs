@@ -788,3 +788,289 @@ async fn a_projected_node_flattens_to_exactly_its_scope() {
         wire["properties"]
     );
 }
+
+// ============================================================================
+// maps_to — enum-value extension and scope-relative resolution (ADR-078)
+// ============================================================================
+
+/// `ticket.state` is an extensible enum; `bug` extends it and adds `backlog`
+/// mapping to `open`.
+async fn seed_maps_to_chain(svc: &Arc<NodeService>) {
+    handle_create_schema(
+        svc,
+        json!({
+            "name": "Ticket",
+            "fields": [{
+                "name": "state",
+                "type": "enum",
+                "protection": "user",
+                "indexed": false,
+                "extensible": true,
+                "coreValues": [
+                    { "value": "open", "label": "Open" },
+                    { "value": "done", "label": "Done" }
+                ]
+            }]
+        }),
+    )
+    .await
+    .expect("ticket schema creation failed");
+
+    handle_create_schema(
+        svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug schema creation failed");
+
+    handle_update_schema(
+        svc,
+        json!({
+            "schema_id": "bug",
+            "add_field_values": [{
+                "field": "state",
+                "values": [{ "value": "backlog", "label": "Backlog", "mapsTo": "open" }]
+            }]
+        }),
+    )
+    .await
+    .expect("extending the inherited enum should succeed");
+}
+
+#[tokio::test]
+async fn adding_to_an_inherited_field_without_maps_to_is_rejected() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "add_field_values": [{
+                "field": "state",
+                "values": [{ "value": "triage", "label": "Triage" }]
+            }]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err("a value with no mapsTo on an inherited field must be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("mapsTo"),
+        "the error should name the missing key so the caller can fix it: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn a_maps_to_naming_a_nonexistent_value_is_rejected() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "add_field_values": [{
+                "field": "state",
+                "values": [{ "value": "triage", "label": "Triage", "mapsTo": "nonexistent" }]
+            }]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err("mapsTo must name a value the field already has");
+    assert!(
+        format!("{err:?}").contains("nonexistent"),
+        "the error should name the bad target: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_schemas_own_field_needs_no_maps_to() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+
+    // `severity` is declared by `bug` itself, so it has no ancestor scope
+    // whose meaning needs preserving — mapsTo is neither required nor
+    // meaningful. Regression guard for the non-inherited path.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "add_fields": [{
+                "name": "severity",
+                "type": "enum",
+                "protection": "user",
+                "indexed": false,
+                "extensible": true,
+                "coreValues": [{ "value": "low", "label": "Low" }]
+            }]
+        }),
+    )
+    .await
+    .expect("adding an own field should succeed");
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "add_field_values": [{
+                "field": "severity",
+                "values": [{ "value": "high", "label": "High" }]
+            }]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a value added to the schema's OWN field needs no mapsTo: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_base_scoped_query_matches_an_extended_value_through_maps_to() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+
+    create_instance(&svc, "ticket", json!({ "state": "open" })).await;
+    create_instance(&svc, "bug", json!({ "state": "backlog" })).await;
+
+    // The criterion's own case: a filter authored against the BASE type, using
+    // the base's vocabulary, must match a subtype instance storing the
+    // extended value that maps to it.
+    let filter = nodespace_core::models::NodeFilter {
+        node_type: Some("ticket".to_string()),
+        property_filters: Some(vec![nodespace_core::models::PropertyFilter::new(
+            "$.state".to_string(),
+            nodespace_core::models::FilterOperator::Equals,
+            json!("open"),
+        )
+        .expect("filter construction failed")]),
+        ..Default::default()
+    };
+
+    let results = svc.query_nodes(filter).await.expect("query failed");
+    let types: Vec<&str> = results.iter().map(|n| n.node_type.as_str()).collect();
+
+    assert!(
+        types.contains(&"bug"),
+        "a ticket-scoped `state == open` filter should match a bug storing \
+         `backlog`, which maps to open — got {types:?}"
+    );
+    assert!(
+        types.contains(&"ticket"),
+        "and must still match the plain ticket — got {types:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_native_scoped_query_sees_the_raw_extended_value() {
+    let (svc, _tmp) = test_service().await;
+    seed_maps_to_chain(&svc).await;
+    create_instance(&svc, "bug", json!({ "state": "backlog" })).await;
+
+    // Reading at the node's own scope is already native — nothing to resolve,
+    // so the stored value is what a bug-scoped filter compares against.
+    let raw = nodespace_core::models::NodeFilter {
+        node_type: Some("bug".to_string()),
+        property_filters: Some(vec![nodespace_core::models::PropertyFilter::new(
+            "$.state".to_string(),
+            nodespace_core::models::FilterOperator::Equals,
+            json!("backlog"),
+        )
+        .expect("filter construction failed")]),
+        ..Default::default()
+    };
+    assert_eq!(
+        svc.query_nodes(raw).await.expect("query failed").len(),
+        1,
+        "a bug-scoped filter matches the raw stored value"
+    );
+
+    // And the base-scope value must NOT match at the subtype's own scope: the
+    // resolution is scope-relative, not a global rewrite.
+    let resolved = nodespace_core::models::NodeFilter {
+        node_type: Some("bug".to_string()),
+        property_filters: Some(vec![nodespace_core::models::PropertyFilter::new(
+            "$.state".to_string(),
+            nodespace_core::models::FilterOperator::Equals,
+            json!("open"),
+        )
+        .expect("filter construction failed")]),
+        ..Default::default()
+    };
+    assert_eq!(
+        svc.query_nodes(resolved).await.expect("query failed").len(),
+        0,
+        "at its own scope the node reads `backlog`, not the value it maps to"
+    );
+}
+
+#[tokio::test]
+async fn extending_a_non_extensible_inherited_field_is_rejected() {
+    let (svc, _tmp) = test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [{
+                "name": "kind",
+                "type": "enum",
+                "protection": "user",
+                "indexed": false,
+                "coreValues": [{ "value": "a", "label": "A" }]
+            }]
+        }),
+    )
+    .await
+    .expect("ticket schema creation failed");
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug schema creation failed");
+
+    // The extensible gate applies through inheritance exactly as it does
+    // directly — extending a closed vocabulary is no more legal via a subtype.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "add_field_values": [{
+                "field": "kind",
+                "values": [{ "value": "b", "label": "B", "mapsTo": "a" }]
+            }]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "a non-extensible inherited field must not be extendable"
+    );
+}
+
+#[tokio::test]
+async fn fields_on_an_extending_schema_are_stored_bare() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+
+    // ADR-063 requires a namespace prefix when extending a type you don't own.
+    // A schema's own fields are exempt, and an extending schema's own fields
+    // are its own — they live in its own bucket and cannot collide with the
+    // base type's future core fields.
+    let schema = svc
+        .get_schema_node("bug")
+        .await
+        .expect("schema lookup failed")
+        .expect("bug schema should exist");
+
+    assert!(
+        schema.fields.iter().any(|f| f.name == "severity"),
+        "an extending schema's own field is stored bare, with no prefix — got {:?}",
+        schema.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+    );
+}

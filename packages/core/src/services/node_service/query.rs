@@ -30,6 +30,12 @@ impl ScopeContext {
         &self.chain
     }
 
+    /// Whether the queried scope declares this field — i.e. whether a filter
+    /// authored at this scope is entitled to read it at all.
+    fn declares_field(&self, name: &str) -> bool {
+        self.scope_fields.iter().any(|f| f.name == name)
+    }
+
     /// Whether a node of this type could carry a value needing resolution.
     ///
     /// False for a node of exactly the queried type — it is already reading at
@@ -232,16 +238,27 @@ impl NodeService {
         };
         let segments: Vec<&str> = path.split('.').collect();
 
-        // Resolve value from namespaced properties, searching each bucket in
-        // the query's scope chain nearest-first (ADR-078). A filter authored
-        // against a base type resolves an inherited field from its declaring
-        // ancestor's bucket; a field outside the scope does not resolve, so
-        // the filter does not match — which is what keeps a base-scoped query
-        // from depending on a subtype's own fields.
+        // Resolve the value from namespaced properties (ADR-078).
+        //
+        // Which buckets to search is decided by whether the field exists at
+        // the query's scope at all, NOT by the query's bucket chain alone. A
+        // field the query's scope declares may physically live in a subtype's
+        // bucket: extending an inherited enum materializes the field onto the
+        // extending schema, which makes that schema its declaring owner and
+        // moves where instances store it. Searching only the query's chain
+        // would miss exactly the values `maps_to` exists to translate.
+        //
+        // A field the query's scope does NOT declare stays invisible, which is
+        // what keeps a base-scoped query from depending on a subtype's own
+        // fields.
         let own_chain = std::slice::from_ref(&node.node_type);
-        let scope_chain = scope.map(|s| s.chain()).unwrap_or(own_chain);
+        let search_chain = match (scope, segments.as_slice()) {
+            (Some(ctx), [field]) if ctx.declares_field(field) => own_chain,
+            (Some(ctx), _) => ctx.chain(),
+            (None, _) => own_chain,
+        };
         let mut current = None;
-        for scope_name in scope_chain {
+        for scope_name in search_chain {
             let mut candidate = node.properties.get(scope_name.as_str());
             for segment in &segments {
                 candidate = candidate.and_then(|v| v.get(*segment));
@@ -249,6 +266,18 @@ impl NodeService {
             if candidate.is_some() {
                 current = candidate;
                 break;
+            }
+        }
+        // Fall back to every bucket when the scope declares the field but the
+        // node's own chain does not hold it — a deeper descendant may own it.
+        if current.is_none() {
+            if let (Some(ctx), [field]) = (scope, segments.as_slice()) {
+                if ctx.declares_field(field) {
+                    current = node
+                        .properties
+                        .as_object()
+                        .and_then(|obj| obj.values().find_map(|b| b.get(field)));
+                }
             }
         }
 

@@ -504,11 +504,20 @@ fn extend_inherited_field(
         )));
     }
 
-    let mut existing_values: std::collections::HashSet<String> = inherited
+    // A previous extension may already have materialized this field onto the
+    // schema. Its values count as pre-existing — both for collision checks and
+    // as legal `maps_to` targets — so start from the materialized copy when
+    // one is present, falling back to the ancestor's definition otherwise.
+    let current = fields
+        .iter()
+        .find(|f| f.name == addition.field)
+        .unwrap_or(&inherited);
+
+    let mut existing_values: std::collections::HashSet<String> = current
         .core_values
         .iter()
         .flatten()
-        .chain(inherited.user_values.iter().flatten())
+        .chain(current.user_values.iter().flatten())
         .map(|ev| ev.value.clone())
         .collect();
 
@@ -567,12 +576,23 @@ fn extend_inherited_field(
 
     // Materialize the inherited field as this schema's own, so the added
     // values live on the extending schema rather than mutating the parent.
-    let mut materialized = inherited;
-    materialized
-        .user_values
-        .get_or_insert_with(Vec::new)
-        .extend(addition.values.iter().cloned());
-    fields.push(materialized);
+    // Append to the existing materialized copy if one is already present.
+    match fields.iter_mut().find(|f| f.name == addition.field) {
+        Some(existing) => {
+            existing
+                .user_values
+                .get_or_insert_with(Vec::new)
+                .extend(addition.values.iter().cloned());
+        }
+        None => {
+            let mut materialized = inherited;
+            materialized
+                .user_values
+                .get_or_insert_with(Vec::new)
+                .extend(addition.values.iter().cloned());
+            fields.push(materialized);
+        }
+    }
 
     Ok(addition.values.len())
 }
@@ -1751,17 +1771,22 @@ pub async fn handle_update_schema(
     // machinery".
     let mut field_values_added = 0;
     if let Some(ref additions) = params.add_field_values {
-        // An inherited field is one the effective set has but this schema does
-        // not declare itself. Resolved once, ahead of the loop, and only when
-        // the schema actually extends something — an unextended schema's
-        // effective set is its own fields, so nothing can be inherited.
+        // A field is "inherited" if an ANCESTOR declares it — not merely if
+        // this schema's own list currently lacks it.
+        //
+        // The distinction is load-bearing. Extending an inherited field
+        // materializes it onto this schema (see `extend_inherited_field`), so
+        // an "absent from my own fields" test would report it as no longer
+        // inherited on the very next call, and a second extension would take
+        // the own-field path and escape the `maps_to` requirement entirely.
+        // Asking the ancestors stays true however many times the field is
+        // extended.
+        //
+        // Resolved once, ahead of the loop, and only when the schema actually
+        // extends something.
         let inherited_fields: Vec<SchemaField> =
             match declared_extends_parent(&schema.relationships) {
-                Some(_) => resolve_effective_fields(node_service, &params.schema_id)
-                    .await?
-                    .into_iter()
-                    .filter(|f| !fields.iter().any(|own| own.name == f.name))
-                    .collect(),
+                Some(parent) => resolve_effective_fields(node_service, &parent).await?,
                 None => Vec::new(),
             };
 
