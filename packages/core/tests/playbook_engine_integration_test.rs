@@ -1583,9 +1583,10 @@ async fn recompute_does_not_fire_from_a_contributing_items_own_change() -> Resul
     // Cycle. No trigger in this play fires on `agg_issue_gap`'s own events.
     patch_node_properties(&service, &issue_a_id, json!({ "estimate": 100 })).await?;
 
-    // Give the (non-existent) reactive path every reasonable chance to fire
-    // before asserting it didn't -- same real-time budget `wait_until` gives
-    // the positive case, just asserting the negative outcome throughout.
+    // Give the (non-existent) reactive path a real chance to fire before
+    // asserting it didn't -- 500ms is generous relative to how fast the
+    // positive tests in this file actually observe a real trigger fire
+    // (typically within one or two of `wait_until`'s 25ms poll ticks).
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     let after = total_estimate_of(&service, cycle_type, &cycle_id).await;
