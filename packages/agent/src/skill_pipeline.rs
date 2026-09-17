@@ -1674,6 +1674,75 @@ mod tests {
         );
     }
 
+    /// A rule that tells the model to "call `foo_bar`" is only actionable if
+    /// `foo_bar` is a tool the model actually has. This shipped wrong once:
+    /// the `add_field_values` guidance told the model to check eligibility
+    /// with `get_schema_definition`, which is the core/CLI-layer RPC name and
+    /// not on the local agent's tool surface at all. Nothing caught it —
+    /// every other guard checks that a rule *reaches* a prompt, not that what
+    /// the rule says is true of the tools that prompt is paired with.
+    ///
+    /// Scoped to the explicit `call <name>` / `calling <name>` phrasing rather
+    /// than every snake_case token, because the rules are dense with
+    /// non-tool identifiers (`core_values`, `blocked_by`, `title_template`)
+    /// that a blanket scan would flag. The narrow form is what a model reads
+    /// as an instruction to emit a tool call, which is exactly the claim that
+    /// has to be true.
+    #[test]
+    fn rules_only_tell_the_model_to_call_tools_that_exist() {
+        let known: std::collections::HashSet<&str> = crate::local_agent::tools::Tool::ALL
+            .iter()
+            .map(|t| t.name())
+            .collect();
+
+        // Every rule text on both surfaces, not just the ones reaching the
+        // prompt today — a rule moved into the prompt later carries its
+        // tool names with it.
+        let mut texts: Vec<(&str, &str)> = Vec::new();
+        for r in crate::skill_rules::SCHEMA_RULES {
+            texts.push((r.id, r.imperative));
+        }
+        for r in crate::skill_rules::INTERACTION_RULES {
+            texts.push((r.id, r.imperative));
+        }
+
+        let mut bad: Vec<String> = Vec::new();
+        for (id, text) in texts {
+            let words: Vec<&str> = text.split_whitespace().collect();
+            for pair in words.windows(2) {
+                let verb = pair[0].trim_matches(|c: char| !c.is_alphanumeric());
+                if !verb.eq_ignore_ascii_case("call") && !verb.eq_ignore_ascii_case("calling") {
+                    continue;
+                }
+                // Tool names reach here as bare words, backticked, or
+                // followed by an argument list — strip all three.
+                let candidate = pair[1]
+                    .trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
+                    .split('(')
+                    .next()
+                    .unwrap_or_default();
+                // Only underscored identifiers are tool-name shaped; this is
+                // what keeps ordinary prose ("call the", "call is") out.
+                if !candidate.contains('_') {
+                    continue;
+                }
+                if !known.contains(candidate) {
+                    bad.push(format!("{id} says to call {candidate:?}"));
+                }
+            }
+        }
+
+        assert!(
+            bad.is_empty(),
+            "these rules instruct the model to call tools that do not exist on the local \
+             agent's surface: {}. A model told to call a missing tool either wastes a turn \
+             on a hard error or treats the instruction as an unsatisfiable precondition and \
+             declines the operation outright. Use a real name from Tool::ALL, or reword so \
+             the rule does not name a tool call.",
+            bad.join("; ")
+        );
+    }
+
     /// The prompt guidance tells the model to reach for `add_field_values`,
     /// but a model only emits a parameter its tool schema declares — so the
     /// guidance is inert unless `update_schema`'s schema actually advertises
