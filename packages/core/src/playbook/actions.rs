@@ -4534,5 +4534,93 @@ mod tests {
             let created = svc.get_node(&expected_id).await.unwrap().unwrap();
             assert_eq!(created.properties[PLAYBOOK_CHAIN_DEPTH_PROPERTY], json!(8));
         }
+
+        /// An action binding resolves a single-hop reverse path through the
+        /// graph resolver.
+        ///
+        /// This is the first test to construct a `BindingContext` with
+        /// `Some(resolver)`. Every other one passes `None`, which routes past
+        /// the resolver branch entirely — so the graph-traversal half of
+        /// `resolve_trigger_path` had no coverage at all, and a binding like
+        /// `{{trigger.node.assignee}}` was exercised only in production.
+        ///
+        /// A Play author reaches this through an action parameter, the way they
+        /// reach `enrich_context` through a condition. Both halves of reverse
+        /// traversal are user-facing, so both need to be reachable in a test.
+        #[tokio::test]
+        async fn action_binding_resolves_a_single_hop_reverse_path() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // A person declares `tasks`; a ticket reads it back as `assignee`.
+            for (type_name, rels) in [
+                ("bind_ticket", json!([])),
+                (
+                    "bind_person",
+                    json!([{
+                        "name": "tasks",
+                        "targetType": "bind_ticket",
+                        "direction": "out",
+                        "cardinality": "many",
+                        "reverseName": "assignee",
+                        "reverseCardinality": "one"
+                    }]),
+                ),
+            ] {
+                let schema = Node::new_with_id(
+                    type_name.to_string(),
+                    "schema".to_string(),
+                    type_name.to_string(),
+                    json!({
+                        "isCore": false,
+                        "schemaVersion": 1,
+                        "description": format!("{type_name} schema"),
+                        "fields": [{"name": "email", "type": "string"}]
+                    }),
+                );
+                svc.create_node(schema).await.unwrap();
+                let declarations: Vec<crate::models::schema::SchemaRelationship> =
+                    serde_json::from_value(rels).unwrap();
+                if !declarations.is_empty() {
+                    svc.set_schema_relationships(type_name, &declarations)
+                        .await
+                        .unwrap();
+                }
+            }
+
+            svc.create_node(make_trigger_node(
+                "bind-person-1",
+                "bind_person",
+                json!({"email": "ada@example.com"}),
+            ))
+            .await
+            .unwrap();
+            let ticket = make_trigger_node("bind-ticket-1", "bind_ticket", json!({}));
+            svc.create_node(ticket.clone()).await.unwrap();
+            svc.create_relationship("bind-person-1", "tasks", "bind-ticket-1", json!({}))
+                .await
+                .unwrap();
+
+            let event = make_node_created_event("bind-ticket-1", "bind_ticket");
+            let resolver = GraphResolver::new(Arc::clone(&svc));
+            let mut ctx = BindingContext::new(&ticket, &event, Some(resolver));
+
+            // Two segments after `trigger` — the length the old `> 2` guard
+            // turned away.
+            let resolved = ctx
+                .resolve_binding("trigger.node.assignee")
+                .await
+                .expect("a single-hop reverse binding must resolve");
+            assert_eq!(
+                resolved["id"], "bind-person-1",
+                "the binding must resolve to the assignee node"
+            );
+
+            // And it still chains, the way a forward binding does.
+            let chained = ctx
+                .resolve_binding("trigger.node.assignee.email")
+                .await
+                .expect("a chained reverse binding must resolve");
+            assert_eq!(chained, json!("ada@example.com"));
+        }
     }
 }

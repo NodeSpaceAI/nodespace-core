@@ -186,7 +186,8 @@ impl GraphResolver {
                         ResolvedValue::Missing
                     }
                 };
-                self.cache.insert(cache_key(&segments[..=i]), result.clone());
+                self.cache
+                    .insert(cache_key(&segments[..=i]), result.clone());
                 if is_last {
                     self.cache.insert(cache_key(segments), result.clone());
                     return result;
@@ -1943,10 +1944,19 @@ mod tests {
                 other => panic!("expected the author Node, got {:?}", other),
             }
 
-            // The declaring end still walks outbound by that same name.
+            // The declaring end still walks outbound by that same name. It
+            // resolves to a Collection rather than a Node even though exactly
+            // one doc matches: `wrote` is declared `cardinality: "many"`, and a
+            // declared "many" keeps its shape regardless of the current row
+            // count. The reverse side above is a Node because its
+            // `reverseCardinality` is "one" — the two ends are asked about
+            // independently, which is the whole point of declaring both.
             match resolver.resolve_path(&author, &["wrote".to_string()]).await {
-                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-inf-d1"),
-                other => panic!("expected the doc Node, got {:?}", other),
+                ResolvedValue::Collection(nodes) => {
+                    assert_eq!(nodes.len(), 1);
+                    assert_eq!(nodes[0].id, "gr-inf-d1");
+                }
+                other => panic!("expected a Collection holding the doc, got {:?}", other),
             }
         }
 
