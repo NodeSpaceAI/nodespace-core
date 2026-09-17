@@ -1500,7 +1500,6 @@
     --circle-offset: 22px; /* Circle center distance from container left edge - reserves space for chevrons */
     --circle-diameter: 20px; /* Circle size (width and height) */
     --circle-text-gap: 8px; /* Gap between circle edge and text content */
-    --node-indent: 2.5rem; /* Indentation distance between parent and child levels */
 
     /* Default font values for positioning calculations */
     --font-size: 1rem;

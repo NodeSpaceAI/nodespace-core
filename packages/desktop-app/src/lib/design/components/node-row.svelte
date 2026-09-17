@@ -237,7 +237,7 @@
 
     HORIZONTAL POSITION:
     - Exactly halfway between parent and child circles
-    - Parent is at current depth, child is at depth + 2.5rem (--node-indent)
+    - Parent is at current depth, child is at depth + 2.5rem (--node-spacing-indent)
     - Chevron positioned at -1.25rem (half of 2.5rem) from current node
 
     INHERITANCE:
@@ -262,7 +262,7 @@
     /* Position chevron exactly halfway between parent and child circles */
     position: absolute;
     left: calc(
-      -1 * var(--node-indent) / 2 + var(--circle-offset)
+      -1 * var(--node-spacing-indent) / 2 + var(--circle-offset)
     ); /* Halfway back to parent + parent circle offset */
     /* Use shared CSS variable from .node - single source of truth for vertical positioning */
     top: var(--icon-vertical-position);
