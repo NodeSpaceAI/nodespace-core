@@ -1284,8 +1284,10 @@ mod tests {
                     field_type: field_type.to_string(),
                     enum_values: Vec::new(),
                     required: false,
+                    description: None,
                 })
                 .collect(),
+            relationships: vec![],
             title_template: None,
         }
         .to_json()])

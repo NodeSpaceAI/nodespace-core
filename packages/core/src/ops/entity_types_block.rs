@@ -20,6 +20,7 @@
 //! own that encoding so it is one reversible mapping rather than a
 //! hand-written projection on each side.
 
+use crate::models::schema::{RelationshipCardinality, RelationshipDirection, SchemaRelationship};
 use crate::models::SchemaNode;
 use serde_json::{json, Value};
 
@@ -36,6 +37,13 @@ pub struct EntityTypeDescriptor {
     /// id — the routing path frequently has nothing else.
     pub name: Option<String>,
     pub fields: Vec<EntityFieldDescriptor>,
+    /// This type's declared relationships to other types, carried so
+    /// `schema_metadata` can tell the model which relationship to use (e.g.
+    /// `epic.stories` vs. the structural `has_child`) and why, via each
+    /// relationship's own `description`. Not rendered by [`Self::render_line`]
+    /// — see [`EntityRelationshipDescriptor`]'s doc comment for why this stays
+    /// out of the compact `EXISTING SCHEMAS` line.
+    pub relationships: Vec<EntityRelationshipDescriptor>,
     /// Rendered because the `create_node` tool description promises the
     /// template is "shown in EXISTING SCHEMAS"; that promise needs a referent.
     pub title_template: Option<String>,
@@ -53,6 +61,21 @@ pub struct EntityFieldDescriptor {
     /// The node-creation guidance treats a required field as mandatory in the
     /// `properties` map, so the flag must reach the prompt to be actionable.
     pub required: bool,
+    /// What the field is for — meaning, purpose, usage, an example where
+    /// helpful. Mirrors [`crate::models::schema::SchemaField::description`],
+    /// whose own doc comment already promises it is "consumed by the model
+    /// for schema comprehension" — a promise [`Self::from_schema_field`]
+    /// previously did not keep, since this struct dropped the value before it
+    /// ever reached [`EntityTypeDescriptor::to_json`].
+    ///
+    /// Deliberately NOT rendered by [`Self::render`]/[`Self::render_shape`]:
+    /// those notations feed the compact `EXISTING SCHEMAS` prompt line (both
+    /// the workspace-context and skill-routing paths), which stays exactly as
+    /// it read before this field existed. Prose this long belongs in
+    /// `schema_metadata`'s JSON (via `to_json`/`from_json`), delivered
+    /// alongside a matched skill result — not inlined into a block whose
+    /// whole design goal is staying short enough to always be in context.
+    pub description: Option<String>,
 }
 
 impl EntityFieldDescriptor {
@@ -120,7 +143,125 @@ impl EntityFieldDescriptor {
             field_type: f.field_type.clone(),
             enum_values,
             required: f.required.unwrap_or(false),
+            description: f.description.clone(),
         }
+    }
+}
+
+/// One relationship of an entity type as `schema_metadata` renders it.
+///
+/// `EntityTypeDescriptor` previously carried nothing about a type's
+/// relationships at all — a caller reading `schema_metadata` could see a
+/// type's fields but had no way to learn it also declares, say, `stories`
+/// (out, many, to `story`) versus the structural `has_child`. This struct is
+/// the relationship counterpart to [`EntityFieldDescriptor`]: deliberately
+/// smaller than [`SchemaRelationship`] (no `edge_fields` — out of this
+/// struct's scope; add it if a real caller needs it), carrying exactly enough
+/// to name the relationship, tell one direction/cardinality from the other,
+/// and — the reason this struct exists — surface its `description`.
+///
+/// Not rendered by [`EntityTypeDescriptor::render_line`]: relationships were
+/// never part of the compact `EXISTING SCHEMAS` block before this struct
+/// existed, and this issue's scope is getting `description` prose into
+/// `schema_metadata` (the `find_skills` sidecar), not changing what the
+/// deterministic prompt-injection block shows.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntityRelationshipDescriptor {
+    /// The name this edge is declared under, from the declaring type's side.
+    pub name: String,
+    /// The related type, when the relationship is typed. `None` for an
+    /// untyped relationship that accepts any target.
+    pub target_type: Option<String>,
+    pub direction: RelationshipDirection,
+    pub cardinality: RelationshipCardinality,
+    /// The name this edge reads by from the target's end (e.g. `epic.stories`
+    /// read from `story`'s side might be `epic`).
+    pub reverse_name: String,
+    pub reverse_cardinality: RelationshipCardinality,
+    /// Why this relationship exists / when to use it over another one.
+    /// Mirrors [`SchemaRelationship::description`] — see
+    /// [`EntityFieldDescriptor::description`]'s doc comment for why this is
+    /// carried here rather than rendered into the compact prompt line.
+    pub description: Option<String>,
+}
+
+impl EntityRelationshipDescriptor {
+    /// Build from a schema relationship declaration.
+    pub fn from_schema_relationship(r: &SchemaRelationship) -> Self {
+        Self {
+            name: r.name.clone(),
+            target_type: r.target_type.clone(),
+            direction: r.direction.clone(),
+            cardinality: r.cardinality.clone(),
+            reverse_name: r.reverse_name.clone(),
+            reverse_cardinality: r.reverse_cardinality.clone(),
+            description: r.description.clone(),
+        }
+    }
+
+    /// Encode for the `schema_metadata` wire form. Snake_case keys, matching
+    /// [`EntityTypeDescriptor::to_json`]'s convention for this response (it is
+    /// not the camelCase wire contract the rest of the app uses).
+    pub fn to_json(&self) -> Value {
+        let mut rel = json!({
+            "name": self.name,
+            "direction": self.direction,
+            "cardinality": self.cardinality,
+            "reverse_name": self.reverse_name,
+            "reverse_cardinality": self.reverse_cardinality,
+        });
+        if let Some(target_type) = &self.target_type {
+            rel["target_type"] = json!(target_type);
+        }
+        if let Some(description) = &self.description {
+            rel["description"] = json!(description);
+        }
+        rel
+    }
+
+    /// Decode one entry of a `schema_metadata` relationship listing.
+    ///
+    /// Returns `None` when `name`, `direction`, `cardinality`, `reverse_name`,
+    /// or `reverse_cardinality` is missing or fails to parse — mirroring
+    /// [`SchemaRelationship`]'s own requirement that both halves of a
+    /// relationship are always named (see that type's doc comments). A
+    /// relationship this incomplete has nothing a caller could act on, so the
+    /// entry is skipped rather than decoded with a fabricated direction or
+    /// cardinality.
+    pub fn from_json(entry: &Value) -> Option<Self> {
+        let name = entry.get("name").and_then(|v| v.as_str())?.to_string();
+        let direction: RelationshipDirection = entry
+            .get("direction")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())?;
+        let cardinality: RelationshipCardinality = entry
+            .get("cardinality")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())?;
+        let reverse_name = entry
+            .get("reverse_name")
+            .and_then(|v| v.as_str())?
+            .to_string();
+        let reverse_cardinality: RelationshipCardinality = entry
+            .get("reverse_cardinality")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())?;
+
+        Some(Self {
+            name,
+            target_type: entry
+                .get("target_type")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            direction,
+            cardinality,
+            reverse_name,
+            reverse_cardinality,
+            description: entry
+                .get("description")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        })
     }
 }
 
@@ -135,6 +276,11 @@ impl EntityTypeDescriptor {
                 .fields
                 .iter()
                 .map(EntityFieldDescriptor::from_schema_field)
+                .collect(),
+            relationships: schema
+                .relationships
+                .iter()
+                .map(EntityRelationshipDescriptor::from_schema_relationship)
                 .collect(),
             title_template: schema.title_template.clone(),
         }
@@ -170,6 +316,9 @@ impl EntityTypeDescriptor {
                 if !f.enum_values.is_empty() {
                     field["enum_values"] = json!(f.enum_values);
                 }
+                if let Some(description) = &f.description {
+                    field["description"] = json!(description);
+                }
                 field
             })
             .collect();
@@ -180,6 +329,11 @@ impl EntityTypeDescriptor {
         });
         if let Some(name) = &self.name {
             entry["name"] = json!(name);
+        }
+        if !self.relationships.is_empty() {
+            let relationships: Vec<Value> =
+                self.relationships.iter().map(|r| r.to_json()).collect();
+            entry["relationships"] = json!(relationships);
         }
         if let Some(tmpl) = &self.title_template {
             entry["title_template"] = json!(tmpl);
@@ -223,8 +377,25 @@ impl EntityTypeDescriptor {
                             field_type,
                             enum_values,
                             required: f.get("required").and_then(|v| v.as_bool()).unwrap_or(false),
+                            description: f
+                                .get("description")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string),
                         })
                     })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Malformed entries (missing/unparseable direction or cardinality)
+        // are skipped rather than failing the whole type, same reasoning as
+        // the `fields` decode above.
+        let relationships = entry
+            .get("relationships")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(EntityRelationshipDescriptor::from_json)
                     .collect()
             })
             .unwrap_or_default();
@@ -236,6 +407,7 @@ impl EntityTypeDescriptor {
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
             fields,
+            relationships,
             title_template: entry
                 .get("title_template")
                 .and_then(|v| v.as_str())
@@ -410,6 +582,8 @@ mod tests {
     fn sample_schema() -> SchemaNode {
         let mut amount = field("amount", "number");
         amount.required = Some(true);
+        amount.description =
+            Some("Total invoiced amount, in the customer's billing currency".to_string());
 
         let mut status = field("status", "enum");
         status.core_values = Some(vec![enum_value("draft")]);
@@ -424,7 +598,17 @@ mod tests {
             is_core: false,
             schema_version: 1,
             fields: vec![field("reference", "string"), amount, status],
-            relationships: vec![],
+            relationships: vec![SchemaRelationship {
+                name: "billed_to".to_string(),
+                target_type: Some("customer".to_string()),
+                direction: RelationshipDirection::Out,
+                cardinality: RelationshipCardinality::One,
+                required: None,
+                reverse_name: "invoices".to_string(),
+                reverse_cardinality: RelationshipCardinality::Many,
+                edge_fields: None,
+                description: Some("The customer this invoice is billed to".to_string()),
+            }],
             title_template: Some("{reference}".to_string()),
             properties_header_summary_template: None,
         }
@@ -466,6 +650,7 @@ mod tests {
             type_id: "venue".to_string(),
             name: None,
             fields: vec![],
+            relationships: vec![],
             title_template: None,
         };
         assert_eq!(d.render_line(), "- venue");
@@ -480,6 +665,7 @@ mod tests {
             type_id: "invoice".to_string(),
             name: Some(r#"The "Big" Invoice"#.to_string()),
             fields: vec![],
+            relationships: vec![],
             title_template: None,
         };
         assert_eq!(d.render_line(), r#"- invoice "The \"Big\" Invoice""#);
@@ -557,6 +743,73 @@ mod tests {
         assert!(rendered.contains("amount: number, required"));
         assert!(rendered.contains("status: enum {draft, sent}"));
         assert!(rendered.contains("[title_template: {reference}]"));
+    }
+
+    /// This issue's core fix: a field's `description` and a relationship's
+    /// `description` (previously dropped entirely — `SchemaRelationship`
+    /// wasn't represented in `EntityTypeDescriptor` at all) must survive
+    /// `from_schema` -> `to_json` -> `from_json`, so `schema_metadata`
+    /// carries them to the model instead of silently discarding them.
+    #[test]
+    fn field_and_relationship_descriptions_survive_the_json_round_trip() {
+        let typed = EntityTypeDescriptor::from_schema(&sample_schema());
+
+        let amount = typed
+            .fields
+            .iter()
+            .find(|f| f.name == "amount")
+            .expect("amount field present");
+        assert_eq!(
+            amount.description.as_deref(),
+            Some("Total invoiced amount, in the customer's billing currency")
+        );
+
+        assert_eq!(typed.relationships.len(), 1);
+        let billed_to = &typed.relationships[0];
+        assert_eq!(billed_to.name, "billed_to");
+        assert_eq!(billed_to.target_type.as_deref(), Some("customer"));
+        assert_eq!(billed_to.direction, RelationshipDirection::Out);
+        assert_eq!(billed_to.cardinality, RelationshipCardinality::One);
+        assert_eq!(billed_to.reverse_name, "invoices");
+        assert_eq!(billed_to.reverse_cardinality, RelationshipCardinality::Many);
+        assert_eq!(
+            billed_to.description.as_deref(),
+            Some("The customer this invoice is billed to")
+        );
+
+        // Round trip through the wire encoding find_skills actually emits.
+        let json = typed.to_json();
+        assert_eq!(
+            json["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|f| f["name"] == "amount")
+                .unwrap()["description"],
+            json!("Total invoiced amount, in the customer's billing currency")
+        );
+        assert_eq!(
+            json["relationships"][0]["description"],
+            json!("The customer this invoice is billed to")
+        );
+
+        let decoded = EntityTypeDescriptor::from_json(&json).expect("decodes");
+        assert_eq!(typed, decoded, "JSON round-trip must not lose information");
+    }
+
+    /// The compact `EXISTING SCHEMAS` prompt line must not grow field or
+    /// relationship prose — that block's whole design goal is staying short
+    /// enough to always be in context. Description content reaches the model
+    /// only via `schema_metadata`'s JSON (`to_json`), never via `render_line`.
+    #[test]
+    fn descriptions_do_not_leak_into_the_compact_render_line() {
+        let d = EntityTypeDescriptor::from_schema(&sample_schema());
+        let line = d.render_line();
+
+        assert!(!line.contains("Total invoiced amount"));
+        assert!(!line.contains("billed to"));
+        // The compact line predates relationships entirely — still true.
+        assert!(!line.contains("billed_to"));
     }
 
     /// The core defect: an unset field must still be listed, and must be

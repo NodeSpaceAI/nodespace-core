@@ -7296,14 +7296,17 @@ mod tests {
                         "done".to_string(),
                     ],
                     required: true,
+                    description: None,
                 },
                 EntityFieldDescriptor {
                     name: "assignee".to_string(),
                     field_type: "text".to_string(),
                     enum_values: vec![],
                     required: false,
+                    description: None,
                 },
             ],
+            relationships: vec![],
             title_template: Some("{title}".to_string()),
         }
     }
@@ -7318,14 +7321,17 @@ mod tests {
                     field_type: "enum".to_string(),
                     enum_values: vec!["cut".to_string(), "shipped".to_string()],
                     required: true,
+                    description: None,
                 },
                 EntityFieldDescriptor {
                     name: "build".to_string(),
                     field_type: "text".to_string(),
                     enum_values: vec![],
                     required: false,
+                    description: None,
                 },
             ],
+            relationships: vec![],
             title_template: None,
         }
     }
@@ -7438,6 +7444,7 @@ mod tests {
             type_id: "empty_type".to_string(),
             name: Some("Empty Type".to_string()),
             fields: vec![],
+            relationships: vec![],
             title_template: None,
         };
         let original = Tool::CreateNode.definition();
@@ -7465,8 +7472,10 @@ mod tests {
                     field_type: "number".to_string(),
                     enum_values: vec![],
                     required: false,
+                    description: None,
                 },
             ],
+            relationships: vec![],
             title_template: None,
         };
         let text_amount = nodespace_core::ops::entity_types_block::EntityTypeDescriptor {
@@ -7478,8 +7487,10 @@ mod tests {
                     field_type: "text".to_string(),
                     enum_values: vec![],
                     required: false,
+                    description: None,
                 },
             ],
+            relationships: vec![],
             title_template: None,
         };
         let properties = declared_field_values_properties(&[numeric_amount, text_amount]);
@@ -7515,8 +7526,10 @@ mod tests {
                             "high".to_string(),
                         ],
                         required: false,
+                        description: None,
                     },
                 ],
+                relationships: vec![],
                 title_template: None,
             };
         let text_priority =
@@ -7529,8 +7542,10 @@ mod tests {
                         field_type: "text".to_string(),
                         enum_values: vec![],
                         required: false,
+                        description: None,
                     },
                 ],
+                relationships: vec![],
                 title_template: None,
             };
 
