@@ -718,10 +718,9 @@ pub fn destructive_tools_withheld(candidates: &[SkillCandidate]) -> Vec<&str> {
 /// on the bare-object fallback, even if that candidate is the sole one
 /// offering the tool at all.
 ///
-/// `dev-schema-creation.toml` (`packages/agent/goldens/`) is why this is the
-/// global max rather than a per-tool one: it offers `create_node` on the
-/// same turn as `create_schema` specifically so the model can choose
-/// wrongly, and measures it never called. `create_node` there is
+/// The distractor scenario is why this is the global max rather than a
+/// per-tool one: a turn that offers `create_node` alongside `create_schema`
+/// specifically so the model can choose wrongly. `create_node` there is
 /// whitelisted only by the lower-scoring Node Creation candidate — a
 /// per-tool max would find Node Creation as "the top scorer among
 /// create_node's own whitelisters" (trivially, being the only one) and
@@ -731,6 +730,15 @@ pub fn destructive_tools_withheld(candidates: &[SkillCandidate]) -> Vec<&str> {
 /// candidate whitelisting it ALSO happens to be the turn's overall best
 /// match, not merely the best match among candidates that want that
 /// specific tool.
+///
+/// The rule is enforced by `declare_write_tool_fields_leaves_a_lower_scored_candidates_tool_bare`
+/// below, which is its only mechanical constraint. `dev-schema-creation.toml`
+/// (`packages/agent/goldens/`) shaped the scenario and measures the model
+/// never calling `create_node`, but it does NOT exercise this function:
+/// the golden runner builds its tool list straight from the TOML and lists
+/// routing as out of scope, so it constructs no candidates and asserts
+/// nothing here. Treat it as the motivating case, not as a gate that would
+/// catch a regression in this code.
 ///
 /// **The known cost of that choice**, caught in review: on a genuinely
 /// compound turn — two independently-relevant skills clear the gate for two
@@ -779,7 +787,26 @@ pub fn declare_write_tool_fields(
 ) -> Vec<ToolDefinition> {
     let cleared: Vec<&SkillCandidate> =
         candidates.iter().filter(|c| clears_score_gate(c)).collect();
-    let max_score = cleared.iter().map(|c| c.score).fold(f32::MIN, f32::max);
+    // Folded over tool-bearing candidates only, for the reason
+    // `stage2_permitted_names` gives: a candidate with an empty `tools` vec
+    // whitelists no tool, so it can never be the `c.tools.iter().any(...)`
+    // match below for any tool — it cannot contribute a descriptor, only
+    // raise the bar that decides who else may. Retrieval returns such
+    // candidates (today, schema-typed hits), and one clears the gate
+    // unconditionally at the read rung while being pinned by the lexical
+    // backstop above any cosine-derived score, so it took `max_score` on
+    // every turn where a schema was named outright and left every write
+    // tool on the bare-object fallback. The schema the user named is
+    // exactly what stopped its own fields being declared.
+    //
+    // This narrows the population the max folds over; it does NOT relax the
+    // global-max rule itself, which stays load-bearing for the distractor
+    // case (see the trade-off above and its two pinning tests).
+    let max_score = cleared
+        .iter()
+        .filter(|c| !c.tools.is_empty())
+        .map(|c| c.score)
+        .fold(f32::NEG_INFINITY, f32::max);
     tools
         .into_iter()
         .map(|tool| {
@@ -1417,6 +1444,54 @@ mod tests {
              stays undeclared under the global-max rule — if this now fails because the rule \
              changed to a per-tool max, re-verify declare_write_tool_fields_leaves_a_lower_scored_candidates_tool_bare \
              (the distractor case) still passes, since the two tests pull the rule in opposite directions"
+        );
+    }
+
+    /// A zero-tool candidate must not raise the bar that decides whose
+    /// descriptors are declared. It whitelists no tool, so it can never be
+    /// the match that contributes one — letting it set `max_score` only ever
+    /// silenced candidates that could.
+    ///
+    /// This is the `stage2_permitted_names` defect in its sibling: a
+    /// schema-typed hit is pinned by the lexical backstop above any
+    /// cosine-derived score and clears the gate unconditionally at the read
+    /// rung, so before the fix it stripped declarations from every write
+    /// tool on exactly the turns where the user named a schema.
+    #[test]
+    fn declare_write_tool_fields_ignores_a_higher_scoring_zero_tool_candidate() {
+        let schema_hit = candidate("Meeting Note", 1.0, &[]);
+        let mut skill = candidate("Node Creation", 0.7, &["create_node"]);
+        skill.schema_metadata = schema_metadata_for("ticket", &[("status", "text")]);
+
+        let declared =
+            declare_write_tool_fields(&[schema_hit, skill], vec![write_tool("create_node")]);
+        assert!(
+            field_values_property_names(&declared[0]).contains(&"status".to_string()),
+            "a tool-bearing candidate that tops every other tool-bearing candidate must still \
+             have its fields declared, whatever a tool-less candidate scored"
+        );
+    }
+
+    /// The degenerate shape the tool-bearing filter introduces: with no
+    /// tool-bearing candidate at all, `max_score` folds to its
+    /// `f32::NEG_INFINITY` seed, which `c.score >= max_score` admits for
+    /// anything. Safe, but via the *second* conjunct rather than the first —
+    /// a zero-tool candidate never matches `c.tools.iter().any(...)`, so
+    /// nothing is declared.
+    /// Pinned because the first conjunct silently stops carrying the weight
+    /// here, and a later edit to the second one could quietly start
+    /// fabricating declarations from candidates that whitelist nothing.
+    #[test]
+    fn declare_write_tool_fields_declares_nothing_when_every_candidate_is_tool_less() {
+        let mut a = candidate("Meeting Note", 1.0, &[]);
+        a.schema_metadata = schema_metadata_for("ticket", &[("status", "text")]);
+        let mut b = candidate("Sprint", 0.9, &[]);
+        b.schema_metadata = schema_metadata_for("adr", &[("supersedes", "text")]);
+
+        let declared = declare_write_tool_fields(&[a, b], vec![write_tool("create_node")]);
+        assert!(
+            field_values_property_names(&declared[0]).is_empty(),
+            "candidates whitelisting no tool must not have their schemas declared onto one"
         );
     }
 
