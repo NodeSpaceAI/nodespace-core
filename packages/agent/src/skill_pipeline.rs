@@ -18,11 +18,12 @@
 //! handler key, typed parameter schema, description, and `source` provenance.
 
 use crate::skill_rules::{
-    AMBIGUITY_CLARIFY, BULK_IMPORT_NO_FOLLOWUP_SEARCH, COLLECTION_AT_CREATE_TIME, DELETE_A_SCHEMA,
-    EDIT_DONT_RECREATE, FIND_THEN_ACT, GROUPING_IS_COLLECTIONS, ONE_SCHEMA_PER_REQUEST,
-    RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS, SCHEMA_VALIDATION_ERROR_RETRY,
-    SINGLE_ITEM_PER_CALL, SUCCESS_NO_REVERIFY, TARGET_TYPE_MUST_EXIST, TASK_STATUS_DEDICATED_VERB,
-    TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
+    ADD_ENUM_VALUES, AMBIGUITY_CLARIFY, BULK_IMPORT_NO_FOLLOWUP_SEARCH, COLLECTION_AT_CREATE_TIME,
+    DELETE_A_SCHEMA, EDIT_DONT_RECREATE, FIND_THEN_ACT, GROUPING_IS_COLLECTIONS,
+    ONE_SCHEMA_PER_REQUEST, RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS,
+    SCHEMA_VALIDATION_ERROR_RETRY, SINGLE_ITEM_PER_CALL, SUCCESS_NO_REVERIFY,
+    TARGET_TYPE_MUST_EXIST, TASK_STATUS_DEDICATED_VERB, TITLE_TEMPLATE_PLACEHOLDERS,
+    UNIQUE_FIELD_FLAGS,
 };
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
 
@@ -68,6 +69,8 @@ CALL create_schema NOW: your next action is the tool call, not planning text.
 
 {edit_dont_recreate}
 
+{add_enum_values}
+
 {rename_vs_relabel}
 
 {delete_a_schema}
@@ -83,6 +86,7 @@ CALL create_schema NOW: your next action is the tool call, not planning text.
         schema_already_exists = SCHEMA_ALREADY_EXISTS.imperative,
         schema_validation_error_retry = SCHEMA_VALIDATION_ERROR_RETRY.imperative,
         edit_dont_recreate = EDIT_DONT_RECREATE.imperative,
+        add_enum_values = ADD_ENUM_VALUES.imperative,
         grouping_is_collections = GROUPING_IS_COLLECTIONS.imperative,
         rename_vs_relabel = RENAME_VS_RELABEL.imperative,
         delete_a_schema = DELETE_A_SCHEMA.imperative,
@@ -1574,6 +1578,43 @@ mod tests {
             md.to_lowercase().contains("advisory only"),
             "Schema Creation guidance must state the unique flag is advisory only, \
              not an enforced constraint"
+        );
+    }
+
+    /// `ADD_ENUM_VALUES` is interpolated through a format-string placeholder
+    /// that a future edit can drop with no compiler error, exactly like the
+    /// rules pinned above.
+    ///
+    /// The discrimination is what's load-bearing, not the mention: `add_fields`
+    /// is the operation an agent already knows, and reaching for it here
+    /// declares a redundant second field instead of extending the vocabulary
+    /// the user asked about. So this pins that the guidance names
+    /// `add_field_values`, names `add_fields` as the wrong choice, and states
+    /// the `extensible`/`enum` gate — a model told only "there is an
+    /// add_field_values" would still guess wrong about which fields accept it.
+    #[test]
+    fn schema_creation_guidance_covers_add_field_values() {
+        let seeds = seed_skill_nodes();
+        let schema_skill = seeds
+            .iter()
+            .find(|s| s.title == "Schema Creation")
+            .expect("Schema Creation skill must exist");
+        let md = &schema_skill.markdown_content;
+
+        assert!(
+            md.contains("add_field_values"),
+            "Schema Creation guidance must name the add_field_values operation"
+        );
+        assert!(
+            md.contains("NOT add_fields"),
+            "Schema Creation guidance must steer away from add_fields — it is the \
+             operation an agent reaches for by default, and it silently declares a \
+             new field instead of extending the existing one"
+        );
+        assert!(
+            md.contains("extensible: true"),
+            "Schema Creation guidance must state the extensible gate so the model \
+             checks eligibility rather than discovering it through a rejection"
         );
     }
 
