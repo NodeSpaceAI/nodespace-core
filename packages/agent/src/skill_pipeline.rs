@@ -1714,13 +1714,17 @@ mod tests {
                 if !verb.eq_ignore_ascii_case("call") && !verb.eq_ignore_ascii_case("calling") {
                     continue;
                 }
-                // Tool names reach here as bare words, backticked, or
-                // followed by an argument list — strip all three.
-                let candidate = pair[1]
-                    .trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
-                    .split('(')
-                    .next()
-                    .unwrap_or_default();
+                // Tool names reach here bare, backticked, followed by an
+                // argument list, or possessive ("get_node's"). Trim the
+                // leading punctuation, then cut at the first character that
+                // cannot appear in an identifier — which covers `(`, `'` and
+                // anything else a future rewording introduces, rather than
+                // enumerating separators one at a time.
+                let candidate =
+                    pair[1].trim_start_matches(|c: char| !c.is_alphanumeric() && c != '_');
+                let candidate = candidate
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .map_or(candidate, |end| &candidate[..end]);
                 // Only underscored identifiers are tool-name shaped; this is
                 // what keeps ordinary prose ("call the", "call is") out.
                 if !candidate.contains('_') {
