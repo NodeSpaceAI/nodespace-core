@@ -1611,6 +1611,22 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
             tools = routing::declare_write_tool_fields(&routed.candidates, tools);
         }
 
+        // Replaces `update_task_status`'s seed `enum` with `task.status`'s
+        // live vocabulary. Unconditional, unlike the retrieved-schema step
+        // above: this is not retrieval output but a core schema's own
+        // declared values, and the `enum` it rewrites is already in the tool
+        // surface on every turn regardless of routing. Gating it on
+        // `routing_disabled` would leave precisely the models probed unsafe
+        // for routing unable to write an extended status — a correctness
+        // regression the routing-reliability finding does not ask for, since
+        // no retrieved content is being injected here.
+        if let Some(statuses) = self.tool_executor.task_status_values().await {
+            tools = tools
+                .into_iter()
+                .map(|tool| super::tools::with_live_task_statuses(tool, &statuses))
+                .collect();
+        }
+
         // `session.routing_disabled` is set once, by the caller, from a cached
         // routing-probe verdict for this session's model (see
         // `local_agent::routing_probe`). The matrix in
