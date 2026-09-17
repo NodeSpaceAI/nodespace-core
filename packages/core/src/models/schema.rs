@@ -72,12 +72,22 @@ pub const BUILTIN_RELATIONSHIPS: [(&str, &str); 4] = [
 ];
 
 /// Built-in structural relationship type names (the declaring side).
+///
+/// Spelled out per index because const context has no iteration. The assertion
+/// below makes a length mismatch a compile error — without it, adding a fifth
+/// entry to [`BUILTIN_RELATIONSHIPS`] would silently leave this array short by
+/// one, and the missing name would stop being treated as reserved.
 pub const BUILTIN_RELATIONSHIP_NAMES: [&str; 4] = [
     BUILTIN_RELATIONSHIPS[0].0,
     BUILTIN_RELATIONSHIPS[1].0,
     BUILTIN_RELATIONSHIPS[2].0,
     BUILTIN_RELATIONSHIPS[3].0,
 ];
+
+const _: () = assert!(
+    BUILTIN_RELATIONSHIPS.len() == BUILTIN_RELATIONSHIP_NAMES.len(),
+    "BUILTIN_RELATIONSHIP_NAMES must list every BUILTIN_RELATIONSHIPS entry"
+);
 
 /// Whether `name` is one of the built-in structural relationship types.
 pub fn is_builtin_relationship(name: &str) -> bool {

@@ -18,6 +18,10 @@ fn builtin_exclusion_sql(column: &str) -> String {
 /// SQL expression yielding a built-in relationship's reverse name from its
 /// forward name, for use as an INSERT's `reverse_relationship_type` value.
 ///
+/// `type_expr` is interpolated into SQL unescaped, so it must be a bound
+/// placeholder (`?4`) or a column name — never user input. The mapping itself
+/// comes from compile-time constants and carries no injection risk.
+///
 /// Derived from [`BUILTIN_RELATIONSHIPS`] rather than written out per call
 /// site: every path that creates a built-in edge — and there are many, spread
 /// across three modules — must populate the column identically, and a hand-typed
@@ -499,6 +503,7 @@ impl SqliteStore {
         source_id: &str,
         target_id: &str,
         rel_type: &str,
+        reverse_name: Option<&str>,
         properties: &serde_json::Value,
     ) -> Result<String> {
         if rel_type == "member_of" {
@@ -507,12 +512,14 @@ impl SqliteStore {
         let now = chrono::Utc::now().to_rfc3339();
         let rel_id = uuid::Uuid::new_v4().to_string();
         let props_json = serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
-        // `rel_type` is dynamic here (a built-in when a caller passes one, a
-        // declared name otherwise), so the reverse name is derived in SQL from
-        // whatever lands in the row rather than fixed at this call site.
+        // `rel_type` is dynamic here. A DECLARED relationship's reverse name
+        // comes from its own declaration and is passed in by the caller, which
+        // has it in hand from schema validation; a BUILT-IN's is derived in SQL
+        // from the forward name that lands in the row. `COALESCE` takes
+        // whichever applies, so neither kind can end up NULL.
         let sql = format!(
             "INSERT OR IGNORE INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) \
-             VALUES (?1, ?2, ?3, ?4, {}, ?5, 1, ?6, ?7)",
+             VALUES (?1, ?2, ?3, ?4, COALESCE(?8, {}), ?5, 1, ?6, ?7)",
             builtin_reverse_name_sql("?4")
         );
         tx.conn()
@@ -525,7 +532,8 @@ impl SqliteStore {
                     rel_type.to_string(),
                     props_json,
                     now.clone(),
-                    now
+                    now,
+                    reverse_name.map(str::to_string)
                 ],
             )
             .await
@@ -1386,6 +1394,7 @@ impl SqliteStore {
         source_id: &str,
         target_id: &str,
         rel_type: &str,
+        reverse_name: Option<&str>,
         properties: &serde_json::Value,
     ) -> Result<String> {
         // ADR-059 §2 applies to a `member_of` edge no matter which API builds it.
@@ -1400,11 +1409,12 @@ impl SqliteStore {
         let now = chrono::Utc::now().to_rfc3339();
         let rel_id = uuid::Uuid::new_v4().to_string();
         let props_json = serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
-        // Dynamic `rel_type`; see the `_in_tx` twin for why the reverse name is
-        // derived in SQL rather than fixed here.
+        // Dynamic `rel_type`; see the `_in_tx` twin for why a declared
+        // relationship's reverse name is passed in while a built-in's is
+        // derived in SQL.
         let sql = format!(
             "INSERT OR IGNORE INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) \
-             VALUES (?1, ?2, ?3, ?4, {}, ?5, 1, ?6, ?7)",
+             VALUES (?1, ?2, ?3, ?4, COALESCE(?8, {}), ?5, 1, ?6, ?7)",
             builtin_reverse_name_sql("?4")
         );
         self.write()
@@ -1418,7 +1428,8 @@ impl SqliteStore {
                     rel_type.to_string(),
                     props_json,
                     now.clone(),
-                    now
+                    now,
+                    reverse_name.map(str::to_string)
                 ],
             )
             .await
@@ -1771,6 +1782,17 @@ impl SqliteStore {
                     schema_id
                 ));
             }
+            // The type system requires `reverse_name` but cannot require it to
+            // be meaningful. An empty one is stored verbatim, satisfies every
+            // NULL check, populates the index, and names nothing — so reject it
+            // here rather than let it reach the column.
+            if rel.reverse_name.trim().is_empty() {
+                return Err(anyhow::anyhow!(
+                    "relationship '{}' on schema '{}' must declare a non-empty reverse name",
+                    rel.name,
+                    schema_id
+                ));
+            }
         }
 
         let now = Utc::now().to_rfc3339();
@@ -1892,6 +1914,17 @@ impl SqliteStore {
             if !seen_names.insert(rel.name.as_str()) {
                 return Err(anyhow::anyhow!(
                     "duplicate relationship declaration name '{}' on schema '{}'",
+                    rel.name,
+                    schema_id
+                ));
+            }
+            // The type system requires `reverse_name` but cannot require it to
+            // be meaningful. An empty one is stored verbatim, satisfies every
+            // NULL check, populates the index, and names nothing — so reject it
+            // here rather than let it reach the column.
+            if rel.reverse_name.trim().is_empty() {
+                return Err(anyhow::anyhow!(
+                    "relationship '{}' on schema '{}' must declare a non-empty reverse name",
                     rel.name,
                     schema_id
                 ));

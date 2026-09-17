@@ -4325,7 +4325,7 @@ mod query_nodes_order_and_scoping_tests {
         // mentioned_by semantics (see query_nodes's mentioned_by branch):
         // `in_node` is the returned/target node, `out_node` is the "by" node.
         store
-            .create_generic_relationship(&task_a, &mentioner_id, "mentions", &json!({}))
+            .create_generic_relationship(&task_a, &mentioner_id, "mentions", None, &json!({}))
             .await?;
         let mentioned_by_query = NodeQuery {
             mentioned_by: Some(mentioner_id.clone()),
@@ -4385,7 +4385,13 @@ mod query_nodes_order_and_scoping_tests {
         // has_child semantics (see get_children/get_roots): `in_node` is the
         // parent, `out_node` is the child.
         store
-            .create_generic_relationship(&root_a.id, &child.id, "has_child", &json!({"order": 0.0}))
+            .create_generic_relationship(
+                &root_a.id,
+                &child.id,
+                "has_child",
+                None,
+                &json!({"order": 0.0}),
+            )
             .await?;
 
         let roots = store.get_roots(None, None).await?;

@@ -161,21 +161,42 @@ async fn an_edge_is_findable_from_the_target_end_by_its_reverse_name() {
 async fn schema_declared_edges_store_the_authors_reverse_name() {
     let (_service, _tmp, conn) = test_service().await;
 
+    // Deliberately NOT filtered on `IS NOT NULL`: a declared row that regressed
+    // to NULL is precisely the failure this test is named for, and filtering it
+    // out would hide it.
     let mut rows = conn
         .query(
             "SELECT relationship_type, reverse_relationship_type FROM relationship \
-             WHERE reverse_relationship_type IS NOT NULL \
-               AND relationship_type NOT IN ('member_of', 'has_child', 'mentions', 'has_role') \
-             LIMIT 5",
+             WHERE relationship_type NOT IN ('member_of', 'has_child', 'mentions', 'has_role')",
             (),
         )
         .await
         .unwrap();
 
+    // The author's declared names, as the core schemas spell them.
+    //
+    // Keyed by forward name, so only relationships whose forward name is
+    // declared ONCE across all core schemas belong here. `tasks` is excluded
+    // deliberately: it is declared on both `project` (reverse `project`) and
+    // `person` (reverse `assignee`), so the forward name alone does not
+    // identify which declaration a row came from — the reverse name is a
+    // property of the declaration, not of the name.
+    let expected: std::collections::HashMap<&str, &str> = [
+        ("blocks", "blocked_by"),
+        ("relates_to", "related_from"),
+        ("duplicates", "duplicated_by"),
+    ]
+    .into_iter()
+    .collect();
+
     let mut seen = 0;
+    let mut checked_against_declaration = 0;
     while let Some(row) = rows.next().await.unwrap() {
         let forward: String = row.get(0).unwrap();
-        let reverse: String = row.get(1).unwrap();
+        let reverse: Option<String> = row.get(1).unwrap();
+        let reverse = reverse.unwrap_or_else(|| {
+            panic!("declared relationship {forward} stored no reverse name at all")
+        });
         assert!(
             !reverse.trim().is_empty(),
             "declared relationship {forward} stored an empty reverse name"
@@ -185,11 +206,25 @@ async fn schema_declared_edges_store_the_authors_reverse_name() {
             None,
             "{forward} is not a built-in, so its reverse must come from its declaration"
         );
+        // Where the declaration's name is known, assert the stored value IS it —
+        // not merely that something non-empty was stored.
+        if let Some(declared) = expected.get(forward.as_str()) {
+            assert_eq!(
+                &reverse, declared,
+                "{forward} must store its declaration's reverse name"
+            );
+            checked_against_declaration += 1;
+        }
         seen += 1;
     }
     assert!(
         seen > 0,
         "core schemas should declare at least one relationship with a reverse name"
+    );
+    assert!(
+        checked_against_declaration > 0,
+        "at least one row must be checked against its declaration's actual name, \
+         or this test only proves something non-empty was stored"
     );
 }
 
@@ -201,8 +236,10 @@ async fn schema_declared_edges_store_the_authors_reverse_name() {
 async fn no_write_path_leaves_the_reverse_name_unpopulated() {
     let (service, _tmp, conn) = test_service().await;
 
-    // Exercise a spread of distinct write paths, not just one. Core schema
-    // seeding has already run by this point, so declared edges are covered too.
+    // Drive a spread of genuinely distinct write paths. Each line below reaches
+    // a different INSERT site — asserting over the whole table is only as good
+    // as the paths actually exercised, so a path missing here is a path whose
+    // regression would ship green.
     let parent = service
         .create_node_with_parent(params("parent", None))
         .await
@@ -212,11 +249,26 @@ async fn no_write_path_leaves_the_reverse_name_unpopulated() {
         .await
         .unwrap();
     // Nested, so the subtree/sibling paths are covered as well.
-    service
+    let grandchild = service
         .create_node_with_parent(params("grandchild", Some(&child)))
         .await
         .unwrap();
-    // A generic edge through the dynamic-type path.
+
+    // Re-parenting: a distinct `has_child` write from the creation path.
+    let second_parent = service
+        .create_node_with_parent(params("second parent", None))
+        .await
+        .unwrap();
+    service
+        .move_node_unchecked(
+            &grandchild,
+            Some(&second_parent),
+            nodespace_core::services::InsertPosition::End,
+        )
+        .await
+        .expect("re-parenting must succeed");
+
+    // A built-in edge through the dynamic-type path (the `CASE`-hit branch).
     let other = service
         .create_node_with_parent(params("other", None))
         .await
@@ -225,6 +277,75 @@ async fn no_write_path_leaves_the_reverse_name_unpopulated() {
         .create_relationship(&parent, "mentions", &other, serde_json::json!({}))
         .await
         .ok();
+
+    // `has_child` via create_relationship with no explicit order, which routes
+    // to the auto-ordering append path rather than the generic one.
+    let appended = service
+        .create_node_with_parent(params("appended", None))
+        .await
+        .unwrap();
+    service
+        .create_relationship(&other, "has_child", &appended, serde_json::json!({}))
+        .await
+        .expect("appending a child must succeed");
+
+    // The bulk attach path used by the sync cold sweep.
+    let bulk_parent = service
+        .create_node_with_parent(params("bulk parent", None))
+        .await
+        .unwrap();
+    let bulk_child = service
+        .create_node_with_parent(params("bulk child", None))
+        .await
+        .unwrap();
+    service
+        .bulk_create_has_child_edges(&[(bulk_parent, bulk_child, 1.0)])
+        .await
+        .expect("bulk attach must succeed");
+
+    // Collection membership — a `member_of` write, which no other line reaches.
+    let collection = service
+        .create_node_with_parent(CreateNodeParams {
+            node_type: "collection".to_string(),
+            content: "collection".to_string(),
+            ..params("collection", None)
+        })
+        .await
+        .unwrap();
+    let member = service
+        .create_node_with_parent(params("member", None))
+        .await
+        .unwrap();
+    service
+        .create_relationship(&member, "member_of", &collection, serde_json::json!({}))
+        .await
+        .ok();
+
+    // A DECLARED relationship's INSTANCE edge — the `CASE`-miss branch, where
+    // the built-in table has nothing to offer and the reverse name has to come
+    // from the declaration itself. `set_schema_declarations` writes the
+    // schema→schema declaration row, NOT this task→task edge, so this is a
+    // separate write path and the one most likely to be left unpopulated.
+    let blocker = service
+        .create_node_with_parent(CreateNodeParams {
+            node_type: "task".to_string(),
+            content: "blocker".to_string(),
+            ..params("blocker", None)
+        })
+        .await
+        .unwrap();
+    let blocked = service
+        .create_node_with_parent(CreateNodeParams {
+            node_type: "task".to_string(),
+            content: "blocked".to_string(),
+            ..params("blocked", None)
+        })
+        .await
+        .unwrap();
+    service
+        .create_relationship(&blocker, "blocks", &blocked, serde_json::json!({}))
+        .await
+        .expect("a declared relationship's instance edge must be creatable");
 
     let mut rows = conn
         .query(
@@ -243,9 +364,32 @@ async fn no_write_path_leaves_the_reverse_name_unpopulated() {
         offenders.push(format!("{rel_type} ({count} rows)"));
     }
 
+    // Unset is one failure mode; WRONG is the other. A built-in edge's reverse
+    // must be the one its forward name maps to — a path writing some other
+    // string satisfies the NULL check while still breaking reverse traversal.
+    let mut wrong = conn
+        .query(
+            "SELECT DISTINCT relationship_type, reverse_relationship_type FROM relationship \
+             WHERE relationship_type IN ('member_of', 'has_child', 'mentions', 'has_role')",
+            (),
+        )
+        .await
+        .unwrap();
+    while let Some(row) = wrong.next().await.unwrap() {
+        let forward: String = row.get(0).unwrap();
+        let reverse: Option<String> = row.get(1).unwrap();
+        let expected = builtin_reverse_name(&forward).unwrap();
+        if reverse.as_deref() != Some(expected) {
+            offenders.push(format!(
+                "{forward} stored {:?}, expected {expected:?}",
+                reverse.as_deref()
+            ));
+        }
+    }
+
     assert!(
         offenders.is_empty(),
-        "every relationship row must carry a reverse name; these write paths left it unset: {}",
+        "every relationship row must carry its correct reverse name; these write paths did not: {}",
         offenders.join(", ")
     );
 }

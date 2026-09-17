@@ -6245,6 +6245,7 @@ mod tests {
                 "g1",
                 "w1",
                 "assigned_to",
+                None,
                 &serde_json::json!({"role":"lead"}),
             )
             .await
@@ -6460,11 +6461,11 @@ mod tests {
                 .unwrap();
         }
         store
-            .create_generic_relationship("g1", "w1", "assigned_to", &serde_json::json!({}))
+            .create_generic_relationship("g1", "w1", "assigned_to", None, &serde_json::json!({}))
             .await
             .unwrap();
         store
-            .create_generic_relationship("s1", "w1", "assigned_to", &serde_json::json!({}))
+            .create_generic_relationship("s1", "w1", "assigned_to", None, &serde_json::json!({}))
             .await
             .unwrap();
 

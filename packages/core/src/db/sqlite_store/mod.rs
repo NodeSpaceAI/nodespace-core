@@ -773,6 +773,7 @@ mod tests {
                 &interior.id,
                 &coll_id,
                 "member_of",
+                None,
                 &json!({"order": 5.0}),
             )
             .await
@@ -784,7 +785,7 @@ mod tests {
         // A non-member_of generic edge is unaffected by the rule.
         assert!(
             store
-                .create_generic_relationship(&interior.id, &root_id, "mentions", &json!({}))
+                .create_generic_relationship(&interior.id, &root_id, "mentions", None, &json!({}))
                 .await
                 .is_ok(),
             "the root-only rule must not touch non-member_of generic edges"
