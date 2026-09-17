@@ -40,8 +40,14 @@ pub enum ResolvedValue {
 /// in the same rule.
 pub struct GraphResolver {
     node_service: Arc<NodeService>,
-    /// Cache: path segments → resolved value
-    cache: HashMap<Vec<String>, ResolvedValue>,
+    /// Cache: (root node id, path segments) → resolved value.
+    ///
+    /// The root id is part of the key because the same path means different
+    /// things from different nodes — `child_of` from one task is not `child_of`
+    /// from another. Callers create one resolver per work item, so in practice
+    /// a single root dominates, but keying on segments alone would silently
+    /// serve one node's answer for another's the moment that stopped holding.
+    cache: HashMap<(String, Vec<String>), ResolvedValue>,
 }
 
 impl GraphResolver {
@@ -71,8 +77,12 @@ impl GraphResolver {
             return ResolvedValue::Node(root_node.clone());
         }
 
+        // Every cache entry is scoped to the node this walk started from.
+        let root_id = root_node.id.clone();
+        let cache_key = |segs: &[String]| (root_id.clone(), segs.to_vec());
+
         // Check cache for the full path first
-        if let Some(cached) = self.cache.get(segments) {
+        if let Some(cached) = self.cache.get(&cache_key(segments)) {
             return cached.clone();
         }
 
@@ -82,7 +92,7 @@ impl GraphResolver {
 
         for i in (1..segments.len()).rev() {
             let prefix = &segments[..i];
-            if let Some(cached) = self.cache.get(prefix) {
+            if let Some(cached) = self.cache.get(&cache_key(prefix)) {
                 match cached {
                     ResolvedValue::Node(n) => {
                         current_node = n.clone();
@@ -92,12 +102,12 @@ impl GraphResolver {
                     ResolvedValue::Collection(_) | ResolvedValue::Scalar(_) => {
                         // Can't continue walking from a collection or scalar
                         let result = ResolvedValue::Missing;
-                        self.cache.insert(segments.to_vec(), result.clone());
+                        self.cache.insert(cache_key(segments), result.clone());
                         return result;
                     }
                     ResolvedValue::Missing => {
                         let result = ResolvedValue::Missing;
-                        self.cache.insert(segments.to_vec(), result.clone());
+                        self.cache.insert(cache_key(segments), result.clone());
                         return result;
                     }
                 }
@@ -112,14 +122,15 @@ impl GraphResolver {
             // Try as a property first (check node.properties)
             if let Some(prop_val) = get_node_property(&current_node, segment) {
                 let result = ResolvedValue::Scalar(prop_val);
-                self.cache.insert(segments[..=i].to_vec(), result.clone());
+                self.cache
+                    .insert(cache_key(&segments[..=i]), result.clone());
                 if is_last {
-                    self.cache.insert(segments.to_vec(), result.clone());
+                    self.cache.insert(cache_key(segments), result.clone());
                     return result;
                 }
                 // Can't walk further into a scalar
                 let missing = ResolvedValue::Missing;
-                self.cache.insert(segments.to_vec(), missing.clone());
+                self.cache.insert(cache_key(segments), missing.clone());
                 return missing;
             }
 
@@ -188,17 +199,20 @@ impl GraphResolver {
             match related {
                 Ok(nodes) if nodes.is_empty() => {
                     let result = ResolvedValue::Missing;
-                    self.cache.insert(segments[..=i].to_vec(), result.clone());
-                    self.cache.insert(segments.to_vec(), result.clone());
+                    self.cache
+                        .insert(cache_key(&segments[..=i]), result.clone());
+                    self.cache.insert(cache_key(segments), result.clone());
                     return result;
                 }
                 Ok(nodes) if nodes.len() == 1 => {
                     let node = nodes.into_iter().next().unwrap();
-                    self.cache
-                        .insert(segments[..=i].to_vec(), ResolvedValue::Node(node.clone()));
+                    self.cache.insert(
+                        cache_key(&segments[..=i]),
+                        ResolvedValue::Node(node.clone()),
+                    );
                     if is_last {
                         let result = ResolvedValue::Node(node);
-                        self.cache.insert(segments.to_vec(), result.clone());
+                        self.cache.insert(cache_key(segments), result.clone());
                         return result;
                     }
                     current_node = node;
@@ -206,14 +220,15 @@ impl GraphResolver {
                 Ok(nodes) => {
                     // Multiple related nodes — this is a collection
                     let result = ResolvedValue::Collection(nodes);
-                    self.cache.insert(segments[..=i].to_vec(), result.clone());
+                    self.cache
+                        .insert(cache_key(&segments[..=i]), result.clone());
                     if is_last {
-                        self.cache.insert(segments.to_vec(), result.clone());
+                        self.cache.insert(cache_key(segments), result.clone());
                         return result;
                     }
                     // Can't walk further into a collection with simple dot-path
                     let missing = ResolvedValue::Missing;
-                    self.cache.insert(segments.to_vec(), missing.clone());
+                    self.cache.insert(cache_key(segments), missing.clone());
                     return missing;
                 }
                 Err(e) => {
@@ -222,7 +237,7 @@ impl GraphResolver {
                         current_node.id, segment, e
                     );
                     let result = ResolvedValue::Missing;
-                    self.cache.insert(segments.to_vec(), result.clone());
+                    self.cache.insert(cache_key(segments), result.clone());
                     return result;
                 }
             }
@@ -1862,6 +1877,111 @@ mod tests {
                     assert_eq!(nodes.len(), 2, "the parent has two children");
                 }
                 other => panic!("expected a Collection of siblings, got {:?}", other),
+            }
+        }
+
+        /// Another schema's FORWARD name, read from the target's end, walks
+        /// inbound rather than resolving to nothing.
+        ///
+        /// This is the one case whose direction changed rather than merely
+        /// becoming reachable. It cannot alter an existing Play: the name is
+        /// not declared on this node's own schema (that resolves as `Forward`
+        /// and still walks outbound), so the old hardcoded `"out"` query asked
+        /// for edges that by construction never left this node — always empty,
+        /// always a false condition. Serving the real inbound nodes is new
+        /// capability, not a redirect of a working traversal.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn another_schemas_forward_name_walks_inbound() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_inf_doc", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_inf_author",
+                json!([{
+                    "name": "wrote",
+                    "targetType": "gr_inf_doc",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "written_by",
+                    "reverseCardinality": "one"
+                }]),
+            )
+            .await;
+
+            let author = make_node("gr-inf-a1", "gr_inf_author", json!({"name": "Kay"}));
+            svc.create_node(author.clone()).await.unwrap();
+            let doc = make_node("gr-inf-d1", "gr_inf_doc", json!({"status": "draft"}));
+            svc.create_node(doc.clone()).await.unwrap();
+            svc.create_relationship("gr-inf-a1", "wrote", "gr-inf-d1", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            // The doc spells the edge by the author's forward name.
+            match resolver.resolve_path(&doc, &["wrote".to_string()]).await {
+                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-inf-a1"),
+                other => panic!("expected the author Node, got {:?}", other),
+            }
+
+            // The declaring end still walks outbound by that same name.
+            match resolver.resolve_path(&author, &["wrote".to_string()]).await {
+                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-inf-d1"),
+                other => panic!("expected the doc Node, got {:?}", other),
+            }
+        }
+
+        /// The segment cache is scoped to the node a walk started from.
+        ///
+        /// Two nodes asking the same path must get their own answers. Keyed on
+        /// segments alone, the second walk would be served the first's result —
+        /// a wrong node returned confidently, with no error anywhere. Callers
+        /// build one resolver per work item today, so this guards the
+        /// invariant rather than a current caller; reverse traversal makes
+        /// reuse across roots (`child_of`, then `has_child` from the parent)
+        /// the natural thing to reach for.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn cache_does_not_leak_between_root_nodes() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_cache_task", json!([])).await;
+
+            // Two independent parent/child pairs.
+            for (parent, child) in [("gr-cc-p1", "gr-cc-c1"), ("gr-cc-p2", "gr-cc-c2")] {
+                svc.create_node(make_node(
+                    parent,
+                    "gr_cache_task",
+                    json!({"status": "open"}),
+                ))
+                .await
+                .unwrap();
+                svc.create_node(make_node(child, "gr_cache_task", json!({"status": "done"})))
+                    .await
+                    .unwrap();
+                svc.create_relationship(parent, "has_child", child, json!({}))
+                    .await
+                    .unwrap();
+            }
+
+            let child1 = svc.get_node("gr-cc-c1").await.unwrap().unwrap();
+            let child2 = svc.get_node("gr-cc-c2").await.unwrap().unwrap();
+
+            // One resolver, the same path, two different roots.
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            match resolver
+                .resolve_path(&child1, &["child_of".to_string()])
+                .await
+            {
+                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-cc-p1"),
+                other => panic!("expected p1, got {:?}", other),
+            }
+            match resolver
+                .resolve_path(&child2, &["child_of".to_string()])
+                .await
+            {
+                ResolvedValue::Node(n) => assert_eq!(
+                    n.id, "gr-cc-p2",
+                    "the second root must not be served the first root's cached parent"
+                ),
+                other => panic!("expected p2, got {:?}", other),
             }
         }
 
