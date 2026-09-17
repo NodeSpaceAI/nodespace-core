@@ -265,12 +265,21 @@ impl QueryService {
     ///
     /// An absent priority ranks [`TaskPriority::ABSENT_RANK`], before the whole
     /// scale, so it sorts first ascending — the same position the SQL CASE's
-    /// `IS NULL` arm gives it. A non-string value is not a valid priority and
-    /// cannot be ranked, so it takes `USER_RANK` and tie-breaks on its rendered
-    /// form, which is where the `ELSE` arm puts it in SQL. Both rules exist to
-    /// keep this pass and the SQL agreeing on every input, not just the
-    /// well-formed ones: they disagree only under a LIMIT, where SQL has
-    /// already discarded rows before this runs.
+    /// `IS NULL` arm gives it (`json_extract` yields SQL NULL for a JSON null
+    /// too, so one arm covers both). A non-string value is not a valid priority
+    /// and cannot be ranked, so it takes `USER_RANK`, which is where the `ELSE`
+    /// arm puts it in SQL.
+    ///
+    /// Scope of the agreement, stated precisely because the bug this replaced
+    /// hid behind a comment claiming more than it delivered: the **rank**
+    /// matches SQL for every input, and the **tie-break within a rank** matches
+    /// for strings, where both order the raw value. It does not match for
+    /// non-strings — this keys on `to_string()` while SQLite orders integers
+    /// before text — but `task.priority` is an enum field, and
+    /// `validate_node_with_fields` rejects a non-null non-string on every write
+    /// path, so no such row exists to sort. Agreement matters because SQL
+    /// applies LIMIT before this pass runs, discarding rows it has already
+    /// ordered.
     fn compare_priority_values(
         &self,
         a: Option<&serde_json::Value>,
