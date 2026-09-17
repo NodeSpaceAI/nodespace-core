@@ -501,10 +501,49 @@ parameters_schema:
 }
 
 ### update_schema
-description: Modify an existing schema type: add/remove/rename fields, relabel a field's display name without renaming it, add/remove relationships, update description or title_template. Use rename_fields to rename a field's storage key — it migrates all existing node property data to the new key and updates the schema definition; the same rename_fields list also handles a display-only relabel (see its own description for the difference).
+description: Modify an existing schema type: add/remove/rename fields, relabel a field's display name without renaming it, append values to an existing enum field (add_field_values), add/remove relationships, update description or title_template. Use rename_fields to rename a field's storage key — it migrates all existing node property data to the new key and updates the schema definition; the same rename_fields list also handles a display-only relabel (see its own description for the difference).
 parameters_schema:
 {
   "properties": {
+    "add_field_values": {
+      "description": "Append new choices to an EXISTING enum field's vocabulary (e.g. a 'backlog' status on task). This is NOT add_fields — add_fields declares a new field and leaves the existing one's choices unchanged. Only a field declared extensible: true AND type 'enum' can be extended; check with get_schema_definition first. New values go to user_values; core_values is never written. The call is rejected outright — nothing merged or overwritten — if the field is missing, not extensible, not an enum, or if any value string already exists in core_values or user_values. Collision is checked on 'value', never 'label' (two values may share a label).",
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "description": "Name of the existing enum field to extend (e.g. 'status').",
+            "type": "string"
+          },
+          "values": {
+            "description": "Values to append, as {value, label} pairs — e.g. [{\"value\": \"backlog\", \"label\": \"Backlog\"}]. Use lowercase value strings with readable labels, the same convention as coreValues.",
+            "items": {
+              "properties": {
+                "label": {
+                  "description": "Display label (e.g. 'In Review').",
+                  "type": "string"
+                },
+                "value": {
+                  "description": "The stored string, lowercase snake_case (e.g. 'in_review').",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "value",
+                "label"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "field",
+          "values"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
     "add_fields": {
       "description": "Fields to add",
       "items": {
