@@ -254,12 +254,12 @@ impl NodeService {
             // declared by an ancestor, so a single-schema fetch would neither
             // default nor validate them, and would have no ownership map to
             // bucket them by.
-            let (fields, owners) = self.resolve_field_owners(&node.node_type).await?;
+            let (fields, owners, chain) = self.resolve_field_owners(&node.node_type).await?;
             if !fields.is_empty() {
                 self.apply_schema_defaults_with_fields(&mut node, &fields)?;
                 node.properties =
                     Self::bucket_properties_by_owner(&node.node_type, &node.properties, &owners);
-                self.validate_node_with_fields(&node, &fields)?;
+                self.validate_node_with_fields(&node, &fields, Some(&chain))?;
             }
         }
 
@@ -866,7 +866,7 @@ impl NodeService {
             // schema (ADR-078): a type change into an extending type must
             // default and validate the ancestors' fields too, and needs the
             // ownership map to re-bucket them.
-            let (fields, owners) = self.resolve_field_owners(&updated.node_type).await?;
+            let (fields, owners, chain) = self.resolve_field_owners(&updated.node_type).await?;
             if !fields.is_empty() {
                 // Defaults land in the node's own bucket, then bucketing moves
                 // any inherited one into its declaring ancestor's — so this
@@ -877,11 +877,28 @@ impl NodeService {
                     &updated.properties,
                     &owners,
                 );
-                self.validate_node_with_fields(&updated, &fields)?;
+                self.validate_node_with_fields(&updated, &fields, Some(&chain))?;
             }
         } else if updated.node_type != "schema" {
-            // Step 2: Schema validation only (node type didn't change)
-            self.validate_node_against_schema(&updated).await?;
+            // node_type unchanged, but properties still need re-bucketing
+            // (ADR-078): an update naming an inherited field arrives flat,
+            // normalizes into the node's OWN bucket, and would sit there
+            // duplicating the authoritative value in the declaring ancestor's
+            // bucket. The readers then disagree — a scope-chain flattener
+            // takes the nearer bucket, a base-scoped filter never looks in it,
+            // and the validation merge resolves by map ordering. Re-bucket so
+            // the field exists in exactly one place, then validate.
+            let (fields, owners, chain) = self.resolve_field_owners(&updated.node_type).await?;
+            if fields.is_empty() {
+                self.validate_node_against_schema(&updated).await?;
+            } else {
+                updated.properties = Self::bucket_properties_by_owner(
+                    &updated.node_type,
+                    &updated.properties,
+                    &owners,
+                );
+                self.validate_node_with_fields(&updated, &fields, Some(&chain))?;
+            }
         }
 
         // Sync title when content, node_type, or properties change
@@ -986,7 +1003,7 @@ impl NodeService {
 
         if node_type_changed && updated.node_type != "schema" {
             // Chain-resolved, per ADR-078 — see `insert_node_in_tx_no_invariant_dispatch`.
-            let (fields, owners) = self.resolve_field_owners(&updated.node_type).await?;
+            let (fields, owners, chain) = self.resolve_field_owners(&updated.node_type).await?;
             if !fields.is_empty() {
                 self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
                 updated.properties = Self::bucket_properties_by_owner(
@@ -994,10 +1011,28 @@ impl NodeService {
                     &updated.properties,
                     &owners,
                 );
-                self.validate_node_with_fields(&updated, &fields)?;
+                self.validate_node_with_fields(&updated, &fields, Some(&chain))?;
             }
         } else if updated.node_type != "schema" {
-            self.validate_node_against_schema(&updated).await?;
+            // node_type unchanged, but properties still need re-bucketing
+            // (ADR-078): an update naming an inherited field arrives flat,
+            // normalizes into the node's OWN bucket, and would sit there
+            // duplicating the authoritative value in the declaring ancestor's
+            // bucket. The readers then disagree — a scope-chain flattener
+            // takes the nearer bucket, a base-scoped filter never looks in it,
+            // and the validation merge resolves by map ordering. Re-bucket so
+            // the field exists in exactly one place, then validate.
+            let (fields, owners, chain) = self.resolve_field_owners(&updated.node_type).await?;
+            if fields.is_empty() {
+                self.validate_node_against_schema(&updated).await?;
+            } else {
+                updated.properties = Self::bucket_properties_by_owner(
+                    &updated.node_type,
+                    &updated.properties,
+                    &owners,
+                );
+                self.validate_node_with_fields(&updated, &fields, Some(&chain))?;
+            }
         }
 
         let title_update = if content_changed || node_type_changed || properties_changed {
@@ -1113,7 +1148,7 @@ impl NodeService {
 
         if node_type_changed && updated.node_type != "schema" {
             // Chain-resolved, per ADR-078 — see `insert_node_in_tx_no_invariant_dispatch`.
-            let (fields, owners) = self.resolve_field_owners(&updated.node_type).await?;
+            let (fields, owners, chain) = self.resolve_field_owners(&updated.node_type).await?;
             if !fields.is_empty() {
                 self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
                 updated.properties = Self::bucket_properties_by_owner(
@@ -1121,10 +1156,28 @@ impl NodeService {
                     &updated.properties,
                     &owners,
                 );
-                self.validate_node_with_fields(&updated, &fields)?;
+                self.validate_node_with_fields(&updated, &fields, Some(&chain))?;
             }
         } else if updated.node_type != "schema" {
-            self.validate_node_against_schema(&updated).await?;
+            // node_type unchanged, but properties still need re-bucketing
+            // (ADR-078): an update naming an inherited field arrives flat,
+            // normalizes into the node's OWN bucket, and would sit there
+            // duplicating the authoritative value in the declaring ancestor's
+            // bucket. The readers then disagree — a scope-chain flattener
+            // takes the nearer bucket, a base-scoped filter never looks in it,
+            // and the validation merge resolves by map ordering. Re-bucket so
+            // the field exists in exactly one place, then validate.
+            let (fields, owners, chain) = self.resolve_field_owners(&updated.node_type).await?;
+            if fields.is_empty() {
+                self.validate_node_against_schema(&updated).await?;
+            } else {
+                updated.properties = Self::bucket_properties_by_owner(
+                    &updated.node_type,
+                    &updated.properties,
+                    &owners,
+                );
+                self.validate_node_with_fields(&updated, &fields, Some(&chain))?;
+            }
         }
 
         let title_update = if content_changed || node_type_changed || properties_changed {
@@ -1389,7 +1442,20 @@ impl NodeService {
         // precedent as `insert_node_in_tx_no_invariant_dispatch`'s own
         // schema/title/play-validation calls.
         if updated.node_type != "schema" {
-            self.validate_node_against_schema(&updated).await?;
+            // Re-bucket before validating, same reasoning as the update paths
+            // above: an inherited field arrives flat and must be moved to its
+            // declaring ancestor's bucket, or it exists in two places.
+            let (fields, owners, chain) = self.resolve_field_owners(&updated.node_type).await?;
+            if fields.is_empty() {
+                self.validate_node_against_schema(&updated).await?;
+            } else {
+                updated.properties = Self::bucket_properties_by_owner(
+                    &updated.node_type,
+                    &updated.properties,
+                    &owners,
+                );
+                self.validate_node_with_fields(&updated, &fields, Some(&chain))?;
+            }
         }
 
         // Synchronous play validation gate — reject invalid rule changes before persist
@@ -2253,12 +2319,12 @@ impl NodeService {
         // inherited fields are validated rather than skipped. An empty result
         // means no schema anywhere in the chain — not all types have one, and
         // validation passes for those.
-        let (fields, _owners) = self.resolve_field_owners(&node.node_type).await?;
+        let (fields, _owners, chain) = self.resolve_field_owners(&node.node_type).await?;
         if fields.is_empty() {
             return Ok(());
         }
 
-        self.validate_node_with_fields(node, &fields)
+        self.validate_node_with_fields(node, &fields, Some(&chain))
     }
 
     /// Validate play rules before persisting.
@@ -2300,6 +2366,15 @@ impl NodeService {
     }
 
     /// Apply schema default values to missing fields using pre-loaded fields
+    ///
+    /// "Missing" is judged against **every** bucket on the node, not just the
+    /// node's own type's. Under `extends` (ADR-078) an inherited field's value
+    /// lives in its declaring ancestor's bucket, so checking only
+    /// `properties[node_type]` would read a populated inherited field as
+    /// missing and overwrite the user's value with the schema default — and
+    /// because `bucket_properties_by_owner` then moves that default into the
+    /// ancestor's bucket unconditionally, the original value is destroyed
+    /// rather than merely shadowed.
     pub(crate) fn apply_schema_defaults_with_fields(
         &self,
         node: &mut Node,
@@ -2309,6 +2384,21 @@ impl NodeService {
         if !node.properties.is_object() {
             node.properties = serde_json::json!({});
         }
+
+        // Which fields already hold a value anywhere on the node. Computed
+        // before the mutable borrow below, and across all buckets so an
+        // inherited value counts as present.
+        let already_present: std::collections::HashSet<String> = node
+            .properties
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .filter(|(k, _)| !k.starts_with('_'))
+                    .filter_map(|(_, v)| v.as_object())
+                    .flat_map(|bucket| bucket.keys().cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
 
         // Get mutable reference to properties object
         let props_obj = node.properties.as_object_mut().unwrap();
@@ -2326,10 +2416,12 @@ impl NodeService {
             ))
         })?;
 
-        // Apply defaults for missing fields within the type namespace
+        // Apply defaults for fields absent from every bucket. Defaults land in
+        // the node's own namespace; `bucket_properties_by_owner` then moves an
+        // inherited one into its declaring ancestor's bucket, which is why
+        // that call must follow this one.
         for field in fields {
-            // Check if field is missing in the type namespace
-            if !type_props.contains_key(&field.name) {
+            if !already_present.contains(&field.name) {
                 // Apply default value if one is defined
                 if let Some(default_value) = &field.default {
                     type_props.insert(field.name.clone(), default_value.clone());
@@ -2533,20 +2625,31 @@ impl NodeService {
         &self,
         node: &Node,
         fields: &[crate::models::SchemaField],
+        scope_chain: Option<&[String]>,
     ) -> Result<(), NodeServiceError> {
-        // Merge every type-namespace bucket into one lookup. Bookkeeping keys
-        // stay at the top level and are not buckets, so they're skipped.
+        // Merge the buckets in this node's `extends` chain into one lookup.
+        //
+        // Scoped to `scope_chain` rather than "every bucket present": a node
+        // retyped from something else keeps a dormant bucket from its previous
+        // type, and merging that indiscriminately would let a stale value
+        // satisfy a required field, or be enum-validated in place of the real
+        // one. Nearest scope wins, matching every other read surface.
+        let own_chain = std::slice::from_ref(&node.node_type);
+        let chain = scope_chain.unwrap_or(own_chain);
         let node_props: Option<serde_json::Map<String, serde_json::Value>> =
             node.properties.as_object().map(|obj| {
                 let mut merged = serde_json::Map::new();
-                for (key, value) in obj {
-                    if key.starts_with('_') {
+                for scope in chain {
+                    let Some(bucket) = obj.get(scope.as_str()).and_then(|v| v.as_object()) else {
                         continue;
-                    }
-                    if let Some(bucket) = value.as_object() {
-                        for (field, field_value) in bucket {
-                            merged.insert(field.clone(), field_value.clone());
+                    };
+                    for (field, field_value) in bucket {
+                        if field.starts_with('_') {
+                            continue;
                         }
+                        merged
+                            .entry(field.clone())
+                            .or_insert_with(|| field_value.clone());
                     }
                 }
                 merged

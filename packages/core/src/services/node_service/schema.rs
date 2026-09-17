@@ -525,7 +525,11 @@ impl NodeService {
     /// bucket a value is stored under. Resolving them in one pass avoids
     /// walking the chain twice for a single write.
     ///
-    /// Returns `(effective_fields, field_name -> owning_schema_id)`.
+    /// Returns `(effective_fields, field_name -> owning_schema_id, chain)`.
+    ///
+    /// The chain comes back too because every caller that buckets also needs
+    /// to *read* across those same buckets when validating, and resolving it
+    /// twice would mean two passes over the same edges.
     pub async fn resolve_field_owners(
         &self,
         node_type: &str,
@@ -533,6 +537,7 @@ impl NodeService {
         (
             Vec<crate::models::SchemaField>,
             std::collections::HashMap<String, String>,
+            Vec<String>,
         ),
         NodeServiceError,
     > {
@@ -566,6 +571,7 @@ impl NodeService {
         Ok((
             crate::schema::extends_chain::flatten_chain_fields(&chain_fields),
             owners,
+            chain,
         ))
     }
 

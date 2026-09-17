@@ -575,3 +575,156 @@ async fn an_unprojected_read_round_trips_without_losing_fields() {
     assert_eq!(after.properties["ticket"]["status"], "open");
     assert_eq!(after.content, "edited");
 }
+
+// ============================================================================
+// Write-path regressions found in review of PR #2739
+// ============================================================================
+
+#[tokio::test]
+async fn updating_an_inherited_field_writes_to_its_declaring_bucket() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    let id = create_instance(&svc, "bug", json!({ "status": "open", "severity": "high" })).await;
+
+    let node = svc
+        .get_node(&id)
+        .await
+        .expect("get_node failed")
+        .expect("node should exist");
+
+    // A flat update naming an INHERITED field, which is how every real caller
+    // writes one (`--property status=done`, NodeUpdate.properties).
+    svc.update_node_unchecked(
+        &id,
+        nodespace_core::models::NodeUpdate {
+            properties: Some(json!({ "status": "done" })),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("update failed");
+
+    let after = svc
+        .get_node(&id)
+        .await
+        .expect("get_node failed")
+        .expect("node should exist");
+
+    // The field must live in exactly one bucket. Without re-bucketing on this
+    // path the new value lands in `bug` while the stale one stays in `ticket`,
+    // and the readers disagree about which wins.
+    assert_eq!(
+        after.properties["ticket"]["status"], "done",
+        "an inherited field updates in its declaring bucket, got {:?}",
+        after.properties
+    );
+    assert!(
+        after.properties["bug"].get("status").is_none(),
+        "the field must not be duplicated into the node's own bucket, got {:?}",
+        after.properties
+    );
+    assert_eq!(
+        after.properties["bug"]["severity"], "high",
+        "the node's own field is untouched"
+    );
+    assert_eq!(node.node_type, "bug");
+}
+
+#[tokio::test]
+async fn a_type_change_preserves_an_inherited_fields_existing_value() {
+    let (svc, _tmp) = test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [{
+                "name": "status",
+                "type": "string",
+                "protection": "user",
+                "indexed": false,
+                "default": "open"
+            }]
+        }),
+    )
+    .await
+    .expect("ticket schema creation failed");
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug schema creation failed");
+
+    // A ticket whose status the user has already moved off the default.
+    let id = create_instance(&svc, "ticket", json!({ "status": "done" })).await;
+
+    svc.update_node_unchecked(
+        &id,
+        nodespace_core::models::NodeUpdate {
+            node_type: Some("bug".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("type change failed");
+
+    let after = svc
+        .get_node(&id)
+        .await
+        .expect("get_node failed")
+        .expect("node should exist");
+
+    // Defaulting must judge "missing" across every bucket. Checking only the
+    // node's own bucket reads the inherited value as absent, applies the
+    // default, and re-bucketing then overwrites the real value with it.
+    assert_eq!(
+        after.properties["ticket"]["status"], "done",
+        "a type change must not overwrite an existing inherited value with the \
+         schema default, got {:?}",
+        after.properties
+    );
+}
+
+#[tokio::test]
+async fn a_dormant_bucket_does_not_satisfy_a_required_inherited_field() {
+    let (svc, _tmp) = test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [{
+                "name": "status",
+                "type": "string",
+                "protection": "user",
+                "indexed": false,
+                "required": true
+            }]
+        }),
+    )
+    .await
+    .expect("ticket schema creation failed");
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug schema creation failed");
+
+    // A create whose only copy of the required inherited field sits in a
+    // bucket outside the type's chain. `normalize_flat_properties_to_namespace`
+    // leaves an explicit sibling namespace alone (it only moves *flat* keys),
+    // so this reaches validation with `status` present but unreachable — the
+    // shape a previous node_type change leaves behind.
+    let node = Node::new(
+        "bug".to_string(),
+        "a bug".to_string(),
+        json!({ "bug": {}, "dormant": { "status": "stale" } }),
+    );
+    let result = svc.create_node(node).await;
+
+    assert!(
+        result.is_err(),
+        "a value in a bucket outside the type's chain must not satisfy a \
+         required field"
+    );
+}

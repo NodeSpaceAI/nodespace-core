@@ -2,6 +2,56 @@
 
 use super::*;
 
+/// A query's read scope (ADR-078): which buckets its results are read from,
+/// and the field definitions needed to resolve extended enum values back to
+/// the vocabulary the query's author could know about.
+///
+/// Built once per query by `build_scope_context` and consulted per row. Every
+/// schema read happens during construction, so the per-row filter path stays
+/// synchronous and store-free — filter evaluation is per-row, and a schema
+/// read inside that loop would be one round-trip per matched node.
+pub(crate) struct ScopeContext {
+    /// The queried type's own chain, nearest-first — the buckets in scope.
+    chain: Vec<String>,
+    /// The type the query named, i.e. the scope values resolve *to*.
+    scope_type: String,
+    /// Effective fields at the queried scope: what vocabulary a filter
+    /// authored against this type can refer to.
+    scope_fields: Vec<crate::models::SchemaField>,
+    /// Effective fields per descendant type, keyed by node_type — where the
+    /// `maps_to` declarations live. Only holds types that differ from the
+    /// queried one; an exact-type match needs no resolution.
+    node_fields: std::collections::HashMap<String, Vec<crate::models::SchemaField>>,
+}
+
+impl ScopeContext {
+    /// The buckets in scope, nearest-first.
+    fn chain(&self) -> &[String] {
+        &self.chain
+    }
+
+    /// Whether a node of this type could carry a value needing resolution.
+    ///
+    /// False for a node of exactly the queried type — it is already reading at
+    /// its native scope — and for any type with no pre-resolved fields, which
+    /// is every type when nothing extends the queried one.
+    fn may_resolve_values(&self, node_type: &str) -> bool {
+        node_type != self.scope_type && self.node_fields.contains_key(node_type)
+    }
+
+    /// Resolve one stored value into the queried scope's vocabulary, or `None`
+    /// if it cannot be expressed there.
+    fn resolve_value(&self, field: &str, stored: &str, node_type: &str) -> Option<String> {
+        let node_fields = self.node_fields.get(node_type)?;
+        crate::schema::extends_chain::resolve_value_at_scope(
+            field,
+            stored,
+            node_fields,
+            &self.scope_fields,
+        )
+    }
+}
+
 impl NodeService {
     /// Query nodes with filtering
     ///
@@ -71,12 +121,9 @@ impl NodeService {
             // filter authored against a base type is evaluated at that base's
             // scope even when the matched row is a descendant instance.
             // Resolved once per query, not per row.
-            let scope_chain = match filter.node_type.as_deref() {
-                Some(nt) if nt != "*" => Some(self.resolve_type_chain(nt).await?),
-                _ => None,
-            };
+            let scope = self.build_scope_context(filter.node_type.as_deref()).await?;
             let mut filtered =
-                Self::apply_property_filters(nodes, property_filters, scope_chain.as_deref());
+                Self::apply_property_filters(nodes, property_filters, scope.as_ref());
             // Apply offset in memory
             if let Some(offset) = filter.offset {
                 if offset < filtered.len() {
@@ -97,26 +144,70 @@ impl NodeService {
         Ok(result_nodes)
     }
 
+    /// Build the read scope for a query's `node_type`, if it names one
+    /// (ADR-078).
+    ///
+    /// Resolved once per query, never per row — filter evaluation is per-row,
+    /// so a schema read inside the row loop would turn an in-memory filter into
+    /// one round-trip per matched node. Returns `None` when there is nothing to
+    /// scope by (no type filter, the `*` wildcard) or when no schema extends
+    /// anything, in which case filtering keeps its pre-`extends` behavior.
+    async fn build_scope_context(
+        &self,
+        node_type: Option<&str>,
+    ) -> Result<Option<ScopeContext>, NodeServiceError> {
+        let Some(nt) = node_type.filter(|nt| *nt != "*") else {
+            return Ok(None);
+        };
+
+        let chain = self.resolve_type_chain(nt).await?;
+        let scope_fields = self.resolve_field_owners(nt).await?.0;
+
+        // Pre-resolve the effective fields of every type that could appear in
+        // this query's results — the descendant closure — because `maps_to`
+        // resolution needs the *node's* field definitions (where the mapping
+        // lives) and runs inside a synchronous filter with no store access.
+        // The closure is exactly the set the query engine already expanded the
+        // type filter into, so this adds no rows, and it is empty of extra
+        // work whenever nothing extends the queried type.
+        let mut node_fields = std::collections::HashMap::new();
+        for subtype in self.store.get_subtype_closure(nt).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to resolve subtypes for scope: {e}"))
+        })? {
+            if subtype == nt {
+                continue;
+            }
+            let fields = self.resolve_field_owners(&subtype).await?.0;
+            node_fields.insert(subtype, fields);
+        }
+
+        Ok(Some(ScopeContext {
+            chain,
+            scope_type: nt.to_string(),
+            scope_fields,
+            node_fields,
+        }))
+    }
+
     /// Apply property filters in-memory to a list of nodes.
     ///
     /// Properties are stored in namespaced format: `{ "task": { "status": "open" } }`.
     /// PropertyFilter paths use JSONPath: `"$.status"`.
     /// This resolves the path against each node's type namespace.
-    /// `scope_chain` is the query's own read scope (ADR-078) — the chain of
-    /// the type its `node_type` filter named, nearest-first. `None` falls back
-    /// to each node's own type, which is the untyped-query case and the
-    /// pre-`extends` behavior.
+    /// `scope` is the query's own read scope (ADR-078) — resolved once per
+    /// query, not per row. `None` falls back to each node's own type, which is
+    /// the untyped-query case and the pre-`extends` behavior.
     fn apply_property_filters(
         nodes: Vec<Node>,
         filters: &[PropertyFilter],
-        scope_chain: Option<&[String]>,
+        scope: Option<&ScopeContext>,
     ) -> Vec<Node> {
         nodes
             .into_iter()
             .filter(|node| {
                 filters
                     .iter()
-                    .all(|f| Self::node_matches_property_filter(node, f, scope_chain))
+                    .all(|f| Self::node_matches_property_filter(node, f, scope))
             })
             .collect()
     }
@@ -125,7 +216,7 @@ impl NodeService {
     fn node_matches_property_filter(
         node: &Node,
         filter: &PropertyFilter,
-        scope_chain: Option<&[String]>,
+        scope: Option<&ScopeContext>,
     ) -> bool {
         // Extract property path from JSONPath "$.field" or "$.field.subfield"
         // PropertyFilter::new() validates the "$." prefix, so strip_prefix should always succeed.
@@ -147,10 +238,11 @@ impl NodeService {
         // ancestor's bucket; a field outside the scope does not resolve, so
         // the filter does not match — which is what keeps a base-scoped query
         // from depending on a subtype's own fields.
-        let scope_chain = scope_chain.unwrap_or(std::slice::from_ref(&node.node_type));
+        let own_chain = std::slice::from_ref(&node.node_type);
+        let scope_chain = scope.map(|s| s.chain()).unwrap_or(own_chain);
         let mut current = None;
-        for scope in scope_chain {
-            let mut candidate = node.properties.get(scope.as_str());
+        for scope_name in scope_chain {
+            let mut candidate = node.properties.get(scope_name.as_str());
             for segment in &segments {
                 candidate = candidate.and_then(|v| v.get(*segment));
             }
@@ -162,6 +254,29 @@ impl NodeService {
 
         let Some(actual_value) = current else {
             return false; // Property not found = doesn't match
+        };
+
+        // Resolve an extended enum value to what it means at the query's scope
+        // (ADR-078). A filter authored against a base type compares against
+        // that type's vocabulary, so an `issue` node storing `backlog` must
+        // compare as `todo` — the value the filter's author could know about.
+        // An unresolvable value fails the filter rather than falling back to
+        // the raw value, which a base-scoped filter has no way to interpret.
+        //
+        // Only single-segment paths resolve: `maps_to` maps a field's enum
+        // values, not positions inside a nested object.
+        let resolved;
+        let actual_value = match (scope, actual_value.as_str(), segments.as_slice()) {
+            (Some(ctx), Some(raw), [field]) if ctx.may_resolve_values(&node.node_type) => {
+                match ctx.resolve_value(field, raw, &node.node_type) {
+                    Some(value) => {
+                        resolved = serde_json::Value::String(value);
+                        &resolved
+                    }
+                    None => return false,
+                }
+            }
+            _ => actual_value,
         };
 
         match &filter.operator {
