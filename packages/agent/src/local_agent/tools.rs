@@ -1367,7 +1367,7 @@ fn def_create_schema() -> ToolDefinition {
 fn def_update_schema() -> ToolDefinition {
     ToolDefinition {
         name: "update_schema".into(),
-        description: "Modify an existing schema type: add/remove/rename fields, relabel a field's display name without renaming it, add/remove relationships, update description or title_template. Use rename_fields to rename a field's storage key — it migrates all existing node property data to the new key and updates the schema definition; the same rename_fields list also handles a display-only relabel (see its own description for the difference).".into(),
+        description: "Modify an existing schema type: add/remove/rename fields, relabel a field's display name without renaming it, append values to an existing enum field (add_field_values), add/remove relationships, update description or title_template. Use rename_fields to rename a field's storage key — it migrates all existing node property data to the new key and updates the schema definition; the same rename_fields list also handles a display-only relabel (see its own description for the difference).".into(),
         parameters_schema: json!({
             "type": "object",
             "properties": {
@@ -1408,6 +1408,30 @@ fn def_update_schema() -> ToolDefinition {
                     "type": "array",
                     "description": "Field names to remove",
                     "items": { "type": "string" }
+                },
+                "add_field_values": {
+                    "type": "array",
+                    "description": "Append new choices to an EXISTING enum field's vocabulary (e.g. a 'backlog' status on task). This is NOT add_fields — add_fields declares a new field and leaves the existing one's choices unchanged. Only a field declared extensible: true AND type 'enum' can be extended. Do not try to pre-verify that — no tool here reports a field's extensible flag — just make the call; a rejection names the exact reason and nothing is partially applied. New values go to user_values; core_values is never written. The call is rejected outright — nothing merged or overwritten — if the field is missing, not extensible, not an enum, or if any value string already exists in core_values or user_values. Collision is checked on 'value', never 'label' (two values may share a label).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "field": { "type": "string", "description": "Name of the existing enum field to extend (e.g. 'status')." },
+                            "values": {
+                                "type": "array",
+                                "description": "Values to append, as {value, label} pairs — e.g. [{\"value\": \"backlog\", \"label\": \"Backlog\"}]. Use lowercase value strings with readable labels, the same convention as coreValues.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "value": { "type": "string", "description": "The stored string, lowercase snake_case (e.g. 'in_review')." },
+                                        "label": { "type": "string", "description": "Display label (e.g. 'In Review')." }
+                                    },
+                                    "required": ["value", "label"]
+                                }
+                            }
+                        },
+                        "required": ["field", "values"],
+                        "additionalProperties": false
+                    }
                 },
                 "rename_fields": {
                     "type": "array",

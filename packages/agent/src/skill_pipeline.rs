@@ -18,11 +18,12 @@
 //! handler key, typed parameter schema, description, and `source` provenance.
 
 use crate::skill_rules::{
-    AMBIGUITY_CLARIFY, BULK_IMPORT_NO_FOLLOWUP_SEARCH, COLLECTION_AT_CREATE_TIME, DELETE_A_SCHEMA,
-    EDIT_DONT_RECREATE, FIND_THEN_ACT, GROUPING_IS_COLLECTIONS, ONE_SCHEMA_PER_REQUEST,
-    RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS, SCHEMA_VALIDATION_ERROR_RETRY,
-    SINGLE_ITEM_PER_CALL, SUCCESS_NO_REVERIFY, TARGET_TYPE_MUST_EXIST, TASK_STATUS_DEDICATED_VERB,
-    TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
+    ADD_ENUM_VALUES, AMBIGUITY_CLARIFY, BULK_IMPORT_NO_FOLLOWUP_SEARCH, COLLECTION_AT_CREATE_TIME,
+    DELETE_A_SCHEMA, EDIT_DONT_RECREATE, FIND_THEN_ACT, GROUPING_IS_COLLECTIONS,
+    ONE_SCHEMA_PER_REQUEST, RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS,
+    SCHEMA_VALIDATION_ERROR_RETRY, SINGLE_ITEM_PER_CALL, SUCCESS_NO_REVERIFY,
+    TARGET_TYPE_MUST_EXIST, TASK_STATUS_DEDICATED_VERB, TITLE_TEMPLATE_PLACEHOLDERS,
+    UNIQUE_FIELD_FLAGS,
 };
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
 
@@ -68,6 +69,8 @@ CALL create_schema NOW: your next action is the tool call, not planning text.
 
 {edit_dont_recreate}
 
+{add_enum_values}
+
 {rename_vs_relabel}
 
 {delete_a_schema}
@@ -83,6 +86,7 @@ CALL create_schema NOW: your next action is the tool call, not planning text.
         schema_already_exists = SCHEMA_ALREADY_EXISTS.imperative,
         schema_validation_error_retry = SCHEMA_VALIDATION_ERROR_RETRY.imperative,
         edit_dont_recreate = EDIT_DONT_RECREATE.imperative,
+        add_enum_values = ADD_ENUM_VALUES.imperative,
         grouping_is_collections = GROUPING_IS_COLLECTIONS.imperative,
         rename_vs_relabel = RENAME_VS_RELABEL.imperative,
         delete_a_schema = DELETE_A_SCHEMA.imperative,
@@ -1577,6 +1581,43 @@ mod tests {
         );
     }
 
+    /// `ADD_ENUM_VALUES` is interpolated through a format-string placeholder
+    /// that a future edit can drop with no compiler error, exactly like the
+    /// rules pinned above.
+    ///
+    /// The discrimination is what's load-bearing, not the mention: `add_fields`
+    /// is the operation an agent already knows, and reaching for it here
+    /// declares a redundant second field instead of extending the vocabulary
+    /// the user asked about. So this pins that the guidance names
+    /// `add_field_values`, names `add_fields` as the wrong choice, and states
+    /// the `extensible`/`enum` gate — a model told only "there is an
+    /// add_field_values" would still guess wrong about which fields accept it.
+    #[test]
+    fn schema_creation_guidance_covers_add_field_values() {
+        let seeds = seed_skill_nodes();
+        let schema_skill = seeds
+            .iter()
+            .find(|s| s.title == "Schema Creation")
+            .expect("Schema Creation skill must exist");
+        let md = &schema_skill.markdown_content;
+
+        assert!(
+            md.contains("add_field_values"),
+            "Schema Creation guidance must name the add_field_values operation"
+        );
+        assert!(
+            md.contains("NOT add_fields"),
+            "Schema Creation guidance must steer away from add_fields — it is the \
+             operation an agent reaches for by default, and it silently declares a \
+             new field instead of extending the existing one"
+        );
+        assert!(
+            md.contains("extensible: true"),
+            "Schema Creation guidance must state the extensible gate so the model \
+             checks eligibility rather than discovering it through a rejection"
+        );
+    }
+
     /// `GROUPING_IS_COLLECTIONS` and `COLLECTION_AT_CREATE_TIME` are
     /// interpolated through format-string placeholders, which a future edit
     /// can drop without any compiler error — the value is a valid `String`
@@ -1630,6 +1671,133 @@ mod tests {
         assert!(
             !md.contains("ask the user to create it first"),
             "Organization guidance must not ask the user to pre-create a              collection that resolve_path creates automatically"
+        );
+    }
+
+    /// A rule that tells the model to "call `foo_bar`" is only actionable if
+    /// `foo_bar` is a tool the model actually has. This shipped wrong once:
+    /// the `add_field_values` guidance told the model to check eligibility
+    /// with `get_schema_definition`, which is the core/CLI-layer RPC name and
+    /// not on the local agent's tool surface at all. Nothing caught it —
+    /// every other guard checks that a rule *reaches* a prompt, not that what
+    /// the rule says is true of the tools that prompt is paired with.
+    ///
+    /// Scoped to the explicit `call <name>` / `calling <name>` phrasing rather
+    /// than every snake_case token, because the rules are dense with
+    /// non-tool identifiers (`core_values`, `blocked_by`, `title_template`)
+    /// that a blanket scan would flag. The narrow form is what a model reads
+    /// as an instruction to emit a tool call, which is exactly the claim that
+    /// has to be true.
+    #[test]
+    fn rules_only_tell_the_model_to_call_tools_that_exist() {
+        let known: std::collections::HashSet<&str> = crate::local_agent::tools::Tool::ALL
+            .iter()
+            .map(|t| t.name())
+            .collect();
+
+        // Every rule text on both surfaces, not just the ones reaching the
+        // prompt today — a rule moved into the prompt later carries its
+        // tool names with it.
+        let mut texts: Vec<(&str, &str)> = Vec::new();
+        for r in crate::skill_rules::SCHEMA_RULES {
+            texts.push((r.id, r.imperative));
+        }
+        for r in crate::skill_rules::INTERACTION_RULES {
+            texts.push((r.id, r.imperative));
+        }
+
+        let mut bad: Vec<String> = Vec::new();
+        for (id, text) in texts {
+            let words: Vec<&str> = text.split_whitespace().collect();
+            for pair in words.windows(2) {
+                let verb = pair[0].trim_matches(|c: char| !c.is_alphanumeric());
+                if !verb.eq_ignore_ascii_case("call") && !verb.eq_ignore_ascii_case("calling") {
+                    continue;
+                }
+                // Tool names reach here bare, backticked, followed by an
+                // argument list, or possessive ("get_node's"). Trim the
+                // leading punctuation, then cut at the first character that
+                // cannot appear in an identifier — which covers `(`, `'` and
+                // anything else a future rewording introduces, rather than
+                // enumerating separators one at a time.
+                let candidate =
+                    pair[1].trim_start_matches(|c: char| !c.is_alphanumeric() && c != '_');
+                let candidate = candidate
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .map_or(candidate, |end| &candidate[..end]);
+                // Only underscored identifiers are tool-name shaped; this is
+                // what keeps ordinary prose ("call the", "call is") out.
+                if !candidate.contains('_') {
+                    continue;
+                }
+                if !known.contains(candidate) {
+                    bad.push(format!("{id} says to call {candidate:?}"));
+                }
+            }
+        }
+
+        assert!(
+            bad.is_empty(),
+            "these rules instruct the model to call tools that do not exist on the local \
+             agent's surface: {}. A model told to call a missing tool either wastes a turn \
+             on a hard error or treats the instruction as an unsatisfiable precondition and \
+             declines the operation outright. Use a real name from Tool::ALL, or reword so \
+             the rule does not name a tool call.",
+            bad.join("; ")
+        );
+    }
+
+    /// The prompt guidance tells the model to reach for `add_field_values`,
+    /// but a model only emits a parameter its tool schema declares — so the
+    /// guidance is inert unless `update_schema`'s schema actually advertises
+    /// it. That declaration was missing entirely until the guidance landed,
+    /// which is the exact failure this pins: `schema_creation_guidance` and
+    /// the tool schema are edited in different files, and a rule pointing at
+    /// an undeclared parameter reads as working guidance right up until the
+    /// model can't act on it.
+    ///
+    /// The prompt-assembly golden also covers this, but only as a byproduct
+    /// of snapshotting the whole tool surface — a regeneration accepts any
+    /// diff put in front of it, so it records the change rather than
+    /// defending the property.
+    #[test]
+    fn update_schema_tool_schema_declares_add_field_values() {
+        let params = crate::local_agent::tools::Tool::UpdateSchema
+            .definition()
+            .parameters_schema;
+        let add_field_values = params
+            .get("properties")
+            .and_then(|p| p.get("add_field_values"))
+            .expect(
+                "update_schema's tool schema must declare add_field_values — without it the \
+                 model is never told the parameter exists, and the prompt guidance steering \
+                 it there cannot be acted on",
+            );
+
+        let item_props = add_field_values
+            .get("items")
+            .and_then(|i| i.get("properties"))
+            .expect("add_field_values items must declare properties");
+        for key in ["field", "values"] {
+            assert!(
+                item_props.get(key).is_some(),
+                "add_field_values items must declare {key:?} — it is required by \
+                 FieldValueAddition, which also denies unknown fields"
+            );
+        }
+
+        let desc = add_field_values
+            .get("description")
+            .and_then(|d| d.as_str())
+            .expect("add_field_values must carry a description");
+        assert!(
+            desc.contains("NOT add_fields"),
+            "add_field_values' description must distinguish it from add_fields — that \
+             confusion is the whole reason the parameter needs guidance, got: {desc:?}"
+        );
+        assert!(
+            desc.contains("extensible: true"),
+            "add_field_values' description must state the extensible gate, got: {desc:?}"
         );
     }
 

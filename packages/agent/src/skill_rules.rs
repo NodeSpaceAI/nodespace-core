@@ -66,8 +66,8 @@ pub const SCHEMA_VALIDATION_ERROR_RETRY: SchemaRule = SchemaRule {
 
 pub const EDIT_DONT_RECREATE: SchemaRule = SchemaRule {
     id: "edit-dont-recreate",
-    imperative: "EDITING A SCHEMA — call update_schema: When the user wants to add a field, remove a field, rename a field, or change a relationship on an existing schema, call update_schema with the schema_id and only the fields that need changing. Do NOT re-create the whole schema. Use add_fields, remove_fields, rename_fields, or update the description/title_template as needed.",
-    prose: "**Editing:** to add, remove, or rename a field, or change a relationship on an existing schema, use `schema update` with only the fields that need changing (`add_fields`/`remove_fields`/`rename_fields`, or an updated `description`/`title_template`). Don't re-create the whole schema for a small change.",
+    imperative: "EDITING A SCHEMA — call update_schema: When the user wants to add a field, remove a field, rename a field, add a value to an existing enum field, or change a relationship on an existing schema, call update_schema with the schema_id and only the fields that need changing. Do NOT re-create the whole schema. Use add_fields, remove_fields, rename_fields, add_field_values, or update the description/title_template as needed.",
+    prose: "**Editing:** to add, remove, or rename a field, add a value to an existing enum field, or change a relationship on an existing schema, use `schema update` with only the fields that need changing (`add_fields`/`remove_fields`/`rename_fields`/`add_field_values`, or an updated `description`/`title_template`). Don't re-create the whole schema for a small change.",
 };
 
 pub const RENAME_VS_RELABEL: SchemaRule = SchemaRule {
@@ -79,6 +79,32 @@ pub const RENAME_VS_RELABEL: SchemaRule = SchemaRule {
     // schema description cannot: which of the two the user actually means.
     imperative: "RENAME VS RELABEL: rename_fields can rename a field's storage key OR relabel its display name (see the tool schema for the 'from'/'to'/'friendlyName' shape of each). A user asking to call a field something else on screen almost always means the display label, not a storage rename — do not conflate the two.",
     prose: "**Rename vs. relabel:** `rename_fields` can rename a field's storage key or relabel its display name only — see the tool schema for the `from`/`to`/`friendlyName` shape of each. A user asking to relabel what a field is called on screen almost always means the display label, not a storage rename.",
+};
+
+/// Adding a value to an existing enum is a different write path from adding a
+/// field, and the two are easy to confuse: both are "add something to this
+/// schema", and `add_fields` is the one an agent already knows about. Reaching
+/// for `add_fields` here declares a redundant second field rather than
+/// extending the vocabulary the user meant, and redeclaring the existing field
+/// is rejected outright — so the rule leads with the discrimination (existing
+/// field's vocabulary vs. new field declaration) rather than with the
+/// mechanics.
+///
+/// The two forms diverge on how to establish eligibility, because the two
+/// surfaces genuinely differ. `nodespace schema get` prints the schema node's
+/// whole flattened property blob, `extensible` included, so the prose form
+/// says to look first. The local agent has no equivalent: its only route to a
+/// schema's fields is `get_node`'s `available_properties`, which
+/// `build_available_properties` builds from name/type/set/allowed_values and
+/// never carries `extensible`. So the imperative form tells the model to call
+/// and read the rejection instead — naming a pre-check it cannot perform
+/// would be worse than none, since a model that treats it as a precondition
+/// declines the operation outright, which is exactly the "capability reads as
+/// missing" failure this family of rules exists to prevent.
+pub const ADD_ENUM_VALUES: SchemaRule = SchemaRule {
+    id: "add-enum-values",
+    imperative: "ADDING A VALUE TO AN EXISTING ENUM \u{2014} use add_field_values, NOT add_fields: When the user wants a new choice on a field that already exists (a \"backlog\" status on task, a new priority level), call update_schema with add_field_values: `{\"schema_id\": \"task\", \"add_field_values\": [{\"field\": \"status\", \"values\": [{\"value\": \"backlog\", \"label\": \"Backlog\"}]}]}`. This appends to the EXISTING field's vocabulary. Do NOT use add_fields \u{2014} that declares a NEW field, which is the wrong operation and leaves the original field unchanged. Do NOT try to redeclare the field with a fuller coreValues list either; that is rejected. ELIGIBILITY: only a field with extensible: true AND type enum can be extended. Do NOT try to pre-verify this before calling \u{2014} no tool on this surface reports a field's extensible flag (get_node's available_properties lists a field's type and allowed_values, not whether it is extensible). Just make the call: a rejection names the exact reason, and nothing is partially applied. New values land in user_values; core_values is never touched. COLLISIONS: the whole call is rejected if the field does not exist, is not extensible, is not an enum, or if any value string already exists in core_values or user_values \u{2014} nothing is merged or overwritten. The check is on the value string, never the label: two values may share a label, so a rejection naming a colliding value means choose a different value string, not a different label.",
+    prose: "**Adding a value to an existing enum.** To give a field that already exists a new choice \u{2014} a `backlog` status on `task`, another priority level \u{2014} use `add_field_values`, not `add_fields`:\n\n```bash\nnodespace schema update --params '{\"schema_id\":\"task\",\"add_field_values\":[{\"field\":\"status\",\"values\":[{\"value\":\"backlog\",\"label\":\"Backlog\"}]}]}'\n```\n\n`add_fields` is the wrong tool here: it declares a *new* field and leaves the original one's vocabulary untouched. Redeclaring the existing field with a fuller `coreValues` list is rejected outright, so extending in place is the only route.\n\nOnly a field declared `extensible: true` **and** typed `enum` can be extended \u{2014} `nodespace schema get <schema_id>` shows both, so check before calling rather than discovering it through a rejection. Added values land in `user_values`; `core_values` is never written.\n\nThe operation is all-or-nothing: it is rejected if the field doesn't exist, isn't extensible, isn't an enum, or if any value string already exists on `core_values` or `user_values` \u{2014} nothing is merged or overwritten. Collision is checked on the `value` string and never on `label` (two values may legitimately share a label), so a rejection naming a colliding value means pick a different `value`, not a different `label`.",
 };
 
 /// The recognition trigger matters more than the conclusion here: an agent
@@ -174,6 +200,7 @@ pub const SCHEMA_RULES: &[SchemaRule] = &[
     SCHEMA_ALREADY_EXISTS,
     SCHEMA_VALIDATION_ERROR_RETRY,
     EDIT_DONT_RECREATE,
+    ADD_ENUM_VALUES,
     RENAME_VS_RELABEL,
     DELETE_A_SCHEMA,
     NO_NAME_TITLE_FIELD,
