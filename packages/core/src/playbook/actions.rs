@@ -13,18 +13,24 @@
 //! - `item.*` — current element during `for_each` iteration
 //!
 //! `{dot.path}` bindings in action params are resolved at execution time
-//! against the live graph state.
+//! against the live graph state. A binding may also be a supported
+//! function-call form, e.g. `{add_days(item.start_date, 14)}`, which
+//! resolves its argument(s) through the same binding context and then
+//! applies a fixed, explicitly-supported function -- this is a scoped
+//! extension of the path-substitution scheme, not a general CEL evaluator
+//! reachable from action values. See `BindingContext::resolve_binding` and
+//! `parse_function_call` for the exact grammar and why it cannot change any
+//! existing bare-`{path}` binding's resolution.
 //!
-//! Two binding-call forms reduce a resolved collection to a single value
-//! instead of navigating to one: `sum(<collection-path>, <field>)` and
-//! `count(<collection-path>)` (see [`parse_aggregate_call`]) — the
-//! `for_each`-shaped collection resolution `for_each` itself uses, but
-//! collapsed to one aggregate instead of iterated. Recognized by
-//! `BindingContext::resolve_binding` ahead of its normal dot-path dispatch.
-//! Usable anywhere any other `{binding}` is (an `update_node` action's
-//! `properties`, a `create_node`'s, nested inside a `for_each` item's own
-//! params, ...) — writing the aggregate's result is the existing
-//! `update_node`/`create_node` action-writing mechanism, not a new one.
+//! Two of those functions, `sum(<collection-path>, <field>)` and
+//! `count(<collection-path>)`, reduce a resolved collection to a single
+//! value instead of navigating to one -- the `for_each`-shaped collection
+//! resolution `for_each` itself uses (see `BindingContext::resolve_binding`),
+//! but collapsed to one aggregate instead of iterated. Usable anywhere any
+//! other `{binding}` is (an `update_node` action's `properties`, a
+//! `create_node`'s, nested inside a `for_each` item's own params, ...) --
+//! writing the aggregate's result is the existing `update_node`/`create_node`
+//! action-writing mechanism, not a new one.
 //!
 //! # Derived Identity (ADR-060 §3, ADR-074)
 //!
@@ -303,24 +309,23 @@ impl BindingContext {
         }
     }
 
-    /// Resolve a dot-path binding against the context.
+    /// Resolve a dot-path binding, or a supported function-call binding
+    /// (e.g. `add_days(item.start_date, 14)`, `sum(item.tasks, points)`),
+    /// against the context.
     ///
-    /// Supported roots: `trigger`, `actions`, `item`.
+    /// Supported roots: `trigger`, `actions`, `item`. Supported functions:
+    /// `add_days`, `sum`, `count` (see [`Self::resolve_function_call`]).
     ///
-    /// Also recognizes the `sum(<collection-path>, <field>)` and
-    /// `count(<collection-path>)` aggregate call forms (see
-    /// [`parse_aggregate_call`]) ahead of the plain dot-path dispatch below,
-    /// since their syntax (`sum(...)`) doesn't parse as a dot-path at all.
+    /// The function-call form is detected ONLY when the entire path is
+    /// `name(...)` -- see [`parse_function_call`] for why that can never
+    /// misfire on, or change the resolution of, an existing bare dot-path
+    /// binding: `(` is not a legal character in any path segment a play
+    /// author can write today.
     ///
     /// Handles both `actions[0].result.field` and `actions.0.result.field` formats.
     pub async fn resolve_binding(&mut self, path: &str) -> Result<Value, String> {
-        if let Some(call) = parse_aggregate_call(path) {
-            // Recursive (resolve_binding resolving the call's own collection
-            // sub-path) — boxed for the same reason every other recursive
-            // async call in this file is (`resolve_bindings_in_value`, etc.):
-            // a directly-recursive `async fn` has an infinite-sized future
-            // unless indirected through the heap.
-            return Box::pin(self.resolve_aggregate_call(call)).await;
+        if let Some((name, args)) = parse_function_call(path) {
+            return self.resolve_function_call(name, args).await;
         }
 
         let segments: Vec<&str> = path.split('.').collect();
@@ -343,6 +348,161 @@ impl BindingContext {
         }
     }
 
+    /// Resolve a function-call binding, e.g. `add_days(item.start_date, 14)`.
+    ///
+    /// This is a fixed, explicitly-supported function set matched by name
+    /// below -- NOT a general dispatch mechanism. There is deliberately no
+    /// registration table or lookup keyed by an action-param-supplied
+    /// string; an unrecognized name is a hard, immediate error.
+    async fn resolve_function_call(&mut self, name: &str, args: &str) -> Result<Value, String> {
+        match name {
+            "add_days" => self.resolve_add_days_call(args).await,
+            "sum" => self.resolve_sum_call(args).await,
+            "count" => self.resolve_count_call(args).await,
+            other => Err(format!(
+                "unknown function '{}' in binding (supported: add_days, sum, count)",
+                other
+            )),
+        }
+    }
+
+    /// `add_days(date, n)` -- resolves `date` and `n` through this same
+    /// binding context, then applies
+    /// [`crate::playbook::cel::compute_add_days`].
+    ///
+    /// `date` must be a dot-path (resolving to a string). `n` may be either
+    /// a dot-path or a bare integer literal. Neither argument may itself be
+    /// a function call -- nesting is rejected with a clear error rather than
+    /// evaluated, keeping this a fixed one-level substitution rather than a
+    /// general expression evaluator reachable through argument position.
+    async fn resolve_add_days_call(&mut self, args: &str) -> Result<Value, String> {
+        let parts = split_top_level_args(args);
+        if parts.len() != 2 {
+            return Err(format!(
+                "add_days expects 2 arguments (date, days), got {}",
+                parts.len()
+            ));
+        }
+        let date_arg = parts[0].trim();
+        let days_arg = parts[1].trim();
+
+        if parse_function_call(date_arg).is_some() || parse_function_call(days_arg).is_some() {
+            return Err("add_days does not support nested function-call arguments".to_string());
+        }
+
+        // Recursion is indirect (resolve_binding -> resolve_function_call ->
+        // here -> resolve_binding) and therefore must be boxed, same as the
+        // recursive calls in `resolve_bindings_in_value` below -- an async
+        // fn calling itself, even indirectly, produces an infinitely-sized
+        // future type unless one hop in the cycle is heap-indirected.
+        let date_value = Box::pin(self.resolve_binding(date_arg)).await?;
+        let date_str = date_value.as_str().ok_or_else(|| {
+            format!(
+                "add_days: first argument ('{}') did not resolve to a string date, got: {}",
+                date_arg, date_value
+            )
+        })?;
+
+        let days: i64 = if let Ok(n) = days_arg.parse::<i64>() {
+            n
+        } else {
+            let days_value = Box::pin(self.resolve_binding(days_arg)).await?;
+            days_value.as_i64().ok_or_else(|| {
+                format!(
+                    "add_days: second argument ('{}') did not resolve to an integer, got: {}",
+                    days_arg, days_value
+                )
+            })?
+        };
+
+        crate::playbook::cel::compute_add_days(date_str, days)
+            .map(Value::String)
+            .map_err(|e| e.to_string())
+    }
+
+    /// `sum(<collection-path>, <field>)` -- sums a numeric field across a
+    /// resolved collection. `<field>` is a literal field name, not itself a
+    /// binding to resolve -- optionally quoted (`"estimate"` or
+    /// `'estimate'`, matching how the equivalent CEL-style call would read
+    /// the field as a string literal), unquoted also accepted for
+    /// convenience. See [`Self::resolve_aggregate_collection`] for how the
+    /// collection itself is resolved, and [`sum_numeric_field`] for the
+    /// reduction (including why a missing/non-numeric field contributes 0
+    /// rather than failing the whole aggregation).
+    async fn resolve_sum_call(&mut self, args: &str) -> Result<Value, String> {
+        let parts = split_top_level_args(args);
+        if parts.len() != 2 {
+            return Err(format!(
+                "sum expects 2 arguments (collection, field), got {}",
+                parts.len()
+            ));
+        }
+        let collection_path = parts[0].trim();
+        let field = strip_matching_quotes(parts[1].trim());
+
+        let items = self.resolve_aggregate_collection(collection_path).await?;
+        Ok(sum_numeric_field(&items, field))
+    }
+
+    /// `count(<collection-path>)` -- item count of a resolved collection,
+    /// through the same resolution [`Self::resolve_sum_call`]/`for_each`
+    /// use.
+    async fn resolve_count_call(&mut self, args: &str) -> Result<Value, String> {
+        let parts = split_top_level_args(args);
+        if parts.len() != 1 {
+            return Err(format!(
+                "count expects 1 argument (collection), got {}",
+                parts.len()
+            ));
+        }
+        let collection_path = parts[0].trim();
+        let items = self.resolve_aggregate_collection(collection_path).await?;
+        Ok(json!(items.len() as i64))
+    }
+
+    /// Shared collection resolution for `sum`/`count`: resolves
+    /// `collection_path` through the exact same [`Self::resolve_binding`]
+    /// entry point `for_each` resolves its own collection through (see
+    /// `execute_actions`'s `for_each` branch) -- there is no second,
+    /// parallel graph-traversal implementation here -- then bounds the
+    /// reduction step's own cost.
+    ///
+    /// The bound (`AGGREGATE_CALL_MAX_ITEMS`) caps the aggregation ITSELF,
+    /// not the collection fetch that already happened inside
+    /// `resolve_binding` above -- that fetch is `for_each`'s own,
+    /// pre-existing, already-unbounded `GraphResolver` traversal (see
+    /// `AGGREGATE_CALL_MAX_ITEMS`'s doc). A collection that already exceeded
+    /// this size paid its (uncapped) DB-read cost before this check ever
+    /// runs; what this prevents is a huge in-memory array (however it got
+    /// resolved) also paying an unbounded reduction cost.
+    async fn resolve_aggregate_collection(
+        &mut self,
+        collection_path: &str,
+    ) -> Result<Vec<Value>, String> {
+        let resolved = Box::pin(self.resolve_binding(collection_path)).await?;
+        let items = match resolved {
+            Value::Array(items) => items,
+            other => {
+                return Err(format!(
+                    "aggregate collection path '{}' did not resolve to an array (got {})",
+                    collection_path,
+                    json_kind(&other)
+                ));
+            }
+        };
+
+        if items.len() > AGGREGATE_CALL_MAX_ITEMS {
+            return Err(format!(
+                "aggregate collection at '{}' has {} items, exceeding the {} item aggregation cap",
+                collection_path,
+                items.len(),
+                AGGREGATE_CALL_MAX_ITEMS
+            ));
+        }
+
+        Ok(items)
+    }
+
     async fn resolve_trigger_path(&mut self, segments: &[&str]) -> Result<Value, String> {
         match segments.first().copied() {
             Some("node") => {
@@ -361,7 +521,7 @@ impl BindingContext {
                     // walk), the old guard just never gave it the chance,
                     // returning the raw JSON-navigation miss instead. Found
                     // while building `sum(collection, field)`
-                    // (`resolve_aggregate_call`): a relationship-based
+                    // (`resolve_aggregate_collection`): a relationship-based
                     // collection is exactly this single-hop shape
                     // (`trigger.node.issues`, not `trigger.node.issues.x`),
                     // and `for_each` resolves its own collection path through
@@ -470,56 +630,6 @@ impl BindingContext {
             .ok_or("no item available (not in a for_each loop)")?;
         navigate_json(item, segments)
     }
-
-    /// Execute a parsed `sum(...)`/`count(...)` aggregate call (see
-    /// [`AggregateCall`]/[`parse_aggregate_call`]).
-    ///
-    /// Resolves `call.collection_path` through the exact same
-    /// [`Self::resolve_binding`] entry point `for_each` resolves its own
-    /// collection through (see `execute_actions`'s `for_each` branch) --
-    /// there is no second, parallel graph-traversal implementation here, only
-    /// a reduction step over whatever `resolve_binding` already returns.
-    async fn resolve_aggregate_call(&mut self, call: AggregateCall) -> Result<Value, String> {
-        let resolved = Box::pin(self.resolve_binding(&call.collection_path)).await?;
-        let items = match resolved {
-            Value::Array(items) => items,
-            other => {
-                return Err(format!(
-                    "aggregate collection path '{}' did not resolve to an array (got {})",
-                    call.collection_path,
-                    json_kind(&other)
-                ));
-            }
-        };
-
-        // Bounds the cost of the aggregation ITSELF (the reduction below),
-        // not the collection fetch that already happened inside
-        // `resolve_binding` above -- that fetch is `for_each`'s own,
-        // pre-existing, already-unbounded `GraphResolver` traversal (see
-        // `AGGREGATE_CALL_MAX_ITEMS`'s doc). A collection that already
-        // exceeded this size paid its (uncapped) DB-read cost before this
-        // check ever runs; what this prevents is a huge in-memory array
-        // (however it got resolved) also paying an unbounded reduction cost.
-        if items.len() > AGGREGATE_CALL_MAX_ITEMS {
-            return Err(format!(
-                "aggregate collection at '{}' has {} items, exceeding the {} item aggregation cap",
-                call.collection_path,
-                items.len(),
-                AGGREGATE_CALL_MAX_ITEMS
-            ));
-        }
-
-        match call.function {
-            AggregateFn::Count => Ok(json!(items.len() as i64)),
-            AggregateFn::Sum => {
-                let field = call
-                    .field
-                    .as_deref()
-                    .expect("parse_aggregate_call always sets `field` for AggregateFn::Sum");
-                Ok(sum_numeric_field(&items, field))
-            }
-        }
-    }
 }
 
 /// Human-readable JSON value kind, for error messages only (no behavior
@@ -539,93 +649,22 @@ fn json_kind(value: &Value) -> &'static str {
 // sum(collection, field) / count(collection) -- aggregate binding calls
 // ---------------------------------------------------------------------------
 //
-// See the module doc's "Binding Context" section: `{dot.path}` bindings are
-// the ONLY mechanism action params evaluate today (there is no CEL surface
-// in action values -- see `playbook::validation`'s invariant-eligibility doc,
-// which is updated alongside this to note the new call-form surface). These
-// two call forms are recognized by `BindingContext::resolve_binding` ahead of
-// its plain dot-path dispatch, computed via a shared, pure Rust reduction
-// (`sum_numeric_field`) so there is exactly one implementation of "read a
-// numeric field off a resolved collection item", not two.
+// Dispatched through the same function-call binding mechanism `add_days`
+// uses (`BindingContext::resolve_function_call`) -- see
+// `Self::resolve_sum_call`/`Self::resolve_count_call` above -- computed via
+// a shared, pure Rust reduction (`sum_numeric_field`) so there is exactly
+// one implementation of "read a numeric field off a resolved collection
+// item", not two.
 
 /// Row/item cap on `sum(...)`/`count(...)` aggregation (see
-/// `BindingContext::resolve_aggregate_call`'s doc for exactly what this does
-/// and does not bound). Chosen generously above any realistic single-user
-/// collection (a Cycle's assigned Issues, a Project's Tasks, ...) while still
-/// giving a huge/pathological collection a fixed, fast failure instead of an
-/// unbounded reduction cost -- the same "fixed cost regardless of table size"
-/// reasoning as `TITLE_STEM_FALLBACK_CANDIDATE_CAP` in
-/// `db::sqlite_store::mod`.
+/// `BindingContext::resolve_aggregate_collection`'s doc for exactly what
+/// this does and does not bound). Chosen generously above any realistic
+/// single-user collection (a Cycle's assigned Issues, a Project's Tasks,
+/// ...) while still giving a huge/pathological collection a fixed, fast
+/// failure instead of an unbounded reduction cost -- the same "fixed cost
+/// regardless of table size" reasoning as
+/// `TITLE_STEM_FALLBACK_CANDIDATE_CAP` in `db::sqlite_store::mod`.
 const AGGREGATE_CALL_MAX_ITEMS: usize = 10_000;
-
-/// Which reduction an [`AggregateCall`] performs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AggregateFn {
-    Sum,
-    Count,
-}
-
-/// A parsed `sum(<collection-path>, <field>)` or `count(<collection-path>)`
-/// binding call.
-#[derive(Debug, Clone, PartialEq)]
-struct AggregateCall {
-    function: AggregateFn,
-    /// Raw (unbraced) binding path to the collection, e.g.
-    /// `trigger.node.issues` -- passed straight to `resolve_binding`, the
-    /// same way `for_each`'s own path is.
-    collection_path: String,
-    /// Field name to sum on each item. `Some` for `Sum`, `None` for `Count`.
-    field: Option<String>,
-}
-
-/// Parse a `sum(...)`/`count(...)` aggregate call out of a raw (unbraced)
-/// binding path. Returns `None` for anything else, so an ordinary dot-path
-/// binding (including one that happens to start with a segment named
-/// literally "sum" or "count", however unlikely) falls through unchanged to
-/// `resolve_binding`'s normal dispatch.
-///
-/// Grammar (deliberately minimal, no nested calls, no expressions):
-/// - `sum(<collection-path>, <field>)` -- exactly two comma-separated
-///   arguments; `<field>` may optionally be quoted (`"estimate"` or
-///   `'estimate'`), matching how the equivalent CEL-style call would read the
-///   field as a string literal.
-/// - `count(<collection-path>)` -- exactly one argument.
-fn parse_aggregate_call(path: &str) -> Option<AggregateCall> {
-    let trimmed = path.trim();
-    if let Some(inner) = trimmed
-        .strip_prefix("sum(")
-        .and_then(|s| s.strip_suffix(')'))
-    {
-        let mut parts = inner.splitn(2, ',');
-        let collection_path = parts.next()?.trim();
-        let field = parts.next()?.trim();
-        if collection_path.is_empty() || field.is_empty() {
-            return None;
-        }
-        return Some(AggregateCall {
-            function: AggregateFn::Sum,
-            collection_path: collection_path.to_string(),
-            field: Some(strip_matching_quotes(field).to_string()),
-        });
-    }
-
-    if let Some(inner) = trimmed
-        .strip_prefix("count(")
-        .and_then(|s| s.strip_suffix(')'))
-    {
-        let collection_path = inner.trim();
-        if collection_path.is_empty() {
-            return None;
-        }
-        return Some(AggregateCall {
-            function: AggregateFn::Count,
-            collection_path: collection_path.to_string(),
-            field: None,
-        });
-    }
-
-    None
-}
 
 /// Strip one matching pair of leading/trailing `"` or `'` characters, if
 /// present. `sum(path, "estimate")` and `sum(path, estimate)` are both
@@ -647,7 +686,7 @@ fn strip_matching_quotes(s: &str) -> &str {
 /// Items are the SAME shape `for_each` items already are: JSON-serialized
 /// `Node`s (type-namespaced properties), not flattened maps -- collection
 /// paths resolve through `GraphResolver`/`resolve_binding` exactly like
-/// `for_each`'s do (see `resolve_aggregate_call`). Each item is deserialized
+/// `for_each`'s do (see `resolve_aggregate_collection`). Each item is deserialized
 /// back into a `Node` and read through `graph_resolver::get_node_property`
 /// (the same namespace-aware lookup `for_each`'s `{item.properties.<type>.*}`
 /// bindings ultimately rely on), so `estimate` correctly finds
@@ -802,6 +841,149 @@ fn resolve_iteration_path_item_id(item: &Value) -> Result<String, String> {
         other => Err(format!(
             "for_each item is neither a real node id string nor an object with an \"id\" field: {other}"
         )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Function-call binding syntax (e.g. `add_days(item.start_date, 14)`)
+// ---------------------------------------------------------------------------
+//
+// A `{path}` binding may ALSO be a single supported function call, e.g.
+// `{add_days(item.start_date, 14)}`. This is deliberately NOT a general
+// function-registration framework: the two helpers below only ever
+// recognize the shape "identifier(args)" and hand it to
+// `BindingContext::resolve_function_call`'s fixed, hardcoded `match` --
+// there is no way for an action param to reach anything beyond the
+// explicitly-supported function set (currently just `add_days`).
+
+/// Detect whether an entire binding path -- the text between a `{` `}` pair,
+/// e.g. the `add_days(item.start_date, 14)` in
+/// `"{add_days(item.start_date, 14)}"` -- is a function-call form rather
+/// than a bare dot-path. Returns the function name and the raw (unsplit)
+/// argument-list text when it is.
+///
+/// Deliberately conservative: the WHOLE trimmed path must be
+/// `<identifier>(...)` with a balanced trailing `)`, where `<identifier>`
+/// is `[A-Za-z_][A-Za-z0-9_]*`. This can never match, or change the
+/// resolution of, any EXISTING bare dot-path binding: `(` is not a legal
+/// character in a `trigger`/`actions`/`item` path segment a play author can
+/// write today (`actions[N]` uses square brackets, not parens), so every
+/// string this function recognizes as a function call was already a hard
+/// error under the old bare-path-only resolver -- never a successfully
+/// resolving binding whose behavior this could silently change.
+///
+/// `pub(crate)` so `playbook::validation`'s ADR-060 §2 determinism check can
+/// recognize a function-call binding inside an action's params without
+/// duplicating this parsing logic -- see [`extract_binding_templates`] and
+/// [`collect_binding_templates_in_value`], which that check uses alongside
+/// this to find the candidate strings in the first place.
+pub(crate) fn parse_function_call(path: &str) -> Option<(&str, &str)> {
+    let path = path.trim();
+    let open = path.find('(')?;
+    if !path.ends_with(')') {
+        return None;
+    }
+    let name = &path[..open];
+    let mut chars = name.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some((name, &path[open + 1..path.len() - 1]))
+}
+
+/// Split a function-call's argument-list text on top-level commas,
+/// respecting nested parentheses so that a nested call's own commas don't
+/// fracture the outer argument list into a shape that could be misread as a
+/// different, valid argument count. This never evaluates or recurses into
+/// anything nested -- it only produces argument-text boundaries; detecting
+/// and rejecting a nested function-call argument is the caller's job (see
+/// `BindingContext::resolve_add_days_call`).
+fn split_top_level_args(args: &str) -> Vec<&str> {
+    if args.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut parts = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start = 0usize;
+    for (i, ch) in args.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(&args[start..i]);
+                start = i + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(&args[start..]);
+    parts
+}
+
+/// Extract the raw text inside every `{...}` binding template in a param
+/// string -- both the "whole string is one binding" shape (`"{path}"`) and
+/// the "mixed literal text" shape (`"prefix {path} suffix"`), mirroring the
+/// two extraction shapes [`resolve_bindings_in_string`] resolves at runtime.
+/// This performs no resolution and does not require a `BindingContext` --
+/// it exists so save-time validation (`playbook::validation`'s ADR-060 §2
+/// determinism check) can find candidate function-call bindings inside an
+/// action's params without duplicating -- or diverging from -- the runtime
+/// resolver's own notion of "what counts as a binding".
+///
+/// `pub(crate)`: see [`parse_function_call`]'s doc for why validation needs
+/// this.
+pub(crate) fn extract_binding_templates(s: &str) -> Vec<&str> {
+    if s.starts_with('{') && s.ends_with('}') && !s[1..s.len() - 1].contains('{') {
+        return vec![&s[1..s.len() - 1]];
+    }
+
+    let mut templates = Vec::new();
+    let mut chars = s.char_indices();
+    while let Some((start, ch)) = chars.next() {
+        if ch != '{' {
+            continue;
+        }
+        let content_start = start + ch.len_utf8();
+        for (i, c) in chars.by_ref() {
+            if c == '}' {
+                templates.push(&s[content_start..i]);
+                break;
+            }
+        }
+        // An unterminated `{` (no matching `}`) contributes no template,
+        // exactly like `resolve_bindings_in_string`'s runtime scan treats
+        // it as literal text rather than a binding.
+    }
+    templates
+}
+
+/// Recursively collect every `{...}` binding template's raw content from a
+/// JSON value (an action's `params`), depth-first through objects and
+/// arrays -- mirrors [`resolve_bindings_in_value`]'s own recursion shape,
+/// without evaluating anything. `pub(crate)`: see [`parse_function_call`]'s
+/// doc for why validation needs this.
+pub(crate) fn collect_binding_templates_in_value(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => {
+            for template in extract_binding_templates(s) {
+                out.push(template.to_string());
+            }
+        }
+        Value::Object(obj) => {
+            for v in obj.values() {
+                collect_binding_templates_in_value(v, out);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                collect_binding_templates_in_value(v, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -1870,6 +2052,25 @@ mod tests {
         }
     }
 
+    /// Helper: like [`make_test_node`], but with caller-supplied properties
+    /// -- used by the `add_days` binding tests, which need date-shaped
+    /// fields `make_test_node`'s fixed `status`/`priority` shape doesn't have.
+    fn make_test_node_with_properties(id: &str, node_type: &str, properties: Value) -> Node {
+        Node {
+            id: id.to_string(),
+            node_type: node_type.to_string(),
+            content: "Test content".to_string(),
+            version: 1,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            properties,
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: Some("Test Node".to_string()),
+            lifecycle_status: "active".to_string(),
+        }
+    }
+
     /// Helper: create a NodeCreated event.
     fn make_node_created_event(node_id: &str, node_type: &str) -> DomainEvent {
         DomainEvent::NodeCreated {
@@ -2289,67 +2490,135 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // parse_aggregate_call — grammar
+    // BindingContext::resolve_sum_call / resolve_count_call -- arg handling
+    //
+    // `sum(...)`/`count(...)` are recognized as function-call bindings by
+    // the SAME `parse_function_call` grammar `add_days(...)` uses (see that
+    // function's own tests for the generic `identifier(...)` shape and its
+    // "never misfires on an ordinary dot-path" guarantee) -- these tests
+    // cover only what's specific to `sum`/`count`: their own arg-count
+    // validation and the field argument's optional quoting.
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn parse_sum_call_bare_field() {
-        let call = parse_aggregate_call("sum(trigger.node.issues, estimate)").unwrap();
-        assert_eq!(call.function, AggregateFn::Sum);
-        assert_eq!(call.collection_path, "trigger.node.issues");
-        assert_eq!(call.field.as_deref(), Some("estimate"));
+    #[tokio::test]
+    async fn sum_call_bare_field_resolves() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results
+            .push(json!([{"estimate": 3}, {"estimate": 5}]));
+
+        let result = ctx
+            .resolve_binding("sum(actions[0].result, estimate)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(8));
     }
 
-    #[test]
-    fn parse_sum_call_double_quoted_field() {
-        let call = parse_aggregate_call(r#"sum(trigger.node.issues, "estimate")"#).unwrap();
-        assert_eq!(call.field.as_deref(), Some("estimate"));
+    #[tokio::test]
+    async fn sum_call_double_quoted_field_resolves() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results.push(json!([{"estimate": 3}]));
+
+        let result = ctx
+            .resolve_binding(r#"sum(actions[0].result, "estimate")"#)
+            .await
+            .unwrap();
+        assert_eq!(result, json!(3));
     }
 
-    #[test]
-    fn parse_sum_call_single_quoted_field() {
-        let call = parse_aggregate_call("sum(trigger.node.issues, 'estimate')").unwrap();
-        assert_eq!(call.field.as_deref(), Some("estimate"));
+    #[tokio::test]
+    async fn sum_call_single_quoted_field_resolves() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results.push(json!([{"estimate": 3}]));
+
+        let result = ctx
+            .resolve_binding("sum(actions[0].result, 'estimate')")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(3));
     }
 
-    #[test]
-    fn parse_sum_call_tolerates_extra_whitespace() {
-        let call = parse_aggregate_call("  sum( trigger.node.issues ,  estimate ) ").unwrap();
-        assert_eq!(call.collection_path, "trigger.node.issues");
-        assert_eq!(call.field.as_deref(), Some("estimate"));
+    #[tokio::test]
+    async fn sum_call_tolerates_extra_whitespace_in_args() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results.push(json!([{"estimate": 3}]));
+
+        let result = ctx
+            .resolve_binding("sum( actions[0].result ,  estimate ) ")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(3));
     }
 
-    #[test]
-    fn parse_count_call() {
-        let call = parse_aggregate_call("count(trigger.node.issues)").unwrap();
-        assert_eq!(call.function, AggregateFn::Count);
-        assert_eq!(call.collection_path, "trigger.node.issues");
-        assert_eq!(call.field, None);
+    #[tokio::test]
+    async fn count_call_resolves() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results
+            .push(json!([{"estimate": 3}, {"estimate": 5}]));
+
+        let result = ctx
+            .resolve_binding("count(actions[0].result)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(2));
     }
 
-    #[test]
-    fn parse_aggregate_call_rejects_sum_with_missing_field() {
-        assert!(parse_aggregate_call("sum(trigger.node.issues)").is_none());
+    #[tokio::test]
+    async fn sum_call_wrong_arg_count_errors() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx
+            .resolve_binding("sum(actions[0].result)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("sum expects 2 arguments"), "{err}");
+
+        let err = ctx
+            .resolve_binding("sum(actions[0].result, estimate, extra)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("sum expects 2 arguments"), "{err}");
     }
 
-    #[test]
-    fn parse_aggregate_call_rejects_sum_with_empty_field() {
-        assert!(parse_aggregate_call("sum(trigger.node.issues, )").is_none());
+    #[tokio::test]
+    async fn count_call_wrong_arg_count_errors() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx.resolve_binding("count()").await.unwrap_err();
+        assert!(err.contains("count expects 1 argument"), "{err}");
+
+        let err = ctx
+            .resolve_binding("count(actions[0].result, estimate)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("count expects 1 argument"), "{err}");
     }
 
-    #[test]
-    fn parse_aggregate_call_rejects_count_with_empty_path() {
-        assert!(parse_aggregate_call("count()").is_none());
-    }
+    #[tokio::test]
+    async fn unknown_function_name_is_a_clear_error() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
 
-    #[test]
-    fn parse_aggregate_call_returns_none_for_an_ordinary_dot_path() {
-        // Ordinary bindings (including anything that isn't a `sum(...)`/
-        // `count(...)` call) must fall through unchanged to the normal
-        // dot-path dispatch in `resolve_binding`.
-        assert!(parse_aggregate_call("trigger.node.id").is_none());
-        assert!(parse_aggregate_call("item.status").is_none());
-        assert!(parse_aggregate_call("summary.trigger.node.id").is_none());
+        let err = ctx
+            .resolve_binding("average(item.values)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("unknown function 'average'"), "{err}");
+        assert!(err.contains("sum"), "{err}");
     }
 
     // -----------------------------------------------------------------------
@@ -2712,6 +2981,444 @@ mod tests {
             }
             _ => panic!("expected BindingResolutionFailed"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_function_call / split_top_level_args (pure parsing) tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_function_call_recognizes_a_simple_call() {
+        let (name, args) = parse_function_call("add_days(item.start_date, 14)").unwrap();
+        assert_eq!(name, "add_days");
+        assert_eq!(args, "item.start_date, 14");
+    }
+
+    #[test]
+    fn parse_function_call_trims_surrounding_whitespace() {
+        let (name, args) = parse_function_call("  add_days(item.start_date, 14)  ").unwrap();
+        assert_eq!(name, "add_days");
+        assert_eq!(args, "item.start_date, 14");
+    }
+
+    #[test]
+    fn parse_function_call_returns_none_for_ordinary_dot_paths() {
+        // Every existing bare-path shape must NOT be misread as a function
+        // call -- `(` never appears in any of these today.
+        for path in [
+            "trigger.node.id",
+            "trigger.node.properties.task.status",
+            "item.name",
+            "actions[0].result.id",
+            "actions.0.result.id",
+            "",
+        ] {
+            assert!(
+                parse_function_call(path).is_none(),
+                "expected None for bare path '{path}'"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_function_call_rejects_unterminated_or_malformed_forms() {
+        for path in [
+            "add_days(item.start_date, 14",   // missing close paren
+            "(item.start_date, 14)",          // empty function name
+            "2add_days(item.start_date, 14)", // name starts with a digit
+            "add days(item.start_date, 14)",  // space in name
+        ] {
+            assert!(
+                parse_function_call(path).is_none(),
+                "expected None for malformed form '{path}'"
+            );
+        }
+    }
+
+    #[test]
+    fn split_top_level_args_splits_simple_args() {
+        assert_eq!(
+            split_top_level_args("item.start_date, 14"),
+            vec!["item.start_date", " 14"]
+        );
+    }
+
+    #[test]
+    fn split_top_level_args_respects_nested_parens() {
+        // A nested call's own comma must not fracture the outer argument
+        // list -- this is what lets `resolve_add_days_call` reliably detect
+        // "exactly 2 arguments, one of which is itself a function call" and
+        // reject it with a clear message, rather than silently
+        // misinterpreting arg count.
+        assert_eq!(
+            split_top_level_args("add_days(item.start_date, 1), 2"),
+            vec!["add_days(item.start_date, 1)", " 2"]
+        );
+    }
+
+    #[test]
+    fn split_top_level_args_empty_input_is_empty_vec() {
+        assert!(split_top_level_args("").is_empty());
+        assert!(split_top_level_args("   ").is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_binding_templates / collect_binding_templates_in_value tests
+    //
+    // These back `playbook::validation`'s ADR-060 §2 determinism check for
+    // action-value function-call bindings -- they must find every `{...}`
+    // template a real action-value resolution would also see.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_binding_templates_whole_string_fast_path() {
+        assert_eq!(
+            extract_binding_templates("{add_days(item.start_date, 14)}"),
+            vec!["add_days(item.start_date, 14)"]
+        );
+    }
+
+    #[test]
+    fn extract_binding_templates_mixed_literal_text() {
+        assert_eq!(
+            extract_binding_templates("End date: {add_days(item.start_date, 14)}"),
+            vec!["add_days(item.start_date, 14)"]
+        );
+    }
+
+    #[test]
+    fn extract_binding_templates_multiple_bindings_in_one_string() {
+        assert_eq!(
+            extract_binding_templates("{trigger.node.id} then {add_days(item.start_date, 1)}"),
+            vec!["trigger.node.id", "add_days(item.start_date, 1)"]
+        );
+    }
+
+    #[test]
+    fn extract_binding_templates_no_bindings_is_empty() {
+        assert!(extract_binding_templates("just a plain string").is_empty());
+    }
+
+    #[test]
+    fn extract_binding_templates_unterminated_brace_contributes_nothing() {
+        assert!(extract_binding_templates("{add_days(item.start_date, 14)").is_empty());
+    }
+
+    #[test]
+    fn collect_binding_templates_in_value_walks_nested_object_and_array() {
+        let params = json!({
+            "node_type": "pb_cycle_result",
+            "content": "computed",
+            "properties": {
+                "end_date": "{add_days(trigger.node.properties.pb_cycle_source.start_date, 14)}",
+                "tags": ["{trigger.node.id}", "literal"]
+            }
+        });
+        let mut templates = Vec::new();
+        collect_binding_templates_in_value(&params, &mut templates);
+        assert!(templates.contains(
+            &"add_days(trigger.node.properties.pb_cycle_source.start_date, 14)".to_string()
+        ));
+        assert!(templates.contains(&"trigger.node.id".to_string()));
+        // Literal text with no `{...}` contributes nothing, and non-string
+        // values (numbers/bools/null) are simply skipped, not stringified.
+        assert_eq!(templates.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // add_days(...) function-call binding tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn add_days_binding_resolves_path_arg_and_integer_literal() {
+        let node = make_test_node_with_properties(
+            "node-123",
+            "cycle",
+            json!({ "cycle": { "start_date": "2026-01-01" } }),
+        );
+        let event = make_node_created_event("node-123", "cycle");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let result = ctx
+            .resolve_binding("add_days(trigger.node.properties.cycle.start_date, 14)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!("2026-01-15"));
+    }
+
+    #[tokio::test]
+    async fn add_days_binding_resolves_days_arg_from_a_path() {
+        let node = make_test_node_with_properties(
+            "node-123",
+            "cycle",
+            json!({ "cycle": { "start_date": "2026-01-01" } }),
+        );
+        let event = make_node_created_event("node-123", "cycle");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.current_item = Some(json!({ "duration_days": 30 }));
+
+        let result = ctx
+            .resolve_binding(
+                "add_days(trigger.node.properties.cycle.start_date, item.duration_days)",
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, json!("2026-01-31"));
+    }
+
+    #[tokio::test]
+    async fn add_days_binding_supports_negative_offset() {
+        let node = make_test_node_with_properties(
+            "node-123",
+            "cycle",
+            json!({ "cycle": { "start_date": "2026-01-15" } }),
+        );
+        let event = make_node_created_event("node-123", "cycle");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let result = ctx
+            .resolve_binding("add_days(trigger.node.properties.cycle.start_date, -14)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!("2026-01-01"));
+    }
+
+    #[tokio::test]
+    async fn add_days_binding_full_curly_brace_form_preserves_string_type() {
+        // The fast path in `resolve_bindings_in_string` (entire string is a
+        // single `{...}`) must return the resolved value with its own JSON
+        // type, exactly like a bare `{path}` binding does today.
+        let node = make_test_node_with_properties(
+            "node-123",
+            "cycle",
+            json!({ "cycle": { "start_date": "2026-01-01" } }),
+        );
+        let event = make_node_created_event("node-123", "cycle");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let result = resolve_bindings_in_string(
+            "{add_days(trigger.node.properties.cycle.start_date, 14)}",
+            &mut ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, json!("2026-01-15"));
+    }
+
+    #[tokio::test]
+    async fn add_days_binding_mixed_with_literal_text_is_interpolated() {
+        let node = make_test_node_with_properties(
+            "node-123",
+            "cycle",
+            json!({ "cycle": { "start_date": "2026-01-01" } }),
+        );
+        let event = make_node_created_event("node-123", "cycle");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let result = resolve_bindings_in_string(
+            "End date: {add_days(trigger.node.properties.cycle.start_date, 14)}",
+            &mut ctx,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, json!("End date: 2026-01-15"));
+    }
+
+    #[tokio::test]
+    async fn add_days_binding_wrong_arg_count_is_a_clean_error() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx
+            .resolve_binding("add_days(trigger.node.id)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("expects 2 arguments"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn add_days_binding_unresolvable_first_arg_is_a_clean_error_not_a_panic() {
+        // Mirrors the issue's own malformed-input example:
+        // `{add_days(bad.path, "not a number")}` -- neither a broken first
+        // argument nor a non-numeric second argument may panic; both must
+        // surface as an ordinary `Err`.
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx
+            .resolve_binding("add_days(bad.path, \"not a number\")")
+            .await
+            .unwrap_err();
+        assert!(err.contains("unknown binding root: 'bad'"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn add_days_binding_non_numeric_days_arg_is_a_clean_error_not_a_panic() {
+        let node = make_test_node_with_properties(
+            "node-123",
+            "cycle",
+            json!({ "cycle": { "start_date": "2026-01-01" } }),
+        );
+        let event = make_node_created_event("node-123", "cycle");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx
+            .resolve_binding("add_days(trigger.node.properties.cycle.start_date, \"not a number\")")
+            .await
+            .unwrap_err();
+        // "not a number" fails i64::parse, then is tried as a dot-path and
+        // fails there too (not a known binding root) -- a clean Err either
+        // way, never a panic.
+        assert!(err.contains("unknown binding root"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn add_days_binding_date_arg_resolving_to_a_non_string_is_a_clean_error() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        // `trigger.node.version` resolves to a number (1), not a string.
+        let err = ctx
+            .resolve_binding("add_days(trigger.node.version, 5)")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("did not resolve to a string date"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_days_binding_invalid_date_string_is_a_clean_error() {
+        let node = make_test_node_with_properties(
+            "node-123",
+            "cycle",
+            json!({ "cycle": { "start_date": "not-a-date" } }),
+        );
+        let event = make_node_created_event("node-123", "cycle");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx
+            .resolve_binding("add_days(trigger.node.properties.cycle.start_date, 5)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("invalid date string"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn add_days_binding_rejects_a_nested_function_call_argument() {
+        let node = make_test_node_with_properties(
+            "node-123",
+            "cycle",
+            json!({ "cycle": { "start_date": "2026-01-01" } }),
+        );
+        let event = make_node_created_event("node-123", "cycle");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx
+            .resolve_binding("add_days(add_days(trigger.node.properties.cycle.start_date, 1), 2)")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("does not support nested function-call arguments"),
+            "got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unsupported_function_name_is_a_clean_error_not_a_silent_passthrough() {
+        // Proves the function-call surface is a fixed, explicitly-supported
+        // set -- not an arbitrary-dispatch mechanism reachable by any
+        // identifier a play author writes.
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx
+            .resolve_binding("delete_everything(trigger.node.id)")
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("unknown function 'delete_everything'") && err.contains("add_days"),
+            "got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: existing {path} / bare-path behavior is unaffected
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn existing_bracket_action_path_unaffected_by_function_call_parsing() {
+        // "actions[0].result.id" contains neither the function-call shape
+        // NOR a top-level '(' -- confirms the new early-return in
+        // `resolve_binding` is a true no-op for this path shape, which is
+        // the one existing form most visually adjacent to a function call.
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results.push(json!({"id": "abc"}));
+
+        assert_eq!(
+            ctx.resolve_binding("actions[0].result.id").await.unwrap(),
+            json!("abc")
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_plain_path_bindings_are_byte_identical_after_the_change() {
+        // A representative sweep of every existing binding root/shape,
+        // asserting the SAME outcomes the pre-existing tests above already
+        // pin -- explicit regression coverage that add_days support changed
+        // nothing about ordinary `{path}` resolution.
+        let node = make_test_node("node-123", "task");
+        let event = make_property_changed_event(
+            "node-123",
+            "task",
+            vec![PropertyChange {
+                key: "status".to_string(),
+                old_value: Some(json!("open")),
+                new_value: Some(json!("done")),
+            }],
+        );
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results.push(json!({"id": "abc"}));
+        ctx.current_item = Some(json!({"id": "item-1", "name": "First"}));
+
+        assert_eq!(
+            ctx.resolve_binding("trigger.node.id").await.unwrap(),
+            json!("node-123")
+        );
+        assert_eq!(
+            ctx.resolve_binding("trigger.property.old_value")
+                .await
+                .unwrap(),
+            json!("open")
+        );
+        assert_eq!(
+            ctx.resolve_binding("actions[0].result.id").await.unwrap(),
+            json!("abc")
+        );
+        assert_eq!(
+            ctx.resolve_binding("actions.0.result.id").await.unwrap(),
+            json!("abc")
+        );
+        assert_eq!(
+            ctx.resolve_binding("item.name").await.unwrap(),
+            json!("First")
+        );
+        assert_eq!(
+            resolve_bindings_in_string(
+                "Node {trigger.node.id} is type {trigger.node.nodeType}",
+                &mut ctx
+            )
+            .await
+            .unwrap(),
+            json!("Node node-123 is type task")
+        );
     }
 
     // -----------------------------------------------------------------------

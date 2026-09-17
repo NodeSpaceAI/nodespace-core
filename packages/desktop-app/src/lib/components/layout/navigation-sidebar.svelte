@@ -782,7 +782,6 @@
     border: none;
     cursor: pointer;
     padding: 0.5rem;
-    transition: color 0.2s;
     color: hsl(var(--foreground));
     position: absolute;
     left: 0.5rem; /* Fixed 8px from left edge */
@@ -810,9 +809,6 @@
     gap: 0.75rem;
     height: 40px; /* Fixed height for consistent alignment */
     box-sizing: border-box;
-    transition:
-      background-color 0.2s,
-      color 0.2s;
     color: hsl(var(--muted-foreground));
     position: relative;
     text-align: left;
@@ -867,7 +863,6 @@
   .nav-label {
     font-size: 0.875rem;
     white-space: nowrap;
-    transition: opacity 0.2s ease-out;
   }
 
   /* Collections trigger styling - full-width hover to match nav items */
@@ -887,9 +882,6 @@
     text-align: left;
     height: 40px;
     box-sizing: border-box;
-    transition:
-      background-color 0.2s,
-      color 0.2s;
   }
 
   .sidebar-expanded :global([data-collapsible-trigger]:hover) {
@@ -926,9 +918,6 @@
     padding: 0 1rem 0 2.25rem; /* Reduced by 1.25rem (20px) since expand-area now provides that space */
     font-size: 0.8125rem;
     color: hsl(var(--muted-foreground));
-    transition:
-      background-color 0.2s,
-      color 0.2s;
   }
 
   .collection-item:hover {
@@ -1039,7 +1028,6 @@
     width: 12px;
     height: 12px;
     flex-shrink: 0;
-    transition: transform 0.15s ease-out;
   }
 
   .expand-chevron.rotate-90 {
@@ -1071,9 +1059,6 @@
     color: hsl(var(--muted-foreground));
     font-size: 0.8125rem;
     width: 100%;
-    transition:
-      background-color 0.2s,
-      color 0.2s;
   }
 
   .schema-type-item:hover {
@@ -1130,9 +1115,6 @@
     color: hsl(var(--muted-foreground));
     font-size: 0.8125rem;
     width: 100%;
-    transition:
-      background-color 0.2s,
-      color 0.2s;
   }
 
   .ai-chat-item:hover:not(:disabled) {

@@ -3814,7 +3814,9 @@ mod tests {
         let create_req = Request::new(crate::nodespace::CreateNodeRequest {
             id: Some(chat_id.to_string()),
             node_type: "ai-chat".to_string(),
-            content: String::new(),
+            // An ai-chat node must carry a title; this test is about the
+            // version-conflict payload, not titling, so the sentinel does.
+            content: "Untitled".to_string(),
             parent_id: None,
             collections: Vec::new(),
             collection_ids: Vec::new(),

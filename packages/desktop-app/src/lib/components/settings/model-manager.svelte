@@ -589,7 +589,6 @@
     height: 100%;
     border-radius: 9999px;
     background: hsl(var(--primary));
-    transition: width 0.2s ease;
   }
 
   .progress-label {
@@ -730,7 +729,6 @@
     font-size: 0.8125rem;
     font-weight: 500;
     cursor: pointer;
-    transition: background 0.15s, opacity 0.15s;
     white-space: nowrap;
   }
 
@@ -768,15 +766,8 @@
     background: hsl(var(--background));
     cursor: pointer;
     color: hsl(var(--muted-foreground));
-    transition: color 0.15s;
   }
 
   .refresh-btn:hover:not(:disabled) { color: hsl(var(--foreground)); }
   .refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
-  .spinning { animation: spin 1s linear infinite; }
 </style>

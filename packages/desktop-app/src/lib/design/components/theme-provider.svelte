@@ -16,10 +16,6 @@
     resetThemeToSystem
   } from '../theme.js';
 
-  // Props
-  export let enableTransitions = true;
-  export let transitionDuration = 300;
-
   // Theme context for child components
   let themeContext: {
     theme: 'light' | 'dark';
@@ -47,44 +43,12 @@
   // Initialize theme system on mount
   onMount(() => {
     cleanupTheme = initializeTheme();
-
-    // Add transition styles if enabled
-    if (enableTransitions) {
-      const style = document.createElement('style');
-      style.id = 'nodespace-theme-transitions';
-      style.textContent = `
-        * {
-          transition: 
-            color ${transitionDuration}ms cubic-bezier(0.4, 0, 0.2, 1),
-            background-color ${transitionDuration}ms cubic-bezier(0.4, 0, 0.2, 1),
-            border-color ${transitionDuration}ms cubic-bezier(0.4, 0, 0.2, 1),
-            box-shadow ${transitionDuration}ms cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        
-        /* Prevent transitions during initial load */
-        .no-transitions * {
-          transition: none !important;
-        }
-      `;
-      document.head.appendChild(style);
-
-      // Remove no-transitions class after initial render
-      setTimeout(() => {
-        document.body.classList.remove('no-transitions');
-      }, 100);
-    }
   });
 
   // Cleanup on destroy
   onDestroy(() => {
     if (cleanupTheme) {
       cleanupTheme();
-    }
-
-    // Remove transition styles
-    const transitionStyle = document.getElementById('nodespace-theme-transitions');
-    if (transitionStyle) {
-      transitionStyle.remove();
     }
   });
 </script>
@@ -107,11 +71,6 @@
     /* Font smoothing for better text rendering */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-
-    /* Ensure theme transitions apply to all children */
-    transition:
-      background-color 300ms cubic-bezier(0.4, 0, 0.2, 1),
-      color 300ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   /* Ensure proper stacking context */

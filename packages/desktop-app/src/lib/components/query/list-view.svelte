@@ -85,7 +85,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    transition: color 0.15s ease, background-color 0.15s ease;
   }
 
   .list-row:hover {

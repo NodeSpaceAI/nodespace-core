@@ -203,7 +203,6 @@
     font-size: 0.75rem;
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.2s ease;
     text-transform: lowercase;
     z-index: 5;
   }
@@ -251,7 +250,6 @@
     padding: 0.125rem; /* 2px padding for clickable area */
     cursor: pointer;
     border-radius: 0.125rem; /* 2px border radius */
-    transition: opacity 0.15s ease-in-out; /* Smooth fade in/out */
     pointer-events: auto; /* Ensure chevron always receives pointer events */
     flex-shrink: 0;
     width: 1.25rem; /* Fixed 20px to match circle size */
@@ -274,7 +272,6 @@
     width: 16px;
     height: 16px;
     fill: hsl(var(--node-text) / 0.5);
-    transition: fill 0.15s ease;
   }
 
   .chevron-icon:hover svg {

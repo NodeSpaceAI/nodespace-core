@@ -8416,4 +8416,57 @@ mod tests {
             "the in-tx path must store the declaration's reverse name, not NULL"
         );
     }
+
+    /// An ai-chat node's title requirement holds on update, not just on
+    /// create.
+    ///
+    /// The behavior registry is consulted on every write path, so a node
+    /// cannot be created with a title and then have it stripped. Without this
+    /// the invariant would be a creation-time formality rather than a
+    /// contract: a client could blank a chat's title in a second call and
+    /// leave it in the state validation exists to prevent — one that reads as
+    /// untitled to a human but does not match the sentinel the background
+    /// titler claims, so it could never be auto-titled either.
+    #[tokio::test]
+    async fn ai_chat_title_requirement_holds_on_update() {
+        let (service, _temp) = create_test_service().await;
+
+        let node = Node::new(
+            "ai-chat".to_string(),
+            "Deployment runbook".to_string(),
+            json!({ "ai-chat": { "messages": [] } }),
+        );
+        let node_id = service.create_node(node).await.unwrap();
+        let created = service.get_node(&node_id).await.unwrap().unwrap();
+
+        for blank in ["", "   ", "\u{200B}"] {
+            let err = service
+                .update_node(
+                    &node_id,
+                    created.version,
+                    NodeUpdate::new().with_content(blank.to_string()),
+                )
+                .await
+                .expect_err("blanking an ai-chat title must be rejected on update");
+            assert!(
+                err.to_string().contains("content"),
+                "expected a missing-content error, got: {err}"
+            );
+        }
+
+        // The stored title is untouched by the rejected updates.
+        let after = service.get_node(&node_id).await.unwrap().unwrap();
+        assert_eq!(after.content, "Deployment runbook");
+
+        // A real retitle, and a reset to the sentinel, both still go through —
+        // the latter being what the UI sends when a user clears the title.
+        service
+            .update_node(
+                &node_id,
+                after.version,
+                NodeUpdate::new().with_content("Untitled".to_string()),
+            )
+            .await
+            .expect("resetting to the sentinel must be accepted");
+    }
 }

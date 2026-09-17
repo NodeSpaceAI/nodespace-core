@@ -2,64 +2,9 @@
   "readme": "Known design-token violations, recorded so the quality gate fails only on NEW drift. Do not add entries by hand and do not re-run --update to silence a new violation: fix it instead. Regenerate only after legitimately removing violations, which shrinks this list. Entries are keyed by file, rule and message with no line number, so edits elsewhere in a file do not churn them — but renaming a file does report its violations as both added and fixed, and legitimately needs a re-record. See packages/desktop-app/stylelint.config.js.",
   "violations": [
     {
-      "file": "src/app.css",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/app.css",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/app.css",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
       "file": "src/lib/components/agent/pty-terminal.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"hsl(222 47% 8%)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/autocomplete-modal.svelte",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/autocomplete-modal.svelte",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/autocomplete-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"modalSlideIn 0.2s ease-out\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/autocomplete-modal.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"overlayFadeIn 0.15s ease-out\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/chat/chat-input.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/chat/chat-message.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s, border-color 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/chat/chat-message.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"color 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/chat/chat-message.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"transform 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
     },
     {
       "file": "src/lib/components/collaboration/collaboration-locked.svelte",
@@ -85,21 +30,6 @@
       "file": "src/lib/components/collaboration/invitations-inbox.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"none\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/conflict-toast.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"toast-in 0.2s ease-out\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
     },
     {
       "file": "src/lib/components/delete-confirmation-modal.svelte",
@@ -128,128 +58,13 @@
     },
     {
       "file": "src/lib/components/layout/collection-sub-panel.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/collection-sub-panel.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/collection-sub-panel.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/collection-sub-panel.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"transform 250ms ease-out,\n      opacity 250ms ease-out\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/collection-sub-panel.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"2px 0 8px rgba(0, 0, 0, 0.1)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/database-switcher.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      border-color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/navigation-sidebar.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/navigation-sidebar.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/navigation-sidebar.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/navigation-sidebar.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/navigation-sidebar.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.2s,\n      color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/navigation-sidebar.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"color 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/navigation-sidebar.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.2s ease-out\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/navigation-sidebar.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"transform 0.15s ease-out\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/pane-manager.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/tab-system.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"all 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/tab-system.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"all 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/tab-system.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease-in-out\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/layout/tab-system.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/node-tree.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"all var(--ns-duration-fast, 0.15s) var(--ns-easing-easeInOut, ease-in-out)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/node-tree.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"margin-left var(--ns-duration-normal, 0.3s) var(--ns-easing-easeInOut, ease-in-out)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/node-tree.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"transform var(--ns-duration-fast) var(--ns-easing-easeInOut)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
     },
     {
       "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
       "rule": "declaration-property-value-allowed-list",
       "text": "Disallowed shadow \"0 12px 40px hsl(0 0% 0% / 0.15)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
     },
     {
       "file": "src/lib/components/onboarding/onboarding-wizard.svelte",
@@ -275,66 +90,6 @@
       "file": "src/lib/components/pro-relogin-modal.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background-color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/query/kanban-view.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease, border-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/query/list-view.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"color 0.15s ease, background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/query/query-editor.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/query/query-editor.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/query/query-editor.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"color 0.15s ease, border-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/query/query-editor.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/references/base-node-reference.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"all 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/references/node-ref-preview.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity var(--transition-fast, 120ms) ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/settings/model-manager.svelte",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/settings/model-manager.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background 0.15s, opacity 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/settings/model-manager.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"color 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/settings/model-manager.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"width 0.2s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
     },
     {
       "file": "src/lib/components/settings/model-manager.svelte",
@@ -377,44 +132,9 @@
       "text": "Raw color literal \"hsl(45 93% 47%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
-      "file": "src/lib/components/settings/model-manager.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"spin 1s linear infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/status-bar.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"width 0.2s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
       "file": "src/lib/components/subtree-access-denied-modal.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"rgba(0, 0, 0, 0.5)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/ui/node-autocomplete/node-autocomplete.svelte",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/ui/slash-command-dropdown/slash-command-dropdown.svelte",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/ui/slash-command-dropdown/slash-command-dropdown.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"spin 1s linear infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
     },
     {
       "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
@@ -440,31 +160,6 @@
       "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"hsl(0 72% 51%)\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"spin 0.75s linear infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-node-viewer.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"typing-bounce 1.2s ease-in-out infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"border-color 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
     },
     {
       "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
@@ -517,66 +212,6 @@
       "text": "Raw color literal \"hsl(38 92% 50% / 0.1)\" in \"background\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
     },
     {
-      "file": "src/lib/components/viewers/ai-chat-pty-session.svelte",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"spin 0.7s linear infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/collection-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/collection-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/collection-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease,\n      color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/collection-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/date-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"all 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/query-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease, border-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/query-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease, color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/query-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/query-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/components/viewers/query-node-viewer.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/design/components/backlinks-panel.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.2s\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
       "file": "src/lib/design/components/code-block-node.svelte",
       "rule": "declaration-property-value-allowed-list",
       "text": "Disallowed shadow \"0 4px 6px rgba(0, 0, 0, 0.1)\". DESIGN.md allows a shadow only on floating surfaces, with the value \"0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)\"; modal panels use none. (declaration-property-value-allowed-list)"
@@ -585,61 +220,6 @@
       "file": "src/lib/design/components/code-block-node.svelte",
       "rule": "declaration-property-value-disallowed-list",
       "text": "Raw color literal \"0 4px 6px rgba(0, 0, 0, 0.1)\" in \"box-shadow\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/design/components/node-row.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"fill 0.15s ease\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/design/components/node-row.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity 0.15s ease-in-out\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/design/components/theme-provider.svelte",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"background-color 300ms cubic-bezier(0.4, 0, 0.2, 1),\n      color 300ms cubic-bezier(0.4, 0, 0.2, 1)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "at-rule-disallowed-list",
-      "text": "Disallowed at-rule \"@keyframes\" (at-rule-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"all var(--transition-fast)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"color var(--transition-fast), text-decoration-color var(--transition-fast)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-allowed-list",
-      "text": "Unauthorized transition on \"transition\": \"opacity var(--transition-fast)\". DESIGN.md permits only \"width 0.25s ease-out\" (sidebar) and \"opacity 0.2s ease\" (code-block buttons). (declaration-property-value-allowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"none\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"pulse 2s infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Unauthorized animation on \"animation\": \"shimmer 1.5s infinite\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
     },
     {
       "file": "src/routes/+layout.svelte",

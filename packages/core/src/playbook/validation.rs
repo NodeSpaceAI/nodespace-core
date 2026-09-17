@@ -18,7 +18,9 @@
 //! (not short-circuited) so the caller can present every issue at once.
 
 use crate::models::SchemaNode;
-use crate::playbook::actions::action_list_signature;
+use crate::playbook::actions::{
+    action_list_signature, collect_binding_templates_in_value, parse_function_call,
+};
 use crate::playbook::path_extractor;
 use crate::playbook::types::{
     ActionType, GraphEventType, ParsedAction, ParsedRule, ParsedTrigger, RuleClass,
@@ -872,17 +874,23 @@ async fn validate_relationship_action(
 ///   Every current action type is a local write, so this passes today; it is a
 ///   forward-looking gate that rejects any future non-local action type (LLM,
 ///   network, PTY, external) added to an invariant rule.
-/// - **Deterministic** — fully enforced against the only surface that can
-///   express non-determinism today: wall-clock CEL functions in the rule's
-///   conditions (`today`/`days_since`/`days_until`, see
-///   [`crate::playbook::cel::NON_DETERMINISTIC_FUNCTIONS`]). Action params are
-///   pure `{binding}` data references (see `actions.rs`), so no random-value
-///   or wall-clock function is reachable from them, and conditions remain the
-///   complete non-deterministic surface. Action params do carry one bounded
-///   function-call FORM today — `sum(collection, field)` / `count(collection)`
-///   (`actions::parse_aggregate_call`) — but it reduces already-resolved graph
-///   state with no wall-clock or random input, so it needs no entry in
-///   `NON_DETERMINISTIC_FUNCTIONS` and this check's scope is unchanged by it.
+/// - **Deterministic** — enforced against BOTH surfaces that can express
+///   non-determinism: wall-clock CEL functions in the rule's conditions, and
+///   the fixed function-call form action-value bindings support (e.g.
+///   `{add_days(item.start_date, 14)}` — see `actions.rs`'s
+///   `parse_function_call`/`BindingContext::resolve_function_call`). Both are
+///   checked against the SAME allow-list,
+///   [`crate::playbook::cel::NON_DETERMINISTIC_FUNCTIONS`] (`today`/
+///   `days_since`/`days_until` today). The three functions currently
+///   registered for action values — `add_days`, and the collection-reducing
+///   `sum`/`count` (`BindingContext::resolve_sum_call`/`resolve_count_call`)
+///   — all read no wall-clock or random input and are correctly absent from
+///   that list, so this check is a no-op today — but it is what keeps that
+///   true: it is what would catch a FUTURE non-deterministic function added
+///   to `resolve_function_call`'s match arm and used inside an invariant
+///   rule's action params, rather than leaving that an unenforced
+///   convention. No random-value function is registered anywhere, so these
+///   two surfaces remain the complete non-deterministic surface.
 /// - **Same-graph scope** — enforced by requiring every action *target* node id
 ///   (`node_id`, `source_id`, `target_id`) to be a `{binding}` derived from the
 ///   trigger node or a prior action, rejecting a literal/arbitrary node id.
@@ -995,6 +1003,48 @@ fn validate_invariant_eligibility(
                     errors.push(PlayValidationError::InvariantNonDeterministic {
                         function,
                         location: format!("rule[{}].condition[{}]", rule_idx, cond_idx),
+                    });
+                }
+            }
+        }
+    }
+
+    // Deterministic — no wall-clock reads in action-value function-call
+    // bindings either (e.g. `{add_days(item.start_date, 14)}`). Mirrors the
+    // conditions check above, against the SAME allow-list, but over a
+    // different syntax: action params are `{path}`-interpolation strings
+    // (`actions.rs`), not CEL expressions, so this cannot reuse
+    // `path_extractor::extract_function_names` (which parses real CEL) --
+    // it scans for the fixed function-call FORM `resolve_function_call`
+    // recognizes instead. See this function's doc for why this check exists
+    // even though it currently always passes.
+    for (action_idx, action) in rule.actions.iter().enumerate() {
+        let mut templates = Vec::new();
+        collect_binding_templates_in_value(&action.params, &mut templates);
+        for template in templates {
+            if let Some((function, _args)) = parse_function_call(&template) {
+                if crate::playbook::cel::NON_DETERMINISTIC_FUNCTIONS.contains(&function) {
+                    errors.push(PlayValidationError::InvariantNonDeterministic {
+                        function: function.to_string(),
+                        location: format!("rule[{}].action[{}]", rule_idx, action_idx),
+                    });
+                }
+            }
+        }
+
+        // `for_each` is a RAW (unbraced) binding path -- `execute_actions`
+        // resolves it via the exact same `BindingContext::resolve_binding`
+        // as any `{path}` param value (see `actions.rs`), so a function-call
+        // form is reachable there too, without wrapping braces. Check it
+        // directly with `parse_function_call` rather than
+        // `extract_binding_templates` (which requires `{...}` wrapping and
+        // would miss this).
+        if let Some(for_each) = &action.for_each {
+            if let Some((function, _args)) = parse_function_call(for_each) {
+                if crate::playbook::cel::NON_DETERMINISTIC_FUNCTIONS.contains(&function) {
+                    errors.push(PlayValidationError::InvariantNonDeterministic {
+                        function: function.to_string(),
+                        location: format!("rule[{}].action[{}].for_each", rule_idx, action_idx),
                     });
                 }
             }
@@ -2598,6 +2648,165 @@ mod tests {
                 vec![],
             );
             assert!(eligibility_errors(&rule).is_empty());
+        }
+
+        #[test]
+        fn invariant_non_deterministic_action_value_function_call_rejected() {
+            // A function-call-shaped action-value binding is checked by NAME
+            // against the SAME non-deterministic allow-list conditions use,
+            // even though `today` isn't itself a function
+            // `resolve_function_call` implements for action values today —
+            // this check is about catching the SHAPE by name (forward-looking,
+            // per this function's doc), not about whether the runtime
+            // resolver would currently accept the call.
+            let action = ParsedAction {
+                action_type: ActionType::UpdateNode,
+                params: json!({
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "custom:stamp": "{today()}" }
+                }),
+                for_each: None,
+            };
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![action],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantNonDeterministic { function, location }
+                        if function == "today" && location == "rule[0].action[0]"
+                )),
+                "expected non-deterministic 'today' error for the action-value \
+                 binding, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_deterministic_action_value_function_call_accepted() {
+            // add_days is genuinely deterministic and correctly absent from
+            // NON_DETERMINISTIC_FUNCTIONS — its function-call binding form
+            // must NOT be flagged.
+            let action = ParsedAction {
+                action_type: ActionType::UpdateNode,
+                params: json!({
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "custom:end_date": "{add_days(trigger.node.id, 14)}" }
+                }),
+                for_each: None,
+            };
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![action],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                !errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::InvariantNonDeterministic { .. })),
+                "add_days is deterministic and must not be flagged, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_plain_binding_action_value_has_no_determinism_error() {
+            // A regression guard: an ordinary `{path}` action-value binding
+            // (no function-call form at all) must not somehow be swept up by
+            // the new scan — it isn't a function call, so `parse_function_call`
+            // must return `None` for it and the loop must skip it entirely.
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![update_action("{trigger.node.id}")],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                !errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::InvariantNonDeterministic { .. })),
+                "a plain {{path}} binding must never be flagged as non-deterministic, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_non_deterministic_for_each_function_call_rejected() {
+            // `for_each` is a RAW (unbraced) binding path — `execute_actions`
+            // resolves it through the exact same `resolve_binding` as any
+            // `{path}` param value, so a function-call form is reachable
+            // there too, without `{...}` wrapping (see `actions.rs`'s
+            // `execute_actions`, which calls
+            // `ctx.resolve_binding(for_each_path)` directly on the stored
+            // string). This must be checked independently of the params scan
+            // above, which only looks inside `{...}`-wrapped text.
+            let action = ParsedAction {
+                action_type: ActionType::UpdateNode,
+                params: json!({
+                    "node_id": "{item.id}",
+                    "properties": { "custom:tag": "v" }
+                }),
+                for_each: Some("today()".to_string()),
+            };
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![action],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantNonDeterministic { function, location }
+                        if function == "today" && location == "rule[0].action[0].for_each"
+                )),
+                "expected non-deterministic 'today' error for the for_each \
+                 binding, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_plain_for_each_path_has_no_determinism_error() {
+            // Regression guard, matching the real `for_each` convention
+            // (bare dot-path, no braces — see `for_each: Some("trigger.node.tasks"...)`
+            // in `playbook::tests`): an ordinary for_each path must not be
+            // flagged just because it's now scanned.
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![ParsedAction {
+                    action_type: ActionType::UpdateNode,
+                    params: json!({
+                        "node_id": "{item.id}",
+                        "properties": { "custom:tag": "v" }
+                    }),
+                    for_each: Some("trigger.node.tasks".to_string()),
+                }],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                !errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::InvariantNonDeterministic { .. })),
+                "a plain for_each dot-path must never be flagged as \
+                 non-deterministic, got {:?}",
+                errors
+            );
         }
 
         // -- Same-graph scope --

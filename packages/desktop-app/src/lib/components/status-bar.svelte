@@ -1,6 +1,5 @@
 <script lang="ts">
   import { statusBar } from '$lib/stores/status-bar.svelte';
-  import { fade } from 'svelte/transition';
 
   const state = $derived(statusBar.state);
 </script>
@@ -10,7 +9,6 @@
     class="status-bar"
     class:success={state.type === 'success'}
     class:error={state.type === 'error'}
-    transition:fade={{ duration: 150 }}
   >
     {#if state.message}
       <span class="message" title={state.message}>{state.message}</span>
@@ -72,6 +70,5 @@
   .progress-fill {
     height: 100%;
     background: hsl(var(--primary));
-    transition: width 0.2s ease;
   }
 </style>

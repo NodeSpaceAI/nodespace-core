@@ -515,7 +515,6 @@
     color: hsl(var(--muted-foreground));
     cursor: pointer;
     opacity: 0; /* Hidden by default, shown on tab hover */
-    transition: opacity 0.15s ease-in-out;
     border-radius: 2px; /* Subtle rounding to soften corners */
     z-index: 100; /* Ensure it's above drag handles */
     pointer-events: auto; /* Always receive pointer events */
@@ -615,14 +614,12 @@
   /* Visual feedback when dragging - reduced opacity on source tab */
   .tab-item.tab-item--dragging {
     opacity: 0.4;
-    transition: opacity 0.15s ease;
   }
 
   /* Drop target indicator - thicker left border */
   .tab-item--drop-target {
     border-left: 3px solid hsl(var(--primary)) !important;
     background-color: hsl(var(--primary) / 0.1);
-    transition: all 0.15s ease;
   }
 
   /* First tab drop target - show border on right instead */
@@ -637,7 +634,6 @@
     height: 40px;
     flex-shrink: 0;
     position: relative;
-    transition: all 0.15s ease;
   }
 
   /* Show visual indicator when hovering over end zone */

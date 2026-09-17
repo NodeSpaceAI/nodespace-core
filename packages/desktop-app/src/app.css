@@ -300,18 +300,6 @@
 
 /* NodeSpace Design System Components - from patterns.html */
 
-/* Blinking cursor animation for demo */
-@keyframes blink {
-  0%,
-  50% {
-    opacity: 1;
-  }
-  51%,
-  100% {
-    opacity: 0;
-  }
-}
-
 /* Perfect Node Alignment System - CSS Variables Architecture */
 .node-viewer {
   /* Dynamic Circle Positioning System - All values configurable from here */
@@ -335,7 +323,6 @@
   position: relative;
   cursor: pointer;
   border-radius: 0.25rem;
-  transition: background-color 0.15s ease;
   /* Dynamic padding calculation: circle-offset + circle-diameter + circle-text-gap */
   padding-left: calc(
     var(--circle-offset, 22px) + var(--circle-diameter, 20px) + var(--circle-text-gap, 8px)
@@ -601,7 +588,6 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  transition: background-color 0.15s ease;
 }
 
 .dropdown-item:hover {
@@ -704,7 +690,7 @@
   font-size: 0.75rem;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s ease !important;
   width: 8rem;
   box-sizing: border-box;
   text-align: left;
@@ -728,7 +714,7 @@
   font-size: 0.75rem;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.2s ease !important;
   text-transform: lowercase;
 }
 

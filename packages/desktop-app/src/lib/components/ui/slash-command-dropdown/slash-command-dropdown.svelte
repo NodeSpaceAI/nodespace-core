@@ -143,7 +143,6 @@
           border: 2px solid hsl(var(--border));
           border-top: 2px solid hsl(var(--primary));
           border-radius: 50%;
-          animation: spin 1s linear infinite;
         "
         ></div>
         <span>Loading commands...</span>
@@ -251,14 +250,3 @@
   </div>
 {/if}
 
-<style>
-  /* Spin animation for loading */
-  @keyframes spin {
-    0% {
-      transform: rotate(0deg);
-    }
-    100% {
-      transform: rotate(360deg);
-    }
-  }
-</style>

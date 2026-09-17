@@ -1799,6 +1799,26 @@ impl NodeBehavior for AiChatNodeBehavior {
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
+        // A chat's title is its content, and every client must supply one.
+        //
+        // Omitting a title is an error rather than a request for automatic
+        // titling: the background titler claims a chat only when its content
+        // is the literal `"Untitled"` sentinel, so opting in is an explicit
+        // act a client performs by writing that value. Were empty content
+        // accepted here, any client that created an ai-chat node without a
+        // title — over the generic `create_node` RPC, say — would be silently
+        // opted into titling behaviour scoped to the desktop UI.
+        //
+        // Uses `is_empty_or_whitespace` rather than `trim()`: a title made of
+        // zero-width characters is not a title, and would otherwise pass here
+        // and then fail to match the sentinel, leaving a chat that looks
+        // blank and can never be auto-titled.
+        if is_empty_or_whitespace(&node.content) {
+            return Err(NodeValidationError::MissingField(
+                "content (chat title; use \"Untitled\" to request automatic titling)".to_string(),
+            ));
+        }
+
         // Validate provider if present
         if let Some(provider) = node.properties.get("provider") {
             if let Some(provider_str) = provider.as_str() {
@@ -4833,9 +4853,40 @@ mod tests {
         );
         assert!(behavior.validate(&node).is_ok());
 
-        // Minimal valid node (no properties)
-        let minimal = Node::new("ai-chat".to_string(), "".to_string(), json!({}));
+        // Minimal valid node: a title and nothing else. Properties are all
+        // optional; content is not.
+        let minimal = Node::new("ai-chat".to_string(), "Untitled".to_string(), json!({}));
         assert!(behavior.validate(&minimal).is_ok());
+    }
+
+    /// A chat must carry a title. Omitting one is an error rather than a
+    /// request for automatic titling — the titler claims only the explicit
+    /// `"Untitled"` sentinel, so a client that writes nothing would otherwise
+    /// be silently opted into desktop-UI titling behaviour.
+    #[test]
+    fn test_ai_chat_node_rejects_empty_content() {
+        let behavior = AiChatNodeBehavior;
+
+        for blank in ["", "   ", "\t\n", "\u{200B}"] {
+            let node = Node::new("ai-chat".to_string(), blank.to_string(), json!({}));
+            let err = behavior
+                .validate(&node)
+                .expect_err("an ai-chat node without a title must be rejected");
+            assert!(
+                matches!(err, NodeValidationError::MissingField(ref f) if f.contains("content")),
+                "expected a missing-content error, got {err:?}"
+            );
+            // The message must name the opt-in, so a client hitting this knows
+            // what to send instead.
+            assert!(
+                format!("{err}").contains("Untitled"),
+                "the error must name the \"Untitled\" opt-in, got {err}"
+            );
+        }
+
+        // The sentinel itself is a title, and is accepted.
+        let opted_in = Node::new("ai-chat".to_string(), "Untitled".to_string(), json!({}));
+        assert!(behavior.validate(&opted_in).is_ok());
     }
 
     #[test]

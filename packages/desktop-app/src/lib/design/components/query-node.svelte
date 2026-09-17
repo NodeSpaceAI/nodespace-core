@@ -138,7 +138,7 @@
 		/* width: 100% handled by parent .node-content-wrapper flex child rule */
 	}
 
-	/* Open button (top-right, appears on hover) - matches task/code block pattern */
+	/* Open button (top-right, appears on hover) */
 	.query-open-button {
 		position: absolute;
 		top: 0.25rem;
@@ -151,7 +151,6 @@
 		font-size: 0.75rem;
 		cursor: pointer;
 		opacity: 0;
-		transition: opacity 0.2s ease;
 		text-transform: lowercase;
 		z-index: 5; /* Below popovers (1001) but above node content */
 	}

@@ -822,15 +822,6 @@
     height: 6px;
     border-radius: 50%;
     background: hsl(var(--muted-foreground));
-    animation: typing-bounce 1.2s ease-in-out infinite;
-  }
-
-  .typing-dot:nth-child(2) {
-    animation-delay: 0.15s;
-  }
-
-  .typing-dot:nth-child(3) {
-    animation-delay: 0.3s;
   }
 
   .cancel-turn-btn {
@@ -847,19 +838,6 @@
   .cancel-turn-btn:hover {
     border-color: hsl(var(--destructive));
     color: hsl(var(--destructive));
-  }
-
-  @keyframes typing-bounce {
-    0%,
-    60%,
-    100% {
-      transform: translateY(0);
-      opacity: 0.4;
-    }
-    30% {
-      transform: translateY(-4px);
-      opacity: 1;
-    }
   }
 
   .message-cap-nudge {
@@ -924,7 +902,6 @@
     border: 2.5px solid hsl(var(--muted-foreground) / 0.3);
     border-top-color: hsl(var(--primary));
     border-radius: 50%;
-    animation: spin 0.75s linear infinite;
   }
 
   .ensure-model-text {
@@ -943,9 +920,4 @@
     font-size: 0.8125rem;
     color: hsl(var(--muted-foreground));
   }
-
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
-
 </style>

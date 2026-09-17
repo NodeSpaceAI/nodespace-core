@@ -697,7 +697,6 @@
     height: 6px;
     border-radius: 50%;
     background: hsl(var(--muted-foreground) / 0.3);
-    transition: background 0.15s;
   }
 
   .step-dot.active {
@@ -825,7 +824,6 @@
     font-size: 0.875rem;
     font-weight: 500;
     cursor: pointer;
-    transition: opacity 0.15s;
   }
 
   .primary-button:hover:not(:disabled) {

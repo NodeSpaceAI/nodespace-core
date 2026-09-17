@@ -154,7 +154,6 @@
     align-items: flex-start;
     gap: var(--ns-spacing-2, 0.5rem);
     margin-bottom: var(--ns-spacing-2, 0.5rem);
-    transition: margin-left var(--ns-duration-normal, 0.3s) var(--ns-easing-easeInOut, ease-in-out);
     /* Pass indentSize as CSS custom property for chevron positioning */
     --indent-size: var(--current-indent-size, 4);
   }
@@ -170,7 +169,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all var(--ns-duration-fast, 0.15s) var(--ns-easing-easeInOut, ease-in-out);
     color: var(--ns-color-text-secondary);
   }
 
@@ -192,7 +190,6 @@
   .ns-node-tree__expand-icon {
     display: block;
     line-height: 1;
-    transition: transform var(--ns-duration-fast) var(--ns-easing-easeInOut);
   }
 
   .ns-node-tree__content {
@@ -232,18 +229,6 @@
     .ns-node-tree__expand-spacer {
       width: 18px;
       height: 18px;
-    }
-  }
-
-  /* Accessibility improvements */
-  @media (prefers-reduced-motion: reduce) {
-    .ns-node-tree__item {
-      transition: none;
-    }
-
-    .ns-node-tree__expand-btn,
-    .ns-node-tree__expand-icon {
-      transition: none;
     }
   }
 
