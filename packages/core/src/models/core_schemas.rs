@@ -99,16 +99,24 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     protection: SchemaProtectionLevel::User,
                     core_values: Some(vec![
                         EnumValue {
-                            value: "low".to_string(),
-                            label: "Low".to_string(),
+                            value: "highest".to_string(),
+                            label: "Highest".to_string(),
+                        },
+                        EnumValue {
+                            value: "high".to_string(),
+                            label: "High".to_string(),
                         },
                         EnumValue {
                             value: "medium".to_string(),
                             label: "Medium".to_string(),
                         },
                         EnumValue {
-                            value: "high".to_string(),
-                            label: "High".to_string(),
+                            value: "low".to_string(),
+                            label: "Low".to_string(),
+                        },
+                        EnumValue {
+                            value: "lowest".to_string(),
+                            label: "Lowest".to_string(),
                         },
                     ]),
                     user_values: Some(vec![]),
@@ -117,9 +125,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: Some(true),
                     default: None,
                     description: Some(
-                        "Relative urgency for triage and sorting (low, medium, high), \
-                         independent of status. Not a deadline — use due_date for that. \
-                         Absent means no priority has been assigned."
+                        "Relative urgency for triage and sorting (highest, high, medium, low, \
+                         lowest), independent of status. Not a deadline — use due_date for \
+                         that. Absent means no priority has been assigned."
                             .to_string(),
                     ),
                     item_type: None,
@@ -1865,6 +1873,61 @@ mod tests {
                 parsed.is_core(),
                 "task.status's core_values entry '{}' does not parse to a named TaskStatus \
                  variant (got TaskStatus::User(_)) — add a matching variant in task_node.rs \
+                 or remove the stray core_values entry.",
+                value
+            );
+        }
+    }
+
+    /// The `TaskPriority` sibling of the status drift check above.
+    ///
+    /// `task.priority` has the same two-sided consistency requirement: a named
+    /// variant with no `core_values` entry is a value the type accepts but the
+    /// schema rejects, and a `core_values` entry with no named variant parses
+    /// to `TaskPriority::User(_)` — validating fine while reporting
+    /// `is_core() == false`, so it is silently treated as a user extension of
+    /// the very field that declares it.
+    #[test]
+    fn test_task_priority_variants_match_core_values_bidirectionally() {
+        use crate::models::TaskPriority;
+
+        let schemas = get_core_schemas();
+        let task = schemas.iter().find(|s| s.id == "task").unwrap();
+        let priority_field = task
+            .get_field("priority")
+            .expect("task schema has priority");
+        let core_value_strings: Vec<&str> = priority_field
+            .core_values
+            .as_ref()
+            .expect("priority field has core_values")
+            .iter()
+            .map(|ev| ev.value.as_str())
+            .collect();
+
+        let named_variants = [
+            TaskPriority::Highest,
+            TaskPriority::High,
+            TaskPriority::Medium,
+            TaskPriority::Low,
+            TaskPriority::Lowest,
+        ];
+        for variant in &named_variants {
+            assert!(
+                core_value_strings.contains(&variant.as_str()),
+                "TaskPriority::{:?} (\"{}\") has no matching entry in task.priority's \
+                 core_values ({:?}) — add it to core_schemas.rs's seed definition.",
+                variant,
+                variant.as_str(),
+                core_value_strings
+            );
+        }
+
+        for value in &core_value_strings {
+            let parsed: TaskPriority = value.parse().expect("TaskPriority::from_str is infallible");
+            assert!(
+                parsed.is_core(),
+                "task.priority's core_values entry '{}' does not parse to a named TaskPriority \
+                 variant (got TaskPriority::User(_)) — add a matching variant in task_node.rs \
                  or remove the stray core_values entry.",
                 value
             );

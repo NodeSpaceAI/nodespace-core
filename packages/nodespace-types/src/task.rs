@@ -55,10 +55,12 @@ impl<'de> Deserialize<'de> for TaskStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TaskPriority {
-    Low,
+    Highest,
+    High,
     #[default]
     Medium,
-    High,
+    Low,
+    Lowest,
     User(String),
 }
 
@@ -67,9 +69,11 @@ impl FromStr for TaskPriority {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "low" => Self::Low,
-            "medium" => Self::Medium,
+            "highest" => Self::Highest,
             "high" => Self::High,
+            "medium" => Self::Medium,
+            "low" => Self::Low,
+            "lowest" => Self::Lowest,
             other => Self::User(other.to_string()),
         })
     }
@@ -78,9 +82,11 @@ impl FromStr for TaskPriority {
 impl TaskPriority {
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
+            Self::Highest => "highest",
             Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::Lowest => "lowest",
             Self::User(s) => s.as_str(),
         }
     }

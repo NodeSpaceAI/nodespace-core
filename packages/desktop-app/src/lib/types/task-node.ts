@@ -39,11 +39,11 @@ export type TaskStatus = CoreTaskStatus | string;
  * Core task priority values (user-extensible)
  * Rust backend now uses string enum format
  */
-export type CoreTaskPriority = 'low' | 'medium' | 'high';
+export type CoreTaskPriority = 'highest' | 'high' | 'medium' | 'low' | 'lowest';
 
 /**
  * Task priority - string enum format
- * Core values: 'low', 'medium', 'high'
+ * Core values: 'highest', 'high', 'medium', 'low', 'lowest'
  * User-defined values allowed via schema extension
  */
 export type TaskPriority = CoreTaskPriority | string;
@@ -295,7 +295,7 @@ export const TaskNodeHelpers = {
    * Check if priority is a core (protected) priority
    */
   isCorePriority(priority: TaskPriority): priority is CoreTaskPriority {
-    return ['low', 'medium', 'high'].includes(priority as string);
+    return ['highest', 'high', 'medium', 'low', 'lowest'].includes(priority as string);
   },
 
   /**
@@ -325,9 +325,11 @@ export const TaskNodeHelpers = {
    */
   getPriorityDisplayName(priority: TaskPriority): string {
     const coreDisplayNames: Record<CoreTaskPriority, string> = {
-      low: 'Low',
+      highest: 'Highest',
+      high: 'High',
       medium: 'Medium',
-      high: 'High'
+      low: 'Low',
+      lowest: 'Lowest'
     };
 
     if (this.isCorePriority(priority)) {

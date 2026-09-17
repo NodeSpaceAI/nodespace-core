@@ -641,7 +641,7 @@ impl TaskNodeBehavior {
         // The Rust type system guarantees it's a valid status value
         //
         // Priority is already type-safe via TaskPriority enum - no validation needed
-        // Core values (low, medium, high) are enforced by the enum
+        // Core values (highest, high, medium, low, lowest) are enforced by the enum
         // User-defined values (TaskPriority::User) are allowed by schema extension
         //
         // Note: Empty content is allowed for tasks - users can add description later
@@ -3213,9 +3213,22 @@ mod tests {
         // This is graceful degradation - it passes validation
         assert!(behavior.validate(&bad_status_type).is_ok());
 
-        // Priority is now a string enum (low, medium, high) with user-extensibility
-        // Legacy integers are converted: 1=high, 2=medium, 3+=low
+        // Priority is now a string enum (highest, high, medium, low, lowest) with user-extensibility
         // All values pass validation - unknown values become TaskPriority::User(value)
+        let priority_highest = Node::new(
+            "task".to_string(),
+            "Task".to_string(),
+            json!({"task": {"priority": "highest"}}),
+        );
+        assert!(behavior.validate(&priority_highest).is_ok());
+
+        let priority_lowest = Node::new(
+            "task".to_string(),
+            "Task".to_string(),
+            json!({"task": {"priority": "lowest"}}),
+        );
+        assert!(behavior.validate(&priority_lowest).is_ok());
+
         let priority_low = Node::new(
             "task".to_string(),
             "Task".to_string(),

@@ -181,22 +181,28 @@ impl<'de> Deserialize<'de> for TaskStatus {
 ///
 /// Represents the priority levels of a task node.
 /// Values use lowercase format for consistency across all layers:
-/// - "low" - Low priority
-/// - "medium" - Medium priority (default)
+/// - "highest" - Highest priority
 /// - "high" - High priority
+/// - "medium" - Medium priority (default)
+/// - "low" - Low priority
+/// - "lowest" - Lowest priority
 /// - User-defined priorities via schema extension (e.g., "critical", "urgent")
 ///
 /// Core priorities are strongly typed; user-defined priorities use `User(String)`.
 /// This aligns with the schema system's `core_values` / `user_values` model.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TaskPriority {
-    /// Low priority
-    Low,
+    /// Highest priority
+    Highest,
+    /// High priority
+    High,
     /// Medium priority (default)
     #[default]
     Medium,
-    /// High priority
-    High,
+    /// Low priority
+    Low,
+    /// Lowest priority
+    Lowest,
     /// User-defined priority (extended via schema)
     User(String),
 }
@@ -206,9 +212,11 @@ impl FromStr for TaskPriority {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "low" => Ok(Self::Low),
-            "medium" => Ok(Self::Medium),
+            "highest" => Ok(Self::Highest),
             "high" => Ok(Self::High),
+            "medium" => Ok(Self::Medium),
+            "low" => Ok(Self::Low),
+            "lowest" => Ok(Self::Lowest),
             // Any other value is treated as user-defined
             other => Ok(Self::User(other.to_string())),
         }
@@ -219,9 +227,11 @@ impl TaskPriority {
     /// Convert priority to string representation
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
+            Self::Highest => "highest",
             Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::Lowest => "lowest",
             Self::User(s) => s.as_str(),
         }
     }
@@ -339,7 +349,7 @@ pub struct TaskNode {
     #[serde(default)]
     pub status: TaskStatus,
 
-    /// Task priority (strongly typed enum: low, medium, high)
+    /// Task priority (strongly typed enum: highest, high, medium, low, lowest)
     #[serde(default)]
     pub priority: Option<TaskPriority>,
 
@@ -660,7 +670,7 @@ pub struct TaskNodeUpdate {
     /// Update task priority (task property)
     /// - `None` - Don't change
     /// - `Some(None)` - Clear priority
-    /// - `Some(Some(p))` - Set to priority p (low, medium, high, or user-defined)
+    /// - `Some(Some(p))` - Set to priority p (highest, high, medium, low, lowest, or user-defined)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<Option<TaskPriority>>,
 
@@ -896,9 +906,11 @@ mod roundtrip_proptests {
     fn task_priority() -> impl Strategy<Value = Option<TaskPriority>> {
         prop_oneof![
             Just(None),
-            Just(Some(TaskPriority::Low)),
-            Just(Some(TaskPriority::Medium)),
+            Just(Some(TaskPriority::Highest)),
             Just(Some(TaskPriority::High)),
+            Just(Some(TaskPriority::Medium)),
+            Just(Some(TaskPriority::Low)),
+            Just(Some(TaskPriority::Lowest)),
             "[a-z][a-z_]{0,15}".prop_map(|s| Some(TaskPriority::User(s))),
         ]
     }
