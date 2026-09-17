@@ -4246,7 +4246,17 @@ impl AgentToolExecutor for GraphToolExecutor {
         let ns = self.node_service.clone()?;
         match self.valid_task_statuses(&ns).await {
             Ok(values) if !values.is_empty() => Some(values),
-            Ok(_) => None,
+            Ok(_) => {
+                // An empty `values` array on a Core-protected field is a more
+                // alarming state than a failed read: something wrote it, and
+                // `add_field_values` is append-only. Warn rather than fall
+                // through silently — the seed enum still applies.
+                tracing::warn!(
+                    "task.status declares an empty value list; update_task_status keeps its \
+                     seed enum"
+                );
+                None
+            }
             Err(e) => {
                 tracing::warn!(
                     error = %e,
@@ -7594,13 +7604,56 @@ mod tests {
     /// until the first `add_field_values` install — and a stale list is worse
     /// than none, because the agent trusts it.
     ///
-    /// Matches the enumeration as a contiguous phrase rather than any single
-    /// value: `done` and `open` legitimately appear in this guidance as
-    /// English words, and the seed values are still fine to name in the tool
-    /// definition (which is rewritten at runtime) and as CLI help examples.
+    /// Keys on the PROPERTY being protected — an enumeration of the seed
+    /// vocabulary appearing in one sentence — rather than on one serialization
+    /// of it. An earlier version matched the single contiguous string
+    /// `"open, in_progress, done, cancelled"`, which let both
+    /// `open/in_progress/done/cancelled` and a reordered
+    /// `open, done, in_progress, cancelled` through: a future author writing
+    /// the list fresh in their own phrasing is the realistic regression, and
+    /// it is exactly the case a literal match misses.
+    ///
+    /// The threshold is three of the four, per sentence. A single value cannot
+    /// be the trigger because `open` and `done` are ordinary English words in
+    /// this corpus ("mark it done", "an open question"). `in_progress` and
+    /// `cancelled` are not, so requiring three co-occurring in one sentence
+    /// makes an accidental trip very unlikely while catching every delimiter,
+    /// ordering and layout. Scoped per sentence rather than per document so a
+    /// long skill that legitimately says "done" in one paragraph and
+    /// "in_progress" in another is not flagged.
+    ///
+    /// Naming the seed values remains fine outside skill guidance — the tool
+    /// definition is rewritten at runtime by `with_live_task_statuses`, and CLI
+    /// help presents them as examples rather than an exhaustive set.
     #[test]
     fn skill_guidance_does_not_hardcode_the_task_status_vocabulary() {
-        let enumeration = "open, in_progress, done, cancelled";
+        /// Underscored values are matched as substrings; the two that are also
+        /// English words are matched only where a value list would put them,
+        /// i.e. adjacent to a delimiter rather than mid-prose.
+        fn seed_values_in(sentence: &str) -> Vec<&'static str> {
+            let lowered = sentence.to_lowercase();
+            let mut found = Vec::new();
+            for value in ["in_progress", "cancelled"] {
+                if lowered.contains(value) {
+                    found.push(value);
+                }
+            }
+            // `open`/`done` only count when delimited — `(open,` or `, done)`
+            // or `open/` — never as the bare English word.
+            for value in ["open", "done"] {
+                let delimited = lowered.split(|c: char| {
+                    c == ',' || c == '/' || c == '(' || c == ')' || c == '|' || c == ';'
+                });
+                if delimited
+                    .map(str::trim)
+                    .any(|segment| segment == value || segment == format!("`{value}`"))
+                {
+                    found.push(value);
+                }
+            }
+            found
+        }
+
         let mut guidance: Vec<(String, String)> = vec![
             (
                 "TASK_STATUS_DEDICATED_VERB.imperative".to_string(),
@@ -7627,13 +7680,19 @@ mod tests {
         }
 
         for (name, text) in guidance {
-            assert!(
-                !text.contains(enumeration),
-                "{name} hardcodes task.status's value list (\"{enumeration}\"). It will go stale \
-                 the moment a methodology bundle extends the vocabulary via add_field_values \
-                 (ADR-076). Point at update_task_status's own status enum instead — \
-                 with_live_task_statuses rewrites it from the stored schema each turn."
-            );
+            for sentence in text.split(['.', '\n']) {
+                let found = seed_values_in(sentence);
+                assert!(
+                    found.len() < 3,
+                    "{name} hardcodes task.status's value list — {found:?} appear together in \
+                     one sentence:\n\n  {}\n\nThat list goes stale the moment a methodology \
+                     bundle extends the vocabulary via add_field_values (ADR-076), and a stale \
+                     list is worse than none because the agent trusts it. Point at \
+                     update_task_status's own status enum instead — with_live_task_statuses \
+                     rewrites it from the stored schema each turn.",
+                    sentence.trim()
+                );
+            }
         }
     }
 
