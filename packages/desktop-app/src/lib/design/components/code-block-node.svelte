@@ -579,9 +579,9 @@
   /* Copied state - green background with success color */
   :global(.code-block-node-wrapper .code-copy-button.copied) {
     opacity: 1;
-    background: hsl(var(--success, 142 76% 36%));
-    color: hsl(var(--success-foreground, 0 0% 100%));
-    border-color: hsl(var(--success, 142 76% 36%));
+    background: hsl(var(--success));
+    color: hsl(var(--success-foreground));
+    border-color: hsl(var(--success));
   }
 
   /* Syntax highlighted code */
@@ -608,12 +608,12 @@
 
   /* Mermaid error state */
   :global(.code-block-node-wrapper .mermaid-error) {
-    color: hsl(var(--destructive, 0 84% 60%));
+    color: hsl(var(--destructive));
     font-size: 0.8125rem;
     padding: 0.5rem;
-    border: 1px solid hsl(var(--destructive, 0 84% 60%) / 30%);
+    border: 1px solid hsl(var(--destructive) / 30%);
     border-radius: var(--radius);
-    background: hsl(var(--destructive, 0 84% 60%) / 5%);
+    background: hsl(var(--destructive) / 5%);
   }
 
   /* Loading state */

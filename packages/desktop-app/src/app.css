@@ -9,6 +9,15 @@
     /* NodeSpace Design System - Figma canonical tokens (NS-theme/shadcn-based) */
 
     /* Color system - light mode */
+    /*
+      --primary is the brand teal and is deliberately NOT tuned for body text:
+      it is 3.67:1 on --background in light mode, which clears AA for large text
+      (18pt+) and UI components such as buttons, focus rings and icons, but not
+      the 4.5:1 required for small body text. Darkening it to reach 4.5:1 would
+      change the brand color app-wide, which is a design decision rather than an
+      accessibility fix. Use --foreground for small text; reach for --primary at
+      UI sizes.
+    */
     --primary: 174 67% 35%;
     --primary-foreground: 166 89% 96%;
 
@@ -38,19 +47,26 @@
     --input: 240 6% 90%;
     --ring: 174 67% 35%;
 
-    --destructive: 345 77% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --destructive-light: 357 74% 76%;
+    /*
+      State colors are sized to clear WCAG AA (4.5:1) as TEXT, which is the
+      strictest way they are used. The binding case is text on a 0.1 tint of its
+      own hue (see status-bar.svelte): the tint darkens the backdrop in the same
+      hue, so it is harder than plain --background. Light-mode values are chosen
+      against that case, which leaves solid fills comfortably legible too.
 
-    --success: 97 45% 46%;
-    --success-foreground: 0 0% 100%;
-    --success-light: 96 64% 69%;
+      --*-foreground is the text color for a SOLID fill of the matching token.
+      It is white here and near-black under .dark — the inverse of the usual
+      intuition, because the light-mode fills are dark and the dark-mode fills
+      are bright. A single value cannot serve both.
+    */
+    --destructive: 345 77% 46%; /* 5.36:1 on --background, 4.55:1 on a 0.1 tint */
+    --destructive-foreground: 0 0% 100%; /* 5.36:1 on the fill */
 
-    --warning: 38 97% 49%;
-    --warning-foreground: 0 0% 100%;
-    --warning-light: 43 100% 78%;
+    --success: 97 45% 32%; /* 5.35:1 on --background, 4.69:1 on a 0.1 tint */
+    --success-foreground: 0 0% 100%; /* 5.35:1 on the fill */
 
-    --info-light: 213 82% 80%;
+    --warning: 38 97% 30%; /* 5.26:1 on --background, 4.60:1 on a 0.1 tint */
+    --warning-foreground: 0 0% 100%; /* 5.26:1 on the fill */
 
     --radius: 0.5rem;
 
@@ -103,9 +119,13 @@
       defined once here and NOT redefined under .dark. The diagnostic panel is a
       fixed-position monospace developer tool that stays a dark console in both
       themes; mapping it to --background/--foreground would turn it white in
-      light mode and destroy the console affordance. Status colors inside that
-      panel still use the semantic tokens (--success/--destructive/--warning),
-      which stay legible against these surfaces in either theme.
+      light mode and destroy the console affordance.
+
+      Because this surface never lightens, the theme-tracking state tokens do
+      NOT work on it unmodified: the light-theme values are tuned for a white
+      backdrop and land at 2.86-2.92:1 here. Any component built on --console-*
+      must pin --success/--warning/--destructive/--primary to their .dark
+      values, as .diagnostic-panel does.
     */
     --console-surface: 0 0% 11.8%; /* Panel background */
     --console-surface-raised: 0 0% 14.5%; /* Header, toolbar, log entries */
@@ -146,19 +166,20 @@
     --input: 0 0% 100% / 0.15;
     --ring: 173 50% 41%;
 
+    /*
+      Dark-mode fills are bright, so their foreground is near-black rather than
+      the white used in light mode — white lands at 2.00-2.86:1 on these fills.
+      The state colors themselves already clear AA as text here (6.27-8.98:1 on
+      --background) and are unchanged.
+    */
     --destructive: 0 100% 70%;
-    --destructive-foreground: 0 0% 100%;
-    --destructive-light: 354 100% 59%;
+    --destructive-foreground: 240 11% 4%; /* 6.95:1 on the fill */
 
     --success: 96 96% 37%;
-    --success-foreground: 0 0% 100%;
-    --success-light: 101 73% 35%;
+    --success-foreground: 240 11% 4%; /* 7.81:1 on the fill */
 
     --warning: 38 100% 51%;
-    --warning-foreground: 0 0% 100%;
-    --warning-light: 38 98% 47%;
-
-    --info-light: 213 68% 57%;
+    --warning-foreground: 240 11% 4%; /* 9.96:1 on the fill */
 
     /* Sidebar tokens - Figma canonical */
     --sidebar-background: 240 4% 10%;
@@ -666,7 +687,7 @@
 /* Copied state - green background with success color */
 .code-block-node-wrapper .code-copy-button.copied {
   opacity: 1;
-  background: hsl(var(--success, 142 76% 36%));
-  color: hsl(var(--success-foreground, 0 0% 100%));
-  border-color: hsl(var(--success, 142 76% 36%));
+  background: hsl(var(--success));
+  color: hsl(var(--success-foreground));
+  border-color: hsl(var(--success));
 }

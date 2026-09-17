@@ -726,9 +726,13 @@
     justify-content: center;
     gap: 1rem;
     padding: 0.5rem 1rem;
-    background: hsl(var(--destructive) / 0.15);
+    background: hsl(var(--destructive) / 0.1);
     border-bottom: 1px solid hsl(var(--destructive) / 0.4);
-    color: hsl(var(--destructive-foreground));
+    /* The state color itself, not --destructive-foreground: that token is the
+       text color for a SOLID fill, and on a tint it renders near-invisible —
+       1.18:1 in light, 1.26:1 in dark. Against the tint, --destructive is
+       4.55:1 light / 5.52:1 dark. */
+    color: hsl(var(--destructive));
     font-size: 0.875rem;
     z-index: 100;
   }

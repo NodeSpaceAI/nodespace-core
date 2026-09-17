@@ -94,7 +94,7 @@
       <div
         class={feedback.ok
           ? 'mb-4 rounded-md border border-green-500/25 bg-green-500/10 px-3.5 py-2.5 text-sm leading-relaxed text-green-700'
-          : 'border-destructive/30 bg-destructive/10 text-destructive-foreground mb-4 rounded-md border px-3.5 py-2.5 text-sm leading-relaxed'}
+          : 'border-destructive/30 bg-destructive/10 text-destructive mb-4 rounded-md border px-3.5 py-2.5 text-sm leading-relaxed'}
       >
         {feedback.message}
       </div>
