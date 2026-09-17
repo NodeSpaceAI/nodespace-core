@@ -1174,7 +1174,7 @@ async fn two_non_deterministic_functions_in_the_same_condition_produce_separate_
 }
 
 // ---------------------------------------------------------------------------
-// sum(collection, field) aggregate binding call — core#2639
+// sum(collection, field) aggregate binding call
 //
 // Covers the acceptance criterion "Aggregation correctly re-runs when any
 // contributing item changes (not just once at collection-resolution time)"

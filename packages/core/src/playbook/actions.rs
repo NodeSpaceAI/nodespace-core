@@ -554,7 +554,8 @@ fn json_kind(value: &Value) -> &'static str {
 /// collection (a Cycle's assigned Issues, a Project's Tasks, ...) while still
 /// giving a huge/pathological collection a fixed, fast failure instead of an
 /// unbounded reduction cost -- the same "fixed cost regardless of table size"
-/// reasoning as `TITLE_STEM_FALLBACK_CANDIDATE_CAP` (core#2676).
+/// reasoning as `TITLE_STEM_FALLBACK_CANDIDATE_CAP` in
+/// `db::sqlite_store::mod`.
 const AGGREGATE_CALL_MAX_ITEMS: usize = 10_000;
 
 /// Which reduction an [`AggregateCall`] performs.
