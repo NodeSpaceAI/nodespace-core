@@ -488,6 +488,156 @@ fn reject_reserved_relationship_names(
     Ok(())
 }
 
+/// Snapshot of every schema's `extends` edge, for chain walking.
+///
+/// Resolution needs a [`ParentLookup`](extends_chain::ParentLookup) that can
+/// answer repeatedly while walking, but the store's accessors are `async` and
+/// a walk is not. Loading the whole parent map once up front sidesteps that
+/// without an `async` recursion: the map is small (one entry per *extending*
+/// schema, and extension is rare), and validation already reads every schema
+/// it touches.
+///
+/// `pending` lets a caller overlay an edge that is not committed yet — the
+/// schema being created, or a re-target about to replace an existing edge —
+/// so the same snapshot serves both handlers.
+async fn load_parent_map(
+    node_service: &Arc<NodeService>,
+) -> Result<std::collections::HashMap<String, String>, MarkdownError> {
+    let schemas = node_service.get_all_schemas().await.map_err(|e| {
+        MarkdownError::internal_error(format!("Failed to load schemas for extends resolution: {e}"))
+    })?;
+
+    Ok(schemas
+        .iter()
+        .filter_map(|schema| {
+            extends_chain::declared_parent(schema).map(|parent| (schema.id.clone(), parent))
+        })
+        .collect())
+}
+
+/// Validate a pending `extends` target: it must exist, must be a schema, and
+/// must not close a cycle.
+///
+/// Shared by `create_schema` and `update_schema` because an existing schema's
+/// `extends` target can be re-pointed after creation, and a re-target can
+/// introduce a cycle exactly as an initial declaration can.
+async fn validate_extends_target(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+    parent_id: &str,
+) -> Result<(), MarkdownError> {
+    if parent_id.trim().is_empty() {
+        return Err(MarkdownError::invalid_params(
+            "\"extends\" must name the schema id of the type being specialized, e.g. \
+             \"extends\": \"task\"."
+                .to_string(),
+        ));
+    }
+
+    // A self-extend is a cycle, but reporting it as one ("a extends a") reads
+    // as a puzzle. Name it directly.
+    if parent_id == schema_id {
+        return Err(MarkdownError::invalid_params(format!(
+            "Schema '{schema_id}' cannot extend itself."
+        )));
+    }
+
+    // Existence, mirroring `validate_relationship_targets_exist`'s check. A
+    // dangling parent would produce a schema whose effective field set can
+    // never resolve.
+    let parent_exists = node_service
+        .get_schema_node(parent_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!("Failed to check extends target '{parent_id}': {e}"))
+        })?
+        .is_some();
+
+    if !parent_exists {
+        return Err(MarkdownError::invalid_params(format!(
+            "\"extends\" target '{parent_id}' does not exist. Create that schema first, or \
+             name an existing one."
+        )));
+    }
+
+    let parent_map = load_parent_map(node_service).await?;
+    let lookup = move |id: &str| parent_map.get(id).cloned();
+
+    if let Some(cycle) = extends_chain::detect_cycle(schema_id, parent_id, &lookup) {
+        return Err(MarkdownError::invalid_params(format!(
+            "\"extends\" would create a cycle: {cycle}. A schema cannot transitively extend \
+             itself."
+        )));
+    }
+
+    Ok(())
+}
+
+/// Reject a field this schema would inherit.
+///
+/// Composition is additive only (ADR-078): an extending schema may add fields
+/// but never redeclare one an ancestor already declares, with any attribute
+/// differing or not. Checked against the **full resolved effective set**, not
+/// just the parent's own directly-declared fields, so a collision two levels
+/// up is caught as readily as one with the immediate parent.
+async fn validate_no_field_redeclaration(
+    node_service: &Arc<NodeService>,
+    parent_id: &str,
+    own_fields: &[SchemaField],
+) -> Result<(), MarkdownError> {
+    let inherited = resolve_effective_fields(node_service, parent_id).await?;
+
+    for field in own_fields {
+        if let Some(existing) = inherited.iter().find(|f| f.name == field.name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Field '{}' is already declared by '{}' (inherited via extends) and cannot be \
+                 redeclared — composition is additive only, with no override or narrowing. \
+                 The inherited field is type '{}'. Either drop it from this schema and use the \
+                 inherited one, or give this field a different name.",
+                field.name, parent_id, existing.field_type,
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve a schema's effective field set: its own fields plus every
+/// ancestor's, nearest scope first.
+///
+/// This is what validation, defaulting and schema comprehension read instead
+/// of a schema's own directly-declared `fields`. Parent schemas are read live
+/// on every call rather than cached, so a value appended to an ancestor's enum
+/// field via `add_field_values` is visible here on the next resolution with no
+/// write to the descendant.
+pub async fn resolve_effective_fields(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+) -> Result<Vec<SchemaField>, MarkdownError> {
+    let parent_map = load_parent_map(node_service).await?;
+    let lookup = {
+        let parent_map = parent_map.clone();
+        move |id: &str| parent_map.get(id).cloned()
+    };
+    let chain = extends_chain::resolve_ancestor_chain(schema_id, &lookup);
+
+    let mut chain_fields: Vec<Vec<SchemaField>> = Vec::with_capacity(chain.len());
+    for id in &chain {
+        let schema = node_service.get_schema_node(id).await.map_err(|e| {
+            MarkdownError::internal_error(format!("Failed to resolve schema '{id}': {e}"))
+        })?;
+        // A missing mid-chain schema means the edge set references something
+        // deleted. Contribute nothing rather than failing the read: the
+        // descendant's own fields still resolve, and schema deletion with a
+        // live extends chain is explicitly out of scope (ADR-078).
+        if let Some(schema) = schema {
+            chain_fields.push(schema.fields);
+        }
+    }
+
+    Ok(extends_chain::flatten_chain_fields(&chain_fields))
+}
+
 /// Validate the `edgeFields` declared on each relationship.
 ///
 /// Mirrors the node-side `validate_schema_field` enum rule (an enum must
@@ -859,6 +1009,17 @@ pub async fn handle_create_schema(
     validate_edge_field_declarations(&relationships)?;
     validate_relationship_targets_exist(node_service, &relationships, pending_schema_id).await?;
 
+    // `extends` (ADR-078). Validated before the schema node exists, like the
+    // relationship checks above, so a bad parent can't leave a half-created
+    // schema behind. Cycle detection is trivially satisfied at creation time
+    // (nothing extends a schema that doesn't exist yet) but runs anyway: the
+    // same helper serves `update_schema`, where re-targeting can close a loop.
+    let extends_parent = params.extends.as_deref().map(str::trim).filter(|p| !p.is_empty());
+    if let Some(parent_id) = extends_parent {
+        validate_extends_target(node_service, &schema_id, parent_id).await?;
+        validate_no_field_redeclaration(node_service, parent_id, &stored_fields).await?;
+    }
+
     // Check if schema already exists — return a clear error so the agent knows
     // to use create_node instead of retrying create_schema. The rejection
     // carries the existing type's real, rendered definition: without it the
@@ -914,6 +1075,15 @@ pub async fn handle_create_schema(
     // no description subtree, semantically undiscoverable via embedding
     // search until someone re-ran update_schema with a description. Both are
     // now impossible: any failure here rolls back the whole create.
+    // Synthesize the `extends` edge and persist it alongside the caller's own
+    // declarations. It has to ride in the same list rather than take a second
+    // write: `set_schema_relationships` is a full replace keyed by name, so a
+    // separate call would clobber whichever set went first.
+    let mut relationships = relationships;
+    if let Some(parent_id) = extends_parent {
+        relationships.push(extends_chain::extends_declaration(parent_id));
+    }
+
     let relationships_for_tx = relationships.clone();
     let description_text_for_tx = description_text.clone();
     let node_service_for_tx = Arc::clone(node_service);
@@ -1551,6 +1721,39 @@ pub async fn handle_update_schema(
         validate_relationship_targets_exist(node_service, add_rels, None).await?;
         relationships_added = add_rels.len();
         relationships.extend(add_rels.clone());
+    }
+
+    // `extends` re-target (ADR-078). Absent leaves the current edge alone,
+    // matching `title_template`'s posture — there is no way to clear one.
+    //
+    // Validation is the same as creation's, because the hazards are: a
+    // dangling parent, and a cycle. Re-targeting is in fact the *only* way to
+    // close a cycle, since at creation time nothing can yet extend the schema
+    // being created.
+    if let Some(ref new_parent) = params.extends {
+        let new_parent = new_parent.trim();
+        validate_extends_target(node_service, &params.schema_id, new_parent).await?;
+
+        // Redeclaration is checked against the schema's own fields as they
+        // stand after this call's add/remove/rename, not as they were loaded —
+        // a call that both re-parents and drops the colliding field is legal.
+        validate_no_field_redeclaration(node_service, new_parent, &fields).await?;
+
+        let replacing = relationships
+            .iter_mut()
+            .find(|r| r.name == crate::models::schema::EXTENDS_RELATIONSHIP);
+        match replacing {
+            Some(existing) => {
+                if existing.target_type.as_deref() != Some(new_parent) {
+                    *existing = extends_chain::extends_declaration(new_parent);
+                    relationships_added += 1;
+                }
+            }
+            None => {
+                relationships.push(extends_chain::extends_declaration(new_parent));
+                relationships_added += 1;
+            }
+        }
     }
 
     // Resolve title_template: use new value if provided, otherwise keep existing
