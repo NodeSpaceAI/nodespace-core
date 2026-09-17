@@ -2064,7 +2064,18 @@ mod tests {
     /// caller shape through the real entry point (not a hand-simulated
     /// race) and asserts every concurrent opener succeeds and shares one
     /// handle.
-    #[tokio::test]
+    ///
+    /// `flavor = "multi_thread"` is required, not cosmetic: libsql's local
+    /// connection runs synchronously (see `sqlite_store/mod.rs`'s
+    /// `test_concurrent_writers_retry_instead_of_erroring_on_busy` comment),
+    /// so on the default current-thread runtime, `tokio::spawn`ed tasks never
+    /// truly interleave — each one runs to completion before the next is
+    /// polled, so every caller after the first trivially hits the
+    /// already-open fast path regardless of whether the per-id lock does
+    /// anything at all. Under that runtime this test passes identically with
+    /// the per-id lock removed entirely, silently providing zero regression
+    /// coverage for the exact race it is named for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_get_or_open_of_the_same_new_id_converges_on_one_assembly() {
         let (mgr, dir, _registry_path) = temp_manager().await;
         let db_path = dir.path().join("default.db");
