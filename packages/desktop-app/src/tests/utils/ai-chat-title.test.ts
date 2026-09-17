@@ -8,7 +8,8 @@ import { describe, it, expect } from 'vitest';
 import {
   aiChatDisplayTitle,
   resolveChatTitleCommit,
-  UNTITLED_CHAT_LABEL
+  UNTITLED_CHAT_LABEL,
+  UNTITLED_CHAT_TITLE
 } from '$lib/utils/ai-chat-title';
 
 describe('aiChatDisplayTitle', () => {
@@ -33,6 +34,23 @@ describe('aiChatDisplayTitle', () => {
     // Trimming is a decision for the caller writing the value, not for display —
     // this only decides whether to show the placeholder.
     expect(aiChatDisplayTitle('  Padded  ')).toBe('  Padded  ');
+  });
+});
+
+describe('UNTITLED_CHAT_TITLE', () => {
+  it('is the exact sentinel the daemon tests for', () => {
+    // This string crosses a language boundary: the frontend writes it at
+    // creation (schema-authoring) and the daemon's `is_untitled` tests for it
+    // (packages/daemon/src/services/ai_chat_title.rs). A drift between the two
+    // disables background titling silently — every chat would look
+    // user-titled — so both sides pin the literal.
+    expect(UNTITLED_CHAT_TITLE).toBe('Untitled');
+  });
+
+  it('is distinct from the display-only placeholder', () => {
+    // One is stored, the other is only rendered. Collapsing them would make a
+    // chat displaying "Untitled chat" look claimable to the titler.
+    expect(UNTITLED_CHAT_TITLE).not.toBe(UNTITLED_CHAT_LABEL);
   });
 });
 

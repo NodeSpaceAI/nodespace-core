@@ -7,12 +7,42 @@
  * (`navigation-sidebar.svelte`) — and both must agree on what "no title yet"
  * reads as, so the fallback lives here once rather than as two copies that
  * could drift.
+ *
+ * "No title yet" is the literal string `UNTITLED_CHAT_TITLE`, persisted at
+ * creation. It is a real stored value, not a display-only placeholder: the
+ * daemon's background titler uses it as the sentinel that says "this title is
+ * still up for grabs" and refuses to write over anything else, so a user's own
+ * title is never clobbered. See `is_untitled` in
+ * `packages/daemon/src/services/ai_chat_title.rs`, which must agree with this
+ * constant exactly.
  */
 
 /**
- * Placeholder shown wherever an ai-chat node's `content` is empty or
- * whitespace-only — a fresh chat before the user renames it, or before
- * background titling (once it lands) fills it in.
+ * The title a new ai-chat node is created with, and the only value the
+ * background titler will overwrite.
+ *
+ * Kept byte-identical to `UNTITLED_CHAT_TITLE` in
+ * `packages/daemon/src/services/ai_chat_title.rs` — the frontend writes it and
+ * the daemon tests it, so a drift between the two would silently disable
+ * automatic titling (every chat would look user-titled).
+ *
+ * Note the split of responsibility: this end only *writes* the sentinel.
+ * Deciding whether a chat is still eligible for titling is the daemon's alone
+ * (`is_untitled`), so there is deliberately no frontend predicate mirroring it
+ * — a second implementation of the guard could drift from the one that
+ * actually gates the write, which is worse than not having it.
+ */
+export const UNTITLED_CHAT_TITLE = 'Untitled';
+
+/**
+ * Display fallback for an ai-chat node whose `content` is empty or
+ * whitespace-only.
+ *
+ * Distinct from {@link UNTITLED_CHAT_TITLE}: that is what gets *stored*, this
+ * is only what gets *shown* when nothing is stored at all. Both exist because
+ * `content` can still be empty — a chat created before titling landed, or one
+ * the user renamed to blank — and "Untitled chat" reads better in a sidebar
+ * than an empty row.
  */
 export const UNTITLED_CHAT_LABEL = 'Untitled chat';
 
