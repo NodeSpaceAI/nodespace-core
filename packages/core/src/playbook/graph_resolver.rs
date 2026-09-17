@@ -141,13 +141,22 @@ impl GraphResolver {
             // for a Cycle with zero or exactly one Issue, an entirely
             // ordinary and common state.
             //
+            // Only checked for 0/1 current matches: for N>=2 the fallback
+            // below already returns Collection(nodes) when `is_last` (and
+            // Missing otherwise) regardless of declared cardinality, so the
+            // outcome is identical either way -- skipping the schema lookup
+            // there avoids an extra DB round trip on the common multi-match
+            // path, where it can't change anything.
+            //
             // Walking FURTHER into a many-relationship (any current count)
             // past this segment stays unsupported by this simple dot-path
             // walk, same as the existing N>=2 case already enforced -- this
             // only changes the TERMINAL-segment shape.
-            if self
-                .is_declared_many_relationship(&current_node.node_type, segment)
-                .await
+            let ambiguous_match_count = matches!(&related, Ok(nodes) if nodes.len() <= 1);
+            if ambiguous_match_count
+                && self
+                    .is_declared_many_relationship(&current_node.node_type, segment)
+                    .await
             {
                 let result = match related {
                     Ok(nodes) => ResolvedValue::Collection(nodes),
@@ -250,12 +259,15 @@ impl GraphResolver {
     /// Whether `segment` is declared as a "many" cardinality relationship on
     /// `node_type`'s schema (schema node id == node_type, per this
     /// codebase's convention). Only called when a relationship fetch already
-    /// returned zero rows -- distinguishes "no such relationship" from "a
-    /// declared many-relationship with zero current matches", which the raw
-    /// row count alone can't tell apart (see the call site's doc for why
-    /// that distinction matters). Any lookup failure (schema not found,
-    /// service error) conservatively resolves to `false` -- i.e. Missing,
-    /// today's existing behavior -- rather than guessing.
+    /// returned zero or exactly one row -- the only counts where cardinality
+    /// can change the resolved shape (see the call site's doc: for two or
+    /// more rows the outcome is identical regardless of declared
+    /// cardinality, so callers skip this lookup there). Distinguishes "no
+    /// such relationship" from "a declared many-relationship with zero or
+    /// one current matches", which the raw row count alone can't tell apart.
+    /// Any lookup failure (schema not found, service error) conservatively
+    /// resolves to `false` -- i.e. today's existing row-count-only
+    /// behavior -- rather than guessing.
     async fn is_declared_many_relationship(&self, node_type: &str, segment: &str) -> bool {
         matches!(
             self.node_service.get_schema_node(node_type).await,
