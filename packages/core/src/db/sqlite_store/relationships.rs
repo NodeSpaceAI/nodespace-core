@@ -4,6 +4,52 @@ use crate::models::schema::{
     SchemaRelationship, BUILTIN_RELATIONSHIPS, BUILTIN_RELATIONSHIP_NAMES,
 };
 
+/// The recursive `extends` closure query, for a given endpoint direction.
+///
+/// **`INDEXED BY` is load-bearing, not decoration.** This is the same hazard
+/// [`MENTION_CONTAINERS_QUERY`] documents: left to its own planning, SQLite
+/// picks `idx_rel_type (relationship_type)` as the driving index for the
+/// recursive step and scans every edge of that type per level, rather than
+/// using `idx_rel_out`/`idx_rel_in`'s `(endpoint, relationship_type)`
+/// composite to look up only the frontier's edges — the difference measured
+/// at 8ms vs 393ms there.
+///
+/// That query solves it with a scalar correlated subquery, which works
+/// because a `has_child` step has exactly one parent. A subtype step fans out
+/// (a parent may be extended by many schemas), so it has to return a set,
+/// which a scalar subquery cannot express — and rewriting the join with the
+/// CTE first does *not* help, since SQLite reorders joins freely. `INDEXED
+/// BY` is what actually pins it, verified by
+/// `extends_closure_query_drives_off_the_endpoint_index` in this file's
+/// `mod tests`, which binds this exact text. Do not remove the hint.
+///
+/// `UNION` (not `UNION ALL`) terminates a cycle by discarding the repeat, so
+/// a corrupt edge set yields a finite result rather than looping to the depth
+/// cap.
+///
+/// Extracted as a function so the query-plan test binds the production text
+/// rather than a copy that can drift out of sync.
+fn extends_closure_sql(step_from: &str, step_to: &str) -> String {
+    format!(
+        r#"WITH RECURSIVE closure(type_id, depth) AS (
+                SELECT ?1, 0
+                UNION
+                SELECT r.{step_to}, c.depth + 1
+                FROM closure c
+                JOIN relationship r INDEXED BY idx_rel_{index_side}
+                  ON r.{step_from} = c.type_id AND r.relationship_type = ?2
+                WHERE c.depth < {max_depth}
+            )
+            SELECT DISTINCT type_id FROM closure"#,
+        step_to = step_to,
+        step_from = step_from,
+        // `idx_rel_in (in_node, …)` / `idx_rel_out (out_node, …)` — the
+        // composite whose leading column is the endpoint being matched.
+        index_side = step_from.trim_end_matches("_node"),
+        max_depth = crate::schema::extends_chain::MAX_EXTENDS_DEPTH,
+    )
+}
+
 /// Which way an `extends` closure walk runs.
 ///
 /// Getting the endpoint swap wrong inverts the closure silently, so the case
@@ -1795,28 +1841,7 @@ impl SqliteStore {
             ExtendsDirection::Descendants => ("out_node", "in_node"),
         };
 
-        // Correlated subquery in the recursive arm, per the doc comments
-        // above. The EXISTS guard stops recursion where the subquery would
-        // otherwise yield NULL, mirroring MENTION_CONTAINERS_QUERY.
-        //
-        // Descendants can fan out (many schemas may extend one parent), so
-        // that direction needs a set-returning step rather than the scalar
-        // subquery the single-parent ancestor walk could use. Both are written
-        // the same way so the index behavior is identical.
-        let sql = format!(
-            r#"WITH RECURSIVE closure(type_id, depth) AS (
-                SELECT ?1, 0
-                UNION
-                SELECT r.{step_to}, c.depth + 1
-                FROM relationship r
-                JOIN closure c ON r.{step_from} = c.type_id
-                WHERE r.relationship_type = ?2 AND c.depth < {max_depth}
-            )
-            SELECT DISTINCT type_id FROM closure"#,
-            step_to = step_to,
-            step_from = step_from,
-            max_depth = crate::schema::extends_chain::MAX_EXTENDS_DEPTH,
-        );
+        let sql = extends_closure_sql(step_from, step_to);
 
         let mut rows = self
             .read()
@@ -2295,6 +2320,56 @@ mod tests {
             !detail.contains("idx_rel_type"),
             "container-resolution query must not use idx_rel_type (full has_child scan); plan was: {detail}"
         );
+        Ok(())
+    }
+
+    /// The subtype-closure walk must drive off `idx_rel_out (out_node,
+    /// relationship_type)`, not `idx_rel_type (relationship_type)`.
+    ///
+    /// Mirrors `container_resolution_query_does_not_scan_idx_rel_type` for the
+    /// `extends` closure. The distinction matters for the same reason it does
+    /// there: driving off `relationship_type` scans every edge of that type
+    /// per recursive step. `extends` selects a far smaller partition than
+    /// `has_child`, so the absolute cost is low today — but this pins the
+    /// claim the doc comment makes, so a future edit that changes the plan
+    /// fails here rather than silently regressing.
+    #[tokio::test]
+    async fn extends_closure_query_drives_off_the_endpoint_index() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("test.db");
+        let store = SqliteStore::new(db_path).await?;
+
+        // The exact text `walk_extends_closure` runs for the descendant
+        // direction, built by the same function.
+        let sql = extends_closure_sql("out_node", "in_node");
+
+        let mut rows = store
+            .read()
+            .await?
+            .query(
+                &format!("EXPLAIN QUERY PLAN {sql}"),
+                libsql::params!["task".to_string(), "extends".to_string()],
+            )
+            .await
+            .context("Failed to run EXPLAIN QUERY PLAN")?;
+
+        let mut detail = String::new();
+        while let Some(row) = rows.next().await? {
+            let d: String = row.get(3)?;
+            detail.push_str(&d);
+            detail.push(' ');
+        }
+
+        assert!(
+            detail.contains("idx_rel_out"),
+            "the closure step should use idx_rel_out (out_node, relationship_type); plan was: {detail}"
+        );
+        assert!(
+            !detail.contains("idx_rel_type"),
+            "the closure step must not drive off idx_rel_type, which scans every \
+             edge of that type per recursive step; plan was: {detail}"
+        );
+
         Ok(())
     }
 }
