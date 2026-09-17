@@ -37,10 +37,15 @@
 //! - a waiter arms its `Notified` future *before* re-reading the counter, so a
 //!   turn ending in that window still wakes it (no lost wakeup).
 //!
-//! Unlike the embedding scheduler there is no semaphore here. This gate only
-//! answers "may background work run now?" — the engine's own lock still
-//! provides mutual exclusion, and background jobs are serialised by the single
-//! worker that runs them.
+//! Unlike the embedding scheduler there is no semaphore here, so this gate
+//! answers "is the model idle?" and nothing more — it is not a reservation,
+//! and it does not serialise background jobs against each other. Two jobs that
+//! wake together both see an idle model and both proceed; the engine's own
+//! lock still gives them mutual exclusion, and their writes are settled by
+//! optimistic concurrency at the node level. That is adequate for titling,
+//! where a duplicated generation wastes a little compute but cannot produce a
+//! wrong result. Work that must not run concurrently with itself needs its own
+//! single-flight guard on top of this.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

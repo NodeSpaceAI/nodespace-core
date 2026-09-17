@@ -139,7 +139,9 @@ pub fn sanitize_title(raw: &str) -> Option<String> {
     // chatty one puts the title on the first and commentary after it.
     let line = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
 
-    // Strip a leading "Title:" / "title -" style label.
+    // Strip a leading "Title:" label. Only the colon form — that is what
+    // models actually emit, and splitting on a dash would eat the second half
+    // of a legitimately hyphenated title.
     let line = match line.split_once(':') {
         Some((label, rest)) if label.trim().eq_ignore_ascii_case("title") => rest.trim(),
         _ => line,
@@ -249,9 +251,16 @@ pub async fn write_title_if_still_untitled(
             return Ok(false);
         }
 
-        // Content only: leaving `properties` untouched means this cannot
-        // disturb the ai-chat namespace, and so cannot race the turn path's
-        // own message/status writes into a lost update.
+        // Setting only `content` on the `NodeUpdate` is NOT what makes this
+        // safe against the turn path's concurrent message/status writes —
+        // `update_node` is a full-row read-modify-write and rewrites the
+        // `properties` column regardless (`node_service/crud.rs`). What makes
+        // it safe is OCC: the row it writes back is a snapshot taken inside
+        // the same version-checked transaction, so a concurrent append either
+        // lands first and bumps `version` (turning this into the
+        // `VersionConflict` the loop retries) or lands after and carries this
+        // title forward. Do not "simplify" the retry loop away on the belief
+        // that a content-only update touches a content-only column.
         let update = NodeUpdate::new().with_content(title.to_string());
         match node_service.update_node(node_id, version, update).await {
             Ok(_) => return Ok(true),

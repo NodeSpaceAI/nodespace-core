@@ -25,6 +25,12 @@
  * `packages/daemon/src/services/ai_chat_title.rs` — the frontend writes it and
  * the daemon tests it, so a drift between the two would silently disable
  * automatic titling (every chat would look user-titled).
+ *
+ * Note the split of responsibility: this end only *writes* the sentinel.
+ * Deciding whether a chat is still eligible for titling is the daemon's alone
+ * (`is_untitled`), so there is deliberately no frontend predicate mirroring it
+ * — a second implementation of the guard could drift from the one that
+ * actually gates the write, which is worse than not having it.
  */
 export const UNTITLED_CHAT_TITLE = 'Untitled';
 
@@ -43,18 +49,6 @@ export const UNTITLED_CHAT_LABEL = 'Untitled chat';
 /** Display title for an ai-chat node's stored `content`. */
 export function aiChatDisplayTitle(content: string | null | undefined): string {
   return content?.trim() ? content : UNTITLED_CHAT_LABEL;
-}
-
-/**
- * Whether `content` is a title the background titler may replace.
- *
- * True for the stored `"Untitled"` sentinel and for genuinely absent content;
- * false for anything the user typed. Mirrors the daemon-side guard so the two
- * ends agree on which chats are still eligible.
- */
-export function isUntitledChat(content: string | null | undefined): boolean {
-  const trimmed = content?.trim() ?? '';
-  return trimmed === '' || trimmed === UNTITLED_CHAT_TITLE;
 }
 
 /**
