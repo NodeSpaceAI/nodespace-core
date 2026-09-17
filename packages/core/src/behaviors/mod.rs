@@ -657,55 +657,13 @@ impl NodeBehavior for TaskNodeBehavior {
     }
 
     fn validate(&self, node: &Node) -> Result<(), NodeValidationError> {
-        // Convert to strongly-typed TaskNode and validate
-        // This provides type-safe validation with direct field access
-        match TaskNode::from_node(node.clone()) {
-            Ok(task) => self.validate_task_node(&task),
-            Err(e) => {
-                // If conversion fails, fall back to basic property validation
-                // This handles backward compatibility with old property formats
-                tracing::debug!(
-                    "TaskNode conversion failed, using fallback validation: {}",
-                    e
-                );
-
-                // Type-namespaced property validation
-                // Properties are stored under type-specific namespaces: properties.task.*
-                // This allows preserving properties when converting between types
-                //
-                // BACKWARD COMPATIBILITY: Accept both formats during transition:
-                // - New format: properties.task.status
-                // - Old format: properties.status (deprecated, will be auto-migrated)
-
-                // Try new nested format first, fall back to old flat format
-                let task_props = node.properties.get("task").or(Some(&node.properties));
-
-                // If task properties exist, validate their TYPES (not values)
-                // VALUE validation (e.g., valid status enum values) is handled by schema system
-                if let Some(props) = task_props {
-                    // Validate status type (must be string if present)
-                    // Schema system validates the actual value against allowed enum values
-                    if let Some(status) = props.get("status") {
-                        if !status.is_string() && !status.is_null() {
-                            return Err(NodeValidationError::InvalidProperties(
-                                "Status must be a string".to_string(),
-                            ));
-                        }
-                    }
-
-                    // Validate priority type (must be integer if present)
-                    if let Some(priority) = props.get("priority") {
-                        if !priority.is_i64() && !priority.is_null() {
-                            return Err(NodeValidationError::InvalidProperties(
-                                "Priority must be an integer".to_string(),
-                            ));
-                        }
-                    }
-                }
-
-                Ok(())
-            }
-        }
+        // Convert to strongly-typed TaskNode and validate.
+        // `from_node` fails only when `node_type != "task"`, so the error arm
+        // means this behavior was handed a node it does not describe — reject
+        // it rather than validating a non-task node against task rules.
+        let task = TaskNode::from_node(node.clone())
+            .map_err(|e| NodeValidationError::InvalidProperties(e.to_string()))?;
+        self.validate_task_node(&task)
     }
 
     fn can_have_children(&self) -> bool {
@@ -3174,14 +3132,14 @@ mod tests {
     fn test_task_node_behavior_validation() {
         let behavior = TaskNodeBehavior;
 
-        // Valid task with status (old flat format - backward compatibility)
+        // Valid task with status (flat format — used by the markdown importer)
         // Status values use lowercase format
-        let valid_node_old_format = Node::new(
+        let valid_node_flat_format = Node::new(
             "task".to_string(),
             "Implement feature".to_string(),
             json!({"status": "in_progress"}),
         );
-        assert!(behavior.validate(&valid_node_old_format).is_ok());
+        assert!(behavior.validate(&valid_node_flat_format).is_ok());
 
         // Valid task with status (new nested format)
         let valid_node_new_format = Node::new(
@@ -3192,7 +3150,6 @@ mod tests {
         assert!(behavior.validate(&valid_node_new_format).is_ok());
 
         // Valid task with all fields (new nested format)
-        // Priority can be string ("high") or integer (2) - both supported
         let complete_node = Node::new(
             "task".to_string(),
             "Complete task".to_string(),
@@ -3206,14 +3163,20 @@ mod tests {
         );
         assert!(behavior.validate(&complete_node).is_ok());
 
-        // Valid task with legacy integer priority (converted to string enum)
-        // Legacy integer format: 1 = high, 2 = medium, 3-4 = low
+        // Priority is a string enum. A non-string priority is not a supported
+        // format: `from_node` reads it with `as_str()`, so it is ignored and the
+        // task falls back to having no priority rather than failing validation.
         let integer_priority_node = Node::new(
             "task".to_string(),
-            "Task with legacy integer priority".to_string(),
+            "Task with non-string priority".to_string(),
             json!({"task": {"status": "open", "priority": 2}}),
         );
         assert!(behavior.validate(&integer_priority_node).is_ok());
+        let parsed = TaskNode::from_node(integer_priority_node).unwrap();
+        assert!(
+            parsed.priority.is_none(),
+            "non-string priority should be ignored, not interpreted as a legacy format"
+        );
 
         // Valid: empty content (allowed for tasks - users can add description later)
         let mut empty_content_node = valid_node_new_format.clone();
