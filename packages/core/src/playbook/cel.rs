@@ -151,22 +151,6 @@ pub fn json_to_cel(json: &serde_json::Value) -> Value {
     }
 }
 
-/// Build a CEL `Value` (Map) from a Node in wire format.
-///
-/// The resulting map has these top-level keys:
-/// - `id`: String
-/// - `node_type`: String
-/// - `content`: String
-/// - `version`: Int
-/// - `lifecycle_status`: String
-/// - All flattened properties as additional keys
-///
-/// Namespace prefixes on properties are stripped: `custom:status` → `status`.
-/// Internal `_`-prefixed bookkeeping keys (`_seed`, `_schemaVersion`,
-/// `_playbookChainDepth`, ...) are excluded entirely, whether they appear
-/// nested inside the type namespace or -- their actual stored shape,
-/// per `NodeService::normalize_flat_properties_to_namespace` -- at the top
-/// level alongside it.
 /// The scope a Play's conditions are evaluated at (ADR-078).
 ///
 /// Built once per rule dispatch by the engine, which has store access; CEL
@@ -260,6 +244,22 @@ fn field_is_enum(fields: &[crate::models::SchemaField], name: &str) -> bool {
         .any(|f| f.name == name && f.field_type == "enum")
 }
 
+/// Build a CEL `Value` (Map) from a Node in wire format.
+///
+/// The resulting map has these top-level keys:
+/// - `id`: String
+/// - `node_type`: String
+/// - `content`: String
+/// - `version`: Int
+/// - `lifecycle_status`: String
+/// - All flattened properties as additional keys
+///
+/// Namespace prefixes on properties are stripped: `custom:status` → `status`.
+/// Internal `_`-prefixed bookkeeping keys (`_seed`, `_schemaVersion`,
+/// `_playbookChainDepth`, ...) are excluded entirely, whether they appear
+/// nested inside the type namespace or -- their actual stored shape,
+/// per `NodeService::normalize_flat_properties_to_namespace` -- at the top
+/// level alongside it.
 pub fn node_to_cel_value(node: &Node) -> Value {
     node_to_cel_value_at_scope(node, std::slice::from_ref(&node.node_type.as_str()))
 }
@@ -403,7 +403,8 @@ fn build_condition_context_with_resolved<'a>(
     let mut trigger_map: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
 
     // Add trigger.node as an alias (also enriched with resolved paths)
-    let trigger_node_value = inject_resolved_paths(&scoped_node_value(node, scope), resolved_values);
+    let trigger_node_value =
+        inject_resolved_paths(&scoped_node_value(node, scope), resolved_values);
     trigger_map.insert(key("node"), trigger_node_value);
 
     // For PropertyChanged events, add trigger.property with old/new values

@@ -1074,3 +1074,111 @@ async fn fields_on_an_extending_schema_are_stored_bare() {
         schema.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
     );
 }
+
+#[tokio::test]
+async fn a_second_extends_declaration_is_structurally_impossible() {
+    let (svc, _tmp) = test_service().await;
+    create_instance_schemas(&svc).await;
+
+    // Single-parent is enforced by shape, not by a runtime check: `extends` is
+    // one scalar key, so a second parent is unexpressible in the request. The
+    // criterion asks for rejection; this pins the mechanism that makes
+    // rejection unnecessary — and would fail if `extends` ever became a list.
+    let result = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Multi",
+            "extends": ["alpha", "beta"],
+            "fields": []
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "an array of parents must not deserialize into the scalar extends key"
+    );
+
+    // And re-targeting replaces rather than appends, so a schema never
+    // accumulates two edges.
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Child", "extends": "alpha", "fields": [] }),
+    )
+    .await
+    .expect("child extends alpha should succeed");
+    handle_update_schema(&svc, json!({ "schema_id": "child", "extends": "beta" }))
+        .await
+        .expect("re-target should succeed");
+
+    let schema = svc
+        .get_schema_node("child")
+        .await
+        .expect("schema lookup failed")
+        .expect("child should exist");
+    let extends_edges = schema
+        .relationships
+        .iter()
+        .filter(|r| r.name == "extends")
+        .count();
+    assert_eq!(
+        extends_edges, 1,
+        "re-targeting must replace the edge, never accumulate a second"
+    );
+}
+
+/// Two unrelated base schemas, for the single-parent test.
+async fn create_instance_schemas(svc: &Arc<NodeService>) {
+    for name in ["Alpha", "Beta"] {
+        handle_create_schema(
+            svc,
+            json!({
+                "name": name,
+                "fields": [
+                    { "name": "note", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{name} schema creation failed: {e:?}"));
+    }
+}
+
+#[tokio::test]
+async fn a_title_search_scoped_to_a_base_type_finds_subtype_instances() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+
+    // Titles are computed from content here, so content is what the stem
+    // search matches against.
+    svc.create_node(Node::new(
+        "bug".to_string(),
+        "kubernetes deployment failure".to_string(),
+        json!({ "status": "open", "severity": "high" }),
+    ))
+    .await
+    .expect("bug creation failed");
+
+    // `query_nodes` falls back to title-stem matching when the exact
+    // substring search finds nothing. That fallback path takes node_type
+    // separately from the main query, so it needs the same subtype expansion
+    // or a base-scoped title search silently narrows to exact matches.
+    let results = svc
+        .query_nodes_simple(NodeQuery {
+            node_type: Some("ticket".to_string()),
+            title_contains: Some("deployments".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("query failed");
+
+    assert!(
+        results.iter().any(|n| n.node_type == "bug"),
+        "a base-scoped title search must reach subtype instances through the \
+         stem fallback, got {:?}",
+        results
+            .iter()
+            .map(|n| (&n.node_type, &n.content))
+            .collect::<Vec<_>>()
+    );
+}

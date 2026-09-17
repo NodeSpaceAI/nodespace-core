@@ -127,7 +127,9 @@ impl NodeService {
             // filter authored against a base type is evaluated at that base's
             // scope even when the matched row is a descendant instance.
             // Resolved once per query, not per row.
-            let scope = self.build_scope_context(filter.node_type.as_deref()).await?;
+            let scope = self
+                .build_scope_context(filter.node_type.as_deref())
+                .await?;
             let mut filtered =
                 Self::apply_property_filters(nodes, property_filters, scope.as_ref());
             // Apply offset in memory

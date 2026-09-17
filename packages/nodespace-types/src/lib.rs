@@ -21,8 +21,8 @@ mod task;
 
 pub use ai_chat::{AiChatMessage, AiChatNode};
 pub use convert::{
-    flatten_all_namespaces, flatten_namespaced_properties,
-    flatten_namespaced_properties_at_scope, node_to_typed_value, nodes_to_typed_values,
+    flatten_all_namespaces, flatten_namespaced_properties, flatten_namespaced_properties_at_scope,
+    node_to_typed_value, nodes_to_typed_values,
 };
 pub use helpers::{is_valid_lifecycle_status, LIFECYCLE_STATUSES};
 pub use node::{
