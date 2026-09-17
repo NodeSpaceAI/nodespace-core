@@ -555,9 +555,26 @@ fn stage2_permitted_names(candidates: &[SkillCandidate]) -> std::collections::Ha
     // another function's ordering staying that way. Ties keep every candidate
     // at the top score, which is the same treatment `declare_write_tool_fields`
     // gives them.
+    //
+    // Scoped to candidates that own at least one tool: a candidate with an
+    // empty `tools` vec can never contribute a tool name, so it has no stake
+    // in deciding whose destructive tools are trusted. "Who won retrieval" is
+    // only meaningful here as "which *tool-bearing* candidate won".
+    //
+    // An empty whitelist is the observable property this turns on, and the
+    // only one visible at this boundary — `SkillCandidate` carries no notion
+    // of candidate kind. Today's producer of such candidates is schema-typed
+    // retrieval hits, which describe a schema rather than a capability and
+    // carry `tools: []` by construction; counting their scores toward
+    // `top_score` is what broke this. A schema named outright in the query is
+    // pinned at the lexical backstop's fixed confidence, above any
+    // cosine-derived score a real skill can reach, so a genuinely-matching
+    // deletion skill lost `delete_node` on every such turn. Directionally
+    // safe but functionally wrong — the tool vanishes for no reason the model
+    // or user can see.
     let top_score = candidates
         .iter()
-        .filter(|c| clears_score_gate(c))
+        .filter(|c| clears_score_gate(c) && !c.tools.is_empty())
         .map(|c| c.score)
         .fold(f32::NEG_INFINITY, f32::max);
 
@@ -1032,6 +1049,29 @@ mod tests {
             names.contains(&"delete_node"),
             "a genuine deletion match must still be able to delete: {names:?}"
         );
+    }
+
+    #[test]
+    fn a_zero_tool_candidate_cannot_withhold_the_winning_skill_s_destructive_tool() {
+        // Retrieval returns schema-kind candidates (`tools: []`) in the same
+        // list this consumes, and the lexical backstop that recovers a schema
+        // named outright in the query pins it above a genuinely-matching
+        // skill's cosine score. Scoring highest must not make it the "winner"
+        // for a decision it has no stake in — it owns no tools at all.
+        let all = vec![tool("delete_node"), tool("search_nodes")];
+        let cands = vec![
+            candidate("Meeting Note", 0.95, &[]),
+            candidate("Node Deletion", 0.7, &["delete_node", "search_nodes"]),
+        ];
+        let scoped = stage2_tools(&cands, &all);
+        let names: Vec<&str> = scoped.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"delete_node"),
+            "a skill that won retrieval among tool-bearing candidates must keep its destructive \
+             tool regardless of a co-occurring zero-tool candidate's score: {names:?}"
+        );
+        // And the log agrees nothing was withheld — the two read the same rule.
+        assert!(destructive_tools_withheld(&cands).is_empty());
     }
 
     #[test]
