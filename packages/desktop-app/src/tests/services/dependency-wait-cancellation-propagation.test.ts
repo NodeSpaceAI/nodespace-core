@@ -45,6 +45,7 @@ import {
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
 import type { Node } from '../../lib/types';
+import { DEBOUNCED_WRITE_WAIT_MS } from '../utils/test-constants';
 
 describe('Dependency-wait cancellation propagation', () => {
   describe('SimplePersistenceCoordinator — coordinator-level mechanism', () => {
@@ -265,7 +266,7 @@ describe('Dependency-wait cancellation propagation', () => {
       // Let everything settle: A's superseding second edit's own debounce
       // timer, B's dependency-wait rejection, and the resulting .catch
       // handlers.
-      await new Promise((resolve) => setTimeout(resolve, 700));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
 
       // B's own backend RPC must never have fired — it never got past the
       // dependency-wait loop.
@@ -296,7 +297,7 @@ describe('Dependency-wait cancellation propagation', () => {
       store.updateNode('node-solo', { content: 'first' }, viewerSource);
       store.updateNode('node-solo', { content: 'second-supersedes-first' }, viewerSource);
 
-      await new Promise((resolve) => setTimeout(resolve, 700));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
 
       // Must NOT surface a spurious failure notification for an ordinary,
       // expected supersede — only the propagated-dependency-failure case

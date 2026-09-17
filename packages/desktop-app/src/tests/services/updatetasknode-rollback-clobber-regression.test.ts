@@ -35,6 +35,7 @@ import {
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
 import type { Node } from '../../lib/types';
+import { DEBOUNCED_WRITE_WAIT_MS } from '../utils/test-constants';
 
 const makeTaskNode = (id: string, status: string, version = 1): Node =>
   ({
@@ -114,7 +115,7 @@ describe('updateTaskNode failure-path rollback — queued-write regression', () 
       // Let A's failure (and its rollback handler) fire, and B's queued
       // write get promoted into execution (call #2 above) — but stop well
       // before any further settlement, since call #2 never resolves.
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
       expect(updateCallCount).toBe(2);
       expect(coord.isExecuting(nodeId)).toBe(true);
 
