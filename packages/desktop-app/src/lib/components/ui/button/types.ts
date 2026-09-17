@@ -20,7 +20,7 @@
  *   per-theme values precisely because white fails on dark-mode fills. Using the
  *   token takes dark destructive from 2.86:1 to 6.95:1 at rest.
  *
- * `filled-button-variants.test.ts` holds both variants to the rule.
+ * `filled-variants.test.ts` holds both variants to the rule.
  *
  * Keyboard focus reuses each variant's hover appearance rather than drawing a
  * ring. Focus and hover mean the same thing to a user — "this is the control

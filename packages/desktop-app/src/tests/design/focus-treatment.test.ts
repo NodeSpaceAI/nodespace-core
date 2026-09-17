@@ -26,7 +26,7 @@
  * "doesn't move" a given property offers.
  *
  * This suite scans source text rather than rendering components, for the same
- * reason `filled-button-variants.test.ts` does: Happy-DOM applies no Tailwind
+ * reason `filled-variants.test.ts` does: Happy-DOM applies no Tailwind
  * stylesheet, so a rendered `getComputedStyle` reports an empty background for
  * a correct class and a forbidden one alike, and would pass either way.
  */

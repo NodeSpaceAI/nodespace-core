@@ -28,7 +28,7 @@ export default {
           // `hover:bg-primary-hover/90` still compiles. Nothing in the config
           // can forbid it; what actually holds the rule is the
           // `no alpha-fill hover left on a filled variant` assertion in
-          // filled-button-variants.test.ts.
+          // filled-variants.test.ts.
           hover: "hsl(var(--primary-hover))"
         },
         secondary: {
