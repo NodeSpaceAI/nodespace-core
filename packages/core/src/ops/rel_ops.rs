@@ -2,7 +2,9 @@
 //!
 //! Typed orchestration for relationship CRUD. Extracted from MCP handlers.
 
-use crate::models::schema::{EdgeField, RelationshipCardinality, BUILTIN_RELATIONSHIP_NAMES};
+use crate::models::schema::{
+    builtin_forward_name, EdgeField, RelationshipCardinality, BUILTIN_RELATIONSHIP_NAMES,
+};
 use crate::ops::OpsError;
 use crate::services::NodeService;
 use serde::Serialize;
@@ -134,14 +136,21 @@ pub enum ResolvedRelName {
     /// The forward `name` of a relationship declared on the node's own schema.
     /// Traversed exactly as given.
     Forward,
-    /// The `reverse_name` of a relationship declared by a schema that targets
-    /// this node's type. Edges are stored under the FORWARD name, so traversing
-    /// by this name rewrites the name and flips the direction.
+    /// A reverse name: either the `reverse_name` of a relationship declared by a
+    /// schema targeting this node's type, or a built-in's fixed inverse
+    /// (`child_of`, `has_member`, …). Edges are stored under the FORWARD name,
+    /// so traversing by this name rewrites the name and flips the direction.
     Reverse {
         /// The forward name the edges are actually stored under.
         forward_name: String,
-        /// The type declaring the forward relationship (the far end here).
-        source_type: String,
+        /// The type declaring the forward relationship (the far end here), used
+        /// to narrow results when several schemas declare the same forward name
+        /// toward this type.
+        ///
+        /// `None` for a built-in, which has no declaring schema and is legal
+        /// between any two node types — narrowing by type would discard
+        /// legitimate answers rather than disambiguate them.
+        source_type: Option<String>,
     },
     /// The forward `name` of a relationship declared by another schema that
     /// targets this node's type — the node sits at the edge's far end. Already
@@ -165,7 +174,7 @@ pub enum ResolvedRelName {
 /// who misspells a name — or reaches for one that was never declared — is told
 /// the capability is absent rather than that the answer is zero. A *declared*
 /// name with no edges still returns an empty list; only an undeclared one errors.
-async fn resolve_relationship_name(
+pub async fn resolve_relationship_name(
     node_service: &Arc<NodeService>,
     node_id: &str,
     node_type: &str,
@@ -173,6 +182,18 @@ async fn resolve_relationship_name(
 ) -> Result<ResolvedRelName, OpsError> {
     if BUILTIN_RELATIONSHIP_NAMES.contains(&relationship_name) {
         return Ok(ResolvedRelName::Builtin);
+    }
+
+    // A built-in's reverse spelling (`child_of` → `has_child`). Checked before
+    // any schema lookup, mirroring the forward short-circuit above: built-ins
+    // have no declaration to consult, and a schema may not claim one of these
+    // names in either direction (`update_schema` rejects both), so no
+    // declaration can be shadowed here.
+    if let Some(forward_name) = builtin_forward_name(relationship_name) {
+        return Ok(ResolvedRelName::Reverse {
+            forward_name: forward_name.to_string(),
+            source_type: None,
+        });
     }
 
     // Forward first: a forward name always wins over a same-spelled reverse
@@ -234,7 +255,7 @@ async fn resolve_relationship_name(
         if rel.reverse_name == relationship_name {
             return Ok(ResolvedRelName::Reverse {
                 forward_name: rel.name.clone(),
-                source_type: source_type.clone(),
+                source_type: Some(source_type.clone()),
             });
         }
     }
@@ -348,7 +369,7 @@ pub async fn get_related_nodes(
             (
                 forward_name.clone(),
                 flipped.to_string(),
-                Some(source_type.clone()),
+                source_type.clone(),
             )
         }
     };

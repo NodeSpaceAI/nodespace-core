@@ -180,8 +180,12 @@ pub async fn get_workflow_state(
     };
 
     let mut rules = Vec::with_capacity(candidate_refs.len());
+    // One resolver across all rules for this node: every rule resolves paths
+    // from the same root, so rebuilding it per rule threw away a cache that was
+    // about to be asked the same questions. Safe because cache entries are
+    // scoped to the root they were resolved from.
+    let mut resolver = GraphResolver::new(Arc::clone(node_service));
     for rule_ref in &candidate_refs {
-        let mut resolver = GraphResolver::new(Arc::clone(node_service));
         let mut condition_states = Vec::with_capacity(rule_ref.rule.conditions.len());
 
         for condition in &rule_ref.rule.conditions {

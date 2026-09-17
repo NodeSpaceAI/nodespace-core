@@ -439,25 +439,30 @@ async fn validate_relationship_targets_exist(
 /// alias, matched by [`resolve_relationship_name`] to reach the inbound side of
 /// an edge stored under the forward name. It therefore cannot make stored data
 /// ambiguous. What it can do is nothing at all: that resolver short-circuits on
-/// `BUILTIN_RELATIONSHIP_NAMES` before it ever consults a declaration, so
+/// the built-in table before it ever consults a declaration, so
 /// `reverseName: "has_child"` is unreachable — the built-in always wins, and
 /// the reverse spelling the author chose silently resolves to something else.
 /// Rejecting it keeps a declaration from being accepted as inert.
 ///
 /// Both halves are checked because a relationship must name its edge from both
 /// ends, so both names land in a namespace a caller can traverse by.
+///
+/// **Both built-in spellings are reserved**, not just the forward ones. A
+/// built-in's inverse (`child_of`, `has_member`, …) is resolved from the
+/// built-in table ahead of any declaration, so a schema claiming one as its
+/// `name` or `reverseName` would be shadowed exactly the way `has_child` is.
 fn reject_reserved_relationship_names(
     relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
     for rel in relationships {
         for (which, name) in [("name", &rel.name), ("reverseName", &rel.reverse_name)] {
-            if crate::models::schema::is_builtin_relationship(name) {
+            if crate::models::schema::is_reserved_relationship_name(name) {
                 return Err(MarkdownError::invalid_params(format!(
                     "Relationship {} '{}' is reserved for a built-in structural relationship \
                      ({}). Choose a different name.",
                     which,
                     name,
-                    crate::models::schema::BUILTIN_RELATIONSHIP_NAMES.join(", ")
+                    crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
                 )));
             }
         }

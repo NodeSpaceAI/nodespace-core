@@ -94,6 +94,41 @@ pub fn is_builtin_relationship(name: &str) -> bool {
     BUILTIN_RELATIONSHIP_NAMES.contains(&name)
 }
 
+/// Whether `name` collides with a built-in in EITHER direction — the forward
+/// type (`has_child`) or its fixed inverse (`child_of`).
+///
+/// Both halves are traversable spellings: a resolver answers `child_of` from
+/// the built-in table before it consults any declaration. A schema declaring
+/// either spelling would therefore be accepted and then never reached, so both
+/// are reserved against declarations.
+pub fn is_reserved_relationship_name(name: &str) -> bool {
+    BUILTIN_RELATIONSHIPS
+        .iter()
+        .any(|(forward, reverse)| *forward == name || *reverse == name)
+}
+
+/// Every reserved relationship spelling, forward and reverse — what an error
+/// message lists when telling an author which names are unavailable.
+///
+/// Spelled out per index for the same reason as [`BUILTIN_RELATIONSHIP_NAMES`]:
+/// const context has no iteration. The assertion below makes a length mismatch
+/// a compile error.
+pub const RESERVED_RELATIONSHIP_NAMES: [&str; 8] = [
+    BUILTIN_RELATIONSHIPS[0].0,
+    BUILTIN_RELATIONSHIPS[0].1,
+    BUILTIN_RELATIONSHIPS[1].0,
+    BUILTIN_RELATIONSHIPS[1].1,
+    BUILTIN_RELATIONSHIPS[2].0,
+    BUILTIN_RELATIONSHIPS[2].1,
+    BUILTIN_RELATIONSHIPS[3].0,
+    BUILTIN_RELATIONSHIPS[3].1,
+];
+
+const _: () = assert!(
+    BUILTIN_RELATIONSHIPS.len() * 2 == RESERVED_RELATIONSHIP_NAMES.len(),
+    "RESERVED_RELATIONSHIP_NAMES must list both spellings of every BUILTIN_RELATIONSHIPS entry"
+);
+
 /// The reverse name for a built-in structural relationship — the label its edge
 /// reads by from the target's end (`has_child` → `child_of`).
 ///
@@ -104,4 +139,21 @@ pub fn builtin_reverse_name(name: &str) -> Option<&'static str> {
         .iter()
         .find(|(forward, _)| *forward == name)
         .map(|(_, reverse)| *reverse)
+}
+
+/// The forward name a built-in reverse name addresses — the inverse of
+/// [`builtin_reverse_name`] (`child_of` → `has_child`).
+///
+/// Edges are stored under the forward name in `relationship_type`, so a caller
+/// naming the reverse side is asking to traverse that same row backwards.
+/// Resolving the spelling is what lets `child_of` mean "the parent" rather than
+/// an undeclared name.
+///
+/// `None` for anything else, including the forward names themselves: this
+/// answers only "is this a built-in's reverse spelling?".
+pub fn builtin_forward_name(reverse: &str) -> Option<&'static str> {
+    BUILTIN_RELATIONSHIPS
+        .iter()
+        .find(|(_, rev)| *rev == reverse)
+        .map(|(forward, _)| *forward)
 }
