@@ -23,6 +23,20 @@ pub struct PlaybookLifecycleManager {
     trigger_index: TriggerIndex,
     /// Cron registry for scheduled triggers
     cron_registry: CronRegistry,
+    /// node_type → its full `extends` ancestry, nearest first (ADR-078).
+    ///
+    /// A Play registered against a base type must fire for events carrying a
+    /// type that extends it, which means resolving the event type's ancestry
+    /// before looking up the trigger index. That resolution is a SQL walk, and
+    /// this index is consulted on every graph mutation system-wide, in-memory,
+    /// with zero I/O — so the ancestry is cached here rather than queried per
+    /// event.
+    ///
+    /// Populated from `engine.rs`, which has store access; this struct
+    /// deliberately has none. Empty until something declares `extends`, and an
+    /// absent entry means "no ancestry", so an unextended type costs one
+    /// failed hash lookup.
+    ancestor_cache: HashMap<String, Vec<String>>,
 }
 
 impl PlaybookLifecycleManager {
@@ -31,7 +45,74 @@ impl PlaybookLifecycleManager {
             active_playbooks: HashMap::new(),
             trigger_index: HashMap::new(),
             cron_registry: Vec::new(),
+            ancestor_cache: HashMap::new(),
         }
+    }
+
+    /// Replace the `extends` ancestry cache (ADR-078).
+    ///
+    /// Called from the engine on startup and whenever a schema write may have
+    /// changed an `extends` edge. Wholesale replacement rather than fine-
+    /// grained diffing is proportionate: `extends` edits are rare,
+    /// administrative operations, and the map holds one entry per extending
+    /// type.
+    pub fn set_ancestor_cache(&mut self, cache: HashMap<String, Vec<String>>) {
+        self.ancestor_cache = cache;
+    }
+
+    /// A node type's cached ancestry, nearest first, including the type itself.
+    ///
+    /// Falls back to just the type when nothing is cached for it — which is
+    /// every type in a database where nothing declares `extends`, and the
+    /// correct answer there.
+    pub fn ancestors_of(&self, node_type: &str) -> Vec<String> {
+        self.ancestor_cache
+            .get(node_type)
+            .cloned()
+            .unwrap_or_else(|| vec![node_type.to_string()])
+    }
+
+    /// Whether the ancestry cache holds anything at all.
+    ///
+    /// Lets the hot path skip ancestor fan-out entirely in the common case.
+    pub fn has_ancestry(&self) -> bool {
+        !self.ancestor_cache.is_empty()
+    }
+
+    /// The same trigger key re-keyed under each *strict* ancestor of its node
+    /// type — the type itself is excluded, since the caller has already looked
+    /// that one up directly.
+    fn ancestor_keys(&self, key: &TriggerKey) -> Vec<TriggerKey> {
+        let node_type = match key {
+            TriggerKey::NodeEvent { node_type, .. } => node_type,
+            TriggerKey::RelationshipEvent {
+                source_node_type, ..
+            } => source_node_type,
+        };
+
+        let Some(chain) = self.ancestor_cache.get(node_type) else {
+            return Vec::new();
+        };
+
+        chain
+            .iter()
+            .filter(|ancestor| *ancestor != node_type)
+            .map(|ancestor| match key {
+                TriggerKey::NodeEvent {
+                    event,
+                    property_key,
+                    ..
+                } => TriggerKey::NodeEvent {
+                    event: event.clone(),
+                    node_type: ancestor.clone(),
+                    property_key: property_key.clone(),
+                },
+                TriggerKey::RelationshipEvent { event, .. } => TriggerKey::RelationshipEvent {
+                    event: event.clone(),
+                    source_node_type: ancestor.clone(),
+                },
+            })
+            .collect()
     }
 
     /// Load and activate a play node into the engine.
@@ -186,12 +267,30 @@ impl PlaybookLifecycleManager {
     ///
     /// For `PropertyChanged` events, the caller should provide both the exact
     /// key and the wildcard key. Results are merged and deduplicated.
+    ///
+    /// Subtype-aware (ADR-078): each key is also looked up under every
+    /// ancestor of its node type, so a Play registered against `task` fires on
+    /// an event carrying `issue`. Matching stays entirely in memory — the
+    /// ancestry comes from this struct's cache, not a query — so the hot path
+    /// keeps its zero-I/O profile. Plays registered against exact, unextended
+    /// types are unaffected: their ancestry is just themselves.
     pub fn lookup_rules(&self, keys: &[TriggerKey]) -> Vec<OrderedRuleRef> {
         let mut result: Vec<OrderedRuleRef> = Vec::new();
 
         for key in keys {
             if let Some(rules) = self.trigger_index.get(key) {
                 result.extend(rules.iter().cloned());
+            }
+
+            // Fan out to the ancestry only when something extends something;
+            // otherwise every event would pay for a clone and a re-key.
+            if !self.has_ancestry() {
+                continue;
+            }
+            for ancestor_key in self.ancestor_keys(key) {
+                if let Some(rules) = self.trigger_index.get(&ancestor_key) {
+                    result.extend(rules.iter().cloned());
+                }
             }
         }
 
@@ -900,5 +999,199 @@ mod tests {
         let keys = trigger_keys_for_event(&event);
         // Should have exact key + wildcard
         assert_eq!(keys.len(), 2);
+    }
+
+    // ========================================================================
+    // extends — subtype-aware trigger matching (ADR-078)
+    // ========================================================================
+
+    /// A manager with one Play triggering on `node_created` for `node_type`.
+    fn manager_with_play_on(node_type: &str) -> PlaybookLifecycleManager {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_play_node(
+            "pb-base",
+            json!([{
+                "name": "r1",
+                "trigger": { "type": "graph_event", "on": "node_created", "node_type": node_type },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        lm.activate_play(&node)
+            .expect("play activation should succeed");
+        lm
+    }
+
+    fn node_created_key(node_type: &str) -> TriggerKey {
+        TriggerKey::NodeEvent {
+            event: NodeEventType::NodeCreated,
+            node_type: node_type.to_string(),
+            property_key: None,
+        }
+    }
+
+    #[test]
+    fn base_scoped_play_fires_on_a_subtype_event() {
+        let mut lm = manager_with_play_on("task");
+        lm.set_ancestor_cache(HashMap::from([(
+            "issue".to_string(),
+            vec!["issue".to_string(), "task".to_string()],
+        )]));
+
+        // The event carries the concrete type; the Play was registered against
+        // the base. Without ancestry fan-out this returns nothing.
+        let rules = lm.lookup_rules(&[node_created_key("issue")]);
+        assert_eq!(
+            rules.len(),
+            1,
+            "a Play on 'task' should match an 'issue' event"
+        );
+    }
+
+    #[test]
+    fn base_scoped_play_fires_through_a_transitive_chain() {
+        let mut lm = manager_with_play_on("task");
+        lm.set_ancestor_cache(HashMap::from([(
+            "bug".to_string(),
+            vec!["bug".to_string(), "issue".to_string(), "task".to_string()],
+        )]));
+
+        let rules = lm.lookup_rules(&[node_created_key("bug")]);
+        assert_eq!(
+            rules.len(),
+            1,
+            "ancestry matching must span the whole chain, not one level"
+        );
+    }
+
+    #[test]
+    fn a_play_on_an_unrelated_type_does_not_fire() {
+        let mut lm = manager_with_play_on("project");
+        lm.set_ancestor_cache(HashMap::from([(
+            "issue".to_string(),
+            vec!["issue".to_string(), "task".to_string()],
+        )]));
+
+        let rules = lm.lookup_rules(&[node_created_key("issue")]);
+        assert!(
+            rules.is_empty(),
+            "ancestry widens matching along the chain only, not across unrelated types"
+        );
+    }
+
+    #[test]
+    fn exact_type_plays_still_match_exactly_with_no_ancestry() {
+        let lm = manager_with_play_on("task");
+
+        // No ancestor cache at all — the state of every database until a
+        // schema declares `extends`.
+        assert_eq!(
+            lm.lookup_rules(&[node_created_key("task")]).len(),
+            1,
+            "an exact match must still match"
+        );
+        assert!(
+            lm.lookup_rules(&[node_created_key("issue")]).is_empty(),
+            "with no ancestry, an unrelated type must not match"
+        );
+    }
+
+    #[test]
+    fn a_subtype_scoped_play_does_not_fire_on_its_base() {
+        let mut lm = manager_with_play_on("issue");
+        lm.set_ancestor_cache(HashMap::from([(
+            "issue".to_string(),
+            vec!["issue".to_string(), "task".to_string()],
+        )]));
+
+        // Matching runs child -> ancestor, never the reverse: an Issue is a
+        // Task, but a Task is not an Issue.
+        let rules = lm.lookup_rules(&[node_created_key("task")]);
+        assert!(
+            rules.is_empty(),
+            "a Play registered on a subtype must not fire for its base type"
+        );
+    }
+
+    #[test]
+    fn a_matching_rule_is_returned_once_not_per_ancestor() {
+        let mut lm = PlaybookLifecycleManager::new();
+        // One play, two rules: one on the base, one on the concrete type.
+        // Both match an `issue` event, and each must appear exactly once.
+        let node = make_play_node(
+            "pb-dup",
+            json!([
+                {
+                    "name": "on_task",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "task" },
+                    "conditions": [],
+                    "actions": []
+                },
+                {
+                    "name": "on_issue",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "issue" },
+                    "conditions": [],
+                    "actions": []
+                }
+            ]),
+        );
+        lm.activate_play(&node)
+            .expect("play activation should succeed");
+        lm.set_ancestor_cache(HashMap::from([(
+            "issue".to_string(),
+            vec!["issue".to_string(), "task".to_string()],
+        )]));
+
+        let rules = lm.lookup_rules(&[node_created_key("issue")]);
+        assert_eq!(
+            rules.len(),
+            2,
+            "both rules match once each; dedup must not collapse distinct rules, \
+             and fan-out must not duplicate either"
+        );
+    }
+
+    #[test]
+    fn ancestors_of_falls_back_to_the_type_itself() {
+        let lm = PlaybookLifecycleManager::new();
+        assert_eq!(lm.ancestors_of("task"), vec!["task".to_string()]);
+        assert!(!lm.has_ancestry());
+    }
+
+    #[test]
+    fn property_changed_keys_fan_out_to_ancestors_too() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_play_node(
+            "pb-prop",
+            json!([{
+                "name": "r1",
+                "trigger": {
+                    "type": "graph_event",
+                    "on": "property_changed",
+                    "node_type": "task",
+                    "property_key": "status"
+                },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        lm.activate_play(&node)
+            .expect("play activation should succeed");
+        lm.set_ancestor_cache(HashMap::from([(
+            "issue".to_string(),
+            vec!["issue".to_string(), "task".to_string()],
+        )]));
+
+        // The property key must be carried across the re-key, not dropped.
+        let rules = lm.lookup_rules(&[TriggerKey::NodeEvent {
+            event: NodeEventType::PropertyChanged,
+            node_type: "issue".to_string(),
+            property_key: Some("status".to_string()),
+        }]);
+        assert_eq!(
+            rules.len(),
+            1,
+            "a property-scoped Play on the base should match the same property on a subtype"
+        );
     }
 }

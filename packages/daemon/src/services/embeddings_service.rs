@@ -27,7 +27,7 @@ use crate::nodespace::{
     SearchSemanticRequest, SearchSemanticResponse, TriggerBatchEmbedRequest,
     TriggerBatchEmbedResponse,
 };
-use crate::services::node_service::{node_to_proto, ops_error_to_status};
+use crate::services::node_service::{nodes_to_proto, ops_error_to_status};
 
 /// Live embedding state once the model has finished loading.
 pub struct EmbeddingReady {
@@ -183,11 +183,7 @@ impl GrpcEmbeddingsService for EmbeddingsServiceImpl {
         // `matched_nodes` is the same ranked set as `output.nodes`, already
         // hydrated by search — mapping it straight onto the wire type avoids a
         // re-read per result.
-        let nodes = output
-            .matched_nodes
-            .into_iter()
-            .map(node_to_proto)
-            .collect();
+        let nodes = nodes_to_proto(&this.node_service, output.matched_nodes).await?;
 
         Ok(Response::new(SearchSemanticResponse { nodes }))
     }

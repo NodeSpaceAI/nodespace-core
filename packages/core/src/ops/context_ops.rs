@@ -971,14 +971,11 @@ mod tests {
             friendly_name: "Status".to_string(),
             field_type: "enum".to_string(),
             protection: SchemaProtectionLevel::User,
-            core_values: Some(vec![EnumValue {
-                value: "open".to_string(),
-                label: "Open".to_string(),
-            }]),
-            user_values: Some(vec![EnumValue {
-                value: "blocked".to_string(),
-                label: "Blocked".to_string(),
-            }]),
+            core_values: Some(vec![EnumValue::new("open".to_string(), "Open".to_string())]),
+            user_values: Some(vec![EnumValue::new(
+                "blocked".to_string(),
+                "Blocked".to_string(),
+            )]),
             indexed: false,
             required: Some(true),
             extensible: None,

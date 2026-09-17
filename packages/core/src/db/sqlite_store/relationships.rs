@@ -4,6 +4,64 @@ use crate::models::schema::{
     SchemaRelationship, BUILTIN_RELATIONSHIPS, BUILTIN_RELATIONSHIP_NAMES,
 };
 
+/// The recursive `extends` closure query, for a given endpoint direction.
+///
+/// **`INDEXED BY` is load-bearing, not decoration.** This is the same hazard
+/// [`MENTION_CONTAINERS_QUERY`] documents: left to its own planning, SQLite
+/// picks `idx_rel_type (relationship_type)` as the driving index for the
+/// recursive step and scans every edge of that type per level, rather than
+/// using `idx_rel_out`/`idx_rel_in`'s `(endpoint, relationship_type)`
+/// composite to look up only the frontier's edges — the difference measured
+/// at 8ms vs 393ms there.
+///
+/// That query solves it with a scalar correlated subquery, which works
+/// because a `has_child` step has exactly one parent. A subtype step fans out
+/// (a parent may be extended by many schemas), so it has to return a set,
+/// which a scalar subquery cannot express — and rewriting the join with the
+/// CTE first does *not* help, since SQLite reorders joins freely. `INDEXED
+/// BY` is what actually pins it, verified by
+/// `extends_closure_query_drives_off_the_endpoint_index` in this file's
+/// `mod tests`, which binds this exact text. Do not remove the hint.
+///
+/// `UNION` (not `UNION ALL`) terminates a cycle by discarding the repeat, so
+/// a corrupt edge set yields a finite result rather than looping to the depth
+/// cap.
+///
+/// Extracted as a function so the query-plan test binds the production text
+/// rather than a copy that can drift out of sync.
+fn extends_closure_sql(step_from: &str, step_to: &str) -> String {
+    format!(
+        r#"WITH RECURSIVE closure(type_id, depth) AS (
+                SELECT ?1, 0
+                UNION
+                SELECT r.{step_to}, c.depth + 1
+                FROM closure c
+                JOIN relationship r INDEXED BY idx_rel_{index_side}
+                  ON r.{step_from} = c.type_id AND r.relationship_type = ?2
+                WHERE c.depth < {max_depth}
+            )
+            SELECT DISTINCT type_id FROM closure"#,
+        step_to = step_to,
+        step_from = step_from,
+        // `idx_rel_in (in_node, …)` / `idx_rel_out (out_node, …)` — the
+        // composite whose leading column is the endpoint being matched.
+        index_side = step_from.trim_end_matches("_node"),
+        max_depth = crate::schema::extends_chain::MAX_EXTENDS_DEPTH,
+    )
+}
+
+/// Which way an `extends` closure walk runs.
+///
+/// Getting the endpoint swap wrong inverts the closure silently, so the case
+/// is named rather than passed as bare column strings. Only `Descendants` has
+/// a caller — see [`SqliteStore::walk_extends_closure`] for why ancestry is
+/// resolved in-memory instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtendsDirection {
+    /// Base type → every schema transitively extending it.
+    Descendants,
+}
+
 /// SQL fragment excluding the built-in structural relationship types, for
 /// queries that must see only schema-declared relationships. One definition so
 /// every declaration query scopes identically.
@@ -1691,6 +1749,126 @@ impl SqliteStore {
     }
 
     /// All relationship declarations made BY `schema_id`, in declaration order.
+    /// Every `extends` edge in the database, as child schema id → parent.
+    ///
+    /// One query rather than a walk: chain resolution needs to answer "who is
+    /// this schema's parent?" repeatedly, and the accessors are `async` while
+    /// the walk is not. The map holds one entry per *extending* schema, so it
+    /// is empty until something declares `extends` and small thereafter —
+    /// extension is a rare, administrative act.
+    ///
+    /// Reads `in_node`/`out_node` directly rather than parsing the declaration
+    /// JSON: the columns are indexed, and they are what the closure queries
+    /// below walk, so a disagreement between the two would be a bug this
+    /// avoids having to detect.
+    pub async fn get_extends_parent_map(&self) -> Result<HashMap<String, String>> {
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                "SELECT in_node, out_node FROM relationship WHERE relationship_type = ?1",
+                libsql::params![crate::models::schema::EXTENDS_RELATIONSHIP],
+            )
+            .await
+            .context("Failed to load extends edges")?;
+
+        let mut map = HashMap::new();
+        while let Some(row) = rows.next().await? {
+            let child: String = row.get(0)?;
+            let parent: String = row.get(1)?;
+            map.insert(child, parent);
+        }
+        Ok(map)
+    }
+
+    /// Whether any `extends` edge exists at all.
+    ///
+    /// The guard on the query engine's hot path: `extends` is rare and absent
+    /// entirely until a schema declares one, so this single indexed lookup
+    /// lets every query in an unextended database skip closure resolution.
+    pub async fn has_any_extends_edge(&self) -> Result<bool> {
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                "SELECT 1 FROM relationship WHERE relationship_type = ?1 LIMIT 1",
+                libsql::params![crate::models::schema::EXTENDS_RELATIONSHIP],
+            )
+            .await
+            .context("Failed to check for extends edges")?;
+
+        Ok(rows.next().await?.is_some())
+    }
+
+    /// A base type's full transitive subtype set, including the base itself.
+    ///
+    /// `task` → `[task, issue, bug, …]`. This is the descendant closure the
+    /// query engine expands a `node_type` filter into, so a query for a base
+    /// type matches every schema extending it (ADR-078).
+    ///
+    /// Walks `out_node → in_node`, since a declaration stores `in_node` as the
+    /// declaring (child) schema. Inverting this silently returns ancestors
+    /// instead of descendants.
+    ///
+    /// The recursive step is a **correlated subquery, not a join** — the same
+    /// constraint `MENTION_CONTAINERS_QUERY` documents at length. The join form
+    /// lets SQLite drive off `idx_rel_type` and scan every edge of that type
+    /// per step; the correlated form forces `idx_rel_out (out_node,
+    /// relationship_type)`. Do not "simplify" it.
+    pub async fn get_subtype_closure(&self, base_type: &str) -> Result<Vec<String>> {
+        self.walk_extends_closure(base_type, ExtendsDirection::Descendants)
+            .await
+    }
+
+    /// Shared recursive walk over `extends` edges.
+    ///
+    /// Only the descendant direction has a caller: ancestry is resolved
+    /// in-memory from [`Self::get_extends_parent_map`] (one query for every
+    /// edge, walked by `resolve_ancestor_chain`) rather than one recursive
+    /// query per type, because the trigger engine needs every type's ancestry
+    /// at once to build its cache. The direction parameter is kept so the
+    /// endpoint swap stays named rather than inlined as bare column strings —
+    /// getting it backwards silently inverts the closure.
+    async fn walk_extends_closure(
+        &self,
+        seed: &str,
+        direction: ExtendsDirection,
+    ) -> Result<Vec<String>> {
+        // `step_from` is the column matched against the frontier; `step_to` is
+        // the column yielding the next node. Descendants match on out_node
+        // (the parent) and yield in_node (the child); ancestors do the reverse.
+        let (step_from, step_to) = match direction {
+            ExtendsDirection::Descendants => ("out_node", "in_node"),
+        };
+
+        let sql = extends_closure_sql(step_from, step_to);
+
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                &sql,
+                libsql::params![
+                    seed.to_string(),
+                    crate::models::schema::EXTENDS_RELATIONSHIP
+                ],
+            )
+            .await
+            .context("Failed to walk extends closure")?;
+
+        let mut types = Vec::new();
+        while let Some(row) = rows.next().await? {
+            types.push(row.get(0)?);
+        }
+
+        // `UNION` (not `UNION ALL`) already terminates a cycle by discarding
+        // the repeat, so a corrupt edge set yields a finite set rather than
+        // looping to the depth cap.
+        types.sort();
+        types.dedup();
+        Ok(types)
+    }
+
     pub async fn get_schema_declarations(
         &self,
         schema_id: &str,
@@ -2142,6 +2320,56 @@ mod tests {
             !detail.contains("idx_rel_type"),
             "container-resolution query must not use idx_rel_type (full has_child scan); plan was: {detail}"
         );
+        Ok(())
+    }
+
+    /// The subtype-closure walk must drive off `idx_rel_out (out_node,
+    /// relationship_type)`, not `idx_rel_type (relationship_type)`.
+    ///
+    /// Mirrors `container_resolution_query_does_not_scan_idx_rel_type` for the
+    /// `extends` closure. The distinction matters for the same reason it does
+    /// there: driving off `relationship_type` scans every edge of that type
+    /// per recursive step. `extends` selects a far smaller partition than
+    /// `has_child`, so the absolute cost is low today — but this pins the
+    /// claim the doc comment makes, so a future edit that changes the plan
+    /// fails here rather than silently regressing.
+    #[tokio::test]
+    async fn extends_closure_query_drives_off_the_endpoint_index() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("test.db");
+        let store = SqliteStore::new(db_path).await?;
+
+        // The exact text `walk_extends_closure` runs for the descendant
+        // direction, built by the same function.
+        let sql = extends_closure_sql("out_node", "in_node");
+
+        let mut rows = store
+            .read()
+            .await?
+            .query(
+                &format!("EXPLAIN QUERY PLAN {sql}"),
+                libsql::params!["task".to_string(), "extends".to_string()],
+            )
+            .await
+            .context("Failed to run EXPLAIN QUERY PLAN")?;
+
+        let mut detail = String::new();
+        while let Some(row) = rows.next().await? {
+            let d: String = row.get(3)?;
+            detail.push_str(&d);
+            detail.push(' ');
+        }
+
+        assert!(
+            detail.contains("idx_rel_out"),
+            "the closure step should use idx_rel_out (out_node, relationship_type); plan was: {detail}"
+        );
+        assert!(
+            !detail.contains("idx_rel_type"),
+            "the closure step must not drive off idx_rel_type, which scans every \
+             edge of that type per recursive step; plan was: {detail}"
+        );
+
         Ok(())
     }
 }

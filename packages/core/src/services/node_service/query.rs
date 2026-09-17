@@ -2,6 +2,62 @@
 
 use super::*;
 
+/// A query's read scope (ADR-078): which buckets its results are read from,
+/// and the field definitions needed to resolve extended enum values back to
+/// the vocabulary the query's author could know about.
+///
+/// Built once per query by `build_scope_context` and consulted per row. Every
+/// schema read happens during construction, so the per-row filter path stays
+/// synchronous and store-free — filter evaluation is per-row, and a schema
+/// read inside that loop would be one round-trip per matched node.
+pub(crate) struct ScopeContext {
+    /// The queried type's own chain, nearest-first — the buckets in scope.
+    chain: Vec<String>,
+    /// The type the query named, i.e. the scope values resolve *to*.
+    scope_type: String,
+    /// Effective fields at the queried scope: what vocabulary a filter
+    /// authored against this type can refer to.
+    scope_fields: Vec<crate::models::SchemaField>,
+    /// Effective fields per descendant type, keyed by node_type — where the
+    /// `maps_to` declarations live. Only holds types that differ from the
+    /// queried one; an exact-type match needs no resolution.
+    node_fields: std::collections::HashMap<String, Vec<crate::models::SchemaField>>,
+}
+
+impl ScopeContext {
+    /// The buckets in scope, nearest-first.
+    fn chain(&self) -> &[String] {
+        &self.chain
+    }
+
+    /// Whether the queried scope declares this field — i.e. whether a filter
+    /// authored at this scope is entitled to read it at all.
+    fn declares_field(&self, name: &str) -> bool {
+        self.scope_fields.iter().any(|f| f.name == name)
+    }
+
+    /// Whether a node of this type could carry a value needing resolution.
+    ///
+    /// False for a node of exactly the queried type — it is already reading at
+    /// its native scope — and for any type with no pre-resolved fields, which
+    /// is every type when nothing extends the queried one.
+    fn may_resolve_values(&self, node_type: &str) -> bool {
+        node_type != self.scope_type && self.node_fields.contains_key(node_type)
+    }
+
+    /// Resolve one stored value into the queried scope's vocabulary, or `None`
+    /// if it cannot be expressed there.
+    fn resolve_value(&self, field: &str, stored: &str, node_type: &str) -> Option<String> {
+        let node_fields = self.node_fields.get(node_type)?;
+        crate::schema::extends_chain::resolve_value_at_scope(
+            field,
+            stored,
+            node_fields,
+            &self.scope_fields,
+        )
+    }
+}
+
 impl NodeService {
     /// Query nodes with filtering
     ///
@@ -67,7 +123,15 @@ impl NodeService {
 
         // Apply property filters in-memory if present
         let result_nodes = if let Some(ref property_filters) = filter.property_filters {
-            let mut filtered = Self::apply_property_filters(nodes, property_filters);
+            // The query's own `node_type` sets the read scope (ADR-078): a
+            // filter authored against a base type is evaluated at that base's
+            // scope even when the matched row is a descendant instance.
+            // Resolved once per query, not per row.
+            let scope = self
+                .build_scope_context(filter.node_type.as_deref())
+                .await?;
+            let mut filtered =
+                Self::apply_property_filters(nodes, property_filters, scope.as_ref());
             // Apply offset in memory
             if let Some(offset) = filter.offset {
                 if offset < filtered.len() {
@@ -88,24 +152,80 @@ impl NodeService {
         Ok(result_nodes)
     }
 
+    /// Build the read scope for a query's `node_type`, if it names one
+    /// (ADR-078).
+    ///
+    /// Resolved once per query, never per row — filter evaluation is per-row,
+    /// so a schema read inside the row loop would turn an in-memory filter into
+    /// one round-trip per matched node. Returns `None` when there is nothing to
+    /// scope by (no type filter, the `*` wildcard) or when no schema extends
+    /// anything, in which case filtering keeps its pre-`extends` behavior.
+    async fn build_scope_context(
+        &self,
+        node_type: Option<&str>,
+    ) -> Result<Option<ScopeContext>, NodeServiceError> {
+        let Some(nt) = node_type.filter(|nt| *nt != "*") else {
+            return Ok(None);
+        };
+
+        let chain = self.resolve_type_chain(nt).await?;
+        let scope_fields = self.resolve_field_owners(nt).await?.0;
+
+        // Pre-resolve the effective fields of every type that could appear in
+        // this query's results — the descendant closure — because `maps_to`
+        // resolution needs the *node's* field definitions (where the mapping
+        // lives) and runs inside a synchronous filter with no store access.
+        // The closure is exactly the set the query engine already expanded the
+        // type filter into, so this adds no rows, and it is empty of extra
+        // work whenever nothing extends the queried type.
+        let mut node_fields = std::collections::HashMap::new();
+        for subtype in self.store.get_subtype_closure(nt).await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to resolve subtypes for scope: {e}"))
+        })? {
+            if subtype == nt {
+                continue;
+            }
+            let fields = self.resolve_field_owners(&subtype).await?.0;
+            node_fields.insert(subtype, fields);
+        }
+
+        Ok(Some(ScopeContext {
+            chain,
+            scope_type: nt.to_string(),
+            scope_fields,
+            node_fields,
+        }))
+    }
+
     /// Apply property filters in-memory to a list of nodes.
     ///
     /// Properties are stored in namespaced format: `{ "task": { "status": "open" } }`.
     /// PropertyFilter paths use JSONPath: `"$.status"`.
     /// This resolves the path against each node's type namespace.
-    fn apply_property_filters(nodes: Vec<Node>, filters: &[PropertyFilter]) -> Vec<Node> {
+    /// `scope` is the query's own read scope (ADR-078) — resolved once per
+    /// query, not per row. `None` falls back to each node's own type, which is
+    /// the untyped-query case and the pre-`extends` behavior.
+    fn apply_property_filters(
+        nodes: Vec<Node>,
+        filters: &[PropertyFilter],
+        scope: Option<&ScopeContext>,
+    ) -> Vec<Node> {
         nodes
             .into_iter()
             .filter(|node| {
                 filters
                     .iter()
-                    .all(|f| Self::node_matches_property_filter(node, f))
+                    .all(|f| Self::node_matches_property_filter(node, f, scope))
             })
             .collect()
     }
 
     /// Check if a single node matches a single property filter.
-    fn node_matches_property_filter(node: &Node, filter: &PropertyFilter) -> bool {
+    fn node_matches_property_filter(
+        node: &Node,
+        filter: &PropertyFilter,
+        scope: Option<&ScopeContext>,
+    ) -> bool {
         // Extract property path from JSONPath "$.field" or "$.field.subfield"
         // PropertyFilter::new() validates the "$." prefix, so strip_prefix should always succeed.
         let path = match filter.path.strip_prefix("$.") {
@@ -120,14 +240,74 @@ impl NodeService {
         };
         let segments: Vec<&str> = path.split('.').collect();
 
-        // Resolve value from namespaced properties: properties[node_type][field...]
-        let mut current = node.properties.get(&node.node_type);
-        for segment in &segments {
-            current = current.and_then(|v| v.get(*segment));
+        // Resolve the value from namespaced properties (ADR-078).
+        //
+        // Which buckets to search is decided by whether the field exists at
+        // the query's scope at all, NOT by the query's bucket chain alone. A
+        // field the query's scope declares may physically live in a subtype's
+        // bucket: extending an inherited enum materializes the field onto the
+        // extending schema, which makes that schema its declaring owner and
+        // moves where instances store it. Searching only the query's chain
+        // would miss exactly the values `maps_to` exists to translate.
+        //
+        // A field the query's scope does NOT declare stays invisible, which is
+        // what keeps a base-scoped query from depending on a subtype's own
+        // fields.
+        let own_chain = std::slice::from_ref(&node.node_type);
+        let search_chain = match (scope, segments.as_slice()) {
+            (Some(ctx), [field]) if ctx.declares_field(field) => own_chain,
+            (Some(ctx), _) => ctx.chain(),
+            (None, _) => own_chain,
+        };
+        let mut current = None;
+        for scope_name in search_chain {
+            let mut candidate = node.properties.get(scope_name.as_str());
+            for segment in &segments {
+                candidate = candidate.and_then(|v| v.get(*segment));
+            }
+            if candidate.is_some() {
+                current = candidate;
+                break;
+            }
+        }
+        // Fall back to every bucket when the scope declares the field but the
+        // node's own chain does not hold it — a deeper descendant may own it.
+        if current.is_none() {
+            if let (Some(ctx), [field]) = (scope, segments.as_slice()) {
+                if ctx.declares_field(field) {
+                    current = node
+                        .properties
+                        .as_object()
+                        .and_then(|obj| obj.values().find_map(|b| b.get(field)));
+                }
+            }
         }
 
         let Some(actual_value) = current else {
             return false; // Property not found = doesn't match
+        };
+
+        // Resolve an extended enum value to what it means at the query's scope
+        // (ADR-078). A filter authored against a base type compares against
+        // that type's vocabulary, so an `issue` node storing `backlog` must
+        // compare as `todo` — the value the filter's author could know about.
+        // An unresolvable value fails the filter rather than falling back to
+        // the raw value, which a base-scoped filter has no way to interpret.
+        //
+        // Only single-segment paths resolve: `maps_to` maps a field's enum
+        // values, not positions inside a nested object.
+        let resolved;
+        let actual_value = match (scope, actual_value.as_str(), segments.as_slice()) {
+            (Some(ctx), Some(raw), [field]) if ctx.may_resolve_values(&node.node_type) => {
+                match ctx.resolve_value(field, raw, &node.node_type) {
+                    Some(value) => {
+                        resolved = serde_json::Value::String(value);
+                        &resolved
+                    }
+                    None => return false,
+                }
+            }
+            _ => actual_value,
         };
 
         match &filter.operator {
@@ -251,6 +431,162 @@ impl NodeService {
     /// If no limit is specified in the query, a default limit of [`DEFAULT_QUERY_LIMIT`] (100)
     /// is applied to prevent unbounded queries and potential performance issues.
     /// Callers can override this by explicitly setting a limit via `query.with_limit(n)`.
+    /// Project a query's results to the queried type's scope (ADR-078).
+    ///
+    /// Returns each node with its properties reduced to the buckets visible at
+    /// `node_type`'s scope, so a `task`-scoped query yields rows carrying
+    /// task's fields and nothing else, whatever their concrete type. Querying
+    /// a type that extends nothing, or with no type filter, returns the nodes
+    /// untouched.
+    ///
+    /// Deliberately **not** applied inside `query_nodes_simple` itself. A
+    /// projected node has had properties removed from the in-memory struct, so
+    /// a caller that reads, mutates and writes one back would silently drop
+    /// the fields outside its read scope — and there are such callers
+    /// (`skill_updater` round-trips a node it queried). Projection belongs at
+    /// a boundary where results are leaving for a client and cannot be written
+    /// back, so it is offered here and applied by the daemon's read RPCs
+    /// rather than imposed on every internal query.
+    pub async fn project_nodes_to_scope(
+        &self,
+        nodes: Vec<Node>,
+        node_type: Option<&str>,
+    ) -> Result<Vec<Node>, NodeServiceError> {
+        let Some(nt) = node_type.filter(|nt| *nt != "*") else {
+            return Ok(nodes);
+        };
+
+        // The scope is the QUERIED type's own chain — `["ticket"]` for an
+        // unextended base, `["bug", "ticket"]` when the query itself names a
+        // subtype. Note this is the queried type's ancestry, not the matched
+        // node's: projecting a bug at ticket scope means keeping ticket's
+        // buckets, and ticket's chain is what names them.
+        let chain = self.resolve_type_chain(nt).await?;
+        let scopes: Vec<&str> = chain.iter().map(String::as_str).collect();
+
+        Ok(nodes
+            .into_iter()
+            .map(|mut node| {
+                // A node of exactly the queried type carries only buckets
+                // already in scope, so projecting it is the identity — skip
+                // the rebuild rather than reallocate every row of an
+                // unextended query.
+                if node.node_type != nt {
+                    node.properties = Self::project_properties_to_scope(&node.properties, &scopes);
+                }
+                node
+            })
+            .collect())
+    }
+
+    /// Keep only the buckets named in `scopes`, plus `_`-prefixed bookkeeping.
+    ///
+    /// Storage shape is preserved rather than flattened: the wire layer
+    /// flattens separately, and returning a flattened object here would make a
+    /// projected node structurally different from an unprojected one.
+    fn project_properties_to_scope(
+        properties: &serde_json::Value,
+        scopes: &[&str],
+    ) -> serde_json::Value {
+        let Some(obj) = properties.as_object() else {
+            return properties.clone();
+        };
+
+        serde_json::Value::Object(
+            obj.iter()
+                .filter(|(k, _)| k.starts_with('_') || scopes.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        )
+    }
+
+    /// Fold a node's inherited buckets into its own, for the wire.
+    ///
+    /// Read surfaces outside this crate — the CLI, the wire flattener — have
+    /// no store access and so cannot resolve an `extends` chain. They flatten
+    /// a single bucket, which is correct for an unextended node and drops
+    /// every inherited field for an extending one.
+    ///
+    /// Collapsing the chain here, where the chain *is* known, lets those
+    /// surfaces keep their single-bucket rule unchanged. Crucially it also
+    /// keeps them able to distinguish a dormant bucket (left by an earlier
+    /// `node_type` change) from an inherited one: a dormant bucket is not in
+    /// the chain, so it is neither folded in nor exposed — the behavior
+    /// `node_to_json_hides_dormant_namespaces` pins.
+    ///
+    /// The node's own bucket wins any collision, matching nearest-scope-first.
+    pub async fn collapse_chain_for_wire(
+        &self,
+        nodes: Vec<Node>,
+    ) -> Result<Vec<Node>, NodeServiceError> {
+        // One query for every `extends` edge, then resolve each node's chain
+        // in memory. Doing this per node would mean a full scan of the edge
+        // table per row — 501 queries for a 500-row result, on the frontend's
+        // main read path. An empty map also answers the existence check, so
+        // this replaces the separate `has_any_extends_edge` guard rather than
+        // adding to it.
+        let parent_map = self
+            .store
+            .get_extends_parent_map()
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        if parent_map.is_empty() {
+            return Ok(nodes);
+        }
+        let lookup = move |id: &str| parent_map.get(id).cloned();
+
+        // Chains are memoized across rows: a result set is typically a handful
+        // of distinct types over many nodes.
+        let mut chains: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+
+        let mut out = Vec::with_capacity(nodes.len());
+        for mut node in nodes {
+            let chain = chains.entry(node.node_type.clone()).or_insert_with(|| {
+                crate::schema::extends_chain::resolve_ancestor_chain(&node.node_type, &lookup)
+            });
+            if chain.len() > 1 {
+                node.properties = Self::collapse_properties(&node.properties, chain);
+            }
+            out.push(node);
+        }
+        Ok(out)
+    }
+
+    /// Merge each in-chain bucket into the node's own, nearest scope winning.
+    fn collapse_properties(properties: &serde_json::Value, chain: &[String]) -> serde_json::Value {
+        let Some(obj) = properties.as_object() else {
+            return properties.clone();
+        };
+        let Some(own_type) = chain.first() else {
+            return properties.clone();
+        };
+
+        let mut own = serde_json::Map::new();
+        for scope in chain {
+            let Some(bucket) = obj.get(scope.as_str()).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (k, v) in bucket {
+                own.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+
+        let mut out = serde_json::Map::new();
+        for (k, v) in obj {
+            // Ancestor buckets are now represented inside the own bucket;
+            // anything else (bookkeeping, dormant namespaces) passes through
+            // untouched so downstream rules about it still apply.
+            if chain.iter().any(|s| s == k) {
+                continue;
+            }
+            out.insert(k.clone(), v.clone());
+        }
+        out.insert(own_type.clone(), serde_json::Value::Object(own));
+
+        serde_json::Value::Object(out)
+    }
+
     pub async fn query_nodes_simple(
         &self,
         query: crate::models::NodeQuery,

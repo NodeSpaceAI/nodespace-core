@@ -86,20 +86,58 @@ pub fn flatten_namespaced_properties(
     properties: &serde_json::Value,
     node_type: &str,
 ) -> serde_json::Value {
+    flatten_namespaced_properties_at_scope(properties, std::slice::from_ref(&node_type))
+}
+
+/// Flatten namespaced properties at an explicit scope chain (ADR-078).
+///
+/// The general form of [`flatten_namespaced_properties`], which is now the
+/// single-scope case. `scope_chain` is nearest-scope-first: reading an `issue`
+/// node at its own scope passes `["issue", "task"]` and yields both its own
+/// and its inherited fields, while reading the same node at `task` scope
+/// passes `["task"]` and yields task's fields only — the issue's own fields
+/// **absent**, not merely unresolved. That truncation is what makes a
+/// base-scoped query return a homogeneous result set.
+///
+/// A nearer scope wins any key collision. Well-formed chains have none
+/// (redeclaration is rejected at write time); this only decides the
+/// retroactive-collision case ADR-078 leaves open.
+///
+/// Stays pure and free of any schema lookup: the caller resolves the chain,
+/// because every caller is in code that can reach the store and this crate
+/// cannot. Passing a single scope preserves the pre-`extends` behavior exactly.
+pub fn flatten_namespaced_properties_at_scope(
+    properties: &serde_json::Value,
+    scope_chain: &[&str],
+) -> serde_json::Value {
     let Some(props_obj) = properties.as_object() else {
         return properties.clone();
     };
 
-    if let Some(type_props) = props_obj.get(node_type).and_then(|v| v.as_object()) {
-        return serde_json::Value::Object(
-            type_props
-                .iter()
-                .filter(|(k, _)| !k.starts_with('_'))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
-        );
+    // Any bucket in the chain present? If so, the node is in storage shape and
+    // the chain decides what is visible.
+    let has_any_bucket = scope_chain
+        .iter()
+        .any(|scope| props_obj.get(*scope).and_then(|v| v.as_object()).is_some());
+
+    if has_any_bucket {
+        let mut out = serde_json::Map::new();
+        for scope in scope_chain {
+            let Some(bucket) = props_obj.get(*scope).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (k, v) in bucket {
+                if k.starts_with('_') {
+                    continue;
+                }
+                out.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        return serde_json::Value::Object(out);
     }
 
+    // Already-flat fallback, unchanged: a nested object here can only be
+    // another type's namespace, so it is dropped.
     serde_json::Value::Object(
         props_obj
             .iter()
@@ -110,6 +148,13 @@ pub fn flatten_namespaced_properties(
 }
 
 /// Flatten namespaced properties for API response, in place.
+///
+/// Single-scope by design: this crate has no store access and cannot resolve
+/// an `extends` chain. The service layer collapses a node's inherited buckets
+/// into its own before the wire boundary
+/// (`NodeService::collapse_chain_for_wire`), so one bucket carries the whole
+/// effective property set by the time it reaches here — and a dormant bucket
+/// left by an earlier type change stays excluded, as it always has been.
 fn flatten_properties_for_api(node: &mut Node) {
     node.properties = flatten_namespaced_properties(&node.properties, &node.node_type);
 }

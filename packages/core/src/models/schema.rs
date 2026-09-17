@@ -129,6 +129,51 @@ const _: () = assert!(
     "RESERVED_RELATIONSHIP_NAMES must list both spellings of every BUILTIN_RELATIONSHIPS entry"
 );
 
+/// Type-system relationship names: NodeSpace's own vocabulary for statements
+/// *about* schemas, rather than statements a schema makes about its instances.
+///
+/// These are deliberately **not** in [`BUILTIN_RELATIONSHIP_NAMES`], and the
+/// distinction is load-bearing. That array answers two questions at once —
+/// "may a caller declare this name?" and "is this edge excluded from schema
+/// declaration storage?" (via `builtin_exclusion_sql`, which splices
+/// `relationship_type NOT IN (…)` into every declaration query). A type-system
+/// relationship answers them differently: a caller may **not** declare one,
+/// but it *is* stored and read as an ordinary schema declaration. Adding one
+/// to the builtin array would make `set_schema_declarations` reject the write
+/// and then filter the row out of every read — the edge would exist in the
+/// table and be invisible to the code that needs it.
+///
+/// Per ADR-078, `extends` is authored as a first-class key on the schema
+/// definition; NodeSpace synthesizes the declaration itself. Users define new
+/// schemas, not new kinds of statement about schemas.
+pub const TYPE_SYSTEM_RELATIONSHIPS: [(&str, &str); 1] = [("extends", "extended_by")];
+
+/// Type-system relationship names, both directions, for rejection messages and
+/// membership checks.
+pub const TYPE_SYSTEM_RELATIONSHIP_NAMES: [&str; 2] = [
+    TYPE_SYSTEM_RELATIONSHIPS[0].0,
+    TYPE_SYSTEM_RELATIONSHIPS[0].1,
+];
+
+const _: () = assert!(
+    TYPE_SYSTEM_RELATIONSHIPS.len() * 2 == TYPE_SYSTEM_RELATIONSHIP_NAMES.len(),
+    "TYPE_SYSTEM_RELATIONSHIP_NAMES must list both directions of every TYPE_SYSTEM_RELATIONSHIPS entry"
+);
+
+/// Whether `name` is a type-system relationship name, in either direction.
+///
+/// Used to reject caller-supplied declarations; never used to exclude rows
+/// from declaration queries (see [`TYPE_SYSTEM_RELATIONSHIPS`]).
+pub fn is_type_system_relationship(name: &str) -> bool {
+    TYPE_SYSTEM_RELATIONSHIP_NAMES.contains(&name)
+}
+
+/// The `extends` relationship name, as stored in `relationship_type`.
+pub const EXTENDS_RELATIONSHIP: &str = TYPE_SYSTEM_RELATIONSHIPS[0].0;
+
+/// The reverse name `extends` edges are stored with.
+pub const EXTENDED_BY_RELATIONSHIP: &str = TYPE_SYSTEM_RELATIONSHIPS[0].1;
+
 /// The reverse name for a built-in structural relationship — the label its edge
 /// reads by from the target's end (`has_child` → `child_of`).
 ///

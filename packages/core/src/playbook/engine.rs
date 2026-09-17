@@ -221,7 +221,96 @@ impl PlaybookEngine {
     /// restart and then, on first trigger, disable its *entire* play (not
     /// just the offending rule): the async reactive dispatch loop treats any
     /// `ActionResult::Failed` the same, and `execute_reject` always fails.
+    /// Rebuild the lifecycle manager's `extends` ancestry cache (ADR-078).
+    ///
+    /// The manager itself has no store access, so the walk happens here and
+    /// the result is handed over. Every extending type gets an entry; an
+    /// unextended type gets none, and `ancestors_of` treats an absent entry as
+    /// "just itself" — so this is empty, and costs nothing, until a schema
+    /// declares `extends`.
+    ///
+    /// Rebuilt wholesale rather than diffed: `extends` edits are rare,
+    /// administrative operations, and the map holds one entry per extending
+    /// type.
+    /// Build the CEL evaluation scope for a rule firing on a node (ADR-078).
+    ///
+    /// A rule registered against a base type evaluates its conditions at that
+    /// type's scope, so it sees the field set and enum vocabulary it was
+    /// authored against whatever concrete subtype fired it. Returns `None`
+    /// when there is nothing to scope — the node is already the registered
+    /// type, or the trigger is not type-scoped — which is every rule until
+    /// something declares `extends`.
+    pub(crate) async fn cel_scope_for(
+        node_service: &Arc<NodeService>,
+        rule: &ParsedRule,
+        node: &crate::models::Node,
+    ) -> Option<crate::playbook::cel::CelScope> {
+        let scope_type = match &rule.trigger {
+            ParsedTrigger::GraphEvent { node_type, .. } => node_type,
+            ParsedTrigger::Scheduled { node_type, .. } => node_type,
+        };
+
+        // A node of exactly the registered type reads natively; nothing to
+        // project or resolve.
+        if scope_type == &node.node_type || scope_type == "*" {
+            return None;
+        }
+
+        let chain = node_service.resolve_type_chain(scope_type).await.ok()?;
+        let scope_fields = node_service.resolve_field_owners(scope_type).await.ok()?.0;
+        // The node's OWN chain, not the scope's. Reading the scope's ancestry
+        // would skip every bucket between the node and the reading scope — on
+        // `bug → ticket → workitem` read at `workitem`, the `ticket` bucket
+        // would never be opened. `resolve_field_owners` already computes this
+        // chain as its third element, so taking it costs nothing.
+        let (node_fields, _, node_chain) = node_service
+            .resolve_field_owners(&node.node_type)
+            .await
+            .ok()?;
+
+        Some(crate::playbook::cel::CelScope {
+            scope_type: scope_type.clone(),
+            node_chain,
+            chain,
+            scope_fields,
+            node_fields,
+        })
+    }
+
+    pub(crate) async fn refresh_ancestor_cache(&self) {
+        let parent_map = match self.node_service.store().get_extends_parent_map().await {
+            Ok(map) => map,
+            Err(e) => {
+                // A failed refresh leaves the previous cache in place. Stale
+                // ancestry can only mean a base-scoped Play misses a
+                // newly-extending type until the next schema write, which is
+                // preferable to dropping every Play's subtype matching.
+                warn!("Failed to refresh extends ancestry cache: {}", e);
+                return;
+            }
+        };
+
+        let cache: std::collections::HashMap<String, Vec<String>> = parent_map
+            .keys()
+            .map(|child| {
+                let lookup = |id: &str| parent_map.get(id).cloned();
+                (
+                    child.clone(),
+                    crate::schema::extends_chain::resolve_ancestor_chain(child, &lookup),
+                )
+            })
+            .collect();
+
+        let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+        lifecycle.set_ancestor_cache(cache);
+    }
+
     async fn load_active_plays(&self) -> anyhow::Result<()> {
+        // Ancestry must be warm before any event is dispatched, or a
+        // base-scoped Play would silently miss subtype events until the first
+        // schema write of the process.
+        self.refresh_ancestor_cache().await;
+
         let nodes = self
             .node_service
             .query_nodes_by_type("play", Some("active"))
@@ -299,6 +388,18 @@ impl PlaybookEngine {
             } if node_type == "schema" => {
                 self.handle_schema_updated(node_id).await;
                 return;
+            }
+            // A newly created schema may declare `extends`, and a deleted one
+            // may remove an edge — neither arrives as NodeUpdated, so the
+            // drift hook above would never see them and the ancestry cache
+            // would stay stale until some unrelated schema edit. Refresh, but
+            // don't return: schema creation/deletion is not itself drift, and
+            // a Play may legitimately trigger on it.
+            DomainEvent::NodeCreated { node_type, .. } if node_type == "schema" => {
+                self.refresh_ancestor_cache().await;
+            }
+            DomainEvent::NodeDeleted { node_type, .. } if node_type == "schema" => {
+                self.refresh_ancestor_cache().await;
             }
             _ => {}
         }
@@ -486,11 +587,14 @@ impl PlaybookEngine {
         for rule_ref in invariant_rules {
             let mut resolver =
                 crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&self.node_service));
-            let condition_result = crate::playbook::cel::evaluate_conditions(
+            let cel_scope =
+                PlaybookEngine::cel_scope_for(&self.node_service, &rule_ref.rule, &node).await;
+            let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 &node,
                 &event,
                 Some(&mut resolver),
+                cel_scope.as_ref(),
             )
             .await;
 
@@ -756,6 +860,13 @@ impl PlaybookEngine {
 
     /// Handle a schema node being updated — check for version drift.
     async fn handle_schema_updated(&self, schema_node_id: &str) {
+        // A schema write may have added, re-targeted or removed an `extends`
+        // edge, which changes what a base-scoped Play matches. Rebuild the
+        // ancestry cache before the drift check below, so this hook cannot
+        // return early (a schema node missing `forNodeType`, say) and leave
+        // the cache stale.
+        self.refresh_ancestor_cache().await;
+
         match self.node_service.get_node(schema_node_id).await {
             Ok(Some(node)) => {
                 // Extract schema_node_type and version from the schema node
@@ -914,11 +1025,21 @@ pub(crate) async fn rule_processor_loop(
                 rule_ref.rule.name, rule_ref.play_id, rule_ref.rule_index,
             );
 
-            let condition_result = crate::playbook::cel::evaluate_conditions(
+            // Evaluate at the rule's registered trigger scope (ADR-078), so
+            // a Play on a base type sees that type's fields and vocabulary
+            // whatever concrete subtype fired it.
+            let cel_scope = PlaybookEngine::cel_scope_for(
+                &node_service,
+                &rule_ref.rule,
+                &work_item.trigger_node,
+            )
+            .await;
+            let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 &work_item.trigger_node,
                 &work_item.trigger_event.event,
                 Some(&mut resolver),
+                cel_scope.as_ref(),
             )
             .await;
 
@@ -1123,5 +1244,309 @@ pub(crate) fn trigger_node_id(event: &DomainEvent) -> Option<&str> {
         DomainEvent::NodeCreated { node_id, .. } => Some(node_id.as_str()),
         DomainEvent::NodeUpdated { node_id, .. } => Some(node_id.as_str()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    //! CEL evaluation at a Play's registered trigger scope (ADR-078).
+    //!
+    //! These live in-crate rather than in `tests/` because `cel_scope_for` is
+    //! `pub(crate)` — the scope is an internal contract between the engine and
+    //! the CEL evaluator, not a public API, and widening it purely for a test
+    //! would be the wrong trade.
+
+    use super::*;
+    use crate::db::SqliteStore;
+    use crate::playbook::cel::{evaluate_conditions_at_scope, ConditionResult};
+    use crate::playbook::types::{parse_rule, ParsedRule};
+    use crate::schema::{handle_create_schema, handle_update_schema};
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    async fn test_service() -> (Arc<NodeService>, TempDir) {
+        let temp_dir = TempDir::new().expect("tempdir creation failed");
+        let db_path = temp_dir.path().join("test.db");
+        let mut store = Arc::new(
+            SqliteStore::new(db_path)
+                .await
+                .expect("SqliteStore init failed"),
+        );
+        let node_service = Arc::new(
+            NodeService::new(&mut store)
+                .await
+                .expect("NodeService init failed"),
+        );
+        (node_service, temp_dir)
+    }
+
+    /// `ticket.state` is extensible; `bug` extends it and adds `backlog`
+    /// mapping to `open`. `bug` also declares its own `severity`.
+    async fn seed_chain(svc: &Arc<NodeService>) {
+        handle_create_schema(
+            svc,
+            json!({
+                "name": "Ticket",
+                "fields": [{
+                    "name": "state",
+                    "type": "enum",
+                    "protection": "user",
+                    "indexed": false,
+                    "extensible": true,
+                    "coreValues": [
+                        { "value": "open", "label": "Open" },
+                        { "value": "done", "label": "Done" }
+                    ]
+                }]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        handle_create_schema(
+            svc,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        handle_update_schema(
+            svc,
+            json!({
+                "schema_id": "bug",
+                "add_field_values": [{
+                    "field": "state",
+                    "values": [{ "value": "backlog", "label": "Backlog", "mapsTo": "open" }]
+                }]
+            }),
+        )
+        .await
+        .expect("extending the inherited enum should succeed");
+    }
+
+    fn rule_on(node_type: &str, condition: &str) -> ParsedRule {
+        let def = serde_json::from_value(json!({
+            "name": "r",
+            "trigger": { "type": "graph_event", "on": "node_created", "node_type": node_type },
+            "conditions": [condition],
+            "actions": []
+        }))
+        .expect("rule definition should parse");
+        parse_rule(&def).expect("rule should compile")
+    }
+
+    async fn eval(svc: &Arc<NodeService>, rule: &ParsedRule, node: &crate::models::Node) -> bool {
+        let scope = PlaybookEngine::cel_scope_for(svc, rule, node).await;
+        let event = DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: node.node_type.clone(),
+        };
+        matches!(
+            evaluate_conditions_at_scope(&rule.conditions, node, &event, None, scope.as_ref())
+                .await,
+            ConditionResult::Pass
+        )
+    }
+
+    async fn make_bug(svc: &Arc<NodeService>, props: serde_json::Value) -> crate::models::Node {
+        let id = svc
+            .create_node(crate::models::Node::new(
+                "bug".to_string(),
+                "a bug".to_string(),
+                props,
+            ))
+            .await
+            .expect("bug creation failed");
+        svc.get_node(&id)
+            .await
+            .expect("get_node failed")
+            .expect("node should exist")
+    }
+
+    #[tokio::test]
+    async fn base_scoped_condition_matches_through_maps_to() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "backlog" })).await;
+
+        // A Play registered on the BASE type, written against the base's
+        // vocabulary, firing on a subtype instance storing an extended value.
+        let rule = rule_on("ticket", "node.state == 'open'");
+        assert!(
+            eval(&svc, &rule, &node).await,
+            "a ticket-scoped `state == open` should match a bug storing `backlog`"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_scoped_condition_does_not_see_the_extended_value() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "backlog" })).await;
+
+        // The other half: a base-scoped condition must not be able to depend
+        // on vocabulary its author never knew existed.
+        let rule = rule_on("ticket", "node.state == 'backlog'");
+        assert!(
+            !eval(&svc, &rule, &node).await,
+            "a ticket-scoped condition must not match the raw extended value"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_scoped_condition_sees_the_raw_value() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "backlog" })).await;
+
+        let rule = rule_on("bug", "node.state == 'backlog'");
+        assert!(
+            eval(&svc, &rule, &node).await,
+            "a bug-scoped condition reads the stored value unresolved"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_scoped_condition_cannot_see_a_subtypes_own_field() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "open", "severity": "high" })).await;
+
+        let sees_base = rule_on("ticket", "node.state == 'open'");
+        assert!(
+            eval(&svc, &sees_base, &node).await,
+            "the base's own field is visible at base scope"
+        );
+
+        // Projection: a Play on the base behaves identically whether it fired
+        // on a plain ticket or a subtype.
+        let sees_subtype = rule_on("ticket", "has(node.severity)");
+        assert!(
+            !eval(&svc, &sees_subtype, &node).await,
+            "the subtype's own field must be absent at base scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn scope_projection_preserves_core_keys_and_plain_strings() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "open", "severity": "high" })).await;
+
+        // `resolve_value_at_scope` returns None for every string that is not a
+        // declared enum value at the reading scope — which includes `id`,
+        // `content`, `node_type`. The `field_is_enum` guard is what keeps
+        // them; deleting it as "redundant" would silently strip these from
+        // every base-scoped Play, and this is what would fail.
+        for condition in [
+            "node.id != ''",
+            "node.content != ''",
+            "node.node_type == 'bug'",
+        ] {
+            let rule = rule_on("ticket", condition);
+            assert!(
+                eval(&svc, &rule, &node).await,
+                "core key must survive scope projection: {condition}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unextended_type_gets_no_scope_at_all() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "open" })).await;
+
+        // A rule registered against the node's own type needs no projection or
+        // resolution, so the engine short-circuits before touching the store.
+        let rule = rule_on("bug", "node.state == 'open'");
+        assert!(
+            PlaybookEngine::cel_scope_for(&svc, &rule, &node)
+                .await
+                .is_none(),
+            "a rule on the node's own type resolves no scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mid_chain_bucket_is_read_on_a_three_level_chain() {
+        let (svc, _tmp) = test_service().await;
+
+        // workitem <- ticket <- bug. The field `state` is declared by
+        // `workitem`, inherited by both, and MATERIALIZED onto `ticket` when
+        // ticket extends its vocabulary — so an instance stores it in the
+        // `ticket` bucket: neither the node's own bucket nor the reading
+        // scope's.
+        handle_create_schema(
+            &svc,
+            json!({
+                "name": "Workitem",
+                "fields": [{
+                    "name": "state",
+                    "type": "enum",
+                    "protection": "user",
+                    "indexed": false,
+                    "extensible": true,
+                    "coreValues": [{ "value": "open", "label": "Open" }]
+                }]
+            }),
+        )
+        .await
+        .expect("workitem schema creation failed");
+        handle_create_schema(
+            &svc,
+            json!({ "name": "Ticket", "extends": "workitem", "fields": [] }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+        handle_update_schema(
+            &svc,
+            json!({
+                "schema_id": "ticket",
+                "add_field_values": [{
+                    "field": "state",
+                    "values": [{ "value": "triage", "label": "Triage", "mapsTo": "open" }]
+                }]
+            }),
+        )
+        .await
+        .expect("extending the inherited enum should succeed");
+        handle_create_schema(
+            &svc,
+            json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        let id = svc
+            .create_node(crate::models::Node::new(
+                "bug".to_string(),
+                "a bug".to_string(),
+                json!({ "state": "triage" }),
+            ))
+            .await
+            .expect("bug creation failed");
+        let node = svc
+            .get_node(&id)
+            .await
+            .expect("get_node failed")
+            .expect("node should exist");
+
+        // Read at the ROOT scope, two levels above the node. Building the
+        // node's view from the reading scope's ancestry yields
+        // ["bug", "workitem"] and never opens `ticket` — where the value
+        // actually lives — so the condition sees nothing.
+        let rule = rule_on("workitem", "node.state == 'open'");
+        assert!(
+            eval(&svc, &rule, &node).await,
+            "a mid-chain bucket must be read on a 3-level chain; node properties were {:?}",
+            node.properties
+        );
     }
 }

@@ -302,7 +302,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(NodeResponse {
             node_id: output.node_id,
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -319,7 +319,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(NodeResponse {
             node_id: req.node_id,
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -351,7 +351,7 @@ impl GrpcNodeService for NodeServiceImpl {
                 Ok(Response::new(NodeResponse {
                     node_id,
                     node_type,
-                    node_data: Some(node_to_proto(node)),
+                    node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
                 }))
             }
             None => Ok(Response::new(NodeResponse {
@@ -507,7 +507,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(NodeResponse {
             node_id: output.node_id,
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -669,7 +669,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        let nodes: Vec<NodeData> = children.into_iter().map(node_to_proto).collect();
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, children).await?;
 
         let count = nodes.len() as i32;
 
@@ -727,7 +727,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        let nodes: Vec<NodeData> = roots.into_iter().map(node_to_proto).collect();
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, roots).await?;
         let count = nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -860,11 +860,10 @@ impl GrpcNodeService for NodeServiceImpl {
             })
             .collect();
 
-        let nodes: Vec<NodeData> = output
-            .matched_nodes
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, output.matched_nodes)
+            .await?
             .into_iter()
-            .map(|node| {
-                let mut node_data = node_to_proto(node);
+            .map(|mut node_data| {
                 if let Some(markdown) = markdown_by_id.get(node_data.id.as_str()) {
                     node_data.markdown = markdown.to_string();
                 }
@@ -912,13 +911,25 @@ impl GrpcNodeService for NodeServiceImpl {
             },
         };
 
+        let queried_type = query.node_type.clone();
         let nodes = this
             .node_service
             .query_nodes_simple(query)
             .await
             .map_err(service_error_to_status)?;
 
-        let proto_nodes: Vec<NodeData> = nodes.into_iter().map(node_to_proto).collect();
+        // Project to the queried type's scope (ADR-078) so a base-type query
+        // returns rows carrying that type's fields and nothing else, whatever
+        // their concrete type. Applied here rather than in the service, since
+        // this is a boundary results leave by and cannot be written back
+        // through.
+        let nodes = this
+            .node_service
+            .project_nodes_to_scope(nodes, queried_type.as_deref())
+            .await
+            .map_err(service_error_to_status)?;
+
+        let proto_nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, nodes).await?;
         let count = proto_nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -988,6 +999,7 @@ impl GrpcNodeService for NodeServiceImpl {
         // the scale of ExecuteQueryInput's own default (50) while still
         // allowing large explicit pulls, without letting a client request an
         // unbounded scan.
+        let target_type = req.target_type.clone();
         let input = query_ops::ExecuteQueryInput {
             target_type: req.target_type,
             filters,
@@ -1003,7 +1015,17 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(ops_error_to_status)?;
 
-        let proto_nodes: Vec<NodeData> = nodes.into_iter().map(node_to_proto).collect();
+        // Project to the queried type's scope (ADR-078), same as
+        // `query_nodes_simple` — this is the RPC behind `nodespace query` and
+        // the playbook query paths, so without it a base-scoped query returns
+        // subtype instances still carrying their own buckets.
+        let nodes = this
+            .node_service
+            .project_nodes_to_scope(nodes, Some(target_type.as_str()))
+            .await
+            .map_err(service_error_to_status)?;
+
+        let proto_nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, nodes).await?;
         let count = proto_nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -1032,7 +1054,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        let proto_nodes: Vec<NodeData> = nodes.into_iter().map(node_to_proto).collect();
+        let proto_nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, nodes).await?;
         let count = proto_nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -1066,7 +1088,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(NodeResponse {
             node_id: req.node_id,
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -1098,7 +1120,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(NodeResponse {
             node_id: node.id.clone(),
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -1144,7 +1166,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        let children_proto = updated.into_iter().map(node_to_proto).collect();
+        let children_proto = nodes_to_proto(&this.node_service, updated).await?;
 
         Ok(Response::new(MoveChildrenToParentResponse {
             children: children_proto,
@@ -1604,7 +1626,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .cloned()
             .collect();
 
-        let nodes: Vec<NodeData> = fetched.into_iter().map(node_to_proto).collect();
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, fetched).await?;
         let count = nodes.len() as i32;
 
         Ok(Response::new(GetNodesBatchResponse {
@@ -1750,7 +1772,21 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?
         {
-            Some(schema) => schema,
+            Some(mut schema) => {
+                // Report the EFFECTIVE field set, not just the schema's own
+                // directly-declared fields (ADR-078). An extending schema's
+                // inherited fields are declared by an ancestor, so a raw read
+                // would show an agent or the CLI an `issue` with only
+                // `severity` and no `status` — the schema-comprehension
+                // failure this resolver exists to prevent.
+                schema.fields = this
+                    .node_service
+                    .resolve_field_owners(&req.schema_id)
+                    .await
+                    .map_err(service_error_to_status)?
+                    .0;
+                schema
+            }
             None => {
                 // Absent id → fetch_node's NotFound; present non-schema node →
                 // failed_precondition; present schema node that failed to parse
@@ -1879,7 +1915,7 @@ impl GrpcNodeService for NodeServiceImpl {
         .await
         .map_err(ops_error_to_status)?;
 
-        let nodes: Vec<NodeData> = output.members.into_iter().map(node_to_proto).collect();
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, output.members).await?;
         let count = nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -1904,7 +1940,7 @@ impl GrpcNodeService for NodeServiceImpl {
         .await
         .map_err(ops_error_to_status)?;
 
-        let nodes: Vec<NodeData> = output.members.into_iter().map(node_to_proto).collect();
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, output.members).await?;
         let count = nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -2266,7 +2302,47 @@ async fn fetch_node(service: &Arc<CoreNodeService>, node_id: &str) -> Result<Nod
         .ok_or_else(|| Status::not_found(format!("Node not found: {}", node_id)))
 }
 
-pub(crate) fn node_to_proto(node: Node) -> NodeData {
+/// Convert nodes to proto, collapsing each one's `extends` chain first.
+///
+/// **This is the only correct way to put a node on the wire** (ADR-078). The
+/// CLI and the wire flattener both flatten a single bucket and have no store
+/// access, so an extending node reaches them missing every inherited field
+/// unless its chain has been collapsed into its own bucket first.
+///
+/// `node_to_proto` is **private to this module**, so this pair is the only
+/// way a node reaches the wire from outside it. That is deliberate: across
+/// three review rounds the rule lived in a doc comment, and each round found
+/// another RPC that had not followed it — `get_node`, `get_children` and
+/// `get_roots`, then `create_node`, `update_node`, `search_nodes` and the
+/// `watch_nodes` stream. `watch_nodes` was the worst of them: a node that
+/// rendered correctly on load lost its inherited properties on the next edit,
+/// which reads as data loss rather than a missing feature.
+///
+/// The remaining in-module `node_to_proto` callers are nodes that cannot have
+/// an `extends` chain — schema nodes (`into_wire_node()`), collections, and
+/// the fixed-type person/identity responses — where collapsing would be a
+/// no-op round trip through the store.
+pub(crate) async fn nodes_to_proto(
+    service: &Arc<CoreNodeService>,
+    nodes: Vec<Node>,
+) -> Result<Vec<NodeData>, Status> {
+    let collapsed = service
+        .collapse_chain_for_wire(nodes)
+        .await
+        .map_err(service_error_to_status)?;
+    Ok(collapsed.into_iter().map(node_to_proto).collect())
+}
+
+/// Single-node form of [`nodes_to_proto`].
+pub(crate) async fn node_to_proto_collapsed(
+    service: &Arc<CoreNodeService>,
+    node: Node,
+) -> Result<NodeData, Status> {
+    let mut out = nodes_to_proto(service, vec![node]).await?;
+    Ok(out.remove(0))
+}
+
+fn node_to_proto(node: Node) -> NodeData {
     NodeData {
         id: node.id,
         node_type: node.node_type,
@@ -2337,7 +2413,21 @@ async fn convert_domain_event(
 ) -> Option<NodeEventKind> {
     match event {
         DomainEvent::NodeCreated { node_id, .. } => match node_service.get_node(node_id).await {
-            Ok(Some(node)) => Some(NodeEventKind::Created(node_to_proto(node))),
+            Ok(Some(node)) => match node_to_proto_collapsed(node_service, node).await {
+                Ok(data) => Some(NodeEventKind::Created(data)),
+                Err(e) => {
+                    // Dropping the event silently would look to a watching
+                    // client exactly like the node never being created, with
+                    // nothing in the log to contradict that. Match the two
+                    // sibling arms below, which already say why they skipped.
+                    tracing::warn!(
+                        node_id = %node_id,
+                        error = %e,
+                        "NodeCreated event skipped: collapsing the extends chain failed"
+                    );
+                    None
+                }
+            },
             Ok(None) => {
                 tracing::debug!(node_id = %node_id, "NodeCreated event skipped: node already gone");
                 None
@@ -2348,7 +2438,17 @@ async fn convert_domain_event(
             }
         },
         DomainEvent::NodeUpdated { node, .. } => {
-            Some(NodeEventKind::Updated(node_to_proto(node.clone())))
+            match node_to_proto_collapsed(node_service, node.clone()).await {
+                Ok(data) => Some(NodeEventKind::Updated(data)),
+                Err(e) => {
+                    tracing::warn!(
+                        node_id = %node.id,
+                        error = %e,
+                        "NodeUpdated event skipped: collapsing the extends chain failed"
+                    );
+                    None
+                }
+            }
         }
         DomainEvent::NodeDeleted { id, node_type } => Some(NodeEventKind::Deleted(NodeDeleted {
             node_id: id.clone(),
@@ -4421,5 +4521,74 @@ mod tests {
             "dropping the stream must retract its active-database claim, not leave the \
              database stuck eviction-immune forever"
         );
+    }
+
+    /// `node get <id>` on an extending node must return its inherited fields.
+    ///
+    /// The acceptance criterion names this path by name, and it is the one the
+    /// collapse was missing when the first re-review caught it. Asserted at
+    /// the daemon boundary rather than on `collapse_chain_for_wire` directly,
+    /// so deleting the call in `get_node` fails here rather than silently
+    /// shipping a node with its inherited properties stripped.
+    #[tokio::test]
+    async fn get_node_returns_inherited_fields_for_an_extending_type() {
+        use nodespace_core::schema::handle_create_schema;
+
+        let (svc, _tmp) = make_service().await;
+        let core = svc.node_service.clone();
+
+        handle_create_schema(
+            &core,
+            serde_json::json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+        handle_create_schema(
+            &core,
+            serde_json::json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        let id = core
+            .create_node(nodespace_core::models::Node::new(
+                "bug".to_string(),
+                "a bug".to_string(),
+                serde_json::json!({ "status": "open", "severity": "high" }),
+            ))
+            .await
+            .expect("bug creation failed");
+
+        let response = svc
+            .get_node(Request::new(GetNodeRequest {
+                node_id: id.clone(),
+            }))
+            .await
+            .expect("get_node should succeed")
+            .into_inner();
+
+        let data = response.node_data.expect("node_data should be present");
+        let props: serde_json::Value =
+            serde_json::from_str(&data.properties).expect("properties should parse");
+
+        // `status` is declared by `ticket` and stored in ticket's bucket; the
+        // collapse is what brings it into the node's own bucket so the
+        // single-bucket flatteners downstream can see it.
+        assert_eq!(
+            props["bug"]["status"], "open",
+            "an inherited field must survive get_node, got {props:?}"
+        );
+        assert_eq!(props["bug"]["severity"], "high");
     }
 }

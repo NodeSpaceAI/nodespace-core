@@ -273,7 +273,7 @@ impl SchemaNode {
     /// ```ignore
     /// let schema = store.get_schema_node("task").await?.unwrap();
     /// let status_values = schema.get_enum_values("status");
-    /// // Returns: Some([EnumValue { value: "open", label: "Open" }, ...])
+    /// // Returns: Some([EnumValue::new("open", "Open"), ...])
     /// ```
     pub fn get_enum_values(&self, field_name: &str) -> Option<Vec<EnumValue>> {
         let field = self.get_field(field_name)?;

@@ -86,10 +86,39 @@ pub fn derive_friendly_name(name: &str) -> String {
         .join(" ")
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct EnumValue {
     pub value: String,
     pub label: String,
+    /// For a value added to a field this schema *inherited* via `extends`:
+    /// which pre-existing value it collapses to at an ancestor's scope
+    /// (ADR-078).
+    ///
+    /// An `issue` extending `task` may add `backlog` to the inherited
+    /// `status`, mapping to `todo`. A consumer reading at `task`'s scope — a
+    /// Play condition, a query filter, any CEL expression written against the
+    /// base type — then sees `todo`, the value it was written to understand,
+    /// rather than a `backlog` it has never heard of. Jira's status-category
+    /// model is the direct precedent.
+    ///
+    /// Required on every value appended to an inherited field, and neither
+    /// required nor meaningful on a field the schema declares itself: an own
+    /// field has no ancestor scope whose meaning needs preserving.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maps_to: Option<String>,
+}
+
+impl EnumValue {
+    /// An enum value with no `maps_to` — the shape every value on a schema's
+    /// own field takes, and what the core schema definitions construct.
+    pub fn new(value: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            label: label.into(),
+            maps_to: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -459,19 +488,13 @@ mod tests {
             protection: SchemaProtectionLevel::Core,
             local_only: false,
             core_values: Some(vec![
-                EnumValue {
-                    value: "open".to_string(),
-                    label: "Open".to_string(),
-                },
-                EnumValue {
-                    value: "done".to_string(),
-                    label: "Done".to_string(),
-                },
+                EnumValue::new("open".to_string(), "Open".to_string()),
+                EnumValue::new("done".to_string(), "Done".to_string()),
             ]),
-            user_values: Some(vec![EnumValue {
-                value: "blocked".to_string(),
-                label: "Blocked".to_string(),
-            }]),
+            user_values: Some(vec![EnumValue::new(
+                "blocked".to_string(),
+                "Blocked".to_string(),
+            )]),
             indexed: true,
             required: Some(true),
             extensible: Some(true),
@@ -891,18 +914,9 @@ mod tests {
             name: "role".to_string(),
             field_type: "enum".to_string(),
             core_values: Some(vec![
-                EnumValue {
-                    value: "owner".to_string(),
-                    label: "Owner".to_string(),
-                },
-                EnumValue {
-                    value: "editor".to_string(),
-                    label: "Editor".to_string(),
-                },
-                EnumValue {
-                    value: "viewer".to_string(),
-                    label: "Viewer".to_string(),
-                },
+                EnumValue::new("owner".to_string(), "Owner".to_string()),
+                EnumValue::new("editor".to_string(), "Editor".to_string()),
+                EnumValue::new("viewer".to_string(), "Viewer".to_string()),
             ]),
             indexed: Some(true),
             required: Some(true),

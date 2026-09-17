@@ -1436,7 +1436,11 @@ impl SqliteStore {
         // dropping the others. Shared with `count_nodes` via
         // `build_scalar_conditions` so a filter added here composes the same
         // way in both.
-        let (conditions, bind_values) = Self::build_scalar_conditions(&query);
+        let subtypes = self
+            .resolve_query_subtypes(query.node_type.as_deref())
+            .await?;
+        let (conditions, bind_values) =
+            Self::build_scalar_conditions_with_subtypes(&query, subtypes.as_deref());
 
         // id-scoping (e.g. a collection's members). Build `id IN (…)` and
         // CHUNK it under SQLite's bound-parameter ceiling so a large member set
@@ -1553,7 +1557,48 @@ impl SqliteStore {
     /// handling (early-return / id-chunking / join) in both callers. Returns
     /// the SQL condition fragments plus their positional bind values,
     /// numbered from `?1`.
-    fn build_scalar_conditions(query: &NodeQuery) -> (Vec<String>, Vec<libsql::Value>) {
+    /// Resolve a queried type's descendant closure, for `node_type` expansion.
+    ///
+    /// Returns `None` when there is nothing to expand — no type filter, the
+    /// `*` wildcard, or a database in which nothing declares `extends` — so
+    /// the overwhelmingly common case costs one cheap existence check rather
+    /// than a recursive walk, and compiles to exactly the SQL it did before.
+    async fn resolve_query_subtypes(&self, node_type: Option<&str>) -> Result<Option<Vec<String>>> {
+        let Some(nt) = node_type else {
+            return Ok(None);
+        };
+        if nt == "*" {
+            return Ok(None);
+        }
+
+        // Cheap guard: `extends` edges are rare, and absent entirely until
+        // something declares one. Checking for any at all is a single indexed
+        // lookup, versus a recursive CTE per query.
+        if !self.has_any_extends_edge().await? {
+            return Ok(None);
+        }
+
+        Ok(Some(self.get_subtype_closure(nt).await?))
+    }
+
+    /// `build_scalar_conditions`, with the `node_type` filter expanded to a
+    /// resolved subtype set (ADR-078).
+    ///
+    /// `subtypes` is the queried type's full descendant closure — `task` plus
+    /// every schema transitively extending it — compiling `node_type = ?` into
+    /// `node_type IN (…)` so a query for a base type matches its subtypes'
+    /// instances too. `None` keeps the single-type equality, which is the
+    /// pre-`extends` behavior and what every unextended type resolves to.
+    ///
+    /// The closure cannot be resolved here: this is an associated function
+    /// with no `self` and no connection, and it is synchronous. Both callers
+    /// (`query_nodes`, `count_nodes`) are `async fn` on `&self` and resolve it
+    /// before calling in. Expanding at this one point still makes every caller
+    /// constructing a `NodeQuery` subtype-aware without touching any of them.
+    fn build_scalar_conditions_with_subtypes(
+        query: &NodeQuery,
+        subtypes: Option<&[String]>,
+    ) -> (Vec<String>, Vec<libsql::Value>) {
         let mut conditions = Vec::new();
         let mut bind_values: Vec<libsql::Value> = Vec::new();
 
@@ -1584,8 +1629,26 @@ impl SqliteStore {
         // ever produce zero rows.
         if let Some(ref nt) = query.node_type {
             if nt != "*" {
-                conditions.push(format!("node_type = ?{}", bind_values.len() + 1));
-                bind_values.push(libsql::Value::Text(nt.clone()));
+                match subtypes {
+                    // A resolved closure always contains at least the queried
+                    // type itself, so a 1-element set is the unextended case
+                    // and compiles to the same equality as before.
+                    Some(types) if types.len() > 1 => {
+                        let placeholders: Vec<String> = types
+                            .iter()
+                            .enumerate()
+                            .map(|(i, _)| format!("?{}", bind_values.len() + 1 + i))
+                            .collect();
+                        conditions.push(format!("node_type IN ({})", placeholders.join(", ")));
+                        for t in types {
+                            bind_values.push(libsql::Value::Text(t.clone()));
+                        }
+                    }
+                    _ => {
+                        conditions.push(format!("node_type = ?{}", bind_values.len() + 1));
+                        bind_values.push(libsql::Value::Text(nt.clone()));
+                    }
+                }
             }
         }
 
@@ -1647,7 +1710,11 @@ impl SqliteStore {
                 .context("Failed to count mentioned_by nodes");
         }
 
-        let (conditions, bind_values) = Self::build_scalar_conditions(query);
+        let subtypes = self
+            .resolve_query_subtypes(query.node_type.as_deref())
+            .await?;
+        let (conditions, bind_values) =
+            Self::build_scalar_conditions_with_subtypes(query, subtypes.as_deref());
 
         // Same id-chunking as `query_nodes` (SQLite's bound-parameter
         // ceiling), summing the per-chunk counts. Chunks are disjoint slices
@@ -1826,15 +1893,36 @@ impl SqliteStore {
         }
         let query_stems: Vec<String> = query_tokens.iter().map(|t| Self::stem_word(t)).collect();
 
-        let (sql, params) = match node_type {
-            Some(nt) => (
+        // Subtype-aware, like the main path (ADR-078) — otherwise a title
+        // search scoped to a base type would return its own instances from
+        // `query_nodes` but silently narrow to exact matches the moment it
+        // fell back to stem matching.
+        let subtypes = self.resolve_query_subtypes(node_type).await?;
+
+        let (sql, params) = match (node_type, subtypes.as_deref()) {
+            (Some(_), Some(types)) if types.len() > 1 => {
+                let placeholders: Vec<String> =
+                    (1..=types.len()).map(|i| format!("?{i}")).collect();
+                (
+                    format!(
+                        "SELECT * FROM node WHERE title IS NOT NULL AND node_type IN ({}) \
+                         ORDER BY modified_at DESC, id ASC LIMIT {TITLE_STEM_FALLBACK_CANDIDATE_CAP}",
+                        placeholders.join(", ")
+                    ),
+                    types
+                        .iter()
+                        .map(|t| libsql::Value::Text(t.clone()))
+                        .collect(),
+                )
+            }
+            (Some(nt), _) => (
                 format!(
                     "SELECT * FROM node WHERE title IS NOT NULL AND node_type = ?1 \
                      ORDER BY modified_at DESC, id ASC LIMIT {TITLE_STEM_FALLBACK_CANDIDATE_CAP}"
                 ),
                 vec![libsql::Value::Text(nt.to_string())],
             ),
-            None => (
+            (None, _) => (
                 format!(
                     "SELECT * FROM node WHERE title IS NOT NULL \
                      ORDER BY modified_at DESC, id ASC LIMIT {TITLE_STEM_FALLBACK_CANDIDATE_CAP}"

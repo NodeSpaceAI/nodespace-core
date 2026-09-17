@@ -232,7 +232,7 @@ impl NodeService {
             // Validate against cached schema (skip for schema nodes themselves)
             if node_type != "schema" {
                 if let Some(Some(fields)) = schema_cache.get(node_type) {
-                    self.validate_node_with_fields(&temp_node, fields)?;
+                    self.validate_node_with_fields(&temp_node, fields, None)?;
                 }
             }
         }
@@ -367,7 +367,7 @@ impl NodeService {
 
             if node_type != "schema" {
                 if let Some(Some(fields)) = schema_cache.get(node_type) {
-                    self.validate_node_with_fields(&temp_node, fields)?;
+                    self.validate_node_with_fields(&temp_node, fields, None)?;
                 }
             }
         }

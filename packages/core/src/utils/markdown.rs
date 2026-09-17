@@ -428,10 +428,7 @@ mod tests {
             } else {
                 Some(
                     core.iter()
-                        .map(|(v, l)| EnumValue {
-                            value: v.to_string(),
-                            label: l.to_string(),
-                        })
+                        .map(|(v, l)| EnumValue::new(v.to_string(), l.to_string()))
                         .collect(),
                 )
             },
@@ -440,10 +437,7 @@ mod tests {
             } else {
                 Some(
                     user.iter()
-                        .map(|(v, l)| EnumValue {
-                            value: v.to_string(),
-                            label: l.to_string(),
-                        })
+                        .map(|(v, l)| EnumValue::new(v.to_string(), l.to_string()))
                         .collect(),
                 )
             },
@@ -525,14 +519,8 @@ mod tests {
             local_only: false,
             protection: crate::models::schema::SchemaProtectionLevel::Core,
             core_values: Some(vec![
-                EnumValue {
-                    value: "on_hold".to_string(),
-                    label: "On Hold".to_string(),
-                },
-                EnumValue {
-                    value: "active".to_string(),
-                    label: "Active".to_string(),
-                },
+                EnumValue::new("on_hold".to_string(), "On Hold".to_string()),
+                EnumValue::new("active".to_string(), "Active".to_string()),
             ]),
             user_values: None,
             indexed: false,
@@ -583,14 +571,14 @@ mod tests {
             field_type: "enum".to_string(),
             local_only: false,
             protection: crate::models::schema::SchemaProtectionLevel::Core,
-            core_values: Some(vec![EnumValue {
-                value: "shared".to_string(),
-                label: "Core Label".to_string(),
-            }]),
-            user_values: Some(vec![EnumValue {
-                value: "shared".to_string(),
-                label: "User Label".to_string(),
-            }]),
+            core_values: Some(vec![EnumValue::new(
+                "shared".to_string(),
+                "Core Label".to_string(),
+            )]),
+            user_values: Some(vec![EnumValue::new(
+                "shared".to_string(),
+                "User Label".to_string(),
+            )]),
             indexed: false,
             required: None,
             extensible: None,

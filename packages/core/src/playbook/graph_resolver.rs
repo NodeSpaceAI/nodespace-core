@@ -448,23 +448,42 @@ impl GraphResolver {
 /// resolved items are subject to, instead of a naive flat lookup that would
 /// silently read `None` for every real (type-namespaced) node.
 pub(crate) fn get_node_property(node: &Node, key: &str) -> Option<serde_json::Value> {
+    get_node_property_at_scope(node, key, std::slice::from_ref(&node.node_type.as_str()))
+}
+
+/// Read a node property, projected to an explicit scope chain (ADR-078).
+///
+/// The general form of [`get_node_property`], which is the node's-own-scope
+/// case. Buckets are searched nearest-scope-first, so an inherited field
+/// resolves from its declaring ancestor's bucket while a field outside the
+/// chain does not resolve at all.
+fn get_node_property_at_scope(
+    node: &Node,
+    key: &str,
+    scope_chain: &[&str],
+) -> Option<serde_json::Value> {
     if let Some(obj) = node.properties.as_object() {
         // Direct match and type-namespaced match both look up `key` verbatim,
         // so the raw stored key being checked is `key` itself in both cases.
         if !key.starts_with('_') {
             // Direct match (e.g., key "status" on {"status": "open"})
             if let Some(val) = obj.get(key) {
-                // Don't return the type namespace wrapper as a property
-                if key != node.node_type || !val.is_object() {
+                // Don't return a type namespace wrapper as a property — not
+                // the node's own, nor any ancestor bucket in scope.
+                let is_namespace_wrapper =
+                    val.is_object() && (key == node.node_type || scope_chain.contains(&key));
+                if !is_namespace_wrapper {
                     return Some(val.clone());
                 }
             }
 
-            // Check inside the type-namespaced object (e.g., {"task": {"status": "open"}})
-            // The type namespace key matches the node_type
-            if let Some(type_obj) = obj.get(&node.node_type).and_then(|v| v.as_object()) {
-                if let Some(val) = type_obj.get(key) {
-                    return Some(val.clone());
+            // Check inside each type-namespaced bucket in scope, nearest
+            // first (e.g., {"task": {"status": "open"}}).
+            for scope in scope_chain {
+                if let Some(type_obj) = obj.get(*scope).and_then(|v| v.as_object()) {
+                    if let Some(val) = type_obj.get(key) {
+                        return Some(val.clone());
+                    }
                 }
             }
         }

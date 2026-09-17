@@ -4294,3 +4294,471 @@ async fn test_add_field_values_does_not_require_namespace_prefix_on_core_type() 
          {result:?}"
     );
 }
+
+// ============================================================================
+// extends — schema layer (ADR-078)
+// ============================================================================
+
+/// Read a schema's persisted `extends` target straight from the hydrated
+/// declarations, so these tests assert on what actually landed in the
+/// relationship table rather than on the handler's own return value.
+async fn persisted_extends_target(svc: &Arc<NodeService>, schema_id: &str) -> Option<String> {
+    let schema = svc
+        .get_schema_node(schema_id)
+        .await
+        .expect("schema lookup failed")
+        .expect("schema should exist");
+    extends_chain::declared_parent(&schema)
+}
+
+#[tokio::test]
+async fn test_create_schema_with_extends_persists_the_edge() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+
+    let result = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [
+                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+
+    assert!(result.is_ok(), "extends should be accepted: {result:?}");
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("ticket"),
+        "the extends edge should be persisted as a schema declaration"
+    );
+}
+
+#[tokio::test]
+async fn test_extends_edge_direction_is_child_to_parent() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("create with extends should succeed");
+
+    // Direction is load-bearing for both closure queries: in_node is the
+    // declaring (child) schema, out_node the target (parent). Reading the
+    // declaration back from the child is what proves it.
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("ticket")
+    );
+    assert_eq!(
+        persisted_extends_target(&svc, "ticket").await,
+        None,
+        "the parent must not itself report an extends target"
+    );
+}
+
+#[tokio::test]
+async fn test_create_schema_extends_nonexistent_parent_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+
+    let result = handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "nope", "fields": [] }),
+    )
+    .await;
+
+    let err = result.expect_err("extending a nonexistent schema should be rejected");
+    assert!(
+        format!("{err:?}").contains("does not exist"),
+        "error should name the missing target: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_schema_cannot_extend_itself() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Thing", &["a"]).await;
+
+    let result =
+        handle_update_schema(&svc, json!({ "schema_id": "thing", "extends": "thing" })).await;
+
+    let err = result.expect_err("a self-extend should be rejected");
+    assert!(
+        format!("{err:?}").contains("cannot extend itself"),
+        "self-extend should be named directly, not reported as a cycle: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_direct_extends_cycle_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Alpha", &["a"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Beta", "extends": "alpha", "fields": [] }),
+    )
+    .await
+    .expect("beta extends alpha should succeed");
+
+    // alpha extends beta would close the loop: alpha -> beta -> alpha.
+    let result =
+        handle_update_schema(&svc, json!({ "schema_id": "alpha", "extends": "beta" })).await;
+
+    let err = result.expect_err("a direct cycle should be rejected");
+    assert!(
+        format!("{err:?}").contains("cycle"),
+        "error should name the cycle: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_transitive_extends_cycle_through_two_intermediates_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Root", &["a"]).await;
+    for (child, parent) in [("Mid1", "root"), ("Mid2", "mid1"), ("Leaf", "mid2")] {
+        handle_create_schema(
+            &svc,
+            json!({ "name": child, "extends": parent, "fields": [] }),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{child} extends {parent} should succeed: {e:?}"));
+    }
+
+    // root -> leaf closes a loop spanning three intermediates.
+    let result =
+        handle_update_schema(&svc, json!({ "schema_id": "root", "extends": "leaf" })).await;
+
+    let err = result.expect_err("a transitive cycle should be rejected");
+    assert!(
+        format!("{err:?}").contains("cycle"),
+        "error should name the cycle: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_redeclaring_an_inherited_field_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+
+    let result = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [
+                { "name": "status", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err("redeclaring an inherited field should be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("status") && msg.contains("additive"),
+        "error should name the field and the additive-only rule: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_redeclaring_a_field_inherited_from_a_grandparent_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Root", &["shared"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Mid", "extends": "root", "fields": [] }),
+    )
+    .await
+    .expect("mid extends root should succeed");
+
+    // The collision is two levels up, so this only fails if the check runs
+    // against the full resolved effective set rather than the parent's own
+    // directly-declared fields.
+    let result = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Leaf",
+            "extends": "mid",
+            "fields": [
+                { "name": "shared", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err("a grandparent field collision should be rejected");
+    assert!(
+        format!("{err:?}").contains("shared"),
+        "error should name the colliding field: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_extends_allows_a_genuinely_new_field() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+
+    let result = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "ticket",
+            "fields": [
+                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a non-colliding field on an extending schema should be accepted: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_user_declared_extends_relationship_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+
+    // The shape an agent would infer from how every other relationship is
+    // declared — and the one that must be refused, with a pointer to the key.
+    let result = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "fields": [],
+            "relationships": [{
+                "name": "extends",
+                "targetType": "ticket",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "extended_by",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err("a hand-declared extends relationship should be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("reserved") && msg.contains("extends"),
+        "error should explain the name is reserved: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_user_declared_extended_by_reverse_name_rejected() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+
+    // Reserved on the reverse side too: a declaration whose *inverse* is
+    // named extended_by would make the type-system edge ambiguous.
+    let result = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "fields": [],
+            "relationships": [{
+                "name": "specializes",
+                "targetType": "ticket",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "extended_by",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "extended_by should be reserved as a reverse name too"
+    );
+}
+
+#[tokio::test]
+async fn test_update_schema_retargets_extends() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Alpha", &["a"]).await;
+    create_base_schema(&svc, "Beta", &["b"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Child", "extends": "alpha", "fields": [] }),
+    )
+    .await
+    .expect("child extends alpha should succeed");
+
+    handle_update_schema(&svc, json!({ "schema_id": "child", "extends": "beta" }))
+        .await
+        .expect("re-targeting extends should succeed");
+
+    assert_eq!(
+        persisted_extends_target(&svc, "child").await.as_deref(),
+        Some("beta"),
+        "the extends edge should now point at the new parent"
+    );
+}
+
+#[tokio::test]
+async fn test_update_without_extends_leaves_the_edge_untouched() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Ticket", &["status"]).await;
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("create with extends should succeed");
+
+    // An unrelated update must not drop the edge — `relationships` is a full
+    // replace, so the existing declaration has to survive the round-trip.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "add_fields": [
+                { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("unrelated update should succeed");
+
+    assert_eq!(
+        persisted_extends_target(&svc, "bug").await.as_deref(),
+        Some("ticket"),
+        "an unrelated update must not clear the extends edge"
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_effective_fields_composes_the_chain() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Root", &["root_field"]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Mid",
+            "extends": "root",
+            "fields": [
+                { "name": "mid_field", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("mid extends root should succeed");
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Leaf",
+            "extends": "mid",
+            "fields": [
+                { "name": "leaf_field", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("leaf extends mid should succeed");
+
+    let fields = resolve_effective_fields(&svc, "leaf")
+        .await
+        .expect("effective field resolution should succeed");
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+
+    for expected in ["leaf_field", "mid_field", "root_field"] {
+        assert!(
+            names.contains(&expected),
+            "effective fields should include '{expected}' from the chain, got {names:?}"
+        );
+    }
+    // Nearest scope first — the ordering property-bucket reads depend on.
+    assert_eq!(names.first(), Some(&"leaf_field"));
+}
+
+#[tokio::test]
+async fn test_effective_fields_see_a_parent_enum_value_added_later() {
+    let (svc, _tmp) = create_test_service().await;
+
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Ticket",
+            "fields": [{
+                "name": "state",
+                "type": "enum",
+                "protection": "user",
+                "indexed": false,
+                "extensible": true,
+                "coreValues": [{ "value": "open", "label": "Open" }]
+            }]
+        }),
+    )
+    .await
+    .expect("ticket creation should succeed");
+    handle_create_schema(
+        &svc,
+        json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+    )
+    .await
+    .expect("bug extends ticket should succeed");
+
+    // Append to the PARENT's vocabulary, touching the child not at all.
+    handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "ticket",
+            "add_field_values": [{
+                "field": "state",
+                "values": [{ "value": "blocked", "label": "Blocked" }]
+            }]
+        }),
+    )
+    .await
+    .expect("add_field_values on the parent should succeed");
+
+    // Resolution reads parents live, so the child sees it without a rewrite.
+    let fields = resolve_effective_fields(&svc, "bug")
+        .await
+        .expect("effective field resolution should succeed");
+    let state = fields
+        .iter()
+        .find(|f| f.name == "state")
+        .expect("inherited enum field should resolve");
+    let values: Vec<&str> = state
+        .core_values
+        .iter()
+        .flatten()
+        .chain(state.user_values.iter().flatten())
+        .map(|ev| ev.value.as_str())
+        .collect();
+
+    assert!(
+        values.contains(&"blocked"),
+        "a value appended to the parent should be visible to the child on next resolution, \
+         got {values:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_unextended_schema_resolves_to_its_own_fields() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Standalone", &["one", "two"]).await;
+
+    let fields = resolve_effective_fields(&svc, "standalone")
+        .await
+        .expect("resolution should succeed");
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+
+    assert!(names.contains(&"one") && names.contains(&"two"));
+    assert_eq!(
+        persisted_extends_target(&svc, "standalone").await,
+        None,
+        "an unextended schema declares no extends edge"
+    );
+}

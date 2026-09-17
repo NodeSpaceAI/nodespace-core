@@ -484,6 +484,97 @@ impl NodeService {
         })
     }
 
+    /// A node type's `extends` chain, nearest scope first (ADR-078).
+    ///
+    /// `["issue", "task"]` for an issue extending task; `["task"]` for an
+    /// unextended type, which is every type in the system until something
+    /// declares `extends`. The ordering is the contract every consumer
+    /// depends on — it is both the property-bucket read order (a nearer
+    /// bucket wins a key collision) and the scope-projection order.
+    ///
+    /// Resolved live rather than cached. The hot paths that cannot afford
+    /// that (trigger matching, per-row filter evaluation) own their own
+    /// caches over the same edges; this is the uncached resolver for write
+    /// paths and one-off reads.
+    pub async fn resolve_type_chain(
+        &self,
+        node_type: &str,
+    ) -> Result<Vec<String>, NodeServiceError> {
+        // One query for every extends edge, rather than an async walk one
+        // parent at a time. The map holds one entry per *extending* schema,
+        // so it is empty in a database where nothing extends anything.
+        let parent_map = self.store.get_extends_parent_map().await.map_err(|e| {
+            NodeServiceError::query_failed(format!("Failed to load extends edges: {e}"))
+        })?;
+
+        if parent_map.is_empty() {
+            return Ok(vec![node_type.to_string()]);
+        }
+
+        let lookup = move |id: &str| parent_map.get(id).cloned();
+        Ok(crate::schema::extends_chain::resolve_ancestor_chain(
+            node_type, &lookup,
+        ))
+    }
+
+    /// Which schema in `node_type`'s chain declares each field, and the
+    /// effective field set, resolved together.
+    ///
+    /// The write path needs both at once: the field list to validate and
+    /// default against, and the owning schema per field to decide which
+    /// bucket a value is stored under. Resolving them in one pass avoids
+    /// walking the chain twice for a single write.
+    ///
+    /// Returns `(effective_fields, field_name -> owning_schema_id, chain)`.
+    ///
+    /// The chain comes back too because every caller that buckets also needs
+    /// to *read* across those same buckets when validating, and resolving it
+    /// twice would mean two passes over the same edges.
+    pub async fn resolve_field_owners(
+        &self,
+        node_type: &str,
+    ) -> Result<
+        (
+            Vec<crate::models::SchemaField>,
+            std::collections::HashMap<String, String>,
+            Vec<String>,
+        ),
+        NodeServiceError,
+    > {
+        let chain = self.resolve_type_chain(node_type).await?;
+
+        let mut owners: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        let mut chain_fields: Vec<Vec<crate::models::SchemaField>> =
+            Vec::with_capacity(chain.len());
+
+        for schema_id in &chain {
+            let Some(schema) = self.get_schema_node(schema_id).await? else {
+                // A missing mid-chain schema contributes nothing rather than
+                // failing the write — same posture as the schema-layer
+                // resolver, since deletion with a live chain is out of scope.
+                continue;
+            };
+            for field in &schema.fields {
+                // First writer wins, and the chain is nearest-first, so a
+                // field declared by a nearer scope keeps ownership. Well-formed
+                // chains have no collisions (redeclaration is rejected at write
+                // time); this only matters for the retroactive-collision edge
+                // case ADR-078 leaves unresolved.
+                owners
+                    .entry(field.name.clone())
+                    .or_insert_with(|| schema_id.clone());
+            }
+            chain_fields.push(schema.fields);
+        }
+
+        Ok((
+            crate::schema::extends_chain::flatten_chain_fields(&chain_fields),
+            owners,
+            chain,
+        ))
+    }
+
     /// Rename a field across all node instances and update the schema definition.
     ///
     /// Only `name` is rewritten — `friendly_name` is left exactly as stored,

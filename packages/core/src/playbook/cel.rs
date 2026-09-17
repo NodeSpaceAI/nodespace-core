@@ -151,6 +151,155 @@ pub fn json_to_cel(json: &serde_json::Value) -> Value {
     }
 }
 
+/// The scope a Play's conditions are evaluated at (ADR-078).
+///
+/// Built once per rule dispatch by the engine, which has store access; CEL
+/// evaluation itself stays synchronous and schema-free. Carries the trigger's
+/// registered type, the buckets visible at it, and the field definitions both
+/// scopes declare — the latter two being what `maps_to` resolution needs.
+#[derive(Debug, Clone)]
+pub struct CelScope {
+    /// The `node_type` the rule's trigger was registered against.
+    pub scope_type: String,
+    /// That type's own chain, nearest-first — the buckets in scope.
+    pub chain: Vec<String>,
+    /// The concrete node's own chain, nearest-first.
+    ///
+    /// Distinct from `chain`, and the distinction is load-bearing: a field the
+    /// reading scope owns may physically live in any bucket of the *node's*
+    /// chain, because extending an inherited enum moves a field's storage onto
+    /// the extending schema. Assembling the node's view from the scope's
+    /// ancestry would skip every bucket in between — on `bug → ticket →
+    /// workitem` read at `workitem`, `ticket`'s bucket would never be opened.
+    pub node_chain: Vec<String>,
+    /// Effective fields at the trigger's scope: the vocabulary a condition
+    /// authored against it can refer to.
+    pub scope_fields: Vec<crate::models::SchemaField>,
+    /// Effective fields at the concrete node's scope, where `maps_to` lives.
+    pub node_fields: Vec<crate::models::SchemaField>,
+}
+
+impl CelScope {
+    /// Whether this scope differs from the node's own, i.e. whether values
+    /// could need resolving. False for a node of exactly the registered type,
+    /// which is already reading natively.
+    fn resolves(&self, node_type: &str) -> bool {
+        node_type != self.scope_type
+    }
+
+    /// Whether the reading scope declares this field — i.e. whether a
+    /// condition authored at this scope is entitled to see it.
+    fn declares(&self, name: &str) -> bool {
+        self.scope_fields.iter().any(|f| f.name == name)
+    }
+}
+
+/// The node's own chain, as borrowed strs — the full stored view, assembled
+/// before projection narrows it to what the reading scope declares.
+fn node_own_chain(scope: &CelScope) -> Vec<&str> {
+    scope.node_chain.iter().map(String::as_str).collect()
+}
+
+/// Keys the CEL map carries that are node metadata rather than schema fields.
+fn is_core_key(key: &str) -> bool {
+    matches!(
+        key,
+        "id" | "node_type" | "content" | "version" | "lifecycle_status"
+    )
+}
+
+/// A node's CEL value, projected and value-resolved at `scope`.
+///
+/// Projection picks which fields exist; `maps_to` decides what a surviving
+/// field reads as. A value that cannot be expressed at the scope is dropped
+/// rather than surfaced raw — handing a base-scoped condition a value it has
+/// never heard of is the hazard `maps_to` exists to prevent, and an absent key
+/// makes the condition simply not match.
+fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value {
+    let Some(scope) = scope else {
+        return node_to_cel_value(node);
+    };
+
+    if !scope.resolves(&node.node_type) {
+        let chain: Vec<&str> = scope.chain.iter().map(String::as_str).collect();
+        return node_to_cel_value_at_scope(node, &chain);
+    }
+
+    // Build from the NODE's own full view, then keep only what the reading
+    // scope declares — rather than reading only the scope's buckets.
+    //
+    // Which bucket a field physically lives in is not a reliable proxy for
+    // which scope owns it: extending an inherited enum materializes the field
+    // onto the extending schema, moving its storage to the subtype's bucket
+    // while it remains a field of the base. Reading the scope's buckets alone
+    // would lose exactly the fields `maps_to` exists to translate.
+    let own_chain = node_own_chain(scope);
+    let projected = node_to_cel_value_at_scope(node, &own_chain);
+
+    let Value::Map(map) = &projected else {
+        return projected;
+    };
+
+    let mut out: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
+    for (k, v) in map.map.iter() {
+        let cel_interpreter::objects::Key::String(field) = k else {
+            out.insert(k.clone(), v.clone());
+            continue;
+        };
+        // Projection: a field the reading scope does not declare is absent,
+        // so a base-scoped Play cannot come to depend on a subtype's own
+        // field. Core keys (`id`, `content`, …) are not schema fields and are
+        // always kept.
+        if !is_core_key(field) && !scope.declares(field) {
+            continue;
+        }
+        // Only string values carry an enum vocabulary to resolve through.
+        let Value::String(stored) = v else {
+            out.insert(k.clone(), v.clone());
+            continue;
+        };
+        match crate::schema::extends_chain::resolve_value_at_scope(
+            field,
+            stored,
+            &scope.node_fields,
+            &scope.scope_fields,
+        ) {
+            Some(resolved) => {
+                out.insert(k.clone(), Value::String(Arc::new(resolved)));
+            }
+            None => {
+                // `resolve_value_at_scope` returns None for EVERY string that
+                // is not a declared enum value at the reading scope — which
+                // includes every plain `string` field and the core keys
+                // (`id`, `node_type`, `content`, `lifecycle_status`) this map
+                // carries. So `None` alone does not mean "unresolvable enum".
+                //
+                // The `field_is_enum` guard below IS the mechanism that tells
+                // the two apart, not a redundant belt-and-braces check.
+                // Removing it would silently strip `node.id`, `node.content`
+                // and every string property from every base-scoped Play's
+                // environment.
+                //
+                // An enum whose value has no meaning at this scope is dropped:
+                // a condition then simply does not match, rather than
+                // comparing against a value its author never knew about.
+                if !field_is_enum(&scope.scope_fields, field) {
+                    out.insert(k.clone(), v.clone());
+                }
+            }
+        }
+    }
+
+    Value::Map(cel_interpreter::objects::Map { map: Arc::new(out) })
+}
+
+/// Whether the named field is an enum at this scope.
+fn field_is_enum(fields: &[crate::models::SchemaField], name: &str) -> bool {
+    fields
+        .iter()
+        .any(|f| f.name == name && f.field_type == "enum")
+}
+
 /// Build a CEL `Value` (Map) from a Node in wire format.
 ///
 /// The resulting map has these top-level keys:
@@ -168,6 +317,27 @@ pub fn json_to_cel(json: &serde_json::Value) -> Value {
 /// per `NodeService::normalize_flat_properties_to_namespace` -- at the top
 /// level alongside it.
 pub fn node_to_cel_value(node: &Node) -> Value {
+    node_to_cel_value_at_scope(node, std::slice::from_ref(&node.node_type.as_str()))
+}
+
+/// Build a CEL `Value` from a Node, projected to an explicit scope chain
+/// (ADR-078).
+///
+/// The general form of [`node_to_cel_value`], which is the node's-own-scope
+/// case. A Play registered against a base type evaluates its conditions at
+/// *that* scope, so a Play on `task` firing against an `issue` node passes
+/// `["task"]` and sees task's fields only — `node.severity` does not resolve
+/// there. That is deliberate: a base-scoped Play then behaves identically
+/// whether it fired on a plain task or a subtype, and cannot come to depend on
+/// a field only some of its matches carry.
+///
+/// Projection also closes a hazard the single-bucket version had under
+/// `extends`: its fallback branch treats any non-matching, non-`_` top-level
+/// key as a flat property, so an unprojected sibling bucket would be inserted
+/// wholesale as a nested map named after the ancestor type (`node.task`),
+/// rather than dropped or unwrapped. Walking an explicit chain removes the
+/// branch's ability to see a sibling bucket at all.
+pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
     let mut map: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
 
     // Core fields
@@ -195,17 +365,32 @@ pub fn node_to_cel_value(node: &Node) -> Value {
     // property storage format changes, both must be updated.
     // Also handles colon-prefixed namespaces: "custom:amount" → "amount".
     if let Some(obj) = node.properties.as_object() {
-        for (k, v) in obj {
-            if k == &node.node_type {
-                // Type namespace: unwrap inner properties
-                if let Some(inner_obj) = v.as_object() {
-                    for (ik, iv) in inner_obj {
-                        // Skip internal fields like _schema_version
-                        if !ik.starts_with('_') {
-                            map.insert(key(ik), json_to_cel(iv));
-                        }
-                    }
+        // Walk the scope chain first, nearest scope wins. Done ahead of the
+        // loop below so a bucket in the chain is never also seen by the
+        // flat-property branch.
+        for scope in scope_chain {
+            let Some(bucket) = obj.get(*scope).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (ik, iv) in bucket {
+                // Skip internal fields like _schema_version
+                if !ik.starts_with('_') {
+                    map.entry(key(ik)).or_insert_with(|| json_to_cel(iv));
                 }
+            }
+        }
+
+        for (k, v) in obj {
+            if scope_chain.contains(&k.as_str()) {
+                // Already unwrapped above.
+                continue;
+            } else if v.is_object() && obj.contains_key(&node.node_type) {
+                // A sibling type-namespace bucket on a node that is in
+                // storage shape: an ancestor's bucket outside this read's
+                // scope, or a dormant namespace from a type change. Either
+                // way it is not a flat property of this node — inserting it
+                // would surface `node.task` as a nested map.
+                continue;
             } else if !k.starts_with('_') {
                 // Skip internal bookkeeping fields (`_seed`, `_schemaVersion`,
                 // `_playbookChainDepth`, ...) -- same `_`-prefix convention as
@@ -249,7 +434,7 @@ pub fn key(s: &str) -> cel_interpreter::objects::Key {
 /// - `today()`: Current date as ISO 8601 string
 /// - `add_days(date_string, n)`: A new ISO 8601 date, `n` days offset from `date_string`
 pub fn build_condition_context<'a>(node: &Node, event: &DomainEvent) -> Context<'a> {
-    build_condition_context_with_resolved(node, event, &HashMap::new())
+    build_condition_context_with_resolved(node, event, &HashMap::new(), None)
 }
 
 /// Build a CEL evaluation context with pre-resolved graph paths injected.
@@ -261,11 +446,12 @@ fn build_condition_context_with_resolved<'a>(
     node: &Node,
     event: &DomainEvent,
     resolved_values: &HashMap<Vec<String>, Value>,
+    scope: Option<&CelScope>,
 ) -> Context<'a> {
     let mut ctx = Context::default();
 
     // `node` variable — the trigger node in wire format, enriched with resolved paths
-    let base_node = node_to_cel_value(node);
+    let base_node = scoped_node_value(node, scope);
     let enriched_node = inject_resolved_paths(&base_node, resolved_values);
     ctx.add_variable_from_value("node", enriched_node);
 
@@ -273,7 +459,8 @@ fn build_condition_context_with_resolved<'a>(
     let mut trigger_map: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
 
     // Add trigger.node as an alias (also enriched with resolved paths)
-    let trigger_node_value = inject_resolved_paths(&node_to_cel_value(node), resolved_values);
+    let trigger_node_value =
+        inject_resolved_paths(&scoped_node_value(node, scope), resolved_values);
     trigger_map.insert(key("node"), trigger_node_value);
 
     // For PropertyChanged events, add trigger.property with old/new values
@@ -490,6 +677,30 @@ pub async fn evaluate_conditions(
     event: &DomainEvent,
     resolver: Option<&mut GraphResolver>,
 ) -> ConditionResult {
+    evaluate_conditions_at_scope(conditions, node, event, resolver, None).await
+}
+
+/// [`evaluate_conditions`], evaluated at an explicit trigger scope (ADR-078).
+///
+/// `scope` is the `node_type` the rule's trigger was registered against, with
+/// the effective field sets needed to read at it. A Play registered on `task`
+/// firing against an `issue` sees task's fields only — `node.severity` does
+/// not resolve there — and an extended enum value reads as the base-scope
+/// value it maps to, so `node.status == 'todo'` matches a node storing
+/// `backlog`.
+///
+/// That is the point of scoping rather than a limitation of it: a base-scoped
+/// Play then behaves identically whether it fired on a plain task or a
+/// subtype, and cannot come to depend on a field only some of its matches
+/// carry. `None` evaluates at the node's own scope, which is every Play in a
+/// database where nothing declares `extends`.
+pub async fn evaluate_conditions_at_scope(
+    conditions: &[CompiledCondition],
+    node: &Node,
+    event: &DomainEvent,
+    resolver: Option<&mut GraphResolver>,
+    scope: Option<&CelScope>,
+) -> ConditionResult {
     if conditions.is_empty() {
         return ConditionResult::Pass;
     }
@@ -518,7 +729,7 @@ pub async fn evaluate_conditions(
         HashMap::new()
     };
 
-    let ctx = build_condition_context_with_resolved(node, event, &resolved_values);
+    let ctx = build_condition_context_with_resolved(node, event, &resolved_values, scope);
 
     for (i, condition) in conditions.iter().enumerate() {
         match condition.program.execute(&ctx) {

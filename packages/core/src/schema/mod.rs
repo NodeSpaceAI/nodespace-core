@@ -3,6 +3,8 @@
 //! Provides the `create_schema` tool for creating custom schemas with explicit
 //! field and relationship definitions.
 
+pub mod extends_chain;
+
 use crate::behaviors::SchemaNodeBehavior;
 use crate::markdown::MarkdownError;
 use crate::models::schema::SchemaField;
@@ -451,6 +453,150 @@ async fn validate_relationship_targets_exist(
 /// built-in's inverse (`child_of`, `has_member`, …) is resolved from the
 /// built-in table ahead of any declaration, so a schema claiming one as its
 /// `name` or `reverseName` would be shadowed exactly the way `has_child` is.
+/// The `extends` target in a relationship list, if one is declared.
+fn declared_extends_parent(
+    relationships: &[crate::models::schema::SchemaRelationship],
+) -> Option<String> {
+    relationships
+        .iter()
+        .find(|rel| rel.name == crate::models::schema::EXTENDS_RELATIONSHIP)
+        .and_then(|rel| rel.target_type.clone())
+}
+
+/// Append values to a field this schema inherited via `extends` (ADR-078).
+///
+/// Every appended value must carry `maps_to` naming a value the field already
+/// has at some scope in the chain. That requirement is what keeps the
+/// extension safe: a consumer reading at the parent's scope — a Play
+/// condition, a query filter, a CEL expression written against the base type
+/// with no knowledge this subtype exists — resolves the stored value through
+/// the map and sees a value it was written to understand. A value with no
+/// `maps_to` would be unresolvable at that scope, which is a correctness bug
+/// rather than a cosmetic one.
+///
+/// The inherited definition is materialized onto this schema as its own
+/// declaration of the field, carrying the parent's definition plus the new
+/// values. The parent is left untouched — its own vocabulary must not grow
+/// because a descendant extended it.
+///
+/// Returns how many values were added.
+fn extend_inherited_field(
+    schema_id: &str,
+    inherited: SchemaField,
+    addition: &FieldValueAddition,
+    fields: &mut Vec<SchemaField>,
+) -> Result<usize, MarkdownError> {
+    // The same gates as the own-field path, checked against the inherited
+    // definition: extending a non-extensible or non-enum field is no more
+    // legal through inheritance than it is directly.
+    if inherited.extensible != Some(true) {
+        return Err(MarkdownError::invalid_params(format!(
+            "Field '{}' (inherited by '{}') is not extensible — add_field_values only \
+             applies to fields declared with extensible: true.",
+            addition.field, schema_id
+        )));
+    }
+    if inherited.field_type != "enum" {
+        return Err(MarkdownError::invalid_params(format!(
+            "Field '{}' (inherited by '{}') is type '{}', not 'enum' — add_field_values \
+             only applies to enum fields.",
+            addition.field, schema_id, inherited.field_type
+        )));
+    }
+
+    // A previous extension may already have materialized this field onto the
+    // schema. Its values count as pre-existing — both for collision checks and
+    // as legal `maps_to` targets — so start from the materialized copy when
+    // one is present, falling back to the ancestor's definition otherwise.
+    let current = fields
+        .iter()
+        .find(|f| f.name == addition.field)
+        .unwrap_or(&inherited);
+
+    let mut existing_values: std::collections::HashSet<String> = current
+        .core_values
+        .iter()
+        .flatten()
+        .chain(current.user_values.iter().flatten())
+        .map(|ev| ev.value.clone())
+        .collect();
+
+    // Captured before any new value is inserted: a `maps_to` must name a value
+    // the field had BEFORE this call, so two values added together cannot
+    // resolve through each other.
+    let preexisting: std::collections::HashSet<String> = existing_values.clone();
+
+    for new_value in &addition.values {
+        if existing_values.contains(&new_value.value) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Value '{}' already exists on inherited field '{}' — add_field_values does \
+                 not overwrite or merge colliding values.",
+                new_value.value, addition.field
+            )));
+        }
+
+        let Some(maps_to) = new_value
+            .maps_to
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+        else {
+            return Err(MarkdownError::invalid_params(format!(
+                "Value '{}' on inherited field '{}' must declare \"mapsTo\", naming which \
+                 existing value it collapses to at the parent's scope — e.g. \
+                 {{\"value\": \"{}\", \"label\": \"...\", \"mapsTo\": \"{}\"}}. Without it, a \
+                 Play or query written against the base type would read a value it has no \
+                 way to interpret.",
+                new_value.value,
+                addition.field,
+                new_value.value,
+                preexisting
+                    .iter()
+                    .next()
+                    .map(String::as_str)
+                    .unwrap_or("todo"),
+            )));
+        };
+
+        if !preexisting.contains(maps_to) {
+            let mut known: Vec<&str> = preexisting.iter().map(String::as_str).collect();
+            known.sort_unstable();
+            return Err(MarkdownError::invalid_params(format!(
+                "Value '{}' on inherited field '{}' maps to '{}', which is not an existing \
+                 value on that field. Existing values: {}.",
+                new_value.value,
+                addition.field,
+                maps_to,
+                known.join(", ")
+            )));
+        }
+
+        existing_values.insert(new_value.value.clone());
+    }
+
+    // Materialize the inherited field as this schema's own, so the added
+    // values live on the extending schema rather than mutating the parent.
+    // Append to the existing materialized copy if one is already present.
+    match fields.iter_mut().find(|f| f.name == addition.field) {
+        Some(existing) => {
+            existing
+                .user_values
+                .get_or_insert_with(Vec::new)
+                .extend(addition.values.iter().cloned());
+        }
+        None => {
+            let mut materialized = inherited;
+            materialized
+                .user_values
+                .get_or_insert_with(Vec::new)
+                .extend(addition.values.iter().cloned());
+            fields.push(materialized);
+        }
+    }
+
+    Ok(addition.values.len())
+}
+
 fn reject_reserved_relationship_names(
     relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
@@ -465,9 +611,179 @@ fn reject_reserved_relationship_names(
                     crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
                 )));
             }
+            // Type-system names are rejected here but, unlike the built-ins
+            // above, are still stored and read as ordinary declarations — see
+            // `TYPE_SYSTEM_RELATIONSHIPS`. `extends` reaches the relationship
+            // table only via the schema definition's own `extends` key, which
+            // this handler synthesizes.
+            if crate::models::schema::is_type_system_relationship(name) {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Relationship {} '{}' is reserved: '{}' describes the type system itself \
+                     and is not declared as a relationship. Use the schema's own \"extends\" \
+                     key instead — e.g. {{\"name\": \"Issue\", \"extends\": \"task\", \
+                     \"fields\": [...]}}.",
+                    which,
+                    name,
+                    crate::models::schema::EXTENDS_RELATIONSHIP,
+                )));
+            }
         }
     }
     Ok(())
+}
+
+/// Snapshot of every schema's `extends` edge, for chain walking.
+///
+/// Resolution needs a [`ParentLookup`](extends_chain::ParentLookup) that can
+/// answer repeatedly while walking, but the store's accessors are `async` and
+/// a walk is not. Loading the whole parent map once up front sidesteps that
+/// without an `async` recursion: the map is small (one entry per *extending*
+/// schema, and extension is rare), and validation already reads every schema
+/// it touches.
+///
+/// `pending` lets a caller overlay an edge that is not committed yet — the
+/// schema being created, or a re-target about to replace an existing edge —
+/// so the same snapshot serves both handlers.
+async fn load_parent_map(
+    node_service: &Arc<NodeService>,
+) -> Result<std::collections::HashMap<String, String>, MarkdownError> {
+    let schemas = node_service.get_all_schemas().await.map_err(|e| {
+        MarkdownError::internal_error(format!(
+            "Failed to load schemas for extends resolution: {e}"
+        ))
+    })?;
+
+    Ok(schemas
+        .iter()
+        .filter_map(|schema| {
+            extends_chain::declared_parent(schema).map(|parent| (schema.id.clone(), parent))
+        })
+        .collect())
+}
+
+/// Validate a pending `extends` target: it must exist, must be a schema, and
+/// must not close a cycle.
+///
+/// Shared by `create_schema` and `update_schema` because an existing schema's
+/// `extends` target can be re-pointed after creation, and a re-target can
+/// introduce a cycle exactly as an initial declaration can.
+async fn validate_extends_target(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+    parent_id: &str,
+) -> Result<(), MarkdownError> {
+    if parent_id.trim().is_empty() {
+        return Err(MarkdownError::invalid_params(
+            "\"extends\" must name the schema id of the type being specialized, e.g. \
+             \"extends\": \"task\"."
+                .to_string(),
+        ));
+    }
+
+    // A self-extend is a cycle, but reporting it as one ("a extends a") reads
+    // as a puzzle. Name it directly.
+    if parent_id == schema_id {
+        return Err(MarkdownError::invalid_params(format!(
+            "Schema '{schema_id}' cannot extend itself."
+        )));
+    }
+
+    // Existence, mirroring `validate_relationship_targets_exist`'s check. A
+    // dangling parent would produce a schema whose effective field set can
+    // never resolve.
+    let parent_exists = node_service
+        .get_schema_node(parent_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Failed to check extends target '{parent_id}': {e}"
+            ))
+        })?
+        .is_some();
+
+    if !parent_exists {
+        return Err(MarkdownError::invalid_params(format!(
+            "\"extends\" target '{parent_id}' does not exist. Create that schema first, or \
+             name an existing one."
+        )));
+    }
+
+    let parent_map = load_parent_map(node_service).await?;
+    let lookup = move |id: &str| parent_map.get(id).cloned();
+
+    if let Some(cycle) = extends_chain::detect_cycle(schema_id, parent_id, &lookup) {
+        return Err(MarkdownError::invalid_params(format!(
+            "\"extends\" would create a cycle: {cycle}. A schema cannot transitively extend \
+             itself."
+        )));
+    }
+
+    Ok(())
+}
+
+/// Reject a field this schema would inherit.
+///
+/// Composition is additive only (ADR-078): an extending schema may add fields
+/// but never redeclare one an ancestor already declares, with any attribute
+/// differing or not. Checked against the **full resolved effective set**, not
+/// just the parent's own directly-declared fields, so a collision two levels
+/// up is caught as readily as one with the immediate parent.
+async fn validate_no_field_redeclaration(
+    node_service: &Arc<NodeService>,
+    parent_id: &str,
+    own_fields: &[SchemaField],
+) -> Result<(), MarkdownError> {
+    let inherited = resolve_effective_fields(node_service, parent_id).await?;
+
+    for field in own_fields {
+        if let Some(existing) = inherited.iter().find(|f| f.name == field.name) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Field '{}' is already declared by '{}' (inherited via extends) and cannot be \
+                 redeclared — composition is additive only, with no override or narrowing. \
+                 The inherited field is type '{}'. Either drop it from this schema and use the \
+                 inherited one, or give this field a different name.",
+                field.name, parent_id, existing.field_type,
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve a schema's effective field set: its own fields plus every
+/// ancestor's, nearest scope first.
+///
+/// This is what validation, defaulting and schema comprehension read instead
+/// of a schema's own directly-declared `fields`. Parent schemas are read live
+/// on every call rather than cached, so a value appended to an ancestor's enum
+/// field via `add_field_values` is visible here on the next resolution with no
+/// write to the descendant.
+pub async fn resolve_effective_fields(
+    node_service: &Arc<NodeService>,
+    schema_id: &str,
+) -> Result<Vec<SchemaField>, MarkdownError> {
+    let parent_map = load_parent_map(node_service).await?;
+    let lookup = {
+        let parent_map = parent_map.clone();
+        move |id: &str| parent_map.get(id).cloned()
+    };
+    let chain = extends_chain::resolve_ancestor_chain(schema_id, &lookup);
+
+    let mut chain_fields: Vec<Vec<SchemaField>> = Vec::with_capacity(chain.len());
+    for id in &chain {
+        let schema = node_service.get_schema_node(id).await.map_err(|e| {
+            MarkdownError::internal_error(format!("Failed to resolve schema '{id}': {e}"))
+        })?;
+        // A missing mid-chain schema means the edge set references something
+        // deleted. Contribute nothing rather than failing the read: the
+        // descendant's own fields still resolve, and schema deletion with a
+        // live extends chain is explicitly out of scope (ADR-078).
+        if let Some(schema) = schema {
+            chain_fields.push(schema.fields);
+        }
+    }
+
+    Ok(extends_chain::flatten_chain_fields(&chain_fields))
 }
 
 /// Validate the `edgeFields` declared on each relationship.
@@ -686,6 +1002,19 @@ pub struct CreateSchemaParams {
     /// Explicit field definitions
     #[serde(default)]
     pub fields: Option<Vec<SchemaField>>,
+    /// Schema id of a parent type this schema specializes (ADR-078).
+    ///
+    /// Structural vocabulary, on the same footing as `fields` — not a
+    /// relationship the caller authors. Declaring it composes this schema's
+    /// effective field set as its own fields plus the parent's (additive
+    /// only, single parent, no override), and instances created under this
+    /// schema carry *this* schema's id as their real `node_type`.
+    ///
+    /// Persisted as an `extends` edge on the relationship table, synthesized
+    /// here rather than accepted in `relationships` — where `extends` and
+    /// `extended_by` are rejected outright.
+    #[serde(default)]
+    pub extends: Option<String>,
     /// Optional relationship definitions
     #[serde(default)]
     pub relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
@@ -828,6 +1157,21 @@ pub async fn handle_create_schema(
     validate_edge_field_declarations(&relationships)?;
     validate_relationship_targets_exist(node_service, &relationships, pending_schema_id).await?;
 
+    // `extends` (ADR-078). Validated before the schema node exists, like the
+    // relationship checks above, so a bad parent can't leave a half-created
+    // schema behind. Cycle detection is trivially satisfied at creation time
+    // (nothing extends a schema that doesn't exist yet) but runs anyway: the
+    // same helper serves `update_schema`, where re-targeting can close a loop.
+    let extends_parent = params
+        .extends
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
+    if let Some(parent_id) = extends_parent {
+        validate_extends_target(node_service, &schema_id, parent_id).await?;
+        validate_no_field_redeclaration(node_service, parent_id, &stored_fields).await?;
+    }
+
     // Check if schema already exists — return a clear error so the agent knows
     // to use create_node instead of retrying create_schema. The rejection
     // carries the existing type's real, rendered definition: without it the
@@ -883,6 +1227,15 @@ pub async fn handle_create_schema(
     // no description subtree, semantically undiscoverable via embedding
     // search until someone re-ran update_schema with a description. Both are
     // now impossible: any failure here rolls back the whole create.
+    // Synthesize the `extends` edge and persist it alongside the caller's own
+    // declarations. It has to ride in the same list rather than take a second
+    // write: `set_schema_relationships` is a full replace keyed by name, so a
+    // separate call would clobber whichever set went first.
+    let mut relationships = relationships;
+    if let Some(parent_id) = extends_parent {
+        relationships.push(extends_chain::extends_declaration(parent_id));
+    }
+
     let relationships_for_tx = relationships.clone();
     let description_text_for_tx = description_text.clone();
     let node_service_for_tx = Arc::clone(node_service);
@@ -1015,6 +1368,15 @@ pub struct UpdateSchemaParams {
     /// and updates the schema definition atomically.
     #[serde(default)]
     pub rename_fields: Option<Vec<FieldRename>>,
+    /// Set or change this schema's parent type (ADR-078). Absent leaves the
+    /// current `extends` edge untouched; there is no way to clear one, the
+    /// same posture `title_template` already takes.
+    ///
+    /// Re-targeting is validated exactly as creation is — the new parent must
+    /// exist, must not introduce a cycle, and must not collide with a field
+    /// this schema (or a remaining ancestor) already declares.
+    #[serde(default)]
+    pub extends: Option<String>,
     /// Relationships to add
     #[serde(default)]
     pub add_relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
@@ -1409,7 +1771,42 @@ pub async fn handle_update_schema(
     // machinery".
     let mut field_values_added = 0;
     if let Some(ref additions) = params.add_field_values {
+        // A field is "inherited" if an ANCESTOR declares it — not merely if
+        // this schema's own list currently lacks it.
+        //
+        // The distinction is load-bearing. Extending an inherited field
+        // materializes it onto this schema (see `extend_inherited_field`), so
+        // an "absent from my own fields" test would report it as no longer
+        // inherited on the very next call, and a second extension would take
+        // the own-field path and escape the `maps_to` requirement entirely.
+        // Asking the ancestors stays true however many times the field is
+        // extended.
+        //
+        // Resolved once, ahead of the loop, and only when the schema actually
+        // extends something.
+        let inherited_fields: Vec<SchemaField> =
+            match declared_extends_parent(&schema.relationships) {
+                Some(parent) => resolve_effective_fields(node_service, &parent).await?,
+                None => Vec::new(),
+            };
+
         for addition in additions {
+            // Extending an INHERITED field's vocabulary (ADR-078). The field
+            // is not in `fields` at all, so it cannot be mutated in place —
+            // the added values are validated here and then materialized onto
+            // this schema as its own declaration of that field, carrying the
+            // inherited definition plus the new values.
+            if let Some(inherited) = inherited_fields
+                .iter()
+                .find(|f| f.name == addition.field)
+                .cloned()
+            {
+                let added =
+                    extend_inherited_field(&params.schema_id, inherited, addition, &mut fields)?;
+                field_values_added += added;
+                continue;
+            }
+
             let Some(field) = fields.iter_mut().find(|f| f.name == addition.field) else {
                 return Err(MarkdownError::invalid_params(format!(
                     "Field '{}' not found in schema '{}'",
@@ -1511,6 +1908,39 @@ pub async fn handle_update_schema(
         validate_relationship_targets_exist(node_service, add_rels, None).await?;
         relationships_added = add_rels.len();
         relationships.extend(add_rels.clone());
+    }
+
+    // `extends` re-target (ADR-078). Absent leaves the current edge alone,
+    // matching `title_template`'s posture — there is no way to clear one.
+    //
+    // Validation is the same as creation's, because the hazards are: a
+    // dangling parent, and a cycle. Re-targeting is in fact the *only* way to
+    // close a cycle, since at creation time nothing can yet extend the schema
+    // being created.
+    if let Some(ref new_parent) = params.extends {
+        let new_parent = new_parent.trim();
+        validate_extends_target(node_service, &params.schema_id, new_parent).await?;
+
+        // Redeclaration is checked against the schema's own fields as they
+        // stand after this call's add/remove/rename, not as they were loaded —
+        // a call that both re-parents and drops the colliding field is legal.
+        validate_no_field_redeclaration(node_service, new_parent, &fields).await?;
+
+        let replacing = relationships
+            .iter_mut()
+            .find(|r| r.name == crate::models::schema::EXTENDS_RELATIONSHIP);
+        match replacing {
+            Some(existing) => {
+                if existing.target_type.as_deref() != Some(new_parent) {
+                    *existing = extends_chain::extends_declaration(new_parent);
+                    relationships_added += 1;
+                }
+            }
+            None => {
+                relationships.push(extends_chain::extends_declaration(new_parent));
+                relationships_added += 1;
+            }
+        }
     }
 
     // Resolve title_template: use new value if provided, otherwise keep existing
@@ -1902,18 +2332,9 @@ mod tests {
 
     fn rbac_values() -> Vec<EnumValue> {
         vec![
-            EnumValue {
-                value: "owner".to_string(),
-                label: "Owner".to_string(),
-            },
-            EnumValue {
-                value: "editor".to_string(),
-                label: "Editor".to_string(),
-            },
-            EnumValue {
-                value: "viewer".to_string(),
-                label: "Viewer".to_string(),
-            },
+            EnumValue::new("owner".to_string(), "Owner".to_string()),
+            EnumValue::new("editor".to_string(), "Editor".to_string()),
+            EnumValue::new("viewer".to_string(), "Viewer".to_string()),
         ]
     }
 
@@ -1991,10 +2412,10 @@ mod tests {
     fn edge_enum_duplicate_values_are_rejected() {
         let mut role = edge_field("role", "enum");
         let mut values = rbac_values();
-        values.push(EnumValue {
-            value: "owner".to_string(),
-            label: "Owner (duplicate)".to_string(),
-        });
+        values.push(EnumValue::new(
+            "owner".to_string(),
+            "Owner (duplicate)".to_string(),
+        ));
         role.core_values = Some(values);
 
         let rels = vec![rel_with_edge_fields(vec![role])];
