@@ -212,7 +212,6 @@
     cursor: col-resize;
     position: relative;
     flex-shrink: 0;
-    transition: background-color 0.15s ease;
     /* Ensure handle is above pane content */
     z-index: 10;
     /* Button reset */

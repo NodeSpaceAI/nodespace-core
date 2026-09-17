@@ -587,7 +587,6 @@
     border: none;
     border-radius: 0.375rem;
     cursor: pointer;
-    transition: opacity 0.15s ease;
   }
 
   .retry-button:hover {
@@ -615,7 +614,6 @@
     align-items: center;
     gap: 0.5rem;
     border-radius: 0.375rem;
-    transition: background-color 0.15s ease;
   }
 
   .member-item:hover {
@@ -634,7 +632,6 @@
     text-align: left;
     color: hsl(var(--foreground));
     font-size: 0.875rem;
-    transition: color 0.15s ease;
   }
 
   .member-button:hover {
@@ -667,9 +664,6 @@
     cursor: pointer;
     color: hsl(var(--muted-foreground));
     opacity: 0;
-    transition:
-      opacity 0.15s ease,
-      color 0.15s ease;
     display: flex;
     align-items: center;
     justify-content: center;

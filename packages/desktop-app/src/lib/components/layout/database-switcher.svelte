@@ -56,9 +56,6 @@
     font-size: 0.875rem;
     font-weight: 500;
     text-align: left;
-    transition:
-      background-color 0.2s,
-      border-color 0.2s;
   }
 
   :global(.db-trigger:hover) {

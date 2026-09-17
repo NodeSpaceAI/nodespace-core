@@ -749,7 +749,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    transition: background-color 0.15s ease, border-color 0.15s ease;
   }
 
   .query-title:hover {
@@ -809,7 +808,6 @@
     border: none;
     border-radius: 0.375rem;
     cursor: pointer;
-    transition: opacity 0.15s ease;
   }
 
   .retry-button:hover {
@@ -830,7 +828,6 @@
     border: 1px solid hsl(var(--border));
     border-radius: 0.375rem;
     cursor: pointer;
-    transition: background-color 0.15s ease;
     flex-shrink: 0;
   }
 
@@ -847,7 +844,6 @@
     border: 1px solid hsl(var(--primary));
     border-radius: 0.375rem;
     cursor: pointer;
-    transition: opacity 0.15s ease;
     flex-shrink: 0;
   }
 
@@ -911,7 +907,6 @@
     border: none;
     border-radius: 0.25rem;
     cursor: pointer;
-    transition: background-color 0.15s ease, color 0.15s ease;
     white-space: nowrap;
   }
 

@@ -476,14 +476,13 @@
     on:keydown={(e) => e.key === 'Escape' && closeModal()}
     role="button"
     tabindex="-1"
-    style="animation: overlayFadeIn 0.15s ease-out;"
     aria-label="Close autocomplete modal"
   >
     <!-- Modal positioned using shadcn-svelte dropdown patterns -->
     <div
       bind:this={modalElement}
       class="fixed z-50 min-w-80 max-w-md"
-      style="left: {adjustedPosition.x}px; top: {adjustedPosition.y}px; animation: modalSlideIn 0.2s ease-out;"
+      style="left: {adjustedPosition.x}px; top: {adjustedPosition.y}px;"
       on:click|stopPropagation
       on:keydown|stopPropagation
       role="dialog"
@@ -711,27 +710,6 @@
     line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
-  }
-
-  /* Modern, smooth entry animations */
-  @keyframes overlayFadeIn {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-
-  @keyframes modalSlideIn {
-    from {
-      opacity: 0;
-      transform: translateY(-8px) scale(0.96);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0) scale(1);
-    }
   }
 
   /* Enhanced scrollbar styling for better visual consistency */

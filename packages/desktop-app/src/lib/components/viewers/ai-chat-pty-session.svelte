@@ -551,7 +551,6 @@
     color: hsl(var(--foreground));
     font-size: 0.8125rem;
     font-family: inherit;
-    transition: border-color 0.15s;
   }
 
   .field-select:focus {
@@ -686,7 +685,6 @@
     font-size: 0.875rem;
     font-weight: 500;
     cursor: pointer;
-    transition: opacity 0.15s;
   }
 
   .launch-button:hover:not(:disabled) {
@@ -704,12 +702,5 @@
     border: 2px solid hsl(var(--primary-foreground) / 0.3);
     border-top-color: hsl(var(--primary-foreground));
     border-radius: 50%;
-    animation: spin 0.7s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
 </style>

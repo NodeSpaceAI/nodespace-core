@@ -102,7 +102,6 @@
     /* Never intercept pointer events: the card can't trap the cursor, so the
        reference below it drives show/hide entirely through hover/focus. */
     pointer-events: none;
-    transition: opacity var(--transition-fast, 120ms) ease;
   }
 
   .node-ref-preview--placed {

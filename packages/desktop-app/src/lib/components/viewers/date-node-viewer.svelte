@@ -159,7 +159,6 @@
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    transition: all 0.15s ease;
   }
 
   .date-nav-btn:hover {

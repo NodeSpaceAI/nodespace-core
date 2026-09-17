@@ -520,7 +520,6 @@
     border: 1px solid hsl(var(--border));
     border-radius: 0.5rem;
     padding: 0.5rem;
-    transition: background-color 0.15s ease, border-color 0.15s ease;
   }
 
   .kanban-column.drag-over {

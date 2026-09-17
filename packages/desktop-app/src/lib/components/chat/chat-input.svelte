@@ -120,7 +120,6 @@
     color: hsl(var(--primary-foreground));
     cursor: pointer;
     flex-shrink: 0;
-    transition: opacity 0.15s;
   }
 
   .send-button:disabled {

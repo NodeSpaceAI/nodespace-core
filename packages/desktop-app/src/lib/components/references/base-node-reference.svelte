@@ -108,7 +108,6 @@
     border-radius: 0.25rem;
     text-decoration: none;
     color: hsl(var(--foreground));
-    transition: all 0.15s ease;
     cursor: pointer;
     border: 1px solid transparent;
     font-size: 0.875rem;
