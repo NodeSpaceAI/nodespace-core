@@ -1,8 +1,9 @@
 //! Live, real-embedding-model integration test for `find_skills`'s schema
-//! discovery path (core#2657): a schema with no hand-authored skill
-//! describing it must still be discoverable through `find_skills`, and a
-//! schema created moments ago (inside the ~30s embedding-debounce window)
-//! must still be recoverable by name via the lexical backstop.
+//! discovery path (see ADR-038's schema-discovery amendment): a schema with
+//! no hand-authored skill describing it must still be discoverable through
+//! `find_skills`, and a schema created moments ago (inside the ~30s
+//! embedding-debounce window) must still be recoverable by name via the
+//! lexical backstop.
 //!
 //! Every DB in this file seeds ZERO skill nodes — not just a schema with no
 //! *matching* skill, but a registry with no skill at all — so a passing
