@@ -29,6 +29,7 @@ vi.mock('$lib/services/schema-authoring', () => ({
 }));
 
 import { aiChatsData } from '$lib/stores/ai-chats.svelte';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 
 function makeChat(id: string, content: string, modifiedAt: string): Node {
   return {
@@ -219,6 +220,34 @@ describe('aiChatsData', () => {
       expect(mockCreateSchemaInstance).toHaveBeenCalledWith('ai-chat');
       expect(result).toEqual(created);
       expect(aiChatsData.state.chats.map((c) => c.id)).toEqual(['new-chat', 'existing']);
+    });
+
+    it('registers the new node as persisted in SharedNodeStore (regression: duplicate node-id collision)', async () => {
+      // `createSchemaInstance` creates its node directly via `backendAdapter`,
+      // bypassing SharedNodeStore entirely — it never lands in the store's
+      // `persistedNodeIds` bookkeeping on its own. Without `createChat`
+      // registering it immediately, the AI Chat viewer's first write (model
+      // selection / first message) would find the id NOT marked persisted,
+      // wrongly re-issue a CREATE for a row that already exists, and collide
+      // with "Failed to insert node".
+      // A unique id — other tests in this file also create a chat named
+      // 'new-chat' and, since `sharedNodeStore` is a real, unreset singleton
+      // here (unlike `aiChatsData`, which `beforeEach` does reset), reusing
+      // that id would make this test's "not yet persisted" assertion
+      // order-dependent on whichever test ran first.
+      const created = makeChat('persisted-id-regression-chat', '', '2026-06-01T00:00:00.000Z');
+      mockCreateSchemaInstance.mockResolvedValue(created);
+
+      expect(sharedNodeStore.isNodePersisted(created.id)).toBe(false);
+
+      await aiChatsData.createChat();
+
+      expect(sharedNodeStore.isNodePersisted(created.id)).toBe(true);
+      // `setNode`'s 'database' source normalizes the raw node (promoting
+      // ai-chat's typed fields), so compare identity/content rather than
+      // deep-equal the raw object `createSchemaInstance` returned.
+      expect(sharedNodeStore.getNode(created.id)?.id).toBe(created.id);
+      expect(sharedNodeStore.getNode(created.id)?.content).toBe(created.content);
     });
 
     it('sets createBusy while the create is in flight and clears it after', async () => {
