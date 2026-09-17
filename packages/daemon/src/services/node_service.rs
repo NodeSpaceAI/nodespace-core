@@ -930,6 +930,15 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
+        // Collapse each node's inherited buckets into its own, so the CLI and
+        // the wire flattener — neither of which can resolve an `extends`
+        // chain — still see the whole effective property set from one bucket.
+        let nodes = this
+            .node_service
+            .collapse_chain_for_wire(nodes)
+            .await
+            .map_err(service_error_to_status)?;
+
         let proto_nodes: Vec<NodeData> = nodes.into_iter().map(node_to_proto).collect();
         let count = proto_nodes.len() as i32;
 
@@ -1026,6 +1035,15 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
+        // Collapse each node's inherited buckets into its own, so the CLI and
+        // the wire flattener — neither of which can resolve an `extends`
+        // chain — still see the whole effective property set from one bucket.
+        let nodes = this
+            .node_service
+            .collapse_chain_for_wire(nodes)
+            .await
+            .map_err(service_error_to_status)?;
+
         let proto_nodes: Vec<NodeData> = nodes.into_iter().map(node_to_proto).collect();
         let count = proto_nodes.len() as i32;
 
@@ -1052,6 +1070,15 @@ impl GrpcNodeService for NodeServiceImpl {
         let nodes = this
             .node_service
             .mention_autocomplete(&req.query, limit)
+            .await
+            .map_err(service_error_to_status)?;
+
+        // Collapse each node's inherited buckets into its own, so the CLI and
+        // the wire flattener — neither of which can resolve an `extends`
+        // chain — still see the whole effective property set from one bucket.
+        let nodes = this
+            .node_service
+            .collapse_chain_for_wire(nodes)
             .await
             .map_err(service_error_to_status)?;
 

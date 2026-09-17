@@ -500,6 +500,81 @@ impl NodeService {
         )
     }
 
+    /// Fold a node's inherited buckets into its own, for the wire.
+    ///
+    /// Read surfaces outside this crate — the CLI, the wire flattener — have
+    /// no store access and so cannot resolve an `extends` chain. They flatten
+    /// a single bucket, which is correct for an unextended node and drops
+    /// every inherited field for an extending one.
+    ///
+    /// Collapsing the chain here, where the chain *is* known, lets those
+    /// surfaces keep their single-bucket rule unchanged. Crucially it also
+    /// keeps them able to distinguish a dormant bucket (left by an earlier
+    /// `node_type` change) from an inherited one: a dormant bucket is not in
+    /// the chain, so it is neither folded in nor exposed — the behavior
+    /// `node_to_json_hides_dormant_namespaces` pins.
+    ///
+    /// The node's own bucket wins any collision, matching nearest-scope-first.
+    pub async fn collapse_chain_for_wire(
+        &self,
+        nodes: Vec<Node>,
+    ) -> Result<Vec<Node>, NodeServiceError> {
+        // One cheap existence check: no `extends` edge anywhere means no node
+        // has more than its own bucket, and this is a no-op for every node.
+        let has_extends = self
+            .store
+            .has_any_extends_edge()
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        if !has_extends {
+            return Ok(nodes);
+        }
+
+        let mut out = Vec::with_capacity(nodes.len());
+        for mut node in nodes {
+            let chain = self.resolve_type_chain(&node.node_type).await?;
+            if chain.len() > 1 {
+                node.properties = Self::collapse_properties(&node.properties, &chain);
+            }
+            out.push(node);
+        }
+        Ok(out)
+    }
+
+    /// Merge each in-chain bucket into the node's own, nearest scope winning.
+    fn collapse_properties(properties: &serde_json::Value, chain: &[String]) -> serde_json::Value {
+        let Some(obj) = properties.as_object() else {
+            return properties.clone();
+        };
+        let Some(own_type) = chain.first() else {
+            return properties.clone();
+        };
+
+        let mut own = serde_json::Map::new();
+        for scope in chain {
+            let Some(bucket) = obj.get(scope.as_str()).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (k, v) in bucket {
+                own.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+
+        let mut out = serde_json::Map::new();
+        for (k, v) in obj {
+            // Ancestor buckets are now represented inside the own bucket;
+            // anything else (bookkeeping, dormant namespaces) passes through
+            // untouched so downstream rules about it still apply.
+            if chain.iter().any(|s| s == k) {
+                continue;
+            }
+            out.insert(k.clone(), v.clone());
+        }
+        out.insert(own_type.clone(), serde_json::Value::Object(own));
+
+        serde_json::Value::Object(out)
+    }
+
     pub async fn query_nodes_simple(
         &self,
         query: crate::models::NodeQuery,

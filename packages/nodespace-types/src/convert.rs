@@ -89,64 +89,6 @@ pub fn flatten_namespaced_properties(
     flatten_namespaced_properties_at_scope(properties, std::slice::from_ref(&node_type))
 }
 
-/// Flatten every type-namespace bucket on a node into one flat set.
-///
-/// The no-scope-available form, for callers that cannot resolve an `extends`
-/// chain — notably this crate and the CLI, neither of which can reach the
-/// store. A node's own bucket wins any key collision; remaining buckets are
-/// merged in stable key order behind it.
-///
-/// This is deliberately wider than [`flatten_namespaced_properties`]'s
-/// single-scope behavior. Under `extends` (ADR-078) an inherited field lives
-/// in its declaring ancestor's bucket, so flattening one bucket would drop it
-/// entirely — losing data on read, which is worse than including a bucket
-/// from a scope the caller did not ask for. Callers that *do* have a scope
-/// project first, which leaves only in-scope buckets for this to merge.
-pub fn flatten_all_namespaces(
-    properties: &serde_json::Value,
-    node_type: &str,
-) -> serde_json::Value {
-    let Some(props_obj) = properties.as_object() else {
-        return properties.clone();
-    };
-
-    // Storage shape is "has at least one type-namespace bucket", not "has the
-    // node's own bucket": a node projected to an ancestor's scope has had its
-    // own bucket dropped, and keying on that would send it down the
-    // already-flat path and lose every remaining field.
-    let has_any_bucket = props_obj
-        .iter()
-        .any(|(k, v)| !k.starts_with('_') && v.is_object());
-    if !has_any_bucket {
-        return flatten_namespaced_properties(properties, node_type);
-    }
-
-    let mut out = serde_json::Map::new();
-    // Own bucket first so it wins collisions, matching nearest-scope-first.
-    if let Some(own) = props_obj.get(node_type).and_then(|v| v.as_object()) {
-        for (k, v) in own {
-            if !k.starts_with('_') {
-                out.insert(k.clone(), v.clone());
-            }
-        }
-    }
-    for (bucket_name, value) in props_obj {
-        if bucket_name == node_type || bucket_name.starts_with('_') {
-            continue;
-        }
-        let Some(bucket) = value.as_object() else {
-            continue;
-        };
-        for (k, v) in bucket {
-            if !k.starts_with('_') {
-                out.entry(k.clone()).or_insert_with(|| v.clone());
-            }
-        }
-    }
-
-    serde_json::Value::Object(out)
-}
-
 /// Flatten namespaced properties at an explicit scope chain (ADR-078).
 ///
 /// The general form of [`flatten_namespaced_properties`], which is now the
@@ -207,14 +149,14 @@ pub fn flatten_namespaced_properties_at_scope(
 
 /// Flatten namespaced properties for API response, in place.
 ///
-/// Uses [`flatten_all_namespaces`] rather than the single-scope form: this
-/// crate has no store access, so it cannot resolve a node's `extends` chain,
-/// and flattening at the node's own type alone would silently drop every
-/// inherited field (ADR-078). Callers that *have* resolved a scope should
-/// project before reaching here — a projected node carries only in-scope
-/// buckets, so flattening all of them yields exactly that scope's fields.
+/// Single-scope by design: this crate has no store access and cannot resolve
+/// an `extends` chain. The service layer collapses a node's inherited buckets
+/// into its own before the wire boundary
+/// (`NodeService::collapse_chain_for_wire`), so one bucket carries the whole
+/// effective property set by the time it reaches here — and a dormant bucket
+/// left by an earlier type change stays excluded, as it always has been.
 fn flatten_properties_for_api(node: &mut Node) {
-    node.properties = flatten_all_namespaces(&node.properties, &node.node_type);
+    node.properties = flatten_namespaced_properties(&node.properties, &node.node_type);
 }
 
 fn task_node_to_value(node: Node) -> Result<serde_json::Value, String> {

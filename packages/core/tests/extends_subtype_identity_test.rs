@@ -741,10 +741,15 @@ async fn the_wire_flattener_keeps_inherited_fields() {
         .expect("get_node failed")
         .expect("node should exist");
 
-    // The wire conversion has no store access, so it cannot resolve a chain.
-    // Flattening the node's own bucket alone would drop `status` entirely —
-    // losing data on every typed read of an extending node.
-    let wire = nodespace_types::node_to_typed_value(node).expect("conversion failed");
+    // The wire conversion has no store access and flattens one bucket, so the
+    // service layer collapses the chain into the node's own bucket first.
+    // Without that, every inherited field is dropped on every typed read.
+    let collapsed = svc
+        .collapse_chain_for_wire(vec![node])
+        .await
+        .expect("collapse failed")
+        .remove(0);
+    let wire = nodespace_types::node_to_typed_value(collapsed).expect("conversion failed");
 
     assert_eq!(
         wire["properties"]["status"], "open",
@@ -779,7 +784,12 @@ async fn a_projected_node_flattens_to_exactly_its_scope() {
         .find(|n| n.node_type == "bug")
         .expect("the bug should be in a ticket-scoped result");
 
-    let wire = nodespace_types::node_to_typed_value(bug).expect("conversion failed");
+    let collapsed = svc
+        .collapse_chain_for_wire(vec![bug])
+        .await
+        .expect("collapse failed")
+        .remove(0);
+    let wire = nodespace_types::node_to_typed_value(collapsed).expect("conversion failed");
 
     assert_eq!(wire["properties"]["status"], "open");
     assert!(
