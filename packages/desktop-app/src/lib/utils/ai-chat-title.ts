@@ -48,9 +48,28 @@ export const UNTITLED_CHAT_TITLE = 'Untitled';
  */
 export const UNTITLED_CHAT_LABEL = 'Untitled chat';
 
+/**
+ * Zero-width characters that read as blank but survive `String.prototype.trim`.
+ *
+ * `trim` strips whitespace only, so a title pasted as U+200B is truthy in JS
+ * while the backend's `is_empty_or_whitespace` (`packages/core/src/behaviors/mod.rs`)
+ * counts it as blank. Kept in step with that function's list, so the two ends
+ * agree on what "no title" means — a disagreement here is exactly what lets a
+ * write be sent that the backend then refuses.
+ */
+const ZERO_WIDTH_CHARS = /[\u200B\u200C\u200D\uFEFF]/g;
+
+/**
+ * Whether `content` is blank in the sense the backend uses: empty, whitespace,
+ * or made only of zero-width characters.
+ */
+function isBlankTitle(content: string): boolean {
+  return content.replace(ZERO_WIDTH_CHARS, '').trim() === '';
+}
+
 /** Display title for an ai-chat node's stored `content`. */
 export function aiChatDisplayTitle(content: string | null | undefined): string {
-  return content?.trim() ? content : UNTITLED_CHAT_LABEL;
+  return content && !isBlankTitle(content) ? content : UNTITLED_CHAT_LABEL;
 }
 
 /**
@@ -74,11 +93,13 @@ export function aiChatDisplayTitle(content: string | null | undefined): string {
  *   what the sentinel encodes — so this also re-arms automatic titling,
  *   rather than leaving the chat stuck with no title and no way to get one.
  *
- * Note this is asymmetric with {@link aiChatDisplayTitle}, which still
- * tolerates blank content on the read side. That is deliberate: the write
- * side is a contract with the backend, the read side is defensive rendering.
+ * "Cleared" is judged with {@link isBlankTitle}, not `trim()` alone: `trim`
+ * leaves zero-width characters standing, so a draft of only those would look
+ * non-empty here, be sent as-is, and then be refused by the backend — the same
+ * failed-write divergence this function exists to prevent, just for a narrower
+ * input. The two ends have to agree on what counts as blank.
  */
 export function resolveChatTitleCommit(currentContent: string, draft: string): string | null {
-  const trimmed = draft.trim() || UNTITLED_CHAT_TITLE;
-  return trimmed === currentContent ? null : trimmed;
+  const resolved = isBlankTitle(draft) ? UNTITLED_CHAT_TITLE : draft.trim();
+  return resolved === currentContent ? null : resolved;
 }

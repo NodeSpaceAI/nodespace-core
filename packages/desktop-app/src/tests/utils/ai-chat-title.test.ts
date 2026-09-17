@@ -25,6 +25,13 @@ describe('aiChatDisplayTitle', () => {
     expect(aiChatDisplayTitle('   ')).toBe(UNTITLED_CHAT_LABEL);
   });
 
+  it('falls back to the placeholder for zero-width-only content', () => {
+    // Renders as an empty row otherwise — `trim()` alone would treat these as
+    // a real title.
+    expect(aiChatDisplayTitle('​')).toBe(UNTITLED_CHAT_LABEL);
+    expect(aiChatDisplayTitle('﻿‍')).toBe(UNTITLED_CHAT_LABEL);
+  });
+
   it('falls back to the placeholder for null/undefined content', () => {
     expect(aiChatDisplayTitle(null)).toBe(UNTITLED_CHAT_LABEL);
     expect(aiChatDisplayTitle(undefined)).toBe(UNTITLED_CHAT_LABEL);
@@ -76,22 +83,35 @@ describe('resolveChatTitleCommit', () => {
     // backend accepts (AiChatNodeBehavior::validate rejects blank content),
     // and the commit updates the sidebar optimistically with no rollback, so
     // writing it would leave two surfaces showing a title the database never
-    // took. "I have no title for this" is what the sentinel already means.
+    // took. "I have no title for this" is what the sentinel already means —
+    // so this also hands the chat back to background titling, rather than
+    // stranding it with no title and no way to acquire one.
     expect(resolveChatTitleCommit('Old title', '')).toBe(UNTITLED_CHAT_TITLE);
     expect(resolveChatTitleCommit('Old title', '   ')).toBe(UNTITLED_CHAT_TITLE);
-  });
-
-  it('re-arms automatic titling when a title is cleared', () => {
-    // The sentinel is exactly what the daemon's titler claims, so clearing a
-    // title hands the chat back to background titling rather than stranding
-    // it with no title and no way to acquire one.
-    expect(resolveChatTitleCommit('Old title', '')).toBe('Untitled');
   });
 
   it('returns null when clearing a chat that is already at the sentinel', () => {
     // No-op: already untitled, so there is nothing to write.
     expect(resolveChatTitleCommit(UNTITLED_CHAT_TITLE, '')).toBeNull();
     expect(resolveChatTitleCommit(UNTITLED_CHAT_TITLE, '   ')).toBeNull();
+  });
+
+  it('treats a zero-width-only draft as cleared', () => {
+    // `trim()` does not strip U+200B and friends, so these are truthy in JS
+    // while the backend's is_empty_or_whitespace counts them as blank. Without
+    // matching that definition the draft would be sent as-is and refused,
+    // which is the same failed write this resolution exists to prevent.
+    expect(resolveChatTitleCommit('Old title', '​')).toBe(UNTITLED_CHAT_TITLE);
+    expect(resolveChatTitleCommit('Old title', '​‌‍﻿')).toBe(
+      UNTITLED_CHAT_TITLE
+    );
+    expect(resolveChatTitleCommit('Old title', ' ​ ')).toBe(UNTITLED_CHAT_TITLE);
+  });
+
+  it('keeps a real title that merely contains a zero-width character', () => {
+    // Only a title made *entirely* of them is blank; one embedded in real text
+    // is the user's content and must survive.
+    expect(resolveChatTitleCommit('Old title', 'Bill​ing')).toBe('Bill​ing');
   });
 
   it('returns the sentinel when the stored content is somehow already blank', () => {
