@@ -583,6 +583,115 @@ async fn cron_runner_ticks_and_fires_a_scheduled_play() -> Result<()> {
     Ok(())
 }
 
+/// Acceptance criterion: "A scheduled Play can compute
+/// `end_date = start_date + N days` and write it as a new node's field
+/// value end-to-end."
+///
+/// Exercises the whole path this issue adds, through a REAL running engine:
+/// `add_days` (registered as a CEL function in `cel.rs`) is reachable from
+/// an action's computed field value through the new function-call binding
+/// syntax (`{add_days(...)}`, parsed by
+/// `BindingContext::resolve_function_call` in `actions.rs`) -- not just from
+/// a CEL condition, which is all that existed before this issue. A
+/// scheduled play scans for `pb_cycle_source` nodes and creates one
+/// `pb_cycle_result` node per match whose `end_date` is computed as
+/// `start_date + 14 days` entirely through the play's own JSON -- no Rust
+/// test code computes the date; the assertion below only checks what the
+/// engine wrote.
+#[tokio::test(start_paused = true)]
+async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_node() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    create_schema(
+        &service,
+        "pb_cycle_source",
+        json!([{ "name": "start_date", "type": "string" }]),
+    )
+    .await?;
+    // A distinct node type for the action to create -- reusing the
+    // trigger's own type would additionally trip the self-chaining check
+    // (`create_node` of the trigger's own type re-satisfies `node_created`),
+    // which is unrelated to what this test is about.
+    create_schema(
+        &service,
+        "pb_cycle_result",
+        json!([{ "name": "end_date", "type": "string" }]),
+    )
+    .await?;
+
+    let source = Node::new(
+        "pb_cycle_source".to_string(),
+        "cycle source".to_string(),
+        json!({ "start_date": "2026-01-01" }),
+    );
+    service.create_node(source).await?;
+
+    // Registered before the engine starts, same as
+    // `cron_runner_ticks_and_fires_a_scheduled_play` above, so
+    // `load_active_plays()` picks it up and the first tick has a live
+    // registry entry to scan against.
+    create_play(
+        &service,
+        "compute-cycle-end-date",
+        json!([{
+            "name": "compute-end-date-scheduled",
+            "trigger": { "type": "scheduled", "cron": "0 * * * * * *", "node_type": "pb_cycle_source" },
+            "conditions": [],
+            "actions": [{
+                "action_type": "create_node",
+                "params": {
+                    "node_type": "pb_cycle_result",
+                    "content": "computed cycle result",
+                    "properties": {
+                        "end_date": "{add_days(trigger.node.properties.pb_cycle_source.start_date, 14)}"
+                    }
+                }
+            }]
+        }]),
+    )
+    .await?;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let engine = Arc::new(PlaybookEngine::new(Arc::clone(&service)));
+    let task = {
+        let engine = Arc::clone(&engine);
+        tokio::spawn(async move { engine.start(shutdown_rx).await })
+    };
+
+    // Let the engine's startup chain reach CronRunner's `sleep(POLL_INTERVAL)`
+    // before advancing the paused virtual clock -- same rationale as
+    // `cron_runner_ticks_and_fires_a_scheduled_play` above.
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(Duration::from_secs(61)).await;
+
+    let fired = wait_until(|| {
+        let service = Arc::clone(&service);
+        async move {
+            let results = service
+                .query_nodes_by_type("pb_cycle_result", Some("active"))
+                .await
+                .unwrap_or_default();
+            results.iter().any(|n| {
+                user_field(n, "pb_cycle_result", "end_date").and_then(|v| v.as_str())
+                    == Some("2026-01-15")
+            })
+        }
+    })
+    .await;
+    assert!(
+        fired,
+        "scheduled play must have created a pb_cycle_result node whose \
+         end_date was computed by the engine as start_date (2026-01-01) \
+         + 14 days = 2026-01-15, via {{add_days(...)}} in the action's \
+         properties param"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
 /// Regression test for a log-node fingerprint collision in the validation-
 /// error logging path shared by `load_active_plays`/`handle_play_created`/
 /// `handle_play_updated`: it used to pass a constant `rule_name="validation"`
