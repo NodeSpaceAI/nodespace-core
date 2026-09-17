@@ -125,9 +125,11 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: Some(true),
                     default: None,
                     description: Some(
-                        "Relative urgency for triage (highest, high, medium, low, lowest), \
-                         independent of status. Not a deadline — use due_date for that. \
-                         Absent means no priority has been assigned."
+                        "Relative urgency for triage and sorting (highest, high, medium, \
+                         low, lowest), independent of status. Sorting follows that urgency \
+                         order rather than the alphabetical order of the values; \
+                         user-defined values sort after all of them. Not a deadline — use \
+                         due_date for that. Absent means no priority has been assigned."
                             .to_string(),
                     ),
                     item_type: None,

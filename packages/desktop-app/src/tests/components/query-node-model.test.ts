@@ -265,6 +265,54 @@ describe('applySorting', () => {
       'b',
     ]);
   });
+
+  // Priority is an enum whose alphabetical order (`high, highest, low, lowest,
+  // medium`) is meaningless, so it sorts by urgency rank instead. This mirrors
+  // TaskPriority::rank() and compare_priority_values in the Rust query service;
+  // saved queries sort here on the client, so the two must agree.
+  describe('task priority ranking', () => {
+    const byPriority = (...priorities: string[]) =>
+      priorities.map((p) => node(p, { properties: { priority: p } }));
+
+    const sortedIds = (
+      nodes: ReturnType<typeof byPriority>,
+      direction: 'asc' | 'desc' = 'asc',
+      type = 'task'
+    ) => applySorting(nodes, [{ field: 'priority', direction }], type).map((n) => n.id);
+
+    it('sorts ascending by urgency rank, not alphabetically', () => {
+      const nodes = byPriority('low', 'highest', 'medium', 'lowest', 'high');
+      expect(sortedIds(nodes)).toEqual(['highest', 'high', 'medium', 'low', 'lowest']);
+    });
+
+    it('reverses the rank when descending', () => {
+      const nodes = byPriority('medium', 'lowest', 'highest', 'high', 'low');
+      expect(sortedIds(nodes, 'desc')).toEqual(['lowest', 'low', 'medium', 'high', 'highest']);
+    });
+
+    it('places user-defined values after all core values, lexicographically', () => {
+      const nodes = byPriority('critical', 'low', 'highest', 'blocker', 'medium');
+      expect(sortedIds(nodes)).toEqual(['highest', 'medium', 'low', 'blocker', 'critical']);
+    });
+
+    it('sorts an absent priority first, matching SQL NULL ordering', () => {
+      const nodes = [
+        node('low', { properties: { priority: 'low' } }),
+        node('none', { properties: {} }),
+        node('highest', { properties: { priority: 'highest' } }),
+      ];
+      expect(sortedIds(nodes)).toEqual(['none', 'highest', 'low']);
+    });
+
+    it('does not apply the task rank to other target types', () => {
+      // project.priority is a separate scale, and a wildcard query spans types
+      // whose priorities are not comparable — both fall back to plain ordering,
+      // exactly as resolve_order_field does in the backend.
+      const nodes = byPriority('low', 'highest', 'medium');
+      expect(sortedIds(nodes, 'asc', 'project')).toEqual(['highest', 'low', 'medium']);
+      expect(sortedIds(nodes, 'asc', '*')).toEqual(['highest', 'low', 'medium']);
+    });
+  });
 });
 
 describe('executeQueryDefinition', () => {

@@ -41,9 +41,10 @@
 //! ```
 
 use crate::db::SqliteStore;
-use crate::models::Node;
+use crate::models::{Node, TaskPriority};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use std::sync::Arc;
 
 /// Structured query definition matching QueryNode fields
@@ -190,21 +191,25 @@ impl QueryService {
         // Re-apply sorting in Rust to guarantee sort order
         // This ensures consistent sorting even if database ordering behaves unexpectedly
         if let Some(sorting) = &query.sorting {
-            self.sort_nodes(&mut nodes, sorting);
+            self.sort_nodes(&mut nodes, sorting, &query.target_type);
         }
 
         Ok(nodes)
     }
 
     /// Sort nodes in-place according to the sort configuration
-    fn sort_nodes(&self, nodes: &mut [Node], sorting: &[SortConfig]) {
+    ///
+    /// `target_type` is the query's own target, not each node's type: it
+    /// selects the same ordering rules [`Self::resolve_order_field`] used when
+    /// building the SQL, so both passes agree.
+    fn sort_nodes(&self, nodes: &mut [Node], sorting: &[SortConfig], target_type: &str) {
         if sorting.is_empty() {
             return;
         }
 
         nodes.sort_by(|a, b| {
             for sort_config in sorting {
-                let ordering = self.compare_nodes_by_field(a, b, &sort_config.field);
+                let ordering = self.compare_nodes_by_field(a, b, &sort_config.field, target_type);
                 let ordering = match sort_config.direction {
                     SortDirection::Ascending => ordering,
                     SortDirection::Descending => ordering.reverse(),
@@ -218,7 +223,13 @@ impl QueryService {
     }
 
     /// Compare two nodes by a specific field (Namespaced property access)
-    fn compare_nodes_by_field(&self, a: &Node, b: &Node, field: &str) -> std::cmp::Ordering {
+    fn compare_nodes_by_field(
+        &self,
+        a: &Node,
+        b: &Node,
+        field: &str,
+        target_type: &str,
+    ) -> std::cmp::Ordering {
         match field {
             // Metadata fields
             "created_at" => a.created_at.cmp(&b.created_at),
@@ -231,9 +242,73 @@ impl QueryService {
             _ => {
                 let val_a = a.properties.get(&a.node_type).and_then(|ns| ns.get(field));
                 let val_b = b.properties.get(&b.node_type).and_then(|ns| ns.get(field));
+
+                // A task's priority is an enum whose alphabetical order is
+                // meaningless, so rank it. This pass runs after the SQL and has
+                // the final say, so the condition must match
+                // resolve_order_field's exactly — including its `task`-only
+                // scope — or the SQL ordering is silently undone here.
+                if field == "priority" && target_type == "task" {
+                    return self.compare_priority_values(val_a, val_b);
+                }
+
                 self.compare_json_values(val_a, val_b)
             }
         }
+    }
+
+    /// Compare two `task.priority` values by rank rather than alphabetically
+    ///
+    /// Ascending yields highest, high, medium, low, lowest, then user-defined
+    /// values ordered lexicographically among themselves — the same ordering
+    /// [`Self::resolve_order_field`] builds in SQL.
+    ///
+    /// An absent priority ranks [`TaskPriority::ABSENT_RANK`], before the whole
+    /// scale, so it sorts first ascending — the same position the SQL CASE's
+    /// `IS NULL` arm gives it (`json_extract` yields SQL NULL for a JSON null
+    /// too, so one arm covers both). A non-string value is not a valid priority
+    /// and cannot be ranked, so it takes `USER_RANK`, which is where the `ELSE`
+    /// arm puts it in SQL.
+    ///
+    /// Scope of the agreement, stated precisely because the bug this replaced
+    /// hid behind a comment claiming more than it delivered: the **rank**
+    /// matches SQL for every input, and the **tie-break within a rank** matches
+    /// for strings, where both order the raw value. It does not match for
+    /// non-strings — this keys on `to_string()` while SQLite orders integers
+    /// before text — but `task.priority` is an enum field, and
+    /// `validate_node_with_fields` rejects a non-null non-string on every write
+    /// path, so no such row exists to sort. Agreement matters because SQL
+    /// applies LIMIT before this pass runs, discarding rows it has already
+    /// ordered.
+    fn compare_priority_values(
+        &self,
+        a: Option<&serde_json::Value>,
+        b: Option<&serde_json::Value>,
+    ) -> std::cmp::Ordering {
+        /// Rank and sort key for one JSON value, mirroring the SQL CASE arm
+        /// that would match it.
+        fn key(value: Option<&serde_json::Value>) -> (i16, String) {
+            match value {
+                None | Some(serde_json::Value::Null) => {
+                    (TaskPriority::ABSENT_RANK as i16, String::new())
+                }
+                Some(serde_json::Value::String(s)) => {
+                    // from_str is infallible — every unknown string is User(_)
+                    // — but name that fallback rather than letting Default's
+                    // Medium stand in for an unparseable value.
+                    let priority =
+                        TaskPriority::from_str(s).unwrap_or_else(|_| TaskPriority::User(s.clone()));
+                    (priority.rank() as i16, s.clone())
+                }
+                Some(other) => (TaskPriority::USER_RANK as i16, other.to_string()),
+            }
+        }
+
+        let (rank_a, value_a) = key(a);
+        let (rank_b, value_b) = key(b);
+        // Ranks tie for two user-defined values; the value string breaks it,
+        // mirroring the SQL tiebreaker.
+        rank_a.cmp(&rank_b).then_with(|| value_a.cmp(&value_b))
     }
 
     /// Compare two JSON values for sorting
@@ -318,11 +393,7 @@ impl QueryService {
                             SortDirection::Ascending => "ASC",
                             SortDirection::Descending => "DESC",
                         };
-                        format!(
-                            "{} {}",
-                            self.resolve_field(&s.field, &query.target_type),
-                            direction
-                        )
+                        self.resolve_order_field(&s.field, &query.target_type, direction)
                     })
                     .collect();
                 sql.push_str(&clauses.join(", "));
@@ -367,6 +438,68 @@ impl QueryService {
         } else {
             format!("json_extract(properties, '$.{}.{}')", target_type, field)
         }
+    }
+
+    /// Build one ORDER BY term, ranking priority instead of sorting it as text
+    ///
+    /// Deliberately separate from [`Self::resolve_field`]. `task.priority` is a
+    /// string enum whose alphabetical order (`high, highest, low, lowest,
+    /// medium`) is meaningless, so ordering by it needs a rank expression —
+    /// but `resolve_field`'s output must stay byte-for-byte identical to the
+    /// expression `idx_task_priority` is built on, or equality filters silently
+    /// stop using that index. Wrapping the CASE in there would trade a working
+    /// filter index for a working sort. So the rank lives here, on the ordering
+    /// path only, and `resolve_field` is left alone.
+    ///
+    /// The CASE mirrors [`TaskPriority::rank`]; the two are pinned together by
+    /// `test_sql_priority_rank_matches_enum_rank`. User-defined values all land
+    /// on the same `ELSE` rank, so the raw value is appended as a tiebreaker to
+    /// order them lexicographically among themselves — matching what
+    /// [`Self::compare_priority_values`] does in Rust.
+    ///
+    /// The trade this makes: a CASE is not an indexed expression, so the sort
+    /// itself no longer uses `idx_task_priority` and SQLite builds a transient
+    /// B-tree for it. Equality *filters* on priority still hit the index, which
+    /// is what keeping `resolve_field` untouched buys, and sorting a result set
+    /// is the cheaper half. Revisit if priority sorts ever run over row counts
+    /// where the transient sort shows up in a profile.
+    fn resolve_order_field(&self, field: &str, target_type: &str, direction: &str) -> String {
+        let resolved = self.resolve_field(field, target_type);
+
+        // Scoped to `task` only. A wildcard query resolves the namespace from
+        // each row's own node_type, so ranking there would impose the task
+        // scale on every type's priority (and rank a non-task NULL as a user
+        // value instead of sorting it first) — while compare_priority_values
+        // ranks only when both nodes are tasks. The two layers would then
+        // disagree, and which one won would depend on whether a LIMIT was
+        // present. project.priority is a different scale; see the companion
+        // issue on whether it should be aligned.
+        if field == "priority" && target_type == "task" {
+            // A *searched* CASE, deliberately: a simple `CASE <expr> WHEN ...`
+            // compares with `=`, and `NULL = 'highest'` is NULL rather than
+            // true, so an absent priority would match no arm and fall to ELSE
+            // — ranking it as a user-defined value, at the far end of the scale
+            // from where compare_priority_values puts it. Because LIMIT applies
+            // in SQL before the in-Rust re-sort, that disagreement would drop
+            // unprioritized tasks from a limited ascending query that should
+            // have returned them first.
+            let rank = format!(
+                "CASE WHEN {resolved} IS NULL THEN {} \
+                 WHEN {resolved} = 'highest' THEN {} WHEN {resolved} = 'high' THEN {} \
+                 WHEN {resolved} = 'medium' THEN {} WHEN {resolved} = 'low' THEN {} \
+                 WHEN {resolved} = 'lowest' THEN {} ELSE {} END",
+                TaskPriority::ABSENT_RANK,
+                TaskPriority::Highest.rank(),
+                TaskPriority::High.rank(),
+                TaskPriority::Medium.rank(),
+                TaskPriority::Low.rank(),
+                TaskPriority::Lowest.rank(),
+                TaskPriority::USER_RANK,
+            );
+            return format!("{rank} {direction}, {resolved} {direction}");
+        }
+
+        format!("{resolved} {direction}")
     }
 
     // ========== Filter Builders ==========

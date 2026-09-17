@@ -18,6 +18,7 @@
 
 import type { Node } from '$lib/types';
 import type { QueryDefinition, QueryFilter, SortConfig } from '$lib/types/query';
+import { TaskNodeHelpers } from '$lib/types/task-node';
 
 /** Header title shown for the (unpersisted) default type view. */
 export const DEFAULT_QUERY_TITLE = 'Default';
@@ -251,12 +252,45 @@ export function applyFilters(nodes: Node[], filters: QueryFilter[]): Node[] {
   return nodes.filter((node) => filters.every((filter) => matchesFilter(node, filter)));
 }
 
-/** Return a sorted copy of `nodes` per the sort config (stable, multi-key). */
-export function applySorting(nodes: Node[], sorting?: SortConfig[]): Node[] {
+/**
+ * Compare two `task.priority` values by urgency rank rather than alphabetically.
+ *
+ * Ascending yields highest, high, medium, low, lowest, then user-defined values
+ * ordered lexicographically among themselves — matching `compare_priority_values`
+ * in `packages/core/src/services/query_service/mod.rs`. An absent priority sorts
+ * first, as it does there and in SQL.
+ */
+function comparePriority(a: unknown, b: unknown): number {
+  if (isEmpty(a) || isEmpty(b)) {
+    if (isEmpty(a) && isEmpty(b)) return 0;
+    return isEmpty(a) ? -1 : 1;
+  }
+  const [sa, sb] = [String(a), String(b)];
+  const rank = TaskNodeHelpers.priorityRank(sa) - TaskNodeHelpers.priorityRank(sb);
+  // Ranks tie for two user-defined values; the value string breaks it.
+  return rank !== 0 ? rank : sa.localeCompare(sb);
+}
+
+/**
+ * Return a sorted copy of `nodes` per the sort config (stable, multi-key).
+ *
+ * `targetType` selects the same ordering rules the backend's `QueryService`
+ * applies, so a query sorted here matches one sorted there. It gates the
+ * priority rank to `task`, since `project.priority` is a different scale.
+ */
+export function applySorting(
+  nodes: Node[],
+  sorting?: SortConfig[],
+  targetType?: string
+): Node[] {
   if (!sorting || sorting.length === 0) return nodes;
   return [...nodes].sort((a, b) => {
     for (const sort of sorting) {
-      const cmp = ordered(readFieldValue(a, sort.field), readFieldValue(b, sort.field));
+      const [va, vb] = [readFieldValue(a, sort.field), readFieldValue(b, sort.field)];
+      const cmp =
+        sort.field === 'priority' && targetType === 'task'
+          ? comparePriority(va, vb)
+          : ordered(va, vb);
       if (cmp !== 0) return sort.direction === 'desc' ? -cmp : cmp;
     }
     return 0;
@@ -270,7 +304,7 @@ export function applySorting(nodes: Node[], sorting?: SortConfig[]): Node[] {
  */
 export function executeQueryDefinition(nodes: Node[], definition: QueryDefinition): Node[] {
   let result = applyFilters(nodes, definition.filters);
-  result = applySorting(result, definition.sorting);
+  result = applySorting(result, definition.sorting, definition.targetType);
   if (typeof definition.limit === 'number' && definition.limit >= 0) {
     result = result.slice(0, definition.limit);
   }
