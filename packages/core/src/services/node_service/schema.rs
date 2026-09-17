@@ -4,7 +4,11 @@ use super::*;
 
 /// Result of [`NodeService::update_task_node_in_tx`] — the task-node twin of
 /// `crud.rs`'s `VersionCheckedUpdateOutcome`. See that type's own doc for why
-/// a version conflict is `Ok` rather than `Err`.
+/// a version conflict is `Ok` rather than `Err`. `Updated` is boxed simply
+/// because `TaskNode` is a large, non-`Copy` struct worth keeping off the
+/// stack when this variant is passed around — unlike `VersionCheckedUpdateOutcome`,
+/// there's no zero-size sibling variant here for the boxing to protect from
+/// paying `TaskNode`'s size (`VersionConflict(i64)` is already small).
 pub(crate) enum TaskVersionCheckedUpdateOutcome {
     VersionConflict(i64),
     Updated(Box<crate::models::TaskNode>),
@@ -415,6 +419,15 @@ impl NodeService {
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
             .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
+        // An invariant rule's action is a generic `update_node` with no
+        // guard against changing `node_type` — unlike the rest of this
+        // pipeline, which is task-shape-preserving by construction. If a
+        // rule's own self-referential action retypes the trigger node away
+        // from "task" (a deliberately unusual thing for a rule to do, and
+        // not the shape any known rule uses today), this conversion fails
+        // and the whole transaction rolls back via the `?` below — a safe,
+        // no-partial-write outcome, just surfaced as a generic
+        // `invalid_update` rather than an invariant-specific error variant.
         let task_node = crate::db::SqliteStore::node_to_task_node(final_node).ok_or_else(|| {
             NodeServiceError::invalid_update(format!(
                 "Node '{}' is no longer a task node after update",
