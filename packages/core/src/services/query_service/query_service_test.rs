@@ -1492,7 +1492,7 @@ mod tests {
     // =========================================================================
     // Index-string coupling
     //
-    // Migration v003_property_indexes.rs hardcodes partial expression indexes
+    // `db/schema.rs` hardcodes partial expression indexes
     // whose expressions must byte-for-byte match what resolve_field/
     // build_property_filter generate, or SQLite won't recognize the index as
     // covering the query and will silently fall back to a full scan. These

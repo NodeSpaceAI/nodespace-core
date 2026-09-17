@@ -1,6 +1,6 @@
 //! Conflict journal types (ADR-068): a durable, resolvable record of a
 //! convergence conflict, stored in the local-only `conflict` +
-//! `conflict_participant` tables (see `db::migrations::v005_conflict_journal`).
+//! `conflict_participant` tables (see `db::schema`).
 //!
 //! Replaces the `_possible_duplicate` boolean property, which could never be
 //! reached on a local-only install, could not name the counterparty, and

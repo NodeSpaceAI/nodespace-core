@@ -71,7 +71,7 @@ pub(crate) struct Connections {
     /// reads *fresh* as well as clean (see [`ReadConn::query`]).
     ///
     /// Starts empty and fills on demand, so no reader connection exists until
-    /// after migrations have run.
+    /// after the schema is created.
     readers: Arc<Mutex<Vec<libsql::Connection>>>,
     /// The store's only writable connection, reachable exclusively through
     /// [`Connections::write`]. Every mutating statement in the store — whether
@@ -232,7 +232,7 @@ fn lock_pool(
 }
 
 /// Per-connection session settings for the writer. Unlike the tables/indexes in
-/// `db::migrations`, these are NOT persisted schema state — `journal_mode` is
+/// `db::schema`, these are NOT persisted schema state — `journal_mode` is
 /// durable in the DB file but re-asserting it is harmless, while
 /// `foreign_keys`, `synchronous`, and `busy_timeout` reset to SQLite defaults
 /// on every new connection and must be set every time. Must run outside any

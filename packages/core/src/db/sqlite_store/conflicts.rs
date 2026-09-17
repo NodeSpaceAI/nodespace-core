@@ -1,5 +1,5 @@
 //! `SqliteStore` methods for the local-only conflict journal (ADR-068).
-//! See `db::migrations::v005_conflict_journal` for the table shape and
+//! See `db::schema` for the table shape and
 //! `services::node_service::conflicts` for the deterministic-id helper and
 //! the `NodeService`-level detection call sites that use these methods.
 use super::*;

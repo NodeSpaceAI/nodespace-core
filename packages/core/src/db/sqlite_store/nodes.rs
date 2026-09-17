@@ -4475,7 +4475,7 @@ mod query_nodes_wildcard_type_tests {
 /// **Gated behind `RUN_LONG_TESTS=1`** (the env var `rust:test:long` already
 /// wires up) and skipped otherwise: creating 30k+ nodes and deleting them
 /// again runs each `node` INSERT/DELETE through the `node_fts` FTS5 sync
-/// triggers (`v001_initial_schema`), which dominates the cost at this row
+/// triggers (`db::schema`), which dominates the cost at this row
 /// count — measured ~90-390s per test depending on machine load, far past
 /// what belongs in the default `cargo test` / `bun run test:all` / pre-push
 /// path. Run explicitly before merging a change to this chunking:

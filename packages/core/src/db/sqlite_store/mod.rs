@@ -84,8 +84,8 @@ pub type StoreNotifier = Arc<dyn Fn(StoreChange) + Send + Sync>;
 /// every connection opened afterwards has the `vec0` virtual-table module available.
 /// Runs exactly once per process and must complete before any real store connection is
 /// opened — `SqliteStore::new` awaits it first. `pub` so tests/tooling that open a raw
-/// libsql connection (bypassing `SqliteStore::new`) to exercise the migration runner
-/// directly can register `vec0` too, since migration 1 creates a vec0 table.
+/// libsql connection (bypassing `SqliteStore::new`) to create the schema directly can
+/// register `vec0` too, since `create_schema` creates a vec0 table.
 ///
 /// Ordering is critical: libsql lazily calls `sqlite3_config(SQLITE_CONFIG_SERIALIZED)`
 /// on its first `connect()` (via a process-global `Once`), and `sqlite3_config` fails
@@ -231,18 +231,9 @@ impl SqliteStore {
 
         // Bootstrap runs through the writer guard like any other write. The
         // read pool is still empty at this point and only fills on first use,
-        // so no reader connection can exist before migrations have run.
+        // so no reader connection can exist before the schema is created.
         let valid_node_types = {
             let conn = conns.write().await;
-            // Data-safety for app updates: snapshot the existing database before any
-            // pending migration runs, so a new release's migration can never lose the
-            // user's prior data irrecoverably. Best-effort — a backup failure is logged
-            // and must not block startup.
-            if let Err(e) =
-                crate::db::migrations::backup_before_pending_migrations(&conn, &db_path).await
-            {
-                tracing::warn!(error = %e, "pre-migration database backup failed; proceeding");
-            }
             Self::initialize_schema(&conn).await?;
             Self::build_schema_caches(&conn).await?
         };
@@ -281,21 +272,23 @@ impl SqliteStore {
     }
 
     async fn initialize_schema(conn: &libsql::Connection) -> Result<()> {
-        crate::db::migrations::run(conn)
+        crate::db::schema::create_schema(conn)
             .await
-            .context("Failed to run schema migrations")?;
+            .context("Failed to create database schema")?;
 
         Self::backfill_fts_if_stale(conn).await?;
 
         Ok(())
     }
 
-    /// One-time FTS5 backfill. The external-content `node_fts` triggers
-    /// only index FUTURE writes, so any node predating the FTS table (user DBs are
-    /// never reset — same reason the migration runner exists) is absent from
-    /// the index and never returned by `bm25_search_roots`. Rebuild the index from
-    /// `node`, but ONLY when it is out of sync, so a healthy DB does not re-index
-    /// its whole corpus on every startup.
+    /// FTS5 index-integrity repair. The external-content `node_fts` triggers
+    /// index writes as they happen, so a healthy database stays in sync on its
+    /// own — but the index and `node` can still diverge if a write is
+    /// interrupted, or if rows reach `node` by a path the triggers did not see
+    /// (a bulk restore, or a `VACUUM` that renumbers rowids). A desynced index silently
+    /// omits those rows from `bm25_search_roots` forever, so rebuild from
+    /// `node` when the two disagree — but ONLY then, so a healthy DB does not
+    /// re-index its whole corpus on every startup.
     ///
     /// The staleness signal is the count of ACTUALLY-INDEXED documents, read from
     /// FTS5's `node_fts_docsize` shadow table — NOT `count(*) FROM node_fts`, which
@@ -524,53 +517,39 @@ mod tests {
         Ok((store_arc, temp_dir))
     }
 
-    /// End-to-end data-safety wiring: opening an existing (pre-migration) database
-    /// through `SqliteStore::new` snapshots it BEFORE the pending migration runs,
-    /// then migrates the live database forward. Guards the app-update guarantee that
-    /// a new release never loses the user's prior data.
+    /// Reopening a database this build created must be a no-op that preserves
+    /// its data: `create_schema` is all-`IF NOT EXISTS`, so the second open
+    /// adds nothing and drops nothing.
     #[tokio::test]
-    async fn new_backs_up_an_existing_db_before_migrating_then_upgrades() -> Result<()> {
-        use crate::db::migrations::LATEST_VERSION;
+    async fn reopening_an_existing_db_preserves_its_data() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("existing.db");
 
-        // Simulate a database left by a prior release: migrated to LATEST-1 with data.
         {
-            crate::db::ensure_sqlite_vec_registered().await;
-            let conn = libsql::Builder::new_local(&db_path)
-                .build()
-                .await?
-                .connect()?;
-            crate::db::migrations::run_up_to(&conn, LATEST_VERSION - 1).await?;
-            conn.execute(
-                "INSERT INTO node (id, node_type, content, created_at, modified_at) \
-                 VALUES ('m', 'text', 'keep', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
-                (),
-            )
-            .await?;
+            let store = SqliteStore::new(db_path.clone()).await?;
+            store
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO node (id, node_type, content, created_at, modified_at) \
+                     VALUES ('m', 'text', 'keep', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    (),
+                )
+                .await?;
         }
 
-        // Opening through the store must snapshot then upgrade.
-        let store = SqliteStore::new(db_path.clone()).await?;
-
-        let backups = temp_dir.path().join("backups");
-        let has_backup = std::fs::read_dir(&backups)
-            .map(|rd| {
-                rd.filter_map(|e| e.ok())
-                    .any(|e| e.file_name().to_string_lossy().ends_with(".bak"))
-            })
-            .unwrap_or(false);
-        assert!(
-            has_backup,
-            "opening a pre-migration db must leave a backup snapshot"
-        );
-
-        let mut rows = store.read().await?.query("PRAGMA user_version", ()).await?;
-        let version: i64 = rows.next().await?.unwrap().get(0)?;
-        assert_eq!(
-            version, LATEST_VERSION,
-            "the live db must be migrated to LATEST"
-        );
+        let store = SqliteStore::new(db_path).await?;
+        let mut rows = store
+            .read()
+            .await?
+            .query("SELECT content FROM node WHERE id = 'm'", ())
+            .await?;
+        let content: String = rows
+            .next()
+            .await?
+            .expect("the row written before reopening must still be there")
+            .get(0)?;
+        assert_eq!(content, "keep");
         Ok(())
     }
 
@@ -1915,9 +1894,10 @@ mod tests {
 
     /// two `SqliteStore`s opened against the same file (simulating a dev +
     /// production daemon both holding the DB) must not surface SQLITE_BUSY as a
-    /// hard error on the loser of a write race. `busy_timeout` (set by migration 1,
-    /// applied per-connection in `initialize_schema`) makes the second writer retry
-    /// until the first releases its lock, instead of failing immediately.
+    /// hard error on the loser of a write race. `busy_timeout` (a per-connection
+    /// session setting, applied in `apply_connection_pragmas`) makes the second
+    /// writer retry until the first releases its lock, instead of failing
+    /// immediately.
     ///
     /// Requires a multi-thread runtime: libsql's local connection executes
     /// synchronously (no `spawn_blocking`), so on a current-thread runtime the
