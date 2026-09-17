@@ -18,6 +18,7 @@
 //! (not short-circuited) so the caller can present every issue at once.
 
 use crate::models::SchemaNode;
+use crate::playbook::actions::action_list_signature;
 use crate::playbook::path_extractor;
 use crate::playbook::types::{
     ActionType, GraphEventType, ParsedAction, ParsedRule, ParsedTrigger, RuleClass,
@@ -130,6 +131,28 @@ pub enum PlayValidationError {
     /// action silently no-ops, vetoing nothing, with no save-time or
     /// runtime warning. Rejected outright rather than accepted-with-a-caveat.
     RejectActionHasForEach { location: String },
+    /// Two different rules within the SAME play have byte-identical action
+    /// lists -- the same `action_type`, `params`, and `for_each` sequence,
+    /// in order, for every action (the same serialized shape
+    /// `playbook::actions::rule_id_for` hashes into a rule's derived
+    /// identity). Two DIFFERENT rules colliding onto the same `rule_id`
+    /// derive the same output node id for a given `(action_index,
+    /// iteration_path)`; `execute_create_node`'s existing-node-at-derived-id
+    /// convergence check cannot distinguish "the same rule re-firing" from
+    /// "two different rules colliding," so it silently returns the wrong
+    /// rule's node -- no error, no log. The realistic trigger is copy-paste
+    /// rule authoring: duplicate a rule, change its trigger or condition,
+    /// leave the action list untouched. Cross-play collisions are already
+    /// distinguished by `play_id` in `rule_id_for` and are not flagged --
+    /// only pairs within the same play (the same `validate_play` call) are
+    /// compared. `location` names the later (duplicate) rule;
+    /// `duplicate_of_location` names the earlier rule it collides with.
+    DuplicateActionList {
+        rule_name: String,
+        duplicate_of_rule_name: String,
+        duplicate_of_location: String,
+        location: String,
+    },
 }
 
 impl std::fmt::Display for PlayValidationError {
@@ -250,6 +273,19 @@ impl std::fmt::Display for PlayValidationError {
                  for_each)",
                 location
             ),
+            Self::DuplicateActionList {
+                rule_name,
+                duplicate_of_rule_name,
+                duplicate_of_location,
+                location,
+            } => write!(
+                f,
+                "rule '{}' at {} has an action list byte-identical to rule '{}' at {} \
+                 (two same-play rules with identical actions derive the same rule identity and \
+                 silently collide onto one output node at execution time; rename/differentiate \
+                 one rule's actions, or remove the duplicate)",
+                rule_name, location, duplicate_of_rule_name, duplicate_of_location
+            ),
         }
     }
 }
@@ -279,7 +315,8 @@ impl PlayValidationError {
             | Self::InvariantUnsupportedTrigger { location, .. }
             | Self::InvariantRelationshipNeedsExplicitOrder { location, .. }
             | Self::RejectActionOnReactiveRule { location }
-            | Self::RejectActionHasForEach { location } => location,
+            | Self::RejectActionHasForEach { location }
+            | Self::DuplicateActionList { location, .. } => location,
         }
     }
 
@@ -305,6 +342,7 @@ impl PlayValidationError {
             }
             Self::RejectActionOnReactiveRule { .. } => "reject_action_on_reactive_rule",
             Self::RejectActionHasForEach { .. } => "reject_action_has_for_each",
+            Self::DuplicateActionList { .. } => "duplicate_action_list",
         }
     }
 }
@@ -436,6 +474,18 @@ pub async fn validate_play(
         validate_reject_action_class(rule, rule_idx, &mut errors);
     }
 
+    // -- Validate no two same-play rules share a byte-identical action list --
+    //
+    // Unlike every check above, this is a cross-rule check over the WHOLE
+    // rule list rather than a per-rule one, so it runs once here instead of
+    // inside the per-rule loop. `rules` is always the set of rules for a
+    // single play (every `validate_play` call site parses and validates one
+    // play node at a time), so comparing all pairs in it is exactly the
+    // same-play scope this check needs -- cross-play collisions are already
+    // distinguished by `play_id` in `rule_id_for` and are not this check's
+    // concern.
+    validate_no_duplicate_action_lists(rules, &mut errors);
+
     if errors.is_empty() {
         Ok(())
     } else {
@@ -446,6 +496,57 @@ pub async fn validate_play(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Detect two rules within `rules` (always a single play's rules -- see the
+/// call site in [`validate_play`]) whose action lists are byte-identical, in
+/// the same shape `playbook::actions::rule_id_for` hashes into a rule's
+/// derived identity. See [`PlayValidationError::DuplicateActionList`] for
+/// why this matters.
+///
+/// Rules with an empty action list are excluded from comparison: there is no
+/// `create_node` (or any other) output whose id is derived from `rule_id`,
+/// so two do-nothing rules "colliding" has no observable consequence -- this
+/// check exists for the specific derived-identity collision the module doc
+/// describes, not as a general duplicate-rule linter.
+///
+/// Compares every pair once. Play rule counts are small in practice, so the
+/// O(n^2) comparison is not a concern.
+fn validate_no_duplicate_action_lists(
+    rules: &[Arc<ParsedRule>],
+    errors: &mut Vec<PlayValidationError>,
+) {
+    let signatures: Vec<Option<String>> = rules
+        .iter()
+        .map(|rule| {
+            if rule.actions.is_empty() {
+                None
+            } else {
+                Some(action_list_signature(&rule.actions))
+            }
+        })
+        .collect();
+
+    for later_idx in 1..signatures.len() {
+        let Some(later_sig) = signatures[later_idx].as_deref() else {
+            continue;
+        };
+        // Report against the EARLIEST matching rule only. When three or more
+        // rules in a play share one action list, this reports N-1 errors
+        // (each later rule against the first occurrence) instead of the full
+        // O(n^2) set of pairs -- they'd all describe the same underlying
+        // duplicate action list, just against different "first" rules.
+        if let Some(earlier_idx) =
+            (0..later_idx).find(|&i| signatures[i].as_deref() == Some(later_sig))
+        {
+            errors.push(PlayValidationError::DuplicateActionList {
+                rule_name: rules[later_idx].name.clone(),
+                duplicate_of_rule_name: rules[earlier_idx].name.clone(),
+                duplicate_of_location: format!("rule[{}]", earlier_idx),
+                location: format!("rule[{}]", later_idx),
+            });
+        }
+    }
+}
 
 /// Extract the node_type from a parsed trigger.
 fn trigger_node_type(rule: &ParsedRule) -> Option<String> {
@@ -3171,6 +3272,201 @@ mod tests {
                 vec![reject_action("no")],
             ));
             let result = validate_play(&[rule], &svc).await;
+            assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Duplicate action lists within a play (derived-identity collision guard)
+    // -----------------------------------------------------------------------
+
+    mod duplicate_action_lists {
+        use super::*;
+        use serde_json::json;
+        use std::sync::Arc;
+
+        // `node_type` is a param (not hardcoded) so the `validate_play`
+        // integration tests below can point at a schema-backed type of
+        // their own rather than a reserved core type name like `task`.
+        fn rule(name: &str, node_type: &str, actions: Vec<ParsedAction>) -> Arc<ParsedRule> {
+            Arc::new(ParsedRule {
+                name: name.to_string(),
+                class: RuleClass::Reactive,
+                trigger: ParsedTrigger::GraphEvent {
+                    on: GraphEventType::NodeCreated,
+                    node_type: node_type.to_string(),
+                    property_key: None,
+                },
+                conditions: vec![],
+                actions,
+            })
+        }
+
+        fn with_property_changed_trigger(rule: &Arc<ParsedRule>) -> Arc<ParsedRule> {
+            let node_type = match &rule.trigger {
+                ParsedTrigger::GraphEvent { node_type, .. } => node_type.clone(),
+                ParsedTrigger::Scheduled { node_type, .. } => node_type.clone(),
+            };
+            Arc::new(ParsedRule {
+                trigger: ParsedTrigger::GraphEvent {
+                    on: GraphEventType::PropertyChanged,
+                    node_type,
+                    property_key: Some("status".to_string()),
+                },
+                ..(**rule).clone()
+            })
+        }
+
+        fn create_action(content: &str) -> ParsedAction {
+            ParsedAction {
+                action_type: ActionType::CreateNode,
+                params: json!({ "node_type": "text", "content": content }),
+                for_each: None,
+            }
+        }
+
+        fn duplicate_errors(rules: &[Arc<ParsedRule>]) -> Vec<PlayValidationError> {
+            let mut errors = Vec::new();
+            validate_no_duplicate_action_lists(rules, &mut errors);
+            errors
+        }
+
+        #[test]
+        fn two_rules_with_identical_actions_and_different_triggers_are_rejected() {
+            // Copy-paste authoring: rule B is rule A with only the trigger
+            // changed (node_created -> property_changed) -- the action list
+            // itself is untouched.
+            let rule_a = rule("notify-a", "task", vec![create_action("same content")]);
+            let rule_b = with_property_changed_trigger(&rule(
+                "notify-b",
+                "task",
+                vec![create_action("same content")],
+            ));
+
+            let errors = duplicate_errors(&[rule_a, rule_b]);
+            assert_eq!(
+                errors.len(),
+                1,
+                "expected exactly one duplicate error, got {:?}",
+                errors
+            );
+            match &errors[0] {
+                PlayValidationError::DuplicateActionList {
+                    rule_name,
+                    duplicate_of_rule_name,
+                    location,
+                    duplicate_of_location,
+                } => {
+                    assert_eq!(rule_name, "notify-b");
+                    assert_eq!(duplicate_of_rule_name, "notify-a");
+                    assert_eq!(location, "rule[1]");
+                    assert_eq!(duplicate_of_location, "rule[0]");
+                }
+                other => panic!("expected DuplicateActionList, got {:?}", other),
+            }
+        }
+
+        /// Negative control: the two rules differ only in the `content`
+        /// template of their single `create_node` action. Not byte-identical
+        /// -> not flagged.
+        #[test]
+        fn two_rules_with_slightly_different_actions_are_allowed() {
+            let rule_a = rule("notify-a", "task", vec![create_action("hello")]);
+            let rule_b = rule("notify-b", "task", vec![create_action("hello world")]);
+
+            let errors = duplicate_errors(&[rule_a, rule_b]);
+            assert!(errors.is_empty(), "expected no errors, got {:?}", errors);
+        }
+
+        #[test]
+        fn two_rules_with_empty_action_lists_are_not_flagged() {
+            // Nothing here derives an output id from `rule_id`, so there is
+            // no collision to guard against -- this check is scoped to the
+            // derived-identity hazard, not a general duplicate-rule linter.
+            let rule_a = rule("empty-a", "task", vec![]);
+            let rule_b = rule("empty-b", "task", vec![]);
+
+            let errors = duplicate_errors(&[rule_a, rule_b]);
+            assert!(
+                errors.is_empty(),
+                "rules with no actions must not be flagged: {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn three_rules_each_later_rule_is_flagged_against_the_earliest_match() {
+            let rule_a = rule("a", "task", vec![create_action("x")]);
+            let rule_b = rule("b", "task", vec![create_action("x")]);
+            let rule_c = rule("c", "task", vec![create_action("x")]);
+
+            let errors = duplicate_errors(&[rule_a, rule_b, rule_c]);
+            assert_eq!(errors.len(), 2, "expected b~a and c~a, got {:?}", errors);
+        }
+
+        // -- End-to-end through validate_play --
+
+        async fn create_test_service() -> (Arc<crate::services::NodeService>, tempfile::TempDir) {
+            let temp_dir = tempfile::TempDir::new().unwrap();
+            let db_path = temp_dir.path().join("test.db");
+            let mut store: Arc<crate::db::SqliteStore> =
+                Arc::new(crate::db::SqliteStore::new(db_path).await.unwrap());
+            let node_service =
+                Arc::new(crate::services::NodeService::new(&mut store).await.unwrap());
+            (node_service, temp_dir)
+        }
+
+        async fn create_schema(node_service: &crate::services::NodeService, type_name: &str) {
+            let schema_node = crate::models::Node::new_with_id(
+                type_name.to_string(),
+                "schema".to_string(),
+                type_name.to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": format!("{} schema", type_name),
+                    "fields": [{ "name": "status", "type": "string" }],
+                    "relationships": []
+                }),
+            );
+            node_service.create_node(schema_node).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn duplicate_action_lists_reject_the_whole_play_through_validate_play() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "dup_check_reject").await;
+
+            let rule_a = rule("dup-a", "dup_check_reject", vec![create_action("same")]);
+            let rule_b = with_property_changed_trigger(&rule(
+                "dup-b",
+                "dup_check_reject",
+                vec![create_action("same")],
+            ));
+
+            let errors = validate_play(&[rule_a, rule_b], &svc).await.unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::DuplicateActionList { .. })),
+                "expected a DuplicateActionList error, got {:?}",
+                errors
+            );
+        }
+
+        #[tokio::test]
+        async fn distinct_action_lists_pass_validate_play() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "dup_check_ok").await;
+
+            let rule_a = rule("ok-a", "dup_check_ok", vec![create_action("hello")]);
+            let rule_b = with_property_changed_trigger(&rule(
+                "ok-b",
+                "dup_check_ok",
+                vec![create_action("hello world")],
+            ));
+
+            let result = validate_play(&[rule_a, rule_b], &svc).await;
             assert!(result.is_ok(), "expected Ok, got {:?}", result);
         }
     }

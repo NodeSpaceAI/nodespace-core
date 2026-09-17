@@ -67,9 +67,12 @@
 //!   existing-node check treats rule B's output as "already converged" and
 //!   quietly returns rule A's node. See
 //!   `two_rules_with_identical_actions_silently_share_one_output_node` for
-//!   the behavior made explicit. Not fixed here -- a save-time
-//!   `validation.rs` check that rejects or warns on two same-play rules with
-//!   byte-identical action lists is tracked as a separate follow-up.
+//!   the behavior made explicit at the executor level -- that stays true by
+//!   design, since `execute_actions` has no way to know a second rule is
+//!   even involved. What such a play can no longer do is get SAVED in the
+//!   first place: `playbook::validation::validate_no_duplicate_action_lists`
+//!   rejects two same-play rules whose [`action_list_signature`] matches,
+//!   naming both offending rules.
 //!
 //! ## What this does NOT solve
 //!
@@ -458,7 +461,23 @@ pub fn deterministic_action_output_id(
 /// positional `rule_index`. See the module doc for why, and the trade-offs
 /// this implies.
 fn rule_id_for(play_id: &str, actions: &[ParsedAction]) -> String {
-    let mut seed = String::from(play_id);
+    format!("{play_id}{}", action_list_signature(actions))
+}
+
+/// The action-list half of [`rule_id_for`]'s seed -- everything it hashes
+/// EXCEPT `play_id`. Two rules whose action lists produce the same
+/// signature are byte-identical in exactly the shape `rule_id_for` cares
+/// about: the same `action_type`, `for_each`, and `params` (as a canonical
+/// JSON string -- `serde_json::Value`'s `Map` is key-sorted, so differently
+/// ordered-but-equal JSON objects still produce the same signature) for
+/// every action, in order.
+///
+/// `pub(crate)` so `playbook::validation`'s save-time check for two
+/// same-play rules with byte-identical action lists
+/// (`validate_no_duplicate_action_lists`) can compare rules without
+/// duplicating this hashing logic.
+pub(crate) fn action_list_signature(actions: &[ParsedAction]) -> String {
+    let mut seed = String::new();
     for action in actions {
         seed.push('\u{1}');
         seed.push_str(action.action_type.as_str());
