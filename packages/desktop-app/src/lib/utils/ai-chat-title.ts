@@ -39,10 +39,12 @@ export const UNTITLED_CHAT_TITLE = 'Untitled';
  * whitespace-only.
  *
  * Distinct from {@link UNTITLED_CHAT_TITLE}: that is what gets *stored*, this
- * is only what gets *shown* when nothing is stored at all. Both exist because
- * `content` can still be empty — a chat created before titling landed, or one
- * the user renamed to blank — and "Untitled chat" reads better in a sidebar
- * than an empty row.
+ * is only what gets *shown*. A persisted chat should never actually be blank —
+ * `AiChatNodeBehavior::validate` rejects blank content, and
+ * {@link resolveChatTitleCommit} never writes it — so this is defensive
+ * rendering for a node that arrived malformed (a hand-edited database, a
+ * future writer that skips validation), not a state the app produces. It
+ * reads better in a sidebar than an empty row.
  */
 export const UNTITLED_CHAT_LABEL = 'Untitled chat';
 
@@ -59,8 +61,24 @@ export function aiChatDisplayTitle(content: string | null | undefined): string {
  * result is identical to what's already stored" — writing an unchanged value
  * back would be a no-op mutation that still bumps `modifiedAt` and re-runs
  * the backend's mention extraction for nothing.
+ *
+ * A cleared draft resolves to {@link UNTITLED_CHAT_TITLE}, not `''`. Two
+ * reasons, and they agree:
+ *
+ * - An ai-chat node must carry a title (`AiChatNodeBehavior::validate`
+ *   rejects blank content), so `''` is not a value the backend will accept.
+ *   Sending it fails the write, and because the commit also updates the
+ *   sidebar optimistically with no rollback, both surfaces would go on
+ *   showing a title the database never took.
+ * - Clearing a title means "I have no title for this", which is precisely
+ *   what the sentinel encodes — so this also re-arms automatic titling,
+ *   rather than leaving the chat stuck with no title and no way to get one.
+ *
+ * Note this is asymmetric with {@link aiChatDisplayTitle}, which still
+ * tolerates blank content on the read side. That is deliberate: the write
+ * side is a contract with the backend, the read side is defensive rendering.
  */
 export function resolveChatTitleCommit(currentContent: string, draft: string): string | null {
-  const trimmed = draft.trim();
+  const trimmed = draft.trim() || UNTITLED_CHAT_TITLE;
   return trimmed === currentContent ? null : trimmed;
 }

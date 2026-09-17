@@ -71,15 +71,33 @@ describe('resolveChatTitleCommit', () => {
     expect(resolveChatTitleCommit('Same', '  Same  ')).toBeNull();
   });
 
-  it('returns an empty string (not null) when clearing a previously-set title', () => {
-    // Clearing is a real, intentional change — distinct from the no-op case,
-    // and must be persisted so the display falls back to the placeholder.
-    expect(resolveChatTitleCommit('Old title', '')).toBe('');
-    expect(resolveChatTitleCommit('Old title', '   ')).toBe('');
+  it('resolves a cleared title to the sentinel, never to an empty string', () => {
+    // Clearing is a real, intentional change — but `''` is not a value the
+    // backend accepts (AiChatNodeBehavior::validate rejects blank content),
+    // and the commit updates the sidebar optimistically with no rollback, so
+    // writing it would leave two surfaces showing a title the database never
+    // took. "I have no title for this" is what the sentinel already means.
+    expect(resolveChatTitleCommit('Old title', '')).toBe(UNTITLED_CHAT_TITLE);
+    expect(resolveChatTitleCommit('Old title', '   ')).toBe(UNTITLED_CHAT_TITLE);
   });
 
-  it('returns null when both the current content and the draft are already empty', () => {
-    expect(resolveChatTitleCommit('', '')).toBeNull();
-    expect(resolveChatTitleCommit('', '   ')).toBeNull();
+  it('re-arms automatic titling when a title is cleared', () => {
+    // The sentinel is exactly what the daemon's titler claims, so clearing a
+    // title hands the chat back to background titling rather than stranding
+    // it with no title and no way to acquire one.
+    expect(resolveChatTitleCommit('Old title', '')).toBe('Untitled');
+  });
+
+  it('returns null when clearing a chat that is already at the sentinel', () => {
+    // No-op: already untitled, so there is nothing to write.
+    expect(resolveChatTitleCommit(UNTITLED_CHAT_TITLE, '')).toBeNull();
+    expect(resolveChatTitleCommit(UNTITLED_CHAT_TITLE, '   ')).toBeNull();
+  });
+
+  it('returns the sentinel when the stored content is somehow already blank', () => {
+    // Defensive: validation should make a blank stored title impossible, but
+    // if one is encountered, committing repairs it rather than writing `''`.
+    expect(resolveChatTitleCommit('', '')).toBe(UNTITLED_CHAT_TITLE);
+    expect(resolveChatTitleCommit('', '   ')).toBe(UNTITLED_CHAT_TITLE);
   });
 });
