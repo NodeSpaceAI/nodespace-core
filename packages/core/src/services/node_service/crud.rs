@@ -249,15 +249,20 @@ impl NodeService {
         if node.node_type != "schema" {
             node.properties =
                 Self::normalize_flat_properties_to_namespace(&node.node_type, &node.properties);
-            if let Some(schema_json) = self.get_schema_for_type(&node.node_type).await? {
-                if let Some(fields_json) = schema_json.get("fields") {
-                    if let Ok(fields) = serde_json::from_value::<Vec<crate::models::SchemaField>>(
-                        fields_json.clone(),
-                    ) {
-                        self.apply_schema_defaults_with_fields(&mut node, &fields)?;
-                        self.validate_node_with_fields(&node, &fields)?;
-                    }
-                }
+            // Resolve the full `extends` chain rather than this type's own
+            // schema (ADR-078): an extending type's inherited fields are
+            // declared by an ancestor, so a single-schema fetch would neither
+            // default nor validate them, and would have no ownership map to
+            // bucket them by.
+            let (fields, owners) = self.resolve_field_owners(&node.node_type).await?;
+            if !fields.is_empty() {
+                self.apply_schema_defaults_with_fields(&mut node, &fields)?;
+                node.properties = Self::bucket_properties_by_owner(
+                    &node.node_type,
+                    &node.properties,
+                    &owners,
+                );
+                self.validate_node_with_fields(&node, &fields)?;
             }
         }
 
@@ -860,20 +865,22 @@ impl NodeService {
         // Apply default values for missing fields when node type changes
         // Skip for schema nodes to avoid circular dependency
         if node_type_changed && updated.node_type != "schema" {
-            // Fetch schema once and reuse it for both operations
-            if let Some(schema_json) = self.get_schema_for_type(&updated.node_type).await? {
-                // Parse schema fields
-                if let Some(fields_json) = schema_json.get("fields") {
-                    if let Ok(fields) = serde_json::from_value::<Vec<crate::models::SchemaField>>(
-                        fields_json.clone(),
-                    ) {
-                        // Apply defaults for the new node type
-                        self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
-
-                        // Validate with the same fields
-                        self.validate_node_with_fields(&updated, &fields)?;
-                    }
-                }
+            // Resolve the whole `extends` chain once, not just this type's own
+            // schema (ADR-078): a type change into an extending type must
+            // default and validate the ancestors' fields too, and needs the
+            // ownership map to re-bucket them.
+            let (fields, owners) = self.resolve_field_owners(&updated.node_type).await?;
+            if !fields.is_empty() {
+                // Defaults land in the node's own bucket, then bucketing moves
+                // any inherited one into its declaring ancestor's — so this
+                // order is load-bearing, not incidental.
+                self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
+                updated.properties = Self::bucket_properties_by_owner(
+                    &updated.node_type,
+                    &updated.properties,
+                    &owners,
+                );
+                self.validate_node_with_fields(&updated, &fields)?;
             }
         } else if updated.node_type != "schema" {
             // Step 2: Schema validation only (node type didn't change)
@@ -981,15 +988,16 @@ impl NodeService {
         self.behaviors.validate_node(&updated)?;
 
         if node_type_changed && updated.node_type != "schema" {
-            if let Some(schema_json) = self.get_schema_for_type(&updated.node_type).await? {
-                if let Some(fields_json) = schema_json.get("fields") {
-                    if let Ok(fields) = serde_json::from_value::<Vec<crate::models::SchemaField>>(
-                        fields_json.clone(),
-                    ) {
-                        self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
-                        self.validate_node_with_fields(&updated, &fields)?;
-                    }
-                }
+            // Chain-resolved, per ADR-078 — see `insert_node_in_tx_no_invariant_dispatch`.
+            let (fields, owners) = self.resolve_field_owners(&updated.node_type).await?;
+            if !fields.is_empty() {
+                self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
+                updated.properties = Self::bucket_properties_by_owner(
+                    &updated.node_type,
+                    &updated.properties,
+                    &owners,
+                );
+                self.validate_node_with_fields(&updated, &fields)?;
             }
         } else if updated.node_type != "schema" {
             self.validate_node_against_schema(&updated).await?;
@@ -1107,15 +1115,16 @@ impl NodeService {
         self.behaviors.validate_node(&updated)?;
 
         if node_type_changed && updated.node_type != "schema" {
-            if let Some(schema_json) = self.get_schema_for_type(&updated.node_type).await? {
-                if let Some(fields_json) = schema_json.get("fields") {
-                    if let Ok(fields) = serde_json::from_value::<Vec<crate::models::SchemaField>>(
-                        fields_json.clone(),
-                    ) {
-                        self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
-                        self.validate_node_with_fields(&updated, &fields)?;
-                    }
-                }
+            // Chain-resolved, per ADR-078 — see `insert_node_in_tx_no_invariant_dispatch`.
+            let (fields, owners) = self.resolve_field_owners(&updated.node_type).await?;
+            if !fields.is_empty() {
+                self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
+                updated.properties = Self::bucket_properties_by_owner(
+                    &updated.node_type,
+                    &updated.properties,
+                    &owners,
+                );
+                self.validate_node_with_fields(&updated, &fields)?;
             }
         } else if updated.node_type != "schema" {
             self.validate_node_against_schema(&updated).await?;
@@ -2243,24 +2252,15 @@ impl NodeService {
         &self,
         node: &Node,
     ) -> Result<(), NodeServiceError> {
-        // Try to get schema for this node type
-        // If no schema exists, validation passes (not all types have schemas)
-        let schema_json = match self.get_schema_for_type(&node.node_type).await? {
-            Some(s) => s,
-            None => return Ok(()), // No schema = no validation needed
-        };
+        // Resolve the full `extends` chain (ADR-078), so an extending type's
+        // inherited fields are validated rather than skipped. An empty result
+        // means no schema anywhere in the chain — not all types have one, and
+        // validation passes for those.
+        let (fields, _owners) = self.resolve_field_owners(&node.node_type).await?;
+        if fields.is_empty() {
+            return Ok(());
+        }
 
-        // Parse schema fields from properties
-        // If parsing fails (e.g., old schema format), skip schema validation gracefully
-        let fields: Vec<crate::models::SchemaField> = match schema_json.get("fields") {
-            Some(fields_json) => match serde_json::from_value(fields_json.clone()) {
-                Ok(f) => f,
-                Err(_) => return Ok(()), // Can't parse fields - skip validation
-            },
-            None => return Ok(()), // No fields defined - skip validation
-        };
-
-        // Use the helper function to validate with the parsed fields
         self.validate_node_with_fields(node, &fields)
     }
 
@@ -2448,18 +2448,149 @@ impl NodeService {
         serde_json::Value::Object(namespaced)
     }
 
+    /// Re-bucket already-normalized properties by which schema declares each
+    /// field, for a node whose type participates in an `extends` chain
+    /// (ADR-078).
+    ///
+    /// Runs *after* [`Self::normalize_flat_properties_to_namespace`], which
+    /// has already put every field under the node's own type. This moves each
+    /// inherited field into its declaring ancestor's bucket, so an issue node
+    /// ends up as `{"issue": {"severity": …}, "task": {"status": …}}`.
+    ///
+    /// Splitting the two apart keeps the flat-input normalization schema-free
+    /// (it decides field-vs-bookkeeping on the `_` prefix alone, with no read),
+    /// and confines the schema-dependent step to the write paths that have
+    /// already resolved field ownership anyway.
+    ///
+    /// `owners` maps field name → declaring schema id. A field with no entry
+    /// stays in the node's own bucket: it is either undeclared (ad-hoc, no
+    /// ancestor can claim it) or declared by the node's own type.
+    pub(crate) fn bucket_properties_by_owner(
+        node_type: &str,
+        properties: &serde_json::Value,
+        owners: &std::collections::HashMap<String, String>,
+    ) -> serde_json::Value {
+        let Some(props_obj) = properties.as_object() else {
+            return properties.clone();
+        };
+
+        // Nothing to move when no field is owned by an ancestor. The common
+        // case by far — every node type is unextended until something
+        // declares `extends` — so this keeps the unextended write path at one
+        // map scan and no allocation.
+        let has_inherited = owners.values().any(|owner| owner != node_type);
+        if !has_inherited {
+            return properties.clone();
+        }
+
+        let mut out = serde_json::Map::new();
+        // Preserve non-own buckets and bookkeeping keys as they stand; only
+        // the node's own bucket is redistributed.
+        for (key, value) in props_obj {
+            if key != node_type {
+                out.insert(key.clone(), value.clone());
+            }
+        }
+
+        let own_bucket = props_obj.get(node_type).and_then(|v| v.as_object());
+        let mut own_remaining = serde_json::Map::new();
+
+        if let Some(own_bucket) = own_bucket {
+            for (field, value) in own_bucket {
+                match owners.get(field) {
+                    Some(owner) if owner != node_type => {
+                        let bucket = out
+                            .entry(owner.clone())
+                            .or_insert_with(|| serde_json::json!({}));
+                        if let Some(bucket_obj) = bucket.as_object_mut() {
+                            bucket_obj.insert(field.clone(), value.clone());
+                        }
+                    }
+                    _ => {
+                        own_remaining.insert(field.clone(), value.clone());
+                    }
+                }
+            }
+        }
+
+        // The own bucket always exists, even when empty — every read surface
+        // keys on it, and an absent bucket would read as "no properties"
+        // rather than "no own properties".
+        out.insert(
+            node_type.to_string(),
+            serde_json::Value::Object(own_remaining),
+        );
+
+        serde_json::Value::Object(out)
+    }
+
+    /// Flatten a node's properties at a given scope, reading each bucket in
+    /// the chain (ADR-078).
+    ///
+    /// `scope_chain` is nearest-scope-first, so a nearer bucket wins any key
+    /// collision. Passing a *truncated* chain is what produces a projection:
+    /// `["task"]` against an issue node yields task's fields only, with the
+    /// issue's own fields absent rather than merely unresolved.
+    ///
+    /// Bookkeeping keys (`_`-prefixed) are dropped, matching every other read
+    /// surface's convention.
+    pub(crate) fn flatten_properties_at_scope(
+        properties: &serde_json::Value,
+        scope_chain: &[String],
+    ) -> serde_json::Value {
+        let Some(props_obj) = properties.as_object() else {
+            return properties.clone();
+        };
+
+        let mut out = serde_json::Map::new();
+        for scope in scope_chain {
+            let Some(bucket) = props_obj.get(scope).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (key, value) in bucket {
+                if key.starts_with('_') {
+                    continue;
+                }
+                // Nearest scope wins: the chain is walked in order and a
+                // nearer bucket has already claimed the key.
+                out.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+
+        serde_json::Value::Object(out)
+    }
+
     /// Validate a node against pre-loaded schema fields
+    ///
+    /// Reads across **every** bucket present on the node, not just its own
+    /// type's. Under `extends` (ADR-078) an inherited field is stored in the
+    /// declaring ancestor's bucket, so scanning only `properties[node_type]`
+    /// would report every inherited required field as missing and skip enum
+    /// validation on it entirely. Unextended nodes have exactly one bucket, so
+    /// this is identical to the previous behavior for them.
     pub(crate) fn validate_node_with_fields(
         &self,
         node: &Node,
         fields: &[crate::models::SchemaField],
     ) -> Result<(), NodeServiceError> {
-        // Get properties for this node type from the type namespace
-        // Properties are stored under properties[node_type][field_name]
-        let node_props = node
-            .properties
-            .get(&node.node_type)
-            .and_then(|p| p.as_object());
+        // Merge every type-namespace bucket into one lookup. Bookkeeping keys
+        // stay at the top level and are not buckets, so they're skipped.
+        let node_props: Option<serde_json::Map<String, serde_json::Value>> =
+            node.properties.as_object().map(|obj| {
+                let mut merged = serde_json::Map::new();
+                for (key, value) in obj {
+                    if key.starts_with('_') {
+                        continue;
+                    }
+                    if let Some(bucket) = value.as_object() {
+                        for (field, field_value) in bucket {
+                            merged.insert(field.clone(), field_value.clone());
+                        }
+                    }
+                }
+                merged
+            });
+        let node_props = node_props.as_ref();
 
         // Validate each field in the schema
         for field in fields {

@@ -4,6 +4,19 @@ use crate::models::schema::{
     SchemaRelationship, BUILTIN_RELATIONSHIPS, BUILTIN_RELATIONSHIP_NAMES,
 };
 
+/// Which way an `extends` closure walk runs.
+///
+/// Both directions are the same recursive query with the two endpoint columns
+/// swapped, and getting the swap wrong inverts the closure silently — hence
+/// naming the two cases rather than passing bare column strings around.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExtendsDirection {
+    /// Base type → every schema transitively extending it.
+    Descendants,
+    /// A type → every schema it transitively extends.
+    Ancestors,
+}
+
 /// SQL fragment excluding the built-in structural relationship types, for
 /// queries that must see only schema-declared relationships. One definition so
 /// every declaration query scopes identically.
@@ -1691,6 +1704,139 @@ impl SqliteStore {
     }
 
     /// All relationship declarations made BY `schema_id`, in declaration order.
+    /// Every `extends` edge in the database, as child schema id → parent.
+    ///
+    /// One query rather than a walk: chain resolution needs to answer "who is
+    /// this schema's parent?" repeatedly, and the accessors are `async` while
+    /// the walk is not. The map holds one entry per *extending* schema, so it
+    /// is empty until something declares `extends` and small thereafter —
+    /// extension is a rare, administrative act.
+    ///
+    /// Reads `in_node`/`out_node` directly rather than parsing the declaration
+    /// JSON: the columns are indexed, and they are what the closure queries
+    /// below walk, so a disagreement between the two would be a bug this
+    /// avoids having to detect.
+    pub async fn get_extends_parent_map(&self) -> Result<HashMap<String, String>> {
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                "SELECT in_node, out_node FROM relationship WHERE relationship_type = ?1",
+                libsql::params![crate::models::schema::EXTENDS_RELATIONSHIP],
+            )
+            .await
+            .context("Failed to load extends edges")?;
+
+        let mut map = HashMap::new();
+        while let Some(row) = rows.next().await? {
+            let child: String = row.get(0)?;
+            let parent: String = row.get(1)?;
+            map.insert(child, parent);
+        }
+        Ok(map)
+    }
+
+    /// A base type's full transitive subtype set, including the base itself.
+    ///
+    /// `task` → `[task, issue, bug, …]`. This is the descendant closure the
+    /// query engine expands a `node_type` filter into, so a query for a base
+    /// type matches every schema extending it (ADR-078).
+    ///
+    /// Walks `out_node → in_node`, since a declaration stores `in_node` as the
+    /// declaring (child) schema. Inverting this silently returns ancestors
+    /// instead of descendants.
+    ///
+    /// The recursive step is a **correlated subquery, not a join** — the same
+    /// constraint `MENTION_CONTAINERS_QUERY` documents at length. The join form
+    /// lets SQLite drive off `idx_rel_type` and scan every edge of that type
+    /// per step; the correlated form forces `idx_rel_out (out_node,
+    /// relationship_type)`. Do not "simplify" it.
+    pub async fn get_subtype_closure(&self, base_type: &str) -> Result<Vec<String>> {
+        self.walk_extends_closure(base_type, ExtendsDirection::Descendants)
+            .await
+    }
+
+    /// A node type's full ancestry, including the type itself.
+    ///
+    /// `bug` → `[bug, issue, task]`. This is the ancestor closure the trigger
+    /// engine matches against, so a Play registered on a base type fires for
+    /// events carrying an extending type (ADR-078).
+    ///
+    /// Walks `in_node → out_node`, the opposite direction from
+    /// [`get_subtype_closure`]. Same correlated-subquery constraint applies.
+    pub async fn get_ancestor_closure(&self, node_type: &str) -> Result<Vec<String>> {
+        self.walk_extends_closure(node_type, ExtendsDirection::Ancestors)
+            .await
+    }
+
+    /// Shared recursive walk over `extends` edges.
+    ///
+    /// Both closures are the same query with the two endpoint columns
+    /// swapped, so they share one body — keeping the correlated-subquery form
+    /// and depth cap in a single place rather than duplicated with one
+    /// direction subtly wrong.
+    async fn walk_extends_closure(
+        &self,
+        seed: &str,
+        direction: ExtendsDirection,
+    ) -> Result<Vec<String>> {
+        // `step_from` is the column matched against the frontier; `step_to` is
+        // the column yielding the next node. Descendants match on out_node
+        // (the parent) and yield in_node (the child); ancestors do the reverse.
+        let (step_from, step_to) = match direction {
+            ExtendsDirection::Descendants => ("out_node", "in_node"),
+            ExtendsDirection::Ancestors => ("in_node", "out_node"),
+        };
+
+        // Correlated subquery in the recursive arm, per the doc comments
+        // above. The EXISTS guard stops recursion where the subquery would
+        // otherwise yield NULL, mirroring MENTION_CONTAINERS_QUERY.
+        //
+        // Descendants can fan out (many schemas may extend one parent), so
+        // that direction needs a set-returning step rather than the scalar
+        // subquery the single-parent ancestor walk could use. Both are written
+        // the same way so the index behavior is identical.
+        let sql = format!(
+            r#"WITH RECURSIVE closure(type_id, depth) AS (
+                SELECT ?1, 0
+                UNION
+                SELECT r.{step_to}, c.depth + 1
+                FROM relationship r
+                JOIN closure c ON r.{step_from} = c.type_id
+                WHERE r.relationship_type = ?2 AND c.depth < {max_depth}
+            )
+            SELECT DISTINCT type_id FROM closure"#,
+            step_to = step_to,
+            step_from = step_from,
+            max_depth = crate::schema::extends_chain::MAX_EXTENDS_DEPTH,
+        );
+
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                &sql,
+                libsql::params![
+                    seed.to_string(),
+                    crate::models::schema::EXTENDS_RELATIONSHIP
+                ],
+            )
+            .await
+            .context("Failed to walk extends closure")?;
+
+        let mut types = Vec::new();
+        while let Some(row) = rows.next().await? {
+            types.push(row.get(0)?);
+        }
+
+        // `UNION` (not `UNION ALL`) already terminates a cycle by discarding
+        // the repeat, so a corrupt edge set yields a finite set rather than
+        // looping to the depth cap.
+        types.sort();
+        types.dedup();
+        Ok(types)
+    }
+
     pub async fn get_schema_declarations(
         &self,
         schema_id: &str,
