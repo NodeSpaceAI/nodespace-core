@@ -4,14 +4,14 @@
 // them queue instead.
 //
 // These tests use real lockfiles in a temp directory — the mutual exclusion
-// being tested IS the filesystem's O_EXCL behaviour, so faking it away would
-// leave the actual primitive untested. Clock and sleeping are injected so no
-// test waits on wall-clock time.
+// being tested IS the filesystem's atomic link(2) behaviour, so faking it away
+// would leave the actual primitive untested. Clock and sleeping are injected
+// so no test waits on wall-clock time.
 //
 // DOM-free on purpose: this file runs under `bun test scripts/`, which
 // bypasses the Happy-DOM vitest config (see CLAUDE.md).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -355,6 +355,44 @@ describe("acquireGateLock", () => {
     expect(lock.held).toBe(true);
     expect(logged.join("\n")).not.toContain("reclaiming");
     lock.release();
+  });
+
+  test("sweeps staging files orphaned by a SIGKILLed acquirer, but spares fresh ones", async () => {
+    // tryCreateLock's finally covers every exit the process survives, but not
+    // a SIGKILL between writing the staged file and publishing it. Nothing
+    // else collects those, so they would accumulate in tmpdir forever.
+    const orphan = `${lockPath}.99999.dead-beef`;
+    const fresh = `${lockPath}.99998.still-working`;
+    writeFileSync(orphan, "{}");
+    writeFileSync(fresh, "{}");
+    // Age the orphan past the threshold; leave the other at "now".
+    const longAgo = new Date(Date.now() - 10 * 60_000);
+    utimesSync(orphan, longAgo, longAgo);
+
+    const lock = await acquireGateLock(harness().options);
+
+    expect(existsSync(orphan)).toBe(false);
+    // Critical: a staging file a live process is mid-publish on must survive.
+    expect(existsSync(fresh)).toBe(true);
+    lock.release();
+  });
+
+  test("the sweep never touches the lock itself, only its staging siblings", async () => {
+    const held = plantLock({ pid: 999_007 });
+    const ancient = new Date(Date.now() - 10 * 60_000);
+    utimesSync(lockPath, ancient, ancient);
+
+    // An old lock is stale-reaped by liveness, never by the age sweep — so
+    // with its owner reported alive it must survive untouched.
+    const { options } = harness({
+      isAlive: () => true,
+      maxWaitMs: 0,
+      now: () => 0,
+    });
+    const lock = await acquireGateLock(options);
+
+    expect(lock.held).toBe(false);
+    expect(parseHolder(readFileSync(lockPath, "utf8"))?.pid).toBe(held.pid);
   });
 
   test("reclaims an unparseable lockfile rather than waiting it out forever", async () => {

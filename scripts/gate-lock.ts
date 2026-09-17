@@ -24,11 +24,15 @@
 // the multi-minute cold `cargo build` the gate already does). A file whose
 // contents are the holder's identity gives us that for free; an flock on an
 // empty file does not.
+//
+// The mutual-exclusion primitive is link(2)'s atomic fail-on-EEXIST, NOT
+// open(O_EXCL) — see tryCreateLock for why that distinction is the whole
+// correctness argument rather than an implementation detail.
 
-import { linkSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /**
  * The errno string off a thrown syscall error, or "" for anything that isn't
@@ -81,11 +85,14 @@ export function serializeHolder(holder: LockHolder): string {
 /**
  * Reads a lockfile's contents into a holder record.
  *
- * Returns null for anything unreadable — a truncated file (we were mid-write
- * when the reader looked), hand-edited junk, or a record missing the fields
- * that make it actionable. A null here is treated exactly like a stale lock:
- * a lockfile we cannot interpret must never be able to wedge every future
- * push on the machine.
+ * Returns null for anything uninterpretable — hand-edited junk, a truncated
+ * file, or a record missing the fields that make it actionable. Such a lock
+ * is reaped rather than waited on: a lockfile nobody can interpret must never
+ * be able to wedge every future push on the machine.
+ *
+ * Note that this module cannot itself produce a half-written lock —
+ * tryCreateLock publishes whole files — so a null here means genuine external
+ * damage, not a race with a concurrent acquirer.
  */
 export function parseHolder(raw: string): LockHolder | null {
   let parsed: unknown;
@@ -189,6 +196,51 @@ export interface GateLock {
  * `rename(2)`, whose silent replace-on-collide is exactly the wrong
  * behaviour for a lock.
  */
+/**
+ * Minimum age before an orphaned staging file is swept. Many orders of
+ * magnitude beyond the window it guards (a single writeFileSync), so it can
+ * never delete one a live process is still between `write` and `link` on.
+ */
+const STAGING_SWEEP_AGE_MS = 60_000;
+
+/**
+ * Removes staging files abandoned by a process that died between writing one
+ * and publishing it.
+ *
+ * `tryCreateLock`'s `finally` covers every exit the process survives —
+ * ordinary exceptions and `process.exit` included — but not a SIGKILL, an OOM
+ * kill, or a power loss. Those leave a `<lockPath>.<pid>.<uuid>` behind with
+ * nothing to collect it.
+ *
+ * This is litter, never a correctness problem: a staging file is not at
+ * `lockPath`, so `readHolder` never sees it and it cannot be mistaken for a
+ * claim. It is swept because it is nearly free to do so, not because it is
+ * dangerous.
+ *
+ * Best-effort throughout — a sweep that cannot read the directory, or that
+ * races another process's own cleanup, must never affect whether a lock can
+ * be acquired.
+ */
+function sweepOrphanedStaging(lockPath: string, now: number): void {
+  const dir = dirname(lockPath);
+  const prefix = `${basename(lockPath)}.`;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(prefix)) continue;
+    const full = join(dir, name);
+    try {
+      if (now - statSync(full).mtimeMs > STAGING_SWEEP_AGE_MS) unlinkSync(full);
+    } catch {
+      // Vanished under us (its owner cleaned up), or not ours to remove.
+    }
+  }
+}
+
 function tryCreateLock(lockPath: string, holder: LockHolder): boolean {
   // Same directory as the lock: link(2) cannot cross filesystems.
   const staging = `${lockPath}.${process.pid}.${randomUUID()}`;
@@ -250,29 +302,39 @@ function removeLock(lockPath: string): void {
 }
 
 /**
- * Releases the lock only if the file still names us as its holder.
+ * Removes the lock only if the file still names `claimantPid` as its holder.
  *
- * An unconditional unlink here would be a correctness bug, not just untidy:
- * once we have released (or been reaped as stale by a waiter that decided we
- * were gone), the file at that path belongs to a DIFFERENT gate, and deleting
- * it hands the machine to two gates at once — the exact failure this module
- * exists to prevent, made harder to diagnose by the fact that both gates
- * believe they hold the lock.
+ * Serves both callers that remove a lock, because both need the same
+ * predicate — "is this still the claim I think it is?" — differing only in
+ * whose pid that is:
+ *   - a holder releasing its own lock, passing its own pid;
+ *   - a waiter reaping a corpse, passing the dead pid it just judged stale.
+ *
+ * An unconditional unlink would be a correctness bug in either role, not just
+ * untidy: the file at that path may by then belong to a DIFFERENT gate, and
+ * deleting it hands the machine to two gates at once — the exact failure this
+ * module exists to prevent, made harder to diagnose by the fact that both
+ * gates believe they hold the lock. For the reaping caller this is the live
+ * hazard: two waiters can judge the same corpse reapable, and without this
+ * check the second would unlink a lock the first had already reaped and
+ * legitimately retaken.
  *
  * The read-then-unlink is not atomic, so in principle an unlucky interleaving
- * could delete a successor's lock. What rules that out is the reap path's
- * liveness gate: a waiter only reclaims a lock whose owning pid is gone, and
- * we are by definition alive while executing this function, so no waiter can
- * replace our lock underneath us. That argument depends on every reap being
- * gated on liveness — which is why the `absent` case in the acquire loop
- * retries instead of unlinking, and why only `unreadable` and dead-pid locks
- * are reaped.
+ * could delete a successor's lock. What rules that out for a self-releasing
+ * holder is the reap path's liveness gate: a waiter only reclaims a lock whose
+ * owning pid is gone, and a process is by definition alive while executing
+ * this function, so no waiter can replace its lock underneath it. That
+ * argument depends on every reap being gated on liveness — which is why the
+ * `absent` case in the acquire loop retries instead of unlinking, and why only
+ * `unreadable` and dead-pid locks are reaped.
  */
-function releaseIfOwner(lockPath: string, ownerPid: number): void {
+function removeLockIfHeldBy(lockPath: string, claimantPid: number): void {
   const current = readHolder(lockPath);
   // "held by someone else" is the one case we must not touch. An absent lock
-  // has nothing to remove, and an unreadable one cannot be anyone's claim.
-  if (current.state === "held" && current.holder.pid !== ownerPid) return;
+  // has nothing to remove, and an unreadable one cannot be anyone's claim —
+  // because tryCreateLock publishes whole files, so a partially-written lock
+  // is not a state this module can produce.
+  if (current.state === "held" && current.holder.pid !== claimantPid) return;
   removeLock(lockPath);
 }
 
@@ -307,6 +369,11 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
   let announced = false;
   let lastSeen: LockHolder | null = null;
 
+  // Once per acquisition, not per poll: this is housekeeping for a rare
+  // SIGKILL-class death, and a waiter polling every 2s has no reason to
+  // re-scan the directory each time.
+  sweepOrphanedStaging(lockPath, now());
+
   for (;;) {
     // startedAt is stamped at acquisition, not at first attempt, so the
     // "running Xm" a waiter prints is how long the holder has held the lock
@@ -328,7 +395,7 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
     }
     if (created) {
       if (announced) log("  lock acquired — starting.\n");
-      return { held: true, release: () => releaseIfOwner(lockPath, holder.pid) };
+      return { held: true, release: () => removeLockIfHeldBy(lockPath, holder.pid) };
     }
 
     const current = readHolder(lockPath);
@@ -360,7 +427,7 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
       // still names the dead holder we judged. Two waiters can reach this
       // point on the same corpse; without the re-check, the second would
       // unlink a lock the first had already reaped and legitimately retaken.
-      releaseIfOwner(lockPath, holderNow.pid);
+      removeLockIfHeldBy(lockPath, holderNow.pid);
       // Loop rather than acquire directly: another waiter may have won the
       // race to recreate it, and tryCreateLock is the only thing allowed to
       // decide who holds it.
