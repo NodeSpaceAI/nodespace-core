@@ -19,6 +19,7 @@ import { conflictNotifications } from '../../lib/stores/conflict-notifications.s
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import type { Node } from '../../lib/types';
 import type { UpdateSource } from '../../lib/types/update-protocol';
+import { CASCADE_SETTLE_TIMEOUT_MS } from '../utils/test-constants';
 
 describe('SharedNodeStore — skip-while-editing guard', () => {
   let store: SharedNodeStore;
@@ -597,13 +598,20 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
       // Not focused — the ONLY thing protecting the queued write here is the
       // hasPending signal, not the isFocused one already covered above.
 
+      // Write A's RPC must not settle until write B has landed and collapsed
+      // into queuedOperations. A real-time delay would only be a guess that B
+      // gets there first; this gate makes the ordering explicit and costs no
+      // wall-clock time.
+      let releaseWriteA!: () => void;
+      const writeAGate = new Promise<void>((resolve) => (releaseWriteA = resolve));
+
       let updateCallCount = 0;
       vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async (_id, version, node) => {
         updateCallCount++;
         if (updateCallCount === 1) {
-          // Write A: delayed enough that write B is guaranteed to land and
-          // collapse into queuedOperations while A is still executing.
-          await new Promise((resolve) => setTimeout(resolve, 300));
+          // Write A: held open until the test releases it, guaranteeing B is
+          // queued while A is still executing.
+          await writeAGate;
           throw makeVersionConflictError(makeNode('occ-5', 'daemon-conflict-content', 2));
         }
         // Write B's own eventual real persist attempt, once promoted.
@@ -629,9 +637,28 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
       store.updateNode('occ-5', { content: 'B-edit-still-queued', properties: {} }, viewerSource);
       expect(store.getNode('occ-5')?.content).toBe('B-edit-still-queued');
 
-      // Let A's OCC failure (direct-hydration branch) and B's eventual real
-      // persist attempt settle.
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // B is queued; let A's RPC fail now.
+      releaseWriteA();
+
+      // This test asserts a NEGATIVE (B's value must survive), so it cannot
+      // wait on its own end state — that already holds the moment B's
+      // optimistic write lands, and the wait would return without the
+      // direct-hydration branch ever having run. Wait instead on markers that
+      // A's OCC failure was actually processed: the conflict notification it
+      // raises, plus the coordinator going idle so the hydrate-or-skip
+      // decision has definitely run before the assertion below.
+      await vi.waitFor(
+        () => {
+          expect(
+            conflictNotifications.notifications.filter(
+              (n) => n.nodeId === 'occ-5' && n.conflictType === 'version-mismatch'
+            ).length
+          ).toBeGreaterThanOrEqual(1);
+          expect(store.isNodePersistenceExecuting('occ-5')).toBe(false);
+          expect(store.hasPendingSave('occ-5')).toBe(false);
+        },
+        { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+      );
 
       // B's optimistic value must not have been silently clobbered by the
       // direct-hydration branch's stale (pre-B) conflict payload.
@@ -786,13 +813,19 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
       // Not focused: hasPending (write B still queued) is the mechanism
       // under test here, not the isFocused guard covered above.
 
+      // Same gate as the updateNode counterpart above: A's RPC is held open
+      // until B has landed, making the ordering explicit instead of guessing
+      // it with a real-time delay.
+      let releaseWriteA!: () => void;
+      const writeAGate = new Promise<void>((resolve) => (releaseWriteA = resolve));
+
       let updateCallCount = 0;
       vi.spyOn(backendAdapter, 'updateTaskNode').mockImplementation(async () => {
         updateCallCount++;
         if (updateCallCount === 1) {
-          // Write A: delayed enough that write B is guaranteed to land and
-          // collapse into queuedOperations while A is still executing.
-          await new Promise((resolve) => setTimeout(resolve, 300));
+          // Write A: held open until the test releases it, guaranteeing B is
+          // queued while A is still executing.
+          await writeAGate;
           const daemonCurrentNode = makeTaskNode(nodeId, 'daemon-conflict-content', 2);
           daemonCurrentNode.status = 'done';
           throw makeVersionConflictError(daemonCurrentNode);
@@ -812,9 +845,27 @@ describe('SharedNodeStore — skip-while-editing guard', () => {
       store.updateTaskNode(nodeId, { status: 'done-by-b' }, viewerSource);
       expect((store.getNode(nodeId) as unknown as TaskLikeNode).status).toBe('done-by-b');
 
-      // Let A's OCC failure settle: the (now-removed) unconditional revert,
-      // then the direct-hydration guard's hasPending-aware skip decision.
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      // B is queued; let A's RPC fail now.
+      releaseWriteA();
+
+      // Another NEGATIVE assertion (B's value must survive), so waiting on
+      // the end state would return immediately and prove nothing. Wait on
+      // evidence that A's OCC failure was handled — the version-mismatch
+      // notification it raises — and that the coordinator has gone idle, so
+      // the (now-removed) revert and the guard's skip decision have both had
+      // their chance to run before the assertions below.
+      await vi.waitFor(
+        () => {
+          expect(
+            conflictNotifications.notifications.filter(
+              (n) => n.nodeId === nodeId && n.conflictType === 'version-mismatch'
+            ).length
+          ).toBeGreaterThanOrEqual(1);
+          expect(store.isNodePersistenceExecuting(nodeId)).toBe(false);
+          expect(store.hasPendingSave(nodeId)).toBe(false);
+        },
+        { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+      );
 
       const after = store.getNode(nodeId) as unknown as TaskLikeNode;
       // B's optimistic value must survive both A's failure-path handling and

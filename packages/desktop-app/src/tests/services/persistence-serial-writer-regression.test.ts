@@ -14,6 +14,12 @@ import { SharedNodeStore } from '../../lib/services/shared-node-store.svelte';
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
 import type { Node } from '../../lib/types';
+import {
+  CASCADE_SETTLE_TIMEOUT_MS,
+  DEBOUNCED_WRITE_WAIT_MS,
+  FLUSH_PENDING_TIMEOUT_MS,
+  PERSISTENCE_DEBOUNCE_MS
+} from '../utils/test-constants';
 
 const makeNode = (id: string, content: string, version = 1): Node => ({
   id,
@@ -51,7 +57,8 @@ describe('Persistence serial writer regression', () => {
 
     let callCount = 0;
     // Each RPC takes a tick to resolve, simulating an in-flight round-trip.
-    // 300ms gives ample margin over the 200ms post-debounce wait below.
+    // This latency must STAY: it is what keeps the first write observably
+    // executing while the keystroke burst below is submitted.
     const updateSpy = vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async (_id, version, node) => {
       callCount++;
       await new Promise((resolve) => setTimeout(resolve, 300));
@@ -69,23 +76,26 @@ describe('Persistence serial writer regression', () => {
 
     store.setNode(initialNode, dbSource);
 
-    // First edit: debounce fires immediately in test env or after 500ms; force
-    // it into flight by using immediate-mode structural updates is not
-    // representative, so instead simulate the debounce firing and then queue
-    // a second edit while the RPC for the first is in flight.
+    // First edit: a content-only change, so it takes the debounced path.
+    // Forcing it into flight via an immediate-mode structural update would not
+    // be representative, so let the real debounce fire and then queue further
+    // edits while the RPC for the first is in flight.
     store.updateNode(nodeId, { content: 'ab' }, viewerSource);
 
-    // Wait past the 500ms debounce so the first RPC starts (but well short of
-    // the 300ms RPC latency, so it's still in flight).
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    expect(store.isNodePersistenceExecuting(nodeId)).toBe(true);
+    // Wait for the debounce to fire and the first RPC to actually be in
+    // flight, rather than for a duration assumed to cover the debounce. This
+    // is false until the debounced write starts executing, so it is a real
+    // wait; the mocked RPC's 300ms latency keeps it in flight afterwards.
+    await vi.waitFor(() => expect(store.isNodePersistenceExecuting(nodeId)).toBe(true), {
+      timeout: CASCADE_SETTLE_TIMEOUT_MS
+    });
 
     // A burst of further keystrokes arrives while the RPC is in flight.
     store.updateNode(nodeId, { content: 'abc' }, viewerSource);
     store.updateNode(nodeId, { content: 'abcd' }, viewerSource);
     store.updateNode(nodeId, { content: 'abcde' }, viewerSource);
 
-    await store.flushAllPendingSaves(3000);
+    await store.flushAllPendingSaves(CASCADE_SETTLE_TIMEOUT_MS);
 
     // The in-flight write plus the collapsed latest-wins follow-up write is
     // exactly two RPCs — not one per queued keystroke.
@@ -121,12 +131,19 @@ describe('Persistence serial writer regression', () => {
     store.setNode(initialNode, dbSource);
 
     store.updateNode(nodeId, { content: 'xy' }, viewerSource);
-    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    // Wait for the first RPC to actually be in flight (false until the
+    // debounced write starts executing) rather than sleeping past the
+    // debounce; the mock's 300ms latency keeps it in flight for the
+    // second edit below.
+    await vi.waitFor(() => expect(store.isNodePersistenceExecuting(nodeId)).toBe(true), {
+      timeout: CASCADE_SETTLE_TIMEOUT_MS
+    });
 
     // Second edit queued while first RPC (version 5) is in flight.
     store.updateNode(nodeId, { content: 'xyz' }, viewerSource);
 
-    await store.flushAllPendingSaves(3000);
+    await store.flushAllPendingSaves(CASCADE_SETTLE_TIMEOUT_MS);
 
     // The second RPC must carry the version the first RPC's response
     // confirmed (6), not the stale version read before confirmation (5).
@@ -143,10 +160,13 @@ describe('Persistence serial writer regression', () => {
     const nodeId = 'serial-writer-3';
     const initialNode = makeNode(nodeId, 'a', 1);
 
-    // The in-flight RPC takes far longer than the debounce window, so the
-    // second edit below is guaranteed to land while it is still in flight.
+    // This mock latency must STAY: the test needs the first RPC to still be
+    // in flight when the second edit's own debounce fires, so it has to
+    // outlive PERSISTENCE_DEBOUNCE_MS. Derived from that constant rather than
+    // a hand-picked round number — it is not a guess at machine speed.
+    const occRpcLatencyMs = PERSISTENCE_DEBOUNCE_MS * 2;
     vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async (_id, _version, node) => {
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, occRpcLatencyMs));
       const occError = new Error('VERSION_CONFLICT: optimistic concurrency failure') as Error & {
         code: string;
         conflictData: {
@@ -170,27 +190,31 @@ describe('Persistence serial writer regression', () => {
 
     // First edit starts the in-flight write that will hit an OCC conflict.
     store.updateNode(nodeId, { content: 'ab' }, viewerSource);
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    expect(store.isNodePersistenceExecuting(nodeId)).toBe(true);
+
+    // Wait for that write to actually be in flight (false until the debounce
+    // fires) instead of sleeping past the debounce window.
+    await vi.waitFor(() => expect(store.isNodePersistenceExecuting(nodeId)).toBe(true), {
+      timeout: CASCADE_SETTLE_TIMEOUT_MS
+    });
 
     // A second edit arrives and collapses into the latest-wins queued write
     // behind the doomed in-flight write, well BEFORE its OCC rejection lands.
     store.updateNode(nodeId, { content: 'abc' }, viewerSource);
     expect(store.hasPendingSave(nodeId)).toBe(true);
 
-    // Must not hang: flushAllPendingSaves(5000) races each node's promise
+    // Must not hang: flushAllPendingSaves races each node's promise
     // against its OWN 5s internal timeout. Without the fix, the collapsed
     // queued write's promise never settles, so this call only "succeeds"
     // by burning the full internal timeout — asserting on elapsed time
     // catches that even though the call eventually resolves either way.
     const flushStart = performance.now();
-    const failed = await store.flushAllPendingSaves(5000);
+    const failed = await store.flushAllPendingSaves(FLUSH_PENDING_TIMEOUT_MS);
     const flushDuration = performance.now() - flushStart;
 
-    // The RPC takes 2000ms and the write started ~600ms before this flush
-    // call; a correctly-settled promise resolves within ~1.5s of that,
-    // nowhere near the 5s internal timeout.
-    expect(flushDuration).toBeLessThan(3000);
+    // A correctly-settled promise resolves once the in-flight RPC's own
+    // latency elapses — bounded by that latency plus settle margin, and
+    // nowhere near the internal flush timeout a hung promise would burn.
+    expect(flushDuration).toBeLessThan(occRpcLatencyMs + DEBOUNCED_WRITE_WAIT_MS);
 
     // The queued write must be reported as settled (rejected, since it was
     // cancelled), not silently forgotten.

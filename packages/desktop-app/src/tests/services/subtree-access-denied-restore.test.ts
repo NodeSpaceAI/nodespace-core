@@ -17,6 +17,7 @@ import { backendAdapter } from '../../lib/services/backend-adapter';
 import { getSubtreeAccessDeniedState } from '../../lib/services/subtree-access-denied.svelte';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
 import type { Node } from '../../lib/types';
+import { CASCADE_SETTLE_TIMEOUT_MS } from '../utils/test-constants';
 
 const NODE_ID = 'a1b2c3d4-0000-4000-8000-000000000001';
 
@@ -80,7 +81,11 @@ describe('deleteNode subtree-access-denied restore', () => {
     store.deleteNode(NODE_ID, viewerSource);
 
     // The node is removed optimistically, then restored once the rejection lands.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // The removal above is synchronous, so the store genuinely holds nothing for
+    // this id when the wait starts — it can only pass on the restore itself.
+    await vi.waitFor(() => expect(store.getNode(NODE_ID)).toBeDefined(), {
+      timeout: CASCADE_SETTLE_TIMEOUT_MS
+    });
 
     const restored = store.getNode(NODE_ID);
     expect(restored).toBeDefined();
@@ -109,7 +114,20 @@ describe('deleteNode subtree-access-denied restore', () => {
 
     store.deleteNode(NODE_ID, viewerSource);
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // This test asserts a NEGATIVE (the node must STAY deleted), so it cannot
+    // wait on its own end state — the optimistic removal already made that true
+    // synchronously, and the wait would return without the rejection having been
+    // handled at all. The write-failure notification is the observable marker
+    // that the error path actually ran.
+    await vi.waitFor(
+      () =>
+        expect(
+          conflictNotifications.notifications.filter(
+            (n) => n.nodeId === NODE_ID && n.conflictType === 'write-failure'
+          )
+        ).toHaveLength(1),
+      { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+    );
 
     // Non-refusal errors keep today's behavior: the optimistic removal stands.
     expect(store.getNode(NODE_ID)).toBeUndefined();
@@ -135,7 +153,11 @@ describe('deleteNode subtree-access-denied restore', () => {
     vi.spyOn(backendAdapter, 'deleteNode').mockRejectedValueOnce(makeRefusalError(2));
     store.deleteNode(NODE_ID, viewerSource, false, [], onRefused);
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Wait on the callback under test — it is unconditionally uncalled when the
+    // wait starts, so this can only pass once the refusal has been handled.
+    await vi.waitFor(() => expect(onRefused).toHaveBeenCalledTimes(1), {
+      timeout: CASCADE_SETTLE_TIMEOUT_MS
+    });
 
     expect(onRefused).toHaveBeenCalledTimes(1);
   }, 3000);
@@ -147,7 +169,19 @@ describe('deleteNode subtree-access-denied restore', () => {
     vi.spyOn(backendAdapter, 'deleteNode').mockRejectedValueOnce(new Error('network unreachable'));
     store.deleteNode(NODE_ID, viewerSource, false, [], onRefused);
 
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    // Another NEGATIVE assertion (`onRefused` must not fire), which is trivially
+    // true before the rejection is handled. Wait on the write-failure
+    // notification — raised only by the non-refusal branch — so the assertion
+    // below runs against a rejection that has actually been processed.
+    await vi.waitFor(
+      () =>
+        expect(
+          conflictNotifications.notifications.filter(
+            (n) => n.nodeId === NODE_ID && n.conflictType === 'write-failure'
+          )
+        ).toHaveLength(1),
+      { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+    );
 
     expect(onRefused).not.toHaveBeenCalled();
   }, 3000);
