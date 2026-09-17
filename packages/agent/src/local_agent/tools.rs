@@ -7617,10 +7617,18 @@ mod tests {
     /// be the trigger because `open` and `done` are ordinary English words in
     /// this corpus ("mark it done", "an open question"). `in_progress` and
     /// `cancelled` are not, so requiring three co-occurring in one sentence
-    /// makes an accidental trip very unlikely while catching every delimiter,
-    /// ordering and layout. Scoped per sentence rather than per document so a
-    /// long skill that legitimately says "done" in one paragraph and
-    /// "in_progress" in another is not flagged.
+    /// makes an accidental trip very unlikely while catching the delimiters,
+    /// orderings and layouts an author actually writes — commas, slashes,
+    /// markdown bullets, dashes and quoted/JSON-ish lists. Scoped per sentence
+    /// rather than per document so a long skill that legitimately says "done"
+    /// in one paragraph and "in_progress" in another is not flagged.
+    ///
+    /// Knowingly out of reach: lists joined by " or "/" and "/bare spaces.
+    /// Catching those means treating the spaces in ordinary prose as
+    /// delimiters, which flags the very sentences this guidance is written in.
+    /// This guards against accident, not against an author determined to
+    /// evade it, so a form no one writes by habit is not worth a false
+    /// positive on every paragraph that says "done".
     ///
     /// Naming the seed values remains fine outside skill guidance — the tool
     /// definition is rewritten at runtime by `with_live_task_statuses`, and CLI
@@ -7638,11 +7646,43 @@ mod tests {
                     found.push(value);
                 }
             }
-            // `open`/`done` only count when delimited — `(open,` or `, done)`
-            // or `open/` — never as the bare English word.
+            // `open`/`done` only count when delimited — `(open,`, `, done)`,
+            // `open/`, `- open`, `"done"` — never as the bare English word.
+            //
+            // The delimiter set covers the renderings an author actually
+            // reaches for, markdown bullets and quoted/JSON-ish lists
+            // included: this corpus is bullet-heavy (see `seed_skill_nodes`)
+            // and embeds JSON fragments in prose, so a four-bullet or
+            // `"open", "in_progress", ...` list is house style, not an
+            // adversarial string.
+            //
+            // It stops short of "any non-alphanumeric char": that catches
+            // `open or in_progress or done or cancelled` too, but only by
+            // treating the spaces around ordinary prose as delimiters, which
+            // false-positives on sentences like "mark it done ... an open
+            // question". Space- and conjunction-separated lists are therefore
+            // knowingly out of reach — no predicate can take them without
+            // also taking the prose this guidance is written in.
             for value in ["open", "done"] {
                 let delimited = lowered.split(|c: char| {
-                    c == ',' || c == '/' || c == '(' || c == ')' || c == '|' || c == ';'
+                    matches!(
+                        c,
+                        ',' | '/'
+                            | '('
+                            | ')'
+                            | '|'
+                            | ';'
+                            | ':'
+                            | '"'
+                            | '\''
+                            | '['
+                            | ']'
+                            | '*'
+                            | '\n'
+                            | '—'
+                            | '–'
+                            | '-'
+                    )
                 });
                 if delimited
                     .map(str::trim)
@@ -7680,7 +7720,14 @@ mod tests {
         }
 
         for (name, text) in guidance {
-            for sentence in text.split(['.', '\n']) {
+            // Split on `.` alone, not `['.', '\n']`: a markdown bullet list
+            // puts each value on its own line, so splitting at newlines gave
+            // every value its own fragment and capped the score at 1 — the
+            // highest-value miss, since four `- value` bullets are this
+            // corpus's own house style. Paragraphs here are `\n\n`-separated
+            // and period-terminated, so `.` alone still keeps the per-
+            // paragraph scoping this needs to avoid false positives.
+            for sentence in text.split('.') {
                 let found = seed_values_in(sentence);
                 assert!(
                     found.len() < 3,
