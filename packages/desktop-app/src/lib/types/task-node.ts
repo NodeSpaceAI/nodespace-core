@@ -42,6 +42,21 @@ export type TaskStatus = CoreTaskStatus | string;
 export type CoreTaskPriority = 'highest' | 'high' | 'medium' | 'low' | 'lowest';
 
 /**
+ * Core priorities in urgency order — position IS the rank, so this array must
+ * stay ordered most- to least-urgent. Consumed by `TaskNodeHelpers.priorityRank`.
+ */
+const CORE_PRIORITY_RANKS: readonly CoreTaskPriority[] = [
+  'highest',
+  'high',
+  'medium',
+  'low',
+  'lowest'
+];
+
+/** Rank shared by all user-defined priorities — one past the core scale. */
+const USER_PRIORITY_RANK = CORE_PRIORITY_RANKS.length;
+
+/**
  * Task priority - string enum format
  * Core values: 'highest', 'high', 'medium', 'low', 'lowest'
  * User-defined values allowed via schema extension
@@ -296,6 +311,25 @@ export const TaskNodeHelpers = {
    */
   isCorePriority(priority: TaskPriority): priority is CoreTaskPriority {
     return ['highest', 'high', 'medium', 'low', 'lowest'].includes(priority as string);
+  },
+
+  /**
+   * Rank of a priority for ordering (0 = most urgent)
+   *
+   * Sorting by priority must follow urgency, not the alphabetical order of the
+   * values (`high, highest, low, lowest, medium`), which is meaningless.
+   * User-defined priorities share `USER_PRIORITY_RANK` so they sort after every
+   * core value; since the rank alone cannot separate two of them, callers break
+   * the tie on the value string to keep the ordering total.
+   *
+   * Mirrors `TaskPriority::rank()` in `packages/core/src/models/task_node.rs`.
+   * The client-side query executor sorts without consulting the backend, so
+   * these two tables must be changed together — there is no test spanning both
+   * languages to catch a one-sided edit.
+   */
+  priorityRank(priority: TaskPriority): number {
+    const rank = CORE_PRIORITY_RANKS.indexOf(priority as CoreTaskPriority);
+    return rank === -1 ? USER_PRIORITY_RANK : rank;
   },
 
   /**

@@ -236,6 +236,35 @@ impl TaskPriority {
         }
     }
 
+    /// Rank of this priority for ordering purposes (0 = most urgent)
+    ///
+    /// Ascending rank yields highest, high, medium, low, lowest — the semantic
+    /// urgency order, not the lexicographic one the raw strings would give.
+    ///
+    /// User-defined priorities all share [`Self::USER_RANK`], one past the core
+    /// scale, so they sort after every core value. Since the rank alone cannot
+    /// separate two user values, callers must break that tie on the value
+    /// string to keep the ordering total; see `QueryService::resolve_order_field`
+    /// and `compare_json_values`, which both do exactly that.
+    ///
+    /// Kept in sync with `core_values` by
+    /// `test_task_priority_variants_match_core_values_bidirectionally`
+    /// in `core_schemas.rs`.
+    pub fn rank(&self) -> u8 {
+        match self {
+            Self::Highest => 0,
+            Self::High => 1,
+            Self::Medium => 2,
+            Self::Low => 3,
+            Self::Lowest => 4,
+            Self::User(_) => Self::USER_RANK,
+        }
+    }
+
+    /// Rank assigned to every user-defined priority — one past the core scale,
+    /// so user values sort after all core values.
+    pub const USER_RANK: u8 = 5;
+
     /// Check if this is a core (built-in) priority
     pub fn is_core(&self) -> bool {
         !matches!(self, Self::User(_))
