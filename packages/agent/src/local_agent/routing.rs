@@ -556,18 +556,22 @@ fn stage2_permitted_names(candidates: &[SkillCandidate]) -> std::collections::Ha
     // at the top score, which is the same treatment `declare_write_tool_fields`
     // gives them.
     //
-    // Scoped to candidates that own at least one tool, because "who won
-    // retrieval" is only meaningful here as "which *tool-bearing* candidate
-    // won". Retrieval also returns zero-tool candidates — `kind: "schema"`
-    // ones, which describe a schema rather than a capability and carry
-    // `tools: []` by construction. Such a candidate contributes nothing to
-    // the surface, yet counting its score toward `top_score` let it decide
-    // whose destructive tools are trusted: a schema named outright in the
-    // query is pinned high by retrieval's lexical backstop, which reliably
-    // outscores a genuinely-matching skill's cosine-derived score and
-    // silently withheld that skill's `delete_node`. Directionally safe but
-    // functionally wrong — the tool vanishes for no reason the model or user
-    // can see.
+    // Scoped to candidates that own at least one tool: a candidate with an
+    // empty `tools` vec can never contribute a tool name, so it has no stake
+    // in deciding whose destructive tools are trusted. "Who won retrieval" is
+    // only meaningful here as "which *tool-bearing* candidate won".
+    //
+    // An empty whitelist is the observable property this turns on, and the
+    // only one visible at this boundary — `SkillCandidate` carries no notion
+    // of candidate kind. Today's producer of such candidates is schema-typed
+    // retrieval hits, which describe a schema rather than a capability and
+    // carry `tools: []` by construction; counting their scores toward
+    // `top_score` is what broke this. A schema named outright in the query is
+    // pinned at the lexical backstop's fixed confidence, above any
+    // cosine-derived score a real skill can reach, so a genuinely-matching
+    // deletion skill lost `delete_node` on every such turn. Directionally
+    // safe but functionally wrong — the tool vanishes for no reason the model
+    // or user can see.
     let top_score = candidates
         .iter()
         .filter(|c| clears_score_gate(c) && !c.tools.is_empty())
