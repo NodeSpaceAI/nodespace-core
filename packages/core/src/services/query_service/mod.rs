@@ -144,6 +144,37 @@ pub struct SortConfig {
     pub direction: SortDirection,
 }
 
+/// A SQL string and the values bound to its placeholders
+///
+/// Filter values never reach the SQL text; they are collected here and bound by
+/// the driver. The invariant that makes this safe by construction rather than
+/// by audit: the only way to place a value into the SQL is
+/// [`Self::bind`], which appends to `params` and returns the matching `?N` in
+/// the same step. A caller cannot produce a placeholder without also supplying
+/// its value, and cannot supply a value without the number advancing, so the
+/// two can never drift out of agreement.
+///
+/// Identifier positions (table, column and JSON path fragments) are the
+/// exception SQL itself imposes: they cannot be bound, so they are still
+/// formatted into the text and must keep arriving pre-validated by
+/// `query_ops::validate_identifier`.
+#[derive(Debug, Default)]
+struct BoundSql {
+    sql: String,
+    params: Vec<libsql::Value>,
+}
+
+impl BoundSql {
+    /// Record `value` as a bound parameter and return its placeholder
+    ///
+    /// The returned `?N` is 1-based and matches the value's position in
+    /// `params`, which is what libsql binds positionally.
+    fn bind(&mut self, value: libsql::Value) -> String {
+        self.params.push(value);
+        format!("?{}", self.params.len())
+    }
+}
+
 /// Service for executing queries against the database
 pub struct QueryService {
     store: Arc<SqliteStore>,
@@ -166,14 +197,14 @@ impl QueryService {
     /// - Database query execution fails
     /// - Result deserialization fails
     pub async fn execute(&self, query: &QueryDefinition) -> Result<Vec<Node>> {
-        let sql = self.build_query(query)?;
+        let built = self.build_query(query)?;
 
         // Execute query to get basic node data (without FETCH to avoid Thing deserialization)
         // Use SqliteStore's internal query_nodes for proper handling
         // For now we'll use a simple direct query and manually fetch properties
 
         // Get node IDs that match the query
-        let node_ids = self.execute_query_for_ids(&sql).await?;
+        let node_ids = self.execute_query_for_ids(&built).await?;
 
         // If no results, return empty vector
         if node_ids.is_empty() {
@@ -339,15 +370,16 @@ impl QueryService {
     }
 
     /// Execute query and return matching node IDs
-    async fn execute_query_for_ids(&self, sql: &str) -> Result<Vec<String>> {
+    async fn execute_query_for_ids(&self, built: &BoundSql) -> Result<Vec<String>> {
         self.store
-            .query_node_ids_raw(sql)
+            .query_node_ids_raw(&built.sql, built.params.clone())
             .await
             .context("Failed to execute ID query")
     }
 
-    /// Build the ` WHERE ...` suffix selecting the rows a query matches, or an
-    /// empty string when nothing constrains them.
+    /// Build the ` WHERE ...` suffix selecting the rows a query matches, with
+    /// the values bound to its placeholders, or an empty clause when nothing
+    /// constrains them.
     ///
     /// This is the whole of what "which rows does this query match?" means, and
     /// it is deliberately the only place that answers it: [`Self::build_query`]
@@ -355,33 +387,46 @@ impl QueryService {
     /// they share this rather than each assembling conditions. Ordering and
     /// limiting are not part of matching and stay with the caller — a count has
     /// neither.
-    fn build_where_clause(&self, query: &QueryDefinition) -> Result<String> {
+    ///
+    /// Every value the caller contributes — filter operands, the target type —
+    /// is bound through [`BoundSql::bind`] rather than formatted into the text.
+    /// Because all of them live in the WHERE clause, both callers inherit the
+    /// binding by sharing this, and neither can reintroduce interpolation on its
+    /// own. Identifiers (the JSON path segments naming a node type and property)
+    /// cannot be bound in SQL and are still interpolated; they arrive
+    /// allowlisted by `query_ops::validate_identifier`.
+    ///
+    /// The returned placeholders are numbered from `?1`, so a caller must not
+    /// bind anything of its own ahead of this clause.
+    fn build_where_clause(&self, query: &QueryDefinition) -> Result<BoundSql> {
+        let mut built = BoundSql::default();
         let mut conditions = Vec::new();
 
-        // Add type filter if not wildcard
+        // Add type filter if not wildcard. `node_type` here is compared as a
+        // value, so it binds — unlike the same string used as a JSON path
+        // segment below, which cannot.
         if query.target_type != "*" {
-            conditions.push(format!("node_type = '{}'", query.target_type));
+            let placeholder = built.bind(libsql::Value::Text(query.target_type.clone()));
+            conditions.push(format!("node_type = {}", placeholder));
         }
 
         // Build filter conditions (pass target_type for namespaced property access)
         for filter in &query.filters {
-            match filter.filter_type {
+            let condition = match filter.filter_type {
                 FilterType::Property => {
-                    conditions.push(self.build_property_filter(filter, &query.target_type)?)
+                    self.build_property_filter(filter, &query.target_type, &mut built)?
                 }
-                FilterType::Content => conditions.push(self.build_content_filter(filter)?),
-                FilterType::Relationship => {
-                    conditions.push(self.build_relationship_filter(filter)?)
-                }
-                FilterType::Metadata => conditions.push(self.build_metadata_filter(filter)?),
-            }
+                FilterType::Content => self.build_content_filter(filter, &mut built)?,
+                FilterType::Relationship => self.build_relationship_filter(filter, &mut built)?,
+                FilterType::Metadata => self.build_metadata_filter(filter, &mut built)?,
+            };
+            conditions.push(condition);
         }
 
-        if conditions.is_empty() {
-            Ok(String::new())
-        } else {
-            Ok(format!(" WHERE {}", conditions.join(" AND ")))
+        if !conditions.is_empty() {
+            built.sql = format!(" WHERE {}", conditions.join(" AND "));
         }
+        Ok(built)
     }
 
     /// Count the nodes a query matches, without materializing them
@@ -400,10 +445,10 @@ impl QueryService {
     ///
     /// Returns an error if query building or database execution fails.
     pub async fn count(&self, query: &QueryDefinition) -> Result<i64> {
-        let sql = self.build_count_query(query)?;
+        let built = self.build_count_query(query)?;
 
         self.store
-            .count_nodes_raw(&sql)
+            .count_nodes_raw(&built.sql, built.params)
             .await
             .context("Failed to execute count query")
     }
@@ -412,12 +457,14 @@ impl QueryService {
     /// [`Self::build_query`] would select.
     ///
     /// Emits no ORDER BY and no LIMIT — see [`Self::count`] for why neither
-    /// belongs on a count.
-    fn build_count_query(&self, query: &QueryDefinition) -> Result<String> {
-        Ok(format!(
-            "SELECT COUNT(*) FROM node{};",
-            self.build_where_clause(query)?
-        ))
+    /// belongs on a count. Filter values are bound, inherited from
+    /// [`Self::build_where_clause`]: the count shares the select's clause, so it
+    /// cannot differ in how it treats a value any more than it can in which rows
+    /// it matches.
+    fn build_count_query(&self, query: &QueryDefinition) -> Result<BoundSql> {
+        let mut built = self.build_where_clause(query)?;
+        built.sql = format!("SELECT COUNT(*) FROM node{};", built.sql);
+        Ok(built)
     }
 
     /// Translate QueryDefinition to SQL
@@ -427,14 +474,18 @@ impl QueryService {
     ///
     /// Properties are now stored in namespaced format:
     /// properties[node_type][field_name] instead of properties[field_name]
-    fn build_query(&self, query: &QueryDefinition) -> Result<String> {
-        let mut sql = String::from("SELECT * FROM node");
-        sql.push_str(&self.build_where_clause(query)?);
+    ///
+    /// Filter values are bound rather than interpolated — see
+    /// [`Self::build_where_clause`], which owns every binding. ORDER BY and
+    /// LIMIT, added here, contribute no values.
+    fn build_query(&self, query: &QueryDefinition) -> Result<BoundSql> {
+        let mut built = self.build_where_clause(query)?;
+        built.sql = format!("SELECT * FROM node{}", built.sql);
 
         // Add sorting (pass target_type for namespaced property access)
         if let Some(sorting) = &query.sorting {
             if !sorting.is_empty() {
-                sql.push_str(" ORDER BY ");
+                built.sql.push_str(" ORDER BY ");
                 let clauses: Vec<String> = sorting
                     .iter()
                     .map(|s| {
@@ -445,17 +496,19 @@ impl QueryService {
                         self.resolve_order_field(&s.field, &query.target_type, direction)
                     })
                     .collect();
-                sql.push_str(&clauses.join(", "));
+                built.sql.push_str(&clauses.join(", "));
             }
         }
 
-        // Add limit
+        // Add limit. A `usize` has no string representation SQL could
+        // misinterpret, so this is a number formatted into the text rather than
+        // bound — which also keeps the LIMIT visible to the query planner.
         if let Some(limit) = query.limit {
-            sql.push_str(&format!(" LIMIT {}", limit));
+            built.sql.push_str(&format!(" LIMIT {}", limit));
         }
 
-        sql.push(';');
-        Ok(sql)
+        built.sql.push(';');
+        Ok(built)
     }
 
     /// Resolve field name for SQLite queries (Namespaced property access)
@@ -556,7 +609,12 @@ impl QueryService {
     /// Build property filter (Namespaced property access)
     ///
     /// Uses SQLite json_extract for property access.
-    fn build_property_filter(&self, filter: &QueryFilter, target_type: &str) -> Result<String> {
+    fn build_property_filter(
+        &self,
+        filter: &QueryFilter,
+        target_type: &str,
+        built: &mut BoundSql,
+    ) -> Result<String> {
         let property = filter
             .property
             .as_ref()
@@ -578,27 +636,31 @@ impl QueryService {
         } else {
             format!("json_extract(properties, '$.{}.{}')", target_type, property)
         };
-        self.build_filter_condition(&field, &filter.operator, filter)
+        self.build_filter_condition(&field, &filter.operator, filter, built)
     }
 
     /// Build content filter
     ///
     /// Direct access: content CONTAINS 'text'
-    fn build_content_filter(&self, filter: &QueryFilter) -> Result<String> {
-        self.build_content_condition("content", filter)
+    fn build_content_filter(&self, filter: &QueryFilter, built: &mut BoundSql) -> Result<String> {
+        self.build_content_condition("content", filter, built)
     }
 
     /// Build relationship filter
     ///
     /// Uses id for filtering: id IN (SELECT...)
-    fn build_relationship_filter(&self, filter: &QueryFilter) -> Result<String> {
-        self.build_relationship_condition("id", filter)
+    fn build_relationship_filter(
+        &self,
+        filter: &QueryFilter,
+        built: &mut BoundSql,
+    ) -> Result<String> {
+        self.build_relationship_condition("id", filter, built)
     }
 
     /// Build metadata filter
     ///
     /// Direct access: created_at >= '2025-01-01'
-    fn build_metadata_filter(&self, filter: &QueryFilter) -> Result<String> {
+    fn build_metadata_filter(&self, filter: &QueryFilter, built: &mut BoundSql) -> Result<String> {
         let property = filter
             .property
             .as_ref()
@@ -610,23 +672,32 @@ impl QueryService {
             anyhow::bail!("Invalid metadata field: {}", property);
         }
 
-        self.build_filter_condition(property, &filter.operator, filter)
+        self.build_filter_condition(property, &filter.operator, filter, built)
     }
 
     // ========== Shared Filter Building Logic ==========
 
     /// Build a filter condition with the given field and operator
+    ///
+    /// Every operand reaches SQL as a bound parameter. The one thing that still
+    /// needs escaping is LIKE wildcards, which are a matter of `LIKE` pattern
+    /// semantics rather than of SQL syntax: `%` and `_` are metacharacters
+    /// *inside* the value, so binding the string does not stop them from
+    /// widening the match. See [`Self::escape_string_for_like`].
     fn build_filter_condition(
         &self,
         field: &str,
         operator: &FilterOperator,
         filter: &QueryFilter,
+        built: &mut BoundSql,
     ) -> Result<String> {
+        let comparison = |op: &str, built: &mut BoundSql| -> Result<String> {
+            let value = Self::bind_json_value(filter.value.as_ref(), built)?;
+            Ok(format!("{} {} {}", field, op, value))
+        };
+
         match operator {
-            FilterOperator::Equals => {
-                let value = self.format_value(filter.value.as_ref())?;
-                Ok(format!("{} = {}", field, value))
-            }
+            FilterOperator::Equals => comparison("=", built),
             FilterOperator::Contains => {
                 let value = filter
                     .value
@@ -635,53 +706,49 @@ impl QueryService {
                     .ok_or_else(|| anyhow::anyhow!("Contains requires string value"))?;
                 if filter.case_sensitive.unwrap_or(true) {
                     // INSTR is case-sensitive in SQLite; no LIKE wildcards needed
-                    Ok(format!(
-                        "INSTR({}, '{}') > 0",
-                        field,
-                        self.escape_string(value)
-                    ))
+                    let placeholder = built.bind(libsql::Value::Text(value.to_string()));
+                    Ok(format!("INSTR({}, {}) > 0", field, placeholder))
                 } else {
+                    // The wildcards are escaped in the bound value itself, so
+                    // the pattern's own `%` delimiters are concatenated in SQL
+                    // rather than wrapped around an interpolated string.
+                    let placeholder =
+                        built.bind(libsql::Value::Text(self.escape_string_for_like(value)));
                     Ok(format!(
-                        "LOWER({}) LIKE LOWER('%{}%') ESCAPE '\\'",
-                        field,
-                        self.escape_string_for_like(value)
+                        "LOWER({}) LIKE LOWER('%' || {} || '%') ESCAPE '\\'",
+                        field, placeholder
                     ))
                 }
             }
-            FilterOperator::GreaterThan => {
-                let value = self.format_value(filter.value.as_ref())?;
-                Ok(format!("{} > {}", field, value))
-            }
-            FilterOperator::LessThan => {
-                let value = self.format_value(filter.value.as_ref())?;
-                Ok(format!("{} < {}", field, value))
-            }
-            FilterOperator::GreaterThanOrEqual => {
-                let value = self.format_value(filter.value.as_ref())?;
-                Ok(format!("{} >= {}", field, value))
-            }
-            FilterOperator::LessThanOrEqual => {
-                let value = self.format_value(filter.value.as_ref())?;
-                Ok(format!("{} <= {}", field, value))
-            }
+            FilterOperator::GreaterThan => comparison(">", built),
+            FilterOperator::LessThan => comparison("<", built),
+            FilterOperator::GreaterThanOrEqual => comparison(">=", built),
+            FilterOperator::LessThanOrEqual => comparison("<=", built),
             FilterOperator::In => {
                 let values = filter
                     .value
                     .as_ref()
                     .and_then(|v| v.as_array())
                     .ok_or_else(|| anyhow::anyhow!("In requires array value"))?;
-                let list: Vec<String> = values
+                // The list length is data-dependent, so the placeholders are
+                // generated one per member rather than being a fixed count.
+                let placeholders: Vec<String> = values
                     .iter()
-                    .map(|v| self.format_value(Some(v)))
+                    .map(|v| Self::bind_json_value(Some(v), built))
                     .collect::<Result<_>>()?;
-                Ok(format!("{} IN ({})", field, list.join(", ")))
+                Ok(format!("{} IN ({})", field, placeholders.join(", ")))
             }
             FilterOperator::Exists => Ok(format!("{} IS NOT NULL", field)),
         }
     }
 
     /// Build content filter condition (shared logic)
-    fn build_content_condition(&self, content_field: &str, filter: &QueryFilter) -> Result<String> {
+    fn build_content_condition(
+        &self,
+        content_field: &str,
+        filter: &QueryFilter,
+        built: &mut BoundSql,
+    ) -> Result<String> {
         let value = filter
             .value
             .as_ref()
@@ -691,30 +758,35 @@ impl QueryService {
         match filter.operator {
             FilterOperator::Contains => {
                 if filter.case_sensitive.unwrap_or(true) {
-                    Ok(format!(
-                        "INSTR({}, '{}') > 0",
-                        content_field,
-                        self.escape_string(value)
-                    ))
+                    let placeholder = built.bind(libsql::Value::Text(value.to_string()));
+                    Ok(format!("INSTR({}, {}) > 0", content_field, placeholder))
                 } else {
+                    let placeholder =
+                        built.bind(libsql::Value::Text(self.escape_string_for_like(value)));
                     Ok(format!(
-                        "LOWER({}) LIKE LOWER('%{}%') ESCAPE '\\'",
-                        content_field,
-                        self.escape_string_for_like(value)
+                        "LOWER({}) LIKE LOWER('%' || {} || '%') ESCAPE '\\'",
+                        content_field, placeholder
                     ))
                 }
             }
-            FilterOperator::Equals => Ok(format!(
-                "{} = '{}'",
-                content_field,
-                self.escape_string(value)
-            )),
+            FilterOperator::Equals => {
+                let placeholder = built.bind(libsql::Value::Text(value.to_string()));
+                Ok(format!("{} = {}", content_field, placeholder))
+            }
             _ => anyhow::bail!("Unsupported content operator: {:?}", filter.operator),
         }
     }
 
     /// Build relationship filter condition (shared logic)
-    fn build_relationship_condition(&self, id_field: &str, filter: &QueryFilter) -> Result<String> {
+    ///
+    /// The relationship type is a fixed literal chosen by the match arm, not
+    /// caller input, so only the node id needs binding.
+    fn build_relationship_condition(
+        &self,
+        id_field: &str,
+        filter: &QueryFilter,
+        built: &mut BoundSql,
+    ) -> Result<String> {
         let rel_type = filter
             .relationship_type
             .as_ref()
@@ -724,59 +796,65 @@ impl QueryService {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Missing nodeId"))?;
 
-        // Use SQLite subqueries with in_node/out_node column names
-        match rel_type {
-            RelationshipType::Children => Ok(format!(
-                "{} IN (SELECT out_node FROM relationship WHERE in_node = '{}' AND relationship_type = 'has_child')",
-                id_field,
-                self.escape_string(node_id)
-            )),
-            RelationshipType::Parent => Ok(format!(
-                "{} IN (SELECT in_node FROM relationship WHERE out_node = '{}' AND relationship_type = 'has_child')",
-                id_field,
-                self.escape_string(node_id)
-            )),
-            RelationshipType::Mentions => Ok(format!(
-                "{} IN (SELECT out_node FROM relationship WHERE in_node = '{}' AND relationship_type = 'mentions')",
-                id_field,
-                self.escape_string(node_id)
-            )),
-            RelationshipType::MentionedBy => Ok(format!(
-                "{} IN (SELECT in_node FROM relationship WHERE out_node = '{}' AND relationship_type = 'mentions')",
-                id_field,
-                self.escape_string(node_id)
-            )),
-        }
+        // Which column the id is matched against, and which is selected, is the
+        // only thing the relationship type varies.
+        let (selected, matched, relationship_type) = match rel_type {
+            RelationshipType::Children => ("out_node", "in_node", "has_child"),
+            RelationshipType::Parent => ("in_node", "out_node", "has_child"),
+            RelationshipType::Mentions => ("out_node", "in_node", "mentions"),
+            RelationshipType::MentionedBy => ("in_node", "out_node", "mentions"),
+        };
+
+        let placeholder = built.bind(libsql::Value::Text(node_id.clone()));
+        Ok(format!(
+            "{} IN (SELECT {} FROM relationship WHERE {} = {} AND relationship_type = '{}')",
+            id_field, selected, matched, placeholder, relationship_type
+        ))
     }
 
-    /// Format a JSON value for SQL
-    fn format_value(&self, value: Option<&serde_json::Value>) -> Result<String> {
-        match value {
-            Some(serde_json::Value::String(s)) => Ok(format!("'{}'", self.escape_string(s))),
-            Some(serde_json::Value::Number(n)) => Ok(n.to_string()),
-            Some(serde_json::Value::Bool(b)) => Ok(b.to_string()),
-            Some(serde_json::Value::Null) => Ok("NULL".to_string()),
+    /// Bind a JSON filter operand as a SQL parameter, returning its placeholder
+    ///
+    /// Only the scalar JSON types have a SQL counterpart; an array or object in
+    /// a scalar operand position is a malformed filter and is rejected rather
+    /// than stringified into something that would compare unequal to everything.
+    fn bind_json_value(value: Option<&serde_json::Value>, built: &mut BoundSql) -> Result<String> {
+        let bound = match value {
+            Some(serde_json::Value::String(s)) => libsql::Value::Text(s.clone()),
+            Some(serde_json::Value::Number(n)) => {
+                if let Some(i) = n.as_i64() {
+                    libsql::Value::Integer(i)
+                } else if let Some(f) = n.as_f64() {
+                    libsql::Value::Real(f)
+                } else {
+                    // Serde only produces a number outside both ranges for u64
+                    // values above i64::MAX; there is no lossless SQLite
+                    // counterpart, so this fails rather than silently wrapping.
+                    anyhow::bail!("Unsupported numeric value: {}", n)
+                }
+            }
+            // SQLite has no boolean type; it stores them as 0/1 integers, which
+            // is also how this codebase writes them into the properties JSON.
+            Some(serde_json::Value::Bool(b)) => libsql::Value::Integer(i64::from(*b)),
+            Some(serde_json::Value::Null) => libsql::Value::Null,
             Some(v) => anyhow::bail!("Unsupported value type: {:?}", v),
             None => anyhow::bail!("Missing value"),
-        }
-    }
-
-    /// Escape single quotes in a string for safe embedding in SQL string literals.
-    ///
-    /// Use this for equality comparisons (`=`, `IN`). For LIKE patterns, call
-    /// `escape_string_for_like` instead, which additionally escapes wildcards.
-    fn escape_string(&self, s: &str) -> String {
-        s.replace('\'', "''")
+        };
+        Ok(built.bind(bound))
     }
 
     /// Escape a string for use inside a SQL LIKE pattern.
     ///
-    /// In addition to single-quote escaping, escapes `\`, `%`, and `_` so the
-    /// value is treated as a literal substring. Callers must append
-    /// `ESCAPE '\\'` to the LIKE expression.
+    /// Escapes `\`, `%`, and `_` so the value is treated as a literal substring
+    /// rather than a pattern. Callers must append `ESCAPE '\\'` to the LIKE
+    /// expression.
+    ///
+    /// This survives the move to bound parameters because it is not about SQL
+    /// syntax: binding stops a value from being read as SQL, but the bound
+    /// string is still interpreted as a LIKE *pattern*, where `%` and `_` keep
+    /// their wildcard meaning. Quote escaping, by contrast, is gone — that was
+    /// syntax, and binding subsumes it.
     fn escape_string_for_like(&self, s: &str) -> String {
-        s.replace('\'', "''")
-            .replace('\\', "\\\\")
+        s.replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_")
     }

@@ -3494,11 +3494,21 @@ impl SqliteStore {
         Ok(row.get::<i64>(0).unwrap_or(0))
     }
 
-    pub async fn query_node_ids_raw(&self, sql: &str) -> Result<Vec<String>> {
+    /// Execute a caller-built SELECT and collect the first column as node ids.
+    ///
+    /// `params` binds the statement's `?N` placeholders positionally. The only
+    /// caller is `QueryService`, which assembles the SQL from a validated query
+    /// definition and routes every filter value through this parameter list —
+    /// the SQL text itself carries no caller-supplied values.
+    pub async fn query_node_ids_raw(
+        &self,
+        sql: &str,
+        params: Vec<libsql::Value>,
+    ) -> Result<Vec<String>> {
         let mut rows = self
             .read()
             .await?
-            .query(sql, ())
+            .query(sql, params)
             .await
             .context("Failed to execute node query")?;
         let mut ids = Vec::new();
@@ -3513,16 +3523,22 @@ impl SqliteStore {
     /// Run a caller-built `SELECT COUNT(*) ...` and return the scalar — the
     /// counting counterpart to [`Self::query_node_ids_raw`].
     ///
-    /// Same contract as that method: the SQL is fully assembled by the caller,
-    /// so the caller owns escaping every value it interpolates. `QueryService`
-    /// is the only one, and it builds both statements from one WHERE clause.
+    /// Same contract as that method: `params` binds the statement's `?N`
+    /// placeholders positionally, and the SQL text carries no caller-supplied
+    /// values. `QueryService` is the only caller, and it builds both statements
+    /// from one WHERE clause, so the count cannot treat a value differently from
+    /// the select.
     ///
-    /// `pub(crate)` rather than `pub` precisely because of that contract: a
-    /// method that trusts its caller to have escaped everything should be
-    /// reachable only by callers this crate can audit. The compiler keeps that
-    /// true, which a doc comment alone cannot.
-    pub(crate) async fn count_nodes_raw(&self, sql: &str) -> Result<i64> {
-        self.count_from_sql(sql, ()).await
+    /// `pub(crate)` rather than `pub` because the SQL text is still assembled by
+    /// the caller, which must keep identifier positions allowlisted — binding
+    /// covers values, not identifiers. Restricting the method keeps that
+    /// remaining obligation to callers this crate can audit.
+    pub(crate) async fn count_nodes_raw(
+        &self,
+        sql: &str,
+        params: Vec<libsql::Value>,
+    ) -> Result<i64> {
+        self.count_from_sql(sql, params).await
     }
 
     /// Find an active node of `node_type` whose namespaced `field` property equals

@@ -10,8 +10,8 @@ mod tests {
     use crate::models::{Node, TaskPriority};
     use crate::services::node_service::{CreateNodeParams, NodeService};
     use crate::services::query_service::{
-        FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService, RelationshipType,
-        SortConfig, SortDirection,
+        BoundSql, FilterOperator, FilterType, QueryDefinition, QueryFilter, QueryService,
+        RelationshipType, SortConfig, SortDirection,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -1852,8 +1852,9 @@ mod tests {
             node_id: None,
         };
 
+        let mut built = BoundSql::default();
         let sql = query_service
-            .build_property_filter(&filter, "task")
+            .build_property_filter(&filter, "task", &mut built)
             .unwrap();
         assert!(
             sql.starts_with("json_extract(properties, '$.task.status')"),
@@ -1987,10 +1988,11 @@ mod tests {
             "sorting must not change a count"
         );
 
-        let sql = query_service.build_count_query(&sorted).unwrap();
+        let built = query_service.build_count_query(&sorted).unwrap();
         assert!(
-            !sql.contains("ORDER BY") && !sql.contains("LIMIT"),
-            "count SQL must carry neither ORDER BY nor LIMIT: {sql}"
+            !built.sql.contains("ORDER BY") && !built.sql.contains("LIMIT"),
+            "count SQL must carry neither ORDER BY nor LIMIT: {}",
+            built.sql
         );
     }
 
@@ -2016,22 +2018,35 @@ mod tests {
         };
 
         let where_clause = query_service.build_where_clause(&query).unwrap();
+        // The conditions name their columns but carry placeholders, not values:
+        // both operands are bound (see the parameter-binding tests below).
         assert!(
-            where_clause.contains("node_type = 'task'")
-                && where_clause.contains("json_extract(properties, '$.task.status') = 'open'"),
-            "WHERE clause should carry both the type and property conditions: {where_clause}"
+            where_clause.sql.contains("node_type = ?")
+                && where_clause
+                    .sql
+                    .contains("json_extract(properties, '$.task.status') = ?"),
+            "WHERE clause should carry both the type and property conditions: {}",
+            where_clause.sql
         );
         assert_eq!(
-            query_service.build_count_query(&query).unwrap(),
-            format!("SELECT COUNT(*) FROM node{where_clause};"),
+            query_service.build_count_query(&query).unwrap().sql,
+            format!("SELECT COUNT(*) FROM node{};", where_clause.sql),
             "count SQL must be COUNT(*) over exactly the shared WHERE clause"
         );
         assert!(
             query_service
                 .build_query(&query)
                 .unwrap()
-                .contains(&where_clause),
+                .sql
+                .contains(&where_clause.sql),
             "the select must be built from that same WHERE clause"
+        );
+        // Sharing the clause must mean sharing its bindings too — a count that
+        // reused the text but rebuilt the params could still count other rows.
+        assert_eq!(
+            query_service.build_count_query(&query).unwrap().params,
+            where_clause.params,
+            "count must bind exactly the values the shared WHERE clause bound"
         );
     }
 
@@ -2050,5 +2065,354 @@ mod tests {
         };
 
         assert_eq!(query_service.count(&query).await.unwrap(), 0);
+    }
+
+    // =========================================================================
+    // Parameter binding
+    //
+    // Filter values are bound, never formatted into the SQL text. These tests
+    // pin that at the boundary: the generated SQL must carry placeholders and
+    // the values must arrive in `params`, in the same order.
+    // =========================================================================
+
+    /// The property-filter path emits a placeholder and binds the operand.
+    #[tokio::test]
+    async fn test_property_filter_binds_its_value() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let query = QueryDefinition {
+            target_type: "task".to_string(),
+            filters: vec![QueryFilter {
+                filter_type: FilterType::Property,
+                operator: FilterOperator::Equals,
+                property: Some("status".to_string()),
+                value: Some(json!("open")),
+                case_sensitive: None,
+                relationship_type: None,
+                node_id: None,
+            }],
+            sorting: None,
+            limit: None,
+        };
+
+        let built = query_service.build_query(&query).unwrap();
+
+        assert!(
+            !built.sql.contains("'open'"),
+            "the filter value must not appear in the SQL text: {}",
+            built.sql
+        );
+        assert!(
+            built
+                .sql
+                .contains("json_extract(properties, '$.task.status') = ?2"),
+            "the filter must compare against a placeholder: {}",
+            built.sql
+        );
+        // ?1 is the target type, ?2 the filter operand — the order they were bound.
+        assert_eq!(
+            built.params,
+            vec![
+                libsql::Value::Text("task".to_string()),
+                libsql::Value::Text("open".to_string()),
+            ]
+        );
+    }
+
+    /// `IN` generates one placeholder per member, numbered consecutively.
+    #[tokio::test]
+    async fn test_in_operator_binds_each_member() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let query = QueryDefinition {
+            target_type: "*".to_string(),
+            filters: vec![QueryFilter {
+                filter_type: FilterType::Property,
+                operator: FilterOperator::In,
+                property: Some("status".to_string()),
+                value: Some(json!(["open", "in_progress", "done"])),
+                case_sensitive: None,
+                relationship_type: None,
+                node_id: None,
+            }],
+            sorting: None,
+            limit: None,
+        };
+
+        let built = query_service.build_query(&query).unwrap();
+
+        assert!(
+            built.sql.contains("IN (?1, ?2, ?3)"),
+            "a three-member IN must generate three placeholders: {}",
+            built.sql
+        );
+        assert_eq!(
+            built.params,
+            vec![
+                libsql::Value::Text("open".to_string()),
+                libsql::Value::Text("in_progress".to_string()),
+                libsql::Value::Text("done".to_string()),
+            ]
+        );
+    }
+
+    /// A value containing a quote is matched literally rather than terminating
+    /// a string literal — the boundary the old quote-doubling defended by hand.
+    ///
+    /// The assertion is behavioral on purpose: the node whose status contains a
+    /// quote comes back, and the one with a plain status does not. If the value
+    /// were interpolated and the escaping dropped, the statement would not parse
+    /// at all; if it were interpolated and escaped, this would still pass — so
+    /// the SQL-text assertion above it is what pins the binding specifically.
+    #[tokio::test]
+    async fn test_quote_in_value_is_matched_literally() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        // Free text rather than a property: `task.status` is a validated enum
+        // and would reject the value before it ever reached SQL.
+        let quoted = "it's a note";
+        for content in [quoted, "a plain note"] {
+            node_service
+                .create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: "text".to_string(),
+                    content: content.to_string(),
+                    parent_id: None,
+                    position: crate::services::InsertPositionOwned::End,
+                    properties: json!({}),
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let query = QueryDefinition {
+            target_type: "text".to_string(),
+            filters: vec![QueryFilter {
+                filter_type: FilterType::Content,
+                operator: FilterOperator::Equals,
+                property: None,
+                value: Some(json!(quoted)),
+                case_sensitive: None,
+                relationship_type: None,
+                node_id: None,
+            }],
+            sorting: None,
+            limit: None,
+        };
+
+        let built = query_service.build_query(&query).unwrap();
+        assert!(
+            !built.sql.contains(quoted),
+            "the value must not appear in the SQL text: {}",
+            built.sql
+        );
+        // Deliberately not pinning the placeholder's number: this test is about
+        // the value being bound rather than interpolated, and which position it
+        // lands in is `test_property_filter_binds_its_value`'s business. The
+        // bound value is asserted instead, so the check still fails if the
+        // operand is wrong rather than merely absent from the text.
+        assert!(
+            built.sql.contains("content = ?"),
+            "content must be compared against a placeholder: {}",
+            built.sql
+        );
+        assert!(
+            built
+                .params
+                .contains(&libsql::Value::Text(quoted.to_string())),
+            "the quoted value must be bound verbatim, with no escaping applied: {:?}",
+            built.params
+        );
+
+        let results = query_service.execute(&query).await.unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "exactly the node whose content contains a quote should match"
+        );
+        assert_eq!(results[0].content, quoted);
+    }
+
+    /// A quote inside a `contains` value survives LIKE escaping intact.
+    ///
+    /// `escape_string_for_like` no longer doubles quotes — binding handles that
+    /// — so a doubled quote here would be matched literally and find nothing.
+    #[tokio::test]
+    async fn test_quote_in_contains_value_is_matched_literally() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "it's a note".to_string(),
+                parent_id: None,
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        // Case-insensitive so the LIKE branch (the one that escapes) is taken.
+        let query = QueryDefinition {
+            target_type: "text".to_string(),
+            filters: vec![QueryFilter {
+                filter_type: FilterType::Content,
+                operator: FilterOperator::Contains,
+                property: None,
+                value: Some(json!("IT'S A")),
+                case_sensitive: Some(false),
+                relationship_type: None,
+                node_id: None,
+            }],
+            sorting: None,
+            limit: None,
+        };
+
+        let results = query_service.execute(&query).await.unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "the apostrophe must be matched as one literal character"
+        );
+    }
+
+    /// LIKE wildcards inside a `contains` value stay literal after the move to
+    /// binding — the job `escape_string_for_like` still has.
+    #[tokio::test]
+    async fn test_contains_wildcards_remain_literal() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        for content in ["100% done", "100 percent done"] {
+            node_service
+                .create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: "text".to_string(),
+                    content: content.to_string(),
+                    parent_id: None,
+                    position: crate::services::InsertPositionOwned::End,
+                    properties: json!({}),
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let query = QueryDefinition {
+            target_type: "text".to_string(),
+            filters: vec![QueryFilter {
+                filter_type: FilterType::Content,
+                operator: FilterOperator::Contains,
+                property: None,
+                // A bare `%` would match both rows if it reached LIKE unescaped.
+                value: Some(json!("100% ")),
+                case_sensitive: Some(false),
+                relationship_type: None,
+                node_id: None,
+            }],
+            sorting: None,
+            limit: None,
+        };
+
+        let results = query_service.execute(&query).await.unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "the % must be a literal character, not a wildcard"
+        );
+        assert_eq!(results[0].content, "100% done");
+    }
+
+    /// The relationship subquery binds the node id it filters on.
+    #[tokio::test]
+    async fn test_relationship_filter_binds_node_id() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let query = QueryDefinition {
+            target_type: "*".to_string(),
+            filters: vec![QueryFilter {
+                filter_type: FilterType::Relationship,
+                operator: FilterOperator::Equals,
+                property: None,
+                value: None,
+                case_sensitive: None,
+                relationship_type: Some(RelationshipType::Children),
+                node_id: Some("parent-1".to_string()),
+            }],
+            sorting: None,
+            limit: None,
+        };
+
+        let built = query_service.build_query(&query).unwrap();
+
+        assert!(
+            !built.sql.contains("parent-1"),
+            "the node id must not appear in the SQL text: {}",
+            built.sql
+        );
+        assert!(
+            built.sql.contains("in_node = ?1"),
+            "the subquery must filter on a placeholder: {}",
+            built.sql
+        );
+        assert_eq!(
+            built.params,
+            vec![libsql::Value::Text("parent-1".to_string())]
+        );
+    }
+
+    /// Non-string operands bind as their SQLite counterparts.
+    #[tokio::test]
+    async fn test_non_string_values_bind_by_type() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let query = QueryDefinition {
+            target_type: "*".to_string(),
+            filters: vec![
+                QueryFilter {
+                    filter_type: FilterType::Property,
+                    operator: FilterOperator::GreaterThan,
+                    property: Some("count".to_string()),
+                    value: Some(json!(3)),
+                    case_sensitive: None,
+                    relationship_type: None,
+                    node_id: None,
+                },
+                QueryFilter {
+                    filter_type: FilterType::Property,
+                    operator: FilterOperator::Equals,
+                    property: Some("ratio".to_string()),
+                    value: Some(json!(1.5)),
+                    case_sensitive: None,
+                    relationship_type: None,
+                    node_id: None,
+                },
+                QueryFilter {
+                    filter_type: FilterType::Property,
+                    operator: FilterOperator::Equals,
+                    property: Some("done".to_string()),
+                    value: Some(json!(true)),
+                    case_sensitive: None,
+                    relationship_type: None,
+                    node_id: None,
+                },
+            ],
+            sorting: None,
+            limit: None,
+        };
+
+        let built = query_service.build_query(&query).unwrap();
+
+        assert_eq!(
+            built.params,
+            vec![
+                libsql::Value::Integer(3),
+                libsql::Value::Real(1.5),
+                // SQLite has no boolean type; true is the integer 1.
+                libsql::Value::Integer(1),
+            ]
+        );
     }
 }
