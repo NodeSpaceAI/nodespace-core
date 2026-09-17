@@ -1854,6 +1854,48 @@ mod ancestry_cache_tests {
         );
     }
 
+    /// The producer half: a refresh that actually fails keeps the previous
+    /// cache **and** marks it for retry.
+    ///
+    /// Without this, nothing covers the transition into the degraded state —
+    /// only the recovery out of it. Both halves matter: a refresh that failed
+    /// without setting the flag would never be retried, which is the exact
+    /// unbounded-window bug the flag exists to close.
+    ///
+    /// The failure is real rather than injected: dropping the `relationship`
+    /// table makes `get_extends_parent_map`'s SELECT fail the way a genuine
+    /// I/O or corruption error would, exercising the actual `Err` arm.
+    #[tokio::test]
+    async fn a_failed_refresh_keeps_the_previous_cache_and_marks_it_dirty() {
+        let (engine, svc, _tmp) = test_engine().await;
+        seed_bug_extends_ticket(&svc).await;
+        engine.refresh_ancestor_cache().await;
+
+        // Precondition: a good cache, not dirty.
+        assert_eq!(cached_ancestors(&engine, "bug"), ["bug", "ticket"]);
+        assert!(!engine.ancestry_dirty.load(Ordering::Relaxed));
+
+        svc.store()
+            .write()
+            .await
+            .execute("DROP TABLE relationship", ())
+            .await
+            .expect("dropping the relationship table should succeed");
+
+        engine.refresh_ancestor_cache().await;
+
+        assert!(
+            engine.ancestry_dirty.load(Ordering::Relaxed),
+            "a failed refresh must mark the cache for retry, or nothing ever retries it"
+        );
+        assert_eq!(
+            cached_ancestors(&engine, "bug"),
+            ["bug", "ticket"],
+            "a failed refresh must keep the previous cache — stale ancestry beats \
+             dropping every Play's subtype matching"
+        );
+    }
+
     /// The dirty flag bounds the degraded window to one event.
     ///
     /// This is the half of the failure path worth pinning. A failed refresh

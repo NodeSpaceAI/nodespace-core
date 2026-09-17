@@ -2354,9 +2354,15 @@ mod tests {
         Ok(())
     }
 
-    /// Every [`ExtendsDirection`] there is. Adding a variant without adding it
-    /// here fails to compile, which is the point: the plan test below must
-    /// cover each direction, not just the one that happens to have a caller.
+    /// Every [`ExtendsDirection`] there is, so the plan test below covers each
+    /// direction rather than only the one that happens to have a caller.
+    ///
+    /// This list is not itself compiler-enforced — nothing rejects a variant
+    /// missing from it. What forces the issue is the exhaustive `match` in
+    /// [`ExtendsDirection::columns`]: a new variant fails to compile there, and
+    /// whoever fixes that has to pick an index name, which is the moment to add
+    /// it here too. Treat this as the checklist that lands you in the right
+    /// file, not as the guard itself.
     const ALL_EXTENDS_DIRECTIONS: &[ExtendsDirection] = &[ExtendsDirection::Descendants];
 
     /// The closure walk must drive off the endpoint composite
