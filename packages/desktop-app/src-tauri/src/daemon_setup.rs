@@ -26,6 +26,17 @@
 //! here rather than inside the daemon, and its call site in
 //! `ensure_daemon_running` for why it must not run any earlier.
 //!
+//! That startup-time check alone leaves the *live* file unbounded across a
+//! long session: under launchd's `KeepAlive`/systemd's `Restart=on-failure`,
+//! a healthy daemon simply never restarts on its own to trip it.
+//! [`spawn_log_rotation_watcher`] closes that gap by re-checking both files on
+//! an interval for as long as the app runs and, only when nodespaced is
+//! actually `Healthy` and one of them has actually grown past the threshold,
+//! restarting it — reusing the exact `kill_running_daemon` + rotate +
+//! platform-(re)spawn sequence this module already uses, rather than any new
+//! IPC or in-process log ownership. See [`check_and_rotate_live_logs`] for the
+//! decision and [`run_periodic_checks`] for the timer loop itself.
+//!
 //! On subsequent launches:
 //!   - Check if the socket exists and the daemon responds (cheap path).
 //!   - If already healthy: no-op.
@@ -39,6 +50,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use tauri::AppHandle;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
+
+use crate::window_routing;
 
 const DAEMON_BIN_DIR: &str = ".nodespace/bin";
 const DAEMON_DB_DIR: &str = ".nodespace/database";
@@ -1418,14 +1432,13 @@ const DAEMON_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 /// generations are deleted.
 ///
 /// The rotated generations are therefore bounded at roughly
-/// `DAEMON_LOG_MAX_BYTES * DAEMON_LOG_KEEP`. The *live* file is not: the
-/// threshold is only ever evaluated at daemon start, so a session that stays
-/// up for weeks under launchd's `KeepAlive` can push `nodespaced.log` past the
-/// threshold by an arbitrary margin before anything checks it. That is a
-/// deliberate trade-off rather than an oversight — continuous enforcement
-/// would require the daemon to own these files, which the inherited-stdio
-/// design documented on `rotate_log_file` rules out — and it is still a strict
-/// improvement on growing without bound forever.
+/// `DAEMON_LOG_MAX_BYTES * DAEMON_LOG_KEEP`. The *live* file is bounded too:
+/// `ensure_daemon_running` only evaluates the threshold at daemon (re)spawn,
+/// but [`spawn_log_rotation_watcher`] re-checks it on an interval for the life
+/// of the app session and restarts nodespaced — the same
+/// kill-then-rotate-then-respawn sequence a startup (re)spawn already uses —
+/// whenever it has actually crossed the threshold, so a session that stays up
+/// for weeks under launchd's `KeepAlive` still gets rotated.
 const DAEMON_LOG_KEEP: u32 = 3;
 
 /// Roll `path` to `path.1` if it has grown past `DAEMON_LOG_MAX_BYTES`,
@@ -1528,6 +1541,202 @@ fn rotate_daemon_logs(log_dir: &Path) {
     let (stdout_log, stderr_log) = daemon_log_paths(log_dir);
     rotate_log_file(&stdout_log);
     rotate_log_file(&stderr_log);
+}
+
+// ── Periodic re-check during a long-running session ─────────────────────────
+//
+// `ensure_daemon_running`'s rotation check above only ever runs once, at
+// daemon (re)spawn. Under launchd's `KeepAlive`/systemd's `Restart=on-failure`
+// a healthy daemon can stay up for weeks without that call site ever running
+// again, so the live log file needs its own periodic check for the life of
+// the app session — this section is that check.
+
+/// How often [`spawn_log_rotation_watcher`] re-checks the live daemon log
+/// files while the app is running.
+///
+/// A cheap two-`stat` check either way, so the cost of a short interval is
+/// negligible; what actually bounds it is that finding an oversized file
+/// mid-session triggers a full daemon restart (see
+/// [`check_and_rotate_live_logs`]) — a real, if brief, disruption to any
+/// in-flight gRPC call and, on a cold cache, the embedding model's ~9s
+/// reload. Thirty minutes keeps `nodespaced.log` from exceeding
+/// `DAEMON_LOG_MAX_BYTES` by more than a session's typical half-hour of
+/// logging, without restarting the daemon any more often than that
+/// disruption is worth.
+const LOG_ROTATION_CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+/// Whether `path` has grown past the size [`rotate_log_file`] rotates at.
+/// `>` (not `>=`) mirrors `rotate_log_file`'s own `size <= DAEMON_LOG_MAX_BYTES`
+/// early return exactly, so this and the rotation it triggers always agree on
+/// what counts as oversized. A missing file (nothing logged yet, or already
+/// sitting at a fresh post-rotation size) is not oversized.
+fn log_file_oversized(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|meta| meta.len() > DAEMON_LOG_MAX_BYTES)
+        .unwrap_or(false)
+}
+
+/// Pure decision: given whether either live log file is currently oversized
+/// and nodespaced's current health, should a log-rotation restart proceed?
+///
+/// Split out from [`check_and_rotate_live_logs`] so this branching — the part
+/// that actually decides whether to kill and restart the daemon — is
+/// unit-testable without touching a real socket or spawning a real process,
+/// the same reason [`daemon_binary_name_for`] is split from
+/// [`daemon_binary_name`].
+///
+/// Only `Healthy` proceeds: `NotRunning`/`Starting` means nothing is
+/// currently holding the file open, so there is nothing to coordinate a
+/// reopen with, and forcing a spawn from this background watcher is outside
+/// what it is for — the next real (re)spawn, whenever it happens, already
+/// rotates via `ensure_daemon_running`'s own `rotate_daemon_logs` call.
+fn should_restart_for_log_rotation(oversized: bool, status: &DaemonStatus) -> bool {
+    oversized && *status == DaemonStatus::Healthy
+}
+
+/// Check both live daemon log files and, if [`should_restart_for_log_rotation`]
+/// says so, restart nodespaced so it reopens fresh ones.
+///
+/// The restart itself is exactly the sequence `ensure_daemon_running` already
+/// uses for a binary-update restart: [`kill_running_daemon`] (verified against
+/// the installed binary's path, same as every other signal this module sends)
+/// followed by [`rotate_daemon_logs`] — in that order, for the same reason
+/// `rotate_daemon_logs`'s call site in `ensure_daemon_running` documents:
+/// the rename must happen only once the file is confirmed closed — then the
+/// same platform-specific (re)register/spawn `ensure_daemon_running` runs.
+/// No new IPC and no change to how the daemon owns (or rather, does not own)
+/// its stdio.
+async fn check_and_rotate_live_logs(app: &AppHandle) -> Result<()> {
+    let home = home_dir().context("Cannot resolve home directory")?;
+    let log_dir = home.join(DAEMON_LOG_DIR);
+    let (stdout_log, stderr_log) = daemon_log_paths(&log_dir);
+    let oversized = log_file_oversized(&stdout_log) || log_file_oversized(&stderr_log);
+
+    if !oversized {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    let socket_path = home.join(daemon_socket_relative());
+    #[cfg(windows)]
+    let socket_path = PathBuf::from(crate::services::grpc_client::resolve_pipe_name());
+
+    let status = check_daemon_socket(&socket_path).await;
+    if !should_restart_for_log_rotation(oversized, &status) {
+        return Ok(());
+    }
+
+    tracing::info!(
+        max_bytes = DAEMON_LOG_MAX_BYTES,
+        "Daemon log file(s) exceeded the rotation threshold during a long-running \
+         session — restarting nodespaced so it reopens fresh log files"
+    );
+    window_routing::emit_routed(app, "daemon-status", "starting", None);
+
+    let daemon_bin = sidecar_install_path(&home.join(DAEMON_BIN_DIR), daemon_binary_name());
+
+    // Stop the process actually holding the files open, THEN rotate — see
+    // `rotate_daemon_logs`'s call site in `ensure_daemon_running` for why this
+    // order is load-bearing (a rename out from under a live fd does not
+    // redirect it on Unix, and fails outright on Windows).
+    kill_running_daemon(&socket_path).await;
+    rotate_daemon_logs(&log_dir);
+
+    #[cfg(target_os = "macos")]
+    {
+        let plist_path = launch_agents_dir(&home).join(plist_filename());
+        write_plist(&home, &plist_path, &daemon_bin).context("Failed to write launchd plist")?;
+        bootstrap_launchd_agent(&plist_path)?;
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let service_path = systemd_user_service_dir(&home).join(SYSTEMD_SERVICE_NAME);
+        write_systemd_service(&home, &service_path, &daemon_bin)
+            .context("Failed to write systemd service file")?;
+        enable_systemd_service()?;
+    }
+
+    #[cfg(windows)]
+    {
+        spawn_daemon_windows(&daemon_bin, &log_dir).context("Failed to spawn daemon on Windows")?;
+        register_autorun_windows(&daemon_bin);
+    }
+
+    let status = wait_for_daemon(&socket_path, Duration::from_secs(30)).await;
+    window_routing::emit_routed(
+        app,
+        "daemon-status",
+        if status == DaemonStatus::Healthy {
+            "healthy"
+        } else {
+            "not_running"
+        },
+        None,
+    );
+    if status != DaemonStatus::Healthy {
+        tracing::warn!(
+            ?status,
+            "nodespaced did not become healthy again after a log-rotation restart"
+        );
+    }
+    Ok(())
+}
+
+/// Sleep for `interval`, run `check_once`, repeat — until `cancel_token`
+/// fires. Isolated from [`check_and_rotate_live_logs`]'s actual file/daemon
+/// behavior so a test can substitute a cheap counting closure and a short
+/// interval to verify the *timer* itself fires reliably and stops on
+/// cancellation, independent of daemon-restart machinery a unit test cannot
+/// safely exercise against a real machine (see `kill_running_daemon`'s own
+/// signal-sending behavior, which — unlike `signal_daemon_to_stop` — has no
+/// `cfg(not(test))` guard and instead relies on there being no real,
+/// matching-argv0 nodespaced process on the machine running the test suite).
+async fn run_periodic_checks<F, Fut>(
+    interval: Duration,
+    cancel_token: CancellationToken,
+    mut check_once: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    tracing::info!(?interval, "Daemon log rotation watcher starting");
+    loop {
+        tokio::select! {
+            _ = cancel_token.cancelled() => {
+                tracing::info!("Daemon log rotation watcher received shutdown signal, exiting");
+                return;
+            }
+            _ = tokio::time::sleep(interval) => {}
+        }
+        check_once().await;
+    }
+}
+
+/// Spawn the periodic task that re-checks the live daemon log files for the
+/// life of the app session and restarts nodespaced to rotate them once they
+/// cross `DAEMON_LOG_MAX_BYTES` — the piece `ensure_daemon_running`'s
+/// startup-only check cannot cover on its own (see this module's top-level
+/// doc comment).
+///
+/// Exits when `cancel_token` is cancelled — pass a child of the same
+/// `ShutdownToken` the node watcher (`watcher::spawn`) and
+/// `crate::graceful_shutdown` use, so this task never outlives the app.
+pub fn spawn_log_rotation_watcher(app: AppHandle, cancel_token: CancellationToken) {
+    tauri::async_runtime::spawn(async move {
+        run_periodic_checks(LOG_ROTATION_CHECK_INTERVAL, cancel_token, move || {
+            let app = app.clone();
+            async move {
+                if let Err(e) = check_and_rotate_live_logs(&app).await {
+                    tracing::warn!(
+                        error = %e,
+                        "Daemon log rotation check failed; will retry next interval"
+                    );
+                }
+            }
+        })
+        .await;
+    });
 }
 
 /// Open a daemon log file for the spawned child's stdio, falling back to
@@ -2776,5 +2985,163 @@ mod daemon_log_rotation_tests {
             "a small stderr log must not be rotated just because stdout was"
         );
         assert_eq!(std::fs::metadata(&stderr_log).unwrap().len(), 64);
+    }
+}
+
+/// Tests for the periodic re-check that covers a long-running session —
+/// `ensure_daemon_running`'s startup-only rotation check above never runs
+/// again once nodespaced is up. Split from `daemon_log_rotation_tests`
+/// because these exercise the timer/decision logic added for that gap, not
+/// `rotate_log_file`'s own file-renaming behavior.
+#[cfg(test)]
+mod log_rotation_watcher_tests {
+    use super::{
+        log_file_oversized, run_periodic_checks, should_restart_for_log_rotation, DaemonStatus,
+        DAEMON_LOG_MAX_BYTES,
+    };
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    fn write_sized(path: &std::path::Path, size: u64) {
+        let mut f = std::fs::File::create(path).unwrap();
+        f.write_all(&vec![b'x'; size as usize]).unwrap();
+    }
+
+    #[test]
+    fn log_file_oversized_true_only_strictly_past_the_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nodespaced.log");
+
+        assert!(
+            !log_file_oversized(&path),
+            "a missing file (nothing logged yet) is not oversized"
+        );
+
+        write_sized(&path, DAEMON_LOG_MAX_BYTES);
+        assert!(
+            !log_file_oversized(&path),
+            "sitting exactly at the threshold must agree with rotate_log_file's own \
+             `size <= DAEMON_LOG_MAX_BYTES` early return and NOT count as oversized"
+        );
+
+        write_sized(&path, DAEMON_LOG_MAX_BYTES + 1);
+        assert!(
+            log_file_oversized(&path),
+            "one byte past the threshold is oversized"
+        );
+    }
+
+    #[test]
+    fn restart_only_proceeds_when_oversized_and_the_daemon_is_healthy() {
+        assert!(
+            should_restart_for_log_rotation(true, &DaemonStatus::Healthy),
+            "an oversized file held open by a live daemon is exactly the case this exists to fix"
+        );
+        assert!(
+            !should_restart_for_log_rotation(false, &DaemonStatus::Healthy),
+            "a healthy daemon with a normal-sized log must not be restarted"
+        );
+        assert!(
+            !should_restart_for_log_rotation(true, &DaemonStatus::NotRunning),
+            "an oversized log with nothing holding it open needs no restart -- the next \
+             real (re)spawn already rotates it"
+        );
+        assert!(
+            !should_restart_for_log_rotation(true, &DaemonStatus::Starting),
+            "a daemon still starting up must not be killed out from under itself"
+        );
+    }
+
+    /// The behavior this issue actually requires: a session that never
+    /// restarts the daemon on its own still gets checked repeatedly, not just
+    /// once. Runs the real loop against a real (short) interval and counts
+    /// real elapsed ticks -- deliberately not `tokio::time::pause`, which the
+    /// `tokio` `full` feature set this crate depends on does not enable -- so
+    /// this is a genuine behavioral test of the timer firing on a schedule,
+    /// not an assertion about the loop's source text.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn periodic_check_fires_repeatedly_until_cancelled() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let cancel = CancellationToken::new();
+        let interval = Duration::from_millis(15);
+
+        let ticks_for_task = ticks.clone();
+        let cancel_for_task = cancel.clone();
+        let handle = tokio::spawn(async move {
+            run_periodic_checks(interval, cancel_for_task, || {
+                let ticks = ticks_for_task.clone();
+                async move {
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+            .await;
+        });
+
+        // Let several intervals elapse on the real clock.
+        tokio::time::sleep(interval * 6).await;
+        let seen_before_cancel = ticks.load(Ordering::SeqCst);
+        assert!(
+            seen_before_cancel >= 3,
+            "expected several ticks within {:?}, saw {}",
+            interval * 6,
+            seen_before_cancel
+        );
+
+        cancel.cancel();
+        handle.await.expect("watcher task must not panic");
+
+        // No further ticks land once cancelled, even after waiting past
+        // another interval -- proves the loop actually exited rather than
+        // just skipping one wait.
+        let seen_at_cancel = ticks.load(Ordering::SeqCst);
+        tokio::time::sleep(interval * 3).await;
+        assert_eq!(
+            ticks.load(Ordering::SeqCst),
+            seen_at_cancel,
+            "cancellation must stop the loop, not just the wait it's currently in"
+        );
+    }
+
+    /// Cancellation is only raced against the *wait* between checks, not
+    /// against a check already running -- documents the loop's actual,
+    /// accepted behavior (a check in flight when `cancel()` fires still runs
+    /// to completion) rather than a stronger interrupt guarantee it doesn't
+    /// need: `check_and_rotate_live_logs` has its own bounded waits
+    /// (`wait_for_daemon`'s 30s cap, `kill_running_daemon`'s 5s grace period)
+    /// instead of running unbounded.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_check_already_running_when_cancelled_finishes_before_the_loop_exits() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let cancel = CancellationToken::new();
+        let cancel_from_inside_check = cancel.clone();
+        let interval = Duration::from_millis(5);
+
+        let ticks_for_task = ticks.clone();
+        let handle = tokio::spawn(async move {
+            run_periodic_checks(interval, cancel, move || {
+                let ticks = ticks_for_task.clone();
+                let cancel = cancel_from_inside_check.clone();
+                async move {
+                    // Cancel partway through this "check" to simulate cancellation
+                    // arriving while a real check_and_rotate_live_logs call (e.g. its
+                    // wait_for_daemon) is in flight.
+                    ticks.fetch_add(1, Ordering::SeqCst);
+                    cancel.cancel();
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+        });
+
+        handle.await.expect("watcher task must not panic");
+        assert_eq!(
+            ticks.load(Ordering::SeqCst),
+            1,
+            "the in-flight check must complete, and the loop must exit afterward without \
+             starting a second one"
+        );
     }
 }
