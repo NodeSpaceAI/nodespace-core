@@ -3,6 +3,8 @@
 //! Provides the `create_schema` tool for creating custom schemas with explicit
 //! field and relationship definitions.
 
+pub mod extends_chain;
+
 use crate::behaviors::SchemaNodeBehavior;
 use crate::markdown::MarkdownError;
 use crate::models::schema::SchemaField;
@@ -465,6 +467,22 @@ fn reject_reserved_relationship_names(
                     crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
                 )));
             }
+            // Type-system names are rejected here but, unlike the built-ins
+            // above, are still stored and read as ordinary declarations — see
+            // `TYPE_SYSTEM_RELATIONSHIPS`. `extends` reaches the relationship
+            // table only via the schema definition's own `extends` key, which
+            // this handler synthesizes.
+            if crate::models::schema::is_type_system_relationship(name) {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Relationship {} '{}' is reserved: '{}' describes the type system itself \
+                     and is not declared as a relationship. Use the schema's own \"extends\" \
+                     key instead — e.g. {{\"name\": \"Issue\", \"extends\": \"task\", \
+                     \"fields\": [...]}}.",
+                    which,
+                    name,
+                    crate::models::schema::EXTENDS_RELATIONSHIP,
+                )));
+            }
         }
     }
     Ok(())
@@ -686,6 +704,19 @@ pub struct CreateSchemaParams {
     /// Explicit field definitions
     #[serde(default)]
     pub fields: Option<Vec<SchemaField>>,
+    /// Schema id of a parent type this schema specializes (ADR-078).
+    ///
+    /// Structural vocabulary, on the same footing as `fields` — not a
+    /// relationship the caller authors. Declaring it composes this schema's
+    /// effective field set as its own fields plus the parent's (additive
+    /// only, single parent, no override), and instances created under this
+    /// schema carry *this* schema's id as their real `node_type`.
+    ///
+    /// Persisted as an `extends` edge on the relationship table, synthesized
+    /// here rather than accepted in `relationships` — where `extends` and
+    /// `extended_by` are rejected outright.
+    #[serde(default)]
+    pub extends: Option<String>,
     /// Optional relationship definitions
     #[serde(default)]
     pub relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
@@ -1015,6 +1046,15 @@ pub struct UpdateSchemaParams {
     /// and updates the schema definition atomically.
     #[serde(default)]
     pub rename_fields: Option<Vec<FieldRename>>,
+    /// Set or change this schema's parent type (ADR-078). Absent leaves the
+    /// current `extends` edge untouched; there is no way to clear one, the
+    /// same posture `title_template` already takes.
+    ///
+    /// Re-targeting is validated exactly as creation is — the new parent must
+    /// exist, must not introduce a cycle, and must not collide with a field
+    /// this schema (or a remaining ancestor) already declares.
+    #[serde(default)]
+    pub extends: Option<String>,
     /// Relationships to add
     #[serde(default)]
     pub add_relationships: Option<Vec<crate::models::schema::SchemaRelationship>>,
