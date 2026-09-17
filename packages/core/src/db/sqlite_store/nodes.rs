@@ -3510,6 +3510,21 @@ impl SqliteStore {
         Ok(ids)
     }
 
+    /// Run a caller-built `SELECT COUNT(*) ...` and return the scalar — the
+    /// counting counterpart to [`Self::query_node_ids_raw`].
+    ///
+    /// Same contract as that method: the SQL is fully assembled by the caller,
+    /// so the caller owns escaping every value it interpolates. `QueryService`
+    /// is the only one, and it builds both statements from one WHERE clause.
+    ///
+    /// `pub(crate)` rather than `pub` precisely because of that contract: a
+    /// method that trusts its caller to have escaped everything should be
+    /// reachable only by callers this crate can audit. The compiler keeps that
+    /// true, which a doc comment alone cannot.
+    pub(crate) async fn count_nodes_raw(&self, sql: &str) -> Result<i64> {
+        self.count_from_sql(sql, ()).await
+    }
+
     /// Find an active node of `node_type` whose namespaced `field` property equals
     /// `value`, excluding `exclude_id` (used to ignore self on update).
     ///

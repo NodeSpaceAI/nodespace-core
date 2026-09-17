@@ -1861,4 +1861,194 @@ mod tests {
              idx_task_status is built on, or the index won't cover this filter: {sql}"
         );
     }
+
+    // ========== count ==========
+
+    /// Create `n` tasks with the given status, for the count tests.
+    async fn seed_tasks(node_service: &Arc<NodeService>, n: usize, status: &str) {
+        for i in 0..n {
+            node_service
+                .create_node_with_parent(CreateNodeParams {
+                    id: None,
+                    node_type: "task".to_string(),
+                    content: format!("Task {i}"),
+                    parent_id: None,
+                    position: crate::services::InsertPositionOwned::End,
+                    properties: json!({ "task": { "status": status } }),
+                    lifecycle_status: None,
+                })
+                .await
+                .unwrap();
+        }
+    }
+
+    /// The count must be of the same rows `execute` returns — same type filter,
+    /// same property filter, same total.
+    #[tokio::test]
+    async fn test_count_matches_executed_rows() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        seed_tasks(&node_service, 3, "open").await;
+        seed_tasks(&node_service, 2, "done").await;
+        node_service
+            .create_node_with_parent(CreateNodeParams {
+                id: None,
+                node_type: "text".to_string(),
+                content: "Not a task".to_string(),
+                parent_id: None,
+                position: crate::services::InsertPositionOwned::End,
+                properties: json!({}),
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+
+        let query = QueryDefinition {
+            target_type: "task".to_string(),
+            filters: vec![QueryFilter {
+                filter_type: FilterType::Property,
+                operator: FilterOperator::Equals,
+                property: Some("status".to_string()),
+                value: Some(json!("open")),
+                case_sensitive: None,
+                relationship_type: None,
+                node_id: None,
+            }],
+            sorting: None,
+            limit: None,
+        };
+
+        let rows = query_service.execute(&query).await.unwrap();
+        let count = query_service.count(&query).await.unwrap();
+
+        assert_eq!(count, 3, "Should count only the open tasks");
+        assert_eq!(
+            count,
+            rows.len() as i64,
+            "count must agree with execute on the same definition"
+        );
+    }
+
+    /// The reason this exists: a count must see past the limit that caps a
+    /// result set. Counting `execute`'s rows would report the limit itself.
+    #[tokio::test]
+    async fn test_count_ignores_limit() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        seed_tasks(&node_service, 7, "open").await;
+
+        let query = QueryDefinition {
+            target_type: "task".to_string(),
+            filters: vec![],
+            sorting: None,
+            limit: Some(2),
+        };
+
+        assert_eq!(
+            query_service.execute(&query).await.unwrap().len(),
+            2,
+            "execute is capped by the limit"
+        );
+        assert_eq!(
+            query_service.count(&query).await.unwrap(),
+            7,
+            "count must report the true total, not saturate at the limit"
+        );
+    }
+
+    /// Ordering cannot change how many rows match, and the count SQL must not
+    /// emit an ORDER BY at all — including for `task.priority`, whose ordering
+    /// builds a CASE expression that has no business in a COUNT(*).
+    #[tokio::test]
+    async fn test_count_ignores_sorting() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        seed_tasks(&node_service, 4, "open").await;
+
+        let sorted = QueryDefinition {
+            target_type: "task".to_string(),
+            filters: vec![],
+            sorting: Some(vec![SortConfig {
+                field: "priority".to_string(),
+                direction: SortDirection::Descending,
+            }]),
+            limit: None,
+        };
+        let unsorted = QueryDefinition {
+            target_type: "task".to_string(),
+            filters: vec![],
+            sorting: None,
+            limit: None,
+        };
+
+        assert_eq!(
+            query_service.count(&sorted).await.unwrap(),
+            query_service.count(&unsorted).await.unwrap(),
+            "sorting must not change a count"
+        );
+
+        let sql = query_service.build_count_query(&sorted).unwrap();
+        assert!(
+            !sql.contains("ORDER BY") && !sql.contains("LIMIT"),
+            "count SQL must carry neither ORDER BY nor LIMIT: {sql}"
+        );
+    }
+
+    /// The count and the select must be built from one WHERE clause, so a
+    /// filter can never select one set of rows and count another.
+    #[tokio::test]
+    async fn test_count_query_shares_where_clause_with_select() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let query = QueryDefinition {
+            target_type: "task".to_string(),
+            filters: vec![QueryFilter {
+                filter_type: FilterType::Property,
+                operator: FilterOperator::Equals,
+                property: Some("status".to_string()),
+                value: Some(json!("open")),
+                case_sensitive: None,
+                relationship_type: None,
+                node_id: None,
+            }],
+            sorting: None,
+            limit: None,
+        };
+
+        let where_clause = query_service.build_where_clause(&query).unwrap();
+        assert!(
+            where_clause.contains("node_type = 'task'")
+                && where_clause.contains("json_extract(properties, '$.task.status') = 'open'"),
+            "WHERE clause should carry both the type and property conditions: {where_clause}"
+        );
+        assert_eq!(
+            query_service.build_count_query(&query).unwrap(),
+            format!("SELECT COUNT(*) FROM node{where_clause};"),
+            "count SQL must be COUNT(*) over exactly the shared WHERE clause"
+        );
+        assert!(
+            query_service
+                .build_query(&query)
+                .unwrap()
+                .contains(&where_clause),
+            "the select must be built from that same WHERE clause"
+        );
+    }
+
+    /// A query matching nothing counts zero rather than erroring on the empty
+    /// result — `count_from_sql` requires a row back, and COUNT(*) always
+    /// returns one.
+    #[tokio::test]
+    async fn test_count_empty_result_is_zero() {
+        let (query_service, _node_service, _temp) = create_test_services().await;
+
+        let query = QueryDefinition {
+            target_type: "task".to_string(),
+            filters: vec![],
+            sorting: None,
+            limit: None,
+        };
+
+        assert_eq!(query_service.count(&query).await.unwrap(), 0);
+    }
 }

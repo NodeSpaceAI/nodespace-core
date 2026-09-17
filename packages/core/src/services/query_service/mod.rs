@@ -346,15 +346,16 @@ impl QueryService {
             .context("Failed to execute ID query")
     }
 
-    /// Translate QueryDefinition to SQL
+    /// Build the ` WHERE ...` suffix selecting the rows a query matches, or an
+    /// empty string when nothing constrains them.
     ///
-    /// Builds queries against the unified node table with JSON properties.
-    /// All node types use the same query pattern with properties stored inline.
-    ///
-    /// Properties are now stored in namespaced format:
-    /// properties[node_type][field_name] instead of properties[field_name]
-    fn build_query(&self, query: &QueryDefinition) -> Result<String> {
-        let mut sql = String::from("SELECT * FROM node");
+    /// This is the whole of what "which rows does this query match?" means, and
+    /// it is deliberately the only place that answers it: [`Self::build_query`]
+    /// and [`Self::build_count_query`] must select and count the *same* rows, so
+    /// they share this rather than each assembling conditions. Ordering and
+    /// limiting are not part of matching and stay with the caller — a count has
+    /// neither.
+    fn build_where_clause(&self, query: &QueryDefinition) -> Result<String> {
         let mut conditions = Vec::new();
 
         // Add type filter if not wildcard
@@ -376,11 +377,59 @@ impl QueryService {
             }
         }
 
-        // Apply WHERE clause
-        if !conditions.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&conditions.join(" AND "));
+        if conditions.is_empty() {
+            Ok(String::new())
+        } else {
+            Ok(format!(" WHERE {}", conditions.join(" AND ")))
         }
+    }
+
+    /// Count the nodes a query matches, without materializing them
+    ///
+    /// The counting counterpart to [`Self::execute`]: same rows, same WHERE
+    /// clause, but a scalar instead of hydrated [`Node`]s. A caller that only
+    /// needs a total (the query editor's preview) should use this rather than
+    /// `execute` + `.len()`, which pays to select ids, `get_node` each one, and
+    /// transfer every column of every match purely to discard them.
+    ///
+    /// `sorting` and `limit` on the definition are ignored: ordering cannot
+    /// change a count, and a limit would cap the answer at the very ceiling this
+    /// exists to remove. The total returned is exact for any number of matches.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if query building or database execution fails.
+    pub async fn count(&self, query: &QueryDefinition) -> Result<i64> {
+        let sql = self.build_count_query(query)?;
+
+        self.store
+            .count_nodes_raw(&sql)
+            .await
+            .context("Failed to execute count query")
+    }
+
+    /// Translate QueryDefinition to a `SELECT COUNT(*)` over the same rows
+    /// [`Self::build_query`] would select.
+    ///
+    /// Emits no ORDER BY and no LIMIT — see [`Self::count`] for why neither
+    /// belongs on a count.
+    fn build_count_query(&self, query: &QueryDefinition) -> Result<String> {
+        Ok(format!(
+            "SELECT COUNT(*) FROM node{};",
+            self.build_where_clause(query)?
+        ))
+    }
+
+    /// Translate QueryDefinition to SQL
+    ///
+    /// Builds queries against the unified node table with JSON properties.
+    /// All node types use the same query pattern with properties stored inline.
+    ///
+    /// Properties are now stored in namespaced format:
+    /// properties[node_type][field_name] instead of properties[field_name]
+    fn build_query(&self, query: &QueryDefinition) -> Result<String> {
+        let mut sql = String::from("SELECT * FROM node");
+        sql.push_str(&self.build_where_clause(query)?);
 
         // Add sorting (pass target_type for namespaced property access)
         if let Some(sorting) = &query.sorting {

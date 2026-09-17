@@ -590,6 +590,32 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  // POST /api/query/count
+  if (method === 'POST' && pathname === '/api/query/count') {
+    try {
+      const body = await req.json() as Record<string, unknown>;
+      // Same request message as /api/query/execute — the daemon ignores
+      // sortingJson/limit for a count, so they are forwarded as given rather
+      // than special-cased here.
+      const request = {
+        targetType: body.targetType,
+        filtersJson: body.filtersJson ?? null,
+        sortingJson: body.sortingJson ?? null,
+        limit: body.limit ?? 0
+      };
+      const res = await call<typeof request, { count: string }>(
+        (nodeClient as unknown as Record<string, Function>).countQuery,
+        request
+      );
+      // `count` is a proto int64, and grpc-client.ts loads with `longs: String`
+      // — so it arrives as a decimal string and must be converted before it
+      // reaches a caller that expects a number.
+      return json(Number(res.count ?? 0));
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
   // POST /api/mentions
   if (method === 'POST' && pathname === '/api/mentions') {
     try {

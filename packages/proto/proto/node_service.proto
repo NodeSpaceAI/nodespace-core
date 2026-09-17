@@ -100,6 +100,14 @@ service NodeService {
 
   // Structured queries
   rpc ExecuteQuery(ExecuteQueryRequest) returns (NodeListResponse);
+  // Count nodes matching the same filter shape as ExecuteQuery, without
+  // paying to transfer the matching records — the ExecuteQuery counterpart to
+  // CountNodes/QueryNodesSimple. `sorting_json`/`limit` on the request are
+  // ignored: ordering cannot change a count, and a limit would cap the very
+  // total this is asked for. Use this instead of ExecuteQuery + counting the
+  // response when only a total is needed (e.g. the query editor's preview),
+  // which otherwise saturates at the response's row cap.
+  rpc CountQuery(ExecuteQueryRequest) returns (CountNodesResponse);
 
   // Playbook: get-workflow-state is the one Play lifecycle operation that
   // needs purpose-built evaluation (it runs the engine's condition logic out
