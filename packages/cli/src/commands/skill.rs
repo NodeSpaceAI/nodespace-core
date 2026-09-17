@@ -417,6 +417,16 @@ fn is_bidi_or_invisible_control(c: char) -> bool {
         // just a human at a terminal, so this range matters even where the
         // others are more terminal-rendering-specific.
         | '\u{E0000}'..='\u{E007F}'
+        // INTERLINEAR ANNOTATION ANCHOR / SEPARATOR / TERMINATOR -- another
+        // Cf format-control family, included for completeness alongside the
+        // ranges above even though it isn't a known smuggling vector (it
+        // doesn't mirror ASCII the way Tags characters do, and terminals
+        // render it inconsistently rather than reliably as invisible).
+        | '\u{FFF9}'..='\u{FFFB}'
+        // Musical notation format controls (DAL SEGNO, DA CAPO, ...) -- same
+        // rationale as the interlinear-annotation range above: a completeness
+        // fix for enumerated Cf coverage, not a response to a live gap.
+        | '\u{1D173}'..='\u{1D17A}'
     )
 }
 
@@ -1233,6 +1243,45 @@ mod tests {
         );
         let real_close = "=== END GRAPH-FETCHED GUIDANCE [tag1] (node n1) ===";
         assert_eq!(out.matches(real_close).count(), 1);
+    }
+
+    /// Two more Cf ("format") families found still surviving unstripped by a
+    /// follow-up review of the fix above: U+FFF9-FFFB (interlinear
+    /// annotation anchor/separator/terminator) and U+1D173-1D17A (musical
+    /// notation format controls). Neither mirrors ASCII or is an established
+    /// smuggling technique the way the Tags block is -- this is a
+    /// completeness fix for the enumerated allowlist, not a response to a
+    /// live gap.
+    #[test]
+    fn sanitize_for_terminal_strips_interlinear_annotation_and_musical_notation_controls() {
+        let cases: &[(char, &str)] = &[
+            ('\u{FFF9}', "INTERLINEAR ANNOTATION ANCHOR"),
+            ('\u{FFFA}', "INTERLINEAR ANNOTATION SEPARATOR"),
+            ('\u{FFFB}', "INTERLINEAR ANNOTATION TERMINATOR"),
+            ('\u{1D173}', "MUSICAL SYMBOL BEGIN BEAM"),
+            ('\u{1D174}', "MUSICAL SYMBOL END BEAM"),
+            ('\u{1D175}', "MUSICAL SYMBOL BEGIN TIE"),
+            ('\u{1D176}', "MUSICAL SYMBOL END TIE"),
+            ('\u{1D177}', "MUSICAL SYMBOL BEGIN SLUR"),
+            ('\u{1D178}', "MUSICAL SYMBOL END SLUR"),
+            ('\u{1D179}', "MUSICAL SYMBOL BEGIN PHRASE"),
+            ('\u{1D17A}', "MUSICAL SYMBOL END PHRASE"),
+        ];
+        for (c, name) in cases {
+            assert!(
+                !c.is_control(),
+                "{name} (U+{:04X}) must be Cf, not Cc, for this test to exercise the gap \
+                 char::is_control() leaves -- if this fails, the char() itself changed category",
+                *c as u32
+            );
+            let input = format!("before{c}after");
+            let out = sanitize_for_terminal(&input);
+            assert_eq!(
+                out, "beforeafter",
+                "{name} (U+{:04X}) must be stripped, got: {out:?}",
+                *c as u32
+            );
+        }
     }
 
     /// Guards against the sanitizer becoming overly aggressive: it targets
