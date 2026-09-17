@@ -290,17 +290,27 @@ pub async fn create_schema(conn: &libsql::Connection) -> Result<()> {
         .await
         .context("Failed to begin schema-creation transaction")?;
 
-    match create_schema_body(conn).await {
-        Ok(()) => conn
-            .execute("COMMIT", ())
-            .await
-            .context("Failed to commit schema-creation transaction")
-            .map(|_| ()),
-        Err(e) => {
-            // Best-effort: if the rollback itself fails, the original DDL
-            // error is what the caller needs to see, not the rollback's.
-            let _ = conn.execute("ROLLBACK", ()).await;
-            Err(e)
-        }
+    if let Err(e) = create_schema_body(conn).await {
+        // Best-effort: if the rollback itself fails, the original DDL error
+        // is what the caller needs to see, not the rollback's.
+        let _ = conn.execute("ROLLBACK", ()).await;
+        return Err(e);
     }
+
+    if let Err(e) = conn
+        .execute("COMMIT", ())
+        .await
+        .context("Failed to commit schema-creation transaction")
+    {
+        // A failed COMMIT does not always leave the transaction open — SQLite
+        // auto-rolls-back most commit-time I/O errors on its own — but
+        // SQLITE_BUSY on COMMIT specifically does not, so roll back
+        // unconditionally here too rather than special-casing which commit
+        // failures need it. A ROLLBACK issued after SQLite already rolled
+        // back on its own is a harmless no-op, not a second error.
+        let _ = conn.execute("ROLLBACK", ()).await;
+        return Err(e);
+    }
+
+    Ok(())
 }

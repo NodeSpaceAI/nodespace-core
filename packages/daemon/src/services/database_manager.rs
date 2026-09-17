@@ -280,9 +280,9 @@ pub struct DatabaseManager {
     /// `std::sync::Mutex` guards the map itself since every access is a bare
     /// lookup/insert with no `.await` in the critical section; each entry's
     /// value is an async mutex, held only while its database's assembly is
-    /// in flight. Entries are never removed — the number of distinct ids a
-    /// process ever opens is bounded by how many databases a user creates,
-    /// not by request volume, so this cannot grow unbounded in practice.
+    /// in flight. [`Self::remove`] prunes an id's entry once it is gone from
+    /// the registry, so this tracks only currently-registered ids — it does
+    /// not grow across register/remove churn.
     opening: StdMutex<HashMap<DatabaseId, Arc<AsyncMutex<()>>>>,
     /// Process-global build context (PTY manager + embedding model) every
     /// per-database service set is assembled from.
@@ -648,6 +648,21 @@ impl DatabaseManager {
         // and calling the public `close` here too would double-notify for a
         // database that happened to be open at removal time.
         self.close_without_notify(id).await;
+        // `id` is gone from the registry now, so its per-id opening lock (see
+        // that field's doc comment) has nothing left to guard: no future
+        // `get_or_open(id)` can succeed past the registry lookup. Drop the
+        // entry rather than leaving it — `DatabaseId::generate()` mints a
+        // fresh ULID per registration, so a register-open-remove cycle
+        // (a supported workflow, e.g. scratch databases) would otherwise
+        // accumulate an orphaned lock per cycle for the life of the process.
+        // Safe even if a concurrent `get_or_open(id)` is mid-flight holding
+        // a clone of this `Arc`: removing the map entry doesn't affect a
+        // clone already held elsewhere, it only stops a *future* caller from
+        // reusing this specific lock instance.
+        self.opening
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
         Ok(())
     }
 
@@ -1621,6 +1636,38 @@ mod tests {
             after.wrapping_sub(before),
             1,
             "removing an open database must notify exactly once, not twice"
+        );
+    }
+
+    /// `remove` must prune the removed id's per-id opening lock, not just its
+    /// registry entry and open handle.
+    ///
+    /// `DatabaseId::generate()` mints a fresh ULID per registration, so a
+    /// register→open→remove cycle (a supported workflow: scratch/test
+    /// databases, or any scripted create-then-delete flow) would otherwise
+    /// leave an orphaned `Arc<AsyncMutex<()>>` behind on every cycle, growing
+    /// `opening` unboundedly across a long-lived daemon process.
+    #[tokio::test]
+    async fn remove_prunes_the_id_from_the_opening_lock_map() {
+        let (mgr, dir, _registry_path) = temp_manager().await;
+        let db_path = dir.path().join("scratch.db");
+        let id = mgr
+            .ensure_default_registered("Scratch".into(), db_path)
+            .await
+            .unwrap();
+        // `get_or_open` (not `create`, which builds its service set directly
+        // and never touches `opening`) is what records the per-id lock.
+        mgr.get_or_open(&id).await.unwrap();
+        assert!(
+            mgr.opening.lock().unwrap().contains_key(&id),
+            "precondition: opening the database through get_or_open must record its per-id lock"
+        );
+
+        mgr.remove(&id).await.unwrap();
+
+        assert!(
+            !mgr.opening.lock().unwrap().contains_key(&id),
+            "remove must drop the id's opening lock, not leave it orphaned"
         );
     }
 
