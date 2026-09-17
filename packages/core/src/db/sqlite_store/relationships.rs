@@ -1736,6 +1736,25 @@ impl SqliteStore {
         Ok(map)
     }
 
+    /// Whether any `extends` edge exists at all.
+    ///
+    /// The guard on the query engine's hot path: `extends` is rare and absent
+    /// entirely until a schema declares one, so this single indexed lookup
+    /// lets every query in an unextended database skip closure resolution.
+    pub async fn has_any_extends_edge(&self) -> Result<bool> {
+        let mut rows = self
+            .read()
+            .await?
+            .query(
+                "SELECT 1 FROM relationship WHERE relationship_type = ?1 LIMIT 1",
+                libsql::params![crate::models::schema::EXTENDS_RELATIONSHIP],
+            )
+            .await
+            .context("Failed to check for extends edges")?;
+
+        Ok(rows.next().await?.is_some())
+    }
+
     /// A base type's full transitive subtype set, including the base itself.
     ///
     /// `task` → `[task, issue, bug, …]`. This is the descendant closure the
