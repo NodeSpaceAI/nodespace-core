@@ -2,7 +2,7 @@ mod error;
 pub mod events;
 pub mod fractional_ordering;
 mod index_manager;
-pub mod migrations;
+pub mod schema;
 mod sqlite_store;
 
 pub use error::DatabaseError;

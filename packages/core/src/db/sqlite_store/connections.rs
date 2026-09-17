@@ -232,7 +232,7 @@ fn lock_pool(
 }
 
 /// Per-connection session settings for the writer. Unlike the tables/indexes in
-/// `db::migrations`, these are NOT persisted schema state — `journal_mode` is
+/// `db::schema`, these are NOT persisted schema state — `journal_mode` is
 /// durable in the DB file but re-asserting it is harmless, while
 /// `foreign_keys`, `synchronous`, and `busy_timeout` reset to SQLite defaults
 /// on every new connection and must be set every time. Must run outside any

@@ -18,7 +18,9 @@ Make breaking changes without hesitation. Fix breakage immediately in the same s
 
 If you catch yourself asking *"how do existing databases get the new shape?"* — that question is the signal, not the task. The answer is always: change the shape, reset the database. Writing a backfill to answer it is the prohibited thing, even when the change feels purely internal and no user-facing version is involved.
 
-**One exception, which shares the word but is not the same thing:** `packages/core/src/db/migrations/` is the **SQL schema bootstrap** — the versioned DDL that creates a database's tables at all. A fresh database still needs its schema created, so that runner is legitimate and stays. The rule above bans **data** migrations (moving existing rows between shapes), not **DDL** (creating the tables).
+**One exception, which shares the word but is not the same thing:** `packages/core/src/db/schema.rs` is the **SQL schema bootstrap** — the DDL that creates a database's tables at all. A fresh database still needs its schema created, so that file is legitimate and stays. The rule above bans **data** migrations (moving existing rows between shapes), not **DDL** (creating the tables).
+
+There is **no migration ladder and no schema version**: `create_schema` defines the current shape directly and is the only thing that builds a database. When the shape changes, edit that DDL and reset the database — never add a versioned migration step, a `user_version` check, or anything that carries an older on-disk shape forward.
 
 ## Project Overview
 
