@@ -32,6 +32,7 @@ import { withDiagnosticLogging } from './diagnostic-logger';
 import { invoke } from '@tauri-apps/api/core';
 import {
   buildCreateNodeFields,
+  buildExecuteQueryWire,
   normalizeChildrenTree,
   HTTP_ROUTES,
   type BackendAdapter,
@@ -39,6 +40,7 @@ import {
   type UpdateNodeInput,
   type DeleteResult,
   type NodeQuery,
+  type ExecuteQueryInput,
   type CreateContainerInput,
   type InsertPosition,
 } from './adapter-core';
@@ -53,6 +55,7 @@ export type {
   DeleteResult,
   EdgeRecord,
   NodeQuery,
+  ExecuteQueryInput,
   CreateContainerInput,
 } from './adapter-core';
 export { insertPosition } from './adapter-core';
@@ -216,6 +219,14 @@ class TauriAdapter implements BackendAdapter {
       'queryNodes',
       () => invoke<Node[]>('query_nodes_simple', { query }),
       [query]
+    );
+  }
+
+  async executeQuery(input: ExecuteQueryInput): Promise<Node[]> {
+    return withDiagnosticLogging(
+      'executeQuery',
+      () => invoke<Node[]>('execute_query', { request: buildExecuteQueryWire(input) }),
+      [input]
     );
   }
 
@@ -556,6 +567,15 @@ export class HttpAdapter implements BackendAdapter {
     return await this.handleResponse<Node[]>(response);
   }
 
+  async executeQuery(input: ExecuteQueryInput): Promise<Node[]> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.executeQuery()}`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(buildExecuteQueryWire(input))
+    });
+    return await this.handleResponse<Node[]>(response);
+  }
+
   async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.mentionAutocomplete()}`, {
       method: 'POST',
@@ -734,6 +754,9 @@ class MockAdapter implements BackendAdapter {
     return [];
   }
   async queryNodes(_query: NodeQuery): Promise<Node[]> {
+    return [];
+  }
+  async executeQuery(_input: ExecuteQueryInput): Promise<Node[]> {
     return [];
   }
   async mentionAutocomplete(_query: string, _limit?: number): Promise<Node[]> {

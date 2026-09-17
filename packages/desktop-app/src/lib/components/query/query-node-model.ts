@@ -9,16 +9,19 @@
  *     config, executed with its filters.
  *
  * These functions own the branch decision, the definition/view-config parsing,
- * the materialize payload shape, and the client-side execution of a
- * QueryDefinition (filter/sort/limit). They are kept DOM-free and
- * side-effect-free so the rules can be unit-tested directly, following the
- * project convention of testing extracted logic rather than rendering Svelte
- * components.
+ * and the materialize payload shape. Executing a query is the backend's job —
+ * `backendAdapter.executeQuery` reaches `QueryService`, the single
+ * implementation of filter and sort semantics. What stays here is single-node
+ * filter evaluation, for deciding whether a node created elsewhere belongs in
+ * an open view (see the section comment below).
+ *
+ * They are kept DOM-free and side-effect-free so the rules can be unit-tested
+ * directly, following the project convention of testing extracted logic rather
+ * than rendering Svelte components.
  */
 
 import type { Node } from '$lib/types';
 import type { QueryDefinition, QueryFilter, SortConfig } from '$lib/types/query';
-import { TaskNodeHelpers } from '$lib/types/task-node';
 
 /** Header title shown for the (unpersisted) default type view. */
 export const DEFAULT_QUERY_TITLE = 'Default';
@@ -120,12 +123,18 @@ export function buildMaterializedProperties(input: {
 }
 
 // ============================================================================
-// Client-side query execution
+// Single-node filter evaluation
 //
-// `backendAdapter.queryNodes` only filters by nodeType (plus contentContains /
-// mentionedBy / limit) — it cannot evaluate an arbitrary QueryFilter list. So a
-// saved query is fetched by its `targetType` and then filtered, sorted, and
-// limited here, on the client.
+// The narrow question the backend cannot answer cheaply: when a node is created
+// outside this viewer (CLI, an agent tool call, another tab), does it belong in
+// the already-open result set? Re-running the whole query per created node
+// would be a round-trip each time, so `shouldShowCreatedNode` evaluates the
+// filters against that one in-memory node instead.
+//
+// This is deliberately *not* a query executor: there is no sorting here (the
+// appended node lands at the end until the next real query settles) and no
+// limit. Filters that need graph traversal are declined rather than guessed at
+// — see `matchesFilter`.
 // ============================================================================
 
 /** snake_case → camelCase, mirroring `kanban-grouping.ts` / `table-row.svelte`. */
@@ -179,10 +188,15 @@ function ordered(actual: unknown, expected: unknown): number {
  *
  * Supports `property`, `content`, and `metadata` filters fully, and the
  * node-local `relationship` filters (`mentions` via `node.mentions`,
- * `mentioned_by` via `node.mentionedIn`). Relationship filters that would need
- * graph traversal not present on the node (`parent`, `children`) cannot be
- * evaluated client-side and are treated as non-restricting (pass-through) so a
- * query still returns its type's nodes rather than silently emptying.
+ * `mentioned_by` via `node.mentionedIn`).
+ *
+ * `parent` / `children` need graph traversal the node doesn't carry, so they
+ * return false: unverifiable is not the same as matching. The caller is
+ * deciding whether to *add* a node to a settled result set, and the cost of
+ * being wrong is asymmetric — declining leaves the node out until the next
+ * query load includes it (the backend evaluates these filters in SQL), while
+ * passing it through would show a node the query may well exclude, with
+ * nothing to correct it until a reload.
  */
 export function matchesFilter(node: Node, filter: QueryFilter): boolean {
   const caseSensitive = filter.caseSensitive ?? false;
@@ -194,8 +208,8 @@ export function matchesFilter(node: Node, filter: QueryFilter): boolean {
       case 'mentioned_by':
         return (node.mentionedIn ?? []).some((ref) => ref.id === filter.nodeId);
       default:
-        // parent / children — not evaluable from a single node. Pass-through.
-        return true;
+        // parent / children — not evaluable from a single node.
+        return false;
     }
   }
 
@@ -231,84 +245,26 @@ export function matchesFilter(node: Node, filter: QueryFilter): boolean {
 }
 
 /**
- * Filters the client-side executor cannot faithfully evaluate from a single
- * node — `parent`/`children` relationship filters need graph traversal not
- * present on the node, so `matchesFilter` lets them pass through. The viewer
- * surfaces these so a saved query doesn't silently render wider than its
- * definition. (`mentions`/`mentioned_by` and all property/content/metadata
- * operators ARE evaluable.)
- */
-export function unevaluableFilters(filters: QueryFilter[] | undefined): QueryFilter[] {
-  return (filters ?? []).filter(
-    (f) =>
-      f.type === 'relationship' &&
-      (f.relationshipType === 'parent' || f.relationshipType === 'children')
-  );
-}
-
-/** Keep only the nodes matching every filter (AND semantics). */
-export function applyFilters(nodes: Node[], filters: QueryFilter[]): Node[] {
-  if (!filters || filters.length === 0) return nodes;
-  return nodes.filter((node) => filters.every((filter) => matchesFilter(node, filter)));
-}
-
-/**
- * Compare two `task.priority` values by urgency rank rather than alphabetically.
+ * Whether a result of `rowCount` rows may be hiding further matches.
  *
- * Ascending yields highest, high, medium, low, lowest, then user-defined values
- * ordered lexicographically among themselves — matching `compare_priority_values`
- * in `packages/core/src/services/query_service/mod.rs`. An absent priority sorts
- * first, as it does there and in SQL.
- */
-function comparePriority(a: unknown, b: unknown): number {
-  if (isEmpty(a) || isEmpty(b)) {
-    if (isEmpty(a) && isEmpty(b)) return 0;
-    return isEmpty(a) ? -1 : 1;
-  }
-  const [sa, sb] = [String(a), String(b)];
-  const rank = TaskNodeHelpers.priorityRank(sa) - TaskNodeHelpers.priorityRank(sb);
-  // Ranks tie for two user-defined values; the value string breaks it.
-  return rank !== 0 ? rank : sa.localeCompare(sb);
-}
-
-/**
- * Return a sorted copy of `nodes` per the sort config (stable, multi-key).
+ * The daemon clamps every query to `maxRows` and says nothing about having done
+ * so, so a truncated result is indistinguishable from a complete one by
+ * inspection — the row count is the only signal available.
  *
- * `targetType` selects the same ordering rules the backend's `QueryService`
- * applies, so a query sorted here matches one sorted there. It gates the
- * priority rank to `task`, since `project.priority` is a different scale.
+ * A full page counts as truncated only when the bound was the system's rather
+ * than the query's own: a query that asked for 25 and got 25 got what it asked
+ * for, while one that named no limit, or asked for more than the daemon will
+ * return, hit a ceiling it never chose. Extracted here so the rule is pinned by
+ * a test rather than living inline in the viewer, where the two constants it
+ * compares drifted apart unnoticed once already.
  */
-export function applySorting(
-  nodes: Node[],
-  sorting?: SortConfig[],
-  targetType?: string
-): Node[] {
-  if (!sorting || sorting.length === 0) return nodes;
-  return [...nodes].sort((a, b) => {
-    for (const sort of sorting) {
-      const [va, vb] = [readFieldValue(a, sort.field), readFieldValue(b, sort.field)];
-      const cmp =
-        sort.field === 'priority' && targetType === 'task'
-          ? comparePriority(va, vb)
-          : ordered(va, vb);
-      if (cmp !== 0) return sort.direction === 'desc' ? -cmp : cmp;
-    }
-    return 0;
-  });
-}
-
-/**
- * Execute a QueryDefinition against a pre-fetched node set: filter → sort →
- * limit. The nodes are expected to already be scoped to `definition.targetType`
- * by the caller's `queryNodes({ nodeType })` fetch.
- */
-export function executeQueryDefinition(nodes: Node[], definition: QueryDefinition): Node[] {
-  let result = applyFilters(nodes, definition.filters);
-  result = applySorting(result, definition.sorting, definition.targetType);
-  if (typeof definition.limit === 'number' && definition.limit >= 0) {
-    result = result.slice(0, definition.limit);
-  }
-  return result;
+export function isResultTruncated(input: {
+  rowCount: number;
+  requestedLimit: number | undefined;
+  maxRows: number;
+}): boolean {
+  const systemBounded = input.requestedLimit === undefined || input.requestedLimit > input.maxRows;
+  return systemBounded && input.rowCount >= input.maxRows;
 }
 
 /** State a viewer needs to decide whether an externally-created node belongs. */
@@ -329,11 +285,24 @@ export interface CreatedNodeGate {
  * `sharedNodeStore.subscribeAll` handler stays a one-liner and this logic is
  * testable in isolation. A node qualifies when the view has settled, the node
  * isn't already shown, its type matches the view (or the view is `'*'`), and it
- * passes the query's client-side filters (a default type view has none).
+ * passes the query's filters (a default type view has none).
+ *
+ * The node is appended to the end of the displayed set regardless of the
+ * query's `sorting` — placing it correctly would mean re-deriving the backend's
+ * ordering here, which is exactly the duplication this module no longer does.
+ * The next query load puts it in its proper place. The query's `limit` is not
+ * enforced either, for the same reason: which node the limit would evict
+ * depends on that ordering.
+ *
+ * Corollary of `matchesFilter` declining graph filters: a definition whose
+ * filters are *only* `parent`/`children` never live-appends, since every node
+ * fails the gate. Such a view refreshes on its next load rather than
+ * incrementally — acceptable because the filter editor emits property filters
+ * only, so those definitions arrive from AI or programmatic creation.
  */
 export function shouldShowCreatedNode(node: Node, gate: CreatedNodeGate): boolean {
   if (gate.queryState !== 'success' || !gate.targetType) return false;
   if (gate.loadedNodeIds.includes(node.id)) return false;
   if (gate.targetType !== '*' && node.nodeType !== gate.targetType) return false;
-  return executeQueryDefinition([node], gate.definition).length > 0;
+  return (gate.definition.filters ?? []).every((filter) => matchesFilter(node, filter));
 }

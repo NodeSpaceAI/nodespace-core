@@ -40,6 +40,7 @@ vi.mock('$lib/services/schema-authoring', () => ({
 const mockGetNode = vi.fn();
 const mockGetSchema = vi.fn();
 const mockQueryNodes = vi.fn();
+const mockExecuteQuery = vi.fn();
 const mockCreateNode = vi.fn();
 const mockUpdateNode = vi.fn();
 
@@ -48,6 +49,7 @@ vi.mock('$lib/services/backend-adapter', () => ({
     getNode: (...args: unknown[]) => mockGetNode(...args),
     getSchema: (...args: unknown[]) => mockGetSchema(...args),
     queryNodes: (...args: unknown[]) => mockQueryNodes(...args),
+    executeQuery: (...args: unknown[]) => mockExecuteQuery(...args),
     createNode: (...args: unknown[]) => mockCreateNode(...args),
     updateNode: (...args: unknown[]) => mockUpdateNode(...args)
   }
@@ -107,6 +109,7 @@ describe('QueryNodeViewer — materialize race', () => {
     vi.clearAllMocks();
     mockGetSchema.mockResolvedValue(schema());
     mockQueryNodes.mockResolvedValue([]);
+    mockExecuteQuery.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -200,7 +203,10 @@ describe('QueryNodeViewer — materialize race', () => {
     // group-by pick materialized, groupBy included.
     sharedNodeStore.setNode(groupByChanged, { type: 'database', reason: 'test seed' });
     mockGetNode.mockRejectedValue(new Error('network should not be needed'));
-    mockQueryNodes.mockResolvedValue([
+    // The remount lands on the saved branch, which executes the definition via
+    // executeQuery; queryNodes is stubbed too so the assertion is about the
+    // restored group-by, not about which fetch the branch happened to take.
+    const widgets = [
       {
         id: 'w1',
         nodeType: SCHEMA_ID,
@@ -211,7 +217,9 @@ describe('QueryNodeViewer — materialize race', () => {
         properties: { status: 'open' },
         mentions: []
       }
-    ]);
+    ];
+    mockQueryNodes.mockResolvedValue(widgets);
+    mockExecuteQuery.mockResolvedValue(widgets);
 
     cleanup();
     const { getByLabelText } = render(QueryNodeViewer, {

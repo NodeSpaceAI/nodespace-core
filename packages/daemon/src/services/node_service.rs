@@ -71,6 +71,23 @@ use crate::nodespace::{
     WatchRequest,
 };
 
+/// The most rows a paged query RPC will return, whatever the request asks for:
+/// `GetRoots`, `QueryNodesSimple` and `ExecuteQuery`.
+///
+/// Not every row-returning RPC bounds itself this way — `Search` and
+/// `MentionAutocomplete` take a caller-supplied limit unclamped — so this is
+/// the ceiling for the paged query surface, not a daemon-wide invariant.
+///
+/// Requests above this are clamped rather than rejected, so callers must bound
+/// large reads with repeated limit/offset pages rather than a single very large
+/// limit. The clamp is silent: a truncated response looks exactly like a
+/// complete one of that size, so a client distinguishing the two compares the
+/// row count against this value — which is why it is one constant rather than
+/// a copy per handler. `MAX_QUERY_ROWS` in
+/// `packages/desktop-app/src/lib/services/adapter-core.ts` mirrors it, pinned
+/// by a test that reads this file.
+pub const MAX_ROW_LIMIT: usize = 500;
+
 /// gRPC adapter that owns shared handles to the core services.
 ///
 /// `embedding_state` is `None` while the model is loading or when the NLP
@@ -693,11 +710,10 @@ impl GrpcNodeService for NodeServiceImpl {
         // only needs a total, not the records, should use CountRoots
         // instead of GetRoots + counting the response.
         const DEFAULT_GET_ROOTS_LIMIT: usize = 100;
-        const MAX_GET_ROOTS_LIMIT: usize = 500;
         let limit = Some(if req.limit == 0 {
             DEFAULT_GET_ROOTS_LIMIT
         } else {
-            (req.limit as usize).min(MAX_GET_ROOTS_LIMIT)
+            (req.limit as usize).min(MAX_ROW_LIMIT)
         });
         let offset = if req.offset == 0 {
             None
@@ -871,13 +887,11 @@ impl GrpcNodeService for NodeServiceImpl {
         let this = self.route(&request).await?;
         let req = request.into_inner();
 
-        // Cap at MAX_QUERY_NODES_SIMPLE_LIMIT regardless of client-requested
-        // value — same clamp shape as ExecuteQuery's MAX_EXECUTE_QUERY_LIMIT.
-        // Combined with order_by_from_proto's always-deterministic default
-        // ordering, this is what makes repeated limit/offset calls tile the
-        // full matching set exactly once each instead of relying on the gRPC
-        // message-size ceiling to (badly) fail an unbounded response.
-        const MAX_QUERY_NODES_SIMPLE_LIMIT: usize = 500;
+        // Cap at MAX_ROW_LIMIT regardless of client-requested value. Combined
+        // with order_by_from_proto's always-deterministic default ordering,
+        // this is what makes repeated limit/offset calls tile the full matching
+        // set exactly once each instead of relying on the gRPC message-size
+        // ceiling to (badly) fail an unbounded response.
         let query = NodeQuery {
             id: req.id,
             ids: None,
@@ -889,7 +903,7 @@ impl GrpcNodeService for NodeServiceImpl {
             limit: if req.limit == 0 {
                 None
             } else {
-                Some((req.limit as usize).min(MAX_QUERY_NODES_SIMPLE_LIMIT))
+                Some((req.limit as usize).min(MAX_ROW_LIMIT))
             },
             offset: if req.offset == 0 {
                 None
@@ -918,7 +932,7 @@ impl GrpcNodeService for NodeServiceImpl {
     /// without transferring the matching records — a caller like `nodespace
     /// diagnostics` that only needs a total should use this instead of
     /// `QueryNodesSimple` + counting the response, which pays to materialize
-    /// and transfer up to `MAX_QUERY_NODES_SIMPLE_LIMIT` full records purely
+    /// and transfer up to `MAX_ROW_LIMIT` full records purely
     /// to call `.len()`.
     async fn count_nodes(
         &self,
@@ -970,10 +984,10 @@ impl GrpcNodeService for NodeServiceImpl {
             _ => None,
         };
 
-        // Cap at 500 regardless of client-requested value — matches the scale
-        // of ExecuteQueryInput's own default (50) while still allowing large
-        // explicit pulls, without letting a client request an unbounded scan.
-        const MAX_EXECUTE_QUERY_LIMIT: usize = 500;
+        // Cap at MAX_ROW_LIMIT regardless of client-requested value — matches
+        // the scale of ExecuteQueryInput's own default (50) while still
+        // allowing large explicit pulls, without letting a client request an
+        // unbounded scan.
         let input = query_ops::ExecuteQueryInput {
             target_type: req.target_type,
             filters,
@@ -981,7 +995,7 @@ impl GrpcNodeService for NodeServiceImpl {
             limit: if req.limit == 0 {
                 None
             } else {
-                Some((req.limit as usize).min(MAX_EXECUTE_QUERY_LIMIT))
+                Some((req.limit as usize).min(MAX_ROW_LIMIT))
             },
         };
 

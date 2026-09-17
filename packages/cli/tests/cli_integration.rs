@@ -2320,7 +2320,7 @@ async fn query_nodes_simple_handles_response_over_the_default_grpc_limit() {
         content_contains: None,
         title_contains: None,
         node_type: None,
-        // Requesting far more than MAX_QUERY_NODES_SIMPLE_LIMIT is
+        // Requesting far more than MAX_ROW_LIMIT is
         // deliberate: the server clamps the row count, not this test's
         // point (a large-CONTENT response still exceeds tonic's default
         // decode limit well under that row cap — see NODE_COUNT/CONTENT_BYTES
