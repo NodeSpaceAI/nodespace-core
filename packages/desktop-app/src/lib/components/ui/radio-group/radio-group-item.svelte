@@ -14,9 +14,11 @@
   bind:ref
   data-slot="radio-group-item"
   class={cn(
-    // No focus treatment, for the same reason as Checkbox and Switch: the dot
-    // inside is the selected state, so there is no paintable surface left that
-    // does not already mean something else.
+    // No focus indicator, and `focus-visible:outline-none` keeps the UA ring
+    // suppressed. Deliberate documented exception to WCAG 2.4.7 — see Checkbox
+    // for the measured reasoning and the Focus section in DESIGN.md for the
+    // decision. The dot inside is the selected state, so there is no paintable
+    // surface left that does not already mean something else.
     'border-input text-primary aspect-square size-4 rounded-full border shadow-xs focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50',
     className
   )}

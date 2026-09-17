@@ -50,20 +50,30 @@ const THEMES = [
 /** WCAG 1.4.11 non-text contrast: a UI state must be this distinguishable. */
 const NON_TEXT = 3;
 
-/** Every source file that can carry a class string or a CSS rule. */
+/**
+ * Every source file that can carry a class string or a CSS rule.
+ *
+ * Only `src/tests` is excluded, matched by full path rather than by directory
+ * name: a bare `name === 'tests'` check would also skip any `tests/` nested
+ * inside `lib/`, silently dropping real components from every sweep. The
+ * exclusion exists because this suite's own prose names the forbidden utilities
+ * and a fixture may legitimately contain one as data.
+ */
 function sourceFiles(dir: string): string[] {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      // `tests/` is excluded: this suite's own prose names the forbidden
-      // utilities, and a test fixture may legitimately contain one as data.
-      return entry.name === 'tests' ? [] : sourceFiles(full);
+      return full === path.join(srcRoot, 'tests') ? [] : sourceFiles(full);
     }
     return /\.(svelte|ts|css)$/.test(entry.name) ? [full] : [];
   });
 }
 
-const FILES = sourceFiles(srcRoot);
+/** Read once: four sweeps over ~1000 files is four times the disk work. */
+const FILES = sourceFiles(srcRoot).map((file) => ({
+  path: path.relative(srcRoot, file),
+  text: fs.readFileSync(file, 'utf8'),
+}));
 
 /**
  * Tailwind utilities that draw or reserve geometry, in a focus variant.
@@ -71,9 +81,42 @@ const FILES = sourceFiles(srcRoot);
  * `outline-none` is deliberately absent — it REMOVES the UA outline, which is
  * the whole point, and is the one outline utility that must stay allowed.
  * `focus-visible:outline-none` appears on nearly every control here.
+ *
+ * Three shapes are easy to leave out and each is a live hole, so they are
+ * spelled out rather than left to a `-\d` suffix:
+ *
+ *  - BARE utilities. `focus-visible:border` is `border-width: 1px`, and it is
+ *    the most natural way to write the exact regression this file prevents.
+ *    Same for a bare `outline` and a bare `ring`. They are matched by allowing
+ *    the utility to end at a word boundary.
+ *  - ARBITRARY values. `border-[3px]`, `p-[4px]` — the `[` form bypasses any
+ *    pattern that only expects a digit or a named scale step.
+ *  - ALIASES that do not name their property. Tailwind's `shadow-*` IS
+ *    `box-shadow` and `tracking-*` IS `letter-spacing`; both are banned in the
+ *    hand-written-CSS sweep below, so leaving them out here would make the two
+ *    halves of the same rule disagree.
  */
-const FORBIDDEN_UTILITY =
-  /(?:focus|focus-visible|focus-within)(?::[a-z-]+)*:(?:ring(?:-offset)?(?:-|\b)|border-\d|border-[xytrbl]-|p[xytrbl]?-\d|m[xytrbl]?-\d|outline-(?!none)|scale-|translate-|font-(?:bold|semibold|medium|light))/;
+const FORBIDDEN_UTILITY = new RegExp(
+  '(?:focus|focus-visible|focus-within)(?::[a-z-]+)*:' +
+    '(?:' +
+    // rings, including bare `ring` and every ring-offset form
+    'ring(?![\\w-])|ring-|' +
+    // border WIDTH: bare, numeric, arbitrary, or per-side. `border-<color>` is
+    // allowed and must not match, so named colors are excluded by requiring a
+    // digit, a bracket, or a side prefix.
+    'border(?![\\w-])|border-\\d|border-\\[|border-[xytrbl]-(?:\\d|\\[)|' +
+    // padding and margin, numeric or arbitrary
+    'p[xytrbl]?-(?:\\d|\\[)|m[xytrbl]?-(?:\\d|\\[)|' +
+    // any outline except the suppression
+    'outline(?![\\w-])|outline-(?!none)|' +
+    // box-shadow under its Tailwind alias, bare or scaled
+    'shadow(?![\\w-])|shadow-(?:sm|md|lg|xl|2xl|inner|\\[)|' +
+    // transforms and text metrics
+    'scale-|translate-|rotate-|skew-|' +
+    'font-(?:thin|extralight|light|normal|medium|semibold|bold|extrabold|black)|' +
+    'tracking-' +
+    ')'
+);
 
 /**
  * The same rule in hand-written CSS: `:focus { ... }` blocks in <style>.
@@ -92,8 +135,19 @@ const FORBIDDEN_UTILITY =
  * violation. Splitting the property match from the value match removes the
  * backtracking entirely.
  */
-const FORBIDDEN_CSS_PROPERTY =
-  /^\s*(border(?:-(?:width|top|right|bottom|left))?|padding(?:-[a-z]+)?|margin(?:-[a-z]+)?|outline(?:-(?:width|offset))?|box-shadow|transform|font-weight|letter-spacing)\s*:\s*([^;]*)/;
+const FORBIDDEN_CSS_PROPERTY = new RegExp(
+  '^\\s*(' +
+    // `border`, `border-width`, `border-top`, and the logical forms
+    // (`border-block-width`, `border-inline-start-width`, …). `border-color`
+    // and `border-radius` must NOT match, so the branch either ends at the
+    // property name or continues into a side/axis followed by `-width`.
+    'border(?:-(?:width|top|right|bottom|left|block|inline)(?:-(?:start|end))?(?:-width)?)?|' +
+    'padding(?:-(?:top|right|bottom|left|block|inline)(?:-(?:start|end))?)?|' +
+    'margin(?:-(?:top|right|bottom|left|block|inline)(?:-(?:start|end))?)?|' +
+    'outline(?:-(?:width|offset))?|' +
+    'box-shadow|transform|font-weight|letter-spacing' +
+    ')\\s*:\\s*([^;]*)'
+);
 
 /** `outline: none`, `box-shadow: none` and `transform: none` paint nothing. */
 const VALUE_IS_NONE = /^none\b/;
@@ -103,6 +157,58 @@ const VALUE_IS_NONE = /^none\b/;
  * intended. It is swept unconditionally rather than only in a focus variant. */
 const RING_OFFSET_COLOR = /\bring-offset-(?!0\b)[a-z]/;
 
+/**
+ * Every `:focus` / `:focus-visible` / `:focus-within` rule body in a stylesheet,
+ * with its declarations flattened onto one string.
+ *
+ * Works on the whole source rather than line by line. A line-oriented scanner
+ * needs a special case for each way a rule can be laid out — `{` on the next
+ * line, a single-line rule, several declarations sharing a line, a comma-
+ * separated selector list broken across lines — and every missing case is a
+ * silent hole rather than a failure. Notably the single-line form
+ * (`.x:focus { border-width: 2px; }`) is what a formatter produces from a short
+ * rule, and it is the collapsed shape of the three defects this change fixed.
+ *
+ * Comments are stripped first so a commented-out declaration cannot trip it,
+ * then each `{...}` body is taken with brace depth tracked across the file so a
+ * nested rule inside a focus block is still inside it.
+ */
+function focusRules(source: string): { selector: string; body: string }[] {
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const rules: { selector: string; body: string }[] = [];
+
+  for (let i = 0; i < css.length; i++) {
+    if (css[i] !== '{') continue;
+
+    // The selector is whatever precedes this brace back to the previous
+    // delimiter, whitespace collapsed so a multi-line list reads as one.
+    const selectorStart = Math.max(
+      css.lastIndexOf('}', i),
+      css.lastIndexOf('{', i - 1),
+      css.lastIndexOf(';', i)
+    );
+    const selector = css.slice(selectorStart + 1, i).replace(/\s+/g, ' ').trim();
+
+    let depth = 0;
+    let end = i;
+    for (let j = i; j < css.length; j++) {
+      if (css[j] === '{') depth++;
+      else if (css[j] === '}' && --depth === 0) {
+        end = j;
+        break;
+      }
+    }
+
+    if (/:focus(-visible|-within)?(?![\w-])/.test(selector)) {
+      // Only this rule's own declarations: a nested block's contents belong to
+      // the nested selector, which this loop reaches on its own iteration.
+      rules.push({ selector, body: css.slice(i + 1, end).replace(/\{[^{}]*\}/g, ' ') });
+    }
+  }
+
+  return rules;
+}
+
 describe('focus treatments are painted-only', () => {
   it('scans a non-trivial number of source files', () => {
     // Guards the guard: a broken path or a too-narrow extension filter would
@@ -111,28 +217,22 @@ describe('focus treatments are painted-only', () => {
   });
 
   it('has no focus utility that changes geometry', () => {
-    const offenders = FILES.flatMap((file) =>
-      fs
-        .readFileSync(file, 'utf8')
-        .split('\n')
-        .flatMap((line, i) => {
-          const match = FORBIDDEN_UTILITY.exec(line);
-          return match ? [`${path.relative(srcRoot, file)}:${i + 1} -> ${match[0]}`] : [];
-        })
+    const offenders = FILES.flatMap(({ path: file, text }) =>
+      text.split('\n').flatMap((line, i) => {
+        const match = FORBIDDEN_UTILITY.exec(line);
+        return match ? [`${file}:${i + 1} -> ${match[0]}`] : [];
+      })
     );
 
     expect(offenders).toEqual([]);
   });
 
   it('has no ring-offset color left behind', () => {
-    const offenders = FILES.flatMap((file) =>
-      fs
-        .readFileSync(file, 'utf8')
-        .split('\n')
-        .flatMap((line, i) => {
-          const match = RING_OFFSET_COLOR.exec(line);
-          return match ? [`${path.relative(srcRoot, file)}:${i + 1} -> ${match[0]}`] : [];
-        })
+    const offenders = FILES.flatMap(({ path: file, text }) =>
+      text.split('\n').flatMap((line, i) => {
+        const match = RING_OFFSET_COLOR.exec(line);
+        return match ? [`${file}:${i + 1} -> ${match[0]}`] : [];
+      })
     );
 
     expect(offenders).toEqual([]);
@@ -141,27 +241,13 @@ describe('focus treatments are painted-only', () => {
   it('has no hand-written :focus rule that changes geometry', () => {
     const offenders: string[] = [];
 
-    for (const file of FILES) {
-      const lines = fs.readFileSync(file, 'utf8').split('\n');
-      let depth = 0;
-      let inFocusRule = false;
-
-      for (const [i, line] of lines.entries()) {
-        // A selector line mentioning :focus opens a block we care about. Nested
-        // braces inside it are counted so the block ends where it really ends.
-        if (!inFocusRule && /:focus(-visible|-within)?\b/.test(line) && line.includes('{')) {
-          inFocusRule = true;
-          depth = 0;
-        }
-
-        if (inFocusRule) {
-          const declaration = FORBIDDEN_CSS_PROPERTY.exec(line);
-          if (declaration && !VALUE_IS_NONE.test(declaration[2].trim())) {
-            offenders.push(`${path.relative(srcRoot, file)}:${i + 1} -> ${line.trim()}`);
+    for (const { path: file, text } of FILES) {
+      for (const { selector, body } of focusRules(text)) {
+        for (const declaration of body.split(';')) {
+          const match = FORBIDDEN_CSS_PROPERTY.exec(declaration.trim());
+          if (match && !VALUE_IS_NONE.test(match[2].trim())) {
+            offenders.push(`${file} -> ${selector} { ${declaration.trim()} }`);
           }
-          depth += (line.match(/\{/g) ?? []).length;
-          depth -= (line.match(/\}/g) ?? []).length;
-          if (depth <= 0) inFocusRule = false;
         }
       }
     }
@@ -176,15 +262,12 @@ describe('focus treatments are painted-only', () => {
     //
     // `focus:outline-none` is exempt: suppressing the UA outline for mouse
     // users as well is intentional and paints nothing.
-    const offenders = FILES.flatMap((file) =>
-      fs
-        .readFileSync(file, 'utf8')
-        .split('\n')
-        .flatMap((line, i) => {
-          const matches = line.match(/\bfocus:[a-z][\w:/[\]-]*/g) ?? [];
-          const visible = matches.filter((cls) => cls !== 'focus:outline-none');
-          return visible.map((cls) => `${path.relative(srcRoot, file)}:${i + 1} -> ${cls}`);
-        })
+    const offenders = FILES.flatMap(({ path: file, text }) =>
+      text.split('\n').flatMap((line, i) => {
+        const matches = line.match(/\bfocus:[a-z][\w:/[\]-]*/g) ?? [];
+        const visible = matches.filter((cls) => cls !== 'focus:outline-none');
+        return visible.map((cls) => `${file}:${i + 1} -> ${cls}`);
+      })
     );
 
     // dropdown-menu's `focus:bg-accent` is the documented exception: bits-ui
@@ -251,6 +334,35 @@ describe('the neutral focus fill is actually visible', () => {
     expect(withFocusTreatment).toHaveLength(5);
     expect(buttonVariants({ variant: 'link' })).toContain('focus-visible:underline');
   });
+
+  for (const theme of THEMES) {
+    it(`states what a filled variant's focus shift actually measures, ${theme.name} theme`, () => {
+      // Recorded rather than asserted against 3:1, because the filled variants
+      // do NOT clear it and the honest thing is to say so in the place someone
+      // will look. `--primary-hover` against `--primary` is 1.38:1 light /
+      // 1.30:1 dark; `--destructive-hover` against `--destructive` is 1.24:1 /
+      // 1.21:1.
+      //
+      // That is defensible where the `bg-muted` and `secondary/80` traps were
+      // not, and the difference is worth being precise about. A neutral control
+      // focusing to `muted` had to be told apart from the PAGE, an unbounded
+      // surface with nothing marking where the control ends. A filled button is
+      // already a saturated shape against that page, so the shift only has to
+      // be told apart from the same button a moment earlier — and it is the
+      // identical shift the button makes on hover, which ships and reads fine.
+      //
+      // What this pins is the direction and the magnitude. A token edit that
+      // flattens the shift toward zero fails here, which is the regression that
+      // would actually matter.
+      const block = themeBlock(appCss, theme.selector);
+
+      for (const token of ['--primary', '--destructive']) {
+        const shift = contrast(readHsl(block, `${token}-hover`), readHsl(block, token));
+        expect(shift).toBeGreaterThan(1.15);
+        expect(shift).toBeLessThan(1.6);
+      }
+    });
+  }
 
   it('keeps the light-mode accent label above its dark-mode counterpart', () => {
     // NOT an AA assertion, deliberately. `--accent-foreground` on `--accent` is
