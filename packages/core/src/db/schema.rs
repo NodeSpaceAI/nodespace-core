@@ -68,6 +68,13 @@ CREATE TABLE IF NOT EXISTS relationship (
     in_node           TEXT    NOT NULL REFERENCES node(id) ON DELETE CASCADE,
     out_node          TEXT    NOT NULL REFERENCES node(id) ON DELETE CASCADE,
     relationship_type TEXT    NOT NULL,
+    -- The name this edge reads by from the target's end — `child_of` for a
+    -- `has_child` row, `project` for a `tasks` declaration. Every edge is named
+    -- from both ends, but only the declaring side's name was ever a column.
+    -- The reverse lived inside the `properties` JSON blob (for schema-declared
+    -- relationships) or nowhere at all (for the built-in structural ones), so
+    -- no query could filter or traverse by it.
+    reverse_relationship_type TEXT,
     properties        TEXT    NOT NULL DEFAULT '{}',
     version           INTEGER NOT NULL DEFAULT 1,
     created_at        TEXT    NOT NULL,
@@ -78,6 +85,10 @@ CREATE INDEX IF NOT EXISTS idx_rel_type  ON relationship (relationship_type);
 CREATE INDEX IF NOT EXISTS idx_rel_in    ON relationship (in_node, relationship_type);
 CREATE INDEX IF NOT EXISTS idx_rel_out   ON relationship (out_node, relationship_type);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rel_unique ON relationship (in_node, out_node, relationship_type);
+-- Mirrors idx_rel_out for reverse traversal: "which nodes point at this one
+-- under the reverse name" is the shape a Play condition walking `child_of`
+-- issues, and without this it is a full scan of the edge table.
+CREATE INDEX IF NOT EXISTS idx_rel_reverse ON relationship (out_node, reverse_relationship_type);
 
 CREATE TABLE IF NOT EXISTS embedding (
     id           TEXT    PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -152,15 +163,27 @@ CREATE INDEX IF NOT EXISTS idx_conflict_participant_node ON conflict_participant
 /// this build already created.
 pub async fn create_schema(conn: &libsql::Connection) -> Result<()> {
     // Naive `;`-splitting is safe ONLY because SCHEMA_SQL is plain CREATE
-    // TABLE/INDEX statements with no semicolons inside string literals or
-    // multi-statement bodies. Triggers and virtual tables are created below via
-    // individual `execute` calls for exactly that reason — do not move them up
-    // here without switching to a real statement splitter.
+    // TABLE/INDEX statements with no semicolons inside string literals,
+    // comments, or multi-statement bodies. Triggers and virtual tables are
+    // created below via individual `execute` calls for exactly that reason — do
+    // not move them up here without switching to a real statement splitter.
     for stmt in SCHEMA_SQL.split(';') {
         let stmt = stmt.trim();
         if stmt.is_empty() {
             continue;
         }
+        // A fragment may open with `--` comment lines, but once those are
+        // stripped it must begin an actual statement. Anything else means a `;`
+        // inside a comment or literal split a statement in half.
+        debug_assert!(
+            stmt.lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty() && !line.starts_with("--"))
+                .is_some_and(|line| line.starts_with("CREATE")),
+            "SCHEMA_SQL fragment does not begin a statement, so a `;` inside a \
+             comment or literal split one in half: {}",
+            &stmt[..stmt.len().min(160)]
+        );
         conn.execute(stmt, ())
             .await
             .with_context(|| format!("Failed to execute DDL: {}", &stmt[..stmt.len().min(80)]))?;
