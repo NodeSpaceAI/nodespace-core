@@ -1061,6 +1061,14 @@ impl GrpcNodeService for NodeServiceImpl {
         // dropped here rather than threaded through, matching `count_nodes`.
         // Dropping the limit is the point: it is the ceiling the caller is
         // asking this RPC to see past.
+        //
+        // This makes it the one query RPC that does not clamp to MAX_ROW_LIMIT,
+        // so a filter with no usable index scans the full table. That is the
+        // accepted trade, not an oversight: COUNT(*) hydrates nothing, so it is
+        // far cheaper than the 500-row materialization it replaces, and the
+        // store is a local single-user SQLite file. Do not "fix" this by
+        // reinstating a cap — a capped count silently reports the cap as the
+        // total, which is the saturation bug this RPC exists to remove.
         let input = query_ops::ExecuteQueryInput {
             target_type: req.target_type,
             filters,
