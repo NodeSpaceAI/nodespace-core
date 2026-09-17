@@ -1030,6 +1030,24 @@ fn validate_invariant_eligibility(
                 }
             }
         }
+
+        // `for_each` is a RAW (unbraced) binding path -- `execute_actions`
+        // resolves it via the exact same `BindingContext::resolve_binding`
+        // as any `{path}` param value (see `actions.rs`), so a function-call
+        // form is reachable there too, without wrapping braces. Check it
+        // directly with `parse_function_call` rather than
+        // `extract_binding_templates` (which requires `{...}` wrapping and
+        // would miss this).
+        if let Some(for_each) = &action.for_each {
+            if let Some((function, _args)) = parse_function_call(for_each) {
+                if crate::playbook::cel::NON_DETERMINISTIC_FUNCTIONS.contains(&function) {
+                    errors.push(PlayValidationError::InvariantNonDeterministic {
+                        function: function.to_string(),
+                        location: format!("rule[{}].action[{}].for_each", rule_idx, action_idx),
+                    });
+                }
+            }
+        }
     }
 
     // Same-graph scope — action targets must be trigger-derived bindings.
@@ -2717,6 +2735,75 @@ mod tests {
                     .iter()
                     .any(|e| matches!(e, PlayValidationError::InvariantNonDeterministic { .. })),
                 "a plain {{path}} binding must never be flagged as non-deterministic, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_non_deterministic_for_each_function_call_rejected() {
+            // `for_each` is a RAW (unbraced) binding path — `execute_actions`
+            // resolves it through the exact same `resolve_binding` as any
+            // `{path}` param value, so a function-call form is reachable
+            // there too, without `{...}` wrapping (see `actions.rs`'s
+            // `execute_actions`, which calls
+            // `ctx.resolve_binding(for_each_path)` directly on the stored
+            // string). This must be checked independently of the params scan
+            // above, which only looks inside `{...}`-wrapped text.
+            let action = ParsedAction {
+                action_type: ActionType::UpdateNode,
+                params: json!({
+                    "node_id": "{item.id}",
+                    "properties": { "custom:tag": "v" }
+                }),
+                for_each: Some("today()".to_string()),
+            };
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![action],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                errors.iter().any(|e| matches!(
+                    e,
+                    PlayValidationError::InvariantNonDeterministic { function, location }
+                        if function == "today" && location == "rule[0].action[0].for_each"
+                )),
+                "expected non-deterministic 'today' error for the for_each \
+                 binding, got {:?}",
+                errors
+            );
+        }
+
+        #[test]
+        fn invariant_plain_for_each_path_has_no_determinism_error() {
+            // Regression guard, matching the real `for_each` convention
+            // (bare dot-path, no braces — see `for_each: Some("trigger.node.tasks"...)`
+            // in `playbook::tests`): an ordinary for_each path must not be
+            // flagged just because it's now scanned.
+            let rule = invariant_rule(
+                GraphEventType::NodeCreated,
+                "task",
+                None,
+                vec![],
+                vec![ParsedAction {
+                    action_type: ActionType::UpdateNode,
+                    params: json!({
+                        "node_id": "{item.id}",
+                        "properties": { "custom:tag": "v" }
+                    }),
+                    for_each: Some("trigger.node.tasks".to_string()),
+                }],
+            );
+            let errors = eligibility_errors(&rule);
+            assert!(
+                !errors
+                    .iter()
+                    .any(|e| matches!(e, PlayValidationError::InvariantNonDeterministic { .. })),
+                "a plain for_each dot-path must never be flagged as \
+                 non-deterministic, got {:?}",
                 errors
             );
         }
