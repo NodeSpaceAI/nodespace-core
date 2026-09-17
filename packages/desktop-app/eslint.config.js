@@ -314,13 +314,30 @@ export default [
       // push (the pre-push gate is the sole CI here). A number above that
       // threshold is almost always a guess padded around a real constant.
       //
+      // The 500 below is the same value as PERSISTENCE_DEBOUNCE_MS in
+      // tests/utils/test-constants.ts, duplicated because an ESLint flat config
+      // cannot import from the test sources it lints. If the production debounce
+      // ever changes, tests/services/persistence-timing-constants.test.ts fails
+      // first and loudly — update this threshold in the same commit.
+      //
       // Deliberately allows a NUMERIC literal <= 500: short sleeps are cheap
       // and usually genuine yields. A named constant (DEBOUNCED_WRITE_WAIT_MS,
       // CASCADE_SETTLE_TIMEOUT_MS, ...) is always allowed regardless of its
       // value, because the point is that the duration be DERIVED and its
       // origin stated, not that it be small.
+      //
+      // `:nth-child(2)` pins this to the DELAY argument. Without it the rule
+      // also flagged literals in any other position — `setTimeout(fn, 10, 9999)`
+      // reported the 9999 callback datum as a sleep, giving advice that made no
+      // sense for that line.
+      //
+      // Deliberately a heuristic ratchet, not a proof. It does NOT catch a
+      // computed delay (`400 + 500`), a module-level `const D = 9000`, or a
+      // member call (`globalThis.setTimeout(fn, 4000)`). Those are rare here and
+      // reaching them needs type-aware analysis; the common literal shape — the
+      // one that produced every case this repo actually accumulated — is caught.
       'no-restricted-syntax': ['error', {
-        selector: "CallExpression[callee.name='setTimeout'] > Literal.arguments[value>500]",
+        selector: "CallExpression[callee.name='setTimeout'] > Literal.arguments:nth-child(2)[value>500]",
         message:
           'Sleeping >500ms on real time in a test. Prefer vi.waitFor on the condition ' +
           'being awaited, or fake timers (vi.advanceTimersByTimeAsync). If a real sleep ' +

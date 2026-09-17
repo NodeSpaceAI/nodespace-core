@@ -40,7 +40,7 @@ import {
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
 import type { Node } from '../../lib/types';
-import { DEBOUNCED_WRITE_WAIT_MS } from '../utils/test-constants';
+import { DEBOUNCED_WRITE_WAIT_MS, CASCADE_SETTLE_TIMEOUT_MS } from '../utils/test-constants';
 
 type TaskLikeNode = Node & {
   status: string;
@@ -144,10 +144,12 @@ describe('updateTaskNode success-path clobber — same-field concurrent-write re
       expect(afterB.status).toBe('done');
 
       // Let A's success handler fire, and B's queued write get promoted into
-      // execution (call #2 above) — but stop well before any further
-      // settlement, since call #2 never resolves.
-      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
-      expect(updateCallCount).toBe(2);
+      // execution (call #2 above). Waiting on that promotion is exact; a fixed
+      // duration would only be a guess that it has happened by now, and call #2
+      // never resolves so there is nothing further to settle.
+      await vi.waitFor(() => expect(updateCallCount).toBe(2), {
+        timeout: CASCADE_SETTLE_TIMEOUT_MS
+      });
 
       const after = store.getNode(nodeId) as unknown as TaskLikeNode;
       // B's still-in-flight optimistic status must survive A's success
@@ -207,9 +209,12 @@ describe('updateTaskNode success-path clobber — same-field concurrent-write re
       store.updateTaskNode(nodeId, { status: 'in-progress' }, viewerSource);
       store.updateTaskNode(nodeId, { status: 'done' }, viewerSource);
 
-      // Let both writes fully settle.
-      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
-      expect(updateCallCount).toBe(2);
+      // Wait for BOTH writes to land. DEBOUNCED_WRITE_WAIT_MS names the wait for
+      // a single write, so using it here would under-state what is being awaited;
+      // waiting on the call count itself is both exact and faster.
+      await vi.waitFor(() => expect(updateCallCount).toBe(2), {
+        timeout: CASCADE_SETTLE_TIMEOUT_MS
+      });
 
       const after = store.getNode(nodeId) as unknown as TaskLikeNode;
       expect(after.status).toBe('done');

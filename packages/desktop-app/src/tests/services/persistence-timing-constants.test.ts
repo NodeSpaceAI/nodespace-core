@@ -82,6 +82,20 @@ describe('persistence timing constants stay in sync with SharedNodeStore', () =>
     expect(updateSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the eslint sleep threshold equal to the production debounce', async () => {
+    // The no-restricted-syntax rule in eslint.config.js hardcodes 500 as the
+    // point above which a bare sleep is suspect. That is PERSISTENCE_DEBOUNCE_MS
+    // duplicated, because a flat config cannot import from test sources. Assert
+    // the two agree so the lint rule cannot quietly stop meaning "the debounce".
+    const { readFileSync } = await import('node:fs');
+    // Vitest runs with packages/desktop-app as cwd (see its vitest config root),
+    // which is where the flat config lives.
+    const config = readFileSync('eslint.config.js', 'utf8');
+    const match = config.match(/Literal\.arguments:nth-child\(2\)\[value>(\d+)\]/);
+    expect(match, 'sleep-threshold selector not found in eslint.config.js').not.toBeNull();
+    expect(Number(match![1])).toBe(PERSISTENCE_DEBOUNCE_MS);
+  });
+
   it('flushAllPending gives up after FLUSH_PENDING_TIMEOUT_MS when an operation never settles', async () => {
     // Never settles: only the internal timeout can resolve the flush.
     vi.spyOn(backendAdapter, 'updateNode').mockImplementation(

@@ -814,7 +814,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
         () => {
           expect(store.getTestErrors().length).toBeGreaterThan(0);
         },
-        { timeout: DEBOUNCED_WRITE_WAIT_MS + 1000 }
+        { timeout: CASCADE_SETTLE_TIMEOUT_MS }
       );
 
       // The failure is surfaced, and the node survives it. (The local edit is
