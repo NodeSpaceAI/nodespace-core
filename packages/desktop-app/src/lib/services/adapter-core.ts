@@ -269,6 +269,20 @@ export function buildTaskNodeUpdatePatch(update: TaskNodeUpdate): TaskNodeUpdate
 // ============================================================================
 
 /**
+ * The most rows the daemon will return for one query, whatever the request
+ * asks for — `MAX_EXECUTE_QUERY_LIMIT` / `MAX_QUERY_NODES_SIMPLE_LIMIT` in
+ * `packages/daemon/src/services/node_service.rs`, which clamp rather than
+ * reject.
+ *
+ * Callers need this to tell a complete result from a truncated one: the clamp
+ * is silent, so a request for more comes back looking exactly like a result
+ * set that happened to be that size. Asking for more than this cannot return
+ * more, so a caller that wants "everything" should ask for exactly this and
+ * treat a full page as "there may be more".
+ */
+export const MAX_QUERY_ROWS = 500;
+
+/**
  * Wire shape for `ExecuteQuery`, matching `ExecuteQueryRequest` in
  * node_service.proto. Filters and sorting cross as JSON strings rather than
  * modeled fields: a filter's `value` is free-form, which has no natural proto
@@ -293,6 +307,15 @@ export interface ExecuteQueryWire {
  * path is structurally NULL, so an unconverted `modifiedAt` would not error,
  * it would silently order every row equally. Only these five are renamed;
  * property names are stored as authored and pass through untouched.
+ *
+ * `content` and `title` map to themselves deliberately: they are metadata
+ * columns whose two spellings coincide, and listing them states that they were
+ * considered rather than leaving a reader to wonder if they were missed.
+ *
+ * This list must agree with `resolve_field`'s, which is the kind of
+ * cross-language pairing this module otherwise exists to avoid. It is tolerable
+ * here because the set is five long-stable column names rather than a semantic
+ * table, and a mismatch degrades to an unsorted result rather than wrong data.
  */
 const METADATA_SORT_FIELDS: Readonly<Record<string, string>> = {
   createdAt: 'created_at',

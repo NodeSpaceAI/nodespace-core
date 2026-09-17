@@ -13,8 +13,33 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import type { QueryFilter, SortConfig } from '$lib/types/query';
-import { buildExecuteQueryWire, encodeSortField } from '$lib/services/adapter-core';
+import { buildExecuteQueryWire, encodeSortField, MAX_QUERY_ROWS } from '$lib/services/adapter-core';
+
+describe('MAX_QUERY_ROWS', () => {
+  it('matches the row ceiling the daemon actually clamps to', () => {
+    // This constant exists so callers can tell a truncated result from a
+    // complete one — the daemon clamps silently, so the only signal is whether
+    // the row count reached the ceiling. That makes it worthless if it drifts
+    // from the daemon's value: too high and the comparison never fires (a
+    // truncated set is reported as complete), too low and every result looks
+    // truncated.
+    //
+    // Read the Rust source rather than restate the number, so a change there
+    // fails here instead of silently disabling the truncation caveat.
+    const source = readFileSync(
+      resolve(__dirname, '../../../../daemon/src/services/node_service.rs'),
+      'utf8'
+    );
+    const limits = [...source.matchAll(/MAX_(?:EXECUTE_QUERY|QUERY_NODES_SIMPLE)_LIMIT:\s*usize\s*=\s*(\d+)/g)]
+      .map((m) => Number(m[1]));
+
+    expect(limits.length).toBe(2);
+    for (const limit of limits) expect(limit).toBe(MAX_QUERY_ROWS);
+  });
+});
 
 describe('encodeSortField', () => {
   it('renames the metadata fields to the columns resolve_field matches', () => {

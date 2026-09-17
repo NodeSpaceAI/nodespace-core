@@ -573,6 +573,8 @@ async function handleRequest(req: Request): Promise<Response> {
     try {
       const body = await req.json() as Record<string, unknown>;
       const request = {
+        // Required by the RPC, unlike its optional siblings — a missing one is
+        // a malformed request the daemon should reject, not a defaulted empty.
         targetType: body.targetType,
         filtersJson: body.filtersJson ?? null,
         sortingJson: body.sortingJson ?? null,

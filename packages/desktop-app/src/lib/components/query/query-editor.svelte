@@ -28,6 +28,7 @@
     partitionFilters,
   } from './query-editor-model';
   import { untrack } from 'svelte';
+  import { MAX_QUERY_ROWS } from '$lib/services/adapter-core';
   import { createLogger } from '$lib/utils/logger';
   import { toError } from '$lib/types/errors';
 
@@ -227,7 +228,11 @@
           {#if previewLoading}
             Previewing...
           {:else if previewCount !== null}
-            Preview ({previewCount} {previewCount === 1 ? 'result' : 'results'})
+            <!-- A full page means the count saturated, not that the total is
+                 exactly MAX_QUERY_ROWS — say "500+" rather than assert a total
+                 the backend never confirmed. -->
+            Preview ({previewCount}{previewCount >= MAX_QUERY_ROWS ? '+' : ''}
+            {previewCount === 1 ? 'result' : 'results'})
           {:else}
             Preview
           {/if}

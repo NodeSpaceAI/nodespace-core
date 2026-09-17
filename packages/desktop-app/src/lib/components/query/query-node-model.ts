@@ -125,15 +125,11 @@ export function buildMaterializedProperties(input: {
 // ============================================================================
 // Single-node filter evaluation
 //
-// A saved query is *executed* by the backend — `backendAdapter.executeQuery`
-// reaches `QueryService`, which owns filtering, ordering and limiting. Nothing
-// here re-implements that.
-//
-// What remains is a narrower question the backend cannot answer cheaply: when a
-// node is created outside this viewer (CLI, an agent tool call, another tab),
-// does it belong in the already-open result set? Re-running the whole query per
-// created node would be a round-trip each time, so `shouldShowCreatedNode`
-// evaluates the filters against that one in-memory node instead.
+// The narrow question the backend cannot answer cheaply: when a node is created
+// outside this viewer (CLI, an agent tool call, another tab), does it belong in
+// the already-open result set? Re-running the whole query per created node
+// would be a round-trip each time, so `shouldShowCreatedNode` evaluates the
+// filters against that one in-memory node instead.
 //
 // This is deliberately *not* a query executor: there is no sorting here (the
 // appended node lands at the end until the next real query settles) and no
@@ -248,6 +244,29 @@ export function matchesFilter(node: Node, filter: QueryFilter): boolean {
   }
 }
 
+/**
+ * Whether a result of `rowCount` rows may be hiding further matches.
+ *
+ * The daemon clamps every query to `maxRows` and says nothing about having done
+ * so, so a truncated result is indistinguishable from a complete one by
+ * inspection — the row count is the only signal available.
+ *
+ * A full page counts as truncated only when the bound was the system's rather
+ * than the query's own: a query that asked for 25 and got 25 got what it asked
+ * for, while one that named no limit, or asked for more than the daemon will
+ * return, hit a ceiling it never chose. Extracted here so the rule is pinned by
+ * a test rather than living inline in the viewer, where the two constants it
+ * compares drifted apart unnoticed once already.
+ */
+export function isResultTruncated(input: {
+  rowCount: number;
+  requestedLimit: number | undefined;
+  maxRows: number;
+}): boolean {
+  const systemBounded = input.requestedLimit === undefined || input.requestedLimit > input.maxRows;
+  return systemBounded && input.rowCount >= input.maxRows;
+}
+
 /** State a viewer needs to decide whether an externally-created node belongs. */
 export interface CreatedNodeGate {
   /** The viewer's query lifecycle — only a settled ('success') view integrates. */
@@ -274,6 +293,12 @@ export interface CreatedNodeGate {
  * The next query load puts it in its proper place. The query's `limit` is not
  * enforced either, for the same reason: which node the limit would evict
  * depends on that ordering.
+ *
+ * Corollary of `matchesFilter` declining graph filters: a definition whose
+ * filters are *only* `parent`/`children` never live-appends, since every node
+ * fails the gate. Such a view refreshes on its next load rather than
+ * incrementally — acceptable because the filter editor emits property filters
+ * only, so those definitions arrive from AI or programmatic creation.
  */
 export function shouldShowCreatedNode(node: Node, gate: CreatedNodeGate): boolean {
   if (gate.queryState !== 'success' || !gate.targetType) return false;

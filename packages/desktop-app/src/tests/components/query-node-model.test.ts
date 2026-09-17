@@ -25,6 +25,7 @@ import {
   parseViewConfig,
   mergeViewConfig,
   buildMaterializedProperties,
+  isResultTruncated,
   matchesFilter,
   shouldShowCreatedNode,
 } from '$lib/components/query/query-node-model';
@@ -238,6 +239,42 @@ describe('title constants', () => {
   it('exposes the default and materialized titles', () => {
     expect(DEFAULT_QUERY_TITLE).toBe('Default');
     expect(MATERIALIZED_QUERY_TITLE).toBe('Untitled Query');
+  });
+});
+
+describe('isResultTruncated', () => {
+  // The daemon clamps silently, so the row count is the only available signal.
+  const MAX = 500;
+
+  it('flags a full page when the query named no limit', () => {
+    expect(isResultTruncated({ rowCount: MAX, requestedLimit: undefined, maxRows: MAX })).toBe(true);
+  });
+
+  it('does not flag a short page', () => {
+    expect(isResultTruncated({ rowCount: 42, requestedLimit: undefined, maxRows: MAX })).toBe(false);
+  });
+
+  it('does not flag a query that asked for N and got N', () => {
+    // The bound was the query's own intent, so the result is complete however
+    // small it is — this is the case a naive `rowCount >= maxRows` gets wrong
+    // in the other direction by never firing at all.
+    expect(isResultTruncated({ rowCount: 25, requestedLimit: 25, maxRows: MAX })).toBe(false);
+  });
+
+  it('flags a query that asked for more than the daemon will return', () => {
+    // Asking for 1000 yields at most 500, clamped without notice — the exact
+    // mismatch that made the caveat unreachable when the viewer's own constant
+    // exceeded the server ceiling.
+    expect(isResultTruncated({ rowCount: MAX, requestedLimit: 1000, maxRows: MAX })).toBe(true);
+  });
+
+  it('does not flag an over-asking query that came back short', () => {
+    // Asked for 1000, got 87: the clamp never bound it, so nothing is hidden.
+    expect(isResultTruncated({ rowCount: 87, requestedLimit: 1000, maxRows: MAX })).toBe(false);
+  });
+
+  it('treats a limit equal to the ceiling as the query’s own bound', () => {
+    expect(isResultTruncated({ rowCount: MAX, requestedLimit: MAX, maxRows: MAX })).toBe(false);
   });
 });
 

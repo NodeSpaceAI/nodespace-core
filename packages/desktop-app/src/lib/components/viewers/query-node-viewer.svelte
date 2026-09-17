@@ -20,6 +20,7 @@
   import { onMount, untrack } from 'svelte';
   import { v4 as uuidv4 } from 'uuid';
   import { backendAdapter } from '$lib/services/backend-adapter';
+  import { MAX_QUERY_ROWS } from '$lib/services/adapter-core';
   import { createSchemaInstance, shouldIntegrateInstance } from '$lib/services/schema-authoring';
   import { getNavigationService } from '$lib/services/navigation-service';
   import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
@@ -42,6 +43,7 @@
     parseViewConfig,
     mergeViewConfig,
     buildMaterializedProperties,
+    isResultTruncated,
     shouldShowCreatedNode,
     type QueryViewKind,
     type QueryViewConfigState,
@@ -50,12 +52,14 @@
 
   const log = createLogger('QueryNodeViewer');
 
-  // Upper bound on the candidate set fetched before client-side filtering.
-  // queryNodes only filters by nodeType, so a saved query must fetch its type's
-  // nodes and filter them here; without an explicit limit the daemon caps at 100,
-  // which would filter an arbitrary first-100 slice. This bounds the fetch while
-  // covering realistic type sizes; larger sets surface a "capped" caveat.
-  const FETCH_LIMIT = 1000;
+  // How many rows a view pulls when the query itself names no limit.
+  //
+  // Set to the daemon's own ceiling rather than a larger number of our own: the
+  // clamp is silent, so asking for more would come back clamped and
+  // indistinguishable from a complete result, and the "showing the first N"
+  // caveat below could then never fire. Asking for exactly the ceiling makes a
+  // full page mean "there may be more", which is a fact we can act on.
+  const FETCH_LIMIT = MAX_QUERY_ROWS;
 
   let {
     nodeId,
@@ -122,8 +126,9 @@
   // no-op rather than an unwanted rename/materialize.
   let titleEditCancelled = $state(false);
 
-  // True when the type's node set was capped by FETCH_LIMIT — client-side
-  // filtering then ran over a partial set, so the viewer says so.
+  // True when the result filled the row ceiling the daemon imposes, so there
+  // may be matches the view is not showing. The viewer says so rather than
+  // presenting a truncated set as the whole answer.
   let fetchCapped = $state(false);
 
   const hasResults = $derived(loadedNodeIds.length > 0);
@@ -153,11 +158,11 @@
    * Now that `QueryService` executes the query, filters are applied in SQL —
    * including the parent/children relationship filters that used to need a
    * caveat here, because they could not be evaluated from a single node. What
-   * remains is the row cap: an uncapped saved query, or a default type view,
-   * pulls at most FETCH_LIMIT rows.
+   * remains is the row ceiling: a query that names no limit of its own, or asks
+   * for more than the daemon returns, sees at most MAX_QUERY_ROWS.
    */
   const executionCaveat = $derived.by((): string | null =>
-    fetchCapped ? `showing the first ${FETCH_LIMIT} nodes of this type` : null
+    fetchCapped ? `showing the first ${MAX_QUERY_ROWS} matches` : null
   );
 
   // Load the backing node and execute the query on mount. pane-content remounts
@@ -253,9 +258,11 @@
         });
         if (loadId !== currentLoadId) return;
         if (sharedNodeStore.currentEpoch() !== epoch) return;
-        // Only a *capped* result is a partial answer worth flagging. A query
-        // that asked for its own limit and got it is complete by definition.
-        fetchCapped = definition.limit === undefined && nodes.length >= FETCH_LIMIT;
+        fetchCapped = isResultTruncated({
+          rowCount: nodes.length,
+          requestedLimit: definition.limit,
+          maxRows: MAX_QUERY_ROWS
+        });
         const databaseSource = { type: 'database' as const, reason: 'query-node-viewer saved query' };
         for (const node of nodes) sharedNodeStore.setNode(node, databaseSource);
         loadedNodeIds = nodes.map((n) => n.id);
@@ -278,7 +285,13 @@
       const nodes = await backendAdapter.queryNodes({ nodeType: schema.id, limit: FETCH_LIMIT });
       if (loadId !== currentLoadId) return;
       if (sharedNodeStore.currentEpoch() !== epoch) return;
-      fetchCapped = nodes.length >= FETCH_LIMIT;
+      // A default type view names no limit of its own, so a full page always
+      // means the daemon's ceiling bounded it.
+      fetchCapped = isResultTruncated({
+        rowCount: nodes.length,
+        requestedLimit: undefined,
+        maxRows: MAX_QUERY_ROWS
+      });
       const databaseSource = { type: 'database' as const, reason: 'query-node-viewer default view' };
       for (const node of nodes) sharedNodeStore.setNode(node, databaseSource);
       loadedNodeIds = nodes.map((n) => n.id);
@@ -452,13 +465,17 @@
   }
 
   async function handleQueryPreview(definition: QueryDefinition): Promise<number> {
-    // Run the definition through the same backend path the saved query uses, so
-    // the previewed count is the count the query will actually return. Sorting
-    // is irrelevant to a count, but the filters and limit are not.
+    // Count what the *filters* select, not what the saved query would display:
+    // while authoring, "how many things match this?" is the question being
+    // asked, and the definition's own `limit` is a display choice applied
+    // afterwards. Sorting is irrelevant to a count, so it is not sent.
+    //
+    // The count still saturates at the daemon's ceiling; the editor renders a
+    // full page as "N+" rather than implying an exact total.
     const nodes = await backendAdapter.executeQuery({
       targetType: definition.targetType,
       filters: definition.filters,
-      limit: definition.limit ?? FETCH_LIMIT,
+      limit: MAX_QUERY_ROWS,
     });
     return nodes.length;
   }
