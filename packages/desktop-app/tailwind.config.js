@@ -18,7 +18,12 @@ export default {
         foreground: "hsl(var(--foreground) / <alpha-value>)",
         primary: {
           DEFAULT: "hsl(var(--primary) / <alpha-value>)",
-          foreground: "hsl(var(--primary-foreground) / <alpha-value>)"
+          foreground: "hsl(var(--primary-foreground) / <alpha-value>)",
+          // No <alpha-value>: a --*-hover is the opaque fill of a hovered filled
+          // button. Admitting an alpha channel here would re-enable the
+          // `hover:bg-primary/90` idiom these tokens exist to replace, which
+          // composites against the page and so flips hover direction by theme.
+          hover: "hsl(var(--primary-hover))"
         },
         secondary: {
           DEFAULT: "hsl(var(--secondary) / <alpha-value>)",
@@ -26,7 +31,8 @@ export default {
         },
         destructive: {
           DEFAULT: "hsl(var(--destructive) / <alpha-value>)",
-          foreground: "hsl(var(--destructive-foreground) / <alpha-value>)"
+          foreground: "hsl(var(--destructive-foreground) / <alpha-value>)",
+          hover: "hsl(var(--destructive-hover))"
         },
         muted: {
           DEFAULT: "hsl(var(--muted) / <alpha-value>)",
