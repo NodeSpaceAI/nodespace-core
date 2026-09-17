@@ -42,21 +42,19 @@ function styleBearingFiles(dir: string): string[] {
  * house style in seven icon components, so it is a realistic way to set a node
  * color. The value stops at `;` or a closing `}`/quote so the last declaration
  * in a block still matches without one.
+ *
+ * `--node-spacing-` is excluded structurally: that sub-namespace is reserved
+ * for non-color, non-accent --node-* variables (e.g. `--node-spacing-indent`),
+ * so naming a variable into it opts it out of the single-accent guard without
+ * an explicit allowlist.
  */
-const NODE_COLOR_DECLARATION = /(?:^|[{;"'])\s*(--node-[a-z0-9-]+)\s*:\s*([^;}"']+)/gim;
-
-/**
- * Non-color --node-* vars, exempt from the "derives from --primary" rule. The
- * single-accent rule is about color only. Anything --node-* is treated as a
- * color unless it is listed here: add a new non-color var to this set, or
- * better, name it so it reads as non-color (--node-spacing-*).
- */
-const NON_COLOR_NODE_VARS = new Set(['--node-indent']);
+const NODE_COLOR_DECLARATION = /(?:^|[{;"'])\s*(--node-(?!spacing-)[a-z0-9-]+)\s*:\s*([^;}"']+)/gim;
 
 function nodeColorDeclarations(source: string): Array<{ name: string; value: string }> {
-  return [...source.matchAll(NODE_COLOR_DECLARATION)]
-    .map((m) => ({ name: m[1], value: m[2].trim() }))
-    .filter((d) => !NON_COLOR_NODE_VARS.has(d.name));
+  return [...source.matchAll(NODE_COLOR_DECLARATION)].map((m) => ({
+    name: m[1],
+    value: m[2].trim(),
+  }));
 }
 
 describe('node accent colors', () => {

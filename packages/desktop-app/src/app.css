@@ -305,10 +305,16 @@
   --circle-offset: 22px; /* Circle center distance from container left edge - reserves space for chevrons */
   --circle-diameter: 20px; /* Circle size (width and height) */
   --circle-text-gap: 8px; /* Gap between circle edge and text content */
-  --node-indent: 2.5rem; /* Indentation distance between parent and child levels */
 
   /* Base correction factor for text visual center alignment */
   --baseline-correction: -0.06375em;
+}
+
+/* .base-node-viewer is the live root element (see base-node-viewer.svelte) that
+   NodeRow's chevron positioning actually inherits from; --node-spacing-indent
+   is declared against that selector, not .node-viewer above, so it reaches it. */
+.base-node-viewer {
+  --node-spacing-indent: 2.5rem; /* Indentation distance between parent and child levels */
 }
 
 /* Hierarchy Node with Perfect Alignment System */
