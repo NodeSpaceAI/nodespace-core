@@ -70,8 +70,8 @@ const gateLock = await acquireGateLock();
 registerLockRelease(gateLock);
 
 // Staleness check, not a fix for the merge race — see check-branch-behind.ts.
-// Runs first so the warning (if any) is visible before the several-minutes
-// pyramid below, and never blocks: checkBranchBehind() already swallows every
+// Runs before the several-minutes pyramid below so its warning (if any) is
+// visible early, and never blocks: checkBranchBehind() already swallows every
 // documented failure mode (fetch/rev-list) into a "skipped" result without
 // throwing. This try/catch is defensive-only, guarding the one call in this
 // entry sequence that isn't wrapped by run() — a future edit to
