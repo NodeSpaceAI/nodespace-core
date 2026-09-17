@@ -198,7 +198,12 @@ async fn transitive_subtypes_are_matched_through_the_whole_chain() {
     .expect("regression schema creation failed");
 
     create_instance(&svc, "ticket", json!({ "status": "open" })).await;
-    create_instance(&svc, "regression", json!({ "status": "open", "found_in": "1.2" })).await;
+    create_instance(
+        &svc,
+        "regression",
+        json!({ "status": "open", "found_in": "1.2" }),
+    )
+    .await;
 
     let results = svc
         .query_nodes_simple(NodeQuery {
@@ -234,7 +239,10 @@ async fn own_scope_projection_shows_inherited_and_own_fields() {
 
     let flat = nodespace_types::flatten_namespaced_properties_at_scope(&node.properties, &scopes);
 
-    assert_eq!(flat["status"], "open", "inherited field visible at own scope");
+    assert_eq!(
+        flat["status"], "open",
+        "inherited field visible at own scope"
+    );
     assert_eq!(flat["severity"], "high", "own field visible at own scope");
 }
 
@@ -252,7 +260,8 @@ async fn base_scope_projection_hides_the_subtypes_own_fields() {
 
     // Reading the same node at the BASE type's scope — what a
     // `node_type: "ticket"` query projects its results to.
-    let flat = nodespace_types::flatten_namespaced_properties_at_scope(&node.properties, &["ticket"]);
+    let flat =
+        nodespace_types::flatten_namespaced_properties_at_scope(&node.properties, &["ticket"]);
 
     assert_eq!(flat["status"], "open", "the base's own field is visible");
     assert!(

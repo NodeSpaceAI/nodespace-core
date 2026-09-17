@@ -4429,7 +4429,8 @@ async fn test_transitive_extends_cycle_through_two_intermediates_rejected() {
     }
 
     // root -> leaf closes a loop spanning three intermediates.
-    let result = handle_update_schema(&svc, json!({ "schema_id": "root", "extends": "leaf" })).await;
+    let result =
+        handle_update_schema(&svc, json!({ "schema_id": "root", "extends": "leaf" })).await;
 
     let err = result.expect_err("a transitive cycle should be rejected");
     assert!(

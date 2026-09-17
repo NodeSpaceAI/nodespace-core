@@ -257,11 +257,8 @@ impl NodeService {
             let (fields, owners) = self.resolve_field_owners(&node.node_type).await?;
             if !fields.is_empty() {
                 self.apply_schema_defaults_with_fields(&mut node, &fields)?;
-                node.properties = Self::bucket_properties_by_owner(
-                    &node.node_type,
-                    &node.properties,
-                    &owners,
-                );
+                node.properties =
+                    Self::bucket_properties_by_owner(&node.node_type, &node.properties, &owners);
                 self.validate_node_with_fields(&node, &fields)?;
             }
         }
@@ -2520,42 +2517,6 @@ impl NodeService {
             node_type.to_string(),
             serde_json::Value::Object(own_remaining),
         );
-
-        serde_json::Value::Object(out)
-    }
-
-    /// Flatten a node's properties at a given scope, reading each bucket in
-    /// the chain (ADR-078).
-    ///
-    /// `scope_chain` is nearest-scope-first, so a nearer bucket wins any key
-    /// collision. Passing a *truncated* chain is what produces a projection:
-    /// `["task"]` against an issue node yields task's fields only, with the
-    /// issue's own fields absent rather than merely unresolved.
-    ///
-    /// Bookkeeping keys (`_`-prefixed) are dropped, matching every other read
-    /// surface's convention.
-    pub(crate) fn flatten_properties_at_scope(
-        properties: &serde_json::Value,
-        scope_chain: &[String],
-    ) -> serde_json::Value {
-        let Some(props_obj) = properties.as_object() else {
-            return properties.clone();
-        };
-
-        let mut out = serde_json::Map::new();
-        for scope in scope_chain {
-            let Some(bucket) = props_obj.get(scope).and_then(|v| v.as_object()) else {
-                continue;
-            };
-            for (key, value) in bucket {
-                if key.starts_with('_') {
-                    continue;
-                }
-                // Nearest scope wins: the chain is walked in order and a
-                // nearer bucket has already claimed the key.
-                out.entry(key.clone()).or_insert_with(|| value.clone());
-            }
-        }
 
         serde_json::Value::Object(out)
     }

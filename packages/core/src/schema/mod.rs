@@ -526,7 +526,11 @@ fn extend_inherited_field(
             )));
         }
 
-        let Some(maps_to) = new_value.maps_to.as_deref().map(str::trim).filter(|m| !m.is_empty())
+        let Some(maps_to) = new_value
+            .maps_to
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
         else {
             return Err(MarkdownError::invalid_params(format!(
                 "Value '{}' on inherited field '{}' must declare \"mapsTo\", naming which \
@@ -537,7 +541,11 @@ fn extend_inherited_field(
                 new_value.value,
                 addition.field,
                 new_value.value,
-                preexisting.iter().next().map(String::as_str).unwrap_or("todo"),
+                preexisting
+                    .iter()
+                    .next()
+                    .map(String::as_str)
+                    .unwrap_or("todo"),
             )));
         };
 
@@ -620,7 +628,9 @@ async fn load_parent_map(
     node_service: &Arc<NodeService>,
 ) -> Result<std::collections::HashMap<String, String>, MarkdownError> {
     let schemas = node_service.get_all_schemas().await.map_err(|e| {
-        MarkdownError::internal_error(format!("Failed to load schemas for extends resolution: {e}"))
+        MarkdownError::internal_error(format!(
+            "Failed to load schemas for extends resolution: {e}"
+        ))
     })?;
 
     Ok(schemas
@@ -665,7 +675,9 @@ async fn validate_extends_target(
         .get_schema_node(parent_id)
         .await
         .map_err(|e| {
-            MarkdownError::internal_error(format!("Failed to check extends target '{parent_id}': {e}"))
+            MarkdownError::internal_error(format!(
+                "Failed to check extends target '{parent_id}': {e}"
+            ))
         })?
         .is_some();
 
@@ -1130,7 +1142,11 @@ pub async fn handle_create_schema(
     // schema behind. Cycle detection is trivially satisfied at creation time
     // (nothing extends a schema that doesn't exist yet) but runs anyway: the
     // same helper serves `update_schema`, where re-targeting can close a loop.
-    let extends_parent = params.extends.as_deref().map(str::trim).filter(|p| !p.is_empty());
+    let extends_parent = params
+        .extends
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty());
     if let Some(parent_id) = extends_parent {
         validate_extends_target(node_service, &schema_id, parent_id).await?;
         validate_no_field_redeclaration(node_service, parent_id, &stored_fields).await?;
@@ -1739,15 +1755,15 @@ pub async fn handle_update_schema(
         // not declare itself. Resolved once, ahead of the loop, and only when
         // the schema actually extends something — an unextended schema's
         // effective set is its own fields, so nothing can be inherited.
-        let inherited_fields: Vec<SchemaField> = match declared_extends_parent(&schema.relationships)
-        {
-            Some(_) => resolve_effective_fields(node_service, &params.schema_id)
-                .await?
-                .into_iter()
-                .filter(|f| !fields.iter().any(|own| own.name == f.name))
-                .collect(),
-            None => Vec::new(),
-        };
+        let inherited_fields: Vec<SchemaField> =
+            match declared_extends_parent(&schema.relationships) {
+                Some(_) => resolve_effective_fields(node_service, &params.schema_id)
+                    .await?
+                    .into_iter()
+                    .filter(|f| !fields.iter().any(|own| own.name == f.name))
+                    .collect(),
+                None => Vec::new(),
+            };
 
         for addition in additions {
             // Extending an INHERITED field's vocabulary (ADR-078). The field
@@ -1760,12 +1776,8 @@ pub async fn handle_update_schema(
                 .find(|f| f.name == addition.field)
                 .cloned()
             {
-                let added = extend_inherited_field(
-                    &params.schema_id,
-                    inherited,
-                    addition,
-                    &mut fields,
-                )?;
+                let added =
+                    extend_inherited_field(&params.schema_id, inherited, addition, &mut fields)?;
                 field_values_added += added;
                 continue;
             }
@@ -2375,7 +2387,10 @@ mod tests {
     fn edge_enum_duplicate_values_are_rejected() {
         let mut role = edge_field("role", "enum");
         let mut values = rbac_values();
-        values.push(EnumValue::new("owner".to_string(), "Owner (duplicate)".to_string()));
+        values.push(EnumValue::new(
+            "owner".to_string(),
+            "Owner (duplicate)".to_string(),
+        ));
         role.core_values = Some(values);
 
         let rels = vec![rel_with_edge_fields(vec![role])];

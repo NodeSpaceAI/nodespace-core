@@ -491,7 +491,10 @@ mod tests {
                 EnumValue::new("open".to_string(), "Open".to_string()),
                 EnumValue::new("done".to_string(), "Done".to_string()),
             ]),
-            user_values: Some(vec![EnumValue::new("blocked".to_string(), "Blocked".to_string())]),
+            user_values: Some(vec![EnumValue::new(
+                "blocked".to_string(),
+                "Blocked".to_string(),
+            )]),
             indexed: true,
             required: Some(true),
             extensible: Some(true),

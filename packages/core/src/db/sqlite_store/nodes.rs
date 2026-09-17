@@ -1436,7 +1436,9 @@ impl SqliteStore {
         // dropping the others. Shared with `count_nodes` via
         // `build_scalar_conditions` so a filter added here composes the same
         // way in both.
-        let subtypes = self.resolve_query_subtypes(query.node_type.as_deref()).await?;
+        let subtypes = self
+            .resolve_query_subtypes(query.node_type.as_deref())
+            .await?;
         let (conditions, bind_values) =
             Self::build_scalar_conditions_with_subtypes(&query, subtypes.as_deref());
 
@@ -1561,10 +1563,7 @@ impl SqliteStore {
     /// `*` wildcard, or a database in which nothing declares `extends` — so
     /// the overwhelmingly common case costs one cheap existence check rather
     /// than a recursive walk, and compiles to exactly the SQL it did before.
-    async fn resolve_query_subtypes(
-        &self,
-        node_type: Option<&str>,
-    ) -> Result<Option<Vec<String>>> {
+    async fn resolve_query_subtypes(&self, node_type: Option<&str>) -> Result<Option<Vec<String>>> {
         let Some(nt) = node_type else {
             return Ok(None);
         };
@@ -1711,7 +1710,9 @@ impl SqliteStore {
                 .context("Failed to count mentioned_by nodes");
         }
 
-        let subtypes = self.resolve_query_subtypes(query.node_type.as_deref()).await?;
+        let subtypes = self
+            .resolve_query_subtypes(query.node_type.as_deref())
+            .await?;
         let (conditions, bind_values) =
             Self::build_scalar_conditions_with_subtypes(query, subtypes.as_deref());
 

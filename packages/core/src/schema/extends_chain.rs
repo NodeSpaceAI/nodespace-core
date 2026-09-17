@@ -200,9 +200,7 @@ pub fn resolve_value_at_scope(
         return Some(stored_value.to_string());
     }
 
-    let Some(field) = node_fields.iter().find(|f| f.name == field_name) else {
-        return None;
-    };
+    let field = node_fields.iter().find(|f| f.name == field_name)?;
 
     let mut current = stored_value.to_string();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -311,7 +309,10 @@ mod tests {
     #[test]
     fn chain_is_self_first_then_ancestors() {
         let l = lookup(&[("bug", "issue"), ("issue", "task")]);
-        assert_eq!(resolve_ancestor_chain("bug", &l), vec!["bug", "issue", "task"]);
+        assert_eq!(
+            resolve_ancestor_chain("bug", &l),
+            vec!["bug", "issue", "task"]
+        );
     }
 
     #[test]
@@ -450,7 +451,11 @@ mod tests {
     fn resolution_follows_multiple_hops_up_a_chain() {
         let root = enum_field("status", &["todo"], &[]);
         // mid adds `queued` -> todo; leaf adds `triage` -> queued.
-        let leaf = enum_field("status", &["todo"], &[("queued", "todo"), ("triage", "queued")]);
+        let leaf = enum_field(
+            "status",
+            &["todo"],
+            &[("queued", "todo"), ("triage", "queued")],
+        );
 
         assert_eq!(
             resolve_value_at_scope("status", "triage", &[leaf], &[root]),

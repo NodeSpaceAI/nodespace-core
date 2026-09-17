@@ -470,8 +470,8 @@ fn get_node_property_at_scope(
             if let Some(val) = obj.get(key) {
                 // Don't return a type namespace wrapper as a property — not
                 // the node's own, nor any ancestor bucket in scope.
-                let is_namespace_wrapper = val.is_object()
-                    && (key == node.node_type || scope_chain.contains(&key));
+                let is_namespace_wrapper =
+                    val.is_object() && (key == node.node_type || scope_chain.contains(&key));
                 if !is_namespace_wrapper {
                     return Some(val.clone());
                 }

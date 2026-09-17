@@ -571,8 +571,14 @@ mod tests {
             field_type: "enum".to_string(),
             local_only: false,
             protection: crate::models::schema::SchemaProtectionLevel::Core,
-            core_values: Some(vec![EnumValue::new("shared".to_string(), "Core Label".to_string())]),
-            user_values: Some(vec![EnumValue::new("shared".to_string(), "User Label".to_string())]),
+            core_values: Some(vec![EnumValue::new(
+                "shared".to_string(),
+                "Core Label".to_string(),
+            )]),
+            user_values: Some(vec![EnumValue::new(
+                "shared".to_string(),
+                "User Label".to_string(),
+            )]),
             indexed: false,
             required: None,
             extensible: None,
