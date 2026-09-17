@@ -1411,7 +1411,7 @@ fn def_update_schema() -> ToolDefinition {
                 },
                 "add_field_values": {
                     "type": "array",
-                    "description": "Append new choices to an EXISTING enum field's vocabulary (e.g. a 'backlog' status on task). This is NOT add_fields — add_fields declares a new field and leaves the existing one's choices unchanged. Only a field declared extensible: true AND type 'enum' can be extended; check with get_schema_definition first. New values go to user_values; core_values is never written. The call is rejected outright — nothing merged or overwritten — if the field is missing, not extensible, not an enum, or if any value string already exists in core_values or user_values. Collision is checked on 'value', never 'label' (two values may share a label).",
+                    "description": "Append new choices to an EXISTING enum field's vocabulary (e.g. a 'backlog' status on task). This is NOT add_fields — add_fields declares a new field and leaves the existing one's choices unchanged. Only a field declared extensible: true AND type 'enum' can be extended. Do not try to pre-verify that — no tool here reports a field's extensible flag — just make the call; a rejection names the exact reason and nothing is partially applied. New values go to user_values; core_values is never written. The call is rejected outright — nothing merged or overwritten — if the field is missing, not extensible, not an enum, or if any value string already exists in core_values or user_values. Collision is checked on 'value', never 'label' (two values may share a label).",
                     "items": {
                         "type": "object",
                         "properties": {

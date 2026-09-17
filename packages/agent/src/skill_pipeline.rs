@@ -1674,6 +1674,60 @@ mod tests {
         );
     }
 
+    /// The prompt guidance tells the model to reach for `add_field_values`,
+    /// but a model only emits a parameter its tool schema declares — so the
+    /// guidance is inert unless `update_schema`'s schema actually advertises
+    /// it. That declaration was missing entirely until the guidance landed,
+    /// which is the exact failure this pins: `schema_creation_guidance` and
+    /// the tool schema are edited in different files, and a rule pointing at
+    /// an undeclared parameter reads as working guidance right up until the
+    /// model can't act on it.
+    ///
+    /// The prompt-assembly golden also covers this, but only as a byproduct
+    /// of snapshotting the whole tool surface — a regeneration accepts any
+    /// diff put in front of it, so it records the change rather than
+    /// defending the property.
+    #[test]
+    fn update_schema_tool_schema_declares_add_field_values() {
+        let params = crate::local_agent::tools::Tool::UpdateSchema
+            .definition()
+            .parameters_schema;
+        let add_field_values = params
+            .get("properties")
+            .and_then(|p| p.get("add_field_values"))
+            .expect(
+                "update_schema's tool schema must declare add_field_values — without it the \
+                 model is never told the parameter exists, and the prompt guidance steering \
+                 it there cannot be acted on",
+            );
+
+        let item_props = add_field_values
+            .get("items")
+            .and_then(|i| i.get("properties"))
+            .expect("add_field_values items must declare properties");
+        for key in ["field", "values"] {
+            assert!(
+                item_props.get(key).is_some(),
+                "add_field_values items must declare {key:?} — it is required by \
+                 FieldValueAddition, which also denies unknown fields"
+            );
+        }
+
+        let desc = add_field_values
+            .get("description")
+            .and_then(|d| d.as_str())
+            .expect("add_field_values must carry a description");
+        assert!(
+            desc.contains("NOT add_fields"),
+            "add_field_values' description must distinguish it from add_fields — that \
+             confusion is the whole reason the parameter needs guidance, got: {desc:?}"
+        );
+        assert!(
+            desc.contains("extensible: true"),
+            "add_field_values' description must state the extensible gate, got: {desc:?}"
+        );
+    }
+
     /// The worked example that replaced Schema Creation's inline "EXAMPLE —
     /// Customer schema" block now lives on `create_schema`'s tool
     /// description (ADR-064 rule 1 / Finding 2). Pins its presence and its
