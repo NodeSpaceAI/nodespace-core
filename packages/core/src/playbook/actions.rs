@@ -16,12 +16,21 @@
 //! against the live graph state. A binding may also be a supported
 //! function-call form, e.g. `{add_days(item.start_date, 14)}`, which
 //! resolves its argument(s) through the same binding context and then
-//! applies a fixed, explicitly-supported function (currently just
-//! `add_days` -- see [`crate::playbook::cel::compute_add_days`]) -- this is
-//! a scoped extension of the path-substitution scheme, not a general CEL
-//! evaluator reachable from action values. See `BindingContext::resolve_binding`
-//! and `parse_function_call` for the exact grammar and why it cannot change
-//! any existing bare-`{path}` binding's resolution.
+//! applies a fixed, explicitly-supported function -- this is a scoped
+//! extension of the path-substitution scheme, not a general CEL evaluator
+//! reachable from action values. See `BindingContext::resolve_binding` and
+//! `parse_function_call` for the exact grammar and why it cannot change any
+//! existing bare-`{path}` binding's resolution.
+//!
+//! Two of those functions, `sum(<collection-path>, <field>)` and
+//! `count(<collection-path>)`, reduce a resolved collection to a single
+//! value instead of navigating to one -- the `for_each`-shaped collection
+//! resolution `for_each` itself uses (see `BindingContext::resolve_binding`),
+//! but collapsed to one aggregate instead of iterated. Usable anywhere any
+//! other `{binding}` is (an `update_node` action's `properties`, a
+//! `create_node`'s, nested inside a `for_each` item's own params, ...) --
+//! writing the aggregate's result is the existing `update_node`/`create_node`
+//! action-writing mechanism, not a new one.
 //!
 //! # Derived Identity (ADR-060 §3, ADR-074)
 //!
@@ -301,10 +310,11 @@ impl BindingContext {
     }
 
     /// Resolve a dot-path binding, or a supported function-call binding
-    /// (e.g. `add_days(item.start_date, 14)`), against the context.
+    /// (e.g. `add_days(item.start_date, 14)`, `sum(item.tasks, points)`),
+    /// against the context.
     ///
     /// Supported roots: `trigger`, `actions`, `item`. Supported functions:
-    /// `add_days` (see [`Self::resolve_function_call`]).
+    /// `add_days`, `sum`, `count` (see [`Self::resolve_function_call`]).
     ///
     /// The function-call form is detected ONLY when the entire path is
     /// `name(...)` -- see [`parse_function_call`] for why that can never
@@ -347,8 +357,10 @@ impl BindingContext {
     async fn resolve_function_call(&mut self, name: &str, args: &str) -> Result<Value, String> {
         match name {
             "add_days" => self.resolve_add_days_call(args).await,
+            "sum" => self.resolve_sum_call(args).await,
+            "count" => self.resolve_count_call(args).await,
             other => Err(format!(
-                "unknown function '{}' in binding (supported: add_days)",
+                "unknown function '{}' in binding (supported: add_days, sum, count)",
                 other
             )),
         }
@@ -408,15 +420,120 @@ impl BindingContext {
             .map_err(|e| e.to_string())
     }
 
+    /// `sum(<collection-path>, <field>)` -- sums a numeric field across a
+    /// resolved collection. `<field>` is a literal field name, not itself a
+    /// binding to resolve -- optionally quoted (`"estimate"` or
+    /// `'estimate'`, matching how the equivalent CEL-style call would read
+    /// the field as a string literal), unquoted also accepted for
+    /// convenience. See [`Self::resolve_aggregate_collection`] for how the
+    /// collection itself is resolved, and [`sum_numeric_field`] for the
+    /// reduction (including why a missing/non-numeric field contributes 0
+    /// rather than failing the whole aggregation).
+    async fn resolve_sum_call(&mut self, args: &str) -> Result<Value, String> {
+        let parts = split_top_level_args(args);
+        if parts.len() != 2 {
+            return Err(format!(
+                "sum expects 2 arguments (collection, field), got {}",
+                parts.len()
+            ));
+        }
+        let collection_path = parts[0].trim();
+        let field = strip_matching_quotes(parts[1].trim());
+
+        let items = self.resolve_aggregate_collection(collection_path).await?;
+        Ok(sum_numeric_field(&items, field))
+    }
+
+    /// `count(<collection-path>)` -- item count of a resolved collection,
+    /// through the same resolution [`Self::resolve_sum_call`]/`for_each`
+    /// use.
+    async fn resolve_count_call(&mut self, args: &str) -> Result<Value, String> {
+        let parts = split_top_level_args(args);
+        if parts.len() != 1 {
+            return Err(format!(
+                "count expects 1 argument (collection), got {}",
+                parts.len()
+            ));
+        }
+        let collection_path = parts[0].trim();
+        let items = self.resolve_aggregate_collection(collection_path).await?;
+        Ok(json!(items.len() as i64))
+    }
+
+    /// Shared collection resolution for `sum`/`count`: resolves
+    /// `collection_path` through the exact same [`Self::resolve_binding`]
+    /// entry point `for_each` resolves its own collection through (see
+    /// `execute_actions`'s `for_each` branch) -- there is no second,
+    /// parallel graph-traversal implementation here -- then bounds the
+    /// reduction step's own cost.
+    ///
+    /// The bound (`AGGREGATE_CALL_MAX_ITEMS`) caps the aggregation ITSELF,
+    /// not the collection fetch that already happened inside
+    /// `resolve_binding` above -- that fetch is `for_each`'s own,
+    /// pre-existing, already-unbounded `GraphResolver` traversal (see
+    /// `AGGREGATE_CALL_MAX_ITEMS`'s doc). A collection that already exceeded
+    /// this size paid its (uncapped) DB-read cost before this check ever
+    /// runs; what this prevents is a huge in-memory array (however it got
+    /// resolved) also paying an unbounded reduction cost.
+    async fn resolve_aggregate_collection(
+        &mut self,
+        collection_path: &str,
+    ) -> Result<Vec<Value>, String> {
+        let resolved = Box::pin(self.resolve_binding(collection_path)).await?;
+        let items = match resolved {
+            Value::Array(items) => items,
+            other => {
+                return Err(format!(
+                    "aggregate collection path '{}' did not resolve to an array (got {})",
+                    collection_path,
+                    json_kind(&other)
+                ));
+            }
+        };
+
+        if items.len() > AGGREGATE_CALL_MAX_ITEMS {
+            return Err(format!(
+                "aggregate collection at '{}' has {} items, exceeding the {} item aggregation cap",
+                collection_path,
+                items.len(),
+                AGGREGATE_CALL_MAX_ITEMS
+            ));
+        }
+
+        Ok(items)
+    }
+
     async fn resolve_trigger_path(&mut self, segments: &[&str]) -> Result<Value, String> {
         match segments.first().copied() {
             Some("node") => {
                 // Try JSON navigation first (direct properties)
                 match navigate_json(&self.trigger_node, &segments[1..]) {
                     Ok(val) => Ok(val),
-                    Err(_) if segments.len() > 2 => {
-                        // JSON navigation failed and we have a multi-hop path
-                        // Try graph traversal via GraphResolver
+                    // `segments` still includes the leading "node", so `> 1`
+                    // is "at least one real segment past it" -- i.e. ANY
+                    // relationship-name reference, not just a 2+-hop one.
+                    // This used to read `> 2`, which silently excluded the
+                    // single-hop case (`{trigger.node.<relationship>}`,
+                    // landing on a Node OR a "many" Collection) from ever
+                    // reaching `GraphResolver` below: `resolve_path` itself
+                    // handles a one-segment path correctly (see its
+                    // `segments.is_empty()` early return and its per-segment
+                    // walk), the old guard just never gave it the chance,
+                    // returning the raw JSON-navigation miss instead. Found
+                    // while building `sum(collection, field)`
+                    // (`resolve_aggregate_collection`): a relationship-based
+                    // collection is exactly this single-hop shape
+                    // (`trigger.node.issues`, not `trigger.node.issues.x`),
+                    // and `for_each` resolves its own collection path through
+                    // this SAME function -- so `for_each` over a genuine
+                    // relationship (as opposed to an array-valued property,
+                    // the only shape previously exercised by this file's own
+                    // tests) was equally unreachable before this fix.
+                    // Strictly additive: this arm only runs when JSON
+                    // navigation already failed, so no path that used to
+                    // resolve successfully is affected.
+                    Err(_) if segments.len() > 1 => {
+                        // JSON navigation failed -- try graph traversal via GraphResolver
                         if let Some(ref mut resolver) = self.graph_resolver {
                             let path_segments: Vec<String> =
                                 segments[1..].iter().map(|s| s.to_string()).collect();
@@ -512,6 +629,108 @@ impl BindingContext {
             .as_ref()
             .ok_or("no item available (not in a for_each loop)")?;
         navigate_json(item, segments)
+    }
+}
+
+/// Human-readable JSON value kind, for error messages only (no behavior
+/// depends on this).
+fn json_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sum(collection, field) / count(collection) -- aggregate binding calls
+// ---------------------------------------------------------------------------
+//
+// Dispatched through the same function-call binding mechanism `add_days`
+// uses (`BindingContext::resolve_function_call`) -- see
+// `Self::resolve_sum_call`/`Self::resolve_count_call` above -- computed via
+// a shared, pure Rust reduction (`sum_numeric_field`) so there is exactly
+// one implementation of "read a numeric field off a resolved collection
+// item", not two.
+
+/// Row/item cap on `sum(...)`/`count(...)` aggregation (see
+/// `BindingContext::resolve_aggregate_collection`'s doc for exactly what
+/// this does and does not bound). Chosen generously above any realistic
+/// single-user collection (a Cycle's assigned Issues, a Project's Tasks,
+/// ...) while still giving a huge/pathological collection a fixed, fast
+/// failure instead of an unbounded reduction cost -- the same "fixed cost
+/// regardless of table size" reasoning as
+/// `TITLE_STEM_FALLBACK_CANDIDATE_CAP` in `db::sqlite_store::mod`.
+const AGGREGATE_CALL_MAX_ITEMS: usize = 10_000;
+
+/// Strip one matching pair of leading/trailing `"` or `'` characters, if
+/// present. `sum(path, "estimate")` and `sum(path, estimate)` are both
+/// accepted -- quoting is optional here (unlike CEL, where a bare `estimate`
+/// would parse as an identifier reference, not a string).
+fn strip_matching_quotes(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 {
+        let (first, last) = (bytes[0], bytes[bytes.len() - 1]);
+        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
+/// Sum a numeric field across a resolved collection of items.
+///
+/// Items are the SAME shape `for_each` items already are: JSON-serialized
+/// `Node`s (type-namespaced properties), not flattened maps -- collection
+/// paths resolve through `GraphResolver`/`resolve_binding` exactly like
+/// `for_each`'s do (see `resolve_aggregate_collection`). Each item is deserialized
+/// back into a `Node` and read through `graph_resolver::get_node_property`
+/// (the same namespace-aware lookup `for_each`'s `{item.properties.<type>.*}`
+/// bindings ultimately rely on), so `estimate` correctly finds
+/// `properties.agg_issue.estimate` / `properties["custom:estimate"]`, not
+/// just a flat top-level `estimate` key.
+///
+/// Falls back to a flat top-level lookup (`item.get(field)`) when an item
+/// isn't a full `Node` (e.g. a plain scalar/object collection, as in the
+/// unit tests below) -- a collection resolved via `GraphResolver` is always
+/// `Vec<Node>`, so this fallback exists for robustness on non-node
+/// collections, not as the primary path.
+///
+/// An item that is missing the field entirely, or whose field isn't numeric,
+/// contributes 0 rather than failing the whole aggregation: a running total
+/// over a partially-populated collection (some items simply haven't had the
+/// field set yet) is the realistic common case for a report-style derived
+/// value like this, not an error condition.
+fn sum_numeric_field(items: &[Value], field: &str) -> Value {
+    let mut sum_int: i64 = 0;
+    let mut sum_float: f64 = 0.0;
+    let mut is_float = false;
+
+    for item in items {
+        let field_value = serde_json::from_value::<Node>(item.clone())
+            .ok()
+            .and_then(|node| crate::playbook::graph_resolver::get_node_property(&node, field))
+            .or_else(|| item.get(field).cloned());
+
+        let Some(Value::Number(n)) = field_value else {
+            continue;
+        };
+        if let Some(i) = n.as_i64() {
+            sum_int += i;
+            sum_float += i as f64;
+        } else if let Some(f) = n.as_f64() {
+            is_float = true;
+            sum_float += f;
+        }
+    }
+
+    if is_float {
+        json!(sum_float)
+    } else {
+        json!(sum_int)
     }
 }
 
@@ -635,7 +854,7 @@ fn resolve_iteration_path_item_id(item: &Value) -> Result<String, String> {
 // recognize the shape "identifier(args)" and hand it to
 // `BindingContext::resolve_function_call`'s fixed, hardcoded `match` --
 // there is no way for an action param to reach anything beyond the
-// explicitly-supported function set (currently just `add_days`).
+// explicitly-supported function set (`add_days`, `sum`, `count`).
 
 /// Detect whether an entire binding path -- the text between a `{` `}` pair,
 /// e.g. the `add_days(item.start_date, 14)` in
@@ -2271,6 +2490,401 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // BindingContext::resolve_sum_call / resolve_count_call -- arg handling
+    //
+    // `sum(...)`/`count(...)` are recognized as function-call bindings by
+    // the SAME `parse_function_call` grammar `add_days(...)` uses (see that
+    // function's own tests for the generic `identifier(...)` shape and its
+    // "never misfires on an ordinary dot-path" guarantee) -- these tests
+    // cover only what's specific to `sum`/`count`: their own arg-count
+    // validation and the field argument's optional quoting.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn sum_call_bare_field_resolves() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results
+            .push(json!([{"estimate": 3}, {"estimate": 5}]));
+
+        let result = ctx
+            .resolve_binding("sum(actions[0].result, estimate)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(8));
+    }
+
+    #[tokio::test]
+    async fn sum_call_double_quoted_field_resolves() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results.push(json!([{"estimate": 3}]));
+
+        let result = ctx
+            .resolve_binding(r#"sum(actions[0].result, "estimate")"#)
+            .await
+            .unwrap();
+        assert_eq!(result, json!(3));
+    }
+
+    #[tokio::test]
+    async fn sum_call_single_quoted_field_resolves() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results.push(json!([{"estimate": 3}]));
+
+        let result = ctx
+            .resolve_binding("sum(actions[0].result, 'estimate')")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(3));
+    }
+
+    #[tokio::test]
+    async fn sum_call_tolerates_extra_whitespace_in_args() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results.push(json!([{"estimate": 3}]));
+
+        let result = ctx
+            .resolve_binding("sum( actions[0].result ,  estimate ) ")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(3));
+    }
+
+    #[tokio::test]
+    async fn count_call_resolves() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+        ctx.action_results
+            .push(json!([{"estimate": 3}, {"estimate": 5}]));
+
+        let result = ctx
+            .resolve_binding("count(actions[0].result)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(2));
+    }
+
+    #[tokio::test]
+    async fn sum_call_wrong_arg_count_errors() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx
+            .resolve_binding("sum(actions[0].result)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("sum expects 2 arguments"), "{err}");
+
+        let err = ctx
+            .resolve_binding("sum(actions[0].result, estimate, extra)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("sum expects 2 arguments"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn count_call_wrong_arg_count_errors() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx.resolve_binding("count()").await.unwrap_err();
+        assert!(err.contains("count expects 1 argument"), "{err}");
+
+        let err = ctx
+            .resolve_binding("count(actions[0].result, estimate)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("count expects 1 argument"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn unknown_function_name_is_a_clear_error() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let err = ctx
+            .resolve_binding("average(item.values)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("unknown function 'average'"), "{err}");
+        assert!(err.contains("sum"), "{err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // BindingContext::resolve_binding — sum(...)/count(...) aggregate calls
+    // -----------------------------------------------------------------------
+
+    /// Helper: a Node-shaped collection item, matching what a real
+    /// `GraphResolver`-resolved collection item looks like (type-namespaced
+    /// properties), the same shape `for_each` items are.
+    fn make_collection_item_node(id: &str, node_type: &str, field: &str, value: Value) -> Value {
+        serde_json::to_value(Node {
+            id: id.to_string(),
+            node_type: node_type.to_string(),
+            content: String::new(),
+            version: 1,
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            properties: json!({ node_type: { field: value } }),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn sum_over_node_shaped_collection_reads_type_namespaced_field() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        ctx.action_results.push(json!([
+            make_collection_item_node("i1", "agg_issue", "estimate", json!(3)),
+            make_collection_item_node("i2", "agg_issue", "estimate", json!(5)),
+        ]));
+
+        let result = ctx
+            .resolve_binding("sum(actions[0].result, estimate)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(8));
+    }
+
+    #[tokio::test]
+    async fn count_over_node_shaped_collection() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        ctx.action_results.push(json!([
+            make_collection_item_node("i1", "agg_issue", "estimate", json!(3)),
+            make_collection_item_node("i2", "agg_issue", "estimate", json!(5)),
+            make_collection_item_node("i3", "agg_issue", "estimate", json!(1)),
+        ]));
+
+        let result = ctx
+            .resolve_binding("count(actions[0].result)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(3));
+    }
+
+    #[tokio::test]
+    async fn count_of_empty_collection_is_zero() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        ctx.action_results.push(json!([]));
+
+        let result = ctx
+            .resolve_binding("count(actions[0].result)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(0));
+    }
+
+    #[tokio::test]
+    async fn sum_skips_items_missing_the_field_instead_of_failing() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        ctx.action_results.push(json!([
+            make_collection_item_node("i1", "agg_issue", "estimate", json!(3)),
+            // No "estimate" set on this issue yet -- a realistic partially
+            // populated collection, not malformed input.
+            make_collection_item_node("i2", "agg_issue", "other_field", json!("x")),
+        ]));
+
+        let result = ctx
+            .resolve_binding("sum(actions[0].result, estimate)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(3));
+    }
+
+    #[tokio::test]
+    async fn sum_skips_items_with_a_non_numeric_field_instead_of_failing() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        ctx.action_results.push(json!([
+            make_collection_item_node("i1", "agg_issue", "estimate", json!(3)),
+            make_collection_item_node("i2", "agg_issue", "estimate", json!("not a number")),
+        ]));
+
+        let result = ctx
+            .resolve_binding("sum(actions[0].result, estimate)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(3));
+    }
+
+    #[tokio::test]
+    async fn sum_falls_back_to_flat_lookup_for_non_node_items() {
+        // A collection whose items aren't full serialized `Node`s (e.g. an
+        // array literal stored directly on a property, the same shape
+        // for_each's own existing tests use) -- must still work via the flat
+        // `item.get(field)` fallback.
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        ctx.action_results
+            .push(json!([{"name": "a", "points": 2}, {"name": "b", "points": 4}]));
+
+        let result = ctx
+            .resolve_binding("sum(actions[0].result, points)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(6));
+    }
+
+    #[tokio::test]
+    async fn sum_preserves_float_result_when_any_value_is_a_float() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        ctx.action_results.push(json!([
+            make_collection_item_node("i1", "agg_issue", "estimate", json!(2)),
+            make_collection_item_node("i2", "agg_issue", "estimate", json!(1.5)),
+        ]));
+
+        let result = ctx
+            .resolve_binding("sum(actions[0].result, estimate)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(3.5));
+    }
+
+    #[tokio::test]
+    async fn sum_errors_when_the_collection_path_does_not_resolve_to_an_array() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        ctx.action_results.push(json!(42));
+
+        let err = ctx
+            .resolve_binding("sum(actions[0].result, estimate)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("did not resolve to an array"));
+    }
+
+    #[tokio::test]
+    async fn sum_reuses_for_eachs_own_collection_resolution_path() {
+        // Same `trigger.node.properties.items` collection shape the
+        // existing `for_each` unit tests already exercise (see
+        // `Some("trigger.node.properties.items")` elsewhere in this file) --
+        // proves the aggregate call resolves its collection through the
+        // exact same `resolve_binding`/JSON-navigation path `for_each` uses,
+        // not a second, parallel implementation.
+        let mut node = make_test_node("node-123", "task");
+        node.properties = json!({
+            "items": [
+                {"name": "a", "points": 2},
+                {"name": "b", "points": 4},
+                {"name": "c", "points": 6},
+            ]
+        });
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let sum = ctx
+            .resolve_binding("sum(trigger.node.properties.items, points)")
+            .await
+            .unwrap();
+        assert_eq!(sum, json!(12));
+
+        let count = ctx
+            .resolve_binding("count(trigger.node.properties.items)")
+            .await
+            .unwrap();
+        assert_eq!(count, json!(3));
+    }
+
+    #[tokio::test]
+    async fn sum_call_over_max_items_cap_errors() {
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let oversized: Vec<Value> = (0..(AGGREGATE_CALL_MAX_ITEMS + 1))
+            .map(|i| json!({"points": i}))
+            .collect();
+        ctx.action_results.push(Value::Array(oversized));
+
+        let err = ctx
+            .resolve_binding("sum(actions[0].result, points)")
+            .await
+            .unwrap_err();
+        assert!(err.contains("aggregation cap"));
+    }
+
+    #[tokio::test]
+    async fn count_call_at_exactly_max_items_cap_succeeds() {
+        // Proves the cap is an exclusive upper bound (`> MAX`, not `>= MAX`)
+        // -- a collection sized exactly at the cap must still succeed.
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        let at_cap: Vec<Value> = (0..AGGREGATE_CALL_MAX_ITEMS)
+            .map(|i| json!({"points": i}))
+            .collect();
+        ctx.action_results.push(Value::Array(at_cap));
+
+        let result = ctx
+            .resolve_binding("count(actions[0].result)")
+            .await
+            .unwrap();
+        assert_eq!(result, json!(AGGREGATE_CALL_MAX_ITEMS as i64));
+    }
+
+    #[tokio::test]
+    async fn sum_is_usable_inside_an_update_node_actions_params() {
+        // Acceptance criterion: "Result is written to a target node's field
+        // via existing action-writing mechanism" -- proves `sum(...)` is
+        // reachable from the SAME `resolve_bindings_in_value` recursive walk
+        // `execute_update_node`'s params go through, not just from a direct
+        // `resolve_binding` call.
+        let node = make_test_node("node-123", "task");
+        let event = make_node_created_event("node-123", "task");
+        let mut ctx = BindingContext::new(&node, &event, None);
+
+        ctx.action_results.push(json!([
+            make_collection_item_node("i1", "agg_issue", "estimate", json!(3)),
+            make_collection_item_node("i2", "agg_issue", "estimate", json!(5)),
+        ]));
+
+        let params = json!({
+            "node_id": "{trigger.node.id}",
+            "properties": { "total_estimate": "{sum(actions[0].result, estimate)}" }
+        });
+
+        let resolved = resolve_bindings_in_value(&params, &mut ctx).await.unwrap();
+        assert_eq!(resolved["properties"]["total_estimate"], json!(8));
+        assert_eq!(resolved["node_id"], json!("node-123"));
+    }
+
+    // -----------------------------------------------------------------------
     // BindingContext::resolve_binding — error cases
     // -----------------------------------------------------------------------
 
@@ -3574,6 +4188,183 @@ mod tests {
                 all_after_b[0].id, rule_a_node_id,
                 "the single node is rule A's, not a merge of both rules' intent"
             );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Single-hop relationship binding resolution — regression coverage for
+    // the `resolve_trigger_path` guard fix (`> 2` → `> 1`) this change made.
+    // Integration tests against a real NodeService + a real schema-declared
+    // relationship, since the bug only manifests through `GraphResolver`
+    // (a unit test with a synthetic `item`/`actions[N].result` JSON value
+    // can't exercise it -- there's no relationship to walk).
+    // -----------------------------------------------------------------------
+
+    mod single_hop_relationship_binding_integration {
+        use super::*;
+        use crate::db::SqliteStore;
+        use crate::services::NodeService;
+        use tempfile::TempDir;
+
+        async fn create_test_service() -> (Arc<NodeService>, TempDir) {
+            let temp_dir = TempDir::new().unwrap();
+            let db_path = temp_dir.path().join("test.db");
+            let mut store: Arc<SqliteStore> = Arc::new(SqliteStore::new(db_path).await.unwrap());
+            let node_service = Arc::new(NodeService::new(&mut store).await.unwrap());
+            (node_service, temp_dir)
+        }
+
+        fn make_trigger_node(id: &str, node_type: &str, properties: Value) -> Node {
+            Node {
+                id: id.to_string(),
+                node_type: node_type.to_string(),
+                content: format!("{id} content"),
+                version: 1,
+                created_at: Utc::now(),
+                modified_at: Utc::now(),
+                properties,
+                mentions: vec![],
+                mentioned_in: vec![],
+                title: Some(format!("{id} title")),
+                lifecycle_status: "active".to_string(),
+            }
+        }
+
+        async fn declare_schema(svc: &NodeService, node_type: &str, relationships: Value) {
+            let schema = Node::new_with_id(
+                node_type.to_string(),
+                "schema".to_string(),
+                node_type.to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": format!("{node_type} schema"),
+                    "fields": [{"name": "estimate", "type": "number"}],
+                    "relationships": []
+                }),
+            );
+            svc.create_node(schema).await.unwrap();
+
+            let declarations: Vec<crate::models::schema::SchemaRelationship> =
+                serde_json::from_value(relationships).unwrap();
+            if !declarations.is_empty() {
+                svc.set_schema_relationships(node_type, &declarations)
+                    .await
+                    .unwrap();
+            }
+        }
+
+        /// Before this fix, `{trigger.node.<relationship>}` (a SINGLE hop,
+        /// landing directly on the related node -- no property segment
+        /// after it) failed with a raw JSON-navigation "not found" error
+        /// without ever reaching `GraphResolver`, because `resolve_trigger_path`
+        /// only attempted graph traversal for 2+-hop paths. Proves the
+        /// single-hop "one" case now resolves to the full related node.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn single_hop_one_relationship_resolves_to_the_related_node() {
+            let (svc, _tmp) = create_test_service().await;
+
+            declare_schema(&svc, "sh_cycle", json!([])).await;
+            declare_schema(
+                &svc,
+                "sh_issue",
+                json!([{
+                    "name": "cycle",
+                    "targetType": "sh_cycle",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "issues",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            let cycle = make_trigger_node("cycle-1", "sh_cycle", json!({}));
+            svc.create_node(cycle).await.unwrap();
+            let issue =
+                make_trigger_node("issue-1", "sh_issue", json!({"sh_issue": {"estimate": 3}}));
+            svc.create_node(issue.clone()).await.unwrap();
+            svc.create_relationship("issue-1", "cycle", "cycle-1", json!({}))
+                .await
+                .unwrap();
+
+            let event = make_node_created_event("issue-1", "sh_issue");
+            let resolver = GraphResolver::new(Arc::clone(&svc));
+            let mut ctx = BindingContext::new(&issue, &event, Some(resolver));
+
+            let result = ctx.resolve_binding("trigger.node.cycle").await.unwrap();
+            assert_eq!(
+                result.get("id").and_then(|v| v.as_str()),
+                Some("cycle-1"),
+                "single-hop `trigger.node.<relationship>` must resolve to the \
+                 full related node, not fail before ever reaching GraphResolver"
+            );
+        }
+
+        /// Same fix, "many" side: a single-hop relationship collection --
+        /// exactly the shape `sum(trigger.node.issues, estimate)` needs for
+        /// its primary real-world case (a Cycle's related Issues), and the
+        /// same shape a genuine relationship-based `for_each` needs (as
+        /// opposed to the property-array-valued for_each this file's other
+        /// tests exercise).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn single_hop_many_relationship_resolves_to_the_collection_and_sums() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // Target schema must exist before a relationship can declare it
+            // as `targetType` -- declare the "many" side (sh_issue2) first.
+            declare_schema(&svc, "sh_issue2", json!([])).await;
+            declare_schema(
+                &svc,
+                "sh_cycle2",
+                json!([{
+                    "name": "issues",
+                    "targetType": "sh_issue2",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "cycle",
+                    "reverseCardinality": "one"
+                }]),
+            )
+            .await;
+
+            let cycle = make_trigger_node("cycle-2", "sh_cycle2", json!({}));
+            svc.create_node(cycle.clone()).await.unwrap();
+            let issue_a = make_trigger_node(
+                "issue-a",
+                "sh_issue2",
+                json!({"sh_issue2": {"estimate": 3}}),
+            );
+            let issue_b = make_trigger_node(
+                "issue-b",
+                "sh_issue2",
+                json!({"sh_issue2": {"estimate": 5}}),
+            );
+            svc.create_node(issue_a).await.unwrap();
+            svc.create_node(issue_b).await.unwrap();
+            svc.create_relationship("cycle-2", "issues", "issue-a", json!({}))
+                .await
+                .unwrap();
+            svc.create_relationship("cycle-2", "issues", "issue-b", json!({}))
+                .await
+                .unwrap();
+
+            let event = make_node_created_event("cycle-2", "sh_cycle2");
+            let resolver = GraphResolver::new(Arc::clone(&svc));
+            let mut ctx = BindingContext::new(&cycle, &event, Some(resolver));
+
+            let collection = ctx.resolve_binding("trigger.node.issues").await.unwrap();
+            assert!(
+                matches!(collection, Value::Array(ref items) if items.len() == 2),
+                "single-hop `trigger.node.<many-relationship>` must resolve to \
+                 the full 2-item collection: {collection:?}"
+            );
+
+            let sum = ctx
+                .resolve_binding("sum(trigger.node.issues, estimate)")
+                .await
+                .unwrap();
+            assert_eq!(sum, json!(8), "sum(...) must reuse this same resolution");
         }
     }
 

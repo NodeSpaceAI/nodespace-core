@@ -881,15 +881,16 @@ async fn validate_relationship_action(
 ///   `parse_function_call`/`BindingContext::resolve_function_call`). Both are
 ///   checked against the SAME allow-list,
 ///   [`crate::playbook::cel::NON_DETERMINISTIC_FUNCTIONS`] (`today`/
-///   `days_since`/`days_until` today). `add_days`, the one function
-///   currently registered for action values, reads no wall-clock time and is
-///   correctly absent from that list, so this check is a no-op today — but
-///   it is what keeps that true: it is what would catch a FUTURE
-///   non-deterministic function added to `resolve_function_call`'s match arm
-///   and used inside an invariant rule's action params, rather than leaving
-///   that an unenforced convention. No random-value function is registered
-///   anywhere, so these two surfaces remain the complete non-deterministic
-///   surface.
+///   `days_since`/`days_until` today). The three functions currently
+///   registered for action values — `add_days`, and the collection-reducing
+///   `sum`/`count` (`BindingContext::resolve_sum_call`/`resolve_count_call`)
+///   — all read no wall-clock or random input and are correctly absent from
+///   that list, so this check is a no-op today — but it is what keeps that
+///   true: it is what would catch a FUTURE non-deterministic function added
+///   to `resolve_function_call`'s match arm and used inside an invariant
+///   rule's action params, rather than leaving that an unenforced
+///   convention. No random-value function is registered anywhere, so these
+///   two surfaces remain the complete non-deterministic surface.
 /// - **Same-graph scope** — enforced by requiring every action *target* node id
 ///   (`node_id`, `source_id`, `target_id`) to be a `{binding}` derived from the
 ///   trigger node or a prior action, rejecting a literal/arbitrary node id.

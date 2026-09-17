@@ -119,6 +119,66 @@ impl GraphResolver {
 
             // Try as a relationship
             let related = self.fetch_related_nodes(&current_node.id, segment).await;
+
+            // A relationship's DECLARED "many" cardinality means its
+            // resolved shape must always be a Collection, regardless of how
+            // many rows CURRENTLY match (0, 1, or N) -- inferring shape
+            // purely from the current row count, as the fallback below does
+            // for relationships this lookup can't identify (an undeclared
+            // segment/typo, or one of the four built-ins, which predate
+            // per-relationship cardinality metadata), makes a declared
+            // "many" relationship's resolved type silently flip between
+            // Missing/Node/Collection as its item count crosses 0 and 1.
+            // That's wrong on both sides: a Cycle with exactly one Issue is
+            // not "the Issue itself" the way walking a genuine "one"
+            // relationship would be, and a Cycle with zero Issues yet is an
+            // ordinary state, not a missing/misconfigured path. Returning
+            // Missing/Node instead of an empty/one-item Collection here made
+            // `for_each` (and this engine's `sum`/`count` aggregate calls,
+            // which resolve their collection through this same function)
+            // hard-fail an action -- disabling the WHOLE play (see
+            // `rule_processor_loop`'s `ActionResult::Failed` handling) --
+            // for a Cycle with zero or exactly one Issue, an entirely
+            // ordinary and common state.
+            //
+            // Only checked for 0/1 current matches: for N>=2 the fallback
+            // below already returns Collection(nodes) when `is_last` (and
+            // Missing otherwise) regardless of declared cardinality, so the
+            // outcome is identical either way -- skipping the schema lookup
+            // there avoids an extra DB round trip on the common multi-match
+            // path, where it can't change anything.
+            //
+            // Walking FURTHER into a many-relationship (any current count)
+            // past this segment stays unsupported by this simple dot-path
+            // walk, same as the existing N>=2 case already enforced -- this
+            // only changes the TERMINAL-segment shape.
+            let ambiguous_match_count = matches!(&related, Ok(nodes) if nodes.len() <= 1);
+            if ambiguous_match_count
+                && self
+                    .is_declared_many_relationship(&current_node.node_type, segment)
+                    .await
+            {
+                let result = match related {
+                    Ok(nodes) => ResolvedValue::Collection(nodes),
+                    Err(e) => {
+                        warn!(
+                            "Failed to fetch related nodes for {}.{}: {}",
+                            current_node.id, segment, e
+                        );
+                        ResolvedValue::Missing
+                    }
+                };
+                self.cache.insert(segments[..=i].to_vec(), result.clone());
+                if is_last {
+                    self.cache.insert(segments.to_vec(), result.clone());
+                    return result;
+                }
+                // Can't walk further into a collection with simple dot-path.
+                let missing = ResolvedValue::Missing;
+                self.cache.insert(segments.to_vec(), missing.clone());
+                return missing;
+            }
+
             match related {
                 Ok(nodes) if nodes.is_empty() => {
                     let result = ResolvedValue::Missing;
@@ -196,6 +256,27 @@ impl GraphResolver {
             .map_err(|e| e.to_string())
     }
 
+    /// Whether `segment` is declared as a "many" cardinality relationship on
+    /// `node_type`'s schema (schema node id == node_type, per this
+    /// codebase's convention). Only called when a relationship fetch already
+    /// returned zero or exactly one row -- the only counts where cardinality
+    /// can change the resolved shape (see the call site's doc: for two or
+    /// more rows the outcome is identical regardless of declared
+    /// cardinality, so callers skip this lookup there). Distinguishes "no
+    /// such relationship" from "a declared many-relationship with zero or
+    /// one current matches", which the raw row count alone can't tell apart.
+    /// Any lookup failure (schema not found, service error) conservatively
+    /// resolves to `false` -- i.e. today's existing row-count-only
+    /// behavior -- rather than guessing.
+    async fn is_declared_many_relationship(&self, node_type: &str, segment: &str) -> bool {
+        matches!(
+            self.node_service.get_schema_node(node_type).await,
+            Ok(Some(schema)) if schema
+                .get_relationship(segment)
+                .is_some_and(|r| r.cardinality == crate::models::schema::RelationshipCardinality::Many)
+        )
+    }
+
     /// Build an enriched CEL context with graph-resolved paths.
     ///
     /// Takes the base node and extracted paths, resolves each path against
@@ -262,7 +343,13 @@ impl GraphResolver {
 /// for where the convention originates). NOTE: Parallel logic exists in
 /// `cel::node_to_cel_value` — if the property storage format changes, both
 /// must be updated.
-fn get_node_property(node: &Node, key: &str) -> Option<serde_json::Value> {
+///
+/// `pub(crate)`: also reused by `actions::sum_numeric_field` for the
+/// `sum(collection, field)` action-binding call, so a collection item's field
+/// is read through the same type-namespace-aware lookup `for_each`'s
+/// resolved items are subject to, instead of a naive flat lookup that would
+/// silently read `None` for every real (type-namespaced) node.
+pub(crate) fn get_node_property(node: &Node, key: &str) -> Option<serde_json::Value> {
     if let Some(obj) = node.properties.as_object() {
         // Direct match and type-namespaced match both look up `key` verbatim,
         // so the raw stored key being checked is `key` itself in both cases.
@@ -925,6 +1012,121 @@ mod tests {
                 ResolvedValue::Scalar(v) => assert_eq!(v, json!("in_progress")),
                 other => panic!("expected Scalar for story.epic.status, got {:?}", other),
             }
+        }
+
+        /// A declared "many" relationship with ZERO current related nodes
+        /// must resolve to an empty Collection, not Missing -- a freshly
+        /// created parent with no children yet (a Cycle with no Issues, a
+        /// Project with no Tasks) is an ordinary state, not a
+        /// missing/misconfigured path. Before this test's fix, this
+        /// resolved to Missing, which made `for_each` (and this engine's
+        /// `sum`/`count` aggregate action-binding calls, which resolve their
+        /// collection through this exact same function) hard-fail the
+        /// action the very first time the parent had zero related items --
+        /// often the very first time the rule ever ran.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn many_relationship_with_zero_matches_resolves_to_empty_collection() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_item_empty", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_parent_empty",
+                json!([{
+                    "name": "items",
+                    "targetType": "gr_item_empty",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "parent",
+                    "reverseCardinality": "one"
+                }]),
+            )
+            .await;
+
+            // Parent created with NO items ever attached -- the exact
+            // "freshly created Cycle with no Issues yet" shape.
+            let parent = make_node("gr-p-empty", "gr_parent_empty", json!({}));
+            svc.create_node(parent.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver.resolve_path(&parent, &["items".to_string()]).await;
+            match result {
+                ResolvedValue::Collection(nodes) => assert!(
+                    nodes.is_empty(),
+                    "expected an empty Collection, got {} nodes",
+                    nodes.len()
+                ),
+                other => panic!(
+                    "expected an empty Collection (not Missing) for a declared many-relationship \
+                     with zero current matches, got {:?}",
+                    other
+                ),
+            }
+        }
+
+        /// Contrast case: a declared "one" relationship with zero current
+        /// matches keeps the EXISTING Missing semantics -- unaffected by the
+        /// fix above. "Missing" correctly means "this optional single
+        /// relationship isn't set yet" (e.g. an Issue with no Cycle
+        /// assigned), which `for_each` never resolves anyway (it requires an
+        /// array) and conditions already treat as "not met" rather than an
+        /// empty node to act on.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn one_relationship_with_zero_matches_still_resolves_to_missing() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_cycle_unset", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_issue_unset",
+                json!([{
+                    "name": "cycle",
+                    "targetType": "gr_cycle_unset",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "issues",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            // Issue created with NO cycle relationship ever added.
+            let issue = make_node("gr-i-unset", "gr_issue_unset", json!({}));
+            svc.create_node(issue.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver.resolve_path(&issue, &["cycle".to_string()]).await;
+            assert!(
+                matches!(result, ResolvedValue::Missing),
+                "a 'one' relationship with zero matches must still resolve to Missing \
+                 (unset optional relationship), got {:?}",
+                result
+            );
+        }
+
+        /// Regression guard for the fix above: a segment that is NEITHER a
+        /// property NOR any declared relationship (a genuine typo/nonexistent
+        /// path) must still resolve to Missing -- `is_declared_many_relationship`
+        /// must not produce a false positive just because the fetch happened
+        /// to return zero rows.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn undeclared_segment_still_resolves_to_missing() {
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_lonely", json!([])).await;
+            let node = make_node("gr-lonely-1", "gr_lonely", json!({}));
+            svc.create_node(node.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver
+                .resolve_path(&node, &["nonexistent_relationship".to_string()])
+                .await;
+            assert!(
+                matches!(result, ResolvedValue::Missing),
+                "an undeclared segment must resolve to Missing, not an empty Collection, \
+                 got {:?}",
+                result
+            );
         }
 
         #[tokio::test(flavor = "multi_thread")]
