@@ -230,13 +230,16 @@ a[href*="nodespace://"][href*="deleted=true"]:hover::after {
   content: 'Deleted node: ';
 }
 
-/* Print styles for broken links */
+/* Print styles for broken links. Pinned to --print-muted-foreground, not
+   --muted-foreground: that token tracks the active theme, and .dark stays on
+   <html> through printing, so it would resolve to a near-white value that is
+   invisible on the printed page's white background. */
 @media print {
   .ns-noderef--deleted,
   .ns-noderef[href*="deleted=true"],
   a[href*="nodespace://"][href*="deleted=true"] {
     text-decoration: line-through;
-    color: #999 !important;
+    color: hsl(var(--print-muted-foreground)) !important;
   }
 
   .ns-noderef--deleted::after,
@@ -742,11 +745,14 @@ a[href*="nodespace://"][href*="deleted=true"]:hover::after {
    Print Styles
    ============================================================================ */
 
+/* Pinned to --print-foreground, not --foreground, for the same reason as the
+   broken-link print block above: it must stay dark-on-white regardless of the
+   active app theme, not track it. */
 @media print {
   .ns-noderef {
     background: transparent !important;
-    border: 1px solid #000 !important;
-    color: #000 !important;
+    border: 1px solid hsl(var(--print-foreground)) !important;
+    color: hsl(var(--print-foreground)) !important;
     box-shadow: none !important;
   }
 

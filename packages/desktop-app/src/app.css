@@ -160,6 +160,19 @@
     --console-border: 0 0% 26.7%; /* Dividers and outlines */
     --console-foreground: 0 0% 88%; /* Primary text */
     --console-foreground-muted: 0 0% 53.3%; /* Timestamps, hints, empty states */
+
+    /*
+      Print ink colors — also deliberately theme-invariant, and also defined
+      once here and NOT redefined under .dark, for the mirror-image reason to
+      --console-*: a printed page is always a white sheet, but the .dark class
+      set by theme.ts stays on <html> through printing (nothing resets it), so
+      a theme-tracking token such as --foreground would resolve to its .dark
+      value — near-white — and print as invisible ink on white paper. These
+      pin the light-mode --foreground/--muted-foreground values so print output
+      stays legible regardless of which theme is active on screen.
+    */
+    --print-foreground: 240 11% 4%; /* Body text / borders on the printed page */
+    --print-muted-foreground: 243 9% 40%; /* De-emphasized print text, e.g. a deleted-link notice */
   }
 
   .dark {

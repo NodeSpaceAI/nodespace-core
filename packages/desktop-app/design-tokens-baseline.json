@@ -629,21 +629,6 @@
     {
       "file": "src/lib/styles/noderef.css",
       "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#000\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"#999\" in \"color\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-disallowed-list",
-      "text": "Raw color literal \"1px solid #000\" in \"border\". Use a design token — hsl(var(--token)) — and define raw values in src/app.css. (declaration-property-value-disallowed-list)"
-    },
-    {
-      "file": "src/lib/styles/noderef.css",
-      "rule": "declaration-property-value-disallowed-list",
       "text": "Unauthorized animation on \"animation\": \"none\". DESIGN.md permits only the sidebar width collapse and the code-block button fade. (declaration-property-value-disallowed-list)"
     },
     {
