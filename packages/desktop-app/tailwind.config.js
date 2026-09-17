@@ -19,10 +19,16 @@ export default {
         primary: {
           DEFAULT: "hsl(var(--primary) / <alpha-value>)",
           foreground: "hsl(var(--primary-foreground) / <alpha-value>)",
-          // No <alpha-value>: a --*-hover is the opaque fill of a hovered filled
-          // button. Admitting an alpha channel here would re-enable the
-          // `hover:bg-primary/90` idiom these tokens exist to replace, which
-          // composites against the page and so flips hover direction by theme.
+          // A --*-hover is the opaque fill of a hovered filled button, so this
+          // entry carries no <alpha-value> placeholder: the bare form is what a
+          // value meant to be used opaquely looks like.
+          //
+          // Note this does NOT make an alpha variant impossible. Tailwind v3
+          // injects the alpha into `hsl(var(--x))` anyway, so
+          // `hover:bg-primary-hover/90` still compiles. Nothing in the config
+          // can forbid it; what actually holds the rule is the
+          // `no alpha-fill hover left on a filled variant` assertion in
+          // filled-button-variants.test.ts.
           hover: "hsl(var(--primary-hover))"
         },
         secondary: {

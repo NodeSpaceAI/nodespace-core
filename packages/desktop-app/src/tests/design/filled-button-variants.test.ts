@@ -22,58 +22,13 @@
 import { describe, it, expect } from 'vitest';
 import { buttonVariants } from '$lib/components/ui/button/types';
 import tailwindConfig from '../../../tailwind.config.js';
+import { AA, contrast, readHsl, themeBlock } from '../helpers/wcag-contrast';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const appCss = fs.readFileSync(path.join(packageRoot, 'src/app.css'), 'utf8');
-
-/** WCAG 2.x minimum for normal-size text. */
-const AA = 4.5;
-
-type Hsl = { h: number; s: number; l: number };
-
-function themeBlock(source: string, selector: string): string {
-  const start = source.indexOf(selector);
-  expect(start, `${selector} block not found in app.css`).toBeGreaterThan(-1);
-
-  const open = source.indexOf('{', start);
-  let depth = 0;
-  for (let i = open; i < source.length; i++) {
-    if (source[i] === '{') depth++;
-    else if (source[i] === '}' && --depth === 0) return source.slice(open + 1, i);
-  }
-  throw new Error(`Unbalanced braces after ${selector} in app.css`);
-}
-
-/** `--token: 345 77% 46%` -> {h,s,l}. Throws on a miss, so a typo fails loudly. */
-function readHsl(block: string, token: string): Hsl {
-  const pattern = new RegExp(`${token}(?![\\w-])\\s*:\\s*([\\d.]+)\\s+([\\d.]+)%\\s+([\\d.]+)%`);
-  const match = pattern.exec(block);
-  if (!match) throw new Error(`${token} is not declared as a plain HSL triple in this theme block`);
-  return { h: Number(match[1]), s: Number(match[2]), l: Number(match[3]) };
-}
-
-function hslToRgb({ h, s, l }: Hsl): [number, number, number] {
-  const sat = s / 100;
-  const lig = l / 100;
-  const k = (n: number) => (n + h / 30) % 12;
-  const a = sat * Math.min(lig, 1 - lig);
-  const f = (n: number) => lig - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
-  return [f(0), f(8), f(4)];
-}
-
-/** WCAG relative luminance. Takes 0-1 channels, as hslToRgb returns. */
-function luminance(rgb: [number, number, number]): number {
-  const [r, g, b] = rgb.map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-function contrast(a: Hsl, b: Hsl): number {
-  const [hi, lo] = [luminance(hslToRgb(a)), luminance(hslToRgb(b))].sort((x, y) => y - x);
-  return (hi + 0.05) / (lo + 0.05);
-}
 
 /**
  * The filled variants: solid semantic fill, own foreground, own hover token.
@@ -108,6 +63,13 @@ describe('shared Button filled variants', () => {
         // `text-white` was the stock shadcn treatment on destructive. It bypasses
         // `--destructive-foreground`, which carries real per-theme values, and
         // lands at 2.86:1 on the solid dark fill.
+        //
+        // The first assertion is the one that bites, and it covers the literal
+        // too: `tv()` runs tw-merge, so a literal added after the token silently
+        // REPLACES it — `text-destructive-foreground text-white` collapses to
+        // `text-white` alone. The second line therefore never fails on its own
+        // (whichever color survives, the other is absent by construction). It
+        // stays as a statement of the prohibition, not as a second safety net.
         expect(classes).toContain(`text-${utility}-foreground`);
         expect(classes).not.toContain('text-white');
       });
@@ -123,9 +85,13 @@ describe('shared Button filled variants', () => {
         expect(colors[utility].hover).toBe(`hsl(var(${token}-hover))`);
       });
 
-      it(`registers ${token}-hover with no alpha channel`, () => {
-        // An `<alpha-value>` placeholder would make `hover:bg-x-hover/90` legal
-        // again, re-admitting the composited idiom these tokens replaced.
+      it(`registers ${token}-hover in its bare, opaque form`, () => {
+        // Asserts the SHAPE of the registration, not an impossibility. Omitting
+        // the `<alpha-value>` placeholder does not stop an alpha variant from
+        // compiling — Tailwind v3 injects alpha into `hsl(var(--x))` regardless,
+        // so `hover:bg-primary-hover/90` still resolves. The placeholder's
+        // absence is how a value meant to be used opaquely is written here;
+        // what actually forbids an alpha hover is the filled-variant sweep below.
         const colors = tailwindConfig.theme?.extend?.colors as Record<
           string,
           Record<string, string>
