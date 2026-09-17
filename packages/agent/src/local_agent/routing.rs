@@ -806,7 +806,7 @@ pub fn declare_write_tool_fields(
         .iter()
         .filter(|c| !c.tools.is_empty())
         .map(|c| c.score)
-        .fold(f32::MIN, f32::max);
+        .fold(f32::NEG_INFINITY, f32::max);
     tools
         .into_iter()
         .map(|tool| {
@@ -1473,10 +1473,11 @@ mod tests {
     }
 
     /// The degenerate shape the tool-bearing filter introduces: with no
-    /// tool-bearing candidate at all, `max_score` folds to its `f32::MIN`
-    /// seed, which `c.score >= max_score` admits for anything. Safe, but via
-    /// the *second* conjunct rather than the first — a zero-tool candidate
-    /// never matches `c.tools.iter().any(...)`, so nothing is declared.
+    /// tool-bearing candidate at all, `max_score` folds to its
+    /// `f32::NEG_INFINITY` seed, which `c.score >= max_score` admits for
+    /// anything. Safe, but via the *second* conjunct rather than the first —
+    /// a zero-tool candidate never matches `c.tools.iter().any(...)`, so
+    /// nothing is declared.
     /// Pinned because the first conjunct silently stops carrying the weight
     /// here, and a later edit to the second one could quietly start
     /// fabricating declarations from candidates that whitelist nothing.
