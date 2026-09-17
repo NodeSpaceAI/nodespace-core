@@ -532,6 +532,13 @@ impl BindingContext {
                     // Strictly additive: this arm only runs when JSON
                     // navigation already failed, so no path that used to
                     // resolve successfully is affected.
+                    //
+                    // Reverse traversal adds a second single-hop shape with the
+                    // same requirement: `{trigger.node.assignee}` names the
+                    // related node itself, so the relationship segment IS the
+                    // whole path. Two independent features needed this same
+                    // guard relaxed, which is a fair sign the old `> 2` was
+                    // encoding a walk-length assumption rather than a rule.
                     Err(_) if segments.len() > 1 => {
                         // JSON navigation failed -- try graph traversal via GraphResolver
                         if let Some(ref mut resolver) = self.graph_resolver {

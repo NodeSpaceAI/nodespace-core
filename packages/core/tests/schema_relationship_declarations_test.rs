@@ -448,6 +448,64 @@ async fn builtin_reverse_spellings_are_reserved_in_both_positions() -> Result<()
     Ok(())
 }
 
+/// The reservation and the resolver's ordering are one mechanism, and this ties
+/// them together.
+///
+/// `resolve_relationship_name` answers a built-in inverse from the built-in
+/// table BEFORE consulting the node's own schema. That early return is only
+/// safe because no schema can declare such a name — otherwise it would shadow a
+/// live declaration. Each half is tested on its own; this asserts the join, so
+/// that relaxing the reservation cannot silently make the ordering wrong.
+#[tokio::test]
+async fn a_builtin_inverse_always_resolves_to_the_builtin() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+
+    // The declaration that would shadow it is refused...
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Carton",
+            "fields": [],
+            "relationships": [{
+                "name": "child_of",
+                "targetType": "carton",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "cartons",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .expect_err("precondition: a built-in inverse cannot be declared");
+
+    // ...so `child_of` on a real node can only mean the built-in: the forward
+    // name rewritten, the direction flipped.
+    handle_create_schema(&svc, json!({ "name": "Carton", "fields": [] }))
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let node = Node::new("carton".to_string(), "a carton".to_string(), json!({}));
+    let node_id = node.id.clone();
+    svc.create_node(node).await?;
+
+    let resolved = rel_ops::resolve_relationship_name(&svc, &node_id, "carton", "child_of").await?;
+    match resolved {
+        rel_ops::ResolvedRelName::Reverse {
+            forward_name,
+            source_type,
+        } => {
+            assert_eq!(forward_name, "has_child");
+            assert_eq!(
+                source_type, None,
+                "a built-in has no declaring schema, so results must not be narrowed by type"
+            );
+        }
+        other => panic!("expected the built-in inverse, got {other:?}"),
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Block-by-default protection
 // ---------------------------------------------------------------------------

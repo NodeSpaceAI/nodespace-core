@@ -107,14 +107,27 @@ pub fn is_reserved_relationship_name(name: &str) -> bool {
         .any(|(forward, reverse)| *forward == name || *reverse == name)
 }
 
-/// Every reserved relationship spelling, forward and reverse, for error
-/// messages that must tell an author which names are unavailable.
-pub fn reserved_relationship_names() -> Vec<&'static str> {
-    BUILTIN_RELATIONSHIPS
-        .iter()
-        .flat_map(|(forward, reverse)| [*forward, *reverse])
-        .collect()
-}
+/// Every reserved relationship spelling, forward and reverse — what an error
+/// message lists when telling an author which names are unavailable.
+///
+/// Spelled out per index for the same reason as [`BUILTIN_RELATIONSHIP_NAMES`]:
+/// const context has no iteration. The assertion below makes a length mismatch
+/// a compile error.
+pub const RESERVED_RELATIONSHIP_NAMES: [&str; 8] = [
+    BUILTIN_RELATIONSHIPS[0].0,
+    BUILTIN_RELATIONSHIPS[0].1,
+    BUILTIN_RELATIONSHIPS[1].0,
+    BUILTIN_RELATIONSHIPS[1].1,
+    BUILTIN_RELATIONSHIPS[2].0,
+    BUILTIN_RELATIONSHIPS[2].1,
+    BUILTIN_RELATIONSHIPS[3].0,
+    BUILTIN_RELATIONSHIPS[3].1,
+];
+
+const _: () = assert!(
+    BUILTIN_RELATIONSHIPS.len() * 2 == RESERVED_RELATIONSHIP_NAMES.len(),
+    "RESERVED_RELATIONSHIP_NAMES must list both spellings of every BUILTIN_RELATIONSHIPS entry"
+);
 
 /// The reverse name for a built-in structural relationship — the label its edge
 /// reads by from the target's end (`has_child` → `child_of`).

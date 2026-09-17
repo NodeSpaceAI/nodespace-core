@@ -12,6 +12,7 @@
 
 use crate::models::Node;
 use crate::ops::rel_ops::{self, ResolvedRelName};
+use crate::ops::OpsError;
 use crate::playbook::cel::{json_to_cel, key, node_to_cel_value};
 use crate::playbook::path_extractor::{CollectionPath, ExtractedPath};
 use crate::services::NodeService;
@@ -185,14 +186,14 @@ impl GraphResolver {
                         ResolvedValue::Missing
                     }
                 };
-                self.cache.insert(segments[..=i].to_vec(), result.clone());
+                self.cache.insert(cache_key(&segments[..=i]), result.clone());
                 if is_last {
-                    self.cache.insert(segments.to_vec(), result.clone());
+                    self.cache.insert(cache_key(segments), result.clone());
                     return result;
                 }
                 // Can't walk further into a collection with simple dot-path.
                 let missing = ResolvedValue::Missing;
-                self.cache.insert(segments.to_vec(), missing.clone());
+                self.cache.insert(cache_key(segments), missing.clone());
                 return missing;
             }
 
@@ -295,8 +296,14 @@ impl GraphResolver {
         .await
         {
             Ok(resolved) => resolved,
-            // Undeclared in either direction — an empty traversal, not a failure.
-            Err(_) => return Ok(vec![]),
+            // Undeclared in either direction — an empty traversal, not a
+            // failure. This is the ordinary way a path turns out missing.
+            Err(OpsError::InvalidParams(_)) => return Ok(vec![]),
+            // Anything else is infrastructure failing (an unreadable schema, a
+            // locked database), not a statement about this path. Propagate it
+            // so it is logged and the condition is not quietly false — the same
+            // treatment the `get_related_nodes` call below already gets.
+            Err(e) => return Err(e.to_string()),
         };
 
         let (name, direction, source_type) = match &resolved {
@@ -368,8 +375,21 @@ impl GraphResolver {
 
         // Resolve flat paths (skip "node" root — those beyond property-level)
         for path in paths {
-            if path.root != "node" || path.segments.len() <= 2 {
-                // Single-level paths (node.status) are handled by existing context building
+            if path.root != "node" || path.segments.len() < 2 {
+                continue;
+            }
+
+            // `node.status` is a property, already in the base CEL context —
+            // resolving it again would be wasted work.
+            //
+            // The check is "is this a property?", not "is this path short?". A
+            // two-segment path used to be a property by definition, because a
+            // relationship needed a further hop to produce a value. A terminal
+            // reverse segment (`node.assignee`) breaks that: the related node
+            // IS the value, so a length test would skip the very paths this
+            // resolver exists to answer.
+            if path.segments.len() == 2 && get_node_property(root_node, &path.segments[1]).is_some()
+            {
                 continue;
             }
 
@@ -1928,6 +1948,62 @@ mod tests {
                 ResolvedValue::Node(n) => assert_eq!(n.id, "gr-inf-d1"),
                 other => panic!("expected the doc Node, got {:?}", other),
             }
+        }
+
+        /// A two-segment reverse path (`node.assignee`) resolves through
+        /// `enrich_context`, the boundary a Play condition actually calls.
+        ///
+        /// `resolve_path` is the unit; `enrich_context` is what CEL evaluation
+        /// goes through. A gate there used to skip any path of two segments on
+        /// the assumption that it must be a property — true while relationships
+        /// only ever appeared mid-path, since a relationship needed a further
+        /// hop to yield a value. A terminal reverse segment breaks that: the
+        /// relationship IS the value. Without this, `node.assignee` silently
+        /// evaluated to a false condition.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn enrich_context_resolves_a_terminal_reverse_segment() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_term_ticket", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_term_person",
+                json!([{
+                    "name": "tasks",
+                    "targetType": "gr_term_ticket",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "assignee",
+                    "reverseCardinality": "one"
+                }]),
+            )
+            .await;
+
+            svc.create_node(make_node(
+                "gr-term-u1",
+                "gr_term_person",
+                json!({"email": "ada@example.com"}),
+            ))
+            .await
+            .unwrap();
+            let ticket = make_node("gr-term-k1", "gr_term_ticket", json!({"status": "open"}));
+            svc.create_node(ticket.clone()).await.unwrap();
+            svc.create_relationship("gr-term-u1", "tasks", "gr-term-k1", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let paths = vec![ExtractedPath {
+                segments: vec!["node".to_string(), "assignee".to_string()],
+                root: "node".to_string(),
+            }];
+
+            let result = resolver.enrich_context(&ticket, &paths, &[]).await;
+
+            let key = vec!["node".to_string(), "assignee".to_string()];
+            assert!(
+                result.contains_key(&key),
+                "node.assignee must resolve through enrich_context, not just resolve_path"
+            );
         }
 
         /// The segment cache is scoped to the node a walk started from.

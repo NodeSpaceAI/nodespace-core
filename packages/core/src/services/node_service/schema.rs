@@ -781,7 +781,7 @@ impl NodeService {
                          ({}); choose a different name",
                         which,
                         name,
-                        crate::models::schema::reserved_relationship_names().join(", ")
+                        crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
                     )));
                 }
             }
@@ -876,7 +876,7 @@ impl NodeService {
                          ({}); choose a different name",
                         which,
                         name,
-                        crate::models::schema::reserved_relationship_names().join(", ")
+                        crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
                     )));
                 }
             }

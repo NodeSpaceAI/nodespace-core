@@ -892,6 +892,13 @@ pub(crate) async fn rule_processor_loop(
             depth,
         );
 
+        // One resolver for every rule on this work item: all of them resolve
+        // paths from the same trigger node, so a per-rule resolver discarded a
+        // cache that the next rule was about to ask the same questions of.
+        // Safe because cache entries are scoped to the root they came from.
+        let mut resolver =
+            crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&node_service));
+
         // Process each matched rule in order
         for rule_ref in &work_item.rules {
             debug!(
@@ -899,9 +906,6 @@ pub(crate) async fn rule_processor_loop(
                 rule_ref.rule.name, rule_ref.play_id, rule_ref.rule_index,
             );
 
-            // Phase 3: Evaluate CEL conditions with graph resolver
-            let mut resolver =
-                crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&node_service));
             let condition_result = crate::playbook::cel::evaluate_conditions(
                 &rule_ref.rule.conditions,
                 &work_item.trigger_node,

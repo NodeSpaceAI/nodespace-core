@@ -462,7 +462,7 @@ fn reject_reserved_relationship_names(
                      ({}). Choose a different name.",
                     which,
                     name,
-                    crate::models::schema::reserved_relationship_names().join(", ")
+                    crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
                 )));
             }
         }
