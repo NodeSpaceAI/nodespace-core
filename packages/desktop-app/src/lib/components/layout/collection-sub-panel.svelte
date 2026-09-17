@@ -272,9 +272,6 @@
     box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
     transform: translateX(-100%);
     opacity: 0;
-    transition:
-      transform 250ms ease-out,
-      opacity 250ms ease-out;
     z-index: 20;
     display: flex;
     flex-direction: column;
@@ -310,7 +307,6 @@
     margin: -0.125rem -0.25rem;
     border-radius: 4px;
     cursor: pointer;
-    transition: background-color 0.2s;
   }
 
   .sub-panel-title:hover {
@@ -334,9 +330,6 @@
     cursor: pointer;
     color: hsl(var(--muted-foreground));
     border-radius: 4px;
-    transition:
-      background-color 0.2s,
-      color 0.2s;
     flex-shrink: 0;
   }
 
@@ -457,9 +450,6 @@
     text-align: left;
     color: hsl(var(--muted-foreground));
     font-size: 0.875rem;
-    transition:
-      background-color 0.2s,
-      color 0.2s;
   }
 
   .node-item:hover {

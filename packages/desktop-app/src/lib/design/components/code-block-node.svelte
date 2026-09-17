@@ -500,7 +500,7 @@
     font-size: 0.75rem;
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.2s ease;
+    transition: opacity 0.2s ease !important;
     width: 8rem;
     box-sizing: border-box;
     text-align: left;
@@ -567,7 +567,7 @@
     font-size: 0.75rem;
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.2s ease;
+    transition: opacity 0.2s ease !important;
     text-transform: lowercase;
   }
 

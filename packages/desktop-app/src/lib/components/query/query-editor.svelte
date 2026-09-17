@@ -347,7 +347,6 @@
     border: 1px solid hsl(var(--border));
     border-radius: 0.375rem;
     cursor: pointer;
-    transition: color 0.15s ease, border-color 0.15s ease;
   }
 
   .btn-remove:hover {
@@ -365,7 +364,6 @@
     border: 1px dashed hsl(var(--border));
     border-radius: 0.375rem;
     cursor: pointer;
-    transition: background-color 0.15s ease;
   }
 
   .btn-add:hover:not(:disabled) {
@@ -402,7 +400,6 @@
     border: none;
     border-radius: 0.375rem;
     cursor: pointer;
-    transition: opacity 0.15s ease;
   }
 
   .btn-save:hover {
@@ -419,7 +416,6 @@
     border: 1px solid hsl(var(--border));
     border-radius: 0.375rem;
     cursor: pointer;
-    transition: background-color 0.15s ease;
   }
 
   .btn-preview:hover:not(:disabled),

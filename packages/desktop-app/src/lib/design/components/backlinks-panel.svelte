@@ -102,7 +102,6 @@
     border-top: 1px solid hsl(var(--border));
     background: hsl(var(--background));
     cursor: pointer;
-    transition: opacity 0.2s;
   }
 
   .backlinks-panel-container :global([data-collapsible-trigger]:hover) {

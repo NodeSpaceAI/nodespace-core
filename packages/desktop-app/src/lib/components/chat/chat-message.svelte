@@ -166,7 +166,6 @@
     font-size: 0.8125rem;
     font-family: inherit;
     cursor: pointer;
-    transition: background-color 0.15s, border-color 0.15s;
   }
 
   .clarify-option:not(:disabled):hover {
@@ -202,7 +201,6 @@
     content: '▸';
     display: inline-block;
     margin-right: 0.375rem;
-    transition: transform 0.15s;
   }
 
   .reasoning-block[open] .reasoning-summary::before {
@@ -228,7 +226,6 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: color 0.15s;
   }
 
   .copy-button:hover {
