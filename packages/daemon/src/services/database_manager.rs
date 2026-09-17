@@ -14,14 +14,14 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use nodespace_core::models::EmbeddingConfig;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{watch, RwLock, RwLockWriteGuard};
+use tokio::sync::{watch, Mutex as AsyncMutex, RwLock, RwLockWriteGuard};
 use ulid::Ulid;
 
 use super::assembly::{build_database_services, DatabaseServices, SharedContext};
@@ -265,6 +265,25 @@ pub struct DatabaseManager {
     /// per-database compute scoping). Drives idle eviction. `Instant` is
     /// monotonic, so this is unaffected by wall-clock changes.
     last_activity: RwLock<HashMap<DatabaseId, Instant>>,
+    /// Per-id locks guarding a database's first open. [`Self::get_or_open`]
+    /// acquires the lock for `id` before assembling its service set, so two
+    /// concurrent callers requesting the same not-yet-open database converge
+    /// on a single `build_database_services` call rather than each
+    /// independently opening a writer `SqliteStore` connection against the
+    /// same file and racing to create its schema on it — `SqliteStore::new`
+    /// permits only one writer at a time, so two overlapping opens either
+    /// collide on the write lock or, absent proper `busy_timeout`
+    /// sequencing, corrupt schema creation outright (see
+    /// `nodespace_core::db::schema::create_schema`'s doc comment for what
+    /// closes that gap on the SQLite side — this closes it one layer up, so
+    /// the daemon never even attempts the race in the first place). A plain
+    /// `std::sync::Mutex` guards the map itself since every access is a bare
+    /// lookup/insert with no `.await` in the critical section; each entry's
+    /// value is an async mutex, held only while its database's assembly is
+    /// in flight. [`Self::remove`] prunes an id's entry once it is gone from
+    /// the registry, so this tracks only currently-registered ids — it does
+    /// not grow across register/remove churn.
+    opening: StdMutex<HashMap<DatabaseId, Arc<AsyncMutex<()>>>>,
     /// Process-global build context (PTY manager + embedding model) every
     /// per-database service set is assembled from.
     context: SharedContext,
@@ -342,6 +361,7 @@ impl DatabaseManager {
             registry: RwLock::new(registry),
             open: RwLock::new(HashMap::new()),
             last_activity: RwLock::new(HashMap::new()),
+            opening: StdMutex::new(HashMap::new()),
             context,
             change_tx: watch::channel(0).0,
             #[cfg(test)]
@@ -628,6 +648,21 @@ impl DatabaseManager {
         // and calling the public `close` here too would double-notify for a
         // database that happened to be open at removal time.
         self.close_without_notify(id).await;
+        // `id` is gone from the registry now, so its per-id opening lock (see
+        // that field's doc comment) has nothing left to guard: no future
+        // `get_or_open(id)` can succeed past the registry lookup. Drop the
+        // entry rather than leaving it — `DatabaseId::generate()` mints a
+        // fresh ULID per registration, so a register-open-remove cycle
+        // (a supported workflow, e.g. scratch databases) would otherwise
+        // accumulate an orphaned lock per cycle for the life of the process.
+        // Safe even if a concurrent `get_or_open(id)` is mid-flight holding
+        // a clone of this `Arc`: removing the map entry doesn't affect a
+        // clone already held elsewhere, it only stops a *future* caller from
+        // reusing this specific lock instance.
+        self.opening
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
         Ok(())
     }
 
@@ -863,12 +898,38 @@ impl DatabaseManager {
     /// A cached handle is returned immediately; otherwise the registry entry's
     /// path is resolved and its [`DatabaseServices`] are built from the shared
     /// [`SharedContext`], cached, and returned. Errors if `id` is not
-    /// registered. Concurrent first-opens of the same id converge on a single
-    /// cached handle: the assembly runs outside the `open` lock (so opens of
-    /// distinct databases don't serialize), then a re-check under the write
-    /// lock keeps whichever handle landed first and shuts the other one down.
+    /// registered.
+    ///
+    /// Concurrent first-opens of the same id converge on a single assembly:
+    /// [`Self::opening`] serializes callers per-id BEFORE any of them touches
+    /// SQLite, so only one ever calls `build_database_services` (which opens
+    /// the writer connection and runs `create_schema`) for a given id at a
+    /// time — every other concurrent caller waits on the same lock and then
+    /// takes the fast path above once the first caller finishes. Opens of
+    /// *distinct* ids still don't serialize against each other, since each id
+    /// gets its own lock. This used to be enforced only after the fact (build
+    /// twice, keep whichever landed first, shut the other down) — that let
+    /// two callers open independent writer connections to the same file at
+    /// the same time, which is exactly the shape `create_schema`'s
+    /// transaction-wrap doc comment describes as unsafe otherwise.
     pub async fn get_or_open(&self, id: &DatabaseId) -> Result<Arc<DatabaseServices>> {
         // Fast path: already open.
+        if let Some(services) = self.open.read().await.get(id).cloned() {
+            self.touch(id).await;
+            return Ok(services);
+        }
+
+        let lock = {
+            let mut opening = self.opening.lock().unwrap_or_else(|e| e.into_inner());
+            opening
+                .entry(id.clone())
+                .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+                .clone()
+        };
+        let _opening_guard = lock.lock().await;
+
+        // Re-check now that we hold the per-id lock: another caller may have
+        // finished opening this exact id while we were waiting for it.
         if let Some(services) = self.open.read().await.get(id).cloned() {
             self.touch(id).await;
             return Ok(services);
@@ -880,9 +941,11 @@ impl DatabaseManager {
             registry.find_or_err(id)?.path.clone()
         };
 
-        // Assemble the service set (opens SQLite, seeds schema) without holding
-        // the `open` lock. The per-database embedding-wiring task is detached,
-        // matching the boot path. `last_opened_at` bookkeeping is deferred.
+        // Assemble the service set (opens SQLite, seeds schema). Held only by
+        // this one caller for this id, per the lock above — no concurrent
+        // assembly of the same database can be racing this. The per-database
+        // embedding-wiring task is detached, matching the boot path.
+        // `last_opened_at` bookkeeping is deferred.
         let (services, _embed_task) = build_database_services(&path, &self.context, id.as_str())
             .await
             .with_context(|| format!("opening database {id}"))?;
@@ -890,22 +953,22 @@ impl DatabaseManager {
         Ok(self.cache_or_discard(id, Arc::new(services)).await)
     }
 
-    /// Publish `services` as the open handle for `id` — or, when a concurrent
-    /// open already cached one, shut ours down and return theirs, so every
-    /// request shares a single open handle.
+    /// Publish `services` as the open handle for `id`.
     ///
-    /// The shutdown is the whole point of this being one function rather than
-    /// an inline re-check. `build_database_services` starts the set's background
-    /// work (ai-chat event watcher, embedding wiring) *before* it returns, and
-    /// letting the loser's `Arc` fall out of scope stops none of it: the watcher
-    /// task holds a clone of the very `NodeService` that owns the event sender
-    /// it is waiting on, so its channel can never close and it runs — pinning a
-    /// second store, node service, and processor — for the rest of the process's
-    /// life, unreachable from `close`/`close_all` because the registry never
-    /// listed it. Retiring it through the same
-    /// [`DatabaseServices::shutdown`] the deliberate-close path uses is what
-    /// makes "converge on one handle" true of the side effects and not just the
-    /// map entry.
+    /// [`Self::get_or_open`]'s per-id lock means, in practice, nothing else
+    /// can have cached `id` between that caller resolving the path and
+    /// calling here — so the `existing` branch below should never trigger
+    /// from that call site. It stays as a defensive re-check rather than a
+    /// bare insert because this is the one place that would need to know how
+    /// to retire a loser if that ever stopped being true: `services.shutdown()`
+    /// is not optional cleanup. `build_database_services` starts the set's
+    /// background work (ai-chat event watcher, embedding wiring) *before* it
+    /// returns, and letting an unwanted `Arc` simply fall out of scope stops
+    /// none of it — the watcher task holds a clone of the very `NodeService`
+    /// that owns the event sender it is waiting on, so its channel can never
+    /// close and it runs — pinning a second store, node service, and
+    /// processor — for the rest of the process's life, unreachable from
+    /// `close`/`close_all` because the registry never listed it.
     async fn cache_or_discard(
         &self,
         id: &DatabaseId,
@@ -1576,6 +1639,38 @@ mod tests {
         );
     }
 
+    /// `remove` must prune the removed id's per-id opening lock, not just its
+    /// registry entry and open handle.
+    ///
+    /// `DatabaseId::generate()` mints a fresh ULID per registration, so a
+    /// register→open→remove cycle (a supported workflow: scratch/test
+    /// databases, or any scripted create-then-delete flow) would otherwise
+    /// leave an orphaned `Arc<AsyncMutex<()>>` behind on every cycle, growing
+    /// `opening` unboundedly across a long-lived daemon process.
+    #[tokio::test]
+    async fn remove_prunes_the_id_from_the_opening_lock_map() {
+        let (mgr, dir, _registry_path) = temp_manager().await;
+        let db_path = dir.path().join("scratch.db");
+        let id = mgr
+            .ensure_default_registered("Scratch".into(), db_path)
+            .await
+            .unwrap();
+        // `get_or_open` (not `create`, which builds its service set directly
+        // and never touches `opening`) is what records the per-id lock.
+        mgr.get_or_open(&id).await.unwrap();
+        assert!(
+            mgr.opening.lock().unwrap().contains_key(&id),
+            "precondition: opening the database through get_or_open must record its per-id lock"
+        );
+
+        mgr.remove(&id).await.unwrap();
+
+        assert!(
+            !mgr.opening.lock().unwrap().contains_key(&id),
+            "remove must drop the id's opening lock, not leave it orphaned"
+        );
+    }
+
     #[tokio::test]
     async fn rename_rolls_back_when_save_fails() {
         let (mgr, dir, registry_path) = temp_manager().await;
@@ -1950,6 +2045,74 @@ mod tests {
             .get_or_open(&DatabaseId::from("ZZZ-NOT-REGISTERED".to_string()))
             .await
             .is_err());
+    }
+
+    /// Real concurrent callers of `get_or_open` for the same not-yet-open id
+    /// must converge on exactly one assembled service set, and none of them
+    /// may error.
+    ///
+    /// Before the per-id lock in `get_or_open`, this shape — several tasks
+    /// racing to open the same brand-new database — let each one
+    /// independently call `build_database_services`, which opens its own
+    /// writer `SqliteStore` connection to the same file and runs
+    /// `create_schema` on it. Two such connections opening at the same
+    /// instant contend for SQLite's single write lock; a prior ordering bug
+    /// in `apply_writer_pragmas` (busy_timeout set AFTER journal_mode, so the
+    /// mode switch itself had no retry grace) turned that ordinary
+    /// contention into an immediate, hard `SQLITE_BUSY` ("database is
+    /// locked") failure instead of a wait. This test exercises that exact
+    /// caller shape through the real entry point (not a hand-simulated
+    /// race) and asserts every concurrent opener succeeds and shares one
+    /// handle.
+    ///
+    /// `flavor = "multi_thread"` is required, not cosmetic: libsql's local
+    /// connection runs synchronously (see `sqlite_store/mod.rs`'s
+    /// `test_concurrent_writers_retry_instead_of_erroring_on_busy` comment),
+    /// so on the default current-thread runtime, `tokio::spawn`ed tasks never
+    /// truly interleave — each one runs to completion before the next is
+    /// polled, so every caller after the first trivially hits the
+    /// already-open fast path regardless of whether the per-id lock does
+    /// anything at all. Under that runtime this test passes identically with
+    /// the per-id lock removed entirely, silently providing zero regression
+    /// coverage for the exact race it is named for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_get_or_open_of_the_same_new_id_converges_on_one_assembly() {
+        let (mgr, dir, _registry_path) = temp_manager().await;
+        let db_path = dir.path().join("default.db");
+        let id = mgr
+            .ensure_default_registered("Default".into(), db_path)
+            .await
+            .unwrap();
+
+        let mgr = Arc::new(mgr);
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let mgr = mgr.clone();
+            let id = id.clone();
+            handles.push(tokio::spawn(async move { mgr.get_or_open(&id).await }));
+        }
+
+        let mut results = Vec::new();
+        for h in handles {
+            results.push(
+                h.await
+                    .expect("task must not panic")
+                    .expect("every concurrent opener of the same id must succeed"),
+            );
+        }
+
+        for r in &results[1..] {
+            assert!(
+                Arc::ptr_eq(&results[0], r),
+                "concurrent get_or_open callers for the same id must converge on one \
+                 assembled service set, not each build (and discard) their own"
+            );
+        }
+
+        assert!(matches!(
+            mgr.list().await.databases[0].status,
+            DatabaseStatus::Open
+        ));
     }
 
     /// The loser of a concurrent-open race is torn down, not merely dropped.

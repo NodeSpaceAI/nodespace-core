@@ -237,7 +237,24 @@ fn lock_pool(
 /// `foreign_keys`, `synchronous`, and `busy_timeout` reset to SQLite defaults
 /// on every new connection and must be set every time. Must run outside any
 /// transaction: SQLite forbids changing `synchronous` inside one.
+///
+/// `busy_timeout` is set FIRST, before any other pragma. `journal_mode = WAL`
+/// itself can contend for the database's write lock (switching journal mode
+/// is a write), and a fresh database's very first writer connection can race
+/// a second one opening concurrently against the same file — the daemon's
+/// `DatabaseManager::get_or_open` explicitly allows two concurrent callers
+/// requesting the same not-yet-open database to each independently open a
+/// writer connection and race to create its schema. With the default
+/// `busy_timeout` of 0, that contention surfaces immediately as
+/// `SQLITE_BUSY` ("database is locked") instead of waiting — confirmed by
+/// `concurrent_schema_creation_test.rs` (`packages/core/tests/`), which
+/// reliably hit this before the reorder and is clean after it. Setting
+/// `busy_timeout` first gives every subsequent statement on this
+/// connection, including the mode switch itself, the full retry window.
 async fn apply_writer_pragmas(conn: &libsql::Connection) -> Result<()> {
+    conn.query(&format!("PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}"), ())
+        .await
+        .context("Failed to set busy_timeout")?;
     conn.query("PRAGMA journal_mode = WAL", ())
         .await
         .context("Failed to set journal_mode")?;
@@ -247,9 +264,6 @@ async fn apply_writer_pragmas(conn: &libsql::Connection) -> Result<()> {
     conn.query("PRAGMA synchronous = NORMAL", ())
         .await
         .context("Failed to set synchronous")?;
-    conn.query(&format!("PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}"), ())
-        .await
-        .context("Failed to set busy_timeout")?;
     Ok(())
 }
 
