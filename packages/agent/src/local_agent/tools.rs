@@ -7696,17 +7696,27 @@ mod tests {
             found
         }
 
-        // Every interaction rule, not just the task-status one: the list could
-        // be reintroduced by a rule that has no obvious connection to status
-        // today, and naming one rule here would not catch it. Same reasoning
-        // as the seeded-skill sweep below.
+        // Both rule families, not just the task-status rule: the list could be
+        // reintroduced by a rule with no obvious connection to status today,
+        // and naming one rule here would not catch it. Same reasoning as the
+        // seeded-skill sweep below.
+        //
+        // SCHEMA_RULES matters as much as INTERACTION_RULES — `ADD_ENUM_VALUES`
+        // lives there and is precisely the rule that teaches an agent to extend
+        // `task.status`, so it is the likeliest place for someone to illustrate
+        // the operation with the current vocabulary spelled out.
         let mut guidance: Vec<(String, String)> = Vec::new();
-        for rule in crate::skill_rules::INTERACTION_RULES {
-            guidance.push((
-                format!("{}.imperative", rule.id),
-                rule.imperative.to_string(),
-            ));
-            guidance.push((format!("{}.prose", rule.id), rule.prose.to_string()));
+        for (id, imperative, prose) in crate::skill_rules::INTERACTION_RULES
+            .iter()
+            .map(|r| (r.id, r.imperative, r.prose))
+            .chain(
+                crate::skill_rules::SCHEMA_RULES
+                    .iter()
+                    .map(|r| (r.id, r.imperative, r.prose)),
+            )
+        {
+            guidance.push((format!("{id}.imperative"), imperative.to_string()));
+            guidance.push((format!("{id}.prose"), prose.to_string()));
         }
 
         // Every seeded skill, not just the two known sites: the guidance texts
