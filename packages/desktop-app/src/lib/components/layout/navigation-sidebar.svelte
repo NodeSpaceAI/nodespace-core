@@ -18,6 +18,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { schemasStore, schemasData } from '$lib/stores/schemas.svelte';
   import { aiChatsData } from '$lib/stores/ai-chats.svelte';
+  import { labsFlags } from '$lib/stores/labs-flags.svelte';
   import {
     clearCollectionRefreshTimer,
     clearSchemaRefreshTimer,
@@ -582,6 +583,8 @@
     {/if}
 
     <!-- AI Chats section (after Schema Types) - accordion toggle -->
+    <!-- Gated behind the Labs "AI Chat" toggle (default OFF) -->
+    {#if labsFlags.aiChatEnabled}
     {#if !isCollapsed}
       <Collapsible.Root open={aiChatsExpanded} onOpenChange={(open) => setAiChatsExpanded(open)}>
         <Collapsible.Trigger
@@ -690,6 +693,7 @@
           >
         </svg>
       </button>
+    {/if}
     {/if}
 
     <!-- Remaining nav items (Search, Favorites) -->
