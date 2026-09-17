@@ -74,18 +74,26 @@
       alpha fill composites against whatever is behind it, which inverts the
       hover direction between themes (it lightens on white, darkens on near-
       black) and lets background content show through a button that should be
-      solid. Only define a --*-hover for a token actually used as a filled
-      button; --success and --warning have no such use today.
+      solid.
+
+      All four state tokens carry a --*-hover so the set is closed and the rule
+      has no gaps: --success and --warning have no filled-button use today, but
+      deriving them now means the first such button applies the law instead of
+      inventing a value, which is how the three competing idioms this replaced
+      came about. Their contrast figures are recorded alongside them and the
+      whole set is held to the rule by filled-button-hover.test.ts.
     */
     --destructive: 345 77% 46%; /* 5.36:1 on --background, 4.55:1 on a 0.1 tint */
     --destructive-foreground: 0 0% 100%; /* 5.36:1 on the fill */
-    --destructive-hover: 345 77% 40%; /* 6.66:1 under --destructive-foreground */
+    --destructive-hover: 345 77% 40%; /* 6.66:1 on its fg; see --*-hover rule above */
 
     --success: 97 45% 32%; /* 5.35:1 on --background, 4.69:1 on a 0.1 tint */
     --success-foreground: 0 0% 100%; /* 5.35:1 on the fill */
+    --success-hover: 97 45% 26%; /* 7.26:1 on its fg; see --*-hover rule above */
 
     --warning: 38 97% 30%; /* 5.26:1 on --background, 4.60:1 on a 0.1 tint */
     --warning-foreground: 0 0% 100%; /* 5.26:1 on the fill */
+    --warning-hover: 38 97% 24%; /* 7.32:1 on its fg; see --*-hover rule above */
 
     --radius: 0.5rem;
 
@@ -197,13 +205,15 @@
     */
     --destructive: 0 100% 70%;
     --destructive-foreground: 240 11% 4%; /* 6.95:1 on the fill */
-    --destructive-hover: 0 100% 76%; /* 8.45:1 under --destructive-foreground */
+    --destructive-hover: 0 100% 76%; /* 8.45:1 on its fg; see --*-hover rule above */
 
     --success: 96 96% 37%;
     --success-foreground: 240 11% 4%; /* 7.81:1 on the fill */
+    --success-hover: 96 96% 43%; /* 10.54:1 on its fg; see --*-hover rule above */
 
     --warning: 38 100% 51%;
     --warning-foreground: 240 11% 4%; /* 9.96:1 on the fill */
+    --warning-hover: 38 100% 57%; /* 10.77:1 on its fg; see --*-hover rule above */
 
     /* Sidebar tokens - Figma canonical */
     --sidebar-background: 240 4% 10%;

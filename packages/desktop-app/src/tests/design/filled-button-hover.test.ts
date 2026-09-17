@@ -91,12 +91,13 @@ function contrast(a: Hsl, b: Hsl): number {
 }
 
 /**
- * Every filled semantic button token. A token earns a `--*-hover` only once it
- * is actually used as a filled button — `--success` and `--warning` have no
- * such use today and so are deliberately absent. Add one here when you add the
- * token, and this suite holds it to the same law.
+ * Every semantic token carrying a `--*-hover`. The set is closed: all four
+ * state colors are derived by the rule whether or not they have a filled-button
+ * use today, so the first such button applies the law rather than inventing a
+ * value. Add a token here when you add its hover, and this suite holds it to
+ * the same law.
  */
-const FILLED_BUTTON_TOKENS = ['--primary', '--destructive'] as const;
+const FILLED_BUTTON_TOKENS = ['--primary', '--destructive', '--success', '--warning'] as const;
 
 /**
  * Which direction "away from the surface" points in each theme. Light-mode
