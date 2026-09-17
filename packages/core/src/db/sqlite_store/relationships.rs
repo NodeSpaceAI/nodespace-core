@@ -29,23 +29,34 @@ use crate::models::schema::{
 ///
 /// Extracted as a function so the query-plan test binds the production text
 /// rather than a copy that can drift out of sync.
-fn extends_closure_sql(step_from: &str, step_to: &str) -> String {
+///
+/// Takes the whole [`ExtendsDirection`] rather than loose column names. The
+/// endpoint columns and the index to pin are three facts about one direction,
+/// and they are named together in [`ExtendsDirection::columns`] rather than
+/// the index being derived from the column string: `INDEXED BY` against a
+/// *wrong but existing* index does not error, it silently pins a bad plan, so
+/// a second direction whose columns are spelled differently must not be able
+/// to produce a valid-but-wrong index name here.
+fn extends_closure_sql(direction: ExtendsDirection) -> String {
+    let DirectionColumns {
+        step_from,
+        step_to,
+        index,
+    } = direction.columns();
     format!(
         r#"WITH RECURSIVE closure(type_id, depth) AS (
                 SELECT ?1, 0
                 UNION
                 SELECT r.{step_to}, c.depth + 1
                 FROM closure c
-                JOIN relationship r INDEXED BY idx_rel_{index_side}
+                JOIN relationship r INDEXED BY {index}
                   ON r.{step_from} = c.type_id AND r.relationship_type = ?2
                 WHERE c.depth < {max_depth}
             )
             SELECT DISTINCT type_id FROM closure"#,
         step_to = step_to,
         step_from = step_from,
-        // `idx_rel_in (in_node, …)` / `idx_rel_out (out_node, …)` — the
-        // composite whose leading column is the endpoint being matched.
-        index_side = step_from.trim_end_matches("_node"),
+        index = index,
         max_depth = crate::schema::extends_chain::MAX_EXTENDS_DEPTH,
     )
 }
@@ -60,6 +71,33 @@ fn extends_closure_sql(step_from: &str, step_to: &str) -> String {
 enum ExtendsDirection {
     /// Base type → every schema transitively extending it.
     Descendants,
+}
+
+/// The three SQL identifiers one [`ExtendsDirection`] decides.
+struct DirectionColumns {
+    /// The column matched against the frontier.
+    step_from: &'static str,
+    /// The column yielding the next node.
+    step_to: &'static str,
+    /// The composite index whose leading column is `step_from`, pinned with
+    /// `INDEXED BY` so the recursive step cannot drive off `idx_rel_type`.
+    index: &'static str,
+}
+
+impl ExtendsDirection {
+    /// Descendants match on `out_node` (the parent) and yield `in_node` (the
+    /// child); an ancestor walk would do the reverse and pin `idx_rel_in`.
+    fn columns(self) -> DirectionColumns {
+        match self {
+            ExtendsDirection::Descendants => DirectionColumns {
+                step_from: "out_node",
+                step_to: "in_node",
+                // `idx_rel_out (out_node, relationship_type)` — the composite
+                // whose leading column is the endpoint being matched.
+                index: "idx_rel_out",
+            },
+        }
+    }
 }
 
 /// SQL fragment excluding the built-in structural relationship types, for
@@ -1834,14 +1872,7 @@ impl SqliteStore {
         seed: &str,
         direction: ExtendsDirection,
     ) -> Result<Vec<String>> {
-        // `step_from` is the column matched against the frontier; `step_to` is
-        // the column yielding the next node. Descendants match on out_node
-        // (the parent) and yield in_node (the child); ancestors do the reverse.
-        let (step_from, step_to) = match direction {
-            ExtendsDirection::Descendants => ("out_node", "in_node"),
-        };
-
-        let sql = extends_closure_sql(step_from, step_to);
+        let sql = extends_closure_sql(direction);
 
         let mut rows = self
             .read()
@@ -2323,8 +2354,14 @@ mod tests {
         Ok(())
     }
 
-    /// The subtype-closure walk must drive off `idx_rel_out (out_node,
-    /// relationship_type)`, not `idx_rel_type (relationship_type)`.
+    /// Every [`ExtendsDirection`] there is. Adding a variant without adding it
+    /// here fails to compile, which is the point: the plan test below must
+    /// cover each direction, not just the one that happens to have a caller.
+    const ALL_EXTENDS_DIRECTIONS: &[ExtendsDirection] = &[ExtendsDirection::Descendants];
+
+    /// The closure walk must drive off the endpoint composite
+    /// (`idx_rel_out (out_node, relationship_type)` for descendants), not
+    /// `idx_rel_type (relationship_type)` — for **every** direction.
     ///
     /// Mirrors `container_resolution_query_does_not_scan_idx_rel_type` for the
     /// `extends` closure. The distinction matters for the same reason it does
@@ -2333,42 +2370,69 @@ mod tests {
     /// `has_child`, so the absolute cost is low today — but this pins the
     /// claim the doc comment makes, so a future edit that changes the plan
     /// fails here rather than silently regressing.
+    ///
+    /// Iterating the directions rather than hard-coding the descendant one is
+    /// what makes this test an actual guard on the direction → index mapping.
+    /// `INDEXED BY` naming a *wrong but existing* index is not an error — it
+    /// pins a bad plan silently, and the only symptom is a slow query. A
+    /// direction added with a mismatched index fails here instead.
     #[tokio::test]
     async fn extends_closure_query_drives_off_the_endpoint_index() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let db_path = temp_dir.path().join("test.db");
         let store = SqliteStore::new(db_path).await?;
 
-        // The exact text `walk_extends_closure` runs for the descendant
-        // direction, built by the same function.
-        let sql = extends_closure_sql("out_node", "in_node");
+        for &direction in ALL_EXTENDS_DIRECTIONS {
+            let cols = direction.columns();
 
-        let mut rows = store
-            .read()
-            .await?
-            .query(
-                &format!("EXPLAIN QUERY PLAN {sql}"),
-                libsql::params!["task".to_string(), "extends".to_string()],
-            )
-            .await
-            .context("Failed to run EXPLAIN QUERY PLAN")?;
+            // The pinned index must be the composite led by the column the
+            // recursive step matches on. Checked before the plan, because a
+            // mismatch here is the failure the plan assertion cannot see: an
+            // index that exists but leads with the wrong column still parses,
+            // still runs, and still returns correct rows.
+            assert_eq!(
+                cols.index,
+                format!("idx_rel_{}", cols.step_from.trim_end_matches("_node")),
+                "{direction:?} pins {} but matches on {} — INDEXED BY against a \
+                 wrong-but-existing index does not error, it silently pins a bad plan",
+                cols.index,
+                cols.step_from
+            );
 
-        let mut detail = String::new();
-        while let Some(row) = rows.next().await? {
-            let d: String = row.get(3)?;
-            detail.push_str(&d);
-            detail.push(' ');
+            // The exact text `walk_extends_closure` runs, built by the same
+            // function.
+            let sql = extends_closure_sql(direction);
+
+            let mut rows = store
+                .read()
+                .await?
+                .query(
+                    &format!("EXPLAIN QUERY PLAN {sql}"),
+                    libsql::params!["task".to_string(), "extends".to_string()],
+                )
+                .await
+                .context("Failed to run EXPLAIN QUERY PLAN")?;
+
+            let mut detail = String::new();
+            while let Some(row) = rows.next().await? {
+                let d: String = row.get(3)?;
+                detail.push_str(&d);
+                detail.push(' ');
+            }
+
+            assert!(
+                detail.contains(cols.index),
+                "the {direction:?} closure step should use {} ({}, relationship_type); \
+                 plan was: {detail}",
+                cols.index,
+                cols.step_from
+            );
+            assert!(
+                !detail.contains("idx_rel_type"),
+                "the {direction:?} closure step must not drive off idx_rel_type, which \
+                 scans every edge of that type per recursive step; plan was: {detail}"
+            );
         }
-
-        assert!(
-            detail.contains("idx_rel_out"),
-            "the closure step should use idx_rel_out (out_node, relationship_type); plan was: {detail}"
-        );
-        assert!(
-            !detail.contains("idx_rel_type"),
-            "the closure step must not drive off idx_rel_type, which scans every \
-             edge of that type per recursive step; plan was: {detail}"
-        );
 
         Ok(())
     }

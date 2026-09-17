@@ -49,6 +49,18 @@ pub struct PlaybookEngine {
     lifecycle: Arc<RwLock<PlaybookLifecycleManager>>,
     /// NodeService for fetching play nodes and (later) executing actions.
     node_service: Arc<NodeService>,
+    /// Set when a `refresh_ancestor_cache` call failed and the cache is
+    /// therefore of unknown staleness (ADR-078).
+    ///
+    /// A failed refresh keeps the previous cache, which is the right immediate
+    /// choice — dropping every Play's subtype matching is worse than serving
+    /// slightly stale ancestry. But without this flag nothing ever retries: a
+    /// transient DB error at startup would leave subtype trigger matching
+    /// quietly degraded for the whole process lifetime, with no error and no
+    /// log after the first warning. `handle_event` clears it by re-refreshing
+    /// before the next event is matched, which bounds the degraded window to
+    /// one event rather than the process.
+    ancestry_dirty: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PlaybookEngine {
@@ -59,6 +71,7 @@ impl PlaybookEngine {
         Self {
             lifecycle: Arc::new(RwLock::new(PlaybookLifecycleManager::new())),
             node_service,
+            ancestry_dirty: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -277,7 +290,14 @@ impl PlaybookEngine {
         })
     }
 
+    /// Rebuild the `extends` ancestry cache from the store (ADR-078).
+    ///
+    /// On failure the previous cache stays in place and `ancestry_dirty` is
+    /// set, so the next event retries rather than the process running on
+    /// unknown-staleness ancestry forever — see the field's own comment.
     pub(crate) async fn refresh_ancestor_cache(&self) {
+        use std::sync::atomic::Ordering;
+
         let parent_map = match self.node_service.store().get_extends_parent_map().await {
             Ok(map) => map,
             Err(e) => {
@@ -285,7 +305,12 @@ impl PlaybookEngine {
                 // ancestry can only mean a base-scoped Play misses a
                 // newly-extending type until the next schema write, which is
                 // preferable to dropping every Play's subtype matching.
-                warn!("Failed to refresh extends ancestry cache: {}", e);
+                //
+                // Marked dirty so this is a bounded window rather than a
+                // permanent one: `handle_event` retries before matching the
+                // next event.
+                self.ancestry_dirty.store(true, Ordering::Relaxed);
+                warn!("Failed to refresh extends ancestry cache (will retry on next event): {e}");
                 return;
             }
         };
@@ -303,6 +328,11 @@ impl PlaybookEngine {
 
         let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
         lifecycle.set_ancestor_cache(cache);
+        drop(lifecycle);
+
+        // Cleared only after the new cache is actually installed, so a refresh
+        // that failed and one that succeeded are never confused.
+        self.ancestry_dirty.store(false, Ordering::Relaxed);
     }
 
     async fn load_active_plays(&self) -> anyhow::Result<()> {
@@ -366,6 +396,18 @@ impl PlaybookEngine {
         envelope: EventEnvelope,
         queue_tx: &mpsc::Sender<ExecutionWorkItem>,
     ) {
+        // A previous refresh failed and left the cache of unknown staleness.
+        // Retry before matching this event, so a transient DB error degrades
+        // subtype trigger matching for one event rather than for the process
+        // lifetime. One relaxed atomic load on the hot path in the common
+        // (never-failed) case.
+        if self
+            .ancestry_dirty
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            self.refresh_ancestor_cache().await;
+        }
+
         // Lifecycle management: detect play node events
         match &envelope.event {
             DomainEvent::NodeCreated { node_type, node_id } if node_type == "play" => {
@@ -1547,6 +1589,315 @@ mod scope_tests {
             eval(&svc, &rule, &node).await,
             "a mid-chain bucket must be read on a 3-level chain; node properties were {:?}",
             node.properties
+        );
+    }
+}
+
+#[cfg(test)]
+mod ancestry_cache_tests {
+    //! The `extends` ancestry cache and its invalidation call sites (ADR-078).
+    //!
+    //! The cache is what lets a base-scoped Play match a subtype's events
+    //! without a SQL walk per event. It is refreshed from four places — engine
+    //! startup, and schema Created/Updated/Deleted — and a missed refresh is
+    //! silent: the Play simply stops matching, with no error and no log. These
+    //! tests cover each call site, so deleting any one of them fails here.
+
+    use super::*;
+    use crate::db::events::EventMetadata;
+    use crate::db::SqliteStore;
+    use crate::schema::handle_create_schema;
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+    use tempfile::TempDir;
+
+    async fn test_engine() -> (PlaybookEngine, Arc<NodeService>, TempDir) {
+        let temp_dir = TempDir::new().expect("tempdir creation failed");
+        let db_path = temp_dir.path().join("test.db");
+        let mut store = Arc::new(
+            SqliteStore::new(db_path)
+                .await
+                .expect("SqliteStore init failed"),
+        );
+        let node_service = Arc::new(
+            NodeService::new(&mut store)
+                .await
+                .expect("NodeService init failed"),
+        );
+        let engine = PlaybookEngine::new(Arc::clone(&node_service));
+        (engine, node_service, temp_dir)
+    }
+
+    /// `bug extends ticket`, created through the real schema write path.
+    async fn seed_bug_extends_ticket(svc: &Arc<NodeService>) {
+        handle_create_schema(
+            svc,
+            json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "state", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        handle_create_schema(
+            svc,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+    }
+
+    /// The engine's current view of a type's ancestry.
+    fn cached_ancestors(engine: &PlaybookEngine, node_type: &str) -> Vec<String> {
+        engine
+            .lifecycle
+            .read()
+            .expect("lifecycle lock poisoned")
+            .ancestors_of(node_type)
+    }
+
+    fn envelope(event: DomainEvent) -> EventEnvelope {
+        EventEnvelope {
+            event,
+            metadata: EventMetadata {
+                source_client_id: None,
+                playbook_context: None,
+            },
+        }
+    }
+
+    /// An unextended type's "ancestry" is just itself, and that is the correct
+    /// answer — not a missing entry standing in for one.
+    #[tokio::test]
+    async fn an_unextended_type_is_its_own_ancestry() {
+        let (engine, _svc, _tmp) = test_engine().await;
+        engine.refresh_ancestor_cache().await;
+
+        assert_eq!(cached_ancestors(&engine, "task"), ["task"]);
+    }
+
+    /// A refresh picks up an `extends` edge written before it ran.
+    ///
+    /// Every call-site test below depends on this working; testing it once on
+    /// its own separates "the refresh is broken" from "a call site is missing"
+    /// when something fails.
+    #[tokio::test]
+    async fn refresh_picks_up_an_extends_edge() {
+        let (engine, svc, _tmp) = test_engine().await;
+        seed_bug_extends_ticket(&svc).await;
+
+        engine.refresh_ancestor_cache().await;
+
+        assert_eq!(cached_ancestors(&engine, "bug"), ["bug", "ticket"]);
+    }
+
+    /// Call site 1 — engine startup (`load_active_plays`).
+    ///
+    /// Ancestry must be warm before the first event is dispatched. Without
+    /// this refresh a base-scoped Play silently misses every subtype event
+    /// until some unrelated schema write happens to warm the cache.
+    #[tokio::test]
+    async fn startup_warms_the_cache_before_any_event() {
+        let (engine, svc, _tmp) = test_engine().await;
+        seed_bug_extends_ticket(&svc).await;
+
+        // Nothing has refreshed yet, so `bug` still looks unextended.
+        assert_eq!(cached_ancestors(&engine, "bug"), ["bug"]);
+
+        engine
+            .load_active_plays()
+            .await
+            .expect("load_active_plays failed");
+
+        assert_eq!(
+            cached_ancestors(&engine, "bug"),
+            ["bug", "ticket"],
+            "startup must warm ancestry before the first event is dispatched"
+        );
+    }
+
+    /// Call site 2 — `NodeCreated { node_type: "schema" }`.
+    ///
+    /// A newly created schema may declare `extends`, and creation never
+    /// arrives as `NodeUpdated`, so the drift hook would not see it.
+    #[tokio::test]
+    async fn a_created_schema_refreshes_the_cache() {
+        let (engine, svc, _tmp) = test_engine().await;
+        engine.refresh_ancestor_cache().await;
+
+        // The edge is written after the cache was last built, so only the
+        // event-driven refresh can pick it up.
+        seed_bug_extends_ticket(&svc).await;
+        assert_eq!(cached_ancestors(&engine, "bug"), ["bug"]);
+
+        let (queue_tx, _queue_rx) = mpsc::channel(EXECUTION_QUEUE_CAPACITY);
+        engine
+            .handle_event(
+                envelope(DomainEvent::NodeCreated {
+                    node_id: "bug".to_string(),
+                    node_type: "schema".to_string(),
+                }),
+                &queue_tx,
+            )
+            .await;
+
+        assert_eq!(
+            cached_ancestors(&engine, "bug"),
+            ["bug", "ticket"],
+            "a created schema must refresh ancestry — creation never arrives as NodeUpdated"
+        );
+    }
+
+    /// Call site 3 — `NodeDeleted { node_type: "schema" }`.
+    ///
+    /// A schema deletion may change what `extends` edges exist, and deletion
+    /// never arrives as `NodeUpdated` either, so the drift hook would not see
+    /// it.
+    ///
+    /// The schema deleted here is deliberately *not* part of the extends
+    /// chain: `schema_has_declarations` refuses to delete either endpoint of
+    /// an edge, and `update_schema` has no way to clear one, so a schema that
+    /// extends something cannot be deleted through the service at all. What is
+    /// reachable — and what this covers — is that the Deleted arm refreshes
+    /// regardless of *which* schema went away, which is what keeps the cache
+    /// from going stale across a deletion.
+    #[tokio::test]
+    async fn a_deleted_schema_refreshes_the_cache() {
+        let (engine, svc, _tmp) = test_engine().await;
+        engine.refresh_ancestor_cache().await;
+
+        // The edge lands after the last refresh, so only the event-driven
+        // refresh can pick it up.
+        seed_bug_extends_ticket(&svc).await;
+        handle_create_schema(
+            &svc,
+            json!({
+                "name": "Standalone",
+                "fields": [
+                    { "name": "note", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("standalone schema creation failed");
+        assert_eq!(cached_ancestors(&engine, "bug"), ["bug"]);
+
+        let standalone = svc
+            .get_node("standalone")
+            .await
+            .expect("get_node failed")
+            .expect("standalone schema node should exist");
+        svc.delete_node("standalone", standalone.version)
+            .await
+            .expect("standalone schema delete failed");
+
+        let (queue_tx, _queue_rx) = mpsc::channel(EXECUTION_QUEUE_CAPACITY);
+        engine
+            .handle_event(
+                envelope(DomainEvent::NodeDeleted {
+                    id: "standalone".to_string(),
+                    node_type: "schema".to_string(),
+                }),
+                &queue_tx,
+            )
+            .await;
+
+        assert_eq!(
+            cached_ancestors(&engine, "bug"),
+            ["bug", "ticket"],
+            "a deleted schema must refresh ancestry — deletion never arrives as NodeUpdated"
+        );
+    }
+
+    /// Call site 4 — `handle_schema_updated`.
+    ///
+    /// The refresh runs *before* the drift check, so that hook returning early
+    /// cannot leave the cache stale. Passing an id that resolves to no schema
+    /// node exercises exactly that early-return path.
+    #[tokio::test]
+    async fn an_updated_schema_refreshes_before_the_drift_check_can_return() {
+        let (engine, svc, _tmp) = test_engine().await;
+        engine.refresh_ancestor_cache().await;
+
+        seed_bug_extends_ticket(&svc).await;
+        assert_eq!(cached_ancestors(&engine, "bug"), ["bug"]);
+
+        engine.handle_schema_updated("no-such-schema-node").await;
+
+        assert_eq!(
+            cached_ancestors(&engine, "bug"),
+            ["bug", "ticket"],
+            "the refresh must precede the drift check, which can return early"
+        );
+    }
+
+    /// A successful refresh leaves nothing marked dirty.
+    #[tokio::test]
+    async fn a_successful_refresh_is_not_dirty() {
+        let (engine, svc, _tmp) = test_engine().await;
+        seed_bug_extends_ticket(&svc).await;
+
+        engine.refresh_ancestor_cache().await;
+
+        assert!(
+            !engine.ancestry_dirty.load(Ordering::Relaxed),
+            "a refresh that installed a cache must not be marked for retry"
+        );
+    }
+
+    /// The dirty flag bounds the degraded window to one event.
+    ///
+    /// This is the half of the failure path worth pinning. A failed refresh
+    /// keeps the previous cache — correct, since stale ancestry beats dropping
+    /// every Play's subtype matching — but on its own that is unbounded:
+    /// nothing retries, so a transient DB error at startup would leave subtype
+    /// matching quietly degraded for the whole process lifetime, after one
+    /// warning. `handle_event` re-refreshing on the flag is what turns
+    /// "forever" into "until the next event".
+    ///
+    /// The dirty state is set directly rather than by breaking the store: what
+    /// needs pinning is that a dirty cache recovers, and forcing a real I/O
+    /// failure would test SQLite's caching behaviour rather than this logic.
+    #[tokio::test]
+    async fn a_dirty_cache_is_refreshed_before_the_next_event_is_matched() {
+        let (engine, svc, _tmp) = test_engine().await;
+
+        // Stand in for a refresh that failed at startup: the edge exists in
+        // the store, the cache does not know about it, and the flag says so.
+        seed_bug_extends_ticket(&svc).await;
+        engine.ancestry_dirty.store(true, Ordering::Relaxed);
+        assert_eq!(cached_ancestors(&engine, "bug"), ["bug"]);
+
+        // An ordinary, unrelated event — not a schema event, so none of the
+        // four call sites above fires. Only the dirty-flag retry can recover.
+        let (queue_tx, _queue_rx) = mpsc::channel(EXECUTION_QUEUE_CAPACITY);
+        engine
+            .handle_event(
+                envelope(DomainEvent::NodeCreated {
+                    node_id: "some-task".to_string(),
+                    node_type: "task".to_string(),
+                }),
+                &queue_tx,
+            )
+            .await;
+
+        assert_eq!(
+            cached_ancestors(&engine, "bug"),
+            ["bug", "ticket"],
+            "a dirty cache must be retried on the next event, not left degraded for the process"
+        );
+        assert!(
+            !engine.ancestry_dirty.load(Ordering::Relaxed),
+            "a successful retry must clear the dirty flag"
         );
     }
 }
