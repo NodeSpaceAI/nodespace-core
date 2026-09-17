@@ -55,3 +55,14 @@ export const FLUSH_PENDING_TIMEOUT_MS = 5000;
  * deliberately leaves an operation hanging cannot stall the suite.
  */
 export const TEARDOWN_FLUSH_CEILING_MS = 1000;
+
+/**
+ * Upper bound for `vi.waitFor` when waiting on a multi-step persistence cascade
+ * (debounced write -> OCC rejection -> fallback resync -> queued follow-up).
+ *
+ * This is a CEILING, not a delay: vi.waitFor polls and returns as soon as its
+ * condition holds, so a passing test costs only as long as the cascade actually
+ * takes. It needs to exceed the slowest path, which is why it is generous — a
+ * test that hits this value has genuinely hung and should fail.
+ */
+export const CASCADE_SETTLE_TIMEOUT_MS = 3000;

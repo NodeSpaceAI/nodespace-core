@@ -23,6 +23,7 @@ import { conflictNotifications } from '../../lib/stores/conflict-notifications.s
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import type { Node } from '../../lib/types';
 import type { AiChatNode } from '../../lib/types/ai-chat-node';
+import { CASCADE_SETTLE_TIMEOUT_MS } from '../utils/test-constants';
 
 const CHAT_ID = 'bf2c1788-76ff-4d79-9c6f-7755d13b0c21';
 
@@ -120,7 +121,11 @@ describe('ai-chat OCC conflict during an active turn', () => {
       viewerSource
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Wait for the conflict payload to be hydrated rather than for a duration
+    // assumed to cover debounce + rejection + hydration.
+    await vi.waitFor(() => expect(readChat(store)?.turnStatus).toBe('idle'), {
+      timeout: CASCADE_SETTLE_TIMEOUT_MS
+    });
 
     const chat = readChat(store);
 
@@ -177,7 +182,12 @@ describe('ai-chat OCC conflict during an active turn', () => {
       viewerSource
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Wait for hydration to REPLACE the optimistic 'processing' value. Waiting
+    // merely for turnStatus to be defined would return immediately — the
+    // optimistic write already set it — and assert nothing.
+    await vi.waitFor(() => expect(readChat(store)?.turnStatus).not.toBe('processing'), {
+      timeout: CASCADE_SETTLE_TIMEOUT_MS
+    });
 
     const chat = readChat(store);
 
@@ -208,9 +218,19 @@ describe('ai-chat OCC conflict during an active turn', () => {
     // re-introducing state and masking what this test is asserting.
     vi.spyOn(backendAdapter, 'getNode').mockResolvedValue(completedTurn);
 
+    const rollbacksBefore = store.getMetrics().rollbackCount;
+
     store.updateNode(CHAT_ID, { properties: { turnStatus: 'processing' } }, viewerSource);
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // This test asserts a NEGATIVE (the stale payload must not be installed),
+    // so it cannot wait on the end state — that state is already true before
+    // the conflict is handled, and the wait would return immediately without
+    // exercising anything. Wait instead on the conflict having been processed;
+    // the rollback counter is the observable marker of that.
+    await vi.waitFor(
+      () => expect(store.getMetrics().rollbackCount).toBeGreaterThan(rollbacksBefore),
+      { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+    );
 
     const chat = readChat(store);
     expect(chat?.version).toBe(4);
@@ -233,13 +253,17 @@ describe('ai-chat OCC conflict during an active turn', () => {
       viewerSource
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Wait on the notification being surfaced — the behaviour under test.
+    await vi.waitFor(
+      () =>
+        expect(
+          conflictNotifications.notifications.filter(
+            (n) => n.nodeId === CHAT_ID && n.conflictType === 'version-mismatch'
+          ).length
+        ).toBeGreaterThanOrEqual(1),
+      { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+    );
 
-    expect(
-      conflictNotifications.notifications.filter(
-        (n) => n.nodeId === CHAT_ID && n.conflictType === 'version-mismatch'
-      ).length
-    ).toBeGreaterThanOrEqual(1);
     expect(store.getMetrics().rollbackCount).toBeGreaterThan(before);
   }, 5000);
 });
