@@ -263,28 +263,43 @@ impl QueryService {
     /// values ordered lexicographically among themselves — the same ordering
     /// [`Self::resolve_order_field`] builds in SQL.
     ///
-    /// Absent priorities keep [`Self::compare_json_values`]'s convention of
-    /// sorting before everything else, which also matches SQL, where NULL
-    /// sorts first ascending. A non-string value cannot be a priority, so it
-    /// falls back to the generic comparison rather than being forced to a rank.
+    /// An absent priority ranks [`TaskPriority::ABSENT_RANK`], before the whole
+    /// scale, so it sorts first ascending — the same position the SQL CASE's
+    /// `IS NULL` arm gives it. A non-string value is not a valid priority and
+    /// cannot be ranked, so it takes `USER_RANK` and tie-breaks on its rendered
+    /// form, which is where the `ELSE` arm puts it in SQL. Both rules exist to
+    /// keep this pass and the SQL agreeing on every input, not just the
+    /// well-formed ones: they disagree only under a LIMIT, where SQL has
+    /// already discarded rows before this runs.
     fn compare_priority_values(
         &self,
         a: Option<&serde_json::Value>,
         b: Option<&serde_json::Value>,
     ) -> std::cmp::Ordering {
-        match (a.and_then(|v| v.as_str()), b.and_then(|v| v.as_str())) {
-            (Some(sa), Some(sb)) => {
-                // from_str never fails: unknown strings map to User(_)
-                let (pa, pb) = (
-                    TaskPriority::from_str(sa).unwrap_or_default(),
-                    TaskPriority::from_str(sb).unwrap_or_default(),
-                );
-                // Ranks tie for two user-defined values; the value string
-                // breaks it, mirroring the SQL tiebreaker.
-                pa.rank().cmp(&pb.rank()).then_with(|| sa.cmp(sb))
+        /// Rank and sort key for one JSON value, mirroring the SQL CASE arm
+        /// that would match it.
+        fn key(value: Option<&serde_json::Value>) -> (i16, String) {
+            match value {
+                None | Some(serde_json::Value::Null) => {
+                    (TaskPriority::ABSENT_RANK as i16, String::new())
+                }
+                Some(serde_json::Value::String(s)) => {
+                    // from_str is infallible — every unknown string is User(_)
+                    // — but name that fallback rather than letting Default's
+                    // Medium stand in for an unparseable value.
+                    let priority =
+                        TaskPriority::from_str(s).unwrap_or_else(|_| TaskPriority::User(s.clone()));
+                    (priority.rank() as i16, s.clone())
+                }
+                Some(other) => (TaskPriority::USER_RANK as i16, other.to_string()),
             }
-            _ => self.compare_json_values(a, b),
         }
+
+        let (rank_a, value_a) = key(a);
+        let (rank_b, value_b) = key(b);
+        // Ranks tie for two user-defined values; the value string breaks it,
+        // mirroring the SQL tiebreaker.
+        rank_a.cmp(&rank_b).then_with(|| value_a.cmp(&value_b))
     }
 
     /// Compare two JSON values for sorting
@@ -431,7 +446,14 @@ impl QueryService {
     /// `test_sql_priority_rank_matches_enum_rank`. User-defined values all land
     /// on the same `ELSE` rank, so the raw value is appended as a tiebreaker to
     /// order them lexicographically among themselves — matching what
-    /// [`Self::compare_json_values`] does in Rust.
+    /// [`Self::compare_priority_values`] does in Rust.
+    ///
+    /// The trade this makes: a CASE is not an indexed expression, so the sort
+    /// itself no longer uses `idx_task_priority` and SQLite builds a transient
+    /// B-tree for it. Equality *filters* on priority still hit the index, which
+    /// is what keeping `resolve_field` untouched buys, and sorting a result set
+    /// is the cheaper half. Revisit if priority sorts ever run over row counts
+    /// where the transient sort shows up in a profile.
     fn resolve_order_field(&self, field: &str, target_type: &str, direction: &str) -> String {
         let resolved = self.resolve_field(field, target_type);
 
@@ -444,10 +466,20 @@ impl QueryService {
         // present. project.priority is a different scale; see the companion
         // issue on whether it should be aligned.
         if field == "priority" && target_type == "task" {
+            // A *searched* CASE, deliberately: a simple `CASE <expr> WHEN ...`
+            // compares with `=`, and `NULL = 'highest'` is NULL rather than
+            // true, so an absent priority would match no arm and fall to ELSE
+            // — ranking it as a user-defined value, at the far end of the scale
+            // from where compare_priority_values puts it. Because LIMIT applies
+            // in SQL before the in-Rust re-sort, that disagreement would drop
+            // unprioritized tasks from a limited ascending query that should
+            // have returned them first.
             let rank = format!(
-                "CASE {resolved} \
-                 WHEN 'highest' THEN {} WHEN 'high' THEN {} WHEN 'medium' THEN {} \
-                 WHEN 'low' THEN {} WHEN 'lowest' THEN {} ELSE {} END",
+                "CASE WHEN {resolved} IS NULL THEN {} \
+                 WHEN {resolved} = 'highest' THEN {} WHEN {resolved} = 'high' THEN {} \
+                 WHEN {resolved} = 'medium' THEN {} WHEN {resolved} = 'low' THEN {} \
+                 WHEN {resolved} = 'lowest' THEN {} ELSE {} END",
+                TaskPriority::ABSENT_RANK,
                 TaskPriority::Highest.rank(),
                 TaskPriority::High.rank(),
                 TaskPriority::Medium.rank(),

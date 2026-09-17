@@ -265,6 +265,15 @@ impl TaskPriority {
     /// so user values sort after all core values.
     pub const USER_RANK: u8 = 5;
 
+    /// Rank for an absent priority, before the whole scale.
+    ///
+    /// Signed because it sits below [`Self::Highest`]'s 0; the SQL side needs a
+    /// literal it can order against the other ranks, and an absent value sorts
+    /// first ascending. This is not a variant of the enum — a missing priority
+    /// has no `TaskPriority` at all — so it lives here as the shared constant
+    /// both ordering paths rank it by.
+    pub const ABSENT_RANK: i8 = -1;
+
     /// Check if this is a core (built-in) priority
     pub fn is_core(&self) -> bool {
         !matches!(self, Self::User(_))

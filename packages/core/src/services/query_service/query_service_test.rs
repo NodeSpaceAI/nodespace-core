@@ -1688,6 +1688,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_sort_by_priority_with_limit_keeps_absent_priority_first() {
+        let (query_service, node_service, _temp) = create_test_services().await;
+
+        create_tasks_with_priorities(&node_service, &["low", "highest"]).await;
+        let task = CreateNodeParams {
+            id: None,
+            node_type: "task".to_string(),
+            content: "No priority".to_string(),
+            parent_id: None,
+            position: crate::services::InsertPositionOwned::End,
+            properties: json!({"task": {}}),
+            lifecycle_status: None,
+        };
+        node_service.create_node_with_parent(task).await.unwrap();
+
+        // The combination the two preceding tests each miss: without a LIMIT
+        // the Rust re-sort masks whatever SQL did, and the other LIMIT test
+        // uses only core values, where the layers happen to agree. A simple
+        // `CASE <expr> WHEN ...` ranks NULL via ELSE (it compares with `=`, and
+        // `NULL = 'highest'` is NULL, not true), which would drop this task off
+        // the end of an ascending query that should return it first.
+        let results = query_service
+            .execute(&priority_query(SortDirection::Ascending, Some(2)))
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(
+            results[0].properties["task"].get("priority").is_none(),
+            "SQL must rank an absent priority before the scale, not via ELSE: \
+             got {:?}",
+            priorities_of(&results)
+        );
+        assert_eq!(priorities_of(&results[1..]), ["highest"]);
+    }
+
+    #[tokio::test]
     async fn test_sql_priority_rank_matches_enum_rank() {
         let (query_service, _node_service, _temp) = create_test_services().await;
 
@@ -1703,7 +1740,7 @@ mod tests {
             TaskPriority::Low,
             TaskPriority::Lowest,
         ] {
-            let arm = format!("WHEN '{}' THEN {}", priority.as_str(), priority.rank());
+            let arm = format!("= '{}' THEN {}", priority.as_str(), priority.rank());
             assert!(
                 sql.contains(&arm),
                 "ORDER BY expression must rank {} as {}: {sql}",
@@ -1715,6 +1752,14 @@ mod tests {
         assert!(
             sql.contains(&format!("ELSE {} END", TaskPriority::USER_RANK)),
             "user-defined priorities must fall to USER_RANK: {sql}"
+        );
+        // A searched CASE with an explicit IS NULL arm, not a simple CASE: the
+        // latter compares with `=`, so NULL matches nothing and an absent
+        // priority would be ranked as a user value instead of before the scale.
+        assert!(
+            sql.contains(&format!("IS NULL THEN {}", TaskPriority::ABSENT_RANK)),
+            "an absent priority must rank ABSENT_RANK via an explicit IS NULL \
+             arm: {sql}"
         );
         assert!(
             sql.contains("json_extract(properties, '$.task.priority') ASC"),
