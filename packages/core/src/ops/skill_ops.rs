@@ -34,6 +34,17 @@ const MAX_UNSCOPED_SCHEMA_METADATA: usize = 5;
 /// models. Revisit if user-defined skill libraries grow past ~30 skills.
 const MAX_SKILL_LIMIT: usize = 10;
 
+/// Confidence assigned to a schema recovered by the lexical backstop
+/// (`append_named_schema_candidates`) rather than found by semantic search.
+///
+/// A deterministic, word-boundary name match is a stronger signal than a
+/// typical cosine score, and — unlike a genuine semantic hit — must not be
+/// left to chance on whether it happens to clear
+/// `nodespace_agent::local_agent::routing`'s score gate. Pinned at the top of
+/// the scale for the same reason `context_ops::append_schemas_named_in_query`
+/// unconditionally injects its own recoveries rather than scoring them.
+const LEXICAL_SCHEMA_MATCH_CONFIDENCE: f64 = 1.0;
+
 /// Input for find_skills operation.
 #[derive(Debug)]
 pub struct FindSkillsInput {
@@ -311,19 +322,95 @@ fn format_all_scores(skill_results: &[(nodespace_types::Node, f64)]) -> String {
         .join(", ")
 }
 
+/// Parse `schema`-typed semantic-search hits into non-core `SchemaNode`s,
+/// keeping each hit's retrieval confidence.
+///
+/// Mirrors `context_ops::parse_and_filter_non_core_schemas`'s filter and the
+/// reason for it: a core type (`text`/`task`/`date`, ...) is a stored schema
+/// node with embeddable content, so an unfiltered pass-through would surface
+/// it here as if it were a user-defined discovery result. Kept as this
+/// module's own copy rather than a shared helper because the two return
+/// differently-shaped results — this one keeps each hit's score, which the
+/// `context_ops.rs` caller (building a resident prompt block, not a scored
+/// candidate list) has no use for.
+fn parse_schema_search_hits(
+    results: Vec<(nodespace_types::Node, f64)>,
+) -> Vec<(crate::models::SchemaNode, f64)> {
+    results
+        .into_iter()
+        .filter_map(|(node, score)| {
+            crate::models::SchemaNode::from_node(node)
+                .ok()
+                .filter(|s| !s.is_core)
+                .map(|s| (s, score))
+        })
+        .collect()
+}
+
+/// Append any non-core schema the query names outright, skipping ones
+/// already present — the lexical backstop for schema discovery.
+///
+/// Mirrors `context_ops::append_schemas_named_in_query`'s reasoning exactly,
+/// against the same gap: schema embeddings run on a ~30s debounce
+/// (`EmbeddingService`'s `debounce_duration_secs`), so a schema created
+/// moments ago is not yet semantically retrievable. Without this, a schema
+/// created and then immediately searched for by name would look, through
+/// this discovery path, indistinguishable from a schema that does not exist
+/// at all — the same failure mode `context_ops.rs`'s own backstop was added
+/// to close for the resident "EXISTING SCHEMAS" block. A query that names a
+/// schema outright is resolvable deterministically regardless of embedding
+/// timing, via the same word-boundary matcher (`mentions_phrase`) that
+/// backs `schema_named_in_query` above.
+///
+/// Appends rather than replaces: semantic retrieval and naming answer
+/// different questions, and a type named outright in the query is the
+/// strongest available evidence that it is relevant right now.
+fn append_named_schema_candidates(
+    mut hits: Vec<(crate::models::SchemaNode, f64)>,
+    all_schemas: &[crate::models::SchemaNode],
+    query: &str,
+) -> Vec<(crate::models::SchemaNode, f64)> {
+    let query_lower = query.to_lowercase();
+    for schema in all_schemas.iter().filter(|s| !s.is_core) {
+        let named = mentions_phrase(&query_lower, &schema.id.to_lowercase())
+            || mentions_phrase(&query_lower, &schema.content.to_lowercase());
+        if named && !hits.iter().any(|(s, _)| s.id == schema.id) {
+            hits.push((schema.clone(), LEXICAL_SCHEMA_MATCH_CONFIDENCE));
+        }
+    }
+    hits
+}
+
 /// Search for skill nodes via semantic search and return flat results with
 /// schema metadata for the matched skill's scoped types.
 ///
-/// Returns up to `limit` matches (default 3) with `id`, `name`, `description`,
-/// `confidence`, `tools`, `schema_metadata`, and `instructions`. The `instructions`
-/// field is the skill's child subtree rendered to markdown — the actual procedure
-/// the model must follow. The `schema_metadata` field contains type IDs,
-/// field names, and enum values for entity types associated with the skill's
-/// `tool_whitelist` scope.
+/// Returns up to `limit` matches (default 3) with `id`, `name`, `kind`,
+/// `description`, `confidence`, `tools`, `schema_metadata`, and `instructions`.
+/// The `instructions` field is the skill's child subtree rendered to markdown
+/// — the actual procedure the model must follow. The `schema_metadata` field
+/// contains type IDs, field names, and enum values for entity types
+/// associated with the skill's `tool_whitelist` scope.
+///
+/// Also searches `schema`-typed nodes directly (`kind: "schema"`), so a
+/// schema with no hand-authored skill describing it is still discoverable
+/// through this same query-driven path — previously it produced no result
+/// here at all, regardless of how well-described the schema itself was.
+/// Reuses the exact semantic-search primitive
+/// (`semantic_search_nodes_of_type(query, "schema", ...)`) that
+/// `context_ops.rs`'s resident "EXISTING SCHEMAS" block already indexes
+/// from, rather than building a second index, and the same lexical backstop
+/// pattern for the ~30s embedding-debounce window (see
+/// `append_named_schema_candidates`). A `kind: "schema"` result carries no
+/// `tools` (empty) and no `instructions` (a schema has neither a
+/// tool_whitelist nor a guidance subtree) — its `schema_metadata` is the one
+/// matched schema's own descriptor, so the result is exactly what the query
+/// asked about rather than the broader unscoped fallback a matched skill's
+/// `schema_metadata` falls back to.
 ///
 /// No filtering or bucketing — the caller (model or MCP client) inspects the
 /// raw confidence score and decides how to act. An empty `skills` array is a
-/// meaningful signal: "no skill is even loosely related to this query."
+/// meaningful signal: "no skill or schema is even loosely related to this
+/// query."
 pub async fn find_skills(
     embedding_service: &Arc<NodeEmbeddingService>,
     node_service: &Arc<NodeService>,
@@ -350,7 +437,19 @@ pub async fn find_skills(
         .await
         .map_err(|e| OpsError::Internal(format!("Skill search failed: {}", e)))?;
 
-    // Fetch all schemas once; used to attach metadata to each matched skill.
+    // Schema discovery, independent of any hand-authored skill matching the
+    // query — see this function's own doc comment. Same primitive
+    // (`semantic_search_nodes_of_type`), same node type ("schema"), same
+    // threshold as the skill search above; the two are deliberately
+    // separate calls rather than a combined query because they populate two
+    // differently-shaped result kinds below.
+    let schema_search_results = embedding_service
+        .semantic_search_nodes_of_type(&input.query, "schema", limit, SKILL_SEARCH_THRESHOLD)
+        .await
+        .map_err(|e| OpsError::Internal(format!("Schema search failed: {}", e)))?;
+
+    // Fetch all schemas once; used to attach metadata to each matched skill
+    // AND (below) to resolve and lexically backstop the schema search above.
     let all_schemas = node_service
         .get_all_schemas()
         .await
@@ -359,8 +458,13 @@ pub async fn find_skills(
         })
         .unwrap_or_default();
 
-    let total_results = skill_results.len();
-    let mut skills = Vec::with_capacity(total_results);
+    let schema_candidates = append_named_schema_candidates(
+        parse_schema_search_hits(schema_search_results),
+        &all_schemas,
+        &input.query,
+    );
+
+    let mut skills = Vec::with_capacity(skill_results.len() + schema_candidates.len());
 
     // Computed once per call, not per matched skill: it depends only on the
     // query text and the schema list, neither of which varies across
@@ -442,6 +546,7 @@ pub async fn find_skills(
         skills.push(json!({
             "id": node.id,
             "name": node.content,
+            "kind": "skill",
             "description": description,
             "confidence": confidence,
             "tools": tool_whitelist,
@@ -450,13 +555,55 @@ pub async fn find_skills(
         }));
     }
 
+    // Schema-typed hits: a shape distinguishable from a skill's ("kind":
+    // "schema", no `tools`, no `instructions` — a schema owns neither a
+    // tool_whitelist nor a guidance subtree). `schema_metadata` carries
+    // exactly this one matched schema (not the unscoped/query-named
+    // fallback a matched skill's `schema_metadata` uses above), so the
+    // result is precisely what the query asked about. Field/relationship
+    // `description` content rides along automatically once
+    // `EntityTypeDescriptor` carries it — this path adds no separate
+    // fetch/render for it, so it inherits whatever `from_schema`/`to_json`
+    // produce without drifting from the skill-riding case.
+    for (schema, confidence) in &schema_candidates {
+        let schema_metadata: Vec<Value> =
+            vec![super::entity_types_block::EntityTypeDescriptor::from_schema(schema).to_json()];
+        skills.push(json!({
+            "id": schema.id,
+            "name": schema.content,
+            "kind": "schema",
+            "description": "",
+            "confidence": confidence,
+            "tools": Value::Array(vec![]),
+            "schema_metadata": schema_metadata,
+            "instructions": "",
+        }));
+    }
+
+    // Re-sort the combined list by confidence, descending. A no-op for the
+    // skill-only case (the store already returns KNN hits in that order,
+    // and `sort_by` is stable) — what this adds is a single coherent
+    // ranking across skill and schema candidates together, since the two
+    // were retrieved by separate calls above.
+    fn confidence_of(v: &Value) -> f64 {
+        v.get("confidence").and_then(|c| c.as_f64()).unwrap_or(0.0)
+    }
+    skills.sort_by(|a, b| {
+        confidence_of(b)
+            .partial_cmp(&confidence_of(a))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let total_results = skills.len();
     let all_scores = format_all_scores(&skill_results);
+    let top_score = skills.first().map(confidence_of).unwrap_or(0.0);
 
     tracing::info!(
         query = %input.query,
         results_found = total_results,
-        top_score = skill_results.first().map(|(_, s)| *s).unwrap_or(0.0),
+        top_score = top_score,
         all_scores = %all_scores,
+        schema_candidates_found = schema_candidates.len(),
         "find_skills executed"
     );
 
@@ -1062,5 +1209,119 @@ mod tests {
         let instructions =
             flatten_subtree_content("skill-root", &node_map, &adjacency_list).join("\n\n");
         assert_eq!(instructions, "Step one\n\nStep two");
+    }
+
+    // -------------------------------------------------------------------
+    // Schema discovery: `parse_schema_search_hits` / `append_named_schema_candidates`
+    // -------------------------------------------------------------------
+    //
+    // Mirrors `context_ops.rs`'s own test suite for
+    // `parse_and_filter_non_core_schemas` / `append_schemas_named_in_query`
+    // (same functions in spirit, kept separate for this module's own
+    // scored-candidate shape — see the doc comments on the two functions
+    // under test).
+
+    fn schema_search_result(id: &str, is_core: bool, score: f64) -> (nodespace_types::Node, f64) {
+        let node = Node::new_with_id(
+            id.to_string(),
+            "schema".to_string(),
+            id.to_string(),
+            json!({ "isCore": is_core, "fields": [] }),
+        );
+        (node, score)
+    }
+
+    #[test]
+    fn parse_schema_search_hits_excludes_core_types_and_keeps_score() {
+        let results = vec![
+            schema_search_result("text", true, 0.9),
+            schema_search_result("sprint", false, 0.42),
+            schema_search_result("task", true, 0.8),
+        ];
+
+        let hits = parse_schema_search_hits(results);
+        let ids_and_scores: Vec<(&str, f64)> = hits
+            .iter()
+            .map(|(s, score)| (s.id.as_str(), *score))
+            .collect();
+
+        assert_eq!(ids_and_scores, vec![("sprint", 0.42)]);
+    }
+
+    fn named_schema(id: &str, display: &str, is_core: bool) -> SchemaNode {
+        SchemaNode::from_node(Node::new_with_id(
+            id.to_string(),
+            "schema".to_string(),
+            display.to_string(),
+            json!({ "isCore": is_core, "fields": [] }),
+        ))
+        .expect("valid schema node")
+    }
+
+    /// The debounce-window mitigation's core property: a schema created
+    /// moments ago (no semantic hit yet — the ~30s embedding debounce) is
+    /// still recovered when the query names it outright, mirroring
+    /// `context_ops::append_schemas_named_in_query`'s identical fix for the
+    /// resident "EXISTING SCHEMAS" block.
+    #[test]
+    fn named_schema_is_recovered_when_semantic_retrieval_is_empty() {
+        let all = vec![named_schema("feature_write_up", "feature write-up", false)];
+        let hits =
+            append_named_schema_candidates(vec![], &all, "Put one down for feature write-up");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0.id, "feature_write_up");
+        assert_eq!(hits[0].1, LEXICAL_SCHEMA_MATCH_CONFIDENCE);
+    }
+
+    #[test]
+    fn named_schema_matches_by_snake_case_id_as_well_as_display_name() {
+        let all = vec![named_schema("release_plan", "Release Plan", false)];
+        let hits = append_named_schema_candidates(vec![], &all, "add a release_plan for Q3");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].0.id, "release_plan");
+    }
+
+    #[test]
+    fn a_schema_found_by_semantic_search_is_not_duplicated_by_the_backstop() {
+        let all = vec![named_schema("invoice", "Invoice", false)];
+        let already = vec![(named_schema("invoice", "Invoice", false), 0.55)];
+        let hits = append_named_schema_candidates(already, &all, "log an invoice");
+        assert_eq!(hits.len(), 1, "duplicate schema injected: {hits:?}");
+        // The original semantic score survives — the backstop does not
+        // clobber a hit semantic search already found with the lexical
+        // sentinel confidence.
+        assert_eq!(hits[0].1, 0.55);
+    }
+
+    #[test]
+    fn a_named_core_schema_is_not_recovered() {
+        let all = vec![named_schema("task", "Task", true)];
+        let hits = append_named_schema_candidates(vec![], &all, "add a task to fix the build");
+        assert!(
+            hits.is_empty(),
+            "core schema leaked into discovery: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_query_recovers_nothing() {
+        let all = vec![named_schema("invoice", "Invoice", false)];
+        let hits = append_named_schema_candidates(vec![], &all, "what's the weather like today");
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn semantic_hits_keep_their_order_ahead_of_a_named_recovery() {
+        let all = vec![
+            named_schema("invoice", "Invoice", false),
+            named_schema("venue", "Venue", false),
+        ];
+        let hits = append_named_schema_candidates(
+            vec![(named_schema("invoice", "Invoice", false), 0.61)],
+            &all,
+            "book the venue for the invoice run",
+        );
+        let ids: Vec<&str> = hits.iter().map(|(s, _)| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["invoice", "venue"]);
     }
 }
