@@ -573,10 +573,7 @@ mod tests {
     }
 
     fn enum_value(value: &str) -> EnumValue {
-        EnumValue {
-            value: value.to_string(),
-            label: value.to_string(),
-        }
+        EnumValue::new(value.to_string(), value.to_string())
     }
 
     fn sample_schema() -> SchemaNode {

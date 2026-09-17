@@ -170,6 +170,83 @@ pub fn flatten_chain_fields(chain_fields: &[Vec<SchemaField>]) -> Vec<SchemaFiel
     out
 }
 
+/// Resolve one stored enum value to what it means at `target_scope` (ADR-078).
+///
+/// Walks `maps_to` from the value as stored toward the target scope: an
+/// `issue` node storing `status: "backlog"` reads as `todo` for a consumer
+/// operating at `task`'s scope, because `backlog` was added to the inherited
+/// field carrying `maps_to: "todo"`.
+///
+/// `scope_fields` is the effective field set at the *target* scope — what that
+/// consumer can see. A value already present there needs no resolution: it
+/// means the same thing at both scopes. A value absent from it is resolved one
+/// `maps_to` hop at a time until it lands on one that is present.
+///
+/// Returns `None` when the value cannot be resolved into the target scope,
+/// which a caller should treat as "does not match" rather than substituting
+/// the raw value — surfacing an unresolvable value to a base-scoped consumer
+/// is exactly the hazard `maps_to` exists to prevent.
+///
+/// `node_fields` is the effective set at the node's own scope, where the
+/// `maps_to` declarations live.
+pub fn resolve_value_at_scope(
+    field_name: &str,
+    stored_value: &str,
+    node_fields: &[SchemaField],
+    scope_fields: &[SchemaField],
+) -> Option<String> {
+    // Visible at the target scope already — nothing to resolve.
+    if field_has_value(scope_fields, field_name, stored_value) {
+        return Some(stored_value.to_string());
+    }
+
+    let Some(field) = node_fields.iter().find(|f| f.name == field_name) else {
+        return None;
+    };
+
+    let mut current = stored_value.to_string();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    seen.insert(current.clone());
+
+    // Bounded by the chain depth cap: each hop must reach a value declared
+    // further up, and a malformed `maps_to` cycle terminates on the visited
+    // set rather than looping.
+    for _ in 0..MAX_EXTENDS_DEPTH {
+        let next = field
+            .core_values
+            .iter()
+            .flatten()
+            .chain(field.user_values.iter().flatten())
+            .find(|ev| ev.value == current)
+            .and_then(|ev| ev.maps_to.clone())?;
+
+        if !seen.insert(next.clone()) {
+            return None;
+        }
+        if field_has_value(scope_fields, field_name, &next) {
+            return Some(next);
+        }
+        current = next;
+    }
+
+    None
+}
+
+/// Whether a field in this set declares `value` at any protection level.
+fn field_has_value(fields: &[SchemaField], field_name: &str, value: &str) -> bool {
+    fields
+        .iter()
+        .find(|f| f.name == field_name)
+        .map(|f| {
+            f.core_values
+                .iter()
+                .flatten()
+                .chain(f.user_values.iter().flatten())
+                .any(|ev| ev.value == value)
+        })
+        .unwrap_or(false)
+}
+
 /// The `extends` target declared by a schema, if any.
 ///
 /// Reads the hydrated `relationships` list rather than properties: on the core
@@ -211,6 +288,7 @@ pub fn extends_declaration(parent_schema_id: &str) -> crate::models::schema::Sch
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::schema::EnumValue;
     use std::collections::HashMap;
 
     /// Fixture parent lookup: a plain child → parent map.
@@ -318,5 +396,107 @@ mod tests {
             rel.reverse_cardinality,
             RelationshipCardinality::Many
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // maps_to / scope-relative value resolution (ADR-078)
+    // ------------------------------------------------------------------
+
+    fn enum_field(name: &str, core: &[&str], user: &[(&str, &str)]) -> SchemaField {
+        SchemaField {
+            name: name.to_string(),
+            field_type: "enum".to_string(),
+            extensible: Some(true),
+            core_values: Some(core.iter().map(|v| EnumValue::new(*v, *v)).collect()),
+            user_values: Some(
+                user.iter()
+                    .map(|(v, m)| EnumValue {
+                        value: v.to_string(),
+                        label: v.to_string(),
+                        maps_to: Some(m.to_string()),
+                    })
+                    .collect(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_value_the_target_scope_already_has_needs_no_resolution() {
+        let base = enum_field("status", &["todo", "done"], &[]);
+        let child = enum_field("status", &["todo", "done"], &[("backlog", "todo")]);
+
+        assert_eq!(
+            resolve_value_at_scope("status", "todo", &[child], &[base]),
+            Some("todo".to_string()),
+            "a value meaning the same at both scopes passes through unchanged"
+        );
+    }
+
+    #[test]
+    fn an_extended_value_resolves_to_its_maps_to_target() {
+        let base = enum_field("status", &["todo", "done"], &[]);
+        let child = enum_field("status", &["todo", "done"], &[("backlog", "todo")]);
+
+        // The whole point: a task-scoped consumer reading an issue's stored
+        // `backlog` sees `todo`, a value it was written to understand.
+        assert_eq!(
+            resolve_value_at_scope("status", "backlog", &[child], &[base]),
+            Some("todo".to_string())
+        );
+    }
+
+    #[test]
+    fn resolution_follows_multiple_hops_up_a_chain() {
+        let root = enum_field("status", &["todo"], &[]);
+        // mid adds `queued` -> todo; leaf adds `triage` -> queued.
+        let leaf = enum_field("status", &["todo"], &[("queued", "todo"), ("triage", "queued")]);
+
+        assert_eq!(
+            resolve_value_at_scope("status", "triage", &[leaf], &[root]),
+            Some("todo".to_string()),
+            "resolution walks until it lands on a value the target scope has"
+        );
+    }
+
+    #[test]
+    fn an_unresolvable_value_returns_none_rather_than_the_raw_value() {
+        let base = enum_field("status", &["todo", "done"], &[]);
+        // `orphan` carries no maps_to — only reachable if validation was
+        // bypassed, but resolution must still refuse to leak it.
+        let child = SchemaField {
+            user_values: Some(vec![EnumValue::new("orphan", "Orphan")]),
+            ..enum_field("status", &["todo", "done"], &[])
+        };
+
+        assert_eq!(
+            resolve_value_at_scope("status", "orphan", &[child], &[base]),
+            None,
+            "surfacing an unresolvable value to a base-scoped consumer is the \
+             hazard maps_to exists to prevent"
+        );
+    }
+
+    #[test]
+    fn a_maps_to_cycle_terminates_instead_of_looping() {
+        let base = enum_field("status", &["todo"], &[]);
+        let child = enum_field("status", &[], &[("a", "b"), ("b", "a")]);
+
+        assert_eq!(
+            resolve_value_at_scope("status", "a", &[child], &[base]),
+            None,
+            "a malformed maps_to cycle must terminate on the visited set"
+        );
+    }
+
+    #[test]
+    fn resolution_of_an_unknown_field_is_none() {
+        let base = enum_field("status", &["todo"], &[]);
+        let child = enum_field("status", &["todo"], &[]);
+
+        assert_eq!(
+            resolve_value_at_scope("severity", "high", &[child], &[base]),
+            None
+        );
     }
 }

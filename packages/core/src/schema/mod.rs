@@ -453,6 +453,122 @@ async fn validate_relationship_targets_exist(
 /// built-in's inverse (`child_of`, `has_member`, …) is resolved from the
 /// built-in table ahead of any declaration, so a schema claiming one as its
 /// `name` or `reverseName` would be shadowed exactly the way `has_child` is.
+/// The `extends` target in a relationship list, if one is declared.
+fn declared_extends_parent(
+    relationships: &[crate::models::schema::SchemaRelationship],
+) -> Option<String> {
+    relationships
+        .iter()
+        .find(|rel| rel.name == crate::models::schema::EXTENDS_RELATIONSHIP)
+        .and_then(|rel| rel.target_type.clone())
+}
+
+/// Append values to a field this schema inherited via `extends` (ADR-078).
+///
+/// Every appended value must carry `maps_to` naming a value the field already
+/// has at some scope in the chain. That requirement is what keeps the
+/// extension safe: a consumer reading at the parent's scope — a Play
+/// condition, a query filter, a CEL expression written against the base type
+/// with no knowledge this subtype exists — resolves the stored value through
+/// the map and sees a value it was written to understand. A value with no
+/// `maps_to` would be unresolvable at that scope, which is a correctness bug
+/// rather than a cosmetic one.
+///
+/// The inherited definition is materialized onto this schema as its own
+/// declaration of the field, carrying the parent's definition plus the new
+/// values. The parent is left untouched — its own vocabulary must not grow
+/// because a descendant extended it.
+///
+/// Returns how many values were added.
+fn extend_inherited_field(
+    schema_id: &str,
+    inherited: SchemaField,
+    addition: &FieldValueAddition,
+    fields: &mut Vec<SchemaField>,
+) -> Result<usize, MarkdownError> {
+    // The same gates as the own-field path, checked against the inherited
+    // definition: extending a non-extensible or non-enum field is no more
+    // legal through inheritance than it is directly.
+    if inherited.extensible != Some(true) {
+        return Err(MarkdownError::invalid_params(format!(
+            "Field '{}' (inherited by '{}') is not extensible — add_field_values only \
+             applies to fields declared with extensible: true.",
+            addition.field, schema_id
+        )));
+    }
+    if inherited.field_type != "enum" {
+        return Err(MarkdownError::invalid_params(format!(
+            "Field '{}' (inherited by '{}') is type '{}', not 'enum' — add_field_values \
+             only applies to enum fields.",
+            addition.field, schema_id, inherited.field_type
+        )));
+    }
+
+    let mut existing_values: std::collections::HashSet<String> = inherited
+        .core_values
+        .iter()
+        .flatten()
+        .chain(inherited.user_values.iter().flatten())
+        .map(|ev| ev.value.clone())
+        .collect();
+
+    // Captured before any new value is inserted: a `maps_to` must name a value
+    // the field had BEFORE this call, so two values added together cannot
+    // resolve through each other.
+    let preexisting: std::collections::HashSet<String> = existing_values.clone();
+
+    for new_value in &addition.values {
+        if existing_values.contains(&new_value.value) {
+            return Err(MarkdownError::invalid_params(format!(
+                "Value '{}' already exists on inherited field '{}' — add_field_values does \
+                 not overwrite or merge colliding values.",
+                new_value.value, addition.field
+            )));
+        }
+
+        let Some(maps_to) = new_value.maps_to.as_deref().map(str::trim).filter(|m| !m.is_empty())
+        else {
+            return Err(MarkdownError::invalid_params(format!(
+                "Value '{}' on inherited field '{}' must declare \"mapsTo\", naming which \
+                 existing value it collapses to at the parent's scope — e.g. \
+                 {{\"value\": \"{}\", \"label\": \"...\", \"mapsTo\": \"{}\"}}. Without it, a \
+                 Play or query written against the base type would read a value it has no \
+                 way to interpret.",
+                new_value.value,
+                addition.field,
+                new_value.value,
+                preexisting.iter().next().map(String::as_str).unwrap_or("todo"),
+            )));
+        };
+
+        if !preexisting.contains(maps_to) {
+            let mut known: Vec<&str> = preexisting.iter().map(String::as_str).collect();
+            known.sort_unstable();
+            return Err(MarkdownError::invalid_params(format!(
+                "Value '{}' on inherited field '{}' maps to '{}', which is not an existing \
+                 value on that field. Existing values: {}.",
+                new_value.value,
+                addition.field,
+                maps_to,
+                known.join(", ")
+            )));
+        }
+
+        existing_values.insert(new_value.value.clone());
+    }
+
+    // Materialize the inherited field as this schema's own, so the added
+    // values live on the extending schema rather than mutating the parent.
+    let mut materialized = inherited;
+    materialized
+        .user_values
+        .get_or_insert_with(Vec::new)
+        .extend(addition.values.iter().cloned());
+    fields.push(materialized);
+
+    Ok(addition.values.len())
+}
+
 fn reject_reserved_relationship_names(
     relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
@@ -1619,7 +1735,41 @@ pub async fn handle_update_schema(
     // machinery".
     let mut field_values_added = 0;
     if let Some(ref additions) = params.add_field_values {
+        // An inherited field is one the effective set has but this schema does
+        // not declare itself. Resolved once, ahead of the loop, and only when
+        // the schema actually extends something — an unextended schema's
+        // effective set is its own fields, so nothing can be inherited.
+        let inherited_fields: Vec<SchemaField> = match declared_extends_parent(&schema.relationships)
+        {
+            Some(_) => resolve_effective_fields(node_service, &params.schema_id)
+                .await?
+                .into_iter()
+                .filter(|f| !fields.iter().any(|own| own.name == f.name))
+                .collect(),
+            None => Vec::new(),
+        };
+
         for addition in additions {
+            // Extending an INHERITED field's vocabulary (ADR-078). The field
+            // is not in `fields` at all, so it cannot be mutated in place —
+            // the added values are validated here and then materialized onto
+            // this schema as its own declaration of that field, carrying the
+            // inherited definition plus the new values.
+            if let Some(inherited) = inherited_fields
+                .iter()
+                .find(|f| f.name == addition.field)
+                .cloned()
+            {
+                let added = extend_inherited_field(
+                    &params.schema_id,
+                    inherited,
+                    addition,
+                    &mut fields,
+                )?;
+                field_values_added += added;
+                continue;
+            }
+
             let Some(field) = fields.iter_mut().find(|f| f.name == addition.field) else {
                 return Err(MarkdownError::invalid_params(format!(
                     "Field '{}' not found in schema '{}'",
@@ -2145,18 +2295,9 @@ mod tests {
 
     fn rbac_values() -> Vec<EnumValue> {
         vec![
-            EnumValue {
-                value: "owner".to_string(),
-                label: "Owner".to_string(),
-            },
-            EnumValue {
-                value: "editor".to_string(),
-                label: "Editor".to_string(),
-            },
-            EnumValue {
-                value: "viewer".to_string(),
-                label: "Viewer".to_string(),
-            },
+            EnumValue::new("owner".to_string(), "Owner".to_string()),
+            EnumValue::new("editor".to_string(), "Editor".to_string()),
+            EnumValue::new("viewer".to_string(), "Viewer".to_string()),
         ]
     }
 
@@ -2234,10 +2375,7 @@ mod tests {
     fn edge_enum_duplicate_values_are_rejected() {
         let mut role = edge_field("role", "enum");
         let mut values = rbac_values();
-        values.push(EnumValue {
-            value: "owner".to_string(),
-            label: "Owner (duplicate)".to_string(),
-        });
+        values.push(EnumValue::new("owner".to_string(), "Owner (duplicate)".to_string()));
         role.core_values = Some(values);
 
         let rels = vec![rel_with_edge_fields(vec![role])];

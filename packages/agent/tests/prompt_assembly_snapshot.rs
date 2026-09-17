@@ -187,10 +187,7 @@ fn schema_field_enum(name: &str, values: &[&str], required: bool) -> SchemaField
     field.user_values = Some(
         values
             .iter()
-            .map(|v| EnumValue {
-                value: v.to_string(),
-                label: v.to_string(),
-            })
+            .map(|v| EnumValue::new(v.to_string(), v.to_string()))
             .collect(),
     );
     field

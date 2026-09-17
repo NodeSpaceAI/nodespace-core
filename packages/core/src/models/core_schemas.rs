@@ -56,22 +56,10 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: Some(vec![
-                        EnumValue {
-                            value: "open".to_string(),
-                            label: "Open".to_string(),
-                        },
-                        EnumValue {
-                            value: "in_progress".to_string(),
-                            label: "In Progress".to_string(),
-                        },
-                        EnumValue {
-                            value: "done".to_string(),
-                            label: "Done".to_string(),
-                        },
-                        EnumValue {
-                            value: "cancelled".to_string(),
-                            label: "Cancelled".to_string(),
-                        },
+                        EnumValue::new("open".to_string(), "Open".to_string()),
+                        EnumValue::new("in_progress".to_string(), "In Progress".to_string()),
+                        EnumValue::new("done".to_string(), "Done".to_string()),
+                        EnumValue::new("cancelled".to_string(), "Cancelled".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,
@@ -98,26 +86,11 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     local_only: false,
                     protection: SchemaProtectionLevel::User,
                     core_values: Some(vec![
-                        EnumValue {
-                            value: "highest".to_string(),
-                            label: "Highest".to_string(),
-                        },
-                        EnumValue {
-                            value: "high".to_string(),
-                            label: "High".to_string(),
-                        },
-                        EnumValue {
-                            value: "medium".to_string(),
-                            label: "Medium".to_string(),
-                        },
-                        EnumValue {
-                            value: "low".to_string(),
-                            label: "Low".to_string(),
-                        },
-                        EnumValue {
-                            value: "lowest".to_string(),
-                            label: "Lowest".to_string(),
-                        },
+                        EnumValue::new("highest".to_string(), "Highest".to_string()),
+                        EnumValue::new("high".to_string(), "High".to_string()),
+                        EnumValue::new("medium".to_string(), "Medium".to_string()),
+                        EnumValue::new("low".to_string(), "Low".to_string()),
+                        EnumValue::new("lowest".to_string(), "Lowest".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,
@@ -305,26 +278,11 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: Some(vec![
-                        EnumValue {
-                            value: "planning".to_string(),
-                            label: "Planning".to_string(),
-                        },
-                        EnumValue {
-                            value: "active".to_string(),
-                            label: "Active".to_string(),
-                        },
-                        EnumValue {
-                            value: "completed".to_string(),
-                            label: "Completed".to_string(),
-                        },
-                        EnumValue {
-                            value: "archived".to_string(),
-                            label: "Archived".to_string(),
-                        },
-                        EnumValue {
-                            value: "cancelled".to_string(),
-                            label: "Cancelled".to_string(),
-                        },
+                        EnumValue::new("planning".to_string(), "Planning".to_string()),
+                        EnumValue::new("active".to_string(), "Active".to_string()),
+                        EnumValue::new("completed".to_string(), "Completed".to_string()),
+                        EnumValue::new("archived".to_string(), "Archived".to_string()),
+                        EnumValue::new("cancelled".to_string(), "Cancelled".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,
@@ -351,18 +309,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     local_only: false,
                     protection: SchemaProtectionLevel::User,
                     core_values: Some(vec![
-                        EnumValue {
-                            value: "low".to_string(),
-                            label: "Low".to_string(),
-                        },
-                        EnumValue {
-                            value: "medium".to_string(),
-                            label: "Medium".to_string(),
-                        },
-                        EnumValue {
-                            value: "high".to_string(),
-                            label: "High".to_string(),
-                        },
+                        EnumValue::new("low".to_string(), "Low".to_string()),
+                        EnumValue::new("medium".to_string(), "Medium".to_string()),
+                        EnumValue::new("high".to_string(), "High".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,
@@ -633,22 +582,10 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: Some(vec![
-                        EnumValue {
-                            value: "native".to_string(),
-                            label: "Native (Local)".to_string(),
-                        },
-                        EnumValue {
-                            value: "anthropic".to_string(),
-                            label: "Anthropic".to_string(),
-                        },
-                        EnumValue {
-                            value: "gemini".to_string(),
-                            label: "Gemini".to_string(),
-                        },
-                        EnumValue {
-                            value: "mistral".to_string(),
-                            label: "Mistral".to_string(),
-                        },
+                        EnumValue::new("native".to_string(), "Native (Local)".to_string()),
+                        EnumValue::new("anthropic".to_string(), "Anthropic".to_string()),
+                        EnumValue::new("gemini".to_string(), "Gemini".to_string()),
+                        EnumValue::new("mistral".to_string(), "Mistral".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,
@@ -692,14 +629,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     // module docs on `AiChatNode` for why these were split out
                     // of one shared `status` key.
                     core_values: Some(vec![
-                        EnumValue {
-                            value: "idle".to_string(),
-                            label: "Idle".to_string(),
-                        },
-                        EnumValue {
-                            value: "processing".to_string(),
-                            label: "Processing".to_string(),
-                        },
+                        EnumValue::new("idle".to_string(), "Idle".to_string()),
+                        EnumValue::new("processing".to_string(), "Processing".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,
@@ -724,14 +655,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     // module docs on `AiChatNode` for why these were split out
                     // of one shared `status` key.
                     core_values: Some(vec![
-                        EnumValue {
-                            value: "active".to_string(),
-                            label: "Active".to_string(),
-                        },
-                        EnumValue {
-                            value: "archived".to_string(),
-                            label: "Archived".to_string(),
-                        },
+                        EnumValue::new("active".to_string(), "Active".to_string()),
+                        EnumValue::new("archived".to_string(), "Archived".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,
@@ -829,22 +754,10 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                             local_only: false,
                             protection: SchemaProtectionLevel::Core,
                             core_values: Some(vec![
-                                EnumValue {
-                                    value: "user".to_string(),
-                                    label: "User".to_string(),
-                                },
-                                EnumValue {
-                                    value: "assistant".to_string(),
-                                    label: "Assistant".to_string(),
-                                },
-                                EnumValue {
-                                    value: "tool_call".to_string(),
-                                    label: "Tool Call".to_string(),
-                                },
-                                EnumValue {
-                                    value: "system".to_string(),
-                                    label: "System".to_string(),
-                                },
+                                EnumValue::new("user".to_string(), "User".to_string()),
+                                EnumValue::new("assistant".to_string(), "Assistant".to_string()),
+                                EnumValue::new("tool_call".to_string(), "Tool Call".to_string()),
+                                EnumValue::new("system".to_string(), "System".to_string()),
                             ]),
                             user_values: Some(vec![]),
                             indexed: false,
@@ -985,14 +898,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                             local_only: false,
                             protection: SchemaProtectionLevel::Core,
                             core_values: Some(vec![
-                                EnumValue {
-                                    value: "completed".to_string(),
-                                    label: "Completed".to_string(),
-                                },
-                                EnumValue {
-                                    value: "error".to_string(),
-                                    label: "Error".to_string(),
-                                },
+                                EnumValue::new("completed".to_string(), "Completed".to_string()),
+                                EnumValue::new("error".to_string(), "Error".to_string()),
                             ]),
                             user_values: Some(vec![]),
                             indexed: false,
@@ -1228,14 +1135,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: Some(vec![
-                        EnumValue {
-                            value: "ai".to_string(),
-                            label: "AI Generated".to_string(),
-                        },
-                        EnumValue {
-                            value: "user".to_string(),
-                            label: "User Created".to_string(),
-                        },
+                        EnumValue::new("ai".to_string(), "AI Generated".to_string()),
+                        EnumValue::new("user".to_string(), "User Created".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,
@@ -1568,14 +1469,8 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     local_only: false,
                     protection: SchemaProtectionLevel::Core,
                     core_values: Some(vec![
-                        EnumValue {
-                            value: "local".to_string(),
-                            label: "Local".to_string(),
-                        },
-                        EnumValue {
-                            value: "connected".to_string(),
-                            label: "Connected".to_string(),
-                        },
+                        EnumValue::new("local".to_string(), "Local".to_string()),
+                        EnumValue::new("connected".to_string(), "Connected".to_string()),
                     ]),
                     user_values: Some(vec![]),
                     indexed: true,
