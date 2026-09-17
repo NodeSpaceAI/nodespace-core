@@ -3500,7 +3500,13 @@ impl SqliteStore {
     /// caller is `QueryService`, which assembles the SQL from a validated query
     /// definition and routes every filter value through this parameter list —
     /// the SQL text itself carries no caller-supplied values.
-    pub async fn query_node_ids_raw(
+    ///
+    /// `pub(crate)` for the same reason as [`Self::count_nodes_raw`], whose
+    /// contract this now shares exactly: the caller still assembles the SQL
+    /// text, so identifier positions remain its obligation, and a method that
+    /// trusts its caller that far should be reachable only from callers this
+    /// crate can audit.
+    pub(crate) async fn query_node_ids_raw(
         &self,
         sql: &str,
         params: Vec<libsql::Value>,
