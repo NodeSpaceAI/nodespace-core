@@ -484,6 +484,15 @@ impl NodeService {
         // Built-in type validation
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
 
+        // The reverse name for a DECLARED relationship's instance edge, captured
+        // during validation below where the declaration is already in hand.
+        // `set_schema_declarations` writes the schema→schema declaration row, not
+        // this instance edge, so without carrying the name here the column would
+        // be left NULL for every user-declared relationship — and reverse
+        // traversal would silently return nothing for exactly those. Built-ins
+        // stay `None` and are derived from their forward name at the store.
+        let mut declared_reverse_name: Option<String> = None;
+
         if is_builtin {
             // Built-in type-specific validation
             if relationship_name == "member_of" {
@@ -547,6 +556,8 @@ impl NodeService {
                         relationship_name, schema_id
                     ))
                 })?;
+
+            declared_reverse_name = Some(relationship.reverse_name.clone());
 
             let target = self
                 .get_node(target_id)
@@ -694,7 +705,13 @@ impl NodeService {
 
         let rel_id = self
             .store
-            .create_generic_relationship(source_id, target_id, relationship_name, &final_edge_data)
+            .create_generic_relationship(
+                source_id,
+                target_id,
+                relationship_name,
+                declared_reverse_name.as_deref(),
+                &final_edge_data,
+            )
             .await
             .map_err(|e| {
                 NodeServiceError::query_failed(format!("Failed to create relationship: {}", e))
@@ -741,6 +758,10 @@ impl NodeService {
         edge_data: serde_json::Value,
     ) -> Result<(), NodeServiceError> {
         let is_builtin = crate::models::schema::is_builtin_relationship(relationship_name);
+
+        // See `create_relationship` — a declared relationship's instance edge
+        // must carry its declaration's reverse name, or the column lands NULL.
+        let mut declared_reverse_name: Option<String> = None;
 
         if is_builtin {
             if relationship_name == "member_of" {
@@ -795,6 +816,8 @@ impl NodeService {
                         relationship_name, schema_id
                     ))
                 })?;
+
+            declared_reverse_name = Some(relationship.reverse_name.clone());
 
             let target = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), target_id)
                 .await
@@ -869,6 +892,7 @@ impl NodeService {
             source_id,
             target_id,
             relationship_name,
+            declared_reverse_name.as_deref(),
             &final_edge_data,
         )
         .await

@@ -1194,10 +1194,14 @@ mod tree_size_limit_tests {
 
         for chunk in child_ids.chunks(SEED_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len())
-                .map(|i| format!("('{root_id}', ?{i}, 'has_child', '{{}}', 1, '{now}', '{now}')"))
+                .map(|i| {
+                    format!(
+                        "('{root_id}', ?{i}, 'has_child', 'child_of', '{{}}', 1, '{now}', '{now}')"
+                    )
+                })
                 .collect();
             let sql = format!(
-                "INSERT INTO relationship (in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES {}",
+                "INSERT INTO relationship (in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES {}",
                 placeholders.join(", ")
             );
             let params: Vec<libsql::Value> = chunk

@@ -71,6 +71,14 @@ async fn fresh_database_gets_the_complete_current_schema() {
         .iter()
         .any(|c| c == "origin"));
 
+    assert!(
+        columns_of(&conn, "relationship")
+            .await
+            .iter()
+            .any(|c| c == "reverse_relationship_type"),
+        "the relationship table must carry the reverse name as a column"
+    );
+
     let indexes = names_of(&conn, "index").await;
     for expected in [
         "idx_node_type",
@@ -85,6 +93,7 @@ async fn fresh_database_gets_the_complete_current_schema() {
         "idx_rel_in",
         "idx_rel_out",
         "idx_rel_unique",
+        "idx_rel_reverse",
         "idx_emb_node",
         "idx_emb_stale_mod",
         "idx_emb_unique",

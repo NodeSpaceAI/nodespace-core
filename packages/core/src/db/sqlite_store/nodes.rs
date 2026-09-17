@@ -224,7 +224,7 @@ impl SqliteStore {
         let rel_id = uuid::Uuid::new_v4().to_string();
         let rel_props = serde_json::json!({"order": new_order}).to_string();
         tx.execute(
-            "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', ?4, 1, ?5, ?6)",
+            "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
             libsql::params![rel_id, parent_id.to_string(), node_id.clone(), rel_props, now.clone(), now],
         ).await.context("Failed to insert parent-child relationship")?;
 
@@ -343,7 +343,7 @@ impl SqliteStore {
         let now = Utc::now().to_rfc3339();
         tx.conn()
             .execute(
-                "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', ?4, 1, ?5, ?6)",
+                "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
                 libsql::params![rel_id, parent_id.to_string(), child_id.to_string(), rel_props, now.clone(), now],
             )
             .await
@@ -2483,7 +2483,7 @@ impl SqliteStore {
                     libsql::params![node_id.clone()],
                 ).await.context("Failed to delete old parent relationship")?;
                 tx.execute(
-                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', ?4, 1, ?5, ?6)",
+                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
                     libsql::params![rel_id, parent_id.clone(), node_id.clone(), props, now.clone(), now],
                 ).await.context("Failed to create new parent relationship")?;
                 tx.commit()
@@ -2591,7 +2591,7 @@ impl SqliteStore {
             let rel_id = uuid::Uuid::new_v4().to_string();
             let rel_props = serde_json::json!({"order": order}).to_string();
             tx.execute(
-                "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', ?4, 1, ?5, ?6)",
+                "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
                 libsql::params![
                     rel_id,
                     new_parent_id.to_string(),
@@ -2972,7 +2972,7 @@ impl SqliteStore {
                 let rel_id = uuid::Uuid::new_v4().to_string();
                 let rel_props = serde_json::json!({"order": order}).to_string();
                 tx.execute(
-                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', ?4, 1, ?5, ?6)",
+                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
                     libsql::params![rel_id, parent.clone(), id.clone(), rel_props, now.clone(), now.clone()],
                 ).await.context("Failed to insert relationship in bulk hierarchy")?;
             }
@@ -3054,7 +3054,7 @@ impl SqliteStore {
                 let rel_id = uuid::Uuid::new_v4().to_string();
                 let rel_props = serde_json::json!({"order": order}).to_string();
                 tx.conn().execute(
-                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', ?4, 1, ?5, ?6)",
+                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
                     libsql::params![rel_id, parent.clone(), id.clone(), rel_props, now.clone(), now.clone()],
                 ).await.context("Failed to insert relationship in bulk hierarchy")?;
             }
@@ -3115,7 +3115,7 @@ impl SqliteStore {
             let rel_id = uuid::Uuid::new_v4().to_string();
             let rel_props = serde_json::json!({"order": order}).to_string();
             db.execute(
-                "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', ?4, 1, ?5, ?6)",
+                "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
                 libsql::params![rel_id, parent.clone(), id.clone(), rel_props, now.clone(), now],
             ).await.context("Failed to create relationship (streaming)")?;
         }
@@ -4420,7 +4420,7 @@ mod query_nodes_order_and_scoping_tests {
         // mentioned_by semantics (see query_nodes's mentioned_by branch):
         // `in_node` is the returned/target node, `out_node` is the "by" node.
         store
-            .create_generic_relationship(&task_a, &mentioner_id, "mentions", &json!({}))
+            .create_generic_relationship(&task_a, &mentioner_id, "mentions", None, &json!({}))
             .await?;
         let mentioned_by_query = NodeQuery {
             mentioned_by: Some(mentioner_id.clone()),
@@ -4480,7 +4480,13 @@ mod query_nodes_order_and_scoping_tests {
         // has_child semantics (see get_children/get_roots): `in_node` is the
         // parent, `out_node` is the child.
         store
-            .create_generic_relationship(&root_a.id, &child.id, "has_child", &json!({"order": 0.0}))
+            .create_generic_relationship(
+                &root_a.id,
+                &child.id,
+                "has_child",
+                None,
+                &json!({"order": 0.0}),
+            )
             .await?;
 
         let roots = store.get_roots(None, None).await?;
@@ -4658,10 +4664,14 @@ mod large_subtree_chunking_tests {
             // omitting it from the column list lets SQLite mint it, so only
             // `out_node` needs a bound param per row.
             let placeholders: Vec<String> = (1..=chunk.len())
-                .map(|i| format!("('{root_id}', ?{i}, 'has_child', '{{}}', 1, '{now}', '{now}')"))
+                .map(|i| {
+                    format!(
+                        "('{root_id}', ?{i}, 'has_child', 'child_of', '{{}}', 1, '{now}', '{now}')"
+                    )
+                })
                 .collect();
             let sql = format!(
-                "INSERT INTO relationship (in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES {}",
+                "INSERT INTO relationship (in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES {}",
                 placeholders.join(", ")
             );
             let params: Vec<libsql::Value> = chunk

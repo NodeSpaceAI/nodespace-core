@@ -1,6 +1,8 @@
 //! `SqliteStore` methods — relationships concern (split from the god-object per ADR-053 prep).
 use super::*;
-use crate::models::schema::{SchemaRelationship, BUILTIN_RELATIONSHIP_NAMES};
+use crate::models::schema::{
+    SchemaRelationship, BUILTIN_RELATIONSHIPS, BUILTIN_RELATIONSHIP_NAMES,
+};
 
 /// SQL fragment excluding the built-in structural relationship types, for
 /// queries that must see only schema-declared relationships. One definition so
@@ -11,6 +13,28 @@ fn builtin_exclusion_sql(column: &str) -> String {
         .map(|n| format!("'{}'", n))
         .collect();
     format!("{} NOT IN ({})", column, quoted.join(", "))
+}
+
+/// SQL expression yielding a built-in relationship's reverse name from its
+/// forward name, for use as an INSERT's `reverse_relationship_type` value.
+///
+/// `type_expr` is interpolated into SQL unescaped, so it must be a bound
+/// placeholder (`?4`) or a column name — never user input. The mapping itself
+/// comes from compile-time constants and carries no injection risk.
+///
+/// Derived from [`BUILTIN_RELATIONSHIPS`] rather than written out per call
+/// site: every path that creates a built-in edge — and there are many, spread
+/// across three modules — must populate the column identically, and a hand-typed
+/// literal at each one is a mapping duplicated a dozen times with a dozen
+/// chances to diverge. `NULL` for anything not built-in, which is correct: a
+/// schema-declared edge's reverse name comes from its own declaration, written
+/// explicitly by `set_schema_declarations`.
+fn builtin_reverse_name_sql(type_expr: &str) -> String {
+    let arms: Vec<String> = BUILTIN_RELATIONSHIPS
+        .iter()
+        .map(|(forward, reverse)| format!("WHEN '{forward}' THEN '{reverse}'"))
+        .collect();
+    format!("(CASE {type_expr} {} END)", arms.join(" "))
 }
 
 /// The outcome of replacing a schema's relationship declarations, itemized so
@@ -90,7 +114,7 @@ impl SqliteStore {
         let rel_id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         db.execute(
-            "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'mentions', '{}', 1, ?4, ?5)",
+            "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'mentions', 'mentioned_by', '{}', 1, ?4, ?5)",
             libsql::params![rel_id.clone(), source_id.to_string(), target_id.to_string(), now.clone(), now],
         ).await.context("Failed to create mention")?;
 
@@ -304,7 +328,7 @@ impl SqliteStore {
         let now = Utc::now().to_rfc3339();
         let props = serde_json::json!({ "order": new_order }).to_string();
         db.execute(
-            "INSERT OR IGNORE INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', ?4, 1, ?5, ?6)",
+            "INSERT OR IGNORE INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
             libsql::params![rel_id.clone(), parent_id.to_string(), child_id.to_string(), props, now.clone(), now],
         ).await.context("Failed to insert has_child edge")?;
 
@@ -479,6 +503,7 @@ impl SqliteStore {
         source_id: &str,
         target_id: &str,
         rel_type: &str,
+        reverse_name: Option<&str>,
         properties: &serde_json::Value,
     ) -> Result<String> {
         if rel_type == "member_of" {
@@ -487,10 +512,32 @@ impl SqliteStore {
         let now = chrono::Utc::now().to_rfc3339();
         let rel_id = uuid::Uuid::new_v4().to_string();
         let props_json = serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
-        tx.conn().execute(
-            "INSERT OR IGNORE INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
-            libsql::params![rel_id.clone(), source_id.to_string(), target_id.to_string(), rel_type.to_string(), props_json, now.clone(), now],
-        ).await.context("Failed to create generic relationship")?;
+        // `rel_type` is dynamic here. A DECLARED relationship's reverse name
+        // comes from its own declaration and is passed in by the caller, which
+        // has it in hand from schema validation; a BUILT-IN's is derived in SQL
+        // from the forward name that lands in the row. `COALESCE` takes
+        // whichever applies, so neither kind can end up NULL.
+        let sql = format!(
+            "INSERT OR IGNORE INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) \
+             VALUES (?1, ?2, ?3, ?4, COALESCE(?8, {}), ?5, 1, ?6, ?7)",
+            builtin_reverse_name_sql("?4")
+        );
+        tx.conn()
+            .execute(
+                &sql,
+                libsql::params![
+                    rel_id.clone(),
+                    source_id.to_string(),
+                    target_id.to_string(),
+                    rel_type.to_string(),
+                    props_json,
+                    now.clone(),
+                    now,
+                    reverse_name.map(str::to_string)
+                ],
+            )
+            .await
+            .context("Failed to create generic relationship")?;
         Ok(rel_id)
     }
 
@@ -591,7 +638,7 @@ impl SqliteStore {
         let props = merged_props.to_string();
 
         tx.execute(
-            "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'member_of', ?4, 1, ?5, ?6)",
+            "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'member_of', 'has_member', ?4, 1, ?5, ?6)",
             libsql::params![rel_id.clone(), member_id.to_string(), collection_id.to_string(), props, now.clone(), now],
         )
         .await
@@ -978,7 +1025,7 @@ impl SqliteStore {
             let rel_id = uuid::Uuid::new_v4().to_string();
             let props = serde_json::json!({ "order": order }).to_string();
             tx.execute(
-                "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', ?4, 1, ?5, ?6)",
+                "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'has_child', 'child_of', ?4, 1, ?5, ?6)",
                 libsql::params![rel_id, parent.clone(), child.clone(), props, now.clone(), now.clone()],
             )
             .await
@@ -1192,7 +1239,7 @@ impl SqliteStore {
             let rel_id = uuid::Uuid::new_v4().to_string();
             let props = serde_json::json!({"order": order}).to_string();
             tx.execute(
-                "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'member_of', ?4, 1, ?5, ?6)",
+                "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'member_of', 'has_member', ?4, 1, ?5, ?6)",
                 libsql::params![rel_id.clone(), node_id.clone(), collection_id.clone(), props, now.clone(), now.clone()],
             ).await.context("Failed to insert membership")?;
             created.push((rel_id, node_id.clone(), collection_id.clone(), *order));
@@ -1297,7 +1344,7 @@ impl SqliteStore {
 
             let rel_id = uuid::Uuid::new_v4().to_string();
             tx.execute(
-                "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'mentions', '{}', 1, ?4, ?5)",
+                "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, 'mentions', 'mentioned_by', '{}', 1, ?4, ?5)",
                 libsql::params![rel_id, source_id.clone().to_string(), target_id.clone().to_string(), now.clone(), now.clone()],
             ).await.context("Failed to insert mention")?;
             created += 1;
@@ -1347,6 +1394,7 @@ impl SqliteStore {
         source_id: &str,
         target_id: &str,
         rel_type: &str,
+        reverse_name: Option<&str>,
         properties: &serde_json::Value,
     ) -> Result<String> {
         // ADR-059 §2 applies to a `member_of` edge no matter which API builds it.
@@ -1361,10 +1409,31 @@ impl SqliteStore {
         let now = chrono::Utc::now().to_rfc3339();
         let rel_id = uuid::Uuid::new_v4().to_string();
         let props_json = serde_json::to_string(properties).unwrap_or_else(|_| "{}".to_string());
-        self.write().await.execute(
-            "INSERT OR IGNORE INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
-            libsql::params![rel_id.clone(), source_id.to_string(), target_id.to_string(), rel_type.to_string(), props_json, now.clone(), now],
-        ).await.context("Failed to create generic relationship")?;
+        // Dynamic `rel_type`; see the `_in_tx` twin for why a declared
+        // relationship's reverse name is passed in while a built-in's is
+        // derived in SQL.
+        let sql = format!(
+            "INSERT OR IGNORE INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) \
+             VALUES (?1, ?2, ?3, ?4, COALESCE(?8, {}), ?5, 1, ?6, ?7)",
+            builtin_reverse_name_sql("?4")
+        );
+        self.write()
+            .await
+            .execute(
+                &sql,
+                libsql::params![
+                    rel_id.clone(),
+                    source_id.to_string(),
+                    target_id.to_string(),
+                    rel_type.to_string(),
+                    props_json,
+                    now.clone(),
+                    now,
+                    reverse_name.map(str::to_string)
+                ],
+            )
+            .await
+            .context("Failed to create generic relationship")?;
         Ok(rel_id)
     }
 
@@ -1713,6 +1782,17 @@ impl SqliteStore {
                     schema_id
                 ));
             }
+            // The type system requires `reverse_name` but cannot require it to
+            // be meaningful. An empty one is stored verbatim, satisfies every
+            // NULL check, populates the index, and names nothing — so reject it
+            // here rather than let it reach the column.
+            if rel.reverse_name.trim().is_empty() {
+                return Err(anyhow::anyhow!(
+                    "relationship '{}' on schema '{}' must declare a non-empty reverse name",
+                    rel.name,
+                    schema_id
+                ));
+            }
         }
 
         let now = Utc::now().to_rfc3339();
@@ -1758,8 +1838,15 @@ impl SqliteStore {
                 Some((id, _, _)) => {
                     tx.execute(
                         "UPDATE relationship SET out_node = ?1, properties = ?2, \
-                         version = version + 1, modified_at = ?3 WHERE id = ?4",
-                        libsql::params![out_node.clone(), props_json, now.clone(), id.clone()],
+                         reverse_relationship_type = ?3, \
+                         version = version + 1, modified_at = ?4 WHERE id = ?5",
+                        libsql::params![
+                            out_node.clone(),
+                            props_json,
+                            rel.reverse_name.clone(),
+                            now.clone(),
+                            id.clone()
+                        ],
                     )
                     .await
                     .context("Failed to update schema declaration edge")?;
@@ -1768,13 +1855,14 @@ impl SqliteStore {
                 None => {
                     let rel_id = uuid::Uuid::new_v4().to_string();
                     tx.execute(
-                        "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
+                        "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
                         libsql::params![
                             rel_id.clone(),
                             schema_id.to_string(),
                             out_node.clone(),
                             rel.name.clone(),
+                            rel.reverse_name.clone(),
                             props_json,
                             now.clone(),
                             now.clone()
@@ -1830,6 +1918,17 @@ impl SqliteStore {
                     schema_id
                 ));
             }
+            // The type system requires `reverse_name` but cannot require it to
+            // be meaningful. An empty one is stored verbatim, satisfies every
+            // NULL check, populates the index, and names nothing — so reject it
+            // here rather than let it reach the column.
+            if rel.reverse_name.trim().is_empty() {
+                return Err(anyhow::anyhow!(
+                    "relationship '{}' on schema '{}' must declare a non-empty reverse name",
+                    rel.name,
+                    schema_id
+                ));
+            }
         }
 
         let now = Utc::now().to_rfc3339();
@@ -1869,8 +1968,15 @@ impl SqliteStore {
                 Some((id, _, _)) => {
                     conn.execute(
                         "UPDATE relationship SET out_node = ?1, properties = ?2, \
-                         version = version + 1, modified_at = ?3 WHERE id = ?4",
-                        libsql::params![out_node.clone(), props_json, now.clone(), id.clone()],
+                         reverse_relationship_type = ?3, \
+                         version = version + 1, modified_at = ?4 WHERE id = ?5",
+                        libsql::params![
+                            out_node.clone(),
+                            props_json,
+                            rel.reverse_name.clone(),
+                            now.clone(),
+                            id.clone()
+                        ],
                     )
                     .await
                     .context("Failed to update schema declaration edge")?;
@@ -1879,13 +1985,14 @@ impl SqliteStore {
                 None => {
                     let rel_id = uuid::Uuid::new_v4().to_string();
                     conn.execute(
-                        "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
-                         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
+                        "INSERT INTO relationship (id, in_node, out_node, relationship_type, reverse_relationship_type, properties, version, created_at, modified_at) \
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7, ?8)",
                         libsql::params![
                             rel_id.clone(),
                             schema_id.to_string(),
                             out_node.clone(),
                             rel.name.clone(),
+                            rel.reverse_name.clone(),
                             props_json,
                             now.clone(),
                             now.clone()
