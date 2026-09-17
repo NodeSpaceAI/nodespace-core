@@ -1527,14 +1527,20 @@ impl SqliteStore {
         // content matching, so running it would silently drop that condition.
         if nodes.is_empty() && query.content_contains.is_none() {
             if let Some(ref search_q) = query.title_contains {
-                return self
-                    .query_nodes_title_stem_fallback(
-                        search_q,
-                        query.node_type.as_deref(),
-                        query.limit,
-                        query.offset,
-                    )
-                    .await;
+                // Below `TITLE_STEM_FALLBACK_MIN_QUERY_LEN`, skip the fallback
+                // entirely rather than bounding-and-running it — see that
+                // constant's doc comment. Falls through to the empty `nodes`
+                // already established by the exact-substring miss above.
+                if search_q.trim().chars().count() >= TITLE_STEM_FALLBACK_MIN_QUERY_LEN {
+                    return self
+                        .query_nodes_title_stem_fallback(
+                            search_q,
+                            query.node_type.as_deref(),
+                            query.limit,
+                            query.offset,
+                        )
+                        .await;
+                }
             }
         }
         Ok(nodes)
@@ -1783,6 +1789,21 @@ impl SqliteStore {
     /// implicit AND. Results are ranked by how many distinct query tokens
     /// matched before `limit`/`offset` apply, so a `limit`-truncated result
     /// keeps the closest matches rather than an arbitrary OR-qualifying set.
+    ///
+    /// The candidate SQL scan is capped at `TITLE_STEM_FALLBACK_CANDIDATE_CAP`
+    /// rows, ordered `modified_at DESC, id ASC` — otherwise the scan is
+    /// O(all titled nodes), which now sits on a per-keystroke desktop-search
+    /// path (see this function's caller). SQLite defines no row order for a
+    /// plain scan, so a `LIMIT` with no `ORDER BY` would slice an arbitrary,
+    /// effectively-insertion-order subset that could change between
+    /// otherwise-identical calls; ordering by recency first makes the cutoff
+    /// deterministic and biases the truncated pool toward nodes a user
+    /// plausibly still cares about, and the `id ASC` tiebreak keeps it fully
+    /// deterministic even when several candidates share a `modified_at`
+    /// (e.g. a bulk import). Known degradation: a matching title that is
+    /// older than the CAP-th most-recently-modified titled node is excluded
+    /// from the candidate pool and never ranked, even though the exact same
+    /// query would have found it before this cap existed.
     async fn query_nodes_title_stem_fallback(
         &self,
         search_q: &str,
@@ -1807,11 +1828,17 @@ impl SqliteStore {
 
         let (sql, params) = match node_type {
             Some(nt) => (
-                "SELECT * FROM node WHERE title IS NOT NULL AND node_type = ?1".to_string(),
+                format!(
+                    "SELECT * FROM node WHERE title IS NOT NULL AND node_type = ?1 \
+                     ORDER BY modified_at DESC, id ASC LIMIT {TITLE_STEM_FALLBACK_CANDIDATE_CAP}"
+                ),
                 vec![libsql::Value::Text(nt.to_string())],
             ),
             None => (
-                "SELECT * FROM node WHERE title IS NOT NULL".to_string(),
+                format!(
+                    "SELECT * FROM node WHERE title IS NOT NULL \
+                     ORDER BY modified_at DESC, id ASC LIMIT {TITLE_STEM_FALLBACK_CANDIDATE_CAP}"
+                ),
                 vec![],
             ),
         };
@@ -3968,6 +3995,74 @@ mod title_contains_stem_fallback_tests {
         assert_eq!(
             nodes[0].id, best_id,
             "the task matching both query tokens must rank first, not be truncated out"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stem_fallback_finds_recent_match_regardless_of_irrelevant_node_count() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+
+        // Seed far more titled, irrelevant nodes than the candidate cap —
+        // none of these share a stem with the "groceries" query below, so
+        // they only exist to make the candidate pool larger than the cap.
+        for i in 0..(super::TITLE_STEM_FALLBACK_CANDIDATE_CAP + 50) {
+            make_task(&store, &format!("Unrelated placeholder item {i}")).await?;
+        }
+
+        // Created last, so it is the most-recently-modified titled node and
+        // is guaranteed to land inside the capped, recency-ordered
+        // candidate window no matter how many irrelevant nodes precede it.
+        let id = make_task(&store, "Buy something from grocery store").await?;
+
+        let nodes = store
+            .query_nodes(NodeQuery {
+                title_contains: Some("groceries".to_string()),
+                node_type: Some("task".to_string()),
+                ..Default::default()
+            })
+            .await?;
+
+        assert_eq!(
+            nodes.len(),
+            1,
+            "the fallback must still find a recent match even with far more \
+             irrelevant titled nodes than the candidate cap — result quality \
+             must not degrade as the irrelevant-node count grows past the cap"
+        );
+        assert_eq!(nodes[0].id, id);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stem_fallback_candidate_scan_is_actually_bounded() -> Result<()> {
+        let (store, _t) = bare_store().await?;
+
+        // Created first, so it is the OLDEST titled node in the store.
+        make_task(&store, "Buy something from grocery store").await?;
+
+        // Exactly CAP more-recently-modified titled nodes follow it, which
+        // pushes the match above outside the capped, recency-ordered
+        // candidate window (the newest CAP rows are all "Unrelated …").
+        for i in 0..super::TITLE_STEM_FALLBACK_CANDIDATE_CAP {
+            make_task(&store, &format!("Unrelated placeholder item {i}")).await?;
+        }
+
+        let nodes = store
+            .query_nodes(NodeQuery {
+                title_contains: Some("groceries".to_string()),
+                node_type: Some("task".to_string()),
+                ..Default::default()
+            })
+            .await?;
+
+        assert!(
+            nodes.is_empty(),
+            "a stem match older than the CAP most-recently-modified titled \
+             nodes must be excluded from the candidate pool — this is the \
+             documented degradation the cap trades for a bounded scan. If \
+             this assertion fails because a match WAS found, the candidate \
+             scan is no longer actually bounded (cap or ORDER BY regressed)."
         );
         Ok(())
     }

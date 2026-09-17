@@ -42,6 +42,31 @@ const BM25_STOP_WORDS: &[&str] = &[
     "why",
 ];
 
+/// Row cap on the candidate scan in `query_nodes_title_stem_fallback` (see
+/// that function's doc comment for the full rationale). Without a cap the
+/// scan is O(all titled nodes); this bounds it to a fixed cost regardless of
+/// table size, at the price of ranking only among the CAP most-recently
+/// modified titled nodes rather than every one of them. 500 is chosen to
+/// comfortably cover a single user's realistic titled-node count (this
+/// fallback only ever sees node types that carry a title, not the whole
+/// table) while still capping the now-per-keystroke desktop-search path at a
+/// fixed, small hydration cost rather than letting it grow with the
+/// database.
+const TITLE_STEM_FALLBACK_CANDIDATE_CAP: i64 = 500;
+
+/// Minimum trimmed length of a `title_contains` query for
+/// `query_nodes_title_stem_fallback` to run at all. Below this, the caller
+/// skips the fallback outright rather than bounding-and-running it.
+///
+/// The stem comparison is an exact match against a whole stemmed title word,
+/// not a prefix match, so a 1-2 character query token is rarely meaningful
+/// signal — it only matches a title word whose ENTIRE stem is that same 1-2
+/// characters. Merged desktop search fires `query_nodes` on a ~300ms
+/// debounce per keystroke, so the very first keystrokes of a search ("d",
+/// "dr") would otherwise each pay for a capped-but-nonzero scan+rank pass
+/// for essentially no benefit.
+const TITLE_STEM_FALLBACK_MIN_QUERY_LEN: usize = 3;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RelationshipRecord {
     pub id: String,
