@@ -247,6 +247,7 @@ pub fn key(s: &str) -> cel_interpreter::objects::Key {
 /// - `days_since(date_string)`: Days elapsed since ISO 8601 date
 /// - `days_until(date_string)`: Days remaining until ISO 8601 date
 /// - `today()`: Current date as ISO 8601 string
+/// - `add_days(date_string, n)`: A new ISO 8601 date, `n` days offset from `date_string`
 pub fn build_condition_context<'a>(node: &Node, event: &DomainEvent) -> Context<'a> {
     build_condition_context_with_resolved(node, event, &HashMap::new())
 }
@@ -344,6 +345,7 @@ fn build_condition_context_with_resolved<'a>(
     ctx.add_function("days_since", cel_days_since);
     ctx.add_function("days_until", cel_days_until);
     ctx.add_function("today", cel_today);
+    ctx.add_function("add_days", cel_add_days);
 
     ctx
 }
@@ -405,6 +407,61 @@ fn parse_date_and_compute_days(date_str: &str, since: bool) -> Result<Value, Exe
     };
 
     Ok(Value::Int(diff))
+}
+
+/// `add_days(date_string, n)` — compute a NEW date, `n` days offset from
+/// `date_string` (negative `n` walks backward). This is the one function in
+/// this module that computes a value rather than comparing an existing date
+/// to "now" — see the module doc for where it's consumed (an action's
+/// computed field value, via `playbook::actions`'s function-call binding
+/// syntax, as well as ordinary CEL conditions).
+///
+/// Unlike `days_since`/`days_until`/`today`, this never reads wall-clock
+/// time — it is a pure function of its two arguments, so it is deliberately
+/// NOT listed in [`NON_DETERMINISTIC_FUNCTIONS`] and is safe to use in an
+/// invariant rule's conditions (ADR-060 §2).
+///
+/// Accepts the same two input shapes as `parse_date_and_compute_days`: a
+/// full RFC 3339 datetime or a bare `YYYY-MM-DD` date. The returned string
+/// matches the input's own format — a bare date in yields a bare date out;
+/// a full datetime in (time-of-day and UTC offset preserved, only the
+/// calendar date shifted) yields a full datetime out.
+///
+/// All arithmetic is checked, not wrapping/panicking: an `n` large enough to
+/// overflow `chrono`'s internal representation, or to shift the date outside
+/// `chrono`'s representable range, is a clean function error — never a
+/// panic — since `n` ultimately comes from user-authored play content.
+pub(crate) fn compute_add_days(date_str: &str, n: i64) -> Result<String, ExecutionError> {
+    let out_of_range = || {
+        ExecutionError::function_error(
+            "add_days",
+            format!("day offset {} is out of range for '{}'", n, date_str),
+        )
+    };
+
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(date_str) {
+        let delta = chrono::Duration::try_days(n).ok_or_else(out_of_range)?;
+        let shifted = dt.checked_add_signed(delta).ok_or_else(out_of_range)?;
+        return Ok(shifted.to_rfc3339());
+    }
+
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+        let delta = chrono::Duration::try_days(n).ok_or_else(out_of_range)?;
+        let shifted = date.checked_add_signed(delta).ok_or_else(out_of_range)?;
+        return Ok(shifted.format("%Y-%m-%d").to_string());
+    }
+
+    Err(ExecutionError::function_error(
+        "add_days",
+        format!("invalid date string: '{}'", date_str),
+    ))
+}
+
+/// `add_days(date_string, n)` — CEL wrapper around [`compute_add_days`] for
+/// condition-expression use, e.g. `add_days(node.start_date, 14) ==
+/// node.end_date`.
+fn cel_add_days(date_str: Arc<String>, n: i64) -> Result<Value, ExecutionError> {
+    compute_add_days(&date_str, n).map(|s| Value::String(Arc::new(s)))
 }
 
 // ---------------------------------------------------------------------------
@@ -868,6 +925,91 @@ mod tests {
         )
         .await;
         assert_eq!(result, ConditionResult::Fail { condition_index: 0 });
+    }
+
+    #[test]
+    fn add_days_shifts_a_bare_date_forward() {
+        assert_eq!(compute_add_days("2026-01-01", 14).unwrap(), "2026-01-15");
+    }
+
+    #[test]
+    fn add_days_shifts_a_bare_date_backward() {
+        assert_eq!(compute_add_days("2026-01-15", -14).unwrap(), "2026-01-01");
+    }
+
+    #[test]
+    fn add_days_zero_offset_is_a_no_op() {
+        assert_eq!(compute_add_days("2026-03-01", 0).unwrap(), "2026-03-01");
+    }
+
+    #[test]
+    fn add_days_preserves_full_datetime_format_and_time_of_day() {
+        // Full RFC 3339 input keeps its time-of-day and offset -- only the
+        // calendar date shifts.
+        let result = compute_add_days("2026-01-01T10:30:00Z", 5).unwrap();
+        assert!(
+            result.starts_with("2026-01-06T10:30:00"),
+            "expected shifted datetime to start with 2026-01-06T10:30:00, got {result}"
+        );
+    }
+
+    #[test]
+    fn add_days_crosses_month_and_year_boundaries() {
+        assert_eq!(compute_add_days("2026-12-25", 10).unwrap(), "2027-01-04");
+    }
+
+    #[test]
+    fn add_days_invalid_date_string_is_an_error() {
+        let err = compute_add_days("not-a-date", 5).unwrap_err();
+        assert!(err.to_string().contains("invalid date string"));
+    }
+
+    #[test]
+    fn add_days_extreme_offset_is_a_clean_error_not_a_panic() {
+        // i64::MAX days would overflow chrono's internal representation --
+        // this must be a normal `Err`, never a panic, since `n` ultimately
+        // comes from user-authored play content.
+        let err = compute_add_days("2026-01-01", i64::MAX).unwrap_err();
+        assert!(err.to_string().contains("out of range"));
+
+        let err = compute_add_days("2026-01-01", i64::MIN).unwrap_err();
+        assert!(err.to_string().contains("out of range"));
+    }
+
+    #[tokio::test]
+    async fn add_days_usable_from_a_cel_condition() {
+        let node = test_node("task", json!({"start_date": "2026-01-01"}));
+        let event = node_created_event("task");
+        let result = evaluate_conditions(
+            &conds(&["add_days(node.start_date, 14) == '2026-01-15'"]),
+            &node,
+            &event,
+            None,
+        )
+        .await;
+        assert_eq!(result, ConditionResult::Pass);
+    }
+
+    #[tokio::test]
+    async fn add_days_invalid_date_evaluates_to_false_in_a_condition() {
+        let node = test_node("task", json!({}));
+        let event = node_created_event("task");
+        let result = evaluate_conditions(
+            &conds(&["add_days('not-a-date', 5) == '2026-01-01'"]),
+            &node,
+            &event,
+            None,
+        )
+        .await;
+        assert_eq!(result, ConditionResult::Fail { condition_index: 0 });
+    }
+
+    #[test]
+    fn add_days_is_not_in_the_non_deterministic_function_list() {
+        // add_days never reads wall-clock time -- it must stay usable in an
+        // invariant rule's conditions (ADR-060 §2), unlike today/days_since/
+        // days_until.
+        assert!(!NON_DETERMINISTIC_FUNCTIONS.contains(&"add_days"));
     }
 
     // -- Numeric comparison tests --
