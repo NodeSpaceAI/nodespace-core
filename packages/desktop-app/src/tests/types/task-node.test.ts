@@ -342,9 +342,11 @@ describe('TaskNodeHelpers', () => {
 
   describe('isCorePriority', () => {
     it('identifies core priorities', () => {
-      expect(TaskNodeHelpers.isCorePriority('low')).toBe(true);
-      expect(TaskNodeHelpers.isCorePriority('medium')).toBe(true);
+      expect(TaskNodeHelpers.isCorePriority('highest')).toBe(true);
       expect(TaskNodeHelpers.isCorePriority('high')).toBe(true);
+      expect(TaskNodeHelpers.isCorePriority('medium')).toBe(true);
+      expect(TaskNodeHelpers.isCorePriority('low')).toBe(true);
+      expect(TaskNodeHelpers.isCorePriority('lowest')).toBe(true);
     });
 
     it('rejects non-core priorities', () => {
@@ -371,9 +373,11 @@ describe('TaskNodeHelpers', () => {
 
   describe('getPriorityDisplayName', () => {
     it('returns display names for core priorities', () => {
-      expect(TaskNodeHelpers.getPriorityDisplayName('low')).toBe('Low');
-      expect(TaskNodeHelpers.getPriorityDisplayName('medium')).toBe('Medium');
+      expect(TaskNodeHelpers.getPriorityDisplayName('highest')).toBe('Highest');
       expect(TaskNodeHelpers.getPriorityDisplayName('high')).toBe('High');
+      expect(TaskNodeHelpers.getPriorityDisplayName('medium')).toBe('Medium');
+      expect(TaskNodeHelpers.getPriorityDisplayName('low')).toBe('Low');
+      expect(TaskNodeHelpers.getPriorityDisplayName('lowest')).toBe('Lowest');
     });
 
     it('formats user-defined priorities', () => {

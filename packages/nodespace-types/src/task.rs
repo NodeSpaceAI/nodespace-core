@@ -55,10 +55,12 @@ impl<'de> Deserialize<'de> for TaskStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TaskPriority {
-    Low,
+    Highest,
+    High,
     #[default]
     Medium,
-    High,
+    Low,
+    Lowest,
     User(String),
 }
 
@@ -67,9 +69,11 @@ impl FromStr for TaskPriority {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Ok(match s {
-            "low" => Self::Low,
-            "medium" => Self::Medium,
+            "highest" => Self::Highest,
             "high" => Self::High,
+            "medium" => Self::Medium,
+            "low" => Self::Low,
+            "lowest" => Self::Lowest,
             other => Self::User(other.to_string()),
         })
     }
@@ -78,9 +82,11 @@ impl FromStr for TaskPriority {
 impl TaskPriority {
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
+            Self::Highest => "highest",
             Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::Lowest => "lowest",
             Self::User(s) => s.as_str(),
         }
     }
@@ -207,6 +213,46 @@ pub(crate) mod flexible_date {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// This crate carries its own `TaskPriority` copy because it cannot depend
+    /// on `nodespace-core`, and it is the one that serializes onto the wire.
+    /// The core-side bidirectional drift test guards the *core* copy against
+    /// `task.priority`'s schema seed; nothing links this copy to either, so a
+    /// value added to the scale but missed here would degrade to
+    /// `TaskPriority::User(_)` at the frontend boundary while every suite
+    /// stayed green. Pinning the literals here is the cheapest available
+    /// stand-in for that missing link.
+    #[test]
+    fn task_priority_core_scale_parses_to_named_variants() {
+        let scale = [
+            ("highest", TaskPriority::Highest),
+            ("high", TaskPriority::High),
+            ("medium", TaskPriority::Medium),
+            ("low", TaskPriority::Low),
+            ("lowest", TaskPriority::Lowest),
+        ];
+
+        for (literal, expected) in &scale {
+            let parsed: TaskPriority = literal.parse().expect("from_str is infallible");
+            assert_eq!(
+                parsed, *expected,
+                "'{}' must parse to the named TaskPriority variant, not TaskPriority::User(_) — \
+                 keep this copy in step with task.priority's core_values in core_schemas.rs.",
+                literal
+            );
+            assert!(
+                !matches!(parsed, TaskPriority::User(_)),
+                "'{}' fell through to the user-defined catch-all",
+                literal
+            );
+            assert_eq!(
+                parsed.as_str(),
+                *literal,
+                "'{}' must round-trip through as_str()",
+                literal
+            );
+        }
+    }
 
     #[test]
     fn task_node_update_null_clears_due_date() {

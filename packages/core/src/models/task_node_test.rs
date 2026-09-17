@@ -366,9 +366,11 @@ mod tests {
 
     #[test]
     fn test_priority_as_str() {
-        assert_eq!(TaskPriority::Low.as_str(), "low");
-        assert_eq!(TaskPriority::Medium.as_str(), "medium");
+        assert_eq!(TaskPriority::Highest.as_str(), "highest");
         assert_eq!(TaskPriority::High.as_str(), "high");
+        assert_eq!(TaskPriority::Medium.as_str(), "medium");
+        assert_eq!(TaskPriority::Low.as_str(), "low");
+        assert_eq!(TaskPriority::Lowest.as_str(), "lowest");
         assert_eq!(
             TaskPriority::User("critical".to_string()).as_str(),
             "critical"

@@ -226,7 +226,12 @@ class TaskNodeDecorator extends BaseNodeDecorator {
       priority,
       isCompleted,
       checkboxIcon: isCompleted ? '☑' : '☐',
-      priorityIcon: priority === 'high' ? '🔴' : priority === 'low' ? '🔵' : '',
+      priorityIcon:
+        priority === 'highest' || priority === 'high'
+          ? '🔴'
+          : priority === 'lowest' || priority === 'low'
+            ? '🔵'
+            : '',
       mentionedDate: metadata.mentionedDate
     };
 

@@ -98,9 +98,11 @@ function realTaskSchema(): SchemaNode {
         'priority',
         'Priority',
         [
-          { value: 'low', label: 'Low' },
+          { value: 'highest', label: 'Highest' },
+          { value: 'high', label: 'High' },
           { value: 'medium', label: 'Medium' },
-          { value: 'high', label: 'High' }
+          { value: 'low', label: 'Low' },
+          { value: 'lowest', label: 'Lowest' }
         ],
         { extensible: true }
       ),

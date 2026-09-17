@@ -520,9 +520,11 @@ mod promotion_proptests {
     /// Arbitrary task `priority` string (core and user-defined values).
     fn task_priority() -> impl Strategy<Value = String> {
         prop_oneof![
-            Just("low".to_string()),
-            Just("medium".to_string()),
+            Just("highest".to_string()),
             Just("high".to_string()),
+            Just("medium".to_string()),
+            Just("low".to_string()),
+            Just("lowest".to_string()),
             "[a-z][a-z_]{0,15}".prop_map(|s| s),
         ]
     }

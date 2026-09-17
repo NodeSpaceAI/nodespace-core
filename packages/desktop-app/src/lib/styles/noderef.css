@@ -306,15 +306,6 @@ a[href*="nodespace://"][href*="deleted=true"]:hover::after {
   color: hsl(var(--status-overdue));
 }
 
-/* Priority variations */
-.ns-noderef--priority-high {
-  border-left: 3px solid hsl(var(--priority-high));
-}
-
-.ns-noderef--priority-low {
-  opacity: 0.8;
-}
-
 /* ============================================================================
    User Node Decorations
    ============================================================================ */
