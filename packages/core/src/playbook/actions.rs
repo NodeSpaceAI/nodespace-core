@@ -652,7 +652,13 @@ fn resolve_iteration_path_item_id(item: &Value) -> Result<String, String> {
 /// string this function recognizes as a function call was already a hard
 /// error under the old bare-path-only resolver -- never a successfully
 /// resolving binding whose behavior this could silently change.
-fn parse_function_call(path: &str) -> Option<(&str, &str)> {
+///
+/// `pub(crate)` so `playbook::validation`'s ADR-060 §2 determinism check can
+/// recognize a function-call binding inside an action's params without
+/// duplicating this parsing logic -- see [`extract_binding_templates`] and
+/// [`collect_binding_templates_in_value`], which that check uses alongside
+/// this to find the candidate strings in the first place.
+pub(crate) fn parse_function_call(path: &str) -> Option<(&str, &str)> {
     let path = path.trim();
     let open = path.find('(')?;
     if !path.ends_with(')') {
@@ -697,6 +703,69 @@ fn split_top_level_args(args: &str) -> Vec<&str> {
     }
     parts.push(&args[start..]);
     parts
+}
+
+/// Extract the raw text inside every `{...}` binding template in a param
+/// string -- both the "whole string is one binding" shape (`"{path}"`) and
+/// the "mixed literal text" shape (`"prefix {path} suffix"`), mirroring the
+/// two extraction shapes [`resolve_bindings_in_string`] resolves at runtime.
+/// This performs no resolution and does not require a `BindingContext` --
+/// it exists so save-time validation (`playbook::validation`'s ADR-060 §2
+/// determinism check) can find candidate function-call bindings inside an
+/// action's params without duplicating -- or diverging from -- the runtime
+/// resolver's own notion of "what counts as a binding".
+///
+/// `pub(crate)`: see [`parse_function_call`]'s doc for why validation needs
+/// this.
+pub(crate) fn extract_binding_templates(s: &str) -> Vec<&str> {
+    if s.starts_with('{') && s.ends_with('}') && !s[1..s.len() - 1].contains('{') {
+        return vec![&s[1..s.len() - 1]];
+    }
+
+    let mut templates = Vec::new();
+    let mut chars = s.char_indices();
+    while let Some((start, ch)) = chars.next() {
+        if ch != '{' {
+            continue;
+        }
+        let content_start = start + ch.len_utf8();
+        for (i, c) in chars.by_ref() {
+            if c == '}' {
+                templates.push(&s[content_start..i]);
+                break;
+            }
+        }
+        // An unterminated `{` (no matching `}`) contributes no template,
+        // exactly like `resolve_bindings_in_string`'s runtime scan treats
+        // it as literal text rather than a binding.
+    }
+    templates
+}
+
+/// Recursively collect every `{...}` binding template's raw content from a
+/// JSON value (an action's `params`), depth-first through objects and
+/// arrays -- mirrors [`resolve_bindings_in_value`]'s own recursion shape,
+/// without evaluating anything. `pub(crate)`: see [`parse_function_call`]'s
+/// doc for why validation needs this.
+pub(crate) fn collect_binding_templates_in_value(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => {
+            for template in extract_binding_templates(s) {
+                out.push(template.to_string());
+            }
+        }
+        Value::Object(obj) => {
+            for v in obj.values() {
+                collect_binding_templates_in_value(v, out);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                collect_binding_templates_in_value(v, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2377,6 +2446,69 @@ mod tests {
     fn split_top_level_args_empty_input_is_empty_vec() {
         assert!(split_top_level_args("").is_empty());
         assert!(split_top_level_args("   ").is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // extract_binding_templates / collect_binding_templates_in_value tests
+    //
+    // These back `playbook::validation`'s ADR-060 §2 determinism check for
+    // action-value function-call bindings -- they must find every `{...}`
+    // template a real action-value resolution would also see.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_binding_templates_whole_string_fast_path() {
+        assert_eq!(
+            extract_binding_templates("{add_days(item.start_date, 14)}"),
+            vec!["add_days(item.start_date, 14)"]
+        );
+    }
+
+    #[test]
+    fn extract_binding_templates_mixed_literal_text() {
+        assert_eq!(
+            extract_binding_templates("End date: {add_days(item.start_date, 14)}"),
+            vec!["add_days(item.start_date, 14)"]
+        );
+    }
+
+    #[test]
+    fn extract_binding_templates_multiple_bindings_in_one_string() {
+        assert_eq!(
+            extract_binding_templates("{trigger.node.id} then {add_days(item.start_date, 1)}"),
+            vec!["trigger.node.id", "add_days(item.start_date, 1)"]
+        );
+    }
+
+    #[test]
+    fn extract_binding_templates_no_bindings_is_empty() {
+        assert!(extract_binding_templates("just a plain string").is_empty());
+    }
+
+    #[test]
+    fn extract_binding_templates_unterminated_brace_contributes_nothing() {
+        assert!(extract_binding_templates("{add_days(item.start_date, 14)").is_empty());
+    }
+
+    #[test]
+    fn collect_binding_templates_in_value_walks_nested_object_and_array() {
+        let params = json!({
+            "node_type": "pb_cycle_result",
+            "content": "computed",
+            "properties": {
+                "end_date": "{add_days(trigger.node.properties.pb_cycle_source.start_date, 14)}",
+                "tags": ["{trigger.node.id}", "literal"]
+            }
+        });
+        let mut templates = Vec::new();
+        collect_binding_templates_in_value(&params, &mut templates);
+        assert!(templates.contains(
+            &"add_days(trigger.node.properties.pb_cycle_source.start_date, 14)".to_string()
+        ));
+        assert!(templates.contains(&"trigger.node.id".to_string()));
+        // Literal text with no `{...}` contributes nothing, and non-string
+        // values (numbers/bools/null) are simply skipped, not stringified.
+        assert_eq!(templates.len(), 2);
     }
 
     // -----------------------------------------------------------------------
