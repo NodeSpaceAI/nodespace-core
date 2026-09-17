@@ -84,8 +84,8 @@ pub type StoreNotifier = Arc<dyn Fn(StoreChange) + Send + Sync>;
 /// every connection opened afterwards has the `vec0` virtual-table module available.
 /// Runs exactly once per process and must complete before any real store connection is
 /// opened — `SqliteStore::new` awaits it first. `pub` so tests/tooling that open a raw
-/// libsql connection (bypassing `SqliteStore::new`) to exercise the migration runner
-/// directly can register `vec0` too, since migration 1 creates a vec0 table.
+/// libsql connection (bypassing `SqliteStore::new`) to create the schema directly can
+/// register `vec0` too, since `create_schema` creates a vec0 table.
 ///
 /// Ordering is critical: libsql lazily calls `sqlite3_config(SQLITE_CONFIG_SERIALIZED)`
 /// on its first `connect()` (via a process-global `Once`), and `sqlite3_config` fails
@@ -285,7 +285,7 @@ impl SqliteStore {
     /// index writes as they happen, so a healthy database stays in sync on its
     /// own — but the index and `node` can still diverge if a write is
     /// interrupted, or if rows reach `node` by a path the triggers did not see
-    /// (a bulk restore, or an `ALTER TABLE` rebuild). A desynced index silently
+    /// (a bulk restore, or a `VACUUM` that renumbers rowids). A desynced index silently
     /// omits those rows from `bm25_search_roots` forever, so rebuild from
     /// `node` when the two disagree — but ONLY then, so a healthy DB does not
     /// re-index its whole corpus on every startup.
@@ -1894,9 +1894,10 @@ mod tests {
 
     /// two `SqliteStore`s opened against the same file (simulating a dev +
     /// production daemon both holding the DB) must not surface SQLITE_BUSY as a
-    /// hard error on the loser of a write race. `busy_timeout` (set by migration 1,
-    /// applied per-connection in `initialize_schema`) makes the second writer retry
-    /// until the first releases its lock, instead of failing immediately.
+    /// hard error on the loser of a write race. `busy_timeout` (a per-connection
+    /// session setting, applied in `apply_connection_pragmas`) makes the second
+    /// writer retry until the first releases its lock, instead of failing
+    /// immediately.
     ///
     /// Requires a multi-thread runtime: libsql's local connection executes
     /// synchronously (no `spawn_blocking`), so on a current-thread runtime the

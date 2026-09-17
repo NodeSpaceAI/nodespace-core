@@ -214,9 +214,12 @@ pub async fn create_schema(conn: &libsql::Connection) -> Result<()> {
     .await
     .context("Failed to create vec0 embeddings table")?;
 
-    // Refresh planner stats so the expression indexes above are picked
-    // immediately, instead of waiting for organic churn to trigger SQLite's
-    // automatic ANALYZE.
+    // Refresh planner stats so the expression indexes above are picked from the
+    // first query, rather than waiting for organic churn to trigger SQLite's
+    // automatic ANALYZE. Running on every open (not once at creation) also keeps
+    // the stats current as the corpus grows, which is what keeps the planner
+    // choosing those indexes later. It scans indexes rather than table content,
+    // so the cost stays flat — single-digit milliseconds on a populated database.
     conn.execute("ANALYZE", ())
         .await
         .context("Failed to ANALYZE after creating schema")?;

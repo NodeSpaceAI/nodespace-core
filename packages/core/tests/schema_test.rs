@@ -132,6 +132,53 @@ async fn embedding_modified_index_leads_on_origin() {
     );
 }
 
+/// End-to-end confirmation that the planner actually picks a partial expression
+/// index for the exact filter shape `QueryService` generates — a stronger
+/// guarantee than asserting the index exists by name, since SQLite silently
+/// ignores an expression index whose expression does not match the query's
+/// byte-for-byte and falls back to a full scan.
+///
+/// Asserts index *coverage*, not one index by name: `idx_task_status` and
+/// `idx_task_status_due_date` both cover this filter, and which one the planner
+/// picks depends on table statistics. Either proves the expression matches,
+/// which is the property that can silently break.
+#[tokio::test]
+async fn task_status_filter_uses_a_partial_expression_index() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let conn = open_raw(&temp_dir.path().join("plan.db")).await;
+
+    schema::create_schema(&conn).await.expect("create schema");
+
+    conn.execute(
+        "INSERT INTO node (id, node_type, content, properties, lifecycle_status, version, created_at, modified_at) \
+         VALUES ('t1', 'task', 'Task 1', '{\"task\":{\"status\":\"open\"}}', 'active', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        (),
+    )
+    .await
+    .expect("insert task");
+
+    let mut rows = conn
+        .query(
+            "EXPLAIN QUERY PLAN SELECT * FROM node WHERE node_type = 'task' AND json_extract(properties, '$.task.status') = 'open'",
+            (),
+        )
+        .await
+        .expect("explain query plan");
+
+    let mut plan = String::new();
+    while let Some(row) = rows.next().await.expect("next plan row") {
+        plan.push_str(&row.get::<String>(3).expect("plan detail column"));
+        plan.push('\n');
+    }
+
+    assert!(
+        plan.contains("idx_task_status"),
+        "planner must use a status-covering partial expression index for this \
+         filter shape (a full scan means the index expression no longer matches \
+         what QueryService generates), got plan: {plan}"
+    );
+}
+
 /// Creating the schema over a database that already has it must neither fail
 /// nor disturb existing rows — this is what reopening a database does on every
 /// startup.

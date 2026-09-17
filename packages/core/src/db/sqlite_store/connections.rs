@@ -71,7 +71,7 @@ pub(crate) struct Connections {
     /// reads *fresh* as well as clean (see [`ReadConn::query`]).
     ///
     /// Starts empty and fills on demand, so no reader connection exists until
-    /// after migrations have run.
+    /// after the schema is created.
     readers: Arc<Mutex<Vec<libsql::Connection>>>,
     /// The store's only writable connection, reachable exclusively through
     /// [`Connections::write`]. Every mutating statement in the store — whether

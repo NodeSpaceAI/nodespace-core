@@ -13,7 +13,7 @@
 //!   (the mention-join path), and a large result set.
 //! - JSON-path: `QueryService` filtering on an indexed column (`node_type`) vs a
 //!   non-indexed `json_extract` property, over the same corpus; also at 1k/10k/
-//!   100k scale, contrasting a `task.status` filter covered by migration v003's
+//!   100k scale, contrasting a `task.status` filter covered by the
 //!   `idx_task_status` partial expression index against the equivalent
 //!   non-indexed `text.category` filter.
 //! - Vector search: `search_embeddings` (`vec0` KNN) over random unit vectors.
@@ -32,7 +32,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 
-/// Embedding dimension the `vec0` mirror is created with (see schema migration 1).
+/// Embedding dimension the `vec0` mirror is created with (see `db::schema`).
 const EMBEDDING_DIM: usize = 768;
 
 /// Build a fresh store + node service backed by a tempfile database.
@@ -448,7 +448,7 @@ async fn seed_task_corpus(count: usize) -> (Arc<SqliteStore>, Arc<NodeService>, 
     (store, svc, temp)
 }
 
-/// `task.status` filter (migration v003's `idx_task_status` partial expression
+/// `task.status` filter (the `idx_task_status` partial expression
 /// index) versus the equivalent non-indexed `text.category` filter, at
 /// increasing corpus sizes, quantifying the index's before/after win as the
 /// table grows.
