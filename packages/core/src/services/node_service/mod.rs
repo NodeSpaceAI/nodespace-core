@@ -8337,4 +8337,83 @@ mod tests {
             .await
             .expect("a declared value must be accepted on edit");
     }
+
+    /// A declared relationship's instance edge must carry its declaration's
+    /// reverse name on the TRANSACTIONAL path too, not only the direct one.
+    ///
+    /// `create_relationship_in_tx` is `pub(crate)` and reached in production
+    /// only through a playbook `add_relationship` action, so an integration
+    /// test cannot drive it — and the existing invariant tests only exercise
+    /// `member_of`, a built-in whose reverse is derived in SQL and therefore
+    /// never touches the parameter this asserts. Without this test, reverting
+    /// the threading on that one path is invisible: every core test binary
+    /// stays green while declared instance edges silently write NULL again.
+    #[tokio::test]
+    async fn in_tx_declared_instance_edge_carries_the_declarations_reverse_name() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (service, _temp) = create_test_service().await;
+
+        let task = |content: &str| CreateNodeParams {
+            id: None,
+            node_type: "task".to_string(),
+            content: content.to_string(),
+            parent_id: None,
+            position: InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        };
+
+        let blocker = service
+            .create_node_with_parent(task("blocker"))
+            .await
+            .unwrap();
+        let blocked = service
+            .create_node_with_parent(task("blocked"))
+            .await
+            .unwrap();
+
+        let service_for_tx = service.clone();
+        let (source, target) = (blocker.clone(), blocked.clone());
+        service
+            .with_transaction(move |tx| {
+                let service = service_for_tx.clone();
+                let (source, target) = (source.clone(), target.clone());
+                Box::pin(async move {
+                    service
+                        .create_relationship_in_tx(tx, &source, "blocks", &target, json!({}))
+                        .await
+                })
+            })
+            .await
+            .expect("an in-tx declared instance edge must be creatable");
+
+        // `blocks` is declared on `task` with reverse `blocked_by`. The
+        // built-in CASE has no arm for it, so a NULL here means the
+        // declaration's name never reached the write.
+        let mut rows = service
+            .store
+            .read()
+            .await
+            .unwrap()
+            .query(
+                "SELECT reverse_relationship_type FROM relationship \
+                 WHERE in_node = ?1 AND out_node = ?2 AND relationship_type = 'blocks'",
+                libsql::params![blocker.clone(), blocked.clone()],
+            )
+            .await
+            .expect("reading the stored reverse name must succeed");
+        let reverse: Option<String> = rows
+            .next()
+            .await
+            .unwrap()
+            .expect("the blocks edge must exist")
+            .get(0)
+            .unwrap();
+        assert_eq!(
+            reverse.as_deref(),
+            Some("blocked_by"),
+            "the in-tx path must store the declaration's reverse name, not NULL"
+        );
+    }
 }

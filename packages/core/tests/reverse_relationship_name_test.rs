@@ -185,6 +185,7 @@ async fn schema_declared_edges_store_the_authors_reverse_name() {
         ("blocks", "blocked_by"),
         ("relates_to", "related_from"),
         ("duplicates", "duplicated_by"),
+        ("reported_tasks", "creator"),
     ]
     .into_iter()
     .collect();
