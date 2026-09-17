@@ -270,9 +270,11 @@ export function buildTaskNodeUpdatePatch(update: TaskNodeUpdate): TaskNodeUpdate
 
 /**
  * The most rows the daemon will return for one query, whatever the request
- * asks for — `MAX_EXECUTE_QUERY_LIMIT` / `MAX_QUERY_NODES_SIMPLE_LIMIT` in
- * `packages/daemon/src/services/node_service.rs`, which clamp rather than
- * reject.
+ * asks for — `MAX_ROW_LIMIT` in `packages/daemon/src/services/node_service.rs`,
+ * which clamps rather than rejects.
+ *
+ * `adapter-core.test.ts` reads that constant out of the Rust source and asserts
+ * it equals this one, so the two cannot drift silently.
  *
  * Callers need this to tell a complete result from a truncated one: the clamp
  * is silent, so a request for more comes back looking exactly like a result

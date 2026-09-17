@@ -71,8 +71,12 @@ use crate::nodespace::{
     WatchRequest,
 };
 
-/// The most rows any one row-returning RPC will return, whatever the request
-/// asks for.
+/// The most rows a paged query RPC will return, whatever the request asks for:
+/// `GetRoots`, `QueryNodesSimple` and `ExecuteQuery`.
+///
+/// Not every row-returning RPC bounds itself this way — `Search` and
+/// `MentionAutocomplete` take a caller-supplied limit unclamped — so this is
+/// the ceiling for the paged query surface, not a daemon-wide invariant.
 ///
 /// Requests above this are clamped rather than rejected, so callers must bound
 /// large reads with repeated limit/offset pages rather than a single very large

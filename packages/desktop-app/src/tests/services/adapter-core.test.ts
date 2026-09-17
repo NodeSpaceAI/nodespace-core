@@ -29,6 +29,9 @@ describe('MAX_QUERY_ROWS', () => {
     //
     // Read the Rust source rather than restate the number, so a change there
     // fails here instead of silently disabling the truncation caveat.
+    // __dirname-relative, not cwd-relative, so this resolves the same whether
+    // vitest runs from the repo root or from packages/desktop-app:
+    // src/tests/services → src/tests → src → desktop-app → packages.
     const source = readFileSync(
       resolve(__dirname, '../../../../daemon/src/services/node_service.rs'),
       'utf8'
