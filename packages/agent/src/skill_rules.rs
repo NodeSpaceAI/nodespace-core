@@ -243,9 +243,23 @@ pub const SUCCESS_NO_REVERIFY: InteractionRule = InteractionRule {
     skill_md_key_phrase: "don't re-fetch",
 };
 
+/// The dedicated-verb instruction is a stable API constraint and is stated
+/// outright. The *value list* deliberately is not: `task.status` is declared
+/// `extensible` and ADR-076's `add_field_values` lets a methodology bundle
+/// append real values to it, so any list written here is only correct until
+/// the first such install. The guidance points at `update_task_status`'s own
+/// `status` enum instead, which `tools::with_live_task_statuses` rewrites
+/// from the stored schema each turn.
+///
+/// It cannot point at the `EXISTING SCHEMAS` block: that block excludes core
+/// types by construction (`context_ops::parse_and_filter_non_core_schemas`
+/// filters on `!is_core`, pinned by
+/// `parse_and_filter_non_core_schemas_excludes_core_types`), because presence
+/// there is what tells the model a type is user-defined and takes bare
+/// property keys. `task` is a core type, so `task.status` never appears in it.
 pub const TASK_STATUS_DEDICATED_VERB: InteractionRule = InteractionRule {
     id: "task-status-dedicated-verb",
-    imperative: "TASK STATUS: To change a task's status (open, in_progress, done, cancelled), call update_task_status with the task ID and the new status string. Do NOT use update_node for task status changes.",
+    imperative: "TASK STATUS: To change a task's status, call update_task_status with the task ID and the new status string. Use one of the values listed on update_task_status's own status parameter — that list is the task type's current vocabulary and can be longer than the built-in four. Do NOT use update_node for task status changes.",
     prose: "task status changes must go through the dedicated status-update verb, not a generic property update.",
     skill_md_key_phrase: "for task status changes",
 };

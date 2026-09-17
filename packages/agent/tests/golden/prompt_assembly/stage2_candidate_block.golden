@@ -7,7 +7,7 @@ Purpose: Create new nodes, records, entries, or instances of any type — tasks,
 
 NEW RECORD OR EXISTING ONE? If the user is changing something that already exists — marking it done or signed off, correcting a value, setting a field on a record already in this conversation — call update_node with that record's id, NOT create_node. Creating a second copy leaves the original unchanged and silently duplicates the user's data. If they are adding something that does not exist yet, create_node is right and the rest of this guidance applies.
 
-CHANGING A TASK'S STATUS: use update_task_status with the task id and the new status string (open, in_progress, done, cancelled), not update_node — status is not a field_values key on a task.
+CHANGING A TASK'S STATUS: use update_task_status with the task id and the new status string, not update_node — status is not a field_values key on a task. Pick the value from the list on update_task_status's own status parameter: that is the task type's current vocabulary, and it can hold more than the four built-in values.
 
 CALL create_node NOW: your next action is the tool call, not planning text.
 

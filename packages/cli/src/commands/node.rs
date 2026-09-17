@@ -122,7 +122,10 @@ fn parse_property(s: &str) -> Result<(String, serde_json::Value), String> {
 pub struct SetStatusArgs {
     /// Task node ID.
     pub id: String,
-    /// New status. Must be one of: open, in_progress, done, cancelled.
+    /// New status. Must be one of the values the `task` schema's `status`
+    /// field declares — the four built-ins (open, in_progress, done,
+    /// cancelled) plus any added since. An invalid value is rejected with the
+    /// current list.
     pub status: String,
 }
 

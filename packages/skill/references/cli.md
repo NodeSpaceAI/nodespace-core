@@ -558,7 +558,7 @@ Operate on individual nodes (get, create, update, delete, children, query, expor
 **`nodespace node set-status`** — Set a task node's status (dedicated verb — do not use `update` for this)
 
 - `<ID>` — Task node ID (required)
-- `<STATUS>` — New status. Must be one of: open, in_progress, done, cancelled (required)
+- `<STATUS>` — New status. Must be one of the values the `task` schema's `status` field declares — the four built-ins (open, in_progress, done, cancelled) plus any added since. An invalid value is rejected with the current list (required)
 
 **`nodespace node delete`** — Delete a node
 

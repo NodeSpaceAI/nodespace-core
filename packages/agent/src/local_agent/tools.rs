@@ -1134,6 +1134,52 @@ pub(crate) fn with_declared_field_values(
     tool
 }
 
+/// Rewrite `update_task_status`'s `status` parameter — its `enum` and the
+/// value list in both descriptions — from the vocabulary `task.status`
+/// actually declares right now.
+///
+/// `def_update_task_status` can only state the four seed values, because
+/// [`Tool::definition`] is synchronous and has no database access. Left at
+/// that, the JSON Schema `enum` is a hard stop: a model cannot emit
+/// `backlog` after an ADR-076 `add_field_values` install, even though the
+/// schema and every layer of the write path now accept it.
+///
+/// Keeping the constraint in the `enum` channel rather than dropping to
+/// prose is deliberate, and is what ADR-064 rule 1 prefers — a stated
+/// constraint measurably outperforms prose. The reason `create_relationship`
+/// cannot do the same (see its own note) does not apply here: its legal set
+/// is source-node-dependent, so no single list is right for every call,
+/// whereas `task.status`'s vocabulary is one workspace-wide list that is
+/// knowable at the moment the tool surface is built.
+///
+/// A no-op for every other tool, so callers can map it over the whole list.
+pub(crate) fn with_live_task_statuses(
+    mut tool: ToolDefinition,
+    statuses: &[String],
+) -> ToolDefinition {
+    if tool.name != "update_task_status" || statuses.is_empty() {
+        return tool;
+    }
+
+    let joined = statuses.join(", ");
+    tool.description = format!("Update a task's status. Valid statuses: {joined}.");
+
+    // `get_mut` rather than `[...]` indexing: `Value`'s `IndexMut` inserts a
+    // `Null` at a missing key, which would leave a stray `"properties": null`
+    // behind on a shape this does not match. Mirrors
+    // `with_declared_field_values`' reasoning.
+    if let Some(status) = tool
+        .parameters_schema
+        .get_mut("properties")
+        .and_then(|properties| properties.get_mut("status"))
+        .filter(|status| status.is_object())
+    {
+        status["enum"] = json!(statuses);
+        status["description"] = json!(format!("New status value. One of: {joined}."));
+    }
+    tool
+}
+
 fn def_create_relationship() -> ToolDefinition {
     ToolDefinition {
         name: "create_relationship".into(),
@@ -3599,21 +3645,34 @@ impl GraphToolExecutor {
                 reason: e.to_string(),
             })?;
 
-        // Validate status is a known enum value
-        match params.status.as_str() {
-            "open" | "in_progress" | "done" | "cancelled" => {}
-            _ => {
-                return Err(ToolError::InvalidArguments {
-                    tool: "update_task_status".into(),
-                    reason: format!(
-                        "Invalid status '{}'. Must be one of: open, in_progress, done, cancelled",
-                        params.status
-                    ),
-                });
-            }
-        }
-
         let ns = self.node_service()?;
+
+        // Validate `status` against the schema's LIVE vocabulary
+        // (`core_values` + `user_values`) rather than a hardcoded list of the
+        // four seed values. `task.status` is declared `extensible: Some(true)`
+        // (`core_schemas.rs`), and ADR-076's `add_field_values` lets a
+        // methodology bundle append real values to it at install time
+        // (`backlog`, `in_review`, ...). A literal match here would reject
+        // exactly those values while the service layer
+        // (`node_service::schema::validate_task_status`) accepts them —
+        // leaving the agent unable to write a status the schema declares
+        // valid.
+        //
+        // The service layer validates again on the write itself; this check
+        // exists to fail with an actionable message naming the legal values
+        // instead of surfacing a generic update error, and to reject before
+        // the node fetch below.
+        let valid_statuses = self.valid_task_statuses(&ns).await?;
+        if !valid_statuses.iter().any(|v| v == &params.status) {
+            return Err(ToolError::InvalidArguments {
+                tool: "update_task_status".into(),
+                reason: format!(
+                    "Invalid status '{}'. Must be one of: {}",
+                    params.status,
+                    valid_statuses.join(", ")
+                ),
+            });
+        }
 
         let input = node_ops::UpdateNodeInput {
             node_id: strip_node_uri(&params.id).to_string(),
@@ -3951,6 +4010,26 @@ impl GraphToolExecutor {
             .ok_or_else(|| ToolError::ExecutionFailed("Node service unavailable".to_string()))
     }
 
+    /// `task.status`'s currently-declared vocabulary — `core_values` plus any
+    /// `user_values` an ADR-076 `add_field_values` call has appended.
+    ///
+    /// Read from the stored schema on every call rather than cached: a
+    /// methodology bundle can extend the vocabulary at any point in a session's
+    /// lifetime, and a value cached before that install would reject a status
+    /// the schema now declares valid — the same staleness this function exists
+    /// to remove. The read is a single indexed lookup by schema id.
+    async fn valid_task_statuses(&self, ns: &NodeService) -> Result<Vec<String>, ToolError> {
+        let schema = ns
+            .get_schema_node("task")
+            .await
+            .map_err(|e| ToolError::ExecutionFailed(format!("Failed to load 'task' schema: {e}")))?
+            .ok_or_else(|| ToolError::ExecutionFailed("Schema 'task' not found".to_string()))?;
+
+        schema.get_enum_value_strings("status").ok_or_else(|| {
+            ToolError::ExecutionFailed("Schema 'task' declares no enum field 'status'".to_string())
+        })
+    }
+
     /// Read the current embedding service from the shared handle.
     ///
     /// Returns the value live each call, so a service that loaded after this
@@ -4152,6 +4231,40 @@ impl AgentToolExecutor for GraphToolExecutor {
     /// ones route, without the executor being rebuilt.
     async fn routing_available(&self) -> bool {
         self.node_service.is_some() && self.embedding_service.read().await.is_some()
+    }
+
+    /// Reads the live vocabulary from the stored `task` schema so the
+    /// definition handed to the model matches what the write path will
+    /// actually accept (`exec_update_task_status`, and the service layer
+    /// behind it).
+    ///
+    /// Any failure — no node service yet, schema unreadable — yields `None`,
+    /// which keeps the static seed `enum`. A turn is not worth failing over a
+    /// vocabulary lookup, and the seed values stay correct for every
+    /// workspace that never extended them.
+    async fn task_status_values(&self) -> Option<Vec<String>> {
+        let ns = self.node_service.clone()?;
+        match self.valid_task_statuses(&ns).await {
+            Ok(values) if !values.is_empty() => Some(values),
+            Ok(_) => {
+                // An empty `values` array on a Core-protected field is a more
+                // alarming state than a failed read: something wrote it, and
+                // `add_field_values` is append-only. Warn rather than fall
+                // through silently — the seed enum still applies.
+                tracing::warn!(
+                    "task.status declares an empty value list; update_task_status keeps its \
+                     seed enum"
+                );
+                None
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Could not read task.status vocabulary; update_task_status keeps its seed enum"
+                );
+                None
+            }
+        }
     }
 
     /// Run skill retrieval as a deterministic system step (ADR-038).
@@ -7423,6 +7536,235 @@ mod tests {
         let original = Tool::CreateNode.definition();
         let unchanged = with_declared_field_values(Tool::CreateNode.definition(), &[]);
         assert_eq!(unchanged.parameters_schema, original.parameters_schema);
+    }
+
+    // -- update_task_status's live vocabulary (ADR-076) ----------------------
+
+    /// The whole point: a value added to `task.status` via `add_field_values`
+    /// must reach the model's tool surface. Before this, the seed `enum` was a
+    /// hard stop — the model could not emit `backlog` even though the schema
+    /// and the write path both accept it.
+    #[test]
+    fn with_live_task_statuses_admits_an_extended_value() {
+        let statuses: Vec<String> = ["open", "in_progress", "done", "cancelled", "backlog"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let tool = with_live_task_statuses(Tool::UpdateTaskStatus.definition(), &statuses);
+        let status = &tool.parameters_schema["properties"]["status"];
+
+        assert_eq!(status["enum"], json!(statuses));
+        assert!(
+            tool.description.contains("backlog"),
+            "the description must name the extended value too, not just the enum: {}",
+            tool.description
+        );
+        assert!(
+            status["description"].as_str().unwrap().contains("backlog"),
+            "parameter description went stale: {}",
+            status["description"]
+        );
+    }
+
+    /// No live vocabulary (empty slice) keeps the seed enum rather than
+    /// writing an empty one — an empty JSON Schema `enum` admits no value at
+    /// all, which would make the tool uncallable instead of merely stale.
+    #[test]
+    fn with_live_task_statuses_is_a_no_op_with_no_values() {
+        let original = Tool::UpdateTaskStatus.definition();
+        let unchanged = with_live_task_statuses(Tool::UpdateTaskStatus.definition(), &[]);
+        assert_eq!(unchanged.parameters_schema, original.parameters_schema);
+        assert_eq!(unchanged.description, original.description);
+    }
+
+    /// Mapped across the whole tool list, so every other tool must pass
+    /// through untouched.
+    #[test]
+    fn with_live_task_statuses_ignores_other_tools() {
+        let statuses = vec!["open".to_string(), "backlog".to_string()];
+        for tool in Tool::ALL.iter().copied() {
+            if tool == Tool::UpdateTaskStatus {
+                continue;
+            }
+            let original = tool.definition();
+            let unchanged = with_live_task_statuses(tool.definition(), &statuses);
+            assert_eq!(
+                unchanged.parameters_schema, original.parameters_schema,
+                "{} was modified",
+                original.name
+            );
+            assert_eq!(unchanged.description, original.description);
+        }
+    }
+
+    /// Guards the regression this issue exists to prevent: skill guidance must
+    /// not re-acquire a hardcoded `task.status` value list. The vocabulary is
+    /// extensible (ADR-076), so any literal list in prose is correct only
+    /// until the first `add_field_values` install — and a stale list is worse
+    /// than none, because the agent trusts it.
+    ///
+    /// Keys on the PROPERTY being protected — an enumeration of the seed
+    /// vocabulary appearing in one sentence — rather than on one serialization
+    /// of it. An earlier version matched the single contiguous string
+    /// `"open, in_progress, done, cancelled"`, which let both
+    /// `open/in_progress/done/cancelled` and a reordered
+    /// `open, done, in_progress, cancelled` through: a future author writing
+    /// the list fresh in their own phrasing is the realistic regression, and
+    /// it is exactly the case a literal match misses.
+    ///
+    /// The threshold is three of the four, per sentence. A single value cannot
+    /// be the trigger because `open` and `done` are ordinary English words in
+    /// this corpus ("mark it done", "an open question"). `in_progress` and
+    /// `cancelled` are not, so requiring three co-occurring in one sentence
+    /// makes an accidental trip very unlikely while catching the delimiters,
+    /// orderings and layouts an author actually writes — commas, slashes,
+    /// markdown bullets, dashes and quoted/JSON-ish lists. Scoped per sentence
+    /// within a paragraph, rather than per document, so a long skill that
+    /// legitimately says "done" in one paragraph and "in_progress" in another
+    /// is not flagged. Both halves of that scoping are load-bearing — see the
+    /// comment on the loop itself for what each one alone gets wrong.
+    ///
+    /// Knowingly out of reach: lists joined by " or "/" and "/bare spaces.
+    /// Catching those means treating the spaces in ordinary prose as
+    /// delimiters, which flags the very sentences this guidance is written in.
+    /// This guards against accident, not against an author determined to
+    /// evade it, so a form no one writes by habit is not worth a false
+    /// positive on every paragraph that says "done".
+    ///
+    /// Naming the seed values remains fine outside skill guidance — the tool
+    /// definition is rewritten at runtime by `with_live_task_statuses`, and CLI
+    /// help presents them as examples rather than an exhaustive set.
+    #[test]
+    fn skill_guidance_does_not_hardcode_the_task_status_vocabulary() {
+        /// Underscored values are matched as substrings; the two that are also
+        /// English words are matched only where a value list would put them,
+        /// i.e. adjacent to a delimiter rather than mid-prose.
+        fn seed_values_in(sentence: &str) -> Vec<&'static str> {
+            let lowered = sentence.to_lowercase();
+            let mut found = Vec::new();
+            for value in ["in_progress", "cancelled"] {
+                if lowered.contains(value) {
+                    found.push(value);
+                }
+            }
+            // `open`/`done` only count when delimited — `(open,`, `, done)`,
+            // `open/`, `- open`, `"done"` — never as the bare English word.
+            //
+            // The delimiter set covers the renderings an author actually
+            // reaches for, markdown bullets and quoted/JSON-ish lists
+            // included: this corpus is bullet-heavy (see `seed_skill_nodes`)
+            // and embeds JSON fragments in prose, so a four-bullet or
+            // `"open", "in_progress", ...` list is house style, not an
+            // adversarial string.
+            //
+            // It stops short of "any non-alphanumeric char": that catches
+            // `open or in_progress or done or cancelled` too, but only by
+            // treating the spaces around ordinary prose as delimiters, which
+            // false-positives on sentences like "mark it done ... an open
+            // question". Space- and conjunction-separated lists are therefore
+            // knowingly out of reach — no predicate can take them without
+            // also taking the prose this guidance is written in.
+            for value in ["open", "done"] {
+                let delimited = lowered.split(|c: char| {
+                    matches!(
+                        c,
+                        ',' | '/'
+                            | '('
+                            | ')'
+                            | '|'
+                            | ';'
+                            | ':'
+                            | '"'
+                            | '\''
+                            | '['
+                            | ']'
+                            | '*'
+                            | '\n'
+                            | '—'
+                            | '–'
+                            | '-'
+                    )
+                });
+                if delimited
+                    .map(str::trim)
+                    .any(|segment| segment == value || segment == format!("`{value}`"))
+                {
+                    found.push(value);
+                }
+            }
+            found
+        }
+
+        // Both rule families, not just the task-status rule: the list could be
+        // reintroduced by a rule with no obvious connection to status today,
+        // and naming one rule here would not catch it. Same reasoning as the
+        // seeded-skill sweep below.
+        //
+        // SCHEMA_RULES matters as much as INTERACTION_RULES — `ADD_ENUM_VALUES`
+        // lives there and is precisely the rule that teaches an agent to extend
+        // `task.status`, so it is the likeliest place for someone to illustrate
+        // the operation with the current vocabulary spelled out.
+        let mut guidance: Vec<(String, String)> = Vec::new();
+        for (id, imperative, prose) in crate::skill_rules::INTERACTION_RULES
+            .iter()
+            .map(|r| (r.id, r.imperative, r.prose))
+            .chain(
+                crate::skill_rules::SCHEMA_RULES
+                    .iter()
+                    .map(|r| (r.id, r.imperative, r.prose)),
+            )
+        {
+            guidance.push((format!("{id}.imperative"), imperative.to_string()));
+            guidance.push((format!("{id}.prose"), prose.to_string()));
+        }
+
+        // Every seeded skill, not just the two known sites: the guidance texts
+        // are interpolated from several constants, and a future skill could
+        // reintroduce the list somewhere this test never named.
+        for template in crate::skill_pipeline::seed_skill_nodes() {
+            guidance.push((
+                format!("seeded skill \"{}\"", template.title),
+                template.markdown_content,
+            ));
+        }
+
+        for (name, text) in guidance {
+            // Scope to a paragraph first, then to a sentence within it.
+            //
+            // Splitting the whole text on `.` alone is not sufficient: this
+            // corpus's headings, bullets and `LABEL: value` lines routinely
+            // carry no terminal period, so a lone `.` split lets unrelated
+            // paragraphs merge into one fragment — measured at 16 of 235 real
+            // fragments spanning a paragraph break, the largest swallowing a
+            // five-item bullet list plus the paragraph after it. That
+            // false-positives on guidance which enumerates nothing at all, and
+            // the failure message would then tell its author to stop
+            // hardcoding a list they never wrote.
+            //
+            // Splitting on `\n` instead is the opposite error: a markdown
+            // bullet list puts each value on its own line, which caps the
+            // score at 1 and misses four `- value` bullets — this corpus's own
+            // house style, and the highest-value regression to catch.
+            //
+            // Nesting gets both: paragraphs stay separate, and a bullet list
+            // within one paragraph is still scored as a unit.
+            for paragraph in text.split("\n\n") {
+                for sentence in paragraph.split('.') {
+                    let found = seed_values_in(sentence);
+                    assert!(
+                        found.len() < 3,
+                        "{name} hardcodes task.status's value list — {found:?} appear together \
+                         in one passage:\n\n  {}\n\nThat list goes stale the moment a \
+                         methodology bundle extends the vocabulary via add_field_values \
+                         (ADR-076), and a stale list is worse than none because the agent \
+                         trusts it. Point at update_task_status's own status enum instead — \
+                         with_live_task_statuses rewrites it from the stored schema each turn.",
+                        sentence.trim()
+                    );
+                }
+            }
+        }
     }
 
     /// A tool with no `field_values` object parameter (e.g. `create_schema`,

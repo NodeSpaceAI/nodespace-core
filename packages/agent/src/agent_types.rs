@@ -664,4 +664,19 @@ pub trait AgentToolExecutor: Send + Sync {
     ) -> Result<SkillRetrieval, ToolError> {
         Ok(SkillRetrieval::default())
     }
+
+    /// `task.status`'s currently-declared values (`core_values` +
+    /// `user_values`), used to keep `update_task_status`'s parameter `enum`
+    /// in step with a vocabulary ADR-076 lets a methodology bundle extend at
+    /// install time.
+    ///
+    /// The default returns `None`, meaning "no live vocabulary available" —
+    /// the tool definition then keeps the static `enum` from
+    /// `def_update_task_status`. That is the correct degraded behaviour
+    /// rather than an empty list, which as a JSON Schema `enum` would admit
+    /// no value at all and make the tool uncallable. Test doubles inherit it
+    /// and need no implementation.
+    async fn task_status_values(&self) -> Option<Vec<String>> {
+        None
+    }
 }
