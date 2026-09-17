@@ -258,14 +258,19 @@ impl PlaybookEngine {
 
         let chain = node_service.resolve_type_chain(scope_type).await.ok()?;
         let scope_fields = node_service.resolve_field_owners(scope_type).await.ok()?.0;
-        let node_fields = node_service
+        // The node's OWN chain, not the scope's. Reading the scope's ancestry
+        // would skip every bucket between the node and the reading scope — on
+        // `bug → ticket → workitem` read at `workitem`, the `ticket` bucket
+        // would never be opened. `resolve_field_owners` already computes this
+        // chain as its third element, so taking it costs nothing.
+        let (node_fields, _, node_chain) = node_service
             .resolve_field_owners(&node.node_type)
             .await
-            .ok()?
-            .0;
+            .ok()?;
 
         Some(crate::playbook::cel::CelScope {
             scope_type: scope_type.clone(),
+            node_chain,
             chain,
             scope_fields,
             node_fields,
@@ -1466,6 +1471,82 @@ mod scope_tests {
                 .await
                 .is_none(),
             "a rule on the node's own type resolves no scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mid_chain_bucket_is_read_on_a_three_level_chain() {
+        let (svc, _tmp) = test_service().await;
+
+        // workitem <- ticket <- bug. The field `state` is declared by
+        // `workitem`, inherited by both, and MATERIALIZED onto `ticket` when
+        // ticket extends its vocabulary — so an instance stores it in the
+        // `ticket` bucket: neither the node's own bucket nor the reading
+        // scope's.
+        handle_create_schema(
+            &svc,
+            json!({
+                "name": "Workitem",
+                "fields": [{
+                    "name": "state",
+                    "type": "enum",
+                    "protection": "user",
+                    "indexed": false,
+                    "extensible": true,
+                    "coreValues": [{ "value": "open", "label": "Open" }]
+                }]
+            }),
+        )
+        .await
+        .expect("workitem schema creation failed");
+        handle_create_schema(
+            &svc,
+            json!({ "name": "Ticket", "extends": "workitem", "fields": [] }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+        handle_update_schema(
+            &svc,
+            json!({
+                "schema_id": "ticket",
+                "add_field_values": [{
+                    "field": "state",
+                    "values": [{ "value": "triage", "label": "Triage", "mapsTo": "open" }]
+                }]
+            }),
+        )
+        .await
+        .expect("extending the inherited enum should succeed");
+        handle_create_schema(
+            &svc,
+            json!({ "name": "Bug", "extends": "ticket", "fields": [] }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        let id = svc
+            .create_node(crate::models::Node::new(
+                "bug".to_string(),
+                "a bug".to_string(),
+                json!({ "state": "triage" }),
+            ))
+            .await
+            .expect("bug creation failed");
+        let node = svc
+            .get_node(&id)
+            .await
+            .expect("get_node failed")
+            .expect("node should exist");
+
+        // Read at the ROOT scope, two levels above the node. Building the
+        // node's view from the reading scope's ancestry yields
+        // ["bug", "workitem"] and never opens `ticket` — where the value
+        // actually lives — so the condition sees nothing.
+        let rule = rule_on("workitem", "node.state == 'open'");
+        assert!(
+            eval(&svc, &rule, &node).await,
+            "a mid-chain bucket must be read on a 3-level chain; node properties were {:?}",
+            node.properties
         );
     }
 }

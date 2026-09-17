@@ -302,7 +302,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(NodeResponse {
             node_id: output.node_id,
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -507,7 +507,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(NodeResponse {
             node_id: output.node_id,
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -860,11 +860,10 @@ impl GrpcNodeService for NodeServiceImpl {
             })
             .collect();
 
-        let nodes: Vec<NodeData> = output
-            .matched_nodes
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, output.matched_nodes)
+            .await?
             .into_iter()
-            .map(|node| {
-                let mut node_data = node_to_proto(node);
+            .map(|mut node_data| {
                 if let Some(markdown) = markdown_by_id.get(node_data.id.as_str()) {
                     node_data.markdown = markdown.to_string();
                 }
@@ -2310,10 +2309,19 @@ async fn fetch_node(service: &Arc<CoreNodeService>, node_id: &str) -> Result<Nod
 /// access, so an extending node reaches them missing every inherited field
 /// unless its chain has been collapsed into its own bucket first.
 ///
-/// `node_to_proto` remains for the handful of sites that genuinely have no
-/// `NodeService` in scope; everything with one should call this. Wiring the
-/// collapse per call site is what let `get_node`, `get_children` and
-/// `get_roots` silently drop inherited fields in the first place.
+/// `node_to_proto` remains only for nodes that cannot have an `extends` chain
+/// — schema nodes (`into_wire_node()`), collections, and the fixed-type
+/// person/identity responses — where collapsing would be a no-op round trip
+/// through the store.
+///
+/// Every RPC returning a node whose type *could* extend something routes
+/// through here. That list is not obvious from any single call site, which is
+/// why wiring the collapse per site let `get_node`, `get_children`,
+/// `get_roots` and then `create_node`, `update_node`, `search_nodes` and the
+/// `watch_nodes` stream each silently drop inherited fields in turn. The
+/// `watch_nodes` case was the worst: a node that rendered correctly on load
+/// lost its inherited properties on the next edit, which reads as data loss
+/// rather than a missing feature.
 pub(crate) async fn nodes_to_proto(
     service: &Arc<CoreNodeService>,
     nodes: Vec<Node>,
@@ -2405,7 +2413,9 @@ async fn convert_domain_event(
 ) -> Option<NodeEventKind> {
     match event {
         DomainEvent::NodeCreated { node_id, .. } => match node_service.get_node(node_id).await {
-            Ok(Some(node)) => Some(NodeEventKind::Created(node_to_proto(node))),
+            Ok(Some(node)) => Some(NodeEventKind::Created(
+                node_to_proto_collapsed(node_service, node).await.ok()?,
+            )),
             Ok(None) => {
                 tracing::debug!(node_id = %node_id, "NodeCreated event skipped: node already gone");
                 None
@@ -2415,9 +2425,11 @@ async fn convert_domain_event(
                 None
             }
         },
-        DomainEvent::NodeUpdated { node, .. } => {
-            Some(NodeEventKind::Updated(node_to_proto(node.clone())))
-        }
+        DomainEvent::NodeUpdated { node, .. } => Some(NodeEventKind::Updated(
+            node_to_proto_collapsed(node_service, node.clone())
+                .await
+                .ok()?,
+        )),
         DomainEvent::NodeDeleted { id, node_type } => Some(NodeEventKind::Deleted(NodeDeleted {
             node_id: id.clone(),
             node_type: node_type.clone(),
@@ -4489,5 +4501,74 @@ mod tests {
             "dropping the stream must retract its active-database claim, not leave the \
              database stuck eviction-immune forever"
         );
+    }
+
+    /// `node get <id>` on an extending node must return its inherited fields.
+    ///
+    /// The acceptance criterion names this path by name, and it is the one the
+    /// collapse was missing when the first re-review caught it. Asserted at
+    /// the daemon boundary rather than on `collapse_chain_for_wire` directly,
+    /// so deleting the call in `get_node` fails here rather than silently
+    /// shipping a node with its inherited properties stripped.
+    #[tokio::test]
+    async fn get_node_returns_inherited_fields_for_an_extending_type() {
+        use nodespace_core::schema::handle_create_schema;
+
+        let (svc, _tmp) = make_service().await;
+        let core = svc.node_service.clone();
+
+        handle_create_schema(
+            &core,
+            serde_json::json!({
+                "name": "Ticket",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+        handle_create_schema(
+            &core,
+            serde_json::json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        let id = core
+            .create_node(nodespace_core::models::Node::new(
+                "bug".to_string(),
+                "a bug".to_string(),
+                serde_json::json!({ "status": "open", "severity": "high" }),
+            ))
+            .await
+            .expect("bug creation failed");
+
+        let response = svc
+            .get_node(Request::new(GetNodeRequest {
+                node_id: id.clone(),
+            }))
+            .await
+            .expect("get_node should succeed")
+            .into_inner();
+
+        let data = response.node_data.expect("node_data should be present");
+        let props: serde_json::Value =
+            serde_json::from_str(&data.properties).expect("properties should parse");
+
+        // `status` is declared by `ticket` and stored in ticket's bucket; the
+        // collapse is what brings it into the node's own bucket so the
+        // single-bucket flatteners downstream can see it.
+        assert_eq!(
+            props["bug"]["status"], "open",
+            "an inherited field must survive get_node, got {props:?}"
+        );
+        assert_eq!(props["bug"]["severity"], "high");
     }
 }

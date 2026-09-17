@@ -163,6 +163,15 @@ pub struct CelScope {
     pub scope_type: String,
     /// That type's own chain, nearest-first — the buckets in scope.
     pub chain: Vec<String>,
+    /// The concrete node's own chain, nearest-first.
+    ///
+    /// Distinct from `chain`, and the distinction is load-bearing: a field the
+    /// reading scope owns may physically live in any bucket of the *node's*
+    /// chain, because extending an inherited enum moves a field's storage onto
+    /// the extending schema. Assembling the node's view from the scope's
+    /// ancestry would skip every bucket in between — on `bug → ticket →
+    /// workitem` read at `workitem`, `ticket`'s bucket would never be opened.
+    pub node_chain: Vec<String>,
     /// Effective fields at the trigger's scope: the vocabulary a condition
     /// authored against it can refer to.
     pub scope_fields: Vec<crate::models::SchemaField>,
@@ -185,16 +194,10 @@ impl CelScope {
     }
 }
 
-/// The node's own chain: its type plus the scope's ancestors, so the full
-/// stored view is assembled before projection narrows it.
-fn node_own_chain<'a>(node: &'a Node, scope: &'a CelScope) -> Vec<&'a str> {
-    let mut chain: Vec<&str> = vec![node.node_type.as_str()];
-    for ancestor in &scope.chain {
-        if ancestor != &node.node_type {
-            chain.push(ancestor.as_str());
-        }
-    }
-    chain
+/// The node's own chain, as borrowed strs — the full stored view, assembled
+/// before projection narrows it to what the reading scope declares.
+fn node_own_chain(scope: &CelScope) -> Vec<&str> {
+    scope.node_chain.iter().map(String::as_str).collect()
 }
 
 /// Keys the CEL map carries that are node metadata rather than schema fields.
@@ -230,7 +233,7 @@ fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value {
     // onto the extending schema, moving its storage to the subtype's bucket
     // while it remains a field of the base. Reading the scope's buckets alone
     // would lose exactly the fields `maps_to` exists to translate.
-    let own_chain = node_own_chain(node, scope);
+    let own_chain = node_own_chain(scope);
     let projected = node_to_cel_value_at_scope(node, &own_chain);
 
     let Value::Map(map) = &projected else {
