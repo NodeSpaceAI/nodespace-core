@@ -46,6 +46,7 @@ vi.mock('$lib/services/backend-adapter', () => ({
 }));
 
 import { proSync } from '$lib/stores/pro-sync.svelte';
+import { labsFlags } from '$lib/stores/labs-flags.svelte';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { resolveProSyncVariant } from '$lib/plugins/ui-extensions.svelte';
 import { DATABASE_SETTINGS_NODE_ID } from '$lib/plugins/ui-extensions';
@@ -91,6 +92,10 @@ describe('sync:status transition → DatabaseSettingsNode re-hydration', () => {
     proSync.state = 'unspecified';
     proSync.userEmail = '';
     proSync.tier = 'pro';
+    // This suite exercises the tier/settings-node state machine directly, not
+    // the Labs "Team synchronization" gate ahead of it (see ui-extensions.test.ts) —
+    // default the gate ON so `resolveProSyncVariant()` still reflects those axes.
+    labsFlags.syncEnabled = true;
     await proSync.start();
   });
 
@@ -99,6 +104,7 @@ describe('sync:status transition → DatabaseSettingsNode re-hydration', () => {
     proSync.tier = 'unknown';
     proSync.state = 'unspecified';
     proSync.userEmail = '';
+    labsFlags.syncEnabled = false;
     SharedNodeStore.getInstance().clearAll();
     vi.restoreAllMocks();
   });

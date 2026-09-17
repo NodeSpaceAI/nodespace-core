@@ -1,9 +1,11 @@
 /**
  * LabsSettings — the Settings → Labs section housing experimental/
- * not-yet-ready features. The "AI Chat" entry has a real, working Switch
- * bound to the labs-flags store's `aiChatEnabled` (default off); "Team
- * synchronization" remains an inert, visibly-disabled placeholder pending
- * its own companion issue.
+ * not-yet-ready features. Both entries have a real, working Switch: "AI Chat"
+ * bound to the labs-flags store's `aiChatEnabled`, "Team synchronization"
+ * bound to `syncEnabled` — both default off. "Team synchronization" is a pure
+ * client-side visibility flag over EXISTING Pro sign-in/collaboration entry
+ * points (gated at `resolveProSyncVariant()` plus two direct `proSync.isPro`
+ * reads) — this file only covers the Labs switch itself, not that gating.
  */
 /* global HTMLButtonElement */
 
@@ -79,16 +81,54 @@ describe('LabsSettings', () => {
     expect(toggle?.getAttribute('data-state')).toBe('checked');
   });
 
-  it('renders Team synchronization as visibly disabled with an "In development" label', () => {
+  it('renders the Team synchronization entry with a real Switch, unchecked by default', () => {
     const { container } = render(LabsSettings);
 
     const cards = container.querySelectorAll('[data-slot="card"]');
     const teamSyncCard = cards[1];
+    const toggle = teamSyncCard.querySelector('[data-slot="switch"]');
 
-    expect(teamSyncCard.getAttribute('aria-disabled')).toBe('true');
-    expect(teamSyncCard.textContent).toContain('In development');
-
-    // The AI Chat card is not disabled — only Team synchronization is.
+    expect(toggle).not.toBeNull();
+    expect(toggle?.getAttribute('data-state')).toBe('unchecked');
+    expect(toggle?.getAttribute('aria-checked')).toBe('false');
+    // Neither card is disabled anymore.
+    expect(teamSyncCard.getAttribute('aria-disabled')).not.toBe('true');
     expect(cards[0].getAttribute('aria-disabled')).not.toBe('true');
+  });
+
+  it('marks the Team synchronization copy "Experimental — may not work correctly"', () => {
+    const { container } = render(LabsSettings);
+
+    const cards = container.querySelectorAll('[data-slot="card"]');
+    const normalized = cards[1].textContent?.replace(/\s+/g, ' ').trim();
+    expect(normalized).toContain('Experimental — may not work correctly.');
+    expect(normalized).not.toContain('In development');
+  });
+
+  it('clicking the Team synchronization Switch flips labsFlags.syncEnabled and reflects the new checked state', async () => {
+    const { container } = render(LabsSettings);
+
+    const cards = container.querySelectorAll('[data-slot="card"]');
+    const toggle = cards[1].querySelector('[data-slot="switch"]') as HTMLButtonElement;
+    expect(labsFlags.syncEnabled).toBe(false);
+
+    await fireEvent.click(toggle);
+
+    expect(labsFlags.syncEnabled).toBe(true);
+    expect(toggle.getAttribute('data-state')).toBe('checked');
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+
+    // The AI Chat flag is untouched by flipping the Team synchronization one.
+    expect(labsFlags.aiChatEnabled).toBe(false);
+  });
+
+  it('reflects a pre-existing enabled syncEnabled flag (e.g. after reload) as checked on mount', () => {
+    labsFlags.syncEnabled = true;
+
+    const { container } = render(LabsSettings);
+    const cards = container.querySelectorAll('[data-slot="card"]');
+    const toggle = cards[1].querySelector('[data-slot="switch"]');
+
+    expect(toggle?.getAttribute('data-state')).toBe('checked');
   });
 });

@@ -24,6 +24,7 @@ vi.mock('@tauri-apps/api/core', () =>
 );
 
 import { proSync } from '$lib/stores/pro-sync.svelte';
+import { labsFlags } from '$lib/stores/labs-flags.svelte';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import {
   resolveProSyncVariant,
@@ -58,11 +59,18 @@ describe('UI-extension registry', () => {
     SharedNodeStore.resetInstance();
     proSync.tier = 'unknown';
     proSync.userEmail = '';
+    // The Labs "Team synchronization" toggle (default OFF) is a separate,
+    // client-side visibility gate checked ahead of the tier/settings axes
+    // below (see the "Labs syncEnabled gate" describe block) — default it ON
+    // here so the pre-existing two-axis variant-resolution tests continue to
+    // exercise those axes in isolation, as they did before that gate existed.
+    labsFlags.syncEnabled = true;
   });
 
   afterEach(() => {
     proSync.tier = 'unknown';
     proSync.userEmail = '';
+    labsFlags.syncEnabled = false;
     SharedNodeStore.resetInstance();
     vi.restoreAllMocks();
   });
@@ -218,6 +226,44 @@ describe('UI-extension registry', () => {
       const viewers = getActiveViewerExtensions('collection');
       expect(viewers).toHaveLength(1);
       expect(viewers[0].variant).toBe('connected');
+    });
+  });
+
+  describe('Labs syncEnabled gate (default OFF)', () => {
+    it('forces teaser regardless of tier/settings when the flag is off — the chokepoint used by every consumer', () => {
+      labsFlags.syncEnabled = false;
+      proSync.tier = 'pro';
+      seedSettings({ sync_enabled: true, auth_status: 'connected' });
+
+      // Otherwise this would resolve 'connected' — see the equivalent test
+      // above with the flag on. Off, it must short-circuit to 'teaser' BEFORE
+      // even checking `proSync.tier`, hiding every downstream surface at once.
+      expect(resolveProSyncVariant()).toBe('teaser');
+      expect(isProSyncActive()).toBe(false);
+      expect(getActiveChromeContributions('app-shell-modal')).toEqual([]);
+      expect(getActiveViewerExtensions('collection')).toEqual([]);
+    });
+
+    it('flipping the flag back on reveals exactly the pre-existing variant, unchanged', () => {
+      proSync.tier = 'pro';
+      seedSettings({ sync_enabled: true, auth_status: 'connected' });
+
+      labsFlags.syncEnabled = false;
+      expect(resolveProSyncVariant()).toBe('teaser');
+
+      labsFlags.syncEnabled = true;
+      expect(resolveProSyncVariant()).toBe('connected');
+      expect(isProSyncActive()).toBe(true);
+    });
+
+    it("does not change a community build's variant either way — already teaser via tier alone", () => {
+      proSync.tier = 'community';
+
+      labsFlags.syncEnabled = false;
+      expect(resolveProSyncVariant()).toBe('teaser');
+
+      labsFlags.syncEnabled = true;
+      expect(resolveProSyncVariant()).toBe('teaser');
     });
   });
 });
