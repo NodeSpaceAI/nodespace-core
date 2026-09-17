@@ -159,15 +159,21 @@ describe.each(COMPONENTS)('shared $name filled variants', ({ hoverPrefix, classe
     // Scoped to the FILLED variants, which is the scope of the rule itself.
     // Secondary's alpha hover is left alone deliberately, on both components: it
     // is a neutral surface, not a semantic fill, sitting at 16.1:1 light /
-    // 14.2:1 dark and GAINING contrast on hover. Alpha is also legitimate
+    // 14.2:1 dark and GAINING contrast on hover. The two carry different alphas
+    // — `/80` on the Button, `/90` on the Badge — which is untidy but not a typo
+    // to unify: neither is bound by this rule, so the values are free. Alpha is also legitimate
     // elsewhere in the base string — `aria-invalid:ring-destructive/20` is a ring
     // tint, and `dark:hover:bg-accent/50` on the Button's ghost/outline is a
     // translucent wash over the page rather than a filled control's solid fill.
-    const hoverPattern = new RegExp(
-      `^(dark:)?${hoverPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}bg-`
-    );
+    //
+    // Matches ANY modifier chain ending in `hover:bg-`, rather than only the
+    // component's own `hoverPrefix`. Scoping it to the prefix would let a bare
+    // `hover:bg-primary/90` added to `badgeVariants` — whose hovers are normally
+    // written `[a&]:hover:bg-…` — walk straight past the sweep that exists to
+    // catch exactly that class. A guard keyed to how the code is currently
+    // written cannot see the case where someone writes it differently.
     const filledHoverClasses = FILLED_VARIANTS.flatMap(({ variant }) => classesFor(variant)).filter(
-      (cls) => hoverPattern.test(cls)
+      (cls) => /(^|:)hover:bg-/.test(cls)
     );
 
     expect(filledHoverClasses.filter((cls) => cls.includes('/'))).toEqual([]);
