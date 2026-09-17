@@ -1000,6 +1000,7 @@ impl GrpcNodeService for NodeServiceImpl {
         // the scale of ExecuteQueryInput's own default (50) while still
         // allowing large explicit pulls, without letting a client request an
         // unbounded scan.
+        let target_type = req.target_type.clone();
         let input = query_ops::ExecuteQueryInput {
             target_type: req.target_type,
             filters,
@@ -1014,6 +1015,16 @@ impl GrpcNodeService for NodeServiceImpl {
         let nodes = query_ops::execute_query_nodes(&this.node_service, input)
             .await
             .map_err(ops_error_to_status)?;
+
+        // Project to the queried type's scope (ADR-078), same as
+        // `query_nodes_simple` — this is the RPC behind `nodespace query` and
+        // the playbook query paths, so without it a base-scoped query returns
+        // subtype instances still carrying their own buckets.
+        let nodes = this
+            .node_service
+            .project_nodes_to_scope(nodes, Some(target_type.as_str()))
+            .await
+            .map_err(service_error_to_status)?;
 
         let proto_nodes: Vec<NodeData> = nodes.into_iter().map(node_to_proto).collect();
         let count = proto_nodes.len() as i32;
@@ -1762,7 +1773,21 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?
         {
-            Some(schema) => schema,
+            Some(mut schema) => {
+                // Report the EFFECTIVE field set, not just the schema's own
+                // directly-declared fields (ADR-078). An extending schema's
+                // inherited fields are declared by an ancestor, so a raw read
+                // would show an agent or the CLI an `issue` with only
+                // `severity` and no `status` — the schema-comprehension
+                // failure this resolver exists to prevent.
+                schema.fields = this
+                    .node_service
+                    .resolve_field_owners(&req.schema_id)
+                    .await
+                    .map_err(service_error_to_status)?
+                    .0;
+                schema
+            }
             None => {
                 // Absent id → fetch_node's NotFound; present non-schema node →
                 // failed_precondition; present schema node that failed to parse

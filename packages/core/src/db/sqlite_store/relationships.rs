@@ -6,15 +6,14 @@ use crate::models::schema::{
 
 /// Which way an `extends` closure walk runs.
 ///
-/// Both directions are the same recursive query with the two endpoint columns
-/// swapped, and getting the swap wrong inverts the closure silently — hence
-/// naming the two cases rather than passing bare column strings around.
+/// Getting the endpoint swap wrong inverts the closure silently, so the case
+/// is named rather than passed as bare column strings. Only `Descendants` has
+/// a caller — see [`SqliteStore::walk_extends_closure`] for why ancestry is
+/// resolved in-memory instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExtendsDirection {
     /// Base type → every schema transitively extending it.
     Descendants,
-    /// A type → every schema it transitively extends.
-    Ancestors,
 }
 
 /// SQL fragment excluding the built-in structural relationship types, for
@@ -1775,25 +1774,15 @@ impl SqliteStore {
             .await
     }
 
-    /// A node type's full ancestry, including the type itself.
-    ///
-    /// `bug` → `[bug, issue, task]`. This is the ancestor closure the trigger
-    /// engine matches against, so a Play registered on a base type fires for
-    /// events carrying an extending type (ADR-078).
-    ///
-    /// Walks `in_node → out_node`, the opposite direction from
-    /// [`get_subtype_closure`]. Same correlated-subquery constraint applies.
-    pub async fn get_ancestor_closure(&self, node_type: &str) -> Result<Vec<String>> {
-        self.walk_extends_closure(node_type, ExtendsDirection::Ancestors)
-            .await
-    }
-
     /// Shared recursive walk over `extends` edges.
     ///
-    /// Both closures are the same query with the two endpoint columns
-    /// swapped, so they share one body — keeping the correlated-subquery form
-    /// and depth cap in a single place rather than duplicated with one
-    /// direction subtly wrong.
+    /// Only the descendant direction has a caller: ancestry is resolved
+    /// in-memory from [`Self::get_extends_parent_map`] (one query for every
+    /// edge, walked by `resolve_ancestor_chain`) rather than one recursive
+    /// query per type, because the trigger engine needs every type's ancestry
+    /// at once to build its cache. The direction parameter is kept so the
+    /// endpoint swap stays named rather than inlined as bare column strings —
+    /// getting it backwards silently inverts the closure.
     async fn walk_extends_closure(
         &self,
         seed: &str,
@@ -1804,7 +1793,6 @@ impl SqliteStore {
         // (the parent) and yield in_node (the child); ancestors do the reverse.
         let (step_from, step_to) = match direction {
             ExtendsDirection::Descendants => ("out_node", "in_node"),
-            ExtendsDirection::Ancestors => ("in_node", "out_node"),
         };
 
         // Correlated subquery in the recursive arm, per the doc comments

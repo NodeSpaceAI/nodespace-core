@@ -728,3 +728,63 @@ async fn a_dormant_bucket_does_not_satisfy_a_required_inherited_field() {
          required field"
     );
 }
+
+#[tokio::test]
+async fn the_wire_flattener_keeps_inherited_fields() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    let id = create_instance(&svc, "bug", json!({ "status": "open", "severity": "high" })).await;
+
+    let node = svc
+        .get_node(&id)
+        .await
+        .expect("get_node failed")
+        .expect("node should exist");
+
+    // The wire conversion has no store access, so it cannot resolve a chain.
+    // Flattening the node's own bucket alone would drop `status` entirely —
+    // losing data on every typed read of an extending node.
+    let wire = nodespace_types::node_to_typed_value(node).expect("conversion failed");
+
+    assert_eq!(
+        wire["properties"]["status"], "open",
+        "an inherited field must survive the wire flattener, got {:?}",
+        wire["properties"]
+    );
+    assert_eq!(wire["properties"]["severity"], "high");
+}
+
+#[tokio::test]
+async fn a_projected_node_flattens_to_exactly_its_scope() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    create_instance(&svc, "bug", json!({ "status": "open", "severity": "high" })).await;
+
+    // Project at base scope first, as the daemon's read RPCs do, then flatten.
+    // The two compose: projection drops out-of-scope buckets, so flattening
+    // everything that remains yields exactly the scope's fields.
+    let nodes = svc
+        .query_nodes_simple(NodeQuery {
+            node_type: Some("ticket".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("query failed");
+    let projected = svc
+        .project_nodes_to_scope(nodes, Some("ticket"))
+        .await
+        .expect("projection failed");
+    let bug = projected
+        .into_iter()
+        .find(|n| n.node_type == "bug")
+        .expect("the bug should be in a ticket-scoped result");
+
+    let wire = nodespace_types::node_to_typed_value(bug).expect("conversion failed");
+
+    assert_eq!(wire["properties"]["status"], "open");
+    assert!(
+        wire["properties"].get("severity").is_none(),
+        "projection + flattening must still hide the subtype's own field, got {:?}",
+        wire["properties"]
+    );
+}

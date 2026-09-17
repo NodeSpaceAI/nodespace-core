@@ -123,7 +123,7 @@ fn write_human_node(node: &NodeData) {
 /// but we'd rather degrade than panic if that contract ever breaks.
 fn properties_to_json(node: &NodeData) -> serde_json::Value {
     match serde_json::from_str::<serde_json::Value>(&node.properties) {
-        Ok(parsed) => nodespace_types::flatten_namespaced_properties(&parsed, &node.node_type),
+        Ok(parsed) => nodespace_types::flatten_all_namespaces(&parsed, &node.node_type),
         Err(_) => serde_json::Value::String(node.properties.clone()),
     }
 }
