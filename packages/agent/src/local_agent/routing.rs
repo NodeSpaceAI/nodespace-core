@@ -1033,6 +1033,57 @@ mod tests {
         );
     }
 
+    /// The invariant itself, asserted on the helper that owns it rather than
+    /// only through its two consumers.
+    ///
+    /// `stage2_permitted_names` and `declare_write_tool_fields` each pin the
+    /// tool-less case against their own user-visible outcome, which is the
+    /// right test for them but leaves the rule specified only as a property
+    /// of two callers. The rule is meant to be inheritable — a third consumer
+    /// gets it by calling this — so it is pinned here directly.
+    ///
+    /// The below-bar case is the one no consumer test reaches: both use
+    /// gate-clearing candidates throughout, so nothing else exercises the
+    /// `clears_score_gate` half of the conjunction rejecting a candidate that
+    /// *does* bear tools.
+    #[test]
+    fn top_tool_bearing_score_ignores_tool_less_and_below_bar_candidates() {
+        // A tool-less candidate scoring above everything must not raise the
+        // result: the winner is the top *tool-bearing* candidate, not the top
+        // candidate.
+        let schema_hit = candidate("Meeting Note", 1.0, &[]);
+        let skill = candidate("Node Creation", 0.7, &["create_node"]);
+        let score = top_tool_bearing_score([&schema_hit, &skill].into_iter());
+        assert_eq!(
+            score, 0.7,
+            "a candidate whitelisting no tool has no stake in which tool-bearing candidate wins"
+        );
+
+        // A tool-bearing candidate *below its own bar* is equally out of the
+        // running — it can never be offered, so it cannot set the bar for one
+        // that can. 0.20 clears the read bar but not the mutating bar its
+        // `create_node` whitelist earns it.
+        let below_bar = candidate("Weak Creation", 0.20, &["create_node"]);
+        assert!(!clears_score_gate(&below_bar));
+        let reader = candidate("Research", 0.18, &["search_nodes"]);
+        let score = top_tool_bearing_score([&below_bar, &reader].into_iter());
+        assert_eq!(
+            score, 0.18,
+            "a tool-bearing candidate that cannot clear its own bar must not raise the score a \
+             gate-clearing candidate is measured against"
+        );
+
+        // No tool-bearing candidate at all folds to the seed. `NEG_INFINITY`
+        // is what makes the empty set impose no ceiling rather than silently
+        // excluding everyone: any real score clears each consumer's
+        // `score >= max` comparison against it.
+        let other = candidate("Sprint", 0.9, &[]);
+        assert_eq!(
+            top_tool_bearing_score([&schema_hit, &other].into_iter()),
+            f32::NEG_INFINITY
+        );
+    }
+
     #[test]
     fn a_destructive_skill_that_only_places_cannot_put_delete_node_in_reach() {
         // The #2240 regression. `Node Deletion` was retrieved as a candidate on
