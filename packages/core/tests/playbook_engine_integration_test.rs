@@ -68,6 +68,41 @@ async fn create_schema(
     Ok(())
 }
 
+/// Like [`create_schema`], but also declares relationships (`create_schema`
+/// always writes an empty `relationships` array). Declarations go through the
+/// real write path (`set_schema_relationships`, backed by `relationship`
+/// table rows), matching production storage and mirroring the pattern
+/// `graph_resolver.rs`'s own integration tests already use.
+async fn create_schema_with_relationships(
+    service: &NodeService,
+    node_type: &str,
+    fields: serde_json::Value,
+    relationships: serde_json::Value,
+) -> Result<()> {
+    let schema = Node::new_with_id(
+        node_type.to_string(),
+        "schema".to_string(),
+        node_type.to_string(),
+        json!({
+            "isCore": false,
+            "schemaVersion": 1,
+            "description": format!("{node_type} schema"),
+            "fields": fields,
+            "relationships": []
+        }),
+    );
+    service.create_node(schema).await?;
+
+    let declarations: Vec<nodespace_core::models::schema::SchemaRelationship> =
+        serde_json::from_value(relationships)?;
+    if !declarations.is_empty() {
+        service
+            .set_schema_relationships(node_type, &declarations)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Create and persist a play node with the given rules JSON (the same wire
 /// format `validate_play_rules`/`PlaybookLifecycleManager::activate_play`
 /// parse — see `packages/core/src/playbook/types.rs::parse_rules_from_properties`).
@@ -1133,6 +1168,286 @@ async fn two_non_deterministic_functions_in_the_same_condition_produce_separate_
              other's fingerprint"
         );
     }
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// sum(collection, field) aggregate binding call — core#2639
+//
+// Covers the acceptance criterion "Aggregation correctly re-runs when any
+// contributing item changes (not just once at collection-resolution time)"
+// as far as the EXISTING trigger/binding model actually supports it:
+//
+// - `recompute_reflects_current_state_on_each_trigger_firing` proves the
+//   positive half that IS supported today: a rule triggered on the
+//   AGGREGATING node's own event, whose action self-targets
+//   (`{trigger.node.id}`, the same pattern every other action in this file
+//   uses) and recomputes `sum(trigger.node.issues, estimate)` fresh each
+//   time it fires -- not a value cached from the first computation.
+// - `recompute_does_not_fire_from_a_contributing_items_own_change` proves
+//   the documented gap: a contributing Issue's OWN `estimate` change does
+//   NOT reach a rule scoped to the Cycle, because (a) the event/trigger
+//   model has no multi-hop trigger composition (`property_changed` on one
+//   node_type cannot reach a rule triggered on a related node_type) and (b)
+//   even if it could, nothing in `resolve_trigger_path` lets an action
+//   target a node other than the trigger node via a relationship walk. Both
+//   are pre-existing, cross-cutting engine gaps -- not aggregation-specific
+//   -- so this issue implements the CEL-adjacent/binding-call computation
+//   itself and documents the limitation here rather than inventing new
+//   cross-node dependency-tracking infrastructure to close it.
+// ---------------------------------------------------------------------------
+
+/// Shared setup for both tests below: a `agg_cycle_<suffix>` with a "many"
+/// `issues` relationship to `agg_issue_<suffix>`, a running engine, and a
+/// play that recomputes `total_estimate` on the Cycle whenever the Cycle's
+/// own `touch` property changes. `cycle_suffix` keeps the two tests' schemas
+/// (and therefore trigger registrations) from colliding — each test gets its
+/// own node types.
+async fn setup_cycle_total_estimate_play(
+    cycle_suffix: &str,
+) -> Result<(
+    Arc<NodeService>,
+    TempDir,
+    Arc<PlaybookEngine>,
+    watch::Sender<bool>,
+    tokio::task::JoinHandle<Result<()>>,
+    String, // cycle id
+    String, // issue-a id
+    String, // issue-b id
+)> {
+    let (service, tmp) = create_test_service().await?;
+
+    let issue_type = format!("agg_issue_{cycle_suffix}");
+    let cycle_type = format!("agg_cycle_{cycle_suffix}");
+
+    create_schema(
+        &service,
+        &issue_type,
+        json!([{ "name": "estimate", "type": "number" }]),
+    )
+    .await?;
+    create_schema_with_relationships(
+        &service,
+        &cycle_type,
+        json!([
+            { "name": "touch", "type": "string" },
+            { "name": "total_estimate", "type": "number" }
+        ]),
+        json!([{
+            "name": "issues",
+            "targetType": issue_type,
+            "direction": "out",
+            "cardinality": "many",
+            "reverseName": "cycle",
+            "reverseCardinality": "one"
+        }]),
+    )
+    .await?;
+
+    let (engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    create_play(
+        &service,
+        &format!("recompute-cycle-total-{cycle_suffix}"),
+        json!([{
+            "name": "recompute-total",
+            "trigger": {
+                "type": "graph_event",
+                "on": "property_changed",
+                "node_type": cycle_type,
+                // Type-namespaced field -> dotted `<node_type>.<field>` key,
+                // matching the stored shape (`{cycle_type: {"touch": ...}}`)
+                // rather than the bare field name (see
+                // `playbook_invariant_integration_test.rs`'s
+                // `property_key: "iv_update_reject.status"` for the same
+                // convention on an established, already-passing test).
+                "property_key": format!("{cycle_type}.touch")
+            },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": {
+                        "total_estimate": "{sum(trigger.node.issues, estimate)}"
+                    }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let cycle = Node::new(
+        cycle_type.clone(),
+        "cycle".to_string(),
+        json!({ "touch": "v0", "total_estimate": 0 }),
+    );
+    let cycle_id = cycle.id.clone();
+    service.create_node(cycle).await?;
+
+    let issue_a = Node::new(
+        issue_type.clone(),
+        "issue a".to_string(),
+        json!({ "estimate": 3 }),
+    );
+    let issue_a_id = issue_a.id.clone();
+    service.create_node(issue_a).await?;
+
+    let issue_b = Node::new(
+        issue_type.clone(),
+        "issue b".to_string(),
+        json!({ "estimate": 5 }),
+    );
+    let issue_b_id = issue_b.id.clone();
+    service.create_node(issue_b).await?;
+
+    service
+        .create_relationship(&cycle_id, "issues", &issue_a_id, json!({}))
+        .await?;
+    service
+        .create_relationship(&cycle_id, "issues", &issue_b_id, json!({}))
+        .await?;
+
+    Ok((
+        service,
+        tmp,
+        engine,
+        shutdown_tx,
+        task,
+        cycle_id,
+        issue_a_id,
+        issue_b_id,
+    ))
+}
+
+async fn total_estimate_of(service: &NodeService, cycle_type: &str, cycle_id: &str) -> Option<i64> {
+    service
+        .get_node(cycle_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|n| user_field(&n, cycle_type, "total_estimate").cloned())
+        .and_then(|v| v.as_i64())
+}
+
+/// `NodeService::update_node` takes an `expected_version` (optimistic
+/// concurrency) alongside the `NodeUpdate`; this test file's existing tests
+/// only ever mutate nodes through play actions (`update_node` action type),
+/// never a direct service call, so there's no existing helper for a direct
+/// properties-patch update. Fetches the node's CURRENT version immediately
+/// before writing, so two sequential calls against the same node (as both
+/// tests below make) each see the version the previous call left behind.
+async fn patch_node_properties(
+    service: &NodeService,
+    node_id: &str,
+    properties: serde_json::Value,
+) -> Result<()> {
+    let current = service
+        .get_node(node_id)
+        .await?
+        .expect("node must exist to be patched");
+    service
+        .update_node(
+            node_id,
+            current.version,
+            nodespace_core::models::NodeUpdate::default().with_properties(properties),
+        )
+        .await?;
+    Ok(())
+}
+
+/// Positive half: `sum(...)` correctly recomputes FRESH each time its own
+/// rule fires -- not a value cached from the first computation -- when the
+/// rule is triggered on the aggregating (Cycle) node's own event and
+/// self-targets, the one pattern every `node_id`/`source_id`/`target_id`
+/// binding in this entire test suite already uses.
+#[tokio::test]
+async fn recompute_reflects_current_state_on_each_trigger_firing() -> Result<()> {
+    let (service, _tmp, _engine, shutdown_tx, task, cycle_id, issue_a_id, _issue_b_id) =
+        setup_cycle_total_estimate_play("fresh").await?;
+    let cycle_type = "agg_cycle_fresh";
+
+    // First recompute: touch the cycle, expect 3 + 5 = 8.
+    patch_node_properties(&service, &cycle_id, json!({ "touch": "v1" })).await?;
+
+    let first = wait_until(|| {
+        let service = Arc::clone(&service);
+        let cycle_id = cycle_id.clone();
+        async move { total_estimate_of(&service, cycle_type, &cycle_id).await == Some(8) }
+    })
+    .await;
+    assert!(first, "first recompute must sum 3 + 5 = 8");
+
+    // Change a CONTRIBUTING item's field directly (simulating "the
+    // collection's underlying data changed since the last computation") --
+    // then touch the cycle again to trigger a SECOND, independent
+    // recomputation.
+    patch_node_properties(&service, &issue_a_id, json!({ "estimate": 10 })).await?;
+    patch_node_properties(&service, &cycle_id, json!({ "touch": "v2" })).await?;
+
+    let second = wait_until(|| {
+        let service = Arc::clone(&service);
+        let cycle_id = cycle_id.clone();
+        async move { total_estimate_of(&service, cycle_type, &cycle_id).await == Some(15) }
+    })
+    .await;
+    assert!(
+        second,
+        "second recompute must reflect the NEW estimate (10 + 5 = 15), \
+         proving the aggregate is recomputed fresh from live current \
+         collection state on each trigger firing, not cached from the first \
+         computation"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+/// Negative half, documenting the acceptance-criterion gap explicitly rather
+/// than silently skipping it: a contributing Issue's OWN `estimate` change
+/// does NOT, by itself, reach a rule scoped to the Cycle -- there is no
+/// existing trigger/binding path from "an Issue changed" to "recompute the
+/// related Cycle". The Cycle's `total_estimate` must therefore stay exactly
+/// at its last explicitly-triggered value even after a contributing item
+/// changes underneath it.
+#[tokio::test]
+async fn recompute_does_not_fire_from_a_contributing_items_own_change() -> Result<()> {
+    let (service, _tmp, _engine, shutdown_tx, task, cycle_id, issue_a_id, _issue_b_id) =
+        setup_cycle_total_estimate_play("gap").await?;
+    let cycle_type = "agg_cycle_gap";
+
+    // Establish a known baseline via the Cycle's own trigger (the supported
+    // path), exactly like the positive test above.
+    patch_node_properties(&service, &cycle_id, json!({ "touch": "v1" })).await?;
+    let baseline = wait_until(|| {
+        let service = Arc::clone(&service);
+        let cycle_id = cycle_id.clone();
+        async move { total_estimate_of(&service, cycle_type, &cycle_id).await == Some(8) }
+    })
+    .await;
+    assert!(baseline, "baseline recompute must sum 3 + 5 = 8");
+
+    // Change a contributing Issue's OWN estimate -- and do NOT touch the
+    // Cycle. No trigger in this play fires on `agg_issue_gap`'s own events.
+    patch_node_properties(&service, &issue_a_id, json!({ "estimate": 100 })).await?;
+
+    // Give the (non-existent) reactive path every reasonable chance to fire
+    // before asserting it didn't -- same real-time budget `wait_until` gives
+    // the positive case, just asserting the negative outcome throughout.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let after = total_estimate_of(&service, cycle_type, &cycle_id).await;
+    assert_eq!(
+        after,
+        Some(8),
+        "a contributing item's own property change must NOT recompute a \
+         DIFFERENT node's aggregate -- no trigger/binding path exists from \
+         \"an Issue's estimate changed\" to \"recompute the related Cycle\" \
+         in the current engine (documented limitation, not a bug)"
+    );
 
     shutdown_engine(shutdown_tx, task).await;
     Ok(())

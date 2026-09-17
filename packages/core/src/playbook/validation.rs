@@ -876,9 +876,13 @@ async fn validate_relationship_action(
 ///   express non-determinism today: wall-clock CEL functions in the rule's
 ///   conditions (`today`/`days_since`/`days_until`, see
 ///   [`crate::playbook::cel::NON_DETERMINISTIC_FUNCTIONS`]). Action params are
-///   pure `{binding}` data references (see `actions.rs`) with no function-call
-///   surface, and no random-value function is registered anywhere, so conditions
-///   are the complete non-deterministic surface.
+///   pure `{binding}` data references (see `actions.rs`), so no random-value
+///   or wall-clock function is reachable from them, and conditions remain the
+///   complete non-deterministic surface. Action params do carry one bounded
+///   function-call FORM today — `sum(collection, field)` / `count(collection)`
+///   (`actions::parse_aggregate_call`) — but it reduces already-resolved graph
+///   state with no wall-clock or random input, so it needs no entry in
+///   `NON_DETERMINISTIC_FUNCTIONS` and this check's scope is unchanged by it.
 /// - **Same-graph scope** — enforced by requiring every action *target* node id
 ///   (`node_id`, `source_id`, `target_id`) to be a `{binding}` derived from the
 ///   trigger node or a prior action, rejecting a literal/arbitrary node id.

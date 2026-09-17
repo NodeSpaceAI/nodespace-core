@@ -262,7 +262,13 @@ impl GraphResolver {
 /// for where the convention originates). NOTE: Parallel logic exists in
 /// `cel::node_to_cel_value` — if the property storage format changes, both
 /// must be updated.
-fn get_node_property(node: &Node, key: &str) -> Option<serde_json::Value> {
+///
+/// `pub(crate)`: also reused by `actions::sum_numeric_field` for the
+/// `sum(collection, field)` action-binding call, so a collection item's field
+/// is read through the same type-namespace-aware lookup `for_each`'s
+/// resolved items are subject to, instead of a naive flat lookup that would
+/// silently read `None` for every real (type-namespaced) node.
+pub(crate) fn get_node_property(node: &Node, key: &str) -> Option<serde_json::Value> {
     if let Some(obj) = node.properties.as_object() {
         // Direct match and type-namespaced match both look up `key` verbatim,
         // so the raw stored key being checked is `key` itself in both cases.
