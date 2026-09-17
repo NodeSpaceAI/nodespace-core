@@ -395,6 +395,26 @@ describe('TaskNodeDecorator', () => {
     expect(resultLow.props.priorityIcon).toBe('🔵');
   });
 
+  it('should extract the outer priority levels of the 5-level scale', () => {
+    const decorator = new TaskNodeDecorator(mockService);
+
+    const highestPriority = createContext({
+      nodeType: 'task',
+      content: 'Critical task\nPriority: highest'
+    });
+    const resultHighest = decorator.decorateReference(highestPriority);
+    expect(resultHighest.props.priority).toBe('highest');
+    expect(resultHighest.props.priorityIcon).toBe('🔴');
+
+    const lowestPriority = createContext({
+      nodeType: 'task',
+      content: 'Someday task\nPriority: lowest'
+    });
+    const resultLowest = decorator.decorateReference(lowestPriority);
+    expect(resultLowest.props.priority).toBe('lowest');
+    expect(resultLowest.props.priorityIcon).toBe('🔵');
+  });
+
   it('should default to normal priority', () => {
     const decorator = new TaskNodeDecorator(mockService);
     const context = createContext({

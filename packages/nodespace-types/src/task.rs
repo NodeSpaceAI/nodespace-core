@@ -214,6 +214,46 @@ pub(crate) mod flexible_date {
 mod tests {
     use super::*;
 
+    /// This crate carries its own `TaskPriority` copy because it cannot depend
+    /// on `nodespace-core`, and it is the one that serializes onto the wire.
+    /// The core-side bidirectional drift test guards the *core* copy against
+    /// `task.priority`'s schema seed; nothing links this copy to either, so a
+    /// value added to the scale but missed here would degrade to
+    /// `TaskPriority::User(_)` at the frontend boundary while every suite
+    /// stayed green. Pinning the literals here is the cheapest available
+    /// stand-in for that missing link.
+    #[test]
+    fn task_priority_core_scale_parses_to_named_variants() {
+        let scale = [
+            ("highest", TaskPriority::Highest),
+            ("high", TaskPriority::High),
+            ("medium", TaskPriority::Medium),
+            ("low", TaskPriority::Low),
+            ("lowest", TaskPriority::Lowest),
+        ];
+
+        for (literal, expected) in &scale {
+            let parsed: TaskPriority = literal.parse().expect("from_str is infallible");
+            assert_eq!(
+                parsed, *expected,
+                "'{}' must parse to the named TaskPriority variant, not TaskPriority::User(_) — \
+                 keep this copy in step with task.priority's core_values in core_schemas.rs.",
+                literal
+            );
+            assert!(
+                !matches!(parsed, TaskPriority::User(_)),
+                "'{}' fell through to the user-defined catch-all",
+                literal
+            );
+            assert_eq!(
+                parsed.as_str(),
+                *literal,
+                "'{}' must round-trip through as_str()",
+                literal
+            );
+        }
+    }
+
     #[test]
     fn task_node_update_null_clears_due_date() {
         let json = r#"{"dueDate": null}"#;

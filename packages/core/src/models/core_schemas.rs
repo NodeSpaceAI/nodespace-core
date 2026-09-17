@@ -125,9 +125,9 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                     extensible: Some(true),
                     default: None,
                     description: Some(
-                        "Relative urgency for triage and sorting (highest, high, medium, low, \
-                         lowest), independent of status. Not a deadline — use due_date for \
-                         that. Absent means no priority has been assigned."
+                        "Relative urgency for triage (highest, high, medium, low, lowest), \
+                         independent of status. Not a deadline — use due_date for that. \
+                         Absent means no priority has been assigned."
                             .to_string(),
                     ),
                     item_type: None,
@@ -1879,7 +1879,7 @@ mod tests {
         }
     }
 
-    /// The `TaskPriority` sibling of the status drift check above.
+    /// The `TaskPriority` sibling of the ADR-076 status drift check above.
     ///
     /// `task.priority` has the same two-sided consistency requirement: a named
     /// variant with no `core_values` entry is a value the type accepts but the
