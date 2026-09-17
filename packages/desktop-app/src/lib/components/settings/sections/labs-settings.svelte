@@ -21,7 +21,7 @@
         <Switch
           checked={labsFlags.aiChatEnabled}
           onCheckedChange={(checked) => (labsFlags.aiChatEnabled = checked)}
-          aria-label="Enable AI Chat"
+          aria-label={labsFlags.aiChatEnabled ? 'Disable AI Chat' : 'Enable AI Chat'}
         />
       </div>
       <p class="text-muted-foreground m-0 text-sm leading-relaxed">
