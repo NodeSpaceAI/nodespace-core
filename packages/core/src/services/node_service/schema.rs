@@ -775,13 +775,13 @@ impl NodeService {
             // makes stored edges ambiguous, a reserved reverse name makes the
             // declaration silently unreachable.
             for (which, name) in [("name", &rel.name), ("reverseName", &rel.reverse_name)] {
-                if crate::models::schema::is_builtin_relationship(name) {
+                if crate::models::schema::is_reserved_relationship_name(name) {
                     return Err(NodeServiceError::invalid_update(format!(
                         "Relationship {} '{}' is reserved for a built-in structural relationship \
                          ({}); choose a different name",
                         which,
                         name,
-                        crate::models::schema::BUILTIN_RELATIONSHIP_NAMES.join(", ")
+                        crate::models::schema::reserved_relationship_names().join(", ")
                     )));
                 }
             }
@@ -870,13 +870,13 @@ impl NodeService {
     ) -> Result<(), NodeServiceError> {
         for rel in relationships {
             for (which, name) in [("name", &rel.name), ("reverseName", &rel.reverse_name)] {
-                if crate::models::schema::is_builtin_relationship(name) {
+                if crate::models::schema::is_reserved_relationship_name(name) {
                     return Err(NodeServiceError::invalid_update(format!(
                         "Relationship {} '{}' is reserved for a built-in structural relationship \
                          ({}); choose a different name",
                         which,
                         name,
-                        crate::models::schema::BUILTIN_RELATIONSHIP_NAMES.join(", ")
+                        crate::models::schema::reserved_relationship_names().join(", ")
                     )));
                 }
             }

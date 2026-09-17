@@ -287,10 +287,10 @@ async fn reserved_builtin_names_are_rejected_at_declaration_time() -> Result<()>
 /// harmless: a reverse name is never written to `relationship_type` — it is a
 /// resolution alias — so it cannot make stored edges ambiguous the way a
 /// reserved forward name does. What it does instead is nothing at all.
-/// `resolve_relationship_name` short-circuits on the built-in names before it
-/// consults any declaration, so a `reverseName` of `has_child` can never
-/// resolve to this relationship; the built-in wins and the author's chosen
-/// reverse spelling is silently inert.
+/// `resolve_relationship_name` answers a built-in spelling from the built-in
+/// table before it consults any declaration, so a `reverseName` of `has_child`
+/// can never resolve to this relationship; the built-in wins and the author's
+/// chosen reverse spelling is silently inert.
 ///
 /// This matters more now that every relationship must carry a reverse name:
 /// what used to be a sparsely-populated opt-in namespace now gains an entry per
@@ -365,6 +365,85 @@ async fn reserved_builtin_names_are_rejected_as_reverse_names() -> Result<()> {
     )
     .await
     .map_err(|e| anyhow::anyhow!("a non-reserved reverseName must still be accepted: {e}"))?;
+
+    Ok(())
+}
+
+/// A built-in's INVERSE spelling (`child_of`, `has_member`, …) is reserved too,
+/// in both declaration positions.
+///
+/// These names were free to declare while nothing could traverse by them: a
+/// resolver that only walked forward never consulted the inverse table, so
+/// `reverseName: "child_of"` was merely unused. Now that a reverse name is
+/// resolved — from the built-in table, ahead of any declaration — declaring one
+/// would be accepted and then permanently shadowed, which is exactly the
+/// "accepted as inert" failure the forward guard exists to prevent.
+#[tokio::test]
+async fn builtin_reverse_spellings_are_reserved_in_both_positions() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+
+    // As a forward `name`.
+    let err = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Shelf",
+            "fields": [],
+            "relationships": [{
+                "name": "child_of",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "shelves",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .expect_err("a built-in's inverse must be rejected as a forward name");
+    assert!(err.to_string().contains("child_of"), "got: {err}");
+    assert!(svc.get_schema_node("shelf").await?.is_none());
+
+    // As a `reverseName`.
+    let err = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bin",
+            "fields": [],
+            "relationships": [{
+                "name": "holds",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "child_of",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .expect_err("a built-in's inverse must be rejected as a reverseName");
+    assert!(err.to_string().contains("child_of"), "got: {err}");
+    assert!(svc.get_schema_node("bin").await?.is_none());
+
+    // Every inverse is covered, not just `child_of` — the guard reads the
+    // built-in table rather than listing names, so a fifth built-in added later
+    // is reserved on both sides without touching this check.
+    for reverse in ["has_member", "mentioned_by", "role_of"] {
+        let err = handle_create_schema(
+            &svc,
+            json!({
+                "name": format!("Probe{reverse}"),
+                "fields": [],
+                "relationships": [{
+                    "name": "links",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": reverse,
+                    "reverseCardinality": "one"
+                }]
+            }),
+        )
+        .await
+        .expect_err("every built-in inverse must be reserved");
+        assert!(err.to_string().contains(reverse), "got: {err}");
+    }
 
     Ok(())
 }

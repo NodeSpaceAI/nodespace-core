@@ -11,6 +11,7 @@
 //! at the CEL-evaluation edge instead of bridging it internally.
 
 use crate::models::Node;
+use crate::ops::rel_ops::{self, ResolvedRelName};
 use crate::playbook::cel::{json_to_cel, key, node_to_cel_value};
 use crate::playbook::path_extractor::{CollectionPath, ExtractedPath};
 use crate::services::NodeService;
@@ -58,6 +59,11 @@ impl GraphResolver {
     /// 2. If not, try as a relationship name → fetch related node(s)
     /// 3. For "one" relationships, continue walking with the target node
     /// 4. For "many" relationships, return Collection
+    ///
+    /// A relationship segment may name either side of an edge: `has_child`
+    /// walks to the children, `child_of` to the parent. Reverse segments walk
+    /// and chain exactly like forward ones (`node.assignee.email`), since
+    /// direction is resolved per segment inside `fetch_related_nodes`.
     ///
     /// Uses the segment cache: if a prefix has already been resolved, starts from there.
     pub async fn resolve_path(&mut self, root_node: &Node, segments: &[String]) -> ResolvedValue {
@@ -118,7 +124,7 @@ impl GraphResolver {
             }
 
             // Try as a relationship
-            let related = self.fetch_related_nodes(&current_node.id, segment).await;
+            let related = self.fetch_related_nodes(&current_node, segment).await;
 
             // A relationship's DECLARED "many" cardinality means its
             // resolved shape must always be a Collection, regardless of how
@@ -244,16 +250,72 @@ impl GraphResolver {
         }
     }
 
-    /// Fetch related nodes directly via NodeService.
+    /// Fetch related nodes via NodeService, in whichever direction the segment
+    /// names.
+    ///
+    /// A path segment may spell either side of a relationship. The forward name
+    /// traverses outbound, exactly as before; a reverse name — a built-in's
+    /// fixed inverse (`child_of`) or a schema's declared `reverse_name`
+    /// (`assignee`) — addresses the same stored row from its other end, so it
+    /// rewrites the name to the forward spelling and queries inbound. Resolution
+    /// is shared with the CLI's read path ([`rel_ops::resolve_relationship_name`])
+    /// so both answer a given name identically.
+    ///
+    /// Unlike that path, an unresolvable name is NOT an error here. The resolver
+    /// tries every segment as a relationship only after it fails as a property,
+    /// so "not a relationship either" is the ordinary way a path turns out to be
+    /// `Missing` — which CEL renders as a false condition. Surfacing it as an
+    /// error would make every non-matching Play condition log a warning.
     async fn fetch_related_nodes(
         &self,
-        node_id: &str,
+        node: &Node,
         relationship_name: &str,
     ) -> Result<Vec<Node>, String> {
-        self.node_service
-            .get_related_nodes(node_id, relationship_name, "out")
+        let resolved = match rel_ops::resolve_relationship_name(
+            &self.node_service,
+            &node.id,
+            &node.node_type,
+            relationship_name,
+        )
+        .await
+        {
+            Ok(resolved) => resolved,
+            // Undeclared in either direction — an empty traversal, not a failure.
+            Err(_) => return Ok(vec![]),
+        };
+
+        let (name, direction, source_type) = match &resolved {
+            ResolvedRelName::Builtin | ResolvedRelName::Forward => {
+                (relationship_name.to_string(), "out", None)
+            }
+            // The node sits at the far end of someone else's forward
+            // declaration, so the edge is already stored pointing at it.
+            ResolvedRelName::InboundForward => (relationship_name.to_string(), "in", None),
+            ResolvedRelName::Reverse {
+                forward_name,
+                source_type,
+            } => (forward_name.clone(), "in", source_type.clone()),
+        };
+
+        let nodes = self
+            .node_service
+            .get_related_nodes(&node.id, &name, direction)
             .await
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+
+        // The store keys an "in" query on relationship_type alone, so every
+        // schema declaring this forward name toward this type answers. A reverse
+        // name belongs to exactly one of them — keep only that declarer's nodes.
+        // This is live, not hypothetical: `tasks` is declared both on `project`
+        // (reverse `project`) and on `person` (reverse `assignee`), so an
+        // unnarrowed `node.assignee` would return the project too.
+        Ok(match source_type {
+            Some(source_type) => nodes
+                .into_iter()
+                .filter(|n| n.node_type == source_type)
+                .collect(),
+            None => nodes,
+        })
     }
 
     /// Whether `segment` is declared as a "many" cardinality relationship on
@@ -1589,6 +1651,244 @@ mod tests {
                 }
                 other => panic!("expected CEL List, got {:?}", other),
             }
+        }
+
+        // ================================================================
+        // Reverse-direction traversal
+        // ================================================================
+
+        /// A built-in's reverse name walks to the node at the edge's other end.
+        ///
+        /// `has_child` is stored parent → child, so a child reaching its parent
+        /// is the same row read backwards. This is the traversal a
+        /// complete-the-parent Play needs, and the one the resolver could not
+        /// express while direction was hardcoded to `"out"`.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn builtin_reverse_name_walks_to_the_parent() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_rev_task", json!([])).await;
+
+            let parent = make_node("gr-rev-p1", "gr_rev_task", json!({"status": "open"}));
+            svc.create_node(parent.clone()).await.unwrap();
+            let child = make_node("gr-rev-c1", "gr_rev_task", json!({"status": "done"}));
+            svc.create_node(child.clone()).await.unwrap();
+
+            svc.create_relationship("gr-rev-p1", "has_child", "gr-rev-c1", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver
+                .resolve_path(&child, &["child_of".to_string()])
+                .await;
+            match result {
+                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-rev-p1"),
+                other => panic!("expected the parent Node, got {:?}", other),
+            }
+
+            // The forward direction must still walk the other way, from the
+            // same edge: reverse support is additive, not a redirect.
+            let forward = resolver
+                .resolve_path(&parent, &["has_child".to_string()])
+                .await;
+            match forward {
+                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-rev-c1"),
+                other => panic!("expected the child Node, got {:?}", other),
+            }
+        }
+
+        /// A schema-declared `reverseName` resolves the same way, and chains.
+        ///
+        /// `gr_rev_person` declares `tasks`; a task reaching its owner spells
+        /// that `assignee`. The second hop (`.email`) proves a reverse segment
+        /// leaves the walk in the same state a forward one does — the resolved
+        /// node keeps being walkable, so multi-hop paths work through it.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn declared_reverse_name_resolves_and_chains() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_rev_ticket", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_rev_person",
+                json!([{
+                    "name": "tasks",
+                    "targetType": "gr_rev_ticket",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "assignee",
+                    "reverseCardinality": "one"
+                }]),
+            )
+            .await;
+
+            let person = make_node(
+                "gr-rev-u1",
+                "gr_rev_person",
+                json!({"email": "ada@example.com"}),
+            );
+            svc.create_node(person.clone()).await.unwrap();
+            let ticket = make_node("gr-rev-k1", "gr_rev_ticket", json!({"status": "open"}));
+            svc.create_node(ticket.clone()).await.unwrap();
+
+            svc.create_relationship("gr-rev-u1", "tasks", "gr-rev-k1", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver
+                .resolve_path(&ticket, &["assignee".to_string()])
+                .await;
+            match result {
+                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-rev-u1"),
+                other => panic!("expected the assignee Node, got {:?}", other),
+            }
+
+            // Multi-hop through the reverse segment: node.assignee.email
+            let chained = resolver
+                .resolve_path(&ticket, &["assignee".to_string(), "email".to_string()])
+                .await;
+            match chained {
+                ResolvedValue::Scalar(v) => assert_eq!(v, json!("ada@example.com")),
+                other => panic!("expected a Scalar email, got {:?}", other),
+            }
+        }
+
+        /// A reverse name returns only the schema that declared it.
+        ///
+        /// The store keys an inbound query on `relationship_type` alone, so two
+        /// schemas declaring the same forward name toward one type both answer
+        /// it. Without narrowing, a ticket asking for its `assignee` also gets
+        /// the project back — a wrong node, not merely an extra one, since the
+        /// resolver reports a single match as `Node` and two as `Collection`.
+        ///
+        /// This is the shape real data already has: `tasks` is declared on both
+        /// `project` and `person` in the core schemas.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn reverse_name_excludes_another_schemas_same_forward_name() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_nar_ticket", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_nar_person",
+                json!([{
+                    "name": "tasks",
+                    "targetType": "gr_nar_ticket",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "assignee",
+                    "reverseCardinality": "one"
+                }]),
+            )
+            .await;
+            // A second schema declaring the SAME forward name at the same type.
+            create_schema(
+                &svc,
+                "gr_nar_project",
+                json!([{
+                    "name": "tasks",
+                    "targetType": "gr_nar_ticket",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "project",
+                    "reverseCardinality": "one"
+                }]),
+            )
+            .await;
+
+            let person = make_node("gr-nar-u1", "gr_nar_person", json!({"email": "grace@x.io"}));
+            svc.create_node(person.clone()).await.unwrap();
+            let project = make_node("gr-nar-pr1", "gr_nar_project", json!({"name": "Apollo"}));
+            svc.create_node(project.clone()).await.unwrap();
+            let ticket = make_node("gr-nar-k1", "gr_nar_ticket", json!({"status": "open"}));
+            svc.create_node(ticket.clone()).await.unwrap();
+
+            // The same ticket is linked from both ends, under the same name.
+            svc.create_relationship("gr-nar-u1", "tasks", "gr-nar-k1", json!({}))
+                .await
+                .unwrap();
+            svc.create_relationship("gr-nar-pr1", "tasks", "gr-nar-k1", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            match resolver
+                .resolve_path(&ticket, &["assignee".to_string()])
+                .await
+            {
+                ResolvedValue::Node(n) => assert_eq!(
+                    n.id, "gr-nar-u1",
+                    "assignee must be the person, not the project"
+                ),
+                other => panic!("expected exactly the person Node, got {:?}", other),
+            }
+
+            // And the other declarer's reverse name resolves to its own node.
+            match resolver
+                .resolve_path(&ticket, &["project".to_string()])
+                .await
+            {
+                ResolvedValue::Node(n) => assert_eq!(n.id, "gr-nar-pr1"),
+                other => panic!("expected exactly the project Node, got {:?}", other),
+            }
+        }
+
+        /// A reverse segment feeds collection comprehensions like any other.
+        ///
+        /// `node.child_of.has_child` — from a child, up to the parent, then back
+        /// down to all its children — is the path an all-siblings-done condition
+        /// walks.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn reverse_segment_feeds_a_collection() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_sib_task", json!([])).await;
+
+            let parent = make_node("gr-sib-p1", "gr_sib_task", json!({"status": "open"}));
+            svc.create_node(parent.clone()).await.unwrap();
+            for id in ["gr-sib-c1", "gr-sib-c2"] {
+                let child = make_node(id, "gr_sib_task", json!({"status": "done"}));
+                svc.create_node(child.clone()).await.unwrap();
+                svc.create_relationship("gr-sib-p1", "has_child", id, json!({}))
+                    .await
+                    .unwrap();
+            }
+            let child = svc.get_node("gr-sib-c1").await.unwrap().unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver
+                .resolve_path(&child, &["child_of".to_string(), "has_child".to_string()])
+                .await;
+            match result {
+                ResolvedValue::Collection(nodes) => {
+                    assert_eq!(nodes.len(), 2, "the parent has two children");
+                }
+                other => panic!("expected a Collection of siblings, got {:?}", other),
+            }
+        }
+
+        /// An unresolvable segment is `Missing`, not an error.
+        ///
+        /// Every segment is tried as a relationship once it fails as a property,
+        /// so a plain typo reaches the relationship resolver. That resolver
+        /// errors on an undeclared name (the CLI wants to say "no such
+        /// relationship"), but here it must degrade to the empty traversal CEL
+        /// reads as a false condition.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn undeclared_segment_is_missing_rather_than_an_error() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_unk_task", json!([])).await;
+
+            let node = make_node("gr-unk-1", "gr_unk_task", json!({"status": "open"}));
+            svc.create_node(node.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver
+                .resolve_path(&node, &["not_a_relationship".to_string()])
+                .await;
+            assert!(
+                matches!(result, ResolvedValue::Missing),
+                "expected Missing, got {:?}",
+                result
+            );
         }
     }
 }
