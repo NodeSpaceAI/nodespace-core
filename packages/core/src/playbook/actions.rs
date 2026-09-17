@@ -467,28 +467,43 @@ fn rule_id_for(play_id: &str, actions: &[ParsedAction]) -> String {
 /// The action-list half of [`rule_id_for`]'s seed -- everything it hashes
 /// EXCEPT `play_id`. Two rules whose action lists produce the same
 /// signature are byte-identical in exactly the shape `rule_id_for` cares
-/// about: the same `action_type`, `for_each`, and `params` (as a canonical
-/// JSON string -- `serde_json::Value`'s `Map` is key-sorted, so differently
-/// ordered-but-equal JSON objects still produce the same signature) for
-/// every action, in order.
+/// about: the same `action_type`, `for_each`, and `params` for every action,
+/// in order.
+///
+/// Encoded as a canonical JSON array of `[action_type, for_each, params]`
+/// triples (one per action), rather than joining fields with a delimiter
+/// character: `for_each` is parsed straight from user-authored play JSON
+/// with no charset validation (unlike `conditions`, which must compile as
+/// CEL), so a hand-picked delimiter is reachable by an ordinary play author
+/// and would let a crafted `for_each` string (containing that exact
+/// character) make one action list's fields bleed across the boundary into
+/// the next, producing the same seed as an unrelated, differently-shaped
+/// action list. JSON's own escaping is structural -- a string's content can
+/// never be crafted to look like an array or string boundary -- so nesting
+/// each action's fields in a `Value` and letting `serde_json` serialize the
+/// whole array closes that off entirely. `Value`'s `Map` is also key-sorted
+/// (see the module note on `preserve_order` not being enabled), so JSON key
+/// order within `params` doesn't affect equality either.
 ///
 /// `pub(crate)` so `playbook::validation`'s save-time check for two
 /// same-play rules with byte-identical action lists
 /// (`validate_no_duplicate_action_lists`) can compare rules without
 /// duplicating this hashing logic.
 pub(crate) fn action_list_signature(actions: &[ParsedAction]) -> String {
-    let mut seed = String::new();
-    for action in actions {
-        seed.push('\u{1}');
-        seed.push_str(action.action_type.as_str());
-        seed.push('\u{1}');
-        if let Some(for_each) = &action.for_each {
-            seed.push_str(for_each);
-        }
-        seed.push('\u{1}');
-        seed.push_str(&action.params.to_string());
-    }
-    seed
+    let list: Vec<Value> = actions
+        .iter()
+        .map(|action| {
+            Value::Array(vec![
+                Value::String(action.action_type.as_str().to_string()),
+                match &action.for_each {
+                    Some(for_each) => Value::String(for_each.clone()),
+                    None => Value::Null,
+                },
+                action.params.clone(),
+            ])
+        })
+        .collect();
+    Value::Array(list).to_string()
 }
 
 /// Resolve a `for_each` item's own real node id for [`IterationPath`]
@@ -2322,6 +2337,38 @@ mod tests {
         assert_ne!(
             a, b,
             "the same rule template installed under two different plays must not collide"
+        );
+    }
+
+    /// Regression: `action_list_signature` used to join each action's
+    /// `action_type`/`for_each`/`params` fields with a raw `'\u{1}'`
+    /// separator. `for_each` is parsed straight from user-authored play
+    /// JSON with no charset validation, so an ordinary play author could
+    /// set it to a string containing that exact character and make an
+    /// unrelated, differently-shaped action list produce the same seed --
+    /// a genuine collision, not a contrived one. The fix nests each
+    /// action's fields in a JSON array instead, whose escaping is
+    /// structural rather than delimiter-based.
+    #[test]
+    fn action_list_signature_is_not_confused_by_control_characters_in_for_each() {
+        let two_actions = vec![
+            make_action(ActionType::CreateNode, json!("X"), None),
+            make_action(ActionType::CreateNode, Value::Null, None),
+        ];
+        // Under the old delimiter-joined seed, this single action's
+        // `for_each` -- crafted to contain the exact bytes the two actions
+        // above would have produced around the `action_type`/`params`
+        // boundary -- collided with `two_actions`'s seed.
+        let one_action_with_crafted_for_each = vec![make_action(
+            ActionType::CreateNode,
+            Value::Null,
+            Some("\u{1}\"X\"\u{1}create_node\u{1}"),
+        )];
+
+        assert_ne!(
+            action_list_signature(&two_actions),
+            action_list_signature(&one_action_with_crafted_for_each),
+            "a for_each value must never make an unrelated action list collide"
         );
     }
 
