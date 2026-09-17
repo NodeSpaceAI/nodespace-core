@@ -7620,8 +7620,10 @@ mod tests {
     /// makes an accidental trip very unlikely while catching the delimiters,
     /// orderings and layouts an author actually writes — commas, slashes,
     /// markdown bullets, dashes and quoted/JSON-ish lists. Scoped per sentence
-    /// rather than per document so a long skill that legitimately says "done"
-    /// in one paragraph and "in_progress" in another is not flagged.
+    /// within a paragraph, rather than per document, so a long skill that
+    /// legitimately says "done" in one paragraph and "in_progress" in another
+    /// is not flagged. Both halves of that scoping are load-bearing — see the
+    /// comment on the loop itself for what each one alone gets wrong.
     ///
     /// Knowingly out of reach: lists joined by " or "/" and "/bare spaces.
     /// Catching those means treating the spaces in ordinary prose as
@@ -7694,20 +7696,18 @@ mod tests {
             found
         }
 
-        let mut guidance: Vec<(String, String)> = vec![
-            (
-                "TASK_STATUS_DEDICATED_VERB.imperative".to_string(),
-                crate::skill_rules::TASK_STATUS_DEDICATED_VERB
-                    .imperative
-                    .to_string(),
-            ),
-            (
-                "TASK_STATUS_DEDICATED_VERB.prose".to_string(),
-                crate::skill_rules::TASK_STATUS_DEDICATED_VERB
-                    .prose
-                    .to_string(),
-            ),
-        ];
+        // Every interaction rule, not just the task-status one: the list could
+        // be reintroduced by a rule that has no obvious connection to status
+        // today, and naming one rule here would not catch it. Same reasoning
+        // as the seeded-skill sweep below.
+        let mut guidance: Vec<(String, String)> = Vec::new();
+        for rule in crate::skill_rules::INTERACTION_RULES {
+            guidance.push((
+                format!("{}.imperative", rule.id),
+                rule.imperative.to_string(),
+            ));
+            guidance.push((format!("{}.prose", rule.id), rule.prose.to_string()));
+        }
 
         // Every seeded skill, not just the two known sites: the guidance texts
         // are interpolated from several constants, and a future skill could
@@ -7720,25 +7720,39 @@ mod tests {
         }
 
         for (name, text) in guidance {
-            // Split on `.` alone, not `['.', '\n']`: a markdown bullet list
-            // puts each value on its own line, so splitting at newlines gave
-            // every value its own fragment and capped the score at 1 — the
-            // highest-value miss, since four `- value` bullets are this
-            // corpus's own house style. Paragraphs here are `\n\n`-separated
-            // and period-terminated, so `.` alone still keeps the per-
-            // paragraph scoping this needs to avoid false positives.
-            for sentence in text.split('.') {
-                let found = seed_values_in(sentence);
-                assert!(
-                    found.len() < 3,
-                    "{name} hardcodes task.status's value list — {found:?} appear together in \
-                     one sentence:\n\n  {}\n\nThat list goes stale the moment a methodology \
-                     bundle extends the vocabulary via add_field_values (ADR-076), and a stale \
-                     list is worse than none because the agent trusts it. Point at \
-                     update_task_status's own status enum instead — with_live_task_statuses \
-                     rewrites it from the stored schema each turn.",
-                    sentence.trim()
-                );
+            // Scope to a paragraph first, then to a sentence within it.
+            //
+            // Splitting the whole text on `.` alone is not sufficient: this
+            // corpus's headings, bullets and `LABEL: value` lines routinely
+            // carry no terminal period, so a lone `.` split lets unrelated
+            // paragraphs merge into one fragment — measured at 16 of 235 real
+            // fragments spanning a paragraph break, the largest swallowing a
+            // five-item bullet list plus the paragraph after it. That
+            // false-positives on guidance which enumerates nothing at all, and
+            // the failure message would then tell its author to stop
+            // hardcoding a list they never wrote.
+            //
+            // Splitting on `\n` instead is the opposite error: a markdown
+            // bullet list puts each value on its own line, which caps the
+            // score at 1 and misses four `- value` bullets — this corpus's own
+            // house style, and the highest-value regression to catch.
+            //
+            // Nesting gets both: paragraphs stay separate, and a bullet list
+            // within one paragraph is still scored as a unit.
+            for paragraph in text.split("\n\n") {
+                for sentence in paragraph.split('.') {
+                    let found = seed_values_in(sentence);
+                    assert!(
+                        found.len() < 3,
+                        "{name} hardcodes task.status's value list — {found:?} appear together \
+                         in one passage:\n\n  {}\n\nThat list goes stale the moment a \
+                         methodology bundle extends the vocabulary via add_field_values \
+                         (ADR-076), and a stale list is worse than none because the agent \
+                         trusts it. Point at update_task_status's own status enum instead — \
+                         with_live_task_statuses rewrites it from the stored schema each turn.",
+                        sentence.trim()
+                    );
+                }
             }
         }
     }
