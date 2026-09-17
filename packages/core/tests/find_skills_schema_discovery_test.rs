@@ -152,6 +152,20 @@ async fn schema_with_no_skill_is_discoverable_once_embedded() {
         .filter_map(|f| f.get("name").and_then(|v| v.as_str()))
         .collect();
     assert_eq!(field_names, vec!["start_date", "velocity_points"]);
+
+    // The schema's own top-level description (authored as markdown, stored
+    // as a child subtree, rendered via the same `render_schema_description`/
+    // `schema_description_cache` machinery the skill-riding case uses) must
+    // reach a `kind: "schema"` result too, not just field-level shape —
+    // otherwise this discovery path would silently degrade to less content
+    // than the same schema carries when it happens to ride along with a
+    // matched skill instead.
+    assert_eq!(
+        metadata[0].get("description").and_then(|v| v.as_str()),
+        Some("A time-boxed iteration of work items tracked to completion"),
+        "the schema's own description subtree must be rendered into \
+         schema_metadata for a kind: \"schema\" result: {metadata:?}"
+    );
 }
 
 /// Debounce-window mitigation, tested end-to-end rather than only at the

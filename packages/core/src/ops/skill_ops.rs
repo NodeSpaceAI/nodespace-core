@@ -561,13 +561,30 @@ pub async fn find_skills(
     // exactly this one matched schema (not the unscoped/query-named
     // fallback a matched skill's `schema_metadata` uses above), so the
     // result is precisely what the query asked about. Field/relationship
-    // `description` content rides along automatically once
-    // `EntityTypeDescriptor` carries it — this path adds no separate
-    // fetch/render for it, so it inherits whatever `from_schema`/`to_json`
-    // produce without drifting from the skill-riding case.
+    // `description` content rides along automatically via `to_json` (it's
+    // baked into the descriptor). The schema's own top-level description is
+    // NOT automatic — it's rendered from a separate subtree fetch above,
+    // via `schema_description_cache`, and this loop reuses that exact same
+    // cache/fetch rather than adding a second, independent way to get it,
+    // so a `kind: "schema"` result never drifts from what a `kind: "skill"`
+    // result would show for the identical schema.
     for (schema, confidence) in &schema_candidates {
-        let schema_metadata: Vec<Value> =
-            vec![super::entity_types_block::EntityTypeDescriptor::from_schema(schema).to_json()];
+        let mut entry =
+            super::entity_types_block::EntityTypeDescriptor::from_schema(schema).to_json();
+
+        let schema_description = match schema_description_cache.get(&schema.id) {
+            Some(cached) => cached.clone(),
+            None => {
+                let rendered = render_schema_description(node_service.as_ref(), &schema.id).await;
+                schema_description_cache.insert(schema.id.clone(), rendered.clone());
+                rendered
+            }
+        };
+        if !schema_description.is_empty() {
+            entry["description"] = json!(schema_description);
+        }
+        let schema_metadata: Vec<Value> = vec![entry];
+
         skills.push(json!({
             "id": schema.id,
             "name": schema.content,
