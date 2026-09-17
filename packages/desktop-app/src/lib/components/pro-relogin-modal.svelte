@@ -137,7 +137,7 @@
   }
 
   .btn-primary:hover:not(:disabled) {
-    background-color: hsl(var(--primary) / 0.85);
+    background-color: hsl(var(--primary-hover));
   }
 
   .btn-secondary {

@@ -20,6 +20,7 @@
     */
     --primary: 174 67% 35%;
     --primary-foreground: 166 89% 96%;
+    --primary-hover: 174 67% 29%; /* 4.86:1 on its fg; see --*-hover rule below */
 
     --secondary: 240 5% 96%;
     --secondary-foreground: 240 4% 10%;
@@ -58,15 +59,41 @@
       It is white here and near-black under .dark — the inverse of the usual
       intuition, because the light-mode fills are dark and the dark-mode fills
       are bright. A single value cannot serve both.
+
+      --*-hover is the fill for a hovered SOLID button of the matching token.
+      The neutral --hover-background is wrong for these: it resolves to --muted,
+      which would turn a filled destructive button grey and destroy the very
+      semantic the button exists to communicate.
+
+      The rule: hover moves 6 points of HSL lightness AWAY from the surface —
+      darker in light mode, lighter under .dark. Contrast against the button's
+      own foreground therefore always RISES on hover (4.86-8.45:1 here, up from
+      3.51-6.95:1 at rest), so hovering can never make a label harder to read.
+
+      These are opaque values rather than `hsl(var(--x) / 0.85)` on purpose. An
+      alpha fill composites against whatever is behind it, which inverts the
+      hover direction between themes (it lightens on white, darkens on near-
+      black) and lets background content show through a button that should be
+      solid.
+
+      All four state tokens carry a --*-hover so the set is closed and the rule
+      has no gaps: --success and --warning have no filled-button use today, but
+      deriving them now means the first such button applies the law instead of
+      inventing a value, which is how the three competing idioms this replaced
+      came about. Their contrast figures are recorded alongside them and the
+      whole set is held to the rule by filled-button-hover.test.ts.
     */
     --destructive: 345 77% 46%; /* 5.36:1 on --background, 4.55:1 on a 0.1 tint */
     --destructive-foreground: 0 0% 100%; /* 5.36:1 on the fill */
+    --destructive-hover: 345 77% 40%; /* 6.66:1 on its fg; see --*-hover rule above */
 
     --success: 97 45% 32%; /* 5.35:1 on --background, 4.69:1 on a 0.1 tint */
     --success-foreground: 0 0% 100%; /* 5.35:1 on the fill */
+    --success-hover: 97 45% 26%; /* 7.26:1 on its fg; see --*-hover rule above */
 
     --warning: 38 97% 30%; /* 5.26:1 on --background, 4.60:1 on a 0.1 tint */
     --warning-foreground: 0 0% 100%; /* 5.26:1 on the fill */
+    --warning-hover: 38 97% 24%; /* 7.32:1 on its fg; see --*-hover rule above */
 
     --radius: 0.5rem;
 
@@ -139,6 +166,7 @@
     /* Color system - dark mode (Figma canonical tokens) */
     --primary: 173 50% 41%;
     --primary-foreground: 177 100% 9%;
+    --primary-hover: 173 50% 47%; /* 5.79:1 on its fg; see --*-hover rule below */
 
     --secondary: 240 4% 16%;
     --secondary-foreground: 0 0% 98%;
@@ -171,15 +199,21 @@
       the white used in light mode — white lands at 2.00-2.86:1 on these fills.
       The state colors themselves already clear AA as text here (6.27-8.98:1 on
       --background) and are unchanged.
+
+      --*-hover LIGHTENS here, the mirror of the light-mode darkening: the rule
+      is "away from the surface" in both themes, not a fixed direction.
     */
     --destructive: 0 100% 70%;
     --destructive-foreground: 240 11% 4%; /* 6.95:1 on the fill */
+    --destructive-hover: 0 100% 76%; /* 8.45:1 on its fg; see --*-hover rule above */
 
     --success: 96 96% 37%;
     --success-foreground: 240 11% 4%; /* 7.81:1 on the fill */
+    --success-hover: 96 96% 43%; /* 10.54:1 on its fg; see --*-hover rule above */
 
     --warning: 38 100% 51%;
     --warning-foreground: 240 11% 4%; /* 9.96:1 on the fill */
+    --warning-hover: 38 100% 57%; /* 10.77:1 on its fg; see --*-hover rule above */
 
     /* Sidebar tokens - Figma canonical */
     --sidebar-background: 240 4% 10%;
