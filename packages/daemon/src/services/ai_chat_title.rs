@@ -17,11 +17,15 @@
 //! # Never clobbering a user's title
 //!
 //! [`is_untitled`] is the whole guard: the titler writes only when `content`
-//! is still the `"Untitled"` sentinel (or empty, for chats created before
-//! titling landed). Anything else is treated as the user's own words and left
-//! alone. The guard is re-checked immediately before the write, not just
-//! before generating, because generation takes seconds and the user may rename
-//! the chat while it runs.
+//! is still the exact `"Untitled"` sentinel. Anything else is treated as the
+//! client's own words and left alone. The guard is re-checked immediately
+//! before the write, not just before generating, because generation takes
+//! seconds and the user may rename the chat while it runs.
+//!
+//! Blank content is not a third case. `AiChatNodeBehavior::validate` rejects
+//! an ai-chat node with empty or whitespace-only content, so every persisted
+//! chat has a title and titling is something a client opts into by writing
+//! the sentinel — not something it receives by saying nothing.
 //!
 //! Known consequence of using a sentinel string rather than a separate flag: a
 //! user who types exactly `"Untitled"` is indistinguishable from an untitled
@@ -94,11 +98,16 @@ const TITLE_MAX_TOKENS: u32 = 48;
 
 /// Whether `content` is a title background titling may replace.
 ///
-/// True for the `"Untitled"` sentinel and for genuinely absent content; false
-/// for anything else, which is taken to be the user's own title.
+/// True only for the exact `"Untitled"` sentinel; anything else is the
+/// client's own title and is left alone. Blank content is not a case this has
+/// to consider — `AiChatNodeBehavior::validate` rejects it outright, so a
+/// titleless chat cannot be persisted in the first place.
+///
+/// That rejection is what makes titling an opt-in rather than a default: a
+/// client asks for it by writing the sentinel, instead of getting it by
+/// omitting a title.
 pub fn is_untitled(content: &str) -> bool {
-    let trimmed = content.trim();
-    trimmed.is_empty() || trimmed == UNTITLED_CHAT_TITLE
+    content.trim() == UNTITLED_CHAT_TITLE
 }
 
 /// Whether this chat should be titled: enough conversation, and no title yet.
@@ -320,11 +329,20 @@ mod tests {
     }
 
     #[test]
-    fn sentinel_and_empty_are_untitled() {
+    fn only_the_sentinel_is_untitled() {
         assert!(is_untitled("Untitled"));
         assert!(is_untitled("  Untitled  "));
-        assert!(is_untitled(""));
-        assert!(is_untitled("   "));
+    }
+
+    /// Blank content is not claimable. It is also not persistable —
+    /// `AiChatNodeBehavior::validate` rejects it — so this pins the guard
+    /// against someone reintroducing an empty-content branch here rather than
+    /// describing a state the database can hold.
+    #[test]
+    fn blank_content_is_not_claimable() {
+        assert!(!is_untitled(""));
+        assert!(!is_untitled("   "));
+        assert!(!is_untitled("\t\n"));
     }
 
     #[test]
