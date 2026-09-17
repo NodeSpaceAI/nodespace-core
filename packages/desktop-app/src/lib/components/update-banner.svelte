@@ -79,7 +79,7 @@
     color: hsl(var(--primary-foreground));
   }
   .download:hover:not(:disabled) {
-    filter: brightness(1.08);
+    background: hsl(var(--primary-hover));
   }
   .download:disabled {
     opacity: 0.6;

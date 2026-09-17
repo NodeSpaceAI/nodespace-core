@@ -184,6 +184,6 @@
   }
 
   .btn-danger:hover:not(:disabled) {
-    filter: brightness(0.92);
+    background-color: hsl(var(--destructive-hover));
   }
 </style>

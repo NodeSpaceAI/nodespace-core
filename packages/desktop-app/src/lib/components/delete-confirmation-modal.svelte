@@ -103,6 +103,6 @@
   }
 
   .btn-delete:hover {
-    background: hsl(var(--destructive) / 0.85);
+    background: hsl(var(--destructive-hover));
   }
 </style>
