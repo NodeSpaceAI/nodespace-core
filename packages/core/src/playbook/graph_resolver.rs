@@ -255,26 +255,45 @@ impl GraphResolver {
 /// NodeSpace stores properties in a type-namespaced format:
 /// `{"task": {"status": "open"}}` — so we check inside the type namespace too.
 /// Also checks `custom:key` namespace prefix format.
+///
+/// Internal `_`-prefixed bookkeeping keys (`_seed`, `_schemaVersion`,
+/// `_playbookChainDepth`, ...) are excluded, same convention and same check
+/// as `node_to_cel_value` in `cel.rs` (see `NodeService::normalize_flat_properties_to_namespace`
+/// for where the convention originates). NOTE: Parallel logic exists in
+/// `cel::node_to_cel_value` — if the property storage format changes, both
+/// must be updated.
 fn get_node_property(node: &Node, key: &str) -> Option<serde_json::Value> {
     if let Some(obj) = node.properties.as_object() {
-        // Direct match (e.g., key "status" on {"status": "open"})
-        if let Some(val) = obj.get(key) {
-            // Don't return the type namespace wrapper as a property
-            if key != node.node_type || !val.is_object() {
-                return Some(val.clone());
+        // Direct match and type-namespaced match both look up `key` verbatim,
+        // so the raw stored key being checked is `key` itself in both cases.
+        if !key.starts_with('_') {
+            // Direct match (e.g., key "status" on {"status": "open"})
+            if let Some(val) = obj.get(key) {
+                // Don't return the type namespace wrapper as a property
+                if key != node.node_type || !val.is_object() {
+                    return Some(val.clone());
+                }
+            }
+
+            // Check inside the type-namespaced object (e.g., {"task": {"status": "open"}})
+            // The type namespace key matches the node_type
+            if let Some(type_obj) = obj.get(&node.node_type).and_then(|v| v.as_object()) {
+                if let Some(val) = type_obj.get(key) {
+                    return Some(val.clone());
+                }
             }
         }
 
-        // Check inside the type-namespaced object (e.g., {"task": {"status": "open"}})
-        // The type namespace key matches the node_type
-        if let Some(type_obj) = obj.get(&node.node_type).and_then(|v| v.as_object()) {
-            if let Some(val) = type_obj.get(key) {
-                return Some(val.clone());
-            }
-        }
-
-        // Try with colon namespace prefix (e.g., "status" → "custom:status")
+        // Try with colon namespace prefix (e.g., "status" → "custom:status").
+        // The filter checks the raw stored key `k` (with its colon prefix),
+        // not the colon-stripped bare name -- matching node_to_cel_value's
+        // rule that a leading `_` only makes a key internal when it's on the
+        // WHOLE stored key. "custom:_internal" is a legal, visible user
+        // field, not bookkeeping, even though its bare name starts with `_`.
         for (k, v) in obj {
+            if k.starts_with('_') {
+                continue;
+            }
             if let Some(bare) = k.find(':').map(|i| &k[i + 1..]) {
                 if bare == key {
                     return Some(v.clone());
@@ -569,6 +588,45 @@ mod tests {
         // "task" itself should NOT be returned as a property (it's the namespace wrapper)
         assert_eq!(get_node_property(&node, "task"), None);
         assert_eq!(get_node_property(&node, "missing"), None);
+    }
+
+    #[test]
+    fn get_property_excludes_underscore_prefixed_keys() {
+        // Internal bookkeeping keys are stored both flat and inside the type
+        // namespace, mirroring NodeService::normalize_flat_properties_to_namespace.
+        let node = crate::models::Node {
+            id: "n1".to_string(),
+            node_type: "task".to_string(),
+            content: "".to_string(),
+            version: 1,
+            created_at: chrono::Utc::now(),
+            modified_at: chrono::Utc::now(),
+            properties: json!({
+                "_playbookChainDepth": 3,
+                "task": {"status": "open", "_seed": "abc123"},
+                "custom:_internal": "visible-to-user"
+            }),
+            mentions: vec![],
+            mentioned_in: vec![],
+            title: None,
+            lifecycle_status: "active".to_string(),
+        };
+
+        // Flat internal key is excluded.
+        assert_eq!(get_node_property(&node, "_playbookChainDepth"), None);
+        // Internal key nested inside the type namespace is excluded.
+        assert_eq!(get_node_property(&node, "_seed"), None);
+        // A normal property alongside an internal one in the same namespace
+        // is unaffected.
+        assert_eq!(get_node_property(&node, "status"), Some(json!("open")));
+        // A colon-namespaced field is not internal just because its bare
+        // name (after stripping the namespace) starts with `_` -- only a
+        // leading `_` on the whole stored key means bookkeeping. This
+        // matches node_to_cel_value's identical rule.
+        assert_eq!(
+            get_node_property(&node, "_internal"),
+            Some(json!("visible-to-user"))
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1123,6 +1181,94 @@ mod tests {
                 Some(Value::String(s)) => assert_eq!(s.as_ref(), "in_progress"),
                 other => panic!("expected CEL String('in_progress'), got {:?}", other),
             }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn enrich_context_multi_hop_path_excludes_internal_key() {
+            // A multi-hop CEL path (node.related_node._internalKey, segment
+            // length > 2) is resolved via get_node_property, not
+            // node_to_cel_value -- this exercises that a `_`-prefixed
+            // internal-bookkeeping value on a RELATED node stays unreadable,
+            // matching the direct-node case already enforced by
+            // node_to_cel_value.
+            let (svc, _tmp) = create_test_service().await;
+
+            create_schema(&svc, "gr_related11", json!([])).await;
+            create_schema(
+                &svc,
+                "gr_root11",
+                json!([{
+                    "name": "related_node",
+                    "targetType": "gr_related11",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "roots",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            let related = make_node(
+                "gr-rel11",
+                "gr_related11",
+                json!({"status": "active", "_playbookChainDepth": 7}),
+            );
+            svc.create_node(related).await.unwrap();
+            let root = make_node("gr-root11", "gr_root11", json!({}));
+            svc.create_node(root.clone()).await.unwrap();
+            svc.create_relationship("gr-root11", "related_node", "gr-rel11", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+
+            use crate::playbook::path_extractor::ExtractedPath;
+
+            // Multi-hop path targeting the internal key on the related node:
+            // node.related_node._playbookChainDepth (3 segments, root="node").
+            let internal_path = ExtractedPath {
+                segments: vec![
+                    "node".to_string(),
+                    "related_node".to_string(),
+                    "_playbookChainDepth".to_string(),
+                ],
+                root: "node".to_string(),
+            };
+            // Control path: an ordinary property on the same related node
+            // resolves normally, proving the traversal itself works and the
+            // internal key's absence isn't an unrelated resolution failure.
+            let normal_path = ExtractedPath {
+                segments: vec![
+                    "node".to_string(),
+                    "related_node".to_string(),
+                    "status".to_string(),
+                ],
+                root: "node".to_string(),
+            };
+
+            let result = resolver
+                .enrich_context(&root, &[internal_path, normal_path], &[])
+                .await;
+
+            let internal_key = vec![
+                "node".to_string(),
+                "related_node".to_string(),
+                "_playbookChainDepth".to_string(),
+            ];
+            assert!(
+                !result.contains_key(&internal_key),
+                "internal-bookkeeping key on a related node must not be CEL-readable via a multi-hop path"
+            );
+
+            let normal_key = vec![
+                "node".to_string(),
+                "related_node".to_string(),
+                "status".to_string(),
+            ];
+            assert!(
+                result.contains_key(&normal_key),
+                "ordinary property on the related node should still resolve"
+            );
         }
 
         #[tokio::test(flavor = "multi_thread")]
