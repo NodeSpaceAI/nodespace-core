@@ -20,7 +20,15 @@
   data-slot="checkbox"
   class={cn(
     'peer size-4 shrink-0 rounded-sm border border-primary shadow-xs outline-none',
-    'focus-visible:ring-ring/50 focus-visible:ring-[3px]',
+    // No focus treatment. A checkbox is a 16px square whose only paintable
+    // surfaces are its border and its fill, and the fill already carries
+    // checked state — reusing it for focus would make a focused-unchecked box
+    // read as checked. The remaining option is a border change, which is the
+    // one idiom this codebase has removed twice for moving the layout.
+    //
+    // The ring that stood here was `ring-ring/50`: an alpha value composited
+    // against whatever sat behind it, measuring 1.84:1 light and 2.28:1 dark
+    // against a 3:1 floor. It was not doing the job it appeared to do.
     'disabled:cursor-not-allowed disabled:opacity-50',
     'data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground data-[state=checked]:border-primary',
     'aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40',

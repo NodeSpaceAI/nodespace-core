@@ -14,7 +14,10 @@
   bind:ref
   data-slot="radio-group-item"
   class={cn(
-    'border-input text-primary focus-visible:ring-ring aspect-square size-4 rounded-full border shadow-xs focus:outline-none focus-visible:ring-1 disabled:cursor-not-allowed disabled:opacity-50',
+    // No focus treatment, for the same reason as Checkbox and Switch: the dot
+    // inside is the selected state, so there is no paintable surface left that
+    // does not already mean something else.
+    'border-input text-primary aspect-square size-4 rounded-full border shadow-xs focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50',
     className
   )}
   {...restProps}

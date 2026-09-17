@@ -696,7 +696,7 @@
           {#if addableGroups.length > 0}
             <Popover.Root bind:open={addChooserOpen}>
               <Popover.Trigger
-                class="rail-item text-muted-foreground focus-visible:ring-ring mt-1 focus-visible:outline-none focus-visible:ring-1"
+                class="rail-item text-muted-foreground focus-visible:bg-accent focus-visible:text-accent-foreground mt-1 focus-visible:outline-none"
               >
                 <PlusIcon class="size-3.5 shrink-0" />
                 <span>Add</span>
@@ -782,7 +782,7 @@
                     {#if expandable}
                       <button
                         type="button"
-                        class="text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-5 shrink-0 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-1"
+                        class="text-muted-foreground hover:text-foreground focus-visible:bg-accent focus-visible:text-accent-foreground inline-flex size-5 shrink-0 items-center justify-center rounded focus-visible:outline-none"
                         aria-expanded={rowOpen}
                         aria-controls={`edge-props-${rowKey(group, row)}`}
                         aria-label={rowOpen ? `Collapse ${row.label}` : `Expand ${row.label}`}
@@ -805,7 +805,7 @@
 
                     <button
                       type="button"
-                      class="text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-6 shrink-0 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-1"
+                      class="text-muted-foreground hover:text-foreground focus-visible:bg-accent focus-visible:text-accent-foreground inline-flex size-6 shrink-0 items-center justify-center rounded focus-visible:outline-none"
                       title="Open {row.label}"
                       aria-label="Open {row.label}"
                       onclick={() => openTarget(row)}
@@ -816,7 +816,7 @@
                     {#if !inbound}
                       <button
                         type="button"
-                        class="text-muted-foreground hover:text-destructive focus-visible:ring-ring inline-flex size-6 shrink-0 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-1 disabled:opacity-50"
+                        class="text-muted-foreground hover:text-destructive focus-visible:bg-accent focus-visible:text-accent-foreground inline-flex size-6 shrink-0 items-center justify-center rounded focus-visible:outline-none disabled:opacity-50"
                         title="Remove {row.label}"
                         aria-label="Remove {row.label}"
                         disabled={busy}
@@ -944,7 +944,7 @@
             {/if}
             <button
               type="button"
-              class="text-muted-foreground hover:text-foreground focus-visible:ring-ring ml-auto inline-flex size-6 items-center justify-center rounded focus-visible:outline-none focus-visible:ring-1"
+              class="text-muted-foreground hover:text-foreground focus-visible:bg-accent focus-visible:text-accent-foreground ml-auto inline-flex size-6 items-center justify-center rounded focus-visible:outline-none"
               aria-label="Cancel add"
               onclick={closeAdd}
             >

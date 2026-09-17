@@ -21,6 +21,17 @@
  *   token takes dark destructive from 2.86:1 to 6.95:1 at rest.
  *
  * `filled-button-variants.test.ts` holds both variants to the rule.
+ *
+ * Keyboard focus reuses each variant's hover appearance rather than drawing a
+ * ring. Focus and hover mean the same thing to a user — "this is the control
+ * you are about to act on" — so they are shown the same way, and a focus
+ * treatment built only from `background-color` cannot move the control or its
+ * siblings. A ring, outline or border can: see DESIGN.md's focus rule for why
+ * every geometry-affecting property is excluded, including the ones that merely
+ * look like they reflow.
+ *
+ * `focus-visible:` and not `focus:` — bare `:focus` fires on mouse clicks too,
+ * which would leave the treatment sitting on a button the user just pressed.
  */
 import type { WithElementRef } from '$lib/utils.js';
 import type { HTMLAnchorAttributes, HTMLButtonAttributes } from 'svelte/elements';
@@ -30,14 +41,27 @@ export const buttonVariants = tv({
   base: "aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive inline-flex shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium outline-none transition-all disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0",
   variants: {
     variant: {
-      default: 'bg-primary text-primary-foreground shadow-xs hover:bg-primary-hover',
+      default:
+        'bg-primary text-primary-foreground shadow-xs hover:bg-primary-hover focus-visible:bg-primary-hover',
       destructive:
-        'bg-destructive text-destructive-foreground shadow-xs hover:bg-destructive-hover',
+        'bg-destructive text-destructive-foreground shadow-xs hover:bg-destructive-hover focus-visible:bg-destructive-hover',
       outline:
-        'bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 border',
-      secondary: 'bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80',
-      ghost: 'hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50',
-      link: 'text-primary underline-offset-4 hover:underline'
+        'bg-background shadow-xs hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 border',
+      // `secondary` focuses to `accent`, NOT to its own `hover:bg-secondary/80`
+      // like the filled variants do. Hover can afford a subtle shift because the
+      // pointer is already on the control; focus cannot, because it is the only
+      // thing telling a keyboard user where they are. `--secondary` is 1.10:1
+      // against the page, and at 0.8 alpha it composites to 1.08:1 — a focus
+      // state that is technically present and practically invisible.
+      secondary:
+        'bg-secondary text-secondary-foreground shadow-xs hover:bg-secondary/80 focus-visible:bg-accent focus-visible:text-accent-foreground',
+      ghost:
+        'hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground dark:hover:bg-accent/50',
+      // `link` renders as text, not a surface: a background shift on a bare
+      // inline link would paint a block behind the words rather than read as
+      // focus. It takes the same underline its hover uses instead, which is
+      // painted and changes no geometry (`text-decoration`, not `border`).
+      link: 'text-primary underline-offset-4 hover:underline focus-visible:underline'
     },
     size: {
       default: 'h-9 px-4 py-2 has-[>svg]:px-3',

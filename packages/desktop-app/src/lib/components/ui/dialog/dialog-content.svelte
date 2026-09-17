@@ -33,7 +33,7 @@
     {@render children?.()}
     {#if showCloseButton}
       <DialogPrimitive.Close
-        class="focus:ring-ring rounded-xs focus:outline-none absolute right-4 top-4 opacity-70 transition-opacity hover:opacity-100 focus:ring-2 disabled:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0"
+        class="rounded-xs focus-visible:outline-none absolute right-4 top-4 opacity-70 transition-opacity hover:opacity-100 focus-visible:opacity-100 focus-visible:bg-accent focus-visible:text-accent-foreground disabled:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:pointer-events-none [&_svg]:shrink-0"
       >
         <XIcon />
         <span class="sr-only">Close</span>

@@ -28,7 +28,7 @@
 <button
   type="button"
   id={fieldId}
-  class="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm transition-all hover:opacity-80 focus-visible:outline-none"
+  class="flex h-10 w-full items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm transition-all hover:opacity-80 focus-visible:outline-none focus-visible:bg-accent focus-visible:text-accent-foreground"
   onclick={onopen}
 >
   <span class="text-muted-foreground">{nestedFieldSummary(field, value)}</span>

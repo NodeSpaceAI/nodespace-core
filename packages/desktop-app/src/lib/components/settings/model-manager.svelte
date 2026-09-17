@@ -694,8 +694,9 @@
   }
 
   .form-input:focus {
+    /* Border COLOR only — see the focus rule in DESIGN.md. The alpha ring that
+       sat here composited against whatever was behind it. */
     border-color: hsl(var(--ring));
-    box-shadow: 0 0 0 2px hsl(var(--ring) / 0.2);
   }
 
   .form-actions {
@@ -716,8 +717,8 @@
   }
 
   .form-select:focus {
+    /* Border COLOR only — see .form-input:focus above. */
     border-color: hsl(var(--ring));
-    box-shadow: 0 0 0 2px hsl(var(--ring) / 0.2);
   }
 
   /* Buttons */
