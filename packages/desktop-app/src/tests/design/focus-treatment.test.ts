@@ -96,27 +96,35 @@ const FILES = sourceFiles(srcRoot).map((file) => ({
  *    hand-written-CSS sweep below, so leaving them out here would make the two
  *    halves of the same rule disagree.
  */
+const GEOMETRY_UTILITY =
+  // rings, including bare `ring` and every ring-offset form
+  'ring(?![\\w-])|ring-|' +
+  // border WIDTH: bare, numeric, arbitrary, or per-side. `border-<color>` is
+  // allowed and must not match, so named colors are excluded by requiring a
+  // digit, a bracket, or a side prefix.
+  'border(?![\\w-])|border-\\d|border-\\[|border-[xytrbl]-(?:\\d|\\[)|' +
+  // padding and margin, numeric or arbitrary
+  'p[xytrbl]?-(?:\\d|\\[)|m[xytrbl]?-(?:\\d|\\[)|' +
+  // any outline except the suppression
+  'outline(?![\\w-])|outline-(?!none)|' +
+  // box-shadow under its Tailwind alias, bare or scaled
+  'shadow(?![\\w-])|shadow-(?:sm|md|lg|xl|2xl|inner|\\[)|' +
+  // transforms and text metrics
+  'scale-|translate-|rotate-|skew-|' +
+  'font-(?:thin|extralight|light|normal|medium|semibold|bold|extrabold|black)|' +
+  'tracking-';
+
+/** The same list under a focus variant, which is how markup spells it. */
 const FORBIDDEN_UTILITY = new RegExp(
-  '(?:focus|focus-visible|focus-within)(?::[a-z-]+)*:' +
-    '(?:' +
-    // rings, including bare `ring` and every ring-offset form
-    'ring(?![\\w-])|ring-|' +
-    // border WIDTH: bare, numeric, arbitrary, or per-side. `border-<color>` is
-    // allowed and must not match, so named colors are excluded by requiring a
-    // digit, a bracket, or a side prefix.
-    'border(?![\\w-])|border-\\d|border-\\[|border-[xytrbl]-(?:\\d|\\[)|' +
-    // padding and margin, numeric or arbitrary
-    'p[xytrbl]?-(?:\\d|\\[)|m[xytrbl]?-(?:\\d|\\[)|' +
-    // any outline except the suppression
-    'outline(?![\\w-])|outline-(?!none)|' +
-    // box-shadow under its Tailwind alias, bare or scaled
-    'shadow(?![\\w-])|shadow-(?:sm|md|lg|xl|2xl|inner|\\[)|' +
-    // transforms and text metrics
-    'scale-|translate-|rotate-|skew-|' +
-    'font-(?:thin|extralight|light|normal|medium|semibold|bold|extrabold|black)|' +
-    'tracking-' +
-    ')'
+  `(?:focus|focus-visible|focus-within)(?::[a-z-]+)*:(?:${GEOMETRY_UTILITY})`
 );
+
+/**
+ * The same list BARE, which is how `@apply` spells it inside a `:focus` block —
+ * there the focus state lives in the selector, so the utility carries no prefix.
+ * Built from the one list above so the two cannot drift apart.
+ */
+const FORBIDDEN_APPLIED_UTILITY = new RegExp(`(?:^|\\s)(?:${GEOMETRY_UTILITY})`);
 
 /**
  * The same rule in hand-written CSS: `:focus { ... }` blocks in <style>.
@@ -202,7 +210,20 @@ function focusRules(source: string): { selector: string; body: string }[] {
     if (/:focus(-visible|-within)?(?![\w-])/.test(selector)) {
       // Only this rule's own declarations: a nested block's contents belong to
       // the nested selector, which this loop reaches on its own iteration.
-      rules.push({ selector, body: css.slice(i + 1, end).replace(/\{[^{}]*\}/g, ' ') });
+      //
+      // The strip takes each nested block TOGETHER WITH its selector text
+      // (`[^;{}]*` before the braces). Removing only `{...}` leaves the
+      // selector behind as an orphan, and since declarations are split on `;`
+      // that orphan glues onto the front of the next one — which defeats the
+      // `^\s*` anchor in FORBIDDEN_CSS_PROPERTY and silently passes it:
+      //
+      //   .a:focus-visible { .x { color: red } padding: 4px }
+      //                                        ^ missed, because the chunk
+      //                                          reads ".x  padding: 4px"
+      //
+      // The bug was order-dependent, which is what made it worth a comment:
+      // the same declaration placed BEFORE the nested block was caught.
+      rules.push({ selector, body: css.slice(i + 1, end).replace(/[^;{}]*\{[^{}]*\}/g, ' ') });
     }
   }
 
@@ -244,9 +265,23 @@ describe('focus treatments are painted-only', () => {
     for (const { path: file, text } of FILES) {
       for (const { selector, body } of focusRules(text)) {
         for (const declaration of body.split(';')) {
-          const match = FORBIDDEN_CSS_PROPERTY.exec(declaration.trim());
+          const trimmed = declaration.trim();
+
+          const match = FORBIDDEN_CSS_PROPERTY.exec(trimmed);
           if (match && !VALUE_IS_NONE.test(match[2].trim())) {
-            offenders.push(`${file} -> ${selector} { ${declaration.trim()} }`);
+            offenders.push(`${file} -> ${selector} { ${trimmed} }`);
+          }
+
+          // `@apply` pulls a Tailwind utility into hand-written CSS, so it
+          // slips between the two sweeps: the utility sweep looks for a
+          // `focus-visible:` prefix that is not there (the `:focus` is in the
+          // selector instead), and the property sweep looks for
+          // `property: value`, which `@apply ring-2` is not. Nothing in the
+          // codebase uses `@apply` today; this closes the seam rather than
+          // waiting for the first one to land in a focus block.
+          const applied = /^@apply\s+(.+)/.exec(trimmed);
+          if (applied && FORBIDDEN_APPLIED_UTILITY.test(applied[1])) {
+            offenders.push(`${file} -> ${selector} { ${trimmed} }`);
           }
         }
       }
