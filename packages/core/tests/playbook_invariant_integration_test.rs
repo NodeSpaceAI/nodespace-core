@@ -23,7 +23,7 @@
 use anyhow::Result;
 use nodespace_core::db::events::{DomainEvent, SYNC_SERVICE_CLIENT_ID};
 use nodespace_core::db::SqliteStore;
-use nodespace_core::models::{Node, NodeUpdate};
+use nodespace_core::models::{Node, NodeUpdate, TaskNodeUpdate, TaskPriority, TaskStatus};
 use nodespace_core::services::{NodeService, NodeServiceError};
 use nodespace_core::PlaybookEngine;
 use serde_json::json;
@@ -1833,6 +1833,412 @@ async fn reactive_update_rule_still_fires_asynchronously_post_commit() -> Result
                 .is_some_and(|n| {
                     user_field(&n, "iv_update_reactive", "notified") == Some(&json!(true))
                 })
+        }
+    })
+    .await;
+    assert!(fired, "reactive rule must eventually fire post-commit");
+
+    shutdown_engine(shutdown_tx, task).await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `update_task_node` wiring (ADR-060 §2, closing the gap the generic
+// `update_node` coverage above doesn't reach): `NodeService::update_task_node`
+// is a separate write path from `update_node` — it calls
+// `SqliteStore::update_task_node_with_version_check_in_tx` directly rather
+// than composing `update_node`'s own `_in_tx` pipeline — so it needs its own
+// synchronous-dispatch coverage, not just a generic-`update_node` inference.
+// Uses the real, seeded built-in "task" schema (no `create_schema` call,
+// unlike the generic tests above) since `update_task_node` requires the
+// target node's `node_type` to literally be `"task"` (see
+// `NodeService::validate_task_status` and `SqliteStore::node_to_task_node`).
+// Triggers are scoped to `task.status` — the exact property ADR-060/#2642's
+// own motivating example turns on ("reject this status change to
+// done/in_progress while sub-issues are open") — and augmenting actions
+// stamp `priority`, a real built-in task field, rather than an invented one:
+// the built-in "task" schema is core-protected (ADR-063), so an action
+// targeting it must write a field the schema already declares.
+// ---------------------------------------------------------------------------
+
+/// The task-node twin of `stamp_verified_on_update_invariant_rule`: on a
+/// `task.status` change, stamps `priority: "high"` on the trigger node
+/// itself, inside the same transaction.
+fn stamp_priority_on_task_status_update_invariant_rule() -> serde_json::Value {
+    json!([{
+        "name": "stamp-priority-on-status-update",
+        "class": "invariant",
+        "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
+        "conditions": [],
+        "actions": [{
+            "action_type": "update_node",
+            "params": {
+                "node_id": "{trigger.node.id}",
+                "properties": { "priority": "high" }
+            }
+        }]
+    }])
+}
+
+fn new_task_node(content: &str) -> Node {
+    Node::new(
+        "task".to_string(),
+        content.to_string(),
+        json!({ "status": "open" }),
+    )
+}
+
+/// An invariant rule triggered by `update_task_node`'s own `property_changed`
+/// write executes synchronously, inside the SAME transaction as the write
+/// itself — checked immediately via the RETURN VALUE, no `wait_until`/polling,
+/// exactly like `invariant_update_rule_executes_synchronously_in_same_transaction`
+/// for the generic path.
+#[tokio::test]
+async fn invariant_task_update_rule_executes_synchronously_in_same_transaction() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "stamp-priority-on-task-status-play".to_string(),
+        json!({ "rules": stamp_priority_on_task_status_update_invariant_rule() }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let node = new_task_node("Ship the feature");
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    // No wait_until: check the RETURN VALUE of update_task_node itself.
+    let updated = service
+        .update_task_node(
+            &node_id,
+            version,
+            TaskNodeUpdate::new().with_status(TaskStatus::InProgress),
+        )
+        .await?;
+
+    assert_eq!(
+        updated.priority,
+        Some(TaskPriority::High),
+        "invariant action must have already run by the time update_task_node returned"
+    );
+    assert_eq!(
+        updated.status,
+        TaskStatus::InProgress,
+        "the triggering update itself must still have applied"
+    );
+
+    Ok(())
+}
+
+/// The motivating example from ADR-060/#2642 itself: a reject firing on a
+/// `task.status` transition to `done` prevents the triggering
+/// `update_task_node` call from taking effect at all — the node's status
+/// stays at its pre-update value, not a mix of "some fields updated, some
+/// not". This is the exact gap this issue closes — before this change, no
+/// real daemon call path could ever produce this rejection for a task-node
+/// status change.
+#[tokio::test]
+async fn invariant_task_update_rule_reject_prevents_partial_write() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "reject-task-done-play".to_string(),
+        json!({ "rules": [{
+            "name": "reject-done-transition",
+            "class": "invariant",
+            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
+            "conditions": ["node.status == 'done'"],
+            "actions": [{
+                "action_type": "reject",
+                "params": { "message": "cannot mark done while sub-issues are open" }
+            }]
+        }] }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let node = new_task_node("Ship the feature");
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let before = service.get_node(&node_id).await?.unwrap();
+
+    let err = service
+        .update_task_node(
+            &node_id,
+            before.version,
+            TaskNodeUpdate::new().with_status(TaskStatus::Done),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, NodeServiceError::PlayRuleRejected { .. }),
+        "expected PlayRuleRejected, got {:?}",
+        err
+    );
+
+    let after = service.get_node(&node_id).await?.unwrap();
+    assert_eq!(
+        after.version, before.version,
+        "a rejected update must not bump the node's version at all"
+    );
+    assert_eq!(
+        user_field(&after, "task", "status"),
+        Some(&json!("open")),
+        "a rejected update must leave the property at its pre-update value"
+    );
+
+    Ok(())
+}
+
+/// No `DomainEvent` is broadcast for a rejected `update_task_node` call — the
+/// buffered `NodeUpdated` event `update_task_node_in_tx` emits before
+/// dispatch is discarded on rollback, never flushed. Mirrors
+/// `invariant_update_rule_reject_emits_no_domain_event` for the generic path.
+#[tokio::test]
+async fn invariant_task_update_rule_reject_emits_no_domain_event() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "reject-task-no-broadcast-play".to_string(),
+        json!({ "rules": [{
+            "name": "reject-always",
+            "class": "invariant",
+            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
+            "conditions": [],
+            "actions": [{
+                "action_type": "reject",
+                "params": { "message": "never allowed" }
+            }]
+        }] }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let node = new_task_node("Ship the feature");
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    // Subscribe AFTER the create (so its own NodeCreated event isn't sitting
+    // in the channel) and BEFORE the rejected update.
+    let mut rx = service.subscribe_to_events();
+
+    let result = service
+        .update_task_node(
+            &node_id,
+            version,
+            TaskNodeUpdate::new().with_status(TaskStatus::InProgress),
+        )
+        .await;
+    assert!(result.is_err(), "expected the update to be rejected");
+
+    match rx.try_recv() {
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {}
+        other => panic!(
+            "expected no event to have been broadcast for a rejected update, got {:?}",
+            other
+        ),
+    }
+
+    Ok(())
+}
+
+/// Successful path, the mirror of the rejection test above: an invariant
+/// rule's augmenting action commits atomically with the triggering
+/// `update_task_node` write AND a real `NodeUpdated` broadcast for the
+/// triggering update itself goes out normally, since that write genuinely
+/// succeeded.
+#[tokio::test]
+async fn invariant_task_update_rule_augmenting_action_commits_and_broadcasts_normally() -> Result<()>
+{
+    let (service, _tmp) = create_test_service().await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "augment-on-task-update-play".to_string(),
+        json!({ "rules": stamp_priority_on_task_status_update_invariant_rule() }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let node = new_task_node("Ship the feature");
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    let mut rx = service.subscribe_to_events();
+
+    let updated = service
+        .update_task_node(
+            &node_id,
+            version,
+            TaskNodeUpdate::new().with_status(TaskStatus::InProgress),
+        )
+        .await?;
+    assert_eq!(
+        updated.priority,
+        Some(TaskPriority::High),
+        "augmenting action must have run"
+    );
+
+    let envelope = timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .expect("timed out waiting for a broadcast")
+        .expect("channel must not have closed");
+    match envelope.event {
+        DomainEvent::NodeUpdated { node_id: id, .. } => {
+            assert_eq!(
+                id, node_id,
+                "the broadcast must be for the triggering update"
+            );
+        }
+        other => panic!("expected NodeUpdated, got {:?}", other),
+    }
+
+    Ok(())
+}
+
+/// A `property_changed` invariant rule scoped to `task.status` must not fire
+/// when a DIFFERENT task property changes via `update_task_node` — proves
+/// `update_task_node_in_tx` reuses the same real exact/wildcard trigger-key
+/// matching as the generic path, not a blanket "any update to this node"
+/// match. Mirrors
+/// `invariant_update_rule_scoped_to_one_property_ignores_a_different_property_change`.
+#[tokio::test]
+async fn invariant_task_update_rule_scoped_to_one_property_ignores_a_different_property_change(
+) -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    let engine = PlaybookEngine::new(Arc::clone(&service));
+    service.set_playbook_lifecycle(engine.lifecycle().clone());
+    let play_node = Node::new(
+        "play".to_string(),
+        "scoped-task-property-play".to_string(),
+        // Scoped to "task.status" only.
+        json!({ "rules": stamp_priority_on_task_status_update_invariant_rule() }),
+    );
+    {
+        let lifecycle = engine.lifecycle();
+        let mut lm = lifecycle.write().unwrap();
+        lm.activate_play(&play_node)
+            .expect("play must parse and activate");
+    }
+
+    let node = new_task_node("Ship the feature");
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    // Change ONLY "due_date" — must not match a rule scoped to "task.status".
+    let updated = service
+        .update_task_node(
+            &node_id,
+            version,
+            TaskNodeUpdate::new().with_due_date(Some("2026-01-01")),
+        )
+        .await?;
+
+    assert_eq!(
+        updated.priority, None,
+        "a property-key-scoped invariant rule must not fire for an unrelated property change"
+    );
+    assert_eq!(
+        updated.due_date.as_deref(),
+        Some("2026-01-01"),
+        "the unrelated update itself must still have applied"
+    );
+
+    Ok(())
+}
+
+/// `RuleClass::Reactive` rules triggered by `update_task_node`'s
+/// `property_changed` remain completely unaffected by the new synchronous
+/// wiring: still async, post-commit, requiring the real engine loop — unlike
+/// the invariant tests above, which never spawn one. Mirrors
+/// `reactive_update_rule_still_fires_asynchronously_post_commit` for the
+/// generic path.
+#[tokio::test]
+async fn reactive_task_update_rule_still_fires_asynchronously_post_commit() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+    create_play(
+        &service,
+        "reactive-on-task-update-play",
+        json!([{
+            "name": "notify-on-task-status-change",
+            // No "class" -> defaults to reactive.
+            "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "task", "property_key": "task.status" },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": { "priority": "high" }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let node = new_task_node("Ship the feature");
+    let node_id = node.id.clone();
+    service.create_node(node).await?;
+    let version = service.get_node(&node_id).await?.unwrap().version;
+
+    let updated = service
+        .update_task_node(
+            &node_id,
+            version,
+            TaskNodeUpdate::new().with_status(TaskStatus::InProgress),
+        )
+        .await?;
+    // Must NOT be synchronous for a reactive rule.
+    assert_eq!(
+        updated.priority, None,
+        "a reactive rule's effect must not be visible synchronously"
+    );
+
+    let fired = wait_until(|| {
+        let service = Arc::clone(&service);
+        let node_id = node_id.clone();
+        async move {
+            service
+                .get_node(&node_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|n| user_field(&n, "task", "priority") == Some(&json!("high")))
         }
     })
     .await;

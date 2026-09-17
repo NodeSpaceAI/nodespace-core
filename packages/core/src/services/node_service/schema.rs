@@ -2,6 +2,18 @@
 
 use super::*;
 
+/// Result of [`NodeService::update_task_node_in_tx`] — the task-node twin of
+/// `crud.rs`'s `VersionCheckedUpdateOutcome`. See that type's own doc for why
+/// a version conflict is `Ok` rather than `Err`. `Updated` is boxed simply
+/// because `TaskNode` is a large, non-`Copy` struct worth keeping off the
+/// stack when this variant is passed around — unlike `VersionCheckedUpdateOutcome`,
+/// there's no zero-size sibling variant here for the boxing to protect from
+/// paying `TaskNode`'s size (`VersionConflict(i64)` is already small).
+pub(crate) enum TaskVersionCheckedUpdateOutcome {
+    VersionConflict(i64),
+    Updated(Box<crate::models::TaskNode>),
+}
+
 impl NodeService {
     /// Query nodes by type with optional lifecycle_status filter.
     ///
@@ -263,10 +275,65 @@ impl NodeService {
         // already performs for schema-only types (ADR-076). `update_task_node`
         // is the sole call path into the store-layer write (confirmed: no other
         // caller reaches it directly), and the store layer trusts this having
-        // already run rather than re-validating itself.
+        // already run rather than re-validating itself. Read-only and schema-scoped
+        // (not node-scoped), so it's safe to run before the transaction opens below —
+        // same posture as `update_with_version_check_returning_node`'s own pre-tx checks.
         if let Some(ref status) = update.status {
             self.validate_task_status(status).await?;
         }
+
+        let service = self.clone();
+        let service_for_tx = service.clone();
+        let id_for_tx = id.to_string();
+        let outcome = service
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    service_for_tx
+                        .update_task_node_in_tx(tx, &id_for_tx, expected_version, update)
+                        .await
+                })
+            })
+            .await?;
+
+        match outcome {
+            TaskVersionCheckedUpdateOutcome::Updated(task) => Ok(*task),
+            TaskVersionCheckedUpdateOutcome::VersionConflict(actual_version) => {
+                Err(NodeServiceError::VersionConflict {
+                    node_id: id.to_string(),
+                    expected_version,
+                    actual_version,
+                })
+            }
+        }
+    }
+
+    /// Tx-scoped twin of [`Self::update_task_node`] (ADR-060 §2) — the
+    /// `update_task_node` counterpart to `crud.rs`'s
+    /// `update_with_version_check_returning_node_in_tx`. Same
+    /// read-existing → compute title → version-checked write → diff →
+    /// buffer event → synchronous invariant dispatch → re-read final state
+    /// pipeline as that method; see its own doc for why each step is
+    /// ordered the way it is (in particular, why the event is buffered
+    /// *before* dispatch, and why the final state is re-read rather than
+    /// returning the pre-dispatch snapshot — an invariant rule's action can
+    /// self-referentially write back to this same node).
+    ///
+    /// Reads `existing` and computes `title_update` from it here, inside
+    /// `tx`, rather than reusing a pre-transaction snapshot — the same
+    /// posture `update_with_version_check_returning_node_in_tx` takes, so a
+    /// concurrent write landing between a hypothetical pre-tx read and this
+    /// tx's write can never leave the title computed against stale content.
+    pub(crate) async fn update_task_node_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        id: &str,
+        expected_version: i64,
+        update: crate::models::TaskNodeUpdate,
+    ) -> Result<TaskVersionCheckedUpdateOutcome, NodeServiceError> {
+        let existing = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
 
         // Sync the indexed `title` column, mirroring the generic update path's guard
         // (`content_changed || properties_changed`, see crud.rs). A task-schema
@@ -279,18 +346,13 @@ impl NodeService {
         // (the built-in "task" schema today), compute_title falls through to
         // `strip_markdown(content)`, so a property-only update recomputes to the same
         // value — a harmless no-op write, not a behavior change.
-        let existing = self
-            .get_node(id)
-            .await?
-            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
-
         let content_changed = update
             .content
             .as_ref()
             .is_some_and(|new_content| new_content != &existing.content);
 
         let title_update = if content_changed || update.has_property_fields() {
-            let mut merged = existing;
+            let mut merged = existing.clone();
             if let Some(ref new_content) = update.content {
                 merged.content = new_content.clone();
             }
@@ -300,43 +362,82 @@ impl NodeService {
             None
         };
 
-        self.store
-            .update_task_node(id, expected_version, update, title_update)
-            .await
-            .map_err(|e| {
-                // Get the full error chain for pattern matching
-                // anyhow errors chain with context, so we need to check the full string
-                let error_msg = format!("{:#}", e); // Use alternate format for full chain
-                let root_cause = e.root_cause().to_string();
+        let result = crate::db::SqliteStore::update_task_node_with_version_check_in_tx(
+            tx.store_tx(),
+            id,
+            expected_version,
+            update,
+            title_update,
+        )
+        .await
+        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
 
-                if error_msg.contains("VersionMismatch")
-                    || root_cause.contains("VersionMismatch")
-                    || root_cause.contains("failed transaction")
-                {
-                    // A failed transaction surfaces as a "failed transaction" error.
-                    // Our only abort is for version mismatch, so treat failed transactions as OCC errors.
-                    // Note: This is a simplification - ideally the abort message would be preserved.
-                    NodeServiceError::VersionConflict {
-                        node_id: id.to_string(),
-                        expected_version,
-                        actual_version: 0, // Actual version unknown when transaction fails
-                    }
-                } else if error_msg.contains("not found")
-                    || error_msg.contains("Record not found")
-                    || error_msg.contains("$current[0].version")
-                    || root_cause.contains("not found")
-                    || root_cause.contains("$current")
-                {
-                    // The store returns various error formats for missing records
-                    // "Record not found" - explicit record error
-                    // "$current[0].version" - when the LET query returns empty and IF fails
-                    NodeServiceError::node_not_found(id)
-                } else {
-                    NodeServiceError::DatabaseError(crate::db::DatabaseError::SqlExecutionError {
-                        context: format!("Failed to update task node '{}': {}", id, e),
-                    })
-                }
-            })
+        let updated_node = match result {
+            Ok(node) => node,
+            Err(actual_version) => {
+                return Ok(TaskVersionCheckedUpdateOutcome::VersionConflict(
+                    actual_version,
+                ))
+            }
+        };
+
+        // Real changed_properties, diffed from the namespaced `properties.task.*`
+        // storage shape — see `compute_property_changes`'s own doc. Required here
+        // for the same reason it's required in the generic update path: an
+        // `_in_tx` store write bypasses the store's own notifier, so this is the
+        // only source of an accurate diff for property_changed-triggered plays
+        // (reactive or invariant) and WatchNodes consumers.
+        let changed_properties =
+            compute_property_changes(&existing.properties, &updated_node.properties);
+
+        // Buffered, not broadcast yet (`BatchState::Transactional`) — only
+        // flushed if this whole transaction commits.
+        self.emit_event(DomainEvent::NodeUpdated {
+            node_id: updated_node.id.clone(),
+            node_type: updated_node.node_type.clone(),
+            node: updated_node.clone(),
+            changed_properties: changed_properties.clone(),
+        });
+
+        // ADR-060 §2: synchronous invariant-rule dispatch for property_changed
+        // triggers, inside this same transaction — the exact gap this issue
+        // closes (a Task's `status` change is the motivating example). A
+        // rejecting rule's `Err` propagates out through the `?` below, through
+        // this whole function, and through the caller's `with_transaction`,
+        // rolling back everything above — including the buffered event.
+        self.dispatch_invariant_rules_for_update_in_tx(tx, &updated_node, &changed_properties)
+            .await?;
+
+        // Re-read the trigger node's final state, tx-consistent, rather than
+        // converting `updated_node` directly — an invariant rule's own action
+        // can be a self-referential `update_node` on the SAME node, writing a
+        // second time inside this same transaction (see
+        // `update_with_version_check_returning_node_in_tx`'s identical
+        // re-read for the full rationale).
+        let final_node = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+            .ok_or_else(|| NodeServiceError::node_not_found(id))?;
+
+        // An invariant rule's action is a generic `update_node` with no
+        // guard against changing `node_type` — unlike the rest of this
+        // pipeline, which is task-shape-preserving by construction. If a
+        // rule's own self-referential action retypes the trigger node away
+        // from "task" (a deliberately unusual thing for a rule to do, and
+        // not the shape any known rule uses today), this conversion fails
+        // and the whole transaction rolls back via the `?` below — a safe,
+        // no-partial-write outcome, just surfaced as a generic
+        // `invalid_update` rather than an invariant-specific error variant.
+        let task_node = crate::db::SqliteStore::node_to_task_node(final_node).ok_or_else(|| {
+            NodeServiceError::invalid_update(format!(
+                "Node '{}' is no longer a task node after update",
+                id
+            ))
+        })?;
+
+        Ok(TaskVersionCheckedUpdateOutcome::Updated(Box::new(
+            task_node,
+        )))
     }
 
     /// Get a schema node with strong typing
