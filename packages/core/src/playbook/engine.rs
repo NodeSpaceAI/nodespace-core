@@ -221,7 +221,51 @@ impl PlaybookEngine {
     /// restart and then, on first trigger, disable its *entire* play (not
     /// just the offending rule): the async reactive dispatch loop treats any
     /// `ActionResult::Failed` the same, and `execute_reject` always fails.
+    /// Rebuild the lifecycle manager's `extends` ancestry cache (ADR-078).
+    ///
+    /// The manager itself has no store access, so the walk happens here and
+    /// the result is handed over. Every extending type gets an entry; an
+    /// unextended type gets none, and `ancestors_of` treats an absent entry as
+    /// "just itself" — so this is empty, and costs nothing, until a schema
+    /// declares `extends`.
+    ///
+    /// Rebuilt wholesale rather than diffed: `extends` edits are rare,
+    /// administrative operations, and the map holds one entry per extending
+    /// type.
+    pub(crate) async fn refresh_ancestor_cache(&self) {
+        let parent_map = match self.node_service.store().get_extends_parent_map().await {
+            Ok(map) => map,
+            Err(e) => {
+                // A failed refresh leaves the previous cache in place. Stale
+                // ancestry can only mean a base-scoped Play misses a
+                // newly-extending type until the next schema write, which is
+                // preferable to dropping every Play's subtype matching.
+                warn!("Failed to refresh extends ancestry cache: {}", e);
+                return;
+            }
+        };
+
+        let cache: std::collections::HashMap<String, Vec<String>> = parent_map
+            .keys()
+            .map(|child| {
+                let lookup = |id: &str| parent_map.get(id).cloned();
+                (
+                    child.clone(),
+                    crate::schema::extends_chain::resolve_ancestor_chain(child, &lookup),
+                )
+            })
+            .collect();
+
+        let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+        lifecycle.set_ancestor_cache(cache);
+    }
+
     async fn load_active_plays(&self) -> anyhow::Result<()> {
+        // Ancestry must be warm before any event is dispatched, or a
+        // base-scoped Play would silently miss subtype events until the first
+        // schema write of the process.
+        self.refresh_ancestor_cache().await;
+
         let nodes = self
             .node_service
             .query_nodes_by_type("play", Some("active"))
@@ -299,6 +343,18 @@ impl PlaybookEngine {
             } if node_type == "schema" => {
                 self.handle_schema_updated(node_id).await;
                 return;
+            }
+            // A newly created schema may declare `extends`, and a deleted one
+            // may remove an edge — neither arrives as NodeUpdated, so the
+            // drift hook above would never see them and the ancestry cache
+            // would stay stale until some unrelated schema edit. Refresh, but
+            // don't return: schema creation/deletion is not itself drift, and
+            // a Play may legitimately trigger on it.
+            DomainEvent::NodeCreated { node_type, .. } if node_type == "schema" => {
+                self.refresh_ancestor_cache().await;
+            }
+            DomainEvent::NodeDeleted { node_type, .. } if node_type == "schema" => {
+                self.refresh_ancestor_cache().await;
             }
             _ => {}
         }
@@ -756,6 +812,13 @@ impl PlaybookEngine {
 
     /// Handle a schema node being updated — check for version drift.
     async fn handle_schema_updated(&self, schema_node_id: &str) {
+        // A schema write may have added, re-targeted or removed an `extends`
+        // edge, which changes what a base-scoped Play matches. Rebuild the
+        // ancestry cache before the drift check below, so this hook cannot
+        // return early (a schema node missing `forNodeType`, say) and leave
+        // the cache stale.
+        self.refresh_ancestor_cache().await;
+
         match self.node_service.get_node(schema_node_id).await {
             Ok(Some(node)) => {
                 // Extract schema_node_type and version from the schema node
