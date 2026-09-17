@@ -52,7 +52,17 @@ export function readHsl(block: string, token: string): Hsl {
   return { h: Number(match[1]), s: Number(match[2]), l: Number(match[3]) };
 }
 
-/** Returns 0-1 channels, as `luminance` expects. */
+/**
+ * Returns 0-1 channels, as `luminance` expects.
+ *
+ * Exported alongside `contrast` rather than kept private even though both
+ * current callers only want the ratio: these are the two WCAG primitives the
+ * ratio is built from, and an assertion about a single color — "is this surface
+ * light or dark", a non-ratio threshold — needs the luminance without the
+ * comparison. Keeping them named and documented here is the point of the
+ * module; hiding them would only push the next such test back to a local copy,
+ * which is what this file exists to stop.
+ */
 export function hslToRgb({ h, s, l }: Hsl): [number, number, number] {
   const sat = s / 100;
   const lig = l / 100;
