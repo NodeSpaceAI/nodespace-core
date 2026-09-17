@@ -568,6 +568,26 @@ async function handleRequest(req: Request): Promise<Response> {
     }
   }
 
+  // POST /api/query/execute
+  if (method === 'POST' && pathname === '/api/query/execute') {
+    try {
+      const body = await req.json() as Record<string, unknown>;
+      const request = {
+        targetType: body.targetType,
+        filtersJson: body.filtersJson ?? null,
+        sortingJson: body.sortingJson ?? null,
+        limit: body.limit ?? 0
+      };
+      const res = await call<typeof request, { nodes: ProtoNodeData[] }>(
+        (nodeClient as unknown as Record<string, Function>).executeQuery,
+        request
+      );
+      return json((res.nodes ?? []).map(nodeDataToApiNode));
+    } catch (err) {
+      return grpcError(err as grpc.ServiceError);
+    }
+  }
+
   // POST /api/mentions
   if (method === 'POST' && pathname === '/api/mentions') {
     try {

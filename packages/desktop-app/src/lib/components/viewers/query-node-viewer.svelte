@@ -42,9 +42,7 @@
     parseViewConfig,
     mergeViewConfig,
     buildMaterializedProperties,
-    executeQueryDefinition,
     shouldShowCreatedNode,
-    unevaluableFilters,
     type QueryViewKind,
     type QueryViewConfigState,
     type ViewerMode
@@ -150,21 +148,17 @@
   }));
 
   /**
-   * A visible note when client-side execution can't be fully faithful — the
-   * fetch was capped, or the saved definition has filters that can't be
-   * evaluated here (parent/children relationships need graph traversal). Keeps
-   * the result honest rather than silently under- or over-returning.
+   * A visible note when the displayed set is only part of the answer.
+   *
+   * Now that `QueryService` executes the query, filters are applied in SQL —
+   * including the parent/children relationship filters that used to need a
+   * caveat here, because they could not be evaluated from a single node. What
+   * remains is the row cap: an uncapped saved query, or a default type view,
+   * pulls at most FETCH_LIMIT rows.
    */
-  const executionCaveat = $derived.by((): string | null => {
-    const notes: string[] = [];
-    if (fetchCapped) notes.push(`showing the first ${FETCH_LIMIT} nodes of this type`);
-    if (mode === 'saved' && unevaluableFilters(currentDefinition.filters).length > 0) {
-      notes.push(
-        'relationship filters (parent/children) can’t be applied here, so results may be broader than the saved query'
-      );
-    }
-    return notes.length > 0 ? notes.join('; ') : null;
-  });
+  const executionCaveat = $derived.by((): string | null =>
+    fetchCapped ? `showing the first ${FETCH_LIMIT} nodes of this type` : null
+  );
 
   // Load the backing node and execute the query on mount. pane-content remounts
   // this viewer via {#key ...nodeId} when the tab's nodeId changes, so this is a
@@ -247,15 +241,24 @@
         schemaNode = await safeGetSchema(targetType);
         if (loadId !== currentLoadId) return;
 
-        const nodes = await backendAdapter.queryNodes({ nodeType: targetType, limit: FETCH_LIMIT });
+        // Execute the definition on the backend: QueryService applies the
+        // filters, the ordering and the limit in SQL. The definition's own
+        // `limit` wins when it has one; otherwise cap the pull like the default
+        // view does, so an unlimited saved query can't stream an entire type.
+        const nodes = await backendAdapter.executeQuery({
+          targetType,
+          filters: definition.filters,
+          sorting: definition.sorting,
+          limit: definition.limit ?? FETCH_LIMIT
+        });
         if (loadId !== currentLoadId) return;
         if (sharedNodeStore.currentEpoch() !== epoch) return;
-        fetchCapped = nodes.length >= FETCH_LIMIT;
+        // Only a *capped* result is a partial answer worth flagging. A query
+        // that asked for its own limit and got it is complete by definition.
+        fetchCapped = definition.limit === undefined && nodes.length >= FETCH_LIMIT;
         const databaseSource = { type: 'database' as const, reason: 'query-node-viewer saved query' };
-        // Hydrate the fetched (unfiltered-by-property) set, then execute the
-        // definition client-side — queryNodes only filters by nodeType.
         for (const node of nodes) sharedNodeStore.setNode(node, databaseSource);
-        loadedNodeIds = executeQueryDefinition(nodes, definition).map((n) => n.id);
+        loadedNodeIds = nodes.map((n) => n.id);
         queryState = 'success';
         log.debug('Saved query executed', { nodeId: id, targetType, count: loadedNodeIds.length });
         return;
@@ -449,14 +452,15 @@
   }
 
   async function handleQueryPreview(definition: QueryDefinition): Promise<number> {
-    // queryNodes only filters by nodeType, so apply the definition's filters
-    // (and sort/limit) client-side — the same path the saved query executes —
-    // otherwise the preview reports the whole-type count regardless of filters.
-    const nodes = await backendAdapter.queryNodes({
-      nodeType: definition.targetType,
-      limit: FETCH_LIMIT,
+    // Run the definition through the same backend path the saved query uses, so
+    // the previewed count is the count the query will actually return. Sorting
+    // is irrelevant to a count, but the filters and limit are not.
+    const nodes = await backendAdapter.executeQuery({
+      targetType: definition.targetType,
+      filters: definition.filters,
+      limit: definition.limit ?? FETCH_LIMIT,
     });
-    return executeQueryDefinition(nodes, definition).length;
+    return nodes.length;
   }
 
   function handleQueryCancel(): void {

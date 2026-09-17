@@ -11,9 +11,9 @@ use crate::types::{
 use chrono::{DateTime, Utc};
 use nodespace_proto::nodespace::{
     ChildMove, CreateMentionRequest, CreateNodeRequest, CreateRelationshipRequest,
-    DeleteMentionRequest, DeleteNodeRequest, DeleteRelationshipRequest, FindDuplicateRequest,
-    GetChildrenRequest, GetChildrenTreeRequest, GetNodeRelationshipsRequest, GetNodeRequest,
-    GetSchemaDefinitionRequest, MentionAutocompleteRequest, MentionTargetRequest,
+    DeleteMentionRequest, DeleteNodeRequest, DeleteRelationshipRequest, ExecuteQueryRequest,
+    FindDuplicateRequest, GetChildrenRequest, GetChildrenTreeRequest, GetNodeRelationshipsRequest,
+    GetNodeRequest, GetSchemaDefinitionRequest, MentionAutocompleteRequest, MentionTargetRequest,
     MoveChildrenToParentRequest, MoveNodeRequest, NodeData, NodeResponse, NodeSortOrder,
     OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest, ReorderNodeRequest,
     UpdateNodeRequest, UpdateRelationshipPropertiesRequest, UpdateTaskNodeRequest,
@@ -769,6 +769,55 @@ pub async fn query_nodes_simple(
             // stable, which is a strict improvement over the prior
             // unordered behavior.
             order_by: NodeSortOrder::Unspecified as i32,
+        }))
+        .await
+        .map_err(status_to_command_error)?;
+
+    let nodes: Result<Vec<Node>, CommandError> = resp
+        .into_inner()
+        .nodes
+        .into_iter()
+        .map(proto_node_data_to_node)
+        .collect();
+
+    nodes_to_typed_values(nodes?)
+}
+
+/// Arguments for [`execute_query`], mirroring proto `ExecuteQueryRequest`.
+///
+/// `filters_json` / `sorting_json` stay JSON strings the whole way down: the
+/// shape is defined once by serde in `query_ops` (`AgentFilterItem` /
+/// `AgentSortItem`), and a filter's free-form `value` has no natural proto
+/// representation. Re-modeling it here would be a third copy to keep in step.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteQueryArgs {
+    pub target_type: String,
+    pub filters_json: Option<String>,
+    pub sorting_json: Option<String>,
+    /// 0 = unset; the daemon applies its own default and clamp.
+    #[serde(default)]
+    pub limit: u32,
+}
+
+/// Execute a structured query through the backend's `QueryService`.
+///
+/// Unlike [`query_nodes_simple`], which scopes by type/text and cannot order,
+/// this carries property filters with comparison operators and the caller's
+/// sort configuration. Saved queries run here so their semantics have one
+/// implementation rather than a re-derived copy in the frontend.
+#[tauri::command]
+pub async fn execute_query(
+    client: State<'_, GrpcClient>,
+    request: ExecuteQueryArgs,
+) -> Result<Vec<Value>, CommandError> {
+    let mut c = client.client().await;
+    let resp = c
+        .execute_query(Request::new(ExecuteQueryRequest {
+            target_type: request.target_type,
+            filters_json: request.filters_json,
+            sorting_json: request.sorting_json,
+            limit: request.limit,
         }))
         .await
         .map_err(status_to_command_error)?;

@@ -1,8 +1,13 @@
 /**
  * Unit tests for the query-node viewer model helpers (query-node-model.ts) —
  * the default-vs-saved branch decision, definition/view-config parsing, the
- * materialize payload shape, and client-side query execution (filter/sort/limit)
- * behind query-node-viewer.svelte.
+ * materialize payload shape, and the single-node filter evaluation behind
+ * query-node-viewer.svelte's live-append gate.
+ *
+ * Executing a query is the backend's job (QueryService), so there is no
+ * filter/sort/limit executor here to test. Sort semantics — notably the
+ * task.priority urgency rank — are covered on the Rust side, and the encoding
+ * that carries a sort there is covered in tests/services/adapter-core.test.ts.
  *
  * Follows the project pattern of testing extracted logic functions directly
  * (not rendering Svelte components).
@@ -21,10 +26,6 @@ import {
   mergeViewConfig,
   buildMaterializedProperties,
   matchesFilter,
-  applyFilters,
-  applySorting,
-  unevaluableFilters,
-  executeQueryDefinition,
   shouldShowCreatedNode,
 } from '$lib/components/query/query-node-model';
 
@@ -213,7 +214,7 @@ describe('matchesFilter', () => {
     ).toBe(false);
   });
 
-  it('evaluates node-local relationship filters and passes through graph ones', () => {
+  it('evaluates node-local relationship filters and declines graph ones', () => {
     const withRels = node('n2', { mentions: ['m1'], mentionedIn: [{ id: 'src', title: null, nodeType: 'text' }] });
     expect(
       matchesFilter(withRels, { type: 'relationship', operator: 'exists', relationshipType: 'mentions', nodeId: 'm1' })
@@ -221,121 +222,15 @@ describe('matchesFilter', () => {
     expect(
       matchesFilter(withRels, { type: 'relationship', operator: 'exists', relationshipType: 'mentioned_by', nodeId: 'src' })
     ).toBe(true);
-    // parent/children can't be evaluated from a single node → pass-through (true)
+    // parent/children need graph traversal the node doesn't carry. Unverifiable
+    // is not matching: declining keeps a node the query may exclude out of the
+    // view until the next load, where the backend evaluates it in SQL.
     expect(
       matchesFilter(withRels, { type: 'relationship', operator: 'exists', relationshipType: 'parent', nodeId: 'x' })
-    ).toBe(true);
-  });
-});
-
-describe('applyFilters', () => {
-  const nodes = [
-    node('a', { properties: { status: 'open' } }),
-    node('b', { properties: { status: 'closed' } }),
-    node('c', { properties: { status: 'open' } }),
-  ];
-
-  it('returns all nodes when there are no filters', () => {
-    expect(applyFilters(nodes, [])).toHaveLength(3);
-  });
-
-  it('ANDs multiple filters', () => {
-    const result = applyFilters(nodes, [
-      { type: 'property', operator: 'equals', property: 'status', value: 'open' },
-    ]);
-    expect(result.map((n) => n.id)).toEqual(['a', 'c']);
-  });
-});
-
-describe('applySorting', () => {
-  it('sorts ascending and descending by a property', () => {
-    const nodes = [
-      node('a', { properties: { amount: 30 } }),
-      node('b', { properties: { amount: 10 } }),
-      node('c', { properties: { amount: 20 } }),
-    ];
-    expect(applySorting(nodes, [{ field: 'amount', direction: 'asc' }]).map((n) => n.id)).toEqual([
-      'b',
-      'c',
-      'a',
-    ]);
-    expect(applySorting(nodes, [{ field: 'amount', direction: 'desc' }]).map((n) => n.id)).toEqual([
-      'a',
-      'c',
-      'b',
-    ]);
-  });
-
-  // Priority is an enum whose alphabetical order (`high, highest, low, lowest,
-  // medium`) is meaningless, so it sorts by urgency rank instead. This mirrors
-  // TaskPriority::rank() and compare_priority_values in the Rust query service;
-  // saved queries sort here on the client, so the two must agree.
-  describe('task priority ranking', () => {
-    const byPriority = (...priorities: string[]) =>
-      priorities.map((p) => node(p, { properties: { priority: p } }));
-
-    const sortedIds = (
-      nodes: ReturnType<typeof byPriority>,
-      direction: 'asc' | 'desc' = 'asc',
-      type = 'task'
-    ) => applySorting(nodes, [{ field: 'priority', direction }], type).map((n) => n.id);
-
-    it('sorts ascending by urgency rank, not alphabetically', () => {
-      const nodes = byPriority('low', 'highest', 'medium', 'lowest', 'high');
-      expect(sortedIds(nodes)).toEqual(['highest', 'high', 'medium', 'low', 'lowest']);
-    });
-
-    it('reverses the rank when descending', () => {
-      const nodes = byPriority('medium', 'lowest', 'highest', 'high', 'low');
-      expect(sortedIds(nodes, 'desc')).toEqual(['lowest', 'low', 'medium', 'high', 'highest']);
-    });
-
-    it('places user-defined values after all core values, lexicographically', () => {
-      const nodes = byPriority('critical', 'low', 'highest', 'blocker', 'medium');
-      expect(sortedIds(nodes)).toEqual(['highest', 'medium', 'low', 'blocker', 'critical']);
-    });
-
-    it('sorts an absent priority first, matching SQL NULL ordering', () => {
-      const nodes = [
-        node('low', { properties: { priority: 'low' } }),
-        node('none', { properties: {} }),
-        node('highest', { properties: { priority: 'highest' } }),
-      ];
-      expect(sortedIds(nodes)).toEqual(['none', 'highest', 'low']);
-    });
-
-    it('does not apply the task rank to other target types', () => {
-      // project.priority is a separate scale, and a wildcard query spans types
-      // whose priorities are not comparable — both fall back to plain ordering,
-      // exactly as resolve_order_field does in the backend.
-      const nodes = byPriority('low', 'highest', 'medium');
-      expect(sortedIds(nodes, 'asc', 'project')).toEqual(['highest', 'low', 'medium']);
-      expect(sortedIds(nodes, 'asc', '*')).toEqual(['highest', 'low', 'medium']);
-    });
-  });
-});
-
-describe('executeQueryDefinition', () => {
-  const nodes = [
-    node('a', { properties: { status: 'open', amount: 30 } }),
-    node('b', { properties: { status: 'closed', amount: 10 } }),
-    node('c', { properties: { status: 'open', amount: 20 } }),
-    node('d', { properties: { status: 'open', amount: 5 } }),
-  ];
-
-  it('filters, sorts, then limits', () => {
-    const def: QueryDefinition = {
-      targetType: 'invoice',
-      filters: [{ type: 'property', operator: 'equals', property: 'status', value: 'open' }],
-      sorting: [{ field: 'amount', direction: 'asc' }],
-      limit: 2,
-    };
-    expect(executeQueryDefinition(nodes, def).map((n) => n.id)).toEqual(['d', 'c']);
-  });
-
-  it('returns everything for an empty definition', () => {
-    const def: QueryDefinition = { targetType: 'invoice', filters: [] };
-    expect(executeQueryDefinition(nodes, def)).toHaveLength(4);
+    ).toBe(false);
+    expect(
+      matchesFilter(withRels, { type: 'relationship', operator: 'exists', relationshipType: 'children', nodeId: 'x' })
+    ).toBe(false);
   });
 });
 
@@ -343,41 +238,6 @@ describe('title constants', () => {
   it('exposes the default and materialized titles', () => {
     expect(DEFAULT_QUERY_TITLE).toBe('Default');
     expect(MATERIALIZED_QUERY_TITLE).toBe('Untitled Query');
-  });
-});
-
-describe('unevaluableFilters', () => {
-  const mentions: QueryFilter = {
-    type: 'relationship',
-    operator: 'equals',
-    relationshipType: 'mentions',
-    nodeId: 'n1'
-  };
-  const child: QueryFilter = {
-    type: 'relationship',
-    operator: 'equals',
-    relationshipType: 'children',
-    nodeId: 'n1'
-  };
-  const parent: QueryFilter = {
-    type: 'relationship',
-    operator: 'equals',
-    relationshipType: 'parent',
-    nodeId: 'n1'
-  };
-  const prop: QueryFilter = { type: 'property', operator: 'equals', property: 'status', value: 'open' };
-
-  it('flags only parent/children relationship filters (graph traversal not on the node)', () => {
-    expect(unevaluableFilters([parent, child]).length).toBe(2);
-  });
-
-  it('treats mentions / mentioned_by and property/content filters as evaluable', () => {
-    expect(unevaluableFilters([mentions, prop])).toEqual([]);
-  });
-
-  it('returns [] for no filters', () => {
-    expect(unevaluableFilters(undefined)).toEqual([]);
-    expect(unevaluableFilters([])).toEqual([]);
   });
 });
 
