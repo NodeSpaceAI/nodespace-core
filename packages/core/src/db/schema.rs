@@ -161,7 +161,27 @@ CREATE INDEX IF NOT EXISTS idx_conflict_participant_node ON conflict_participant
 
 /// Create the full schema on `conn`. Idempotent: safe to call on a database
 /// this build already created.
-pub async fn create_schema(conn: &libsql::Connection) -> Result<()> {
+///
+/// Runs the whole thing — every `CREATE TABLE`/`CREATE INDEX` in
+/// [`SCHEMA_SQL`], the FTS5 table and its triggers, the vec0 table, and the
+/// closing `ANALYZE` — inside one `BEGIN IMMEDIATE` / `COMMIT`. Two things
+/// this closes:
+///
+/// - `BEGIN IMMEDIATE` takes the write lock up front rather than lazily on
+///   first write, so a second connection racing to create the same fresh
+///   schema (see `DatabaseManager::get_or_open` in the daemon, which
+///   explicitly allows two concurrent callers to each open a writer and
+///   race here) blocks — subject to `busy_timeout`, now set before any
+///   other pragma on this connection — instead of interleaving with this
+///   transaction statement-by-statement.
+/// - Without an explicit transaction, `create_schema` was a sequence of
+///   separate autocommit statements: `relationship` could commit, and
+///   THEN a differently-timed statement on some other connection could
+///   observe it, before every index on it had committed too. Wrapping the
+///   whole sequence means every other connection sees either none of this
+///   schema or all of it — never a table with some of its indexes (or, on
+///   a from-scratch table, some of its columns) missing.
+async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
     // Naive `;`-splitting is safe ONLY because SCHEMA_SQL is plain CREATE
     // TABLE/INDEX statements with no semicolons inside string literals,
     // comments, or multi-statement bodies. Triggers and virtual tables are
@@ -248,4 +268,39 @@ pub async fn create_schema(conn: &libsql::Connection) -> Result<()> {
         .context("Failed to ANALYZE after creating schema")?;
 
     Ok(())
+}
+
+/// Entry point: run [`create_schema_body`] inside one `BEGIN IMMEDIATE` /
+/// `COMMIT` on `conn`. See [`create_schema_body`]'s doc comment for why.
+///
+/// `BEGIN IMMEDIATE` rather than a bare `BEGIN`/`conn.transaction()` (which
+/// would be `BEGIN DEFERRED`): deferred acquires the write lock lazily, on
+/// this transaction's first write, so two racing connections could both get
+/// past their first few statements before either actually blocks. Immediate
+/// takes it up front, so the loser blocks (subject to `busy_timeout`) before
+/// executing anything at all.
+///
+/// On any failure, rolls back before returning the error — this connection
+/// is the store's one long-lived writer, so leaving an open transaction on
+/// it would make every subsequent write on the connection fail with "cannot
+/// start a transaction within a transaction" for the rest of the process's
+/// life.
+pub async fn create_schema(conn: &libsql::Connection) -> Result<()> {
+    conn.execute("BEGIN IMMEDIATE", ())
+        .await
+        .context("Failed to begin schema-creation transaction")?;
+
+    match create_schema_body(conn).await {
+        Ok(()) => conn
+            .execute("COMMIT", ())
+            .await
+            .context("Failed to commit schema-creation transaction")
+            .map(|_| ()),
+        Err(e) => {
+            // Best-effort: if the rollback itself fails, the original DDL
+            // error is what the caller needs to see, not the rollback's.
+            let _ = conn.execute("ROLLBACK", ()).await;
+            Err(e)
+        }
+    }
 }
