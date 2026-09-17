@@ -204,9 +204,64 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
                 },
             ],
             // A task's assignee is the derived inverse of person's `tasks`
-            // relationship declaration below (mirrors project ↔ task); task
-            // carries no relationships entry of its own.
-            relationships: vec![],
+            // relationship declaration below (mirrors project ↔ task), and its
+            // project the inverse of project's `tasks`; neither needs an entry
+            // here. What task does declare is the task↔task links every
+            // work-tracking tool treats as first-class: dependency (blocks),
+            // a weak association (relates_to), and duplication (duplicates).
+            //
+            // All three are self-referential — the declaration edge is a
+            // task→task self-edge, so both the forward and reverse name land
+            // on the same node type. All are Many/Many and optional: absence
+            // is the common case, and a task can block several others while
+            // being blocked by several itself. Cycles (A blocks B blocks A)
+            // are representable; nothing here validates against them, matching
+            // every other non-`extends` relationship.
+            //
+            // None of these names belong in BUILTIN_RELATIONSHIP_NAMES: that
+            // list is the built-in STRUCTURAL edges (member_of, has_child,
+            // mentions, has_role) that declaration queries exclude, and a
+            // schema-declared name resolves through the ordinary resolver
+            // instead — same as project's `tasks`.
+            relationships: vec![
+                SchemaRelationship {
+                    name: "blocks".to_string(),
+                    target_type: Some("task".to_string()),
+                    direction: RelationshipDirection::Out,
+                    cardinality: RelationshipCardinality::Many,
+                    required: None,
+                    reverse_name: "blocked_by".to_string(),
+                    reverse_cardinality: RelationshipCardinality::Many,
+                    edge_fields: None,
+                    description: Some(
+                        "Tasks that cannot start/complete until this task is done".to_string(),
+                    ),
+                },
+                SchemaRelationship {
+                    name: "relates_to".to_string(),
+                    target_type: Some("task".to_string()),
+                    direction: RelationshipDirection::Out,
+                    cardinality: RelationshipCardinality::Many,
+                    required: None,
+                    reverse_name: "related_from".to_string(),
+                    reverse_cardinality: RelationshipCardinality::Many,
+                    edge_fields: None,
+                    description: Some(
+                        "Tasks this task is related to, with no directional dependency".to_string(),
+                    ),
+                },
+                SchemaRelationship {
+                    name: "duplicates".to_string(),
+                    target_type: Some("task".to_string()),
+                    direction: RelationshipDirection::Out,
+                    cardinality: RelationshipCardinality::Many,
+                    required: None,
+                    reverse_name: "duplicated_by".to_string(),
+                    reverse_cardinality: RelationshipCardinality::Many,
+                    edge_fields: None,
+                    description: Some("The task(s) this task duplicates".to_string()),
+                },
+            ],
             title_template: None,
             properties_header_summary_template: None,
         },
@@ -1328,17 +1383,36 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             // A person has many tasks; the inverse (a task's single assignee)
             // is derived from this declaration, so `task` needs no entry of
             // its own. Mirrors project's `tasks` relationship below.
-            relationships: vec![SchemaRelationship {
-                name: "tasks".to_string(),
-                target_type: Some("task".to_string()),
-                direction: RelationshipDirection::Out,
-                cardinality: RelationshipCardinality::Many,
-                required: None,
-                reverse_name: "assignee".to_string(),
-                reverse_cardinality: RelationshipCardinality::One,
-                edge_fields: None,
-                description: Some("Tasks assigned to this person".to_string()),
-            }],
+            //
+            // `reported_tasks` is the same shape under a distinct name: who
+            // filed the task, which is independent of who it was assigned to
+            // (often nobody, and often not the same person).
+            relationships: vec![
+                SchemaRelationship {
+                    name: "tasks".to_string(),
+                    target_type: Some("task".to_string()),
+                    direction: RelationshipDirection::Out,
+                    cardinality: RelationshipCardinality::Many,
+                    required: None,
+                    reverse_name: "assignee".to_string(),
+                    reverse_cardinality: RelationshipCardinality::One,
+                    edge_fields: None,
+                    description: Some("Tasks assigned to this person".to_string()),
+                },
+                SchemaRelationship {
+                    name: "reported_tasks".to_string(),
+                    target_type: Some("task".to_string()),
+                    direction: RelationshipDirection::Out,
+                    cardinality: RelationshipCardinality::Many,
+                    required: None,
+                    reverse_name: "creator".to_string(),
+                    reverse_cardinality: RelationshipCardinality::One,
+                    edge_fields: None,
+                    description: Some(
+                        "Tasks originally reported/created by this person".to_string(),
+                    ),
+                },
+            ],
             // Whitespace-collapse + trim in interpolate_title_template_with_schema
             // degrades this correctly when one or both fields are empty: one absent
             // field yields just the other; both absent yields "".
@@ -1610,7 +1684,7 @@ mod tests {
 
         let task = schemas.iter().find(|s| s.id == "task").unwrap();
         assert!(
-            task.relationships.is_empty(),
+            !task.relationships.iter().any(|r| r.name == "project"),
             "task's project link is the derived inverse, not its own declaration"
         );
     }
@@ -1621,11 +1695,17 @@ mod tests {
         let person = schemas.iter().find(|s| s.id == "person").unwrap();
 
         // person has-many tasks (as assignee); the task-side inverse is derived
-        // from this one declaration (task carries no relationships entry of its
+        // from this one declaration (task carries no `assignee` entry of its
         // own — mirrors project's `tasks` relationship).
-        assert_eq!(person.relationships.len(), 1);
-        let rel = &person.relationships[0];
-        assert_eq!(rel.name, "tasks");
+        //
+        // The count is asserted alongside the lookup so an accidental addition
+        // to person still trips a test: `tasks` and `reported_tasks`, no more.
+        assert_eq!(person.relationships.len(), 2);
+        let rel = person
+            .relationships
+            .iter()
+            .find(|r| r.name == "tasks")
+            .expect("person declares tasks");
         assert_eq!(rel.target_type.as_deref(), Some("task"));
         assert_eq!(rel.cardinality, RelationshipCardinality::Many);
         assert_eq!(rel.reverse_name, "assignee");
@@ -1633,8 +1713,67 @@ mod tests {
 
         let task = schemas.iter().find(|s| s.id == "task").unwrap();
         assert!(
-            task.relationships.is_empty(),
+            !task.relationships.iter().any(|r| r.name == "assignee"),
             "task's assignee link is the derived inverse, not its own declaration"
+        );
+    }
+
+    #[test]
+    fn test_task_declares_self_referential_link_relationships() {
+        let schemas = get_core_schemas();
+        let task = schemas.iter().find(|s| s.id == "task").unwrap();
+
+        // Exactly these three — an accidental fourth declaration on task should
+        // trip a test rather than ride along unnoticed.
+        assert_eq!(task.relationships.len(), 3);
+
+        // Every one of these is task→task, Many/Many, and optional on both ends.
+        for (name, reverse_name) in [
+            ("blocks", "blocked_by"),
+            ("relates_to", "related_from"),
+            ("duplicates", "duplicated_by"),
+        ] {
+            let rel = task
+                .relationships
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap_or_else(|| panic!("task declares {name}"));
+            assert_eq!(
+                rel.target_type.as_deref(),
+                Some("task"),
+                "{name} is self-referential"
+            );
+            assert_eq!(rel.direction, RelationshipDirection::Out);
+            assert_eq!(rel.cardinality, RelationshipCardinality::Many);
+            assert_eq!(rel.reverse_name, reverse_name);
+            assert_eq!(rel.reverse_cardinality, RelationshipCardinality::Many);
+            assert!(rel.required.is_none(), "{name} must be optional");
+            assert!(rel.edge_fields.is_none());
+        }
+    }
+
+    #[test]
+    fn test_person_declares_reported_tasks_creator_relationship() {
+        let schemas = get_core_schemas();
+        let person = schemas.iter().find(|s| s.id == "person").unwrap();
+
+        // Distinct from `tasks`/`assignee`: who filed the task, not who owns it.
+        let rel = person
+            .relationships
+            .iter()
+            .find(|r| r.name == "reported_tasks")
+            .expect("person declares reported_tasks");
+        assert_eq!(rel.target_type.as_deref(), Some("task"));
+        assert_eq!(rel.direction, RelationshipDirection::Out);
+        assert_eq!(rel.cardinality, RelationshipCardinality::Many);
+        assert_eq!(rel.reverse_name, "creator");
+        assert_eq!(rel.reverse_cardinality, RelationshipCardinality::One);
+        assert!(rel.required.is_none());
+
+        let task = schemas.iter().find(|s| s.id == "task").unwrap();
+        assert!(
+            !task.relationships.iter().any(|r| r.name == "creator"),
+            "task's creator link is the derived inverse, not its own declaration"
         );
     }
 
