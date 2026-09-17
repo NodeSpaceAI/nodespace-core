@@ -177,6 +177,32 @@ impl CelScope {
     fn resolves(&self, node_type: &str) -> bool {
         node_type != self.scope_type
     }
+
+    /// Whether the reading scope declares this field — i.e. whether a
+    /// condition authored at this scope is entitled to see it.
+    fn declares(&self, name: &str) -> bool {
+        self.scope_fields.iter().any(|f| f.name == name)
+    }
+}
+
+/// The node's own chain: its type plus the scope's ancestors, so the full
+/// stored view is assembled before projection narrows it.
+fn node_own_chain<'a>(node: &'a Node, scope: &'a CelScope) -> Vec<&'a str> {
+    let mut chain: Vec<&str> = vec![node.node_type.as_str()];
+    for ancestor in &scope.chain {
+        if ancestor != &node.node_type {
+            chain.push(ancestor.as_str());
+        }
+    }
+    chain
+}
+
+/// Keys the CEL map carries that are node metadata rather than schema fields.
+fn is_core_key(key: &str) -> bool {
+    matches!(
+        key,
+        "id" | "node_type" | "content" | "version" | "lifecycle_status"
+    )
 }
 
 /// A node's CEL value, projected and value-resolved at `scope`.
@@ -191,12 +217,21 @@ fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value {
         return node_to_cel_value(node);
     };
 
-    let chain: Vec<&str> = scope.chain.iter().map(String::as_str).collect();
-    let projected = node_to_cel_value_at_scope(node, &chain);
-
     if !scope.resolves(&node.node_type) {
-        return projected;
+        let chain: Vec<&str> = scope.chain.iter().map(String::as_str).collect();
+        return node_to_cel_value_at_scope(node, &chain);
     }
+
+    // Build from the NODE's own full view, then keep only what the reading
+    // scope declares — rather than reading only the scope's buckets.
+    //
+    // Which bucket a field physically lives in is not a reliable proxy for
+    // which scope owns it: extending an inherited enum materializes the field
+    // onto the extending schema, moving its storage to the subtype's bucket
+    // while it remains a field of the base. Reading the scope's buckets alone
+    // would lose exactly the fields `maps_to` exists to translate.
+    let own_chain = node_own_chain(node, scope);
+    let projected = node_to_cel_value_at_scope(node, &own_chain);
 
     let Value::Map(map) = &projected else {
         return projected;
@@ -208,6 +243,13 @@ fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value {
             out.insert(k.clone(), v.clone());
             continue;
         };
+        // Projection: a field the reading scope does not declare is absent,
+        // so a base-scoped Play cannot come to depend on a subtype's own
+        // field. Core keys (`id`, `content`, …) are not schema fields and are
+        // always kept.
+        if !is_core_key(field) && !scope.declares(field) {
+            continue;
+        }
         // Only string values carry an enum vocabulary to resolve through.
         let Value::String(stored) = v else {
             out.insert(k.clone(), v.clone());
@@ -223,10 +265,21 @@ fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value {
                 out.insert(k.clone(), Value::String(Arc::new(resolved)));
             }
             None => {
-                // Unresolvable at this scope. Non-enum fields resolve to
-                // themselves via `resolve_value_at_scope`'s first check, so
-                // reaching here means the field IS an enum whose value has no
-                // meaning at the reading scope — drop the key.
+                // `resolve_value_at_scope` returns None for EVERY string that
+                // is not a declared enum value at the reading scope — which
+                // includes every plain `string` field and the core keys
+                // (`id`, `node_type`, `content`, `lifecycle_status`) this map
+                // carries. So `None` alone does not mean "unresolvable enum".
+                //
+                // The `field_is_enum` guard below IS the mechanism that tells
+                // the two apart, not a redundant belt-and-braces check.
+                // Removing it would silently strip `node.id`, `node.content`
+                // and every string property from every base-scoped Play's
+                // environment.
+                //
+                // An enum whose value has no meaning at this scope is dropped:
+                // a condition then simply does not match, rather than
+                // comparing against a value its author never knew about.
                 if !field_is_enum(&scope.scope_fields, field) {
                     out.insert(k.clone(), v.clone());
                 }

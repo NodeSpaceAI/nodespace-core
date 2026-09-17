@@ -519,22 +519,34 @@ impl NodeService {
         &self,
         nodes: Vec<Node>,
     ) -> Result<Vec<Node>, NodeServiceError> {
-        // One cheap existence check: no `extends` edge anywhere means no node
-        // has more than its own bucket, and this is a no-op for every node.
-        let has_extends = self
+        // One query for every `extends` edge, then resolve each node's chain
+        // in memory. Doing this per node would mean a full scan of the edge
+        // table per row — 501 queries for a 500-row result, on the frontend's
+        // main read path. An empty map also answers the existence check, so
+        // this replaces the separate `has_any_extends_edge` guard rather than
+        // adding to it.
+        let parent_map = self
             .store
-            .has_any_extends_edge()
+            .get_extends_parent_map()
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        if !has_extends {
+        if parent_map.is_empty() {
             return Ok(nodes);
         }
+        let lookup = move |id: &str| parent_map.get(id).cloned();
+
+        // Chains are memoized across rows: a result set is typically a handful
+        // of distinct types over many nodes.
+        let mut chains: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
 
         let mut out = Vec::with_capacity(nodes.len());
         for mut node in nodes {
-            let chain = self.resolve_type_chain(&node.node_type).await?;
+            let chain = chains.entry(node.node_type.clone()).or_insert_with(|| {
+                crate::schema::extends_chain::resolve_ancestor_chain(&node.node_type, &lookup)
+            });
             if chain.len() > 1 {
-                node.properties = Self::collapse_properties(&node.properties, &chain);
+                node.properties = Self::collapse_properties(&node.properties, chain);
             }
             out.push(node);
         }

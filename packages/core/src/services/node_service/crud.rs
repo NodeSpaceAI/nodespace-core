@@ -256,7 +256,7 @@ impl NodeService {
             // bucket them by.
             let (fields, owners, chain) = self.resolve_field_owners(&node.node_type).await?;
             if !fields.is_empty() {
-                self.apply_schema_defaults_with_fields(&mut node, &fields)?;
+                self.apply_schema_defaults_with_fields(&mut node, &fields, Some(&chain))?;
                 node.properties =
                     Self::bucket_properties_by_owner(&node.node_type, &node.properties, &owners);
                 self.validate_node_with_fields(&node, &fields, Some(&chain))?;
@@ -871,7 +871,7 @@ impl NodeService {
                 // Defaults land in the node's own bucket, then bucketing moves
                 // any inherited one into its declaring ancestor's — so this
                 // order is load-bearing, not incidental.
-                self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
+                self.apply_schema_defaults_with_fields(&mut updated, &fields, Some(&chain))?;
                 updated.properties = Self::bucket_properties_by_owner(
                     &updated.node_type,
                     &updated.properties,
@@ -1005,7 +1005,7 @@ impl NodeService {
             // Chain-resolved, per ADR-078 — see `insert_node_in_tx_no_invariant_dispatch`.
             let (fields, owners, chain) = self.resolve_field_owners(&updated.node_type).await?;
             if !fields.is_empty() {
-                self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
+                self.apply_schema_defaults_with_fields(&mut updated, &fields, Some(&chain))?;
                 updated.properties = Self::bucket_properties_by_owner(
                     &updated.node_type,
                     &updated.properties,
@@ -1150,7 +1150,7 @@ impl NodeService {
             // Chain-resolved, per ADR-078 — see `insert_node_in_tx_no_invariant_dispatch`.
             let (fields, owners, chain) = self.resolve_field_owners(&updated.node_type).await?;
             if !fields.is_empty() {
-                self.apply_schema_defaults_with_fields(&mut updated, &fields)?;
+                self.apply_schema_defaults_with_fields(&mut updated, &fields, Some(&chain))?;
                 updated.properties = Self::bucket_properties_by_owner(
                     &updated.node_type,
                     &updated.properties,
@@ -2379,22 +2379,34 @@ impl NodeService {
         &self,
         node: &mut Node,
         fields: &[crate::models::SchemaField],
+        scope_chain: Option<&[String]>,
     ) -> Result<(), NodeServiceError> {
         // Ensure properties is an object
         if !node.properties.is_object() {
             node.properties = serde_json::json!({});
         }
 
-        // Which fields already hold a value anywhere on the node. Computed
-        // before the mutable borrow below, and across all buckets so an
-        // inherited value counts as present.
+        // Which fields already hold a value a reader will actually see.
+        //
+        // Scoped to the node's `extends` chain, matching
+        // `validate_node_with_fields` exactly. The two must agree on what
+        // "present" means: if defaulting counted a dormant bucket (left by an
+        // earlier `node_type` change) but validation did not, a defaulted
+        // field would be suppressed as already-present and then read as
+        // absent — leaving the node with no value and no error, since a field
+        // with a default never trips the required check.
+        //
+        // Computed before the mutable borrow below.
+        let own_chain = std::slice::from_ref(&node.node_type);
+        let chain = scope_chain.unwrap_or(own_chain);
         let already_present: std::collections::HashSet<String> = node
             .properties
             .as_object()
             .map(|obj| {
-                obj.iter()
-                    .filter(|(k, _)| !k.starts_with('_'))
-                    .filter_map(|(_, v)| v.as_object())
+                chain
+                    .iter()
+                    .filter_map(|scope| obj.get(scope.as_str()))
+                    .filter_map(|v| v.as_object())
                     .flat_map(|bucket| bucket.keys().cloned())
                     .collect()
             })

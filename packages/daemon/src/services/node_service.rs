@@ -319,7 +319,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(NodeResponse {
             node_id: req.node_id,
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -669,7 +669,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        let nodes: Vec<NodeData> = children.into_iter().map(node_to_proto).collect();
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, children).await?;
 
         let count = nodes.len() as i32;
 
@@ -727,7 +727,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        let nodes: Vec<NodeData> = roots.into_iter().map(node_to_proto).collect();
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, roots).await?;
         let count = nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -930,16 +930,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        // Collapse each node's inherited buckets into its own, so the CLI and
-        // the wire flattener — neither of which can resolve an `extends`
-        // chain — still see the whole effective property set from one bucket.
-        let nodes = this
-            .node_service
-            .collapse_chain_for_wire(nodes)
-            .await
-            .map_err(service_error_to_status)?;
-
-        let proto_nodes: Vec<NodeData> = nodes.into_iter().map(node_to_proto).collect();
+        let proto_nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, nodes).await?;
         let count = proto_nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -1035,16 +1026,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        // Collapse each node's inherited buckets into its own, so the CLI and
-        // the wire flattener — neither of which can resolve an `extends`
-        // chain — still see the whole effective property set from one bucket.
-        let nodes = this
-            .node_service
-            .collapse_chain_for_wire(nodes)
-            .await
-            .map_err(service_error_to_status)?;
-
-        let proto_nodes: Vec<NodeData> = nodes.into_iter().map(node_to_proto).collect();
+        let proto_nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, nodes).await?;
         let count = proto_nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -1073,16 +1055,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        // Collapse each node's inherited buckets into its own, so the CLI and
-        // the wire flattener — neither of which can resolve an `extends`
-        // chain — still see the whole effective property set from one bucket.
-        let nodes = this
-            .node_service
-            .collapse_chain_for_wire(nodes)
-            .await
-            .map_err(service_error_to_status)?;
-
-        let proto_nodes: Vec<NodeData> = nodes.into_iter().map(node_to_proto).collect();
+        let proto_nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, nodes).await?;
         let count = proto_nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -1194,7 +1167,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .await
             .map_err(service_error_to_status)?;
 
-        let children_proto = updated.into_iter().map(node_to_proto).collect();
+        let children_proto = nodes_to_proto(&this.node_service, updated).await?;
 
         Ok(Response::new(MoveChildrenToParentResponse {
             children: children_proto,
@@ -1654,7 +1627,7 @@ impl GrpcNodeService for NodeServiceImpl {
             .cloned()
             .collect();
 
-        let nodes: Vec<NodeData> = fetched.into_iter().map(node_to_proto).collect();
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, fetched).await?;
         let count = nodes.len() as i32;
 
         Ok(Response::new(GetNodesBatchResponse {
@@ -1943,7 +1916,7 @@ impl GrpcNodeService for NodeServiceImpl {
         .await
         .map_err(ops_error_to_status)?;
 
-        let nodes: Vec<NodeData> = output.members.into_iter().map(node_to_proto).collect();
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, output.members).await?;
         let count = nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -1968,7 +1941,7 @@ impl GrpcNodeService for NodeServiceImpl {
         .await
         .map_err(ops_error_to_status)?;
 
-        let nodes: Vec<NodeData> = output.members.into_iter().map(node_to_proto).collect();
+        let nodes: Vec<NodeData> = nodes_to_proto(&this.node_service, output.members).await?;
         let count = nodes.len() as i32;
 
         Ok(Response::new(NodeListResponse {
@@ -2328,6 +2301,37 @@ async fn fetch_node(service: &Arc<CoreNodeService>, node_id: &str) -> Result<Nod
         .await
         .map_err(service_error_to_status)?
         .ok_or_else(|| Status::not_found(format!("Node not found: {}", node_id)))
+}
+
+/// Convert nodes to proto, collapsing each one's `extends` chain first.
+///
+/// **This is the only correct way to put a node on the wire** (ADR-078). The
+/// CLI and the wire flattener both flatten a single bucket and have no store
+/// access, so an extending node reaches them missing every inherited field
+/// unless its chain has been collapsed into its own bucket first.
+///
+/// `node_to_proto` remains for the handful of sites that genuinely have no
+/// `NodeService` in scope; everything with one should call this. Wiring the
+/// collapse per call site is what let `get_node`, `get_children` and
+/// `get_roots` silently drop inherited fields in the first place.
+pub(crate) async fn nodes_to_proto(
+    service: &Arc<CoreNodeService>,
+    nodes: Vec<Node>,
+) -> Result<Vec<NodeData>, Status> {
+    let collapsed = service
+        .collapse_chain_for_wire(nodes)
+        .await
+        .map_err(service_error_to_status)?;
+    Ok(collapsed.into_iter().map(node_to_proto).collect())
+}
+
+/// Single-node form of [`nodes_to_proto`].
+pub(crate) async fn node_to_proto_collapsed(
+    service: &Arc<CoreNodeService>,
+    node: Node,
+) -> Result<NodeData, Status> {
+    let mut out = nodes_to_proto(service, vec![node]).await?;
+    Ok(out.remove(0))
 }
 
 pub(crate) fn node_to_proto(node: Node) -> NodeData {

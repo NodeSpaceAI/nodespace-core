@@ -1241,3 +1241,231 @@ pub(crate) fn trigger_node_id(event: &DomainEvent) -> Option<&str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod scope_tests {
+    //! CEL evaluation at a Play's registered trigger scope (ADR-078).
+    //!
+    //! These live in-crate rather than in `tests/` because `cel_scope_for` is
+    //! `pub(crate)` — the scope is an internal contract between the engine and
+    //! the CEL evaluator, not a public API, and widening it purely for a test
+    //! would be the wrong trade.
+
+    use super::*;
+    use crate::db::SqliteStore;
+    use crate::playbook::cel::{evaluate_conditions_at_scope, ConditionResult};
+    use crate::playbook::types::{parse_rule, ParsedRule};
+    use crate::schema::{handle_create_schema, handle_update_schema};
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    async fn test_service() -> (Arc<NodeService>, TempDir) {
+        let temp_dir = TempDir::new().expect("tempdir creation failed");
+        let db_path = temp_dir.path().join("test.db");
+        let mut store = Arc::new(
+            SqliteStore::new(db_path)
+                .await
+                .expect("SqliteStore init failed"),
+        );
+        let node_service = Arc::new(
+            NodeService::new(&mut store)
+                .await
+                .expect("NodeService init failed"),
+        );
+        (node_service, temp_dir)
+    }
+
+    /// `ticket.state` is extensible; `bug` extends it and adds `backlog`
+    /// mapping to `open`. `bug` also declares its own `severity`.
+    async fn seed_chain(svc: &Arc<NodeService>) {
+        handle_create_schema(
+            svc,
+            json!({
+                "name": "Ticket",
+                "fields": [{
+                    "name": "state",
+                    "type": "enum",
+                    "protection": "user",
+                    "indexed": false,
+                    "extensible": true,
+                    "coreValues": [
+                        { "value": "open", "label": "Open" },
+                        { "value": "done", "label": "Done" }
+                    ]
+                }]
+            }),
+        )
+        .await
+        .expect("ticket schema creation failed");
+
+        handle_create_schema(
+            svc,
+            json!({
+                "name": "Bug",
+                "extends": "ticket",
+                "fields": [
+                    { "name": "severity", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("bug schema creation failed");
+
+        handle_update_schema(
+            svc,
+            json!({
+                "schema_id": "bug",
+                "add_field_values": [{
+                    "field": "state",
+                    "values": [{ "value": "backlog", "label": "Backlog", "mapsTo": "open" }]
+                }]
+            }),
+        )
+        .await
+        .expect("extending the inherited enum should succeed");
+    }
+
+    fn rule_on(node_type: &str, condition: &str) -> ParsedRule {
+        let def = serde_json::from_value(json!({
+            "name": "r",
+            "trigger": { "type": "graph_event", "on": "node_created", "node_type": node_type },
+            "conditions": [condition],
+            "actions": []
+        }))
+        .expect("rule definition should parse");
+        parse_rule(&def).expect("rule should compile")
+    }
+
+    async fn eval(svc: &Arc<NodeService>, rule: &ParsedRule, node: &crate::models::Node) -> bool {
+        let scope = PlaybookEngine::cel_scope_for(svc, rule, node).await;
+        let event = DomainEvent::NodeCreated {
+            node_id: node.id.clone(),
+            node_type: node.node_type.clone(),
+        };
+        matches!(
+            evaluate_conditions_at_scope(&rule.conditions, node, &event, None, scope.as_ref())
+                .await,
+            ConditionResult::Pass
+        )
+    }
+
+    async fn make_bug(svc: &Arc<NodeService>, props: serde_json::Value) -> crate::models::Node {
+        let id = svc
+            .create_node(crate::models::Node::new(
+                "bug".to_string(),
+                "a bug".to_string(),
+                props,
+            ))
+            .await
+            .expect("bug creation failed");
+        svc.get_node(&id)
+            .await
+            .expect("get_node failed")
+            .expect("node should exist")
+    }
+
+    #[tokio::test]
+    async fn base_scoped_condition_matches_through_maps_to() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "backlog" })).await;
+
+        // A Play registered on the BASE type, written against the base's
+        // vocabulary, firing on a subtype instance storing an extended value.
+        let rule = rule_on("ticket", "node.state == 'open'");
+        assert!(
+            eval(&svc, &rule, &node).await,
+            "a ticket-scoped `state == open` should match a bug storing `backlog`"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_scoped_condition_does_not_see_the_extended_value() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "backlog" })).await;
+
+        // The other half: a base-scoped condition must not be able to depend
+        // on vocabulary its author never knew existed.
+        let rule = rule_on("ticket", "node.state == 'backlog'");
+        assert!(
+            !eval(&svc, &rule, &node).await,
+            "a ticket-scoped condition must not match the raw extended value"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_scoped_condition_sees_the_raw_value() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "backlog" })).await;
+
+        let rule = rule_on("bug", "node.state == 'backlog'");
+        assert!(
+            eval(&svc, &rule, &node).await,
+            "a bug-scoped condition reads the stored value unresolved"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_scoped_condition_cannot_see_a_subtypes_own_field() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "open", "severity": "high" })).await;
+
+        let sees_base = rule_on("ticket", "node.state == 'open'");
+        assert!(
+            eval(&svc, &sees_base, &node).await,
+            "the base's own field is visible at base scope"
+        );
+
+        // Projection: a Play on the base behaves identically whether it fired
+        // on a plain ticket or a subtype.
+        let sees_subtype = rule_on("ticket", "has(node.severity)");
+        assert!(
+            !eval(&svc, &sees_subtype, &node).await,
+            "the subtype's own field must be absent at base scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn scope_projection_preserves_core_keys_and_plain_strings() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "open", "severity": "high" })).await;
+
+        // `resolve_value_at_scope` returns None for every string that is not a
+        // declared enum value at the reading scope — which includes `id`,
+        // `content`, `node_type`. The `field_is_enum` guard is what keeps
+        // them; deleting it as "redundant" would silently strip these from
+        // every base-scoped Play, and this is what would fail.
+        for condition in [
+            "node.id != ''",
+            "node.content != ''",
+            "node.node_type == 'bug'",
+        ] {
+            let rule = rule_on("ticket", condition);
+            assert!(
+                eval(&svc, &rule, &node).await,
+                "core key must survive scope projection: {condition}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unextended_type_gets_no_scope_at_all() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+        let node = make_bug(&svc, json!({ "state": "open" })).await;
+
+        // A rule registered against the node's own type needs no projection or
+        // resolution, so the engine short-circuits before touching the store.
+        let rule = rule_on("bug", "node.state == 'open'");
+        assert!(
+            PlaybookEngine::cel_scope_for(&svc, &rule, &node)
+                .await
+                .is_none(),
+            "a rule on the node's own type resolves no scope"
+        );
+    }
+}
