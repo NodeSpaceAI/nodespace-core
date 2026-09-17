@@ -33,11 +33,12 @@ describe('MAX_QUERY_ROWS', () => {
       resolve(__dirname, '../../../../daemon/src/services/node_service.rs'),
       'utf8'
     );
-    const limits = [...source.matchAll(/MAX_(?:EXECUTE_QUERY|QUERY_NODES_SIMPLE)_LIMIT:\s*usize\s*=\s*(\d+)/g)]
-      .map((m) => Number(m[1]));
+    const match = source.match(/pub const MAX_ROW_LIMIT:\s*usize\s*=\s*(\d+)/);
 
-    expect(limits.length).toBe(2);
-    for (const limit of limits) expect(limit).toBe(MAX_QUERY_ROWS);
+    // A miss means the constant was renamed or moved — fail loudly rather than
+    // silently skipping the only check that keeps the two sides in step.
+    expect(match, 'MAX_ROW_LIMIT not found in node_service.rs').not.toBeNull();
+    expect(Number(match?.[1])).toBe(MAX_QUERY_ROWS);
   });
 });
 
