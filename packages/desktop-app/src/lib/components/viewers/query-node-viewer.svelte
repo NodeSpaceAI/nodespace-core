@@ -470,14 +470,13 @@
     // asked, and the definition's own `limit` is a display choice applied
     // afterwards. Sorting is irrelevant to a count, so it is not sent.
     //
-    // The count still saturates at the daemon's ceiling; the editor renders a
-    // full page as "N+" rather than implying an exact total.
-    const nodes = await backendAdapter.executeQuery({
+    // `countQuery` rather than `executeQuery(...).length`: the backend answers
+    // with a scalar instead of transferring every match, so the total is exact
+    // at any size rather than saturating at the response's row cap.
+    return await backendAdapter.countQuery({
       targetType: definition.targetType,
       filters: definition.filters,
-      limit: MAX_QUERY_ROWS,
     });
-    return nodes.length;
   }
 
   function handleQueryCancel(): void {

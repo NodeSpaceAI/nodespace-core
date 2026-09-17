@@ -137,6 +137,16 @@ export interface BackendAdapter {
    * the alphabetical order of its values.
    */
   executeQuery(input: ExecuteQueryInput): Promise<Node[]>;
+  /**
+   * Count what `executeQuery` would match, without transferring the matches.
+   *
+   * Takes the same input so a caller can count exactly what it would execute,
+   * but the backend ignores `sorting` and `limit`: ordering cannot change a
+   * total, and a limit would cap the very number being asked for. The result is
+   * therefore exact for any number of matches — unlike `executeQuery(...).length`,
+   * which saturates at `MAX_QUERY_ROWS`.
+   */
+  countQuery(input: ExecuteQueryInput): Promise<number>;
   mentionAutocomplete(query: string, limit?: number): Promise<Node[]>;
   /** Title-prefix search over nodes of an optional type, for the target picker. */
   searchNodesByTitle(nodeType: string | null, titleContains: string, limit?: number): Promise<Node[]>;
@@ -428,6 +438,7 @@ export const HTTP_ROUTES = {
   getMentioningContainers: (nodeId: string) => `/api/nodes/${encodeURIComponent(nodeId)}/mentions/roots`,
   queryNodes: () => '/api/query',
   executeQuery: () => '/api/query/execute',
+  countQuery: () => '/api/query/count',
   mentionAutocomplete: () => '/api/mentions/autocomplete',
   findDuplicate: () => '/api/nodes/find-duplicate',
   getAllSchemas: () => '/api/schemas',

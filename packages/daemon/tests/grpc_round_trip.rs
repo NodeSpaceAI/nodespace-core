@@ -1678,3 +1678,78 @@ async fn count_nodes_and_count_roots_report_totals_without_transferring_records(
 
     let _ = shutdown.send(());
 }
+
+/// `CountQuery` is the `ExecuteQuery` counterpart to `CountNodes`: it answers
+/// "how many nodes match these filters?" with a scalar, over the structured
+/// filter shape rather than the type/text one.
+///
+/// The `limit` assertion is the point of the RPC, not an edge case. Counting an
+/// `ExecuteQuery` response caps the answer at the rows that response carries, so
+/// the query editor's preview could only ever report "at least N". A count has
+/// to see past the limit to report a real total.
+#[tokio::test]
+async fn count_query_reports_exact_total_ignoring_limit_and_sorting() {
+    use nodespace_daemon::nodespace::ExecuteQueryRequest;
+
+    let (mut client, shutdown, _tempdir) = spawn_test_daemon().await;
+
+    const SEEDED: i64 = 6;
+    const MARKER: &str = "count-query-probe";
+    for i in 0..SEEDED {
+        client
+            .create_node(CreateNodeRequest {
+                node_type: "text".into(),
+                content: format!("{MARKER} {i}"),
+                parent_id: None,
+                properties: String::new(),
+                collections: Vec::new(),
+                collection_ids: Vec::new(),
+                lifecycle_status: None,
+                id: None,
+                position: None,
+            })
+            .await
+            .expect("create probe node");
+    }
+
+    let filters = format!(r#"[{{"type":"content","operator":"contains","value":"{MARKER}"}}]"#);
+
+    // A limit well below the true total, and a sort — neither may affect the
+    // count the daemon returns.
+    let count = client
+        .count_query(ExecuteQueryRequest {
+            target_type: "text".to_string(),
+            filters_json: Some(filters.clone()),
+            sorting_json: Some(r#"[{"field":"created_at","direction":"desc"}]"#.to_string()),
+            limit: 2,
+        })
+        .await
+        .expect("count_query failed")
+        .into_inner()
+        .count;
+    assert_eq!(
+        count, SEEDED,
+        "count_query must report the exact matching total, not saturate at the request's limit"
+    );
+
+    // And the same filters through ExecuteQuery must select the rows that were
+    // counted — the two verbs agreeing is what makes the count trustworthy.
+    let rows = client
+        .execute_query(ExecuteQueryRequest {
+            target_type: "text".to_string(),
+            filters_json: Some(filters),
+            sorting_json: None,
+            limit: 0,
+        })
+        .await
+        .expect("execute_query failed")
+        .into_inner()
+        .nodes
+        .len() as i64;
+    assert_eq!(
+        rows, count,
+        "execute_query and count_query must agree on the same filters"
+    );
+
+    let _ = shutdown.send(());
+}

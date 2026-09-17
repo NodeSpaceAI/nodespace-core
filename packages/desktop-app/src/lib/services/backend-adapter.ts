@@ -230,6 +230,14 @@ class TauriAdapter implements BackendAdapter {
     );
   }
 
+  async countQuery(input: ExecuteQueryInput): Promise<number> {
+    return withDiagnosticLogging(
+      'countQuery',
+      () => invoke<number>('count_query', { request: buildExecuteQueryWire(input) }),
+      [input]
+    );
+  }
+
   async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
     return withDiagnosticLogging(
       'mentionAutocomplete',
@@ -576,6 +584,15 @@ export class HttpAdapter implements BackendAdapter {
     return await this.handleResponse<Node[]>(response);
   }
 
+  async countQuery(input: ExecuteQueryInput): Promise<number> {
+    const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.countQuery()}`, {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify(buildExecuteQueryWire(input))
+    });
+    return await this.handleResponse<number>(response);
+  }
+
   async mentionAutocomplete(query: string, limit?: number): Promise<Node[]> {
     const response = await fetch(`${this.baseUrl}${HTTP_ROUTES.mentionAutocomplete()}`, {
       method: 'POST',
@@ -758,6 +775,9 @@ class MockAdapter implements BackendAdapter {
   }
   async executeQuery(_input: ExecuteQueryInput): Promise<Node[]> {
     return [];
+  }
+  async countQuery(_input: ExecuteQueryInput): Promise<number> {
+    return 0;
   }
   async mentionAutocomplete(_query: string, _limit?: number): Promise<Node[]> {
     return [];

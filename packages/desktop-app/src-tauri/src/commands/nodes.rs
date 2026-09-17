@@ -832,6 +832,31 @@ pub async fn execute_query(
     nodes_to_typed_values(nodes?)
 }
 
+/// Count the nodes a structured query matches, without transferring them.
+///
+/// The counting counterpart to [`execute_query`], backing the query editor's
+/// preview. Takes the same [`ExecuteQueryArgs`] so a caller can count exactly
+/// what it would execute; the daemon ignores `sorting_json`/`limit`, neither of
+/// which can change a total.
+#[tauri::command]
+pub async fn count_query(
+    client: State<'_, GrpcClient>,
+    request: ExecuteQueryArgs,
+) -> Result<i64, CommandError> {
+    let mut c = client.client().await;
+    let resp = c
+        .count_query(Request::new(ExecuteQueryRequest {
+            target_type: request.target_type,
+            filters_json: request.filters_json,
+            sorting_json: request.sorting_json,
+            limit: request.limit,
+        }))
+        .await
+        .map_err(status_to_command_error)?;
+
+    Ok(resp.into_inner().count)
+}
+
 /// Mention autocomplete query - specialized endpoint for @mention feature
 #[tauri::command]
 pub async fn mention_autocomplete(

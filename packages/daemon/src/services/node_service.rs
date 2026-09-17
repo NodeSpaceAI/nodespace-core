@@ -1035,6 +1035,46 @@ impl GrpcNodeService for NodeServiceImpl {
         }))
     }
 
+    /// Count the nodes matching `ExecuteQuery`'s filter shape without
+    /// transferring them — what the query editor's preview asks. Counting the
+    /// `ExecuteQuery` response instead would both materialize every match and
+    /// saturate the answer at `MAX_ROW_LIMIT`.
+    ///
+    /// No scope projection here, unlike `execute_query`: projection reshapes
+    /// each returned node's property buckets, and a scalar has no buckets to
+    /// reshape. It does not change *which* rows match, so the total is the same
+    /// either way.
+    async fn count_query(
+        &self,
+        request: Request<ExecuteQueryRequest>,
+    ) -> Result<Response<CountNodesResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let filters = match req.filters_json.as_deref() {
+            Some(raw) if !raw.is_empty() => serde_json::from_str(raw)
+                .map_err(|e| Status::invalid_argument(format!("invalid filters_json: {e}")))?,
+            _ => Vec::new(),
+        };
+
+        // sorting_json/limit are meaningless for a scalar count — deliberately
+        // dropped here rather than threaded through, matching `count_nodes`.
+        // Dropping the limit is the point: it is the ceiling the caller is
+        // asking this RPC to see past.
+        let input = query_ops::ExecuteQueryInput {
+            target_type: req.target_type,
+            filters,
+            sorting: None,
+            limit: None,
+        };
+
+        let count = query_ops::count_query(&this.node_service, input)
+            .await
+            .map_err(ops_error_to_status)?;
+
+        Ok(Response::new(CountNodesResponse { count }))
+    }
+
     async fn mention_autocomplete(
         &self,
         request: Request<MentionAutocompleteRequest>,

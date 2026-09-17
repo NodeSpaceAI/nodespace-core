@@ -294,6 +294,22 @@ pub async fn execute_query_nodes(
     node_service: &Arc<NodeService>,
     input: ExecuteQueryInput,
 ) -> Result<Vec<Node>, OpsError> {
+    let query = to_query_definition(input)?;
+
+    let query_service = QueryService::new(node_service.store().clone());
+    query_service
+        .execute(&query)
+        .await
+        .map_err(|e| OpsError::Internal(format!("execute_query failed: {}", e)))
+}
+
+/// Validate the agent's filter shape and map it to a [`QueryDefinition`].
+///
+/// Shared by the executing and counting entry points so the two cannot drift:
+/// a filter that selects some set of rows must count that same set, and both
+/// the identifier validation and the filter/sort mapping are what decide which
+/// set that is.
+fn to_query_definition(input: ExecuteQueryInput) -> Result<QueryDefinition, OpsError> {
     validate_identifier(&input.target_type, "target_type")?;
 
     for item in &input.filters {
@@ -326,18 +342,36 @@ pub async fn execute_query_nodes(
             .collect()
     });
 
-    let query = QueryDefinition {
+    Ok(QueryDefinition {
         target_type: input.target_type,
         filters,
         sorting,
         limit: Some(limit),
-    };
+    })
+}
+
+/// Count the nodes a structured query matches, without materializing them.
+///
+/// The counting counterpart to [`execute_query_nodes`], backing the query
+/// editor's preview: it answers "how many nodes match these filters?" with a
+/// scalar rather than transferring every match to call `.len()` on the result.
+///
+/// The input's `sorting` and `limit` are still validated — an invalid sort
+/// field is a malformed query whichever verb it is asked with — but neither
+/// reaches the SQL, since ordering cannot change a count and a limit would cap
+/// the very total this is asked for. The count is exact for any number of
+/// matches.
+pub async fn count_query(
+    node_service: &Arc<NodeService>,
+    input: ExecuteQueryInput,
+) -> Result<i64, OpsError> {
+    let query = to_query_definition(input)?;
 
     let query_service = QueryService::new(node_service.store().clone());
     query_service
-        .execute(&query)
+        .count(&query)
         .await
-        .map_err(|e| OpsError::Internal(format!("execute_query failed: {}", e)))
+        .map_err(|e| OpsError::Internal(format!("count_query failed: {}", e)))
 }
 
 /// Execute a structured property query, returning typed JSON values.
