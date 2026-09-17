@@ -14,6 +14,7 @@
 
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { createSchemaInstance } from '$lib/services/schema-authoring';
+import { sharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { createLogger } from '$lib/utils/logger';
 import { onDaemonReconnect } from '$lib/services/daemon-status';
 import type { Node } from '$lib/types';
@@ -126,6 +127,18 @@ class AiChatsStore {
     try {
       const created = await createSchemaInstance('ai-chat');
       if (generation !== this.#generation) return null;
+      // `createSchemaInstance` creates the node directly via `backendAdapter`,
+      // bypassing SharedNodeStore entirely — it never lands in `persistedNodeIds`.
+      // Seed the store now (hydrate + mark persisted in one step, same as
+      // QueryNodeViewer's `handleCreateInstance` already does for its own
+      // "+ New" call site) so the viewer's first write, once the tab opens,
+      // finds the id already known-persisted. Without this, the id is only
+      // hydrated later via the sync/domain-event echo of this very create,
+      // which sets `skipPersistence: true` and therefore never marks it
+      // persisted — so the viewer's first write (model selection or the
+      // first message) wrongly re-issues a CREATE for an id that already
+      // has a row, colliding with it.
+      sharedNodeStore.setNode(created, { type: 'database', reason: 'ai-chat-created' });
       this.state = { ...this.state, chats: [toListItem(created), ...this.state.chats] };
       return created;
     } catch (err) {
