@@ -309,6 +309,24 @@ export default [
       '@typescript-eslint/no-unused-vars': commonUnusedVarsRule,
       '@typescript-eslint/no-explicit-any': 'warn',
       'no-console': 'off', // Allow console in tests
+      // Bare wall-clock sleeps longer than the 500ms persistence debounce are
+      // how this suite accumulated ~64s of deliberate sleeping, paid on every
+      // push (the pre-push gate is the sole CI here). A number above that
+      // threshold is almost always a guess padded around a real constant.
+      //
+      // Deliberately allows a NUMERIC literal <= 500: short sleeps are cheap
+      // and usually genuine yields. A named constant (DEBOUNCED_WRITE_WAIT_MS,
+      // CASCADE_SETTLE_TIMEOUT_MS, ...) is always allowed regardless of its
+      // value, because the point is that the duration be DERIVED and its
+      // origin stated, not that it be small.
+      'no-restricted-syntax': ['error', {
+        selector: "CallExpression[callee.name='setTimeout'] > Literal.arguments[value>500]",
+        message:
+          'Sleeping >500ms on real time in a test. Prefer vi.waitFor on the condition ' +
+          'being awaited, or fake timers (vi.advanceTimersByTimeAsync). If a real sleep ' +
+          'is genuinely required, import a named constant from tests/utils/test-constants ' +
+          'that is derived from the production value it outwaits.'
+      }],
       // File naming conventions for test files (kebab-case)
       'unicorn/filename-case': ['error', {
         cases: {
