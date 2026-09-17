@@ -49,31 +49,59 @@ pub struct FindSkillsOutput {
     pub total_results: usize,
 }
 
-/// Render a skill node's child subtree as flat markdown.
+/// Render a node's child subtree as flat markdown, via the shared
+/// ADR-057 subtree-render utility (`flatten_subtree_content`).
 ///
 /// Fetches the full subtree in a single DB query, then walks it depth-first
 /// (root children first, their children next) and joins each node's content
-/// with a blank line separator. The skill root itself is excluded — callers
-/// already have its `name`/`description`.
+/// with a blank line separator. `root_id` itself is excluded — callers
+/// already have whatever flat metadata (name, `description` property) lives
+/// directly on the root node.
 ///
-/// Empty/childless skills return an empty string without error.
-async fn render_skill_instructions(node_service: &NodeService, skill_id: &str) -> String {
-    // root_node unused — callers already have the skill's name/description
-    let (_, node_map, adjacency_list) = match node_service.get_subtree_data(skill_id).await {
+/// Empty/childless subtrees return an empty string without error. Shared by
+/// [`render_skill_instructions`] (a skill's procedure subtree) and
+/// [`render_schema_description`] (a schema's own description subtree,
+/// `crate::models::schema_node`'s doc comment) — both are "a node's markdown
+/// child subtree flattened to text," differing only in which root and what
+/// the caller does with the result. Reusing this one function is what keeps
+/// there from being a third independent subtree-render implementation.
+async fn render_node_subtree(node_service: &NodeService, root_id: &str) -> String {
+    let (_, node_map, adjacency_list) = match node_service.get_subtree_data(root_id).await {
         Ok(data) => data,
         Err(e) => {
             tracing::warn!(
                 error = %e,
-                skill_id = %skill_id,
-                "render_skill_instructions: failed to fetch subtree"
+                root_id = %root_id,
+                "render_node_subtree: failed to fetch subtree"
             );
             return String::new();
         }
     };
 
-    // One get_subtree_data query per skill. Acceptable under MAX_SKILL_LIMIT = 10;
-    // a batch API would eliminate serial round trips if the limit grows.
-    flatten_subtree_content(skill_id, &node_map, &adjacency_list).join("\n\n")
+    flatten_subtree_content(root_id, &node_map, &adjacency_list).join("\n\n")
+}
+
+/// Render a skill node's child subtree as flat markdown — the actual
+/// procedure the model must follow.
+///
+/// One `get_subtree_data` query per skill. Acceptable under
+/// `MAX_SKILL_LIMIT = 10`; a batch API would eliminate serial round trips if
+/// the limit grows.
+async fn render_skill_instructions(node_service: &NodeService, skill_id: &str) -> String {
+    render_node_subtree(node_service, skill_id).await
+}
+
+/// Render a schema node's own description subtree as flat markdown.
+///
+/// A schema's description is authored as markdown and stored as a child
+/// subtree (parsed into text/header nodes), not as a flat property — see
+/// `crate::models::schema_node`'s module doc comment. That subtree already
+/// feeds the schema's embedding for semantic *retrieval*
+/// (`SchemaNodeBehavior::get_aggregated_content`), but retrieval only helps a
+/// schema be *found*; it does not deliver the description's actual content to
+/// the model once found. This is that delivery path.
+async fn render_schema_description(node_service: &NodeService, schema_id: &str) -> String {
+    render_node_subtree(node_service, schema_id).await
 }
 
 /// A skill node's discovery-relevant properties, decoded from whichever shape
@@ -341,6 +369,14 @@ pub async fn find_skills(
     // unscoped-branch candidate below keeps today's fallback unchanged.
     let query_named_schema = schema_named_in_query(&input.query, &all_schemas);
 
+    // Schema-description-subtree fetches are cached per call: the same
+    // schema commonly appears in `schema_metadata` for more than one matched
+    // skill (e.g. every generic node-creation skill scoped to it), and its
+    // description subtree cannot change mid-call, so re-fetching it per skill
+    // would be a repeat DB round trip for identical content.
+    let mut schema_description_cache: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
     for (node, confidence) in &skill_results {
         let SkillProperties {
             description,
@@ -348,28 +384,20 @@ pub async fn find_skills(
             scoped_type_ids,
         } = SkillProperties::from_node_properties(&node.properties);
 
-        // Attach schema metadata for entity types relevant to this skill.
-        // The skill's `node_types` property lists the type IDs in scope. When
-        // absent: if the query itself names exactly one non-core type, scope
-        // to that type (see `schema_named_in_query`); otherwise fall back to
-        // all custom (non-core) schemas, capped at MAX_UNSCOPED_SCHEMA_METADATA
-        // to bound token cost for general-purpose skills whose query didn't
-        // resolve to one type.
-        let schema_metadata: Vec<Value> = if scoped_type_ids.is_empty() {
+        // Entity types relevant to this skill. The skill's `node_types`
+        // property lists the type IDs in scope. When absent: if the query
+        // itself names exactly one non-core type, scope to that type (see
+        // `schema_named_in_query`); otherwise fall back to all custom
+        // (non-core) schemas, capped at MAX_UNSCOPED_SCHEMA_METADATA to bound
+        // token cost for general-purpose skills whose query didn't resolve to
+        // one type.
+        let schema_candidates: Vec<&crate::models::SchemaNode> = if scoped_type_ids.is_empty() {
             match query_named_schema {
-                Some(named) => vec![
-                    super::entity_types_block::EntityTypeDescriptor::from_schema(named).to_json(),
-                ],
+                Some(named) => vec![named],
                 None => all_schemas
                     .iter()
                     .filter(|s| !s.is_core)
                     .take(MAX_UNSCOPED_SCHEMA_METADATA)
-                    .map(|s| {
-                        // Encoded from the same descriptor the prompt block
-                        // renders from, so this JSON cannot describe a schema
-                        // differently than the model is told about it.
-                        super::entity_types_block::EntityTypeDescriptor::from_schema(s).to_json()
-                    })
                     .collect(),
             }
         } else {
@@ -377,9 +405,37 @@ pub async fn find_skills(
                 .iter()
                 .filter(|s| scoped_type_ids.contains(&s.id))
                 .take(scoped_type_ids.len())
-                .map(|s| super::entity_types_block::EntityTypeDescriptor::from_schema(s).to_json())
                 .collect()
         };
+
+        // Build `schema_metadata`: each candidate's fields/relationships
+        // (with their own `description`, via `EntityTypeDescriptor::to_json`)
+        // plus the schema's own description subtree, fetched and merged in
+        // as a sibling `description` key on the same entry — the schema-level
+        // counterpart to the field/relationship-level descriptions already
+        // carried by `to_json`.
+        let mut schema_metadata: Vec<Value> = Vec::with_capacity(schema_candidates.len());
+        for schema in schema_candidates {
+            // Encoded from the same descriptor the prompt block renders
+            // from, so this JSON cannot describe a schema differently than
+            // the model is told about it.
+            let mut entry =
+                super::entity_types_block::EntityTypeDescriptor::from_schema(schema).to_json();
+
+            let schema_description = match schema_description_cache.get(&schema.id) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let rendered =
+                        render_schema_description(node_service.as_ref(), &schema.id).await;
+                    schema_description_cache.insert(schema.id.clone(), rendered.clone());
+                    rendered
+                }
+            };
+            if !schema_description.is_empty() {
+                entry["description"] = json!(schema_description);
+            }
+            schema_metadata.push(entry);
+        }
 
         let instructions = render_skill_instructions(node_service.as_ref(), &node.id).await;
 
