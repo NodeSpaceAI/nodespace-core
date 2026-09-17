@@ -164,9 +164,10 @@ describe.each(COMPONENTS)('shared $name filled variants', ({ hoverPrefix, classe
     // to unify: neither is bound by this rule, so the values are free.
     //
     // Alpha is also legitimate elsewhere in the base string —
-    // `aria-invalid:ring-destructive/20` is a ring tint, and
-    // `dark:hover:bg-accent/50` on the Button's ghost/outline is a translucent
-    // wash over the page rather than a filled control's solid fill.
+    // `aria-invalid:ring-destructive/20` is a ring tint, and the Button's
+    // `dark:hover:bg-accent/50` on ghost and `dark:hover:bg-input/50` on outline
+    // are translucent washes over the page rather than a filled control's solid
+    // fill.
     //
     // Matches ANY modifier chain ending in `hover:bg-`, rather than only the
     // component's own `hoverPrefix`. Scoping it to the prefix would let a bare
