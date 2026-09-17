@@ -1,5 +1,5 @@
 /**
- * Guards that the shared Button's filled variants CONSUME the hover tokens.
+ * Guards that the shared filled variants CONSUME the hover tokens.
  *
  * `filled-button-hover.test.ts` proves the `--*-hover` values in app.css obey
  * the rule. That is a necessary but not sufficient condition, and the gap
@@ -9,9 +9,20 @@
  * "Remove database" control, at the moment of a destructive commitment.
  *
  * So this suite asserts the other half: that each filled variant names its own
- * `--*-hover` token, that no alpha hover survives anywhere in `buttonVariants`,
- * and that the classes it emits resolve through `tailwind.config.js` to values
- * that clear AA and rise on hover in both themes.
+ * `--*-hover` token, that no alpha hover survives on a filled variant, and that
+ * the classes it emits resolve through `tailwind.config.js` to values that clear
+ * AA and rise on hover in both themes.
+ *
+ * It covers Button and Badge together because they are the same defect from the
+ * same stock shadcn origin, and fixing one is no guard on the other: the Badge
+ * carried `bg-primary/90`, `bg-destructive/90`, `dark:bg-destructive/70` and
+ * `text-white` unchanged while the Button next to it was already correct.
+ *
+ * The Badge's hovers are gated behind `[a&]:`, applying only when it renders as
+ * an anchor — no consumer does today, so its defect was latent rather than
+ * visible. The rule is asserted on it anyway: "currently unreachable" is a fact
+ * about today's call sites, not a property of the component, and the first
+ * linked filled badge would inherit whatever the variant string says.
  *
  * Reading the variant strings rather than rendering the component is deliberate.
  * The bug is in which classes are emitted, and Happy-DOM applies no Tailwind
@@ -21,6 +32,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { buttonVariants } from '$lib/components/ui/button/types';
+import { badgeVariants } from '$lib/components/ui/badge/types';
 import tailwindConfig from '../../../tailwind.config.js';
 import { AA, contrast, readHsl, themeBlock } from '../helpers/wcag-contrast';
 import fs from 'node:fs';
@@ -29,6 +41,8 @@ import { fileURLToPath } from 'node:url';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const appCss = fs.readFileSync(path.join(packageRoot, 'src/app.css'), 'utf8');
+
+type FilledVariant = 'default' | 'destructive';
 
 /**
  * The filled variants: solid semantic fill, own foreground, own hover token.
@@ -45,18 +59,35 @@ const THEMES = [
   { name: 'dark', selector: '.dark' },
 ];
 
-/** The class string tailwind-variants emits for a variant, at default size. */
-const classesFor = (variant: 'default' | 'destructive') =>
-  buttonVariants({ variant }).split(/\s+/).filter(Boolean);
+/**
+ * The two components under the rule. `hoverPrefix` is the modifier chain each
+ * puts in front of its hover utility: the Badge only hovers as an anchor, so its
+ * classes read `[a&]:hover:bg-primary-hover`. Everything else about the rule is
+ * identical, which is why one table drives both.
+ */
+const COMPONENTS = [
+  {
+    name: 'Button',
+    hoverPrefix: 'hover:',
+    /** The class string tailwind-variants emits for a variant, at default size. */
+    classesFor: (variant: FilledVariant) =>
+      buttonVariants({ variant }).split(/\s+/).filter(Boolean),
+  },
+  {
+    name: 'Badge',
+    hoverPrefix: '[a&]:hover:',
+    classesFor: (variant: FilledVariant) => badgeVariants({ variant }).split(/\s+/).filter(Boolean),
+  },
+];
 
-describe('shared Button filled variants', () => {
+describe.each(COMPONENTS)('shared $name filled variants', ({ hoverPrefix, classesFor }) => {
   for (const { variant, token, utility } of FILLED_VARIANTS) {
     describe(`${variant} variant`, () => {
       const classes = classesFor(variant);
 
       it(`fills with bg-${utility} and hovers to bg-${utility}-hover`, () => {
         expect(classes).toContain(`bg-${utility}`);
-        expect(classes).toContain(`hover:bg-${utility}-hover`);
+        expect(classes).toContain(`${hoverPrefix}bg-${utility}-hover`);
       });
 
       it(`labels with text-${utility}-foreground rather than a hardcoded color`, () => {
@@ -121,26 +152,30 @@ describe('shared Button filled variants', () => {
   }
 
   it('has no alpha-fill hover left on a filled variant', () => {
-    // The idiom-level assertion: `hover:bg-primary/90` and `hover:bg-destructive/90`
-    // were both present before this change, and this is what stops either coming
-    // back under a different token name.
+    // The idiom-level assertion: an alpha hover on `primary` and on `destructive`
+    // was present on both components before their respective fixes, and this is
+    // what stops either coming back under a different token name.
     //
     // Scoped to the FILLED variants, which is the scope of the rule itself.
-    // `hover:bg-secondary/80` is left alone deliberately: secondary is a neutral
-    // surface, not a semantic fill, and it sits at 16.1:1 light / 14.2:1 dark and
-    // GAINS contrast on hover. Alpha is also legitimate elsewhere in the base
-    // string — `aria-invalid:ring-destructive/20` is a ring tint, and
-    // `dark:hover:bg-accent/50` on ghost/outline is a translucent wash over the
-    // page rather than a filled button's solid fill.
+    // Secondary's alpha hover is left alone deliberately, on both components: it
+    // is a neutral surface, not a semantic fill, sitting at 16.1:1 light /
+    // 14.2:1 dark and GAINING contrast on hover. Alpha is also legitimate
+    // elsewhere in the base string — `aria-invalid:ring-destructive/20` is a ring
+    // tint, and `dark:hover:bg-accent/50` on the Button's ghost/outline is a
+    // translucent wash over the page rather than a filled control's solid fill.
+    const hoverPattern = new RegExp(
+      `^(dark:)?${hoverPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}bg-`
+    );
     const filledHoverClasses = FILLED_VARIANTS.flatMap(({ variant }) => classesFor(variant)).filter(
-      (cls) => /^(dark:)?hover:bg-/.test(cls)
+      (cls) => hoverPattern.test(cls)
     );
 
     expect(filledHoverClasses.filter((cls) => cls.includes('/'))).toEqual([]);
   });
 
   it('leaves no translucent rest fill on the destructive variant', () => {
-    // `dark:bg-destructive/60` was stock shadcn. It lightened the dark fill
+    // A `dark:bg-destructive/*` rest fill was stock shadcn on both components
+    // (`/60` on the Button, `/70` on the Badge). It lightened the dark fill
     // toward the page, which was the only thing keeping `text-white` legible
     // there; with the token foreground the fill should be solid in both themes.
     const classes = classesFor('destructive');
