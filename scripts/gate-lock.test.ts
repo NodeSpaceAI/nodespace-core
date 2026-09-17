@@ -24,6 +24,7 @@ import {
   isForeignHost,
   isPidAlive,
   parseHolder,
+  readHolder,
   registerLockRelease,
   serializeHolder,
   type LockHolder,
@@ -112,6 +113,32 @@ describe("parseHolder", () => {
     ["a missing host", '{"pid":1,"startedAt":1,"cwd":"/x"}'],
   ])("returns null for %s, so it can be reaped rather than wedging pushes", (_label, raw) => {
     expect(parseHolder(raw)).toBeNull();
+  });
+});
+
+describe("readHolder", () => {
+  // These three states must stay distinct: an absent lock means "retry the
+  // create", while an unreadable one means "reap it". Collapsing them (as an
+  // earlier version did, into a single null) made waiters unlink locks that
+  // had simply been released — and made the logs claim corruption that never
+  // happened.
+  test("reports absent when nothing is at the path", () => {
+    expect(readHolder(lockPath)).toEqual({ state: "absent" });
+  });
+
+  test("reports the holder when the file is a valid lock", () => {
+    const holder = plantLock({ pid: 4242 });
+    expect(readHolder(lockPath)).toEqual({ state: "held", holder });
+  });
+
+  test("reports unreadable for a truncated or hand-edited file, distinctly from absent", () => {
+    writeFileSync(lockPath, '{"pid":123,"star');
+    expect(readHolder(lockPath)).toEqual({ state: "unreadable" });
+  });
+
+  test("reports unreadable for an empty file — the window an atomic create must prevent", () => {
+    writeFileSync(lockPath, "");
+    expect(readHolder(lockPath)).toEqual({ state: "unreadable" });
   });
 });
 
@@ -221,15 +248,73 @@ describe("acquireGateLock", () => {
     second.release();
   });
 
-  test("only one of many simultaneous acquires wins — real O_EXCL, not a mock", async () => {
-    const results = await Promise.all(
-      Array.from({ length: 8 }, () =>
-        acquireGateLock(harness({ isAlive: () => true, maxWaitMs: 0 }).options)
-      )
-    );
-    expect(results.filter((r) => r.held)).toHaveLength(1);
-    results.find((r) => r.held)?.release();
-  });
+  test(
+    "no two REAL processes ever hold the lock at once",
+    async () => {
+      // The invariant that matters, tested the only way it can be: across
+      // actual OS processes. An in-process version is tautological — the
+      // acquire path's syscalls are synchronous, so several callers on one
+      // event loop cannot interleave inside them, and such a test passes even
+      // when cross-process exclusion is completely broken.
+      //
+      // What this guards against: an earlier implementation published the
+      // lockfile with `open(path, "wx")` then `write`, leaving a window in
+      // which the file existed but was empty. A waiter reading in that window
+      // saw no holder, judged the lock garbage, reaped it out from under the
+      // live owner, and took it — two gates, both believing they held it.
+      //
+      // Honest limitation: that window is sub-millisecond, and six processes
+      // do not reliably land inside it, so this test does NOT dependably fail
+      // against that specific bug on its own. Its value was established by
+      // widening the window artificially (a 5ms spin at the publish point):
+      // with the two-syscall implementation the test then failed on
+      // overlapping held-intervals, and with the current write-then-link
+      // implementation it still passed — because a staged file is not
+      // reachable at the lock path until `link(2)` publishes it whole, so
+      // there is no window to widen. The assertion is therefore a real
+      // detector of overlapping holds; what is probabilistic is only whether
+      // a given interleaving arises.
+      // A shared start instant, far enough out that every worker has finished
+      // booting and is spinning on the barrier. Without it their staggered
+      // startup serializes them by accident and the race never occurs.
+      const startAt = Date.now() + 2500;
+      const workers = Array.from({ length: 6 }, () =>
+        Bun.spawn(
+          [
+            "bun",
+            "run",
+            join(import.meta.dir, "gate-lock.race-worker.ts"),
+            lockPath,
+            "120",
+            String(startAt),
+          ],
+          { stdout: "pipe", stderr: "pipe" }
+        )
+      );
+
+      const outputs = await Promise.all(workers.map((w) => Bun.readableStreamToText(w.stdout)));
+      await Promise.all(workers.map((w) => w.exited));
+
+      const intervals = outputs.map((out, i) => {
+        const held = out.match(/^HELD \d+ (\d+)$/m);
+        const done = out.match(/^DONE \d+ (\d+)$/m);
+        if (!held || !done) throw new Error(`worker ${i} did not acquire the lock:\n${out}`);
+        return { start: Number(held[1]), end: Number(done[1]) };
+      });
+
+      // Every worker got the lock (none timed out), and no two held windows
+      // overlap. Sorting by start makes the check a simple neighbour scan.
+      expect(intervals).toHaveLength(6);
+      intervals.sort((a, b) => a.start - b.start);
+      for (let i = 1; i < intervals.length; i++) {
+        const previous = intervals[i - 1]!;
+        const next = intervals[i]!;
+        expect(next.start).toBeGreaterThanOrEqual(previous.end);
+      }
+    },
+    // Six workers × ~120ms of held time, plus bun startup per process.
+    30_000
+  );
 
   test("reclaims a lock whose owning pid is gone — no manual cleanup step", async () => {
     plantLock({ pid: 999_002 });
@@ -240,6 +325,35 @@ describe("acquireGateLock", () => {
     expect(lock.held).toBe(true);
     expect(logged.join("\n")).toContain("reclaiming a stale gate lock");
     expect(parseHolder(readFileSync(lockPath, "utf8"))?.pid).toBe(process.pid);
+    lock.release();
+  });
+
+  test("does not unlink when the lock vanished mid-poll — it retries the create instead", async () => {
+    // The holder released between our failed create and our read. There is
+    // nothing to reap, and unlinking blind here would destroy whatever
+    // successor claimed the path in the meantime.
+    let firstAttempt = true;
+    const { options, logged } = harness({
+      isAlive: () => true,
+      sleep: async () => {
+        throw new Error("must not sleep — an absent lock should retry immediately");
+      },
+    });
+    // Occupy the path for exactly one create attempt, then clear it.
+    plantLock();
+    const lock = await acquireGateLock({
+      ...options,
+      now: () => {
+        if (firstAttempt) {
+          firstAttempt = false;
+          rmSync(lockPath, { force: true });
+        }
+        return 0;
+      },
+    });
+
+    expect(lock.held).toBe(true);
+    expect(logged.join("\n")).not.toContain("reclaiming");
     lock.release();
   });
 

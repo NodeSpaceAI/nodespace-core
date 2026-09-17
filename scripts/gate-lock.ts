@@ -25,7 +25,8 @@
 // contents are the holder's identity gives us that for free; an flock on an
 // empty file does not.
 
-import { openSync, closeSync, writeSync, readFileSync, unlinkSync } from "node:fs";
+import { linkSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -169,32 +170,74 @@ export interface GateLock {
   release: () => void;
 }
 
+/**
+ * Publishes a fully-written lockfile at `lockPath`, atomically.
+ *
+ * The obvious implementation — `open(lockPath, "wx")` then `write` — is
+ * WRONG, and wrong in a way that silently defeats the whole module. Those are
+ * two syscalls, and between them the lockfile exists with zero bytes. A
+ * concurrent waiter reading in that window sees "", cannot parse a holder out
+ * of it, correctly concludes nobody owns it, and reaps it — deleting a live
+ * holder's lock and then taking it. Both processes then run the gate
+ * believing they hold the lock, which is worse than having no lock at all: it
+ * removes the suspicion of contention that would otherwise explain the
+ * resulting timeout.
+ *
+ * So the file is written under a unique staging name first and only becomes
+ * reachable at `lockPath` once it is complete. `link(2)` is atomic and fails
+ * with EEXIST rather than clobbering — which is why it is used instead of
+ * `rename(2)`, whose silent replace-on-collide is exactly the wrong
+ * behaviour for a lock.
+ */
 function tryCreateLock(lockPath: string, holder: LockHolder): boolean {
+  // Same directory as the lock: link(2) cannot cross filesystems.
+  const staging = `${lockPath}.${process.pid}.${randomUUID()}`;
+  writeFileSync(staging, serializeHolder(holder));
   try {
-    // "wx" is O_CREAT|O_EXCL: it succeeds only if we are the process that
-    // created the file. This is the whole mutual-exclusion primitive — every
-    // other check in this module is diagnostics or stale-reaping around it.
-    const fd = openSync(lockPath, "wx");
-    try {
-      writeSync(fd, serializeHolder(holder));
-    } finally {
-      closeSync(fd);
-    }
+    linkSync(staging, lockPath);
     return true;
   } catch (err) {
     if (errorCode(err) === "EEXIST") return false;
     throw err;
+  } finally {
+    // The staged copy has served its purpose either way: on success the lock
+    // path is a second name for the same inode, and on failure it is garbage.
+    try {
+      unlinkSync(staging);
+    } catch {
+      // Nothing to clean up, or we cannot — either way it must not fail the
+      // acquisition, which has already been decided above.
+    }
   }
 }
 
-function readHolder(lockPath: string): LockHolder | null {
+/** What a read of the lock path found. See readHolder(). */
+export type LockRead =
+  | { state: "absent" }
+  | { state: "unreadable" }
+  | { state: "held"; holder: LockHolder };
+
+/**
+ * Reads the lock path, distinguishing "nothing is there" from "something is
+ * there but we cannot interpret it".
+ *
+ * These must not collapse into one value. They call for opposite actions: an
+ * absent lock means retry the create (there is nothing to delete, and
+ * unlinking blind would destroy a successor's lock that appeared in the
+ * meantime), while an unreadable one is genuine garbage to reap. Folding both
+ * into `null` also makes the logs lie — reporting a corrupt lockfile when the
+ * file had simply been released.
+ */
+export function readHolder(lockPath: string): LockRead {
+  let raw: string;
   try {
-    return parseHolder(readFileSync(lockPath, "utf8"));
-  } catch {
-    // ENOENT: the holder released between our failed create and this read.
-    // Anything else: unreadable, which we treat the same as unparseable.
-    return null;
+    raw = readFileSync(lockPath, "utf8");
+  } catch (err) {
+    if (errorCode(err) === "ENOENT") return { state: "absent" };
+    return { state: "unreadable" };
   }
+  const holder = parseHolder(raw);
+  return holder === null ? { state: "unreadable" } : { state: "held", holder };
 }
 
 function removeLock(lockPath: string): void {
@@ -216,16 +259,20 @@ function removeLock(lockPath: string): void {
  * exists to prevent, made harder to diagnose by the fact that both gates
  * believe they hold the lock.
  *
- * The read-then-unlink is not atomic, so a sufficiently unlucky interleaving
- * could still delete a successor's lock. That race requires us to be reaped
- * as dead while we are in fact alive and mid-release, which cannot happen
- * while we are the live pid the reaper checks. Closing it properly needs an
- * open handle and inode comparison; the sequence that would defeat this check
- * is not reachable from how the gate actually runs.
+ * The read-then-unlink is not atomic, so in principle an unlucky interleaving
+ * could delete a successor's lock. What rules that out is the reap path's
+ * liveness gate: a waiter only reclaims a lock whose owning pid is gone, and
+ * we are by definition alive while executing this function, so no waiter can
+ * replace our lock underneath us. That argument depends on every reap being
+ * gated on liveness — which is why the `absent` case in the acquire loop
+ * retries instead of unlinking, and why only `unreadable` and dead-pid locks
+ * are reaped.
  */
 function releaseIfOwner(lockPath: string, ownerPid: number): void {
   const current = readHolder(lockPath);
-  if (current !== null && current.pid !== ownerPid) return;
+  // "held by someone else" is the one case we must not touch. An absent lock
+  // has nothing to remove, and an unreadable one cannot be anyone's claim.
+  if (current.state === "held" && current.holder.pid !== ownerPid) return;
   removeLock(lockPath);
 }
 
@@ -285,20 +332,35 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
     }
 
     const current = readHolder(lockPath);
-    lastSeen = current ?? lastSeen;
 
-    // Reap a lock nobody owns: an unparseable file, or one whose pid is gone
-    // (a killed session must not wedge every future push). A foreign-host
-    // lock is never reaped — its pid means nothing here — but it is still
-    // bounded by maxWaitMs below, so it cannot wedge us either.
-    const reclaimable = current === null || (!isForeignHost(current, host) && !isAlive(current.pid));
-    if (reclaimable) {
-      log(
-        current === null
-          ? "  reclaiming an unreadable gate lock."
-          : `  reclaiming a stale gate lock (pid ${current.pid} is gone).`
-      );
+    // Released between our failed create and this read. Nothing to reap —
+    // unlinking here would destroy whatever successor has since claimed the
+    // path. Just try again.
+    if (current.state === "absent") continue;
+
+    // Genuine garbage: a hand-edited file, or one truncated by something
+    // outside this module. Nobody can own it, so it must not be allowed to
+    // wedge every future push on the machine.
+    if (current.state === "unreadable") {
+      log("  reclaiming an unreadable gate lock.");
       removeLock(lockPath);
+      continue;
+    }
+
+    const holderNow = current.holder;
+    lastSeen = holderNow;
+
+    // Reap a lock whose owning process is gone — a killed session must not
+    // wedge future pushes. A foreign-host lock is never reaped (its pid means
+    // nothing here) but is still bounded by maxWaitMs below, so it cannot
+    // wedge us either.
+    if (!isForeignHost(holderNow, host) && !isAlive(holderNow.pid)) {
+      log(`  reclaiming a stale gate lock (pid ${holderNow.pid} is gone).`);
+      // Re-read immediately before unlinking, and only remove the file if it
+      // still names the dead holder we judged. Two waiters can reach this
+      // point on the same corpse; without the re-check, the second would
+      // unlink a lock the first had already reaped and legitimately retaken.
+      releaseIfOwner(lockPath, holderNow.pid);
       // Loop rather than acquire directly: another waiter may have won the
       // race to recreate it, and tryCreateLock is the only thing allowed to
       // decide who holds it.
@@ -316,7 +378,7 @@ export async function acquireGateLock(options: AcquireOptions = {}): Promise<Gat
       log("   (gates are serialized so they don't starve each other of CPU; see ADR-047)");
       announced = true;
     }
-    log(formatWaitingLine(current, now(), waitedMs));
+    log(formatWaitingLine(holderNow, now(), waitedMs));
     await sleep(pollIntervalMs);
   }
 }
@@ -342,13 +404,16 @@ export function registerLockRelease(lock: GateLock): void {
 
   process.on("exit", release);
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    process.on(signal, () => {
+    const onSignal = () => {
       release();
-      // Re-raise with the default handler so the exit status reflects the
-      // signal, rather than this handler swallowing it into a clean exit —
-      // git needs a non-zero status to abort the push.
-      process.removeAllListeners(signal);
+      // Re-raise so the exit status reflects the signal rather than this
+      // handler swallowing it into a clean exit — git needs a non-zero status
+      // to abort the push. Remove only our own listener: if nothing else is
+      // subscribed, node restores the default (terminate) behaviour, and if
+      // something is, that handler is not ours to cancel.
+      process.removeListener(signal, onSignal);
       process.kill(process.pid, signal);
-    });
+    };
+    process.on(signal, onSignal);
   }
 }
