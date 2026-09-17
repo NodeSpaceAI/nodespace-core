@@ -351,7 +351,7 @@ impl GrpcNodeService for NodeServiceImpl {
                 Ok(Response::new(NodeResponse {
                     node_id,
                     node_type,
-                    node_data: Some(node_to_proto(node)),
+                    node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
                 }))
             }
             None => Ok(Response::new(NodeResponse {
@@ -1088,7 +1088,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(NodeResponse {
             node_id: req.node_id,
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -1120,7 +1120,7 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(NodeResponse {
             node_id: node.id.clone(),
             node_type,
-            node_data: Some(node_to_proto(node)),
+            node_data: Some(node_to_proto_collapsed(&this.node_service, node).await?),
         }))
     }
 
@@ -2309,19 +2309,19 @@ async fn fetch_node(service: &Arc<CoreNodeService>, node_id: &str) -> Result<Nod
 /// access, so an extending node reaches them missing every inherited field
 /// unless its chain has been collapsed into its own bucket first.
 ///
-/// `node_to_proto` remains only for nodes that cannot have an `extends` chain
-/// — schema nodes (`into_wire_node()`), collections, and the fixed-type
-/// person/identity responses — where collapsing would be a no-op round trip
-/// through the store.
+/// `node_to_proto` is **private to this module**, so this pair is the only
+/// way a node reaches the wire from outside it. That is deliberate: across
+/// three review rounds the rule lived in a doc comment, and each round found
+/// another RPC that had not followed it — `get_node`, `get_children` and
+/// `get_roots`, then `create_node`, `update_node`, `search_nodes` and the
+/// `watch_nodes` stream. `watch_nodes` was the worst of them: a node that
+/// rendered correctly on load lost its inherited properties on the next edit,
+/// which reads as data loss rather than a missing feature.
 ///
-/// Every RPC returning a node whose type *could* extend something routes
-/// through here. That list is not obvious from any single call site, which is
-/// why wiring the collapse per site let `get_node`, `get_children`,
-/// `get_roots` and then `create_node`, `update_node`, `search_nodes` and the
-/// `watch_nodes` stream each silently drop inherited fields in turn. The
-/// `watch_nodes` case was the worst: a node that rendered correctly on load
-/// lost its inherited properties on the next edit, which reads as data loss
-/// rather than a missing feature.
+/// The remaining in-module `node_to_proto` callers are nodes that cannot have
+/// an `extends` chain — schema nodes (`into_wire_node()`), collections, and
+/// the fixed-type person/identity responses — where collapsing would be a
+/// no-op round trip through the store.
 pub(crate) async fn nodes_to_proto(
     service: &Arc<CoreNodeService>,
     nodes: Vec<Node>,
@@ -2342,7 +2342,7 @@ pub(crate) async fn node_to_proto_collapsed(
     Ok(out.remove(0))
 }
 
-pub(crate) fn node_to_proto(node: Node) -> NodeData {
+fn node_to_proto(node: Node) -> NodeData {
     NodeData {
         id: node.id,
         node_type: node.node_type,
@@ -2413,9 +2413,21 @@ async fn convert_domain_event(
 ) -> Option<NodeEventKind> {
     match event {
         DomainEvent::NodeCreated { node_id, .. } => match node_service.get_node(node_id).await {
-            Ok(Some(node)) => Some(NodeEventKind::Created(
-                node_to_proto_collapsed(node_service, node).await.ok()?,
-            )),
+            Ok(Some(node)) => match node_to_proto_collapsed(node_service, node).await {
+                Ok(data) => Some(NodeEventKind::Created(data)),
+                Err(e) => {
+                    // Dropping the event silently would look to a watching
+                    // client exactly like the node never being created, with
+                    // nothing in the log to contradict that. Match the two
+                    // sibling arms below, which already say why they skipped.
+                    tracing::warn!(
+                        node_id = %node_id,
+                        error = %e,
+                        "NodeCreated event skipped: collapsing the extends chain failed"
+                    );
+                    None
+                }
+            },
             Ok(None) => {
                 tracing::debug!(node_id = %node_id, "NodeCreated event skipped: node already gone");
                 None
@@ -2425,11 +2437,19 @@ async fn convert_domain_event(
                 None
             }
         },
-        DomainEvent::NodeUpdated { node, .. } => Some(NodeEventKind::Updated(
-            node_to_proto_collapsed(node_service, node.clone())
-                .await
-                .ok()?,
-        )),
+        DomainEvent::NodeUpdated { node, .. } => {
+            match node_to_proto_collapsed(node_service, node.clone()).await {
+                Ok(data) => Some(NodeEventKind::Updated(data)),
+                Err(e) => {
+                    tracing::warn!(
+                        node_id = %node.id,
+                        error = %e,
+                        "NodeUpdated event skipped: collapsing the extends chain failed"
+                    );
+                    None
+                }
+            }
+        }
         DomainEvent::NodeDeleted { id, node_type } => Some(NodeEventKind::Deleted(NodeDeleted {
             node_id: id.clone(),
             node_type: node_type.clone(),
