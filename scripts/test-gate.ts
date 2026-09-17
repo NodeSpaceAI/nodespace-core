@@ -22,6 +22,7 @@ import { $ } from "bun";
 import { reportBranchBehind } from "./check-branch-behind";
 import { classifyFailure, extractFailureOutput, formatAbortNote } from "./classify-test-failure";
 import { reportUpstreamFixes } from "./correlate-upstream-fixes";
+import { acquireGateLock, registerLockRelease } from "./gate-lock";
 
 async function run(label: string, cmd: () => Promise<unknown>) {
   console.log(`\n▶ ${label}`);
@@ -57,9 +58,20 @@ async function run(label: string, cmd: () => Promise<unknown>) {
   }
 }
 
+// Serialize against other gates on this machine before doing any real work —
+// see gate-lock.ts. Everything below parallelizes across all cores, and N
+// concurrent gates starve each other into worker/daemon timeouts on correct
+// code. Acquired first so a queued push says so immediately, rather than
+// after the staleness check's network round-trip.
+//
+// registerLockRelease() covers Ctrl-C and every early exit, including the
+// process.exit(1) inside run() above.
+const gateLock = await acquireGateLock();
+registerLockRelease(gateLock);
+
 // Staleness check, not a fix for the merge race — see check-branch-behind.ts.
-// Runs first so the warning (if any) is visible before the several-minutes
-// pyramid below, and never blocks: checkBranchBehind() already swallows every
+// Runs before the several-minutes pyramid below so its warning (if any) is
+// visible early, and never blocks: checkBranchBehind() already swallows every
 // documented failure mode (fetch/rev-list) into a "skipped" result without
 // throwing. This try/catch is defensive-only, guarding the one call in this
 // entry sequence that isn't wrapped by run() — a future edit to
