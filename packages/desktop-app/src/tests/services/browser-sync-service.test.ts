@@ -99,6 +99,10 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
 
   afterEach(() => {
     // Cleanup
+    // Destroy first: clears any reconnect timer a test may have armed via
+    // connect()'s error path (scheduleReconnect retries indefinitely by
+    // design), so it can't fire later and hit an unrelated test file.
+    browserSyncService.destroy();
     sharedNodeStore.clearAll();
     structureTree.children.clear();
     SharedNodeStore.resetInstance();
@@ -1032,6 +1036,14 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
       } finally {
         // Restore original EventSource
         globalThis.EventSource = OriginalEventSource;
+
+        // The connect() failure above armed a reconnect via a *real*
+        // setTimeout (timers are real for this test). Destroy while real
+        // timers are still active so the real handle is actually cleared,
+        // rather than leaving it pending on the real event loop once fake
+        // timers are restored below.
+        browserSyncService.destroy();
+
         vi.useFakeTimers(); // Restore fake timers for other tests
       }
     });
