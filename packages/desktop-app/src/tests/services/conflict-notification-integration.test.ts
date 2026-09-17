@@ -10,6 +10,7 @@ import { SharedNodeStore } from '../../lib/services/shared-node-store.svelte';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import type { Node } from '../../lib/types';
+import { CASCADE_SETTLE_TIMEOUT_MS } from '../utils/test-constants';
 
 const makeNode = (id: string, version = 1): Node => ({
   id,
@@ -65,9 +66,13 @@ describe('SharedNodeStore → conflictNotifications (OCC)', () => {
     store.setNode(node, dbSource);
     store.updateNode(nodeId, { content: 'My edit' }, viewerSource);
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Wait for the notification the conflict is supposed to raise, rather than
+    // for a duration assumed to cover debounce + rejection + notification.
+    await vi.waitFor(
+      () => expect(conflictNotifications.notifications.length).toBeGreaterThanOrEqual(1),
+      { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+    );
 
-    expect(conflictNotifications.notifications.length).toBeGreaterThanOrEqual(1);
     const n = conflictNotifications.notifications[0];
     expect(n.nodeId).toBe(nodeId);
     expect(n.conflictType).toBe('version-mismatch');
@@ -86,7 +91,13 @@ describe('SharedNodeStore → conflictNotifications (OCC)', () => {
     store.setNode(node, dbSource);
     store.updateNode(nodeId, { content: 'My optimistic edit' }, viewerSource);
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Wait for hydration to REPLACE the optimistic edit. The store already
+    // holds 'My optimistic edit' here, so this waits on a real transition
+    // rather than returning on a condition that was true before the conflict.
+    await vi.waitFor(
+      () => expect(store.getNode(nodeId)?.content).toBe('Authoritative server content'),
+      { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+    );
 
     const stored = store.getNode(nodeId);
     expect(stored?.content).toBe('Authoritative server content');
@@ -119,7 +130,13 @@ describe('SharedNodeStore → conflictNotifications (OCC)', () => {
 
     store.updateNode(nodeId, { content: 'My edit' }, viewerSource);
 
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+    // Wait on the metric under test itself — `metricsBefore` was captured
+    // before the write, so this cannot pass on a value that already held.
+    await vi.waitFor(
+      () =>
+        expect(store.getMetrics().rollbackCount).toBeGreaterThan(metricsBefore.rollbackCount),
+      { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+    );
 
     expect(conflictNotifications.notifications.length).toBeGreaterThanOrEqual(1);
     const metricsAfter = store.getMetrics();

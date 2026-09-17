@@ -15,6 +15,12 @@ import type { Node } from '../../lib/types';
 import type { UpdateSource } from '../../lib/types/update-protocol';
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
+import {
+  DEBOUNCED_WRITE_WAIT_MS,
+  TEARDOWN_FLUSH_CEILING_MS,
+  CASCADE_SETTLE_TIMEOUT_MS,
+  FLUSH_PENDING_TIMEOUT_MS
+} from '../utils/test-constants';
 
 describe('SharedNodeStore - Coverage Completion', () => {
   let store: SharedNodeStore;
@@ -47,13 +53,18 @@ describe('SharedNodeStore - Coverage Completion', () => {
   });
 
   afterEach(async () => {
+    // Restore real timers first: a test that left fake timers installed would
+    // otherwise freeze the clock this teardown races against, hanging the run.
+    vi.useRealTimers();
     try {
       // Clear test errors before flushing
       store.clearTestErrors();
-      // Flush with longer timeout to allow errors to propagate
+      // Cap the flush so a test that deliberately left an operation hanging
+      // cannot stall teardown. This races a pending flush, so it is a ceiling
+      // that is almost never reached — not a fixed wait.
       await Promise.race([
         store.flushAllPending(),
-        new Promise(resolve => setTimeout(resolve, 1000))
+        new Promise((resolve) => setTimeout(resolve, TEARDOWN_FLUSH_CEILING_MS))
       ]);
     } catch {
       // Ignore cleanup errors
@@ -62,8 +73,10 @@ describe('SharedNodeStore - Coverage Completion', () => {
     SharedNodeStore.resetInstance();
     conflictNotifications.dismissAll();
     vi.clearAllMocks();
-    // Wait for any remaining async operations
-    await new Promise(resolve => setTimeout(resolve, 100));
+    // Let already-scheduled microtasks and any 0ms timers drain before the next
+    // test installs its own mocks. A macrotask boundary is what is needed here;
+    // the old fixed 100ms sleep was 100x that, charged to every test in the file.
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
 
   // ========================================================================
@@ -93,7 +106,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
         { persistenceDependencies: [dependency] }
       );
 
-      await new Promise(resolve => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
       expect(depExecuted).toBe(true);
     });
 
@@ -141,7 +154,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
       store.setNode(mockNode, databaseSource);
       store.updateNode(mockNode.id, { content: 'Trigger error' }, viewerSource);
 
-      await new Promise(resolve => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
 
       const errors = store.getTestErrors();
       expect(errors.length).toBeGreaterThan(0);
@@ -153,7 +166,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
 
       store.setNode(mockNode, viewerSource);
 
-      await new Promise(resolve => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
 
       const errors = store.getTestErrors();
       expect(errors.length).toBeGreaterThan(0);
@@ -274,7 +287,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
 
       store.setNode(mockNode, viewerSource);
 
-      await new Promise(resolve => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
 
       const errors = store.getTestErrors();
       expect(errors.length).toBeGreaterThan(0);
@@ -286,7 +299,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
 
       store.setNode(mockNode, viewerSource);
 
-      await new Promise(resolve => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
 
       const errors = store.getTestErrors();
       expect(errors.length).toBeGreaterThan(0);
@@ -337,7 +350,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
       store.setNode(mockNode, databaseSource);
       store.updateNode(mockNode.id, { content: 'Updated' }, viewerSource);
 
-      await new Promise(resolve => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
 
       // Version should be updated from backend
       const node = store.getNode(mockNode.id);
@@ -555,19 +568,29 @@ describe('SharedNodeStore - Coverage Completion', () => {
     });
 
     it('should handle errors during flush with timeout', async () => {
-      vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async () => {
-        await new Promise(resolve => setTimeout(resolve, 10000)); // Longer than timeout
-        return { ...mockNode, version: 2 };
-      });
+      // The operation never settles: flushAllPending must fall back to its own
+      // internal timeout rather than hang. A never-resolving promise states that
+      // intent directly — a sleep merely longer than the timeout implied the
+      // duration mattered, and cost real seconds to express.
+      vi.spyOn(backendAdapter, 'updateNode').mockImplementation(
+        () => new Promise<Node>(() => {})
+      );
 
       store.setNode(mockNode, databaseSource);
       store.updateNode(mockNode.id, { content: 'Long operation' }, viewerSource);
 
-      // flushAllPending races the pending op against its own internal 5s
-      // timeout, so give this test enough headroom above that to avoid
-      // racing vitest's default testTimeout against the same 5s window.
-      await expect(store.flushAllPending()).resolves.not.toThrow();
-    }, 10000);
+      // Drive the debounce and the internal flush timeout on fake time. Async
+      // variant required: the flush path holds live timers whose promises are
+      // settled by other microtasks (see shared-node-store.svelte.ts:123).
+      vi.useFakeTimers();
+      try {
+        const flushPromise = store.flushAllPending();
+        await vi.advanceTimersByTimeAsync(FLUSH_PENDING_TIMEOUT_MS);
+        await expect(flushPromise).resolves.not.toThrow();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
 
     it('does not double-execute an already in-flight operation on flush', async () => {
       // A controllable in-flight persist: the backend call hangs until we
@@ -582,10 +605,12 @@ describe('SharedNodeStore - Coverage Completion', () => {
       store.setNode(mockNode, databaseSource);
       store.updateNode(mockNode.id, { content: 'in-flight' }, viewerSource);
 
-      // Let the 500ms debounce fire: the op moves pending → executing and calls
-      // the backend exactly once (now parked on our unresolved promise).
-      await new Promise((r) => setTimeout(r, 600));
-      expect(updateSpy).toHaveBeenCalledTimes(1);
+      // Let the debounce fire: the op moves pending → executing and calls the
+      // backend exactly once (now parked on our unresolved promise). Waiting on
+      // that call rather than on a duration is both faster and stricter.
+      await vi.waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1), {
+        timeout: CASCADE_SETTLE_TIMEOUT_MS
+      });
 
       // Flush on window-close while the op is still in flight. The executing-op
       // guard must NOT start a second backend call (the bug: an OCC conflict or
@@ -621,10 +646,11 @@ describe('SharedNodeStore - Coverage Completion', () => {
     });
 
     it('should handle timeout in flushAndWaitForNodes', async () => {
-      vi.spyOn(backendAdapter, 'updateNode').mockImplementation(async () => {
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        return { ...mockNode, version: 2 };
-      });
+      // Never settles, so the 50ms flush timeout below is the only thing that
+      // can resolve this — which is precisely what the test asserts.
+      vi.spyOn(backendAdapter, 'updateNode').mockImplementation(
+        () => new Promise<Node>(() => {})
+      );
 
       store.setNode(mockNode, databaseSource);
       store.updateNode(mockNode.id, { content: 'Timeout test' }, viewerSource);
@@ -765,26 +791,37 @@ describe('SharedNodeStore - Coverage Completion', () => {
   // ========================================================================
 
   describe('OCC Error Detection', () => {
-    it('should trigger resync on VERSION_CONFLICT error', async () => {
-      const occError = new Error('VERSION_CONFLICT: optimistic concurrency failure');
-      (occError as Error & { code?: string }).code = 'VERSION_CONFLICT';
+    // NOTE: this error is a plain Error carrying a `code` property, which is
+    // NOT what `isVersionConflict()` recognises — that requires structured
+    // `conflictData`. So this test exercises the GENERIC write-failure path
+    // (track + rollback), not the OCC resync branch, despite the original
+    // title. Renamed to say what it actually covers; the real OCC resync
+    // behaviour is covered by ai-chat-occ-conflict-regression.test.ts and
+    // conflict-notification-integration.test.ts.
+    it('rolls back and tracks the error when a write fails', async () => {
+      const writeError = new Error('VERSION_CONFLICT: optimistic concurrency failure');
+      (writeError as Error & { code?: string }).code = 'VERSION_CONFLICT';
 
-      vi.spyOn(backendAdapter, 'updateNode').mockRejectedValue(occError);
-      vi.spyOn(backendAdapter, 'getNode').mockResolvedValue({
-        ...mockNode,
-        version: 5,
-        content: 'Server version'
-      });
+      vi.spyOn(backendAdapter, 'updateNode').mockRejectedValue(writeError);
 
       store.setNode(mockNode, databaseSource);
       store.updateNode(mockNode.id, { content: 'Local edit' }, viewerSource);
 
-      // Wait for OCC error and resync
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      // Wait on the failure being observed rather than on a duration long
+      // enough to cover debounce + rejection. vi.waitFor returns as soon as the
+      // condition holds, so the common case costs the debounce and nothing more.
+      await vi.waitFor(
+        () => {
+          expect(store.getTestErrors().length).toBeGreaterThan(0);
+        },
+        { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+      );
 
-      // Should have attempted resync (may or may not succeed depending on timing)
-      const node = store.getNode(mockNode.id);
-      expect(node).toBeTruthy();
+      // The failure is surfaced, and the node survives it. (The local edit is
+      // deliberately NOT discarded — dropping what the user typed because a
+      // write failed would be data loss.)
+      expect(store.getTestErrors()[0].message).toContain('VERSION_CONFLICT');
+      expect(store.getNode(mockNode.id)).toBeTruthy();
     });
   });
 
@@ -860,7 +897,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
       createNodeResolve!('typing-race-node');
 
       // Wait for persistence to complete (debounce is 500ms for new viewer nodes)
-      await new Promise(resolve => setTimeout(resolve, 700));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
 
       // Step 4: CRITICAL CHECK - User's content MUST be preserved!
       const afterCreate = store.getNode('typing-race-node');
@@ -968,7 +1005,7 @@ describe('SharedNodeStore - Coverage Completion', () => {
 
       // Complete CREATE
       createNodeResolve!('rapid-typing');
-      await new Promise(resolve => setTimeout(resolve, 700)); // debounce is 500ms
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
 
       // Final content must be the LATEST user typed, not initial 'A'
       const final = store.getNode('rapid-typing');

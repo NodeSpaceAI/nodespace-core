@@ -46,6 +46,7 @@ import {
 import { backendAdapter } from '../../lib/services/backend-adapter';
 import { conflictNotifications } from '../../lib/stores/conflict-notifications.svelte';
 import type { Node } from '../../lib/types';
+import { DEBOUNCED_WRITE_WAIT_MS, CASCADE_SETTLE_TIMEOUT_MS } from '../utils/test-constants';
 
 const makeNode = (id: string, content: string, version = 1): Node => ({
   id,
@@ -128,16 +129,16 @@ describe('resyncNodeFromServer direct call — queued-write regression', () => {
       // The fetch resync performs after A's OCC failure — reflects server
       // state from BEFORE B was ever attempted (the server has no idea B
       // exists yet).
-      vi.spyOn(backendAdapter, 'getNode').mockResolvedValue(
-        makeNode(nodeId, 'server-state-before-B', 2)
-      );
+      const getNodeSpy = vi
+        .spyOn(backendAdapter, 'getNode')
+        .mockResolvedValue(makeNode(nodeId, 'server-state-before-B', 2));
 
       // Write A: content-only change -> debounced.
       store.updateNode(nodeId, { content: 'A-edit' }, viewerSource);
 
       // Wait past the debounce so A's RPC starts (still in flight — the
       // mocked RPC above takes 300ms).
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      await new Promise((resolve) => setTimeout(resolve, DEBOUNCED_WRITE_WAIT_MS));
       expect(coord.isExecuting(nodeId)).toBe(true);
 
       // Write B: submitted while A is executing -> collapses into
@@ -145,9 +146,25 @@ describe('resyncNodeFromServer direct call — queued-write regression', () => {
       store.updateNode(nodeId, { content: 'B-edit-still-queued' }, viewerSource);
       expect(store.getNode(nodeId)?.content).toBe('B-edit-still-queued');
 
-      // Let A's OCC failure, the fallback resync, and B's eventual real
-      // persist attempt all settle.
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+      // Let A's OCC failure and the fallback resync settle. The resync's fetch
+      // is the terminal event of that cascade and the decision point this test
+      // is about, so waiting on it returns as soon as the sequence under test
+      // has run rather than after a fixed 2s.
+      //
+      // Note B does NOT produce a second updateNode call: the OCC handler's
+      // clearQueued() cancels B's queued retry (see the file header), so only
+      // B's optimistic local value is at stake here — which is the point.
+      await vi.waitFor(
+        () => {
+          expect(getNodeSpy).toHaveBeenCalled();
+          // The write must also have finished failing, so the resync's
+          // apply-or-skip decision has actually run by the time we assert.
+          // Without this the wait could return between the fetch and the
+          // decision, and the regression would stop being detectable.
+          expect(coord.isExecuting(nodeId)).toBe(false);
+        },
+        { timeout: CASCADE_SETTLE_TIMEOUT_MS }
+      );
 
       // B's optimistic value must not have been silently clobbered by the
       // resync's stale (pre-B) server snapshot.
@@ -172,13 +189,16 @@ describe('resyncNodeFromServer direct call — queued-write regression', () => {
 
       store.updateNode(nodeId, { content: 'A-edit-isolated' }, viewerSource);
 
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-
       // Nothing else was queued behind A — the resync must apply normally,
       // not be defeated by a self-referential false "something is pending".
-      const after = store.getNode(nodeId);
-      expect(after?.content).toBe('server-fresh');
-      expect(after?.version).toBe(5);
+      // Waiting on the resynced value IS the assertion, so this settles as
+      // soon as the behaviour under test happens.
+      await vi.waitFor(() => expect(store.getNode(nodeId)?.content).toBe('server-fresh'), {
+        timeout: CASCADE_SETTLE_TIMEOUT_MS
+      });
+
+      // The server row must land whole — content AND version.
+      expect(store.getNode(nodeId)?.version).toBe(5);
     },
     10000
   );
