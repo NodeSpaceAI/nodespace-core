@@ -3771,10 +3771,12 @@ mod tests {
 
         assert_eq!(json["node_id"], task_id);
         assert_eq!(json["expected"], 1);
-        // NOTE: task-node update_task_node service sets actual_version=0 ("unknown")
-        // because the SQLite transaction abort does not surface the winner's version.
-        // The authoritative current state is carried in current_node instead.
-        assert_eq!(json["actual"], 0);
+        // `update_task_node` now runs its version check inside the same
+        // transaction as the write (ADR-060 §2, wiring invariant-rule
+        // dispatch), reusing the real persisted version the transaction
+        // observed instead of a placeholder — the winning writer landed at
+        // version 2, so that's what's reported here.
+        assert_eq!(json["actual"], 2);
 
         // current_node must be non-null — the handler fetches it before returning.
         assert!(

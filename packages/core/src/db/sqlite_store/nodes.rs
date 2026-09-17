@@ -3133,65 +3133,95 @@ impl SqliteStore {
         }
     }
 
-    pub async fn get_task_node(&self, id: &str) -> Result<Option<crate::models::TaskNode>> {
-        let node = self.get_node(id).await?;
-        Ok(node.and_then(|n| {
-            if n.node_type != "task" {
-                return None;
-            }
-            let props = &n.properties;
-            let task_props = props.get("task").cloned().unwrap_or(serde_json::json!({}));
-            Some(crate::models::TaskNode {
-                id: n.id,
-                node_type: n.node_type,
-                content: n.content,
-                version: n.version,
-                created_at: n.created_at,
-                modified_at: n.modified_at,
-                properties: n.properties,
-                status: task_props
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or_default(),
-                priority: task_props
-                    .get("priority")
-                    .and_then(|v| v.as_str())
-                    .and_then(|s| s.parse().ok()),
-                due_date: task_props
-                    .get("due_date")
-                    .and_then(|v| v.as_str())
-                    .map(normalize_date_field),
-                started_at: task_props
-                    .get("started_at")
-                    .and_then(|v| v.as_str())
-                    .map(normalize_date_field),
-                completed_at: task_props
-                    .get("completed_at")
-                    .and_then(|v| v.as_str())
-                    .map(normalize_date_field),
-            })
-        }))
+    /// Convert a raw [`Node`] into a [`crate::models::TaskNode`], reading its
+    /// typed fields back out of the namespaced `properties.task.*` storage
+    /// shape (the inverse of [`crate::models::TaskNodeUpdate::apply_to_properties`]).
+    /// Returns `None` for a non-task node. Shared by [`Self::get_task_node`]
+    /// and [`Self::update_task_node_with_version_check_in_tx`] so the two
+    /// read paths can never parse the stored shape differently.
+    pub(crate) fn node_to_task_node(n: Node) -> Option<crate::models::TaskNode> {
+        if n.node_type != "task" {
+            return None;
+        }
+        let props = &n.properties;
+        let task_props = props.get("task").cloned().unwrap_or(serde_json::json!({}));
+        Some(crate::models::TaskNode {
+            id: n.id,
+            node_type: n.node_type,
+            content: n.content,
+            version: n.version,
+            created_at: n.created_at,
+            modified_at: n.modified_at,
+            properties: n.properties,
+            status: task_props
+                .get("status")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_default(),
+            priority: task_props
+                .get("priority")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok()),
+            due_date: task_props
+                .get("due_date")
+                .and_then(|v| v.as_str())
+                .map(normalize_date_field),
+            started_at: task_props
+                .get("started_at")
+                .and_then(|v| v.as_str())
+                .map(normalize_date_field),
+            completed_at: task_props
+                .get("completed_at")
+                .and_then(|v| v.as_str())
+                .map(normalize_date_field),
+        })
     }
 
-    pub async fn update_task_node(
-        &self,
+    pub async fn get_task_node(&self, id: &str) -> Result<Option<crate::models::TaskNode>> {
+        let node = self.get_node(id).await?;
+        Ok(node.and_then(Self::node_to_task_node))
+    }
+
+    /// `_in_tx` counterpart of the removed non-tx `update_task_node` (ADR-060
+    /// §2), same read-check-write shape as
+    /// [`Self::update_node_with_version_check_in_tx`]: the pre-read and the
+    /// version-gated `UPDATE` both run against `tx`, so the OCC check is
+    /// sound against this transaction's own view — no TOCTOU window between
+    /// reading `current` and writing. The `WHERE ... AND version = ?` guard
+    /// on the `UPDATE` is new relative to the removed method (which checked
+    /// the version only via a separate, non-atomic pre-read): a strict
+    /// correctness improvement that comes for free from running inside a
+    /// real transaction, matching the generic node-update path's own guard.
+    ///
+    /// Returns `Ok(Err(actual_version))` on a version mismatch rather than
+    /// `Err` — an expected, common outcome the caller maps to
+    /// `NodeServiceError::VersionConflict` itself, exactly like
+    /// `update_node_with_version_check_in_tx`'s own convention (ADR-069
+    /// §2a: a version mismatch is not a transaction failure). `actual_version`
+    /// is the real persisted version observed by this call, not a placeholder
+    /// — an improvement over the removed method, which could only ever report
+    /// `0` for a task-node conflict.
+    ///
+    /// Returns the raw [`Node`], not [`crate::models::TaskNode`] — the
+    /// caller (`NodeService::update_task_node_in_tx`) needs the namespaced
+    /// `properties.task.*` shape for its own changed-properties diff and
+    /// invariant-rule dispatch, not `TaskNode::into_node`'s flattened wire
+    /// shape (that shape exists for the RPC boundary only, never storage —
+    /// see that method's own doc).
+    pub(crate) async fn update_task_node_with_version_check_in_tx(
+        tx: &Tx<'_>,
         id: &str,
         expected_version: i64,
         update: crate::models::TaskNodeUpdate,
         title: Option<String>,
-    ) -> Result<crate::models::TaskNode> {
-        let current = self
-            .get_node(id)
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("Task node not found: {}", id))?;
+    ) -> Result<std::result::Result<Node, i64>> {
+        let current = match Self::get_node_in_tx(tx, id).await? {
+            Some(n) => n,
+            None => return Err(anyhow::anyhow!("Task node not found: {}", id)),
+        };
 
         if current.version != expected_version {
-            return Err(anyhow::anyhow!(
-                "VersionMismatch: expected {}, got {}",
-                expected_version,
-                current.version
-            ));
+            return Ok(Err(current.version));
         }
 
         // Merge the update's task-property fields into the node's properties via the
@@ -3232,18 +3262,34 @@ impl SqliteStore {
             sql_params.push(libsql::Value::Text(new_title.clone()));
         }
 
-        sql.push_str(&format!(" WHERE id = ?{}", sql_params.len() + 1));
+        sql.push_str(&format!(
+            " WHERE id = ?{} AND version = ?{}",
+            sql_params.len() + 1,
+            sql_params.len() + 2
+        ));
         sql_params.push(libsql::Value::Text(id.to_string()));
+        sql_params.push(libsql::Value::Integer(expected_version));
 
-        self.write()
-            .await
+        let rows_affected = tx
+            .conn()
             .execute(&sql, sql_params)
             .await
             .context("Failed to update task node")?;
 
-        self.get_task_node(id)
+        if rows_affected == 0 {
+            // Lost a race between the read above and this write despite
+            // running inside the same transaction — vanishingly unlikely
+            // (nothing else can observe or mutate this row mid-transaction),
+            // same defensive posture as `update_node_with_version_check_in_tx`'s
+            // own WHERE clause.
+            return Ok(Err(current.version));
+        }
+
+        let node = Self::get_node_in_tx(tx, id)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("Task node '{}' not found after update", id))
+            .ok_or_else(|| anyhow::anyhow!("Task node '{}' not found after update", id))?;
+
+        Ok(Ok(node))
     }
 
     /// Fetch a schema with `relationships` hydrated from its declaration edges
