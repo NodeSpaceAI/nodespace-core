@@ -13,10 +13,10 @@
 //! in-memory schema list:
 //!
 //! - every declaration lands as a relationship-table row on the right schema
-//! - each pair traverses from both ends, and the reverse name agrees with the
-//!   forward name read with `direction: "in"` (the self-referential case,
-//!   where the declaring and target type are the same, so the schema appears
-//!   in its own inbound set)
+//! - each pair resolves the forward and reverse names to DIFFERENT edge sets,
+//!   and the reverse name agrees with the forward name read with
+//!   `direction: "in"` (the self-referential case, where the declaring and
+//!   target type are the same, so the schema appears in its own inbound set)
 //! - `creator` resolves to a person while `assignee` stays independent of it
 //! - a `blocks` cycle is representable, because nothing validates against one
 
@@ -93,43 +93,77 @@ async fn core_link_declarations_are_seeded_as_relationship_rows() -> Result<()> 
     Ok(())
 }
 
-/// Each self-referential pair traverses from both ends, and the reverse name
-/// agrees with the forward name read inbound.
+/// Each self-referential pair traverses from both ends, and the forward and
+/// reverse names resolve to genuinely DIFFERENT edge sets.
+///
+/// The middle node of a three-node chain is what makes this meaningful. With a
+/// single ordered pair, `blocks` and `blocked_by` would both return "the other
+/// task" even if the reverse name silently resolved to the forward edge set —
+/// the one failure mode that matters here, since both names live on `task` and
+/// the usual `source_type` narrowing degenerates to a no-op when the declaring
+/// and target type are the same. `mid` sits between two distinct tasks, so
+/// resolving the wrong direction surfaces the wrong node and fails loudly.
 #[tokio::test]
-async fn task_link_pairs_traverse_from_both_ends() -> Result<()> {
+async fn task_link_pairs_resolve_direction_asymmetrically() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
-    make_node(&svc, "t_source", "task").await?;
-    make_node(&svc, "t_target", "task").await?;
+    make_node(&svc, "t_upstream", "task").await?;
+    make_node(&svc, "t_mid", "task").await?;
+    make_node(&svc, "t_downstream", "task").await?;
 
     for (name, reverse_name) in [
         ("blocks", "blocked_by"),
         ("relates_to", "related_from"),
         ("duplicates", "duplicated_by"),
     ] {
-        svc.create_relationship("t_source", name, "t_target", json!({}))
+        // upstream → mid → downstream, under this relationship name.
+        svc.create_relationship("t_upstream", name, "t_mid", json!({}))
             .await
-            .map_err(|e| anyhow::anyhow!("create {name}: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("create upstream {name} mid: {e}"))?;
+        svc.create_relationship("t_mid", name, "t_downstream", json!({}))
+            .await
+            .map_err(|e| anyhow::anyhow!("create mid {name} downstream: {e}"))?;
 
-        let forward = rel_ops::get_related_nodes(&svc, get("t_source", name, "out")).await?;
-        assert_eq!(forward.count, 1, "{name} should traverse forward");
-        assert_eq!(forward.related_nodes[0]["id"], "t_target");
+        // Forward from the middle reaches only what mid points at.
+        let forward = rel_ops::get_related_nodes(&svc, get("t_mid", name, "out")).await?;
+        assert_eq!(forward.count, 1, "{name} should traverse forward from mid");
+        assert_eq!(
+            forward.related_nodes[0]["id"], "t_downstream",
+            "{name} from mid must reach downstream, not upstream"
+        );
 
-        // The reverse spelling, from the other end. Both the forward and the
-        // reverse name live on `task` here, so this only resolves if
-        // self-referential declarations are handled.
-        let reverse =
-            rel_ops::get_related_nodes(&svc, get("t_target", reverse_name, "out")).await?;
+        // The reverse spelling from the same node reaches the OTHER neighbour.
+        // This only resolves if self-referential declarations are handled, and
+        // only passes if the two names address different edge sets.
+        let reverse = rel_ops::get_related_nodes(&svc, get("t_mid", reverse_name, "out")).await?;
         assert_eq!(
             reverse.count, 1,
             "{reverse_name} must resolve rather than return a silent zero: {reverse:?}"
         );
-        assert_eq!(reverse.related_nodes[0]["id"], "t_source");
+        assert_eq!(
+            reverse.related_nodes[0]["id"], "t_upstream",
+            "{reverse_name} from mid must reach upstream — if it returns downstream, \
+             the reverse name collapsed onto the forward edge set"
+        );
 
         // ...and agree with the same traversal spelled the long way.
-        let inbound = rel_ops::get_related_nodes(&svc, get("t_target", name, "in")).await?;
+        let inbound = rel_ops::get_related_nodes(&svc, get("t_mid", name, "in")).await?;
         assert_eq!(
             inbound.related_nodes[0]["id"], reverse.related_nodes[0]["id"],
             "{reverse_name} and `{name} --direction in` must agree"
+        );
+
+        // The chain ends see exactly one side each.
+        let upstream_reverse =
+            rel_ops::get_related_nodes(&svc, get("t_upstream", reverse_name, "out")).await?;
+        assert_eq!(
+            upstream_reverse.count, 0,
+            "nothing points at upstream under {name}"
+        );
+        let downstream_forward =
+            rel_ops::get_related_nodes(&svc, get("t_downstream", name, "out")).await?;
+        assert_eq!(
+            downstream_forward.count, 0,
+            "downstream points at nothing under {name}"
         );
     }
 

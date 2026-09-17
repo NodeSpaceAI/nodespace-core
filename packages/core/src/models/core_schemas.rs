@@ -217,6 +217,12 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             // being blocked by several itself. Cycles (A blocks B blocks A)
             // are representable; nothing here validates against them, matching
             // every other non-`extends` relationship.
+            //
+            // None of these names belong in BUILTIN_RELATIONSHIP_NAMES: that
+            // list is the built-in STRUCTURAL edges (member_of, has_child,
+            // mentions, has_role) that declaration queries exclude, and a
+            // schema-declared name resolves through the ordinary resolver
+            // instead — same as project's `tasks`.
             relationships: vec![
                 SchemaRelationship {
                     name: "blocks".to_string(),
@@ -1691,6 +1697,10 @@ mod tests {
         // person has-many tasks (as assignee); the task-side inverse is derived
         // from this one declaration (task carries no `assignee` entry of its
         // own — mirrors project's `tasks` relationship).
+        //
+        // The count is asserted alongside the lookup so an accidental addition
+        // to person still trips a test: `tasks` and `reported_tasks`, no more.
+        assert_eq!(person.relationships.len(), 2);
         let rel = person
             .relationships
             .iter()
@@ -1712,6 +1722,10 @@ mod tests {
     fn test_task_declares_self_referential_link_relationships() {
         let schemas = get_core_schemas();
         let task = schemas.iter().find(|s| s.id == "task").unwrap();
+
+        // Exactly these three — an accidental fourth declaration on task should
+        // trip a test rather than ride along unnoticed.
+        assert_eq!(task.relationships.len(), 3);
 
         // Every one of these is task→task, Many/Many, and optional on both ends.
         for (name, reverse_name) in [
