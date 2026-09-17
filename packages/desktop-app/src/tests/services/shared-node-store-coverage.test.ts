@@ -18,6 +18,7 @@ import { conflictNotifications } from '../../lib/stores/conflict-notifications.s
 import {
   DEBOUNCED_WRITE_WAIT_MS,
   TEARDOWN_FLUSH_CEILING_MS,
+  CASCADE_SETTLE_TIMEOUT_MS,
   FLUSH_PENDING_TIMEOUT_MS
 } from '../utils/test-constants';
 
@@ -604,10 +605,12 @@ describe('SharedNodeStore - Coverage Completion', () => {
       store.setNode(mockNode, databaseSource);
       store.updateNode(mockNode.id, { content: 'in-flight' }, viewerSource);
 
-      // Let the 500ms debounce fire: the op moves pending → executing and calls
-      // the backend exactly once (now parked on our unresolved promise).
-      await new Promise((r) => setTimeout(r, 600));
-      expect(updateSpy).toHaveBeenCalledTimes(1);
+      // Let the debounce fire: the op moves pending → executing and calls the
+      // backend exactly once (now parked on our unresolved promise). Waiting on
+      // that call rather than on a duration is both faster and stricter.
+      await vi.waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1), {
+        timeout: CASCADE_SETTLE_TIMEOUT_MS
+      });
 
       // Flush on window-close while the op is still in flight. The executing-op
       // guard must NOT start a second backend call (the bug: an OCC conflict or
