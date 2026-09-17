@@ -412,3 +412,157 @@ async fn parent_enum_value_added_later_validates_on_an_existing_subtype() {
         "a value appended to the parent should validate on the subtype with no rewrite: {after:?}"
     );
 }
+
+#[tokio::test]
+async fn base_scoped_query_results_project_to_the_base_scope() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    create_instance(&svc, "bug", json!({ "status": "open", "severity": "high" })).await;
+
+    let nodes = svc
+        .query_nodes_simple(NodeQuery {
+            node_type: Some("ticket".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("query failed");
+    let projected = svc
+        .project_nodes_to_scope(nodes, Some("ticket"))
+        .await
+        .expect("projection failed");
+
+    let bug = projected
+        .iter()
+        .find(|n| n.node_type == "bug")
+        .expect("the bug instance should be in a ticket-scoped result set");
+
+    assert!(
+        bug.properties.get("ticket").is_some(),
+        "the base's bucket survives projection, got {:?}",
+        bug.properties
+    );
+    assert!(
+        bug.properties.get("bug").is_none(),
+        "the subtype's own bucket must be dropped at base scope, got {:?}",
+        bug.properties
+    );
+}
+
+#[tokio::test]
+async fn leaf_scoped_query_results_keep_every_bucket() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    create_instance(&svc, "bug", json!({ "status": "open", "severity": "high" })).await;
+
+    let nodes = svc
+        .query_nodes_simple(NodeQuery {
+            node_type: Some("bug".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("query failed");
+    let projected = svc
+        .project_nodes_to_scope(nodes, Some("bug"))
+        .await
+        .expect("projection failed");
+
+    let bug = projected.first().expect("one bug instance");
+    assert!(
+        bug.properties.get("ticket").is_some() && bug.properties.get("bug").is_some(),
+        "at its own scope a node keeps its whole chain, got {:?}",
+        bug.properties
+    );
+}
+
+#[tokio::test]
+async fn projection_leaves_unextended_results_untouched() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    let id = create_instance(&svc, "ticket", json!({ "status": "open" })).await;
+
+    let before = svc
+        .get_node(&id)
+        .await
+        .expect("get_node failed")
+        .expect("node should exist");
+    let projected = svc
+        .project_nodes_to_scope(vec![before.clone()], Some("ticket"))
+        .await
+        .expect("projection failed");
+
+    assert_eq!(
+        projected[0].properties, before.properties,
+        "projecting an exact-type match must be the identity"
+    );
+}
+
+#[tokio::test]
+async fn query_without_a_type_filter_is_not_projected() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    let id = create_instance(&svc, "bug", json!({ "status": "open", "severity": "high" })).await;
+
+    let node = svc
+        .get_node(&id)
+        .await
+        .expect("get_node failed")
+        .expect("node should exist");
+    let projected = svc
+        .project_nodes_to_scope(vec![node.clone()], None)
+        .await
+        .expect("projection failed");
+
+    assert_eq!(
+        projected[0].properties, node.properties,
+        "with no queried type there is no scope to project to"
+    );
+}
+
+#[tokio::test]
+async fn an_unprojected_read_round_trips_without_losing_fields() {
+    let (svc, _tmp) = test_service().await;
+    seed_ticket_and_bug(&svc).await;
+    let id = create_instance(&svc, "bug", json!({ "status": "open", "severity": "high" })).await;
+
+    // The reason projection is not applied inside query_nodes_simple: an
+    // internal caller reads, mutates and writes a node back. If that read were
+    // projected, the write would silently drop every field outside the scope.
+    let node = svc
+        .query_nodes_simple(NodeQuery {
+            node_type: Some("ticket".to_string()),
+            ..Default::default()
+        })
+        .await
+        .expect("query failed")
+        .into_iter()
+        .find(|n| n.node_type == "bug")
+        .expect("the bug instance should be found");
+
+    // Write the node's own properties back verbatim, exactly as a
+    // read-modify-write caller would.
+    svc.update_node_unchecked(
+        &node.id,
+        nodespace_core::models::NodeUpdate {
+            content: Some("edited".to_string()),
+            properties: Some(node.properties.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("update failed");
+
+    let after = svc
+        .get_node(&id)
+        .await
+        .expect("get_node failed")
+        .expect("node should exist");
+
+    assert_eq!(
+        after.properties["bug"]["severity"], "high",
+        "a read-modify-write through an internal query must not drop out-of-scope \
+         fields, got {:?}",
+        after.properties
+    );
+    assert_eq!(after.properties["ticket"]["status"], "open");
+    assert_eq!(after.content, "edited");
+}

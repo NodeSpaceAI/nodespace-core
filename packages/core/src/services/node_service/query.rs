@@ -285,6 +285,75 @@ impl NodeService {
     /// If no limit is specified in the query, a default limit of [`DEFAULT_QUERY_LIMIT`] (100)
     /// is applied to prevent unbounded queries and potential performance issues.
     /// Callers can override this by explicitly setting a limit via `query.with_limit(n)`.
+    /// Project a query's results to the queried type's scope (ADR-078).
+    ///
+    /// Returns each node with its properties reduced to the buckets visible at
+    /// `node_type`'s scope, so a `task`-scoped query yields rows carrying
+    /// task's fields and nothing else, whatever their concrete type. Querying
+    /// a type that extends nothing, or with no type filter, returns the nodes
+    /// untouched.
+    ///
+    /// Deliberately **not** applied inside `query_nodes_simple` itself. A
+    /// projected node has had properties removed from the in-memory struct, so
+    /// a caller that reads, mutates and writes one back would silently drop
+    /// the fields outside its read scope — and there are such callers
+    /// (`skill_updater` round-trips a node it queried). Projection belongs at
+    /// a boundary where results are leaving for a client and cannot be written
+    /// back, so it is offered here and applied by the daemon's read RPCs
+    /// rather than imposed on every internal query.
+    pub async fn project_nodes_to_scope(
+        &self,
+        nodes: Vec<Node>,
+        node_type: Option<&str>,
+    ) -> Result<Vec<Node>, NodeServiceError> {
+        let Some(nt) = node_type.filter(|nt| *nt != "*") else {
+            return Ok(nodes);
+        };
+
+        // The scope is the QUERIED type's own chain — `["ticket"]` for an
+        // unextended base, `["bug", "ticket"]` when the query itself names a
+        // subtype. Note this is the queried type's ancestry, not the matched
+        // node's: projecting a bug at ticket scope means keeping ticket's
+        // buckets, and ticket's chain is what names them.
+        let chain = self.resolve_type_chain(nt).await?;
+        let scopes: Vec<&str> = chain.iter().map(String::as_str).collect();
+
+        Ok(nodes
+            .into_iter()
+            .map(|mut node| {
+                // A node of exactly the queried type carries only buckets
+                // already in scope, so projecting it is the identity — skip
+                // the rebuild rather than reallocate every row of an
+                // unextended query.
+                if node.node_type != nt {
+                    node.properties = Self::project_properties_to_scope(&node.properties, &scopes);
+                }
+                node
+            })
+            .collect())
+    }
+
+    /// Keep only the buckets named in `scopes`, plus `_`-prefixed bookkeeping.
+    ///
+    /// Storage shape is preserved rather than flattened: the wire layer
+    /// flattens separately, and returning a flattened object here would make a
+    /// projected node structurally different from an unprojected one.
+    fn project_properties_to_scope(
+        properties: &serde_json::Value,
+        scopes: &[&str],
+    ) -> serde_json::Value {
+        let Some(obj) = properties.as_object() else {
+            return properties.clone();
+        };
+
+        serde_json::Value::Object(
+            obj.iter()
+                .filter(|(k, _)| k.starts_with('_') || scopes.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        )
+    }
+
     pub async fn query_nodes_simple(
         &self,
         query: crate::models::NodeQuery,

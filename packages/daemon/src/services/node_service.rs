@@ -912,9 +912,21 @@ impl GrpcNodeService for NodeServiceImpl {
             },
         };
 
+        let queried_type = query.node_type.clone();
         let nodes = this
             .node_service
             .query_nodes_simple(query)
+            .await
+            .map_err(service_error_to_status)?;
+
+        // Project to the queried type's scope (ADR-078) so a base-type query
+        // returns rows carrying that type's fields and nothing else, whatever
+        // their concrete type. Applied here rather than in the service, since
+        // this is a boundary results leave by and cannot be written back
+        // through.
+        let nodes = this
+            .node_service
+            .project_nodes_to_scope(nodes, queried_type.as_deref())
             .await
             .map_err(service_error_to_status)?;
 
