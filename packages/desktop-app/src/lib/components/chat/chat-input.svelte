@@ -95,8 +95,10 @@
 
   .chat-textarea:focus {
     outline: none;
+    /* Border COLOR only: the width is unchanged, so nothing reflows. The
+       `box-shadow: 0 0 0 2px hsl(var(--ring) / 0.2)` that sat here was an alpha
+       ring — theme-blind, and enclosure this design does not use. */
     border-color: hsl(var(--ring));
-    box-shadow: 0 0 0 2px hsl(var(--ring) / 0.2);
   }
 
   .chat-textarea:disabled {

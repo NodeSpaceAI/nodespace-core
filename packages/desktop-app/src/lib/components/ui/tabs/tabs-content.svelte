@@ -9,7 +9,11 @@
   bind:ref
   data-slot="tabs-content"
   class={cn(
-    'ring-offset-background focus-visible:ring-ring mt-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2',
+    // A tab panel is a scroll container, not a control: it takes focus only so
+    // the keyboard can scroll it, and there is nothing here for `Enter` to
+    // activate. Repainting a whole pane would be a flash of color rather than a
+    // focus hint, so this one drops its ring and gains nothing in its place.
+    'mt-2 focus-visible:outline-none',
     className
   )}
   {...restProps}

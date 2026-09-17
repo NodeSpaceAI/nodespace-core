@@ -829,10 +829,12 @@
     }
   }
 
-  /* Focus management for accessibility */
-  .app-shell:focus-within {
-    /* Ensure focus indicators are visible */
-    outline: 2px solid hsl(var(--ring));
-    outline-offset: 2px;
-  }
+  /*
+    No focus treatment on the shell itself.
+
+    This carried `outline: 2px solid; outline-offset: 2px`, which `:focus-within`
+    applied to the entire application window whenever anything at all inside it
+    held focus — a ring around the whole app, not around the focused control.
+    Focus is indicated on the control that has it; see DESIGN.md's focus rule.
+  */
 </style>
