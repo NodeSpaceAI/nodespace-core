@@ -854,7 +854,7 @@ fn resolve_iteration_path_item_id(item: &Value) -> Result<String, String> {
 // recognize the shape "identifier(args)" and hand it to
 // `BindingContext::resolve_function_call`'s fixed, hardcoded `match` --
 // there is no way for an action param to reach anything beyond the
-// explicitly-supported function set (currently just `add_days`).
+// explicitly-supported function set (`add_days`, `sum`, `count`).
 
 /// Detect whether an entire binding path -- the text between a `{` `}` pair,
 /// e.g. the `add_days(item.start_date, 14)` in
