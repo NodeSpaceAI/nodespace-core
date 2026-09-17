@@ -168,6 +168,27 @@ pub fn json_to_cel(json: &serde_json::Value) -> Value {
 /// per `NodeService::normalize_flat_properties_to_namespace` -- at the top
 /// level alongside it.
 pub fn node_to_cel_value(node: &Node) -> Value {
+    node_to_cel_value_at_scope(node, std::slice::from_ref(&node.node_type.as_str()))
+}
+
+/// Build a CEL `Value` from a Node, projected to an explicit scope chain
+/// (ADR-078).
+///
+/// The general form of [`node_to_cel_value`], which is the node's-own-scope
+/// case. A Play registered against a base type evaluates its conditions at
+/// *that* scope, so a Play on `task` firing against an `issue` node passes
+/// `["task"]` and sees task's fields only — `node.severity` does not resolve
+/// there. That is deliberate: a base-scoped Play then behaves identically
+/// whether it fired on a plain task or a subtype, and cannot come to depend on
+/// a field only some of its matches carry.
+///
+/// Projection also closes a hazard the single-bucket version had under
+/// `extends`: its fallback branch treats any non-matching, non-`_` top-level
+/// key as a flat property, so an unprojected sibling bucket would be inserted
+/// wholesale as a nested map named after the ancestor type (`node.task`),
+/// rather than dropped or unwrapped. Walking an explicit chain removes the
+/// branch's ability to see a sibling bucket at all.
+pub fn node_to_cel_value_at_scope(node: &Node, scope_chain: &[&str]) -> Value {
     let mut map: HashMap<cel_interpreter::objects::Key, Value> = HashMap::new();
 
     // Core fields
@@ -195,17 +216,32 @@ pub fn node_to_cel_value(node: &Node) -> Value {
     // property storage format changes, both must be updated.
     // Also handles colon-prefixed namespaces: "custom:amount" → "amount".
     if let Some(obj) = node.properties.as_object() {
-        for (k, v) in obj {
-            if k == &node.node_type {
-                // Type namespace: unwrap inner properties
-                if let Some(inner_obj) = v.as_object() {
-                    for (ik, iv) in inner_obj {
-                        // Skip internal fields like _schema_version
-                        if !ik.starts_with('_') {
-                            map.insert(key(ik), json_to_cel(iv));
-                        }
-                    }
+        // Walk the scope chain first, nearest scope wins. Done ahead of the
+        // loop below so a bucket in the chain is never also seen by the
+        // flat-property branch.
+        for scope in scope_chain {
+            let Some(bucket) = obj.get(*scope).and_then(|v| v.as_object()) else {
+                continue;
+            };
+            for (ik, iv) in bucket {
+                // Skip internal fields like _schema_version
+                if !ik.starts_with('_') {
+                    map.entry(key(ik)).or_insert_with(|| json_to_cel(iv));
                 }
+            }
+        }
+
+        for (k, v) in obj {
+            if scope_chain.contains(&k.as_str()) {
+                // Already unwrapped above.
+                continue;
+            } else if v.is_object() && obj.contains_key(&node.node_type) {
+                // A sibling type-namespace bucket on a node that is in
+                // storage shape: an ancestor's bucket outside this read's
+                // scope, or a dormant namespace from a type change. Either
+                // way it is not a flat property of this node — inserting it
+                // would surface `node.task` as a nested map.
+                continue;
             } else if !k.starts_with('_') {
                 // Skip internal bookkeeping fields (`_seed`, `_schemaVersion`,
                 // `_playbookChainDepth`, ...) -- same `_`-prefix convention as

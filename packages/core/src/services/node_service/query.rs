@@ -67,7 +67,16 @@ impl NodeService {
 
         // Apply property filters in-memory if present
         let result_nodes = if let Some(ref property_filters) = filter.property_filters {
-            let mut filtered = Self::apply_property_filters(nodes, property_filters);
+            // The query's own `node_type` sets the read scope (ADR-078): a
+            // filter authored against a base type is evaluated at that base's
+            // scope even when the matched row is a descendant instance.
+            // Resolved once per query, not per row.
+            let scope_chain = match filter.node_type.as_deref() {
+                Some(nt) if nt != "*" => Some(self.resolve_type_chain(nt).await?),
+                _ => None,
+            };
+            let mut filtered =
+                Self::apply_property_filters(nodes, property_filters, scope_chain.as_deref());
             // Apply offset in memory
             if let Some(offset) = filter.offset {
                 if offset < filtered.len() {
@@ -93,19 +102,31 @@ impl NodeService {
     /// Properties are stored in namespaced format: `{ "task": { "status": "open" } }`.
     /// PropertyFilter paths use JSONPath: `"$.status"`.
     /// This resolves the path against each node's type namespace.
-    fn apply_property_filters(nodes: Vec<Node>, filters: &[PropertyFilter]) -> Vec<Node> {
+    /// `scope_chain` is the query's own read scope (ADR-078) — the chain of
+    /// the type its `node_type` filter named, nearest-first. `None` falls back
+    /// to each node's own type, which is the untyped-query case and the
+    /// pre-`extends` behavior.
+    fn apply_property_filters(
+        nodes: Vec<Node>,
+        filters: &[PropertyFilter],
+        scope_chain: Option<&[String]>,
+    ) -> Vec<Node> {
         nodes
             .into_iter()
             .filter(|node| {
                 filters
                     .iter()
-                    .all(|f| Self::node_matches_property_filter(node, f))
+                    .all(|f| Self::node_matches_property_filter(node, f, scope_chain))
             })
             .collect()
     }
 
     /// Check if a single node matches a single property filter.
-    fn node_matches_property_filter(node: &Node, filter: &PropertyFilter) -> bool {
+    fn node_matches_property_filter(
+        node: &Node,
+        filter: &PropertyFilter,
+        scope_chain: Option<&[String]>,
+    ) -> bool {
         // Extract property path from JSONPath "$.field" or "$.field.subfield"
         // PropertyFilter::new() validates the "$." prefix, so strip_prefix should always succeed.
         let path = match filter.path.strip_prefix("$.") {
@@ -120,10 +141,23 @@ impl NodeService {
         };
         let segments: Vec<&str> = path.split('.').collect();
 
-        // Resolve value from namespaced properties: properties[node_type][field...]
-        let mut current = node.properties.get(&node.node_type);
-        for segment in &segments {
-            current = current.and_then(|v| v.get(*segment));
+        // Resolve value from namespaced properties, searching each bucket in
+        // the query's scope chain nearest-first (ADR-078). A filter authored
+        // against a base type resolves an inherited field from its declaring
+        // ancestor's bucket; a field outside the scope does not resolve, so
+        // the filter does not match — which is what keeps a base-scoped query
+        // from depending on a subtype's own fields.
+        let scope_chain = scope_chain.unwrap_or(std::slice::from_ref(&node.node_type));
+        let mut current = None;
+        for scope in scope_chain {
+            let mut candidate = node.properties.get(scope.as_str());
+            for segment in &segments {
+                candidate = candidate.and_then(|v| v.get(*segment));
+            }
+            if candidate.is_some() {
+                current = candidate;
+                break;
+            }
         }
 
         let Some(actual_value) = current else {
