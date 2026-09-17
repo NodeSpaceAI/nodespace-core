@@ -353,6 +353,43 @@ pub fn clears_score_gate(candidate: &SkillCandidate) -> bool {
     candidate.score >= score_bar_for(candidate)
 }
 
+/// The highest score among gate-clearing candidates that whitelist at least
+/// one tool — "which *tool-bearing* candidate won retrieval". `NEG_INFINITY`
+/// when there are none, which every `score >= max` comparison admits, so a
+/// tool-less candidate set imposes no ceiling on anyone.
+///
+/// The invariant this exists to hold: **a candidate that whitelists no tool
+/// must not influence which tool-bearing candidate wins.** A candidate with an
+/// empty `tools` vec can never contribute a tool name or a descriptor, so it
+/// has no stake in who else may — it can only raise the bar that decides them.
+///
+/// An empty whitelist is the observable property this keys on, and the only
+/// one visible at this boundary: `SkillCandidate` carries no notion of
+/// candidate kind. Today's producer of such candidates is schema-typed
+/// retrieval hits, which describe a schema rather than a capability and carry
+/// `tools: []` by construction. One clears the gate unconditionally at the
+/// read rung while the lexical backstop pins it at a fixed confidence above
+/// any cosine-derived score a real skill can reach — so on every turn where a
+/// schema was named outright it took the top score away from a genuinely
+/// matching skill. Both consumers below were separately broken by exactly
+/// that, which is why the rule is one named thing rather than a coincidence
+/// between call sites.
+///
+/// Computed by explicit max rather than by taking the first candidate: callers
+/// do sort by score descending before truncating to `RETRIEVAL_TOP_K`
+/// (`agent_loop`'s `route`), but a safety property should not depend on
+/// another function's ordering staying that way. Ties keep every candidate at
+/// the top score, which both consumers treat alike.
+///
+/// This narrows the population the max folds over; it does **not** relax the
+/// global-max rule either consumer applies with the result.
+fn top_tool_bearing_score<'a>(candidates: impl Iterator<Item = &'a SkillCandidate>) -> f32 {
+    candidates
+        .filter(|c| clears_score_gate(c) && !c.tools.is_empty())
+        .map(|c| c.score)
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
 /// Names of the candidates that clear the score gate, comma-separated, for the
 /// `routed_skills` log field.
 ///
@@ -549,34 +586,13 @@ fn render_schema_metadata(meta: &serde_json::Value) -> Option<String> {
 /// from it and [`destructive_tools_withheld`] reports against it, so the log
 /// cannot claim something different from what the model was offered.
 fn stage2_permitted_names(candidates: &[SkillCandidate]) -> std::collections::HashSet<&str> {
-    // Computed by explicit max rather than taking `candidates[0]`: the caller
-    // does sort by score descending before truncating to RETRIEVAL_TOP_K
-    // (`agent_loop`'s `route`), but a safety property should not depend on
-    // another function's ordering staying that way. Ties keep every candidate
-    // at the top score, which is the same treatment `declare_write_tool_fields`
-    // gives them.
-    //
-    // Scoped to candidates that own at least one tool: a candidate with an
-    // empty `tools` vec can never contribute a tool name, so it has no stake
-    // in deciding whose destructive tools are trusted. "Who won retrieval" is
-    // only meaningful here as "which *tool-bearing* candidate won".
-    //
-    // An empty whitelist is the observable property this turns on, and the
-    // only one visible at this boundary — `SkillCandidate` carries no notion
-    // of candidate kind. Today's producer of such candidates is schema-typed
-    // retrieval hits, which describe a schema rather than a capability and
-    // carry `tools: []` by construction; counting their scores toward
-    // `top_score` is what broke this. A schema named outright in the query is
-    // pinned at the lexical backstop's fixed confidence, above any
-    // cosine-derived score a real skill can reach, so a genuinely-matching
-    // deletion skill lost `delete_node` on every such turn. Directionally
-    // safe but functionally wrong — the tool vanishes for no reason the model
-    // or user can see.
-    let top_score = candidates
-        .iter()
-        .filter(|c| clears_score_gate(c) && !c.tools.is_empty())
-        .map(|c| c.score)
-        .fold(f32::NEG_INFINITY, f32::max);
+    // Only a tool-bearing candidate's score decides whose destructive tools
+    // are trusted — see [`top_tool_bearing_score`] for the invariant and for
+    // what counting tool-less candidates broke here (a genuinely-matching
+    // deletion skill silently lost `delete_node` whenever the query named a
+    // schema outright: directionally safe but functionally wrong, the tool
+    // vanishing for no reason the model or user can see).
+    let top_score = top_tool_bearing_score(candidates.iter());
 
     candidates
         .iter()
@@ -787,26 +803,16 @@ pub fn declare_write_tool_fields(
 ) -> Vec<ToolDefinition> {
     let cleared: Vec<&SkillCandidate> =
         candidates.iter().filter(|c| clears_score_gate(c)).collect();
-    // Folded over tool-bearing candidates only, for the reason
-    // `stage2_permitted_names` gives: a candidate with an empty `tools` vec
-    // whitelists no tool, so it can never be the `c.tools.iter().any(...)`
-    // match below for any tool — it cannot contribute a descriptor, only
-    // raise the bar that decides who else may. Retrieval returns such
-    // candidates (today, schema-typed hits), and one clears the gate
-    // unconditionally at the read rung while being pinned by the lexical
-    // backstop above any cosine-derived score, so it took `max_score` on
-    // every turn where a schema was named outright and left every write
-    // tool on the bare-object fallback. The schema the user named is
-    // exactly what stopped its own fields being declared.
+    // Only a tool-bearing candidate's score decides whose descriptors are
+    // declared — see [`top_tool_bearing_score`] for the invariant and for
+    // what counting tool-less candidates broke here (every write tool left on
+    // the bare-object fallback whenever the query named a schema outright: the
+    // schema the user named was exactly what stopped its own fields being
+    // declared).
     //
-    // This narrows the population the max folds over; it does NOT relax the
-    // global-max rule itself, which stays load-bearing for the distractor
-    // case (see the trade-off above and its two pinning tests).
-    let max_score = cleared
-        .iter()
-        .filter(|c| !c.tools.is_empty())
-        .map(|c| c.score)
-        .fold(f32::NEG_INFINITY, f32::max);
+    // The global-max rule this applies the result to stays load-bearing for
+    // the distractor case (see the trade-off above and its two pinning tests).
+    let max_score = top_tool_bearing_score(cleared.iter().copied());
     tools
         .into_iter()
         .map(|tool| {
