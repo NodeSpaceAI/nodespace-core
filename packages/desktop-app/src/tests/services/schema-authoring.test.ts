@@ -12,6 +12,7 @@ vi.mock('$lib/services/backend-adapter', () => ({
 
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { createSchemaInstance, shouldIntegrateInstance } from '$lib/services/schema-authoring';
+import { UNTITLED_CHAT_TITLE } from '$lib/utils/ai-chat-title';
 
 const createNodeMock = vi.mocked(backendAdapter.createNode);
 const getNodeMock = vi.mocked(backendAdapter.getNode);
@@ -66,6 +67,19 @@ describe('createSchemaInstance', () => {
         expect.objectContaining({ nodeType: typeId, content: expected })
       );
     }
+  });
+
+  it('seeds ai-chat with the exact sentinel the daemon tests for', async () => {
+    // Not "Untitled Ai Chat": the daemon's background titler only claims a
+    // chat whose content is byte-identical to UNTITLED_CHAT_TITLE, so the
+    // humanized "Untitled {Type}" form would read as a user-chosen title and
+    // suppress automatic titling forever.
+    await createSchemaInstance('ai-chat');
+
+    expect(createNodeMock.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ nodeType: 'ai-chat', content: UNTITLED_CHAT_TITLE })
+    );
+    expect(createNodeMock.mock.calls[0][0].content).toBe('Untitled');
   });
 
   it('leaves body-content and custom types with empty content', async () => {

@@ -31,6 +31,9 @@ use nodespace_core::models::{
     AiChatCompletedWrite, AiChatMessage, AiChatNode, AiChatResolvedEntity, NodeFilter, NodeUpdate,
 };
 use nodespace_core::services::{NodeEmbeddingService, NodeService, NodeServiceError};
+
+use crate::services::ai_chat_title;
+use crate::services::chat_idle_gate::ChatIdleGate;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
@@ -126,6 +129,15 @@ const OPENAI_COMPAT_DISCOVERY_CACHE_TTL: std::time::Duration = std::time::Durati
 /// conflict is expected; the retry re-reads the winning version and reapplies.
 const MAX_WRITE_ATTEMPTS: usize = 5;
 
+/// How long the chat model must stay idle before background title generation
+/// runs.
+///
+/// A conversation is a burst of turns with short gaps between them. Firing a
+/// title job into the first gap would satisfy "only when idle" on a
+/// technicality while still stealing the model mid-conversation, so the titler
+/// waits for the user to actually stop rather than merely pause.
+const TITLE_QUIET_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// gRPC error message for local-GGUF-model-management calls made on a daemon
 /// whose `GgufModelManager::new()` failed at construction (see
 /// `SharedLocalAgent::new`). Chat turns and OpenAI-compatible models are
@@ -213,6 +225,11 @@ pub struct SharedLocalAgent {
             Vec<nodespace_agent::agent_types::ModelInfo>,
         )>,
     >,
+    /// Tracks live chat turns so background work can wait for the model to go
+    /// idle. Lives here, on the process-global handle, because the engine it
+    /// guards is process-global: a per-database counter would let one
+    /// database's background job run straight into another's live turn.
+    idle_gate: ChatIdleGate,
 }
 
 impl SharedLocalAgent {
@@ -264,7 +281,14 @@ impl SharedLocalAgent {
             model_spec_snapshot_timeout,
             daemon_config_path,
             openai_compat_discovery_cache: Mutex::new(None),
+            idle_gate: ChatIdleGate::new(),
         })
+    }
+
+    /// The process-global chat-model idle gate. Live turns register against it
+    /// for as long as they run; background work waits on it.
+    pub(crate) fn idle_gate(&self) -> &ChatIdleGate {
+        &self.idle_gate
     }
 
     /// The engine a turn starting now should run against.
@@ -700,6 +724,14 @@ impl LocalAgentServiceImpl {
     /// before triggering this turn — writing it again here would re-emit a
     /// nodeUpdated event and cause a re-entry loop.
     async fn run_ai_chat_turn(&self, node_id: String, cancel: CancellationToken) {
+        // Mark the chat model busy for as long as this turn runs, so background
+        // work (title generation) defers to it. Process-global rather than
+        // per-database: the engine is shared across databases, so a per-database
+        // signal would let one database's background job run into another's live
+        // turn. Held as an RAII guard, so every early return below — and a panic
+        // or cancellation — releases it rather than wedging the gate busy.
+        let active_turn = self.inner.shared.idle_gate().begin_turn();
+
         // One read of the chat node serves both of the things this turn needs
         // from it: the rendered inference history, and the record of what
         // earlier turns wrote (which seeds the duplicate guard below).
@@ -943,6 +975,77 @@ impl LocalAgentServiceImpl {
 
         self.end_turn(&node_id).await;
         tracing::info!(node_id, "ai-chat turn complete");
+
+        // Release the idle gate before considering titling, so the titler sees
+        // an idle model rather than waiting on this very turn.
+        drop(active_turn);
+
+        self.maybe_generate_title(&node_id).await;
+    }
+
+    /// Title this chat in the background if it still needs one.
+    ///
+    /// Called only from the tail of [`Self::run_ai_chat_turn`], which is the
+    /// daemon-driven native turn path the AI-Chat UI drives. That placement is
+    /// the scope guard: PTY-captured sessions never mint ai-chat nodes and
+    /// never run this path (see `capture_service`), so an external agent's
+    /// conversation is not titled here — those carry their own
+    /// `capture:summary` instead.
+    ///
+    /// Spawned rather than awaited: a turn is finished once its reply is
+    /// stored, and titling must not hold the turn's task open or delay the
+    /// next one.
+    async fn maybe_generate_title(&self, node_id: &str) {
+        // Cheap pre-check on the common path — most turns are on chats that
+        // are already titled, and that costs one read rather than a spawn.
+        let Ok(Some(node)) = self.inner.node_service.get_node(node_id).await else {
+            return;
+        };
+        let Ok(chat) = AiChatNode::from_node(node) else {
+            return;
+        };
+        if !ai_chat_title::needs_title(&chat) {
+            return;
+        }
+
+        let node_service = self.inner.node_service.clone();
+        let shared = self.inner.shared.clone();
+        let shutdown = self.inner.shutdown_token.clone();
+        let node_id = node_id.to_string();
+
+        tokio::spawn(async move {
+            // Wait for the model to be genuinely quiet, not merely between two
+            // of the user's messages.
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = shared.idle_gate().wait_for_idle_stable(TITLE_QUIET_PERIOD) => {}
+            }
+
+            // Re-read after the wait: the conversation moved on while we
+            // waited, and the user may have titled it themselves.
+            let Ok(Some(node)) = node_service.get_node(&node_id).await else {
+                return;
+            };
+            let Ok(chat) = AiChatNode::from_node(node) else {
+                return;
+            };
+            if !ai_chat_title::needs_title(&chat) {
+                return;
+            }
+
+            let engine = shared.engine().await;
+            let Some(title) = ai_chat_title::generate_title(&engine, &chat).await else {
+                return;
+            };
+
+            match ai_chat_title::write_title_if_still_untitled(&node_service, &node_id, &title)
+                .await
+            {
+                Ok(true) => tracing::info!(node_id, %title, "generated ai-chat title"),
+                Ok(false) => {}
+                Err(e) => tracing::warn!(node_id, error = %e, "failed to write ai-chat title"),
+            }
+        });
     }
 
     /// Scan for ai-chat nodes stuck in `status: 'processing'` at daemon startup
@@ -5914,5 +6017,199 @@ model = "model-b"
         assert_eq!(ai_chat.messages.len(), 2);
         assert_eq!(ai_chat.messages[1].role, "assistant");
         assert_eq!(ai_chat.messages[1].content, "Hello there");
+    }
+
+    // -- Background title generation ---------------------------------------
+
+    /// Create an untitled ai-chat node carrying `messages` already-exchanged
+    /// messages, so it sits at or above the titling threshold without having
+    /// to run that many real turns.
+    async fn create_untitled_chat_with_history(
+        node_service: &Arc<NodeService>,
+        messages: usize,
+    ) -> String {
+        let history: Vec<serde_json::Value> = (0..messages)
+            .map(|i| {
+                serde_json::json!({
+                    "role": if i % 2 == 0 { "user" } else { "assistant" },
+                    "content": format!("message {i} about deployment pipelines"),
+                })
+            })
+            .collect();
+        let node = Node::new(
+            "ai-chat".to_string(),
+            ai_chat_title::UNTITLED_CHAT_TITLE.to_string(),
+            serde_json::json!({ "ai-chat": { "messages": history, "turn_status": "idle" } }),
+        );
+        node_service
+            .create_node(node)
+            .await
+            .expect("create untitled ai-chat")
+    }
+
+    /// A live turn holds the idle gate for its whole duration, so background
+    /// titling queued against it cannot run until the turn settles.
+    ///
+    /// This is the scheduling guarantee the feature rests on: without it a
+    /// title job would contend for the engine's own (unfair) inference lock
+    /// and could block the user's reply for a full generation.
+    #[tokio::test]
+    async fn title_work_defers_while_a_turn_is_in_flight() {
+        let (svc, node_service, shared, _tempdir) =
+            test_service_with(true, MODEL_SPEC_SNAPSHOT_TIMEOUT).await;
+
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        svc.replace_engine_if_changed("blocking", Arc::new(BlockingEngine::new(release_rx)))
+            .await;
+
+        let node_id = create_processing_node_with_user_message(&node_service, "Hi").await;
+
+        let turn_svc = svc.clone();
+        let turn_node = node_id.clone();
+        let turn = tokio::spawn(async move {
+            turn_svc.maybe_handle_ai_chat_node(&turn_node).await;
+        });
+
+        // Wait for the turn to actually register on the gate.
+        let gate = shared.idle_gate();
+        for _ in 0..200 {
+            if gate.is_busy() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(gate.is_busy(), "a running turn must mark the model busy");
+
+        // A background waiter must stay parked for as long as the turn runs.
+        let waiter_shared = shared.clone();
+        let waiter = tokio::spawn(async move {
+            waiter_shared.idle_gate().wait_for_idle().await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !waiter.is_finished(),
+            "background title work ran while a live turn was still in flight"
+        );
+
+        // Releasing the turn lets the deferred work proceed.
+        let _ = release_tx.send(());
+        turn.await.expect("turn task panicked");
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("background work never resumed after the turn settled")
+            .expect("waiter task panicked");
+        assert!(
+            !gate.is_busy(),
+            "the gate must be released once a turn ends"
+        );
+    }
+
+    /// A chat the user has titled is left alone, however much it is used.
+    #[tokio::test]
+    async fn a_user_title_is_never_overwritten() {
+        let (_svc, node_service, _tempdir) = test_service().await;
+
+        let node = Node::new(
+            "ai-chat".to_string(),
+            "Deployment runbook".to_string(),
+            serde_json::json!({ "ai-chat": { "messages": [
+                {"role": "user", "content": "a"},
+                {"role": "assistant", "content": "b"},
+                {"role": "user", "content": "c"},
+            ] } }),
+        );
+        let node_id = node_service.create_node(node).await.expect("create");
+
+        let chat = get_ai_chat(&node_service, &node_id).await;
+        assert!(
+            !ai_chat_title::needs_title(&chat),
+            "a user-titled chat must not be eligible for background titling"
+        );
+
+        // Even asked directly, the write refuses.
+        let wrote = ai_chat_title::write_title_if_still_untitled(
+            &node_service,
+            &node_id,
+            "Generated title",
+        )
+        .await
+        .expect("write must not error");
+        assert!(!wrote, "the titler must refuse to overwrite a user's title");
+        assert_eq!(
+            get_ai_chat(&node_service, &node_id).await.content,
+            "Deployment runbook"
+        );
+    }
+
+    /// An untitled chat past the threshold accepts a generated title, and the
+    /// write lands in `content` without disturbing the conversation.
+    #[tokio::test]
+    async fn an_untitled_chat_accepts_a_generated_title() {
+        let (_svc, node_service, _tempdir) = test_service().await;
+        let node_id = create_untitled_chat_with_history(
+            &node_service,
+            ai_chat_title::TITLE_MESSAGE_THRESHOLD,
+        )
+        .await;
+
+        let before = get_ai_chat(&node_service, &node_id).await;
+        assert!(ai_chat_title::needs_title(&before));
+
+        let wrote = ai_chat_title::write_title_if_still_untitled(
+            &node_service,
+            &node_id,
+            "Deploy pipeline",
+        )
+        .await
+        .expect("write must succeed");
+        assert!(wrote);
+
+        let after = get_ai_chat(&node_service, &node_id).await;
+        assert_eq!(after.content, "Deploy pipeline");
+        // The conversation itself is untouched — titling reads it, never writes it.
+        assert_eq!(after.messages.len(), before.messages.len());
+        for (a, b) in after.messages.iter().zip(before.messages.iter()) {
+            assert_eq!(a.role, b.role);
+            assert_eq!(a.content, b.content);
+        }
+    }
+
+    /// A chat that has barely started is left untitled — a title drawn from a
+    /// single opening message just restates it.
+    #[tokio::test]
+    async fn a_chat_below_the_threshold_is_not_titled_yet() {
+        let (_svc, node_service, _tempdir) = test_service().await;
+        let node_id = create_untitled_chat_with_history(
+            &node_service,
+            ai_chat_title::TITLE_MESSAGE_THRESHOLD - 1,
+        )
+        .await;
+
+        let chat = get_ai_chat(&node_service, &node_id).await;
+        assert!(
+            !ai_chat_title::needs_title(&chat),
+            "a chat below the message threshold must not be titled yet"
+        );
+    }
+
+    /// Generation is isolated: it builds its own request and never reads or
+    /// appends to the live conversation's stored messages.
+    #[tokio::test]
+    async fn title_generation_does_not_mutate_the_conversation() {
+        let (_svc, node_service, _tempdir) = test_service().await;
+        let node_id = create_untitled_chat_with_history(&node_service, 4).await;
+
+        let before = get_ai_chat(&node_service, &node_id).await;
+        let engine: Arc<dyn ChatInferenceEngine> = Arc::new(StubEngine::new("Deploy pipeline"));
+        let title = ai_chat_title::generate_title(&engine, &before)
+            .await
+            .expect("stub engine should yield a title");
+        assert_eq!(title, "Deploy pipeline");
+
+        // Generation alone persists nothing at all.
+        let after = get_ai_chat(&node_service, &node_id).await;
+        assert_eq!(after.content, ai_chat_title::UNTITLED_CHAT_TITLE);
+        assert_eq!(after.messages.len(), before.messages.len());
+        assert_eq!(after.version, before.version);
     }
 }

@@ -43,6 +43,25 @@ pub fn summarization_prompt(older_messages: &str) -> String {
     )
 }
 
+/// Build the prompt that turns the opening of a conversation into a short
+/// title for it.
+///
+/// `conversation` is the rendered transcript (see `render_for_title` in
+/// `packages/daemon/src/services/ai_chat_title.rs`, which caps how much of the
+/// conversation is included). The instruction is phrased to suppress the
+/// preamble a small local model otherwise volunteers ("Sure! Here's a
+/// title:"), because the reply is used verbatim as the node's title — but the
+/// caller still sanitises the result rather than trusting the model to comply.
+pub fn title_generation_prompt(conversation: &str) -> String {
+    format!(
+        "Write a short title for the following conversation. \
+         Use at most 6 words. Describe what the conversation is about. \
+         Reply with the title alone — no quotes, no punctuation at the end, \
+         no explanation, no preamble.\n\n\
+         {conversation}"
+    )
+}
+
 /// Format a tool result as JSON for the conversation history.
 ///
 /// The content is serialized as JSON so that the nlp-engine can parse it and
@@ -108,6 +127,13 @@ mod tests {
         let result = summarization_prompt("User asked about billing architecture");
         assert!(result.contains("billing architecture"));
         assert!(result.contains("Summarize"));
+    }
+
+    #[test]
+    fn title_generation_prompt_includes_conversation() {
+        let result = title_generation_prompt("user: how do I reset my password");
+        assert!(result.contains("reset my password"));
+        assert!(result.contains("title"));
     }
 
     #[test]

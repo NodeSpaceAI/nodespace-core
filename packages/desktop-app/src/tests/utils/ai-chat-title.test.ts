@@ -7,8 +7,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   aiChatDisplayTitle,
+  isUntitledChat,
   resolveChatTitleCommit,
-  UNTITLED_CHAT_LABEL
+  UNTITLED_CHAT_LABEL,
+  UNTITLED_CHAT_TITLE
 } from '$lib/utils/ai-chat-title';
 
 describe('aiChatDisplayTitle', () => {
@@ -33,6 +35,51 @@ describe('aiChatDisplayTitle', () => {
     // Trimming is a decision for the caller writing the value, not for display —
     // this only decides whether to show the placeholder.
     expect(aiChatDisplayTitle('  Padded  ')).toBe('  Padded  ');
+  });
+});
+
+describe('UNTITLED_CHAT_TITLE', () => {
+  it('is the exact sentinel the daemon tests for', () => {
+    // This string crosses a language boundary: the frontend writes it at
+    // creation (schema-authoring) and the daemon's `is_untitled` tests for it
+    // (packages/daemon/src/services/ai_chat_title.rs). A drift between the two
+    // disables background titling silently — every chat would look
+    // user-titled — so both sides pin the literal.
+    expect(UNTITLED_CHAT_TITLE).toBe('Untitled');
+  });
+
+  it('is distinct from the display-only placeholder', () => {
+    // One is stored, the other is only rendered. Collapsing them would make a
+    // chat displaying "Untitled chat" look claimable to the titler.
+    expect(UNTITLED_CHAT_TITLE).not.toBe(UNTITLED_CHAT_LABEL);
+  });
+});
+
+describe('isUntitledChat', () => {
+  it('treats the stored sentinel as untitled', () => {
+    expect(isUntitledChat(UNTITLED_CHAT_TITLE)).toBe(true);
+    expect(isUntitledChat('  Untitled  ')).toBe(true);
+  });
+
+  it('treats absent content as untitled', () => {
+    expect(isUntitledChat('')).toBe(true);
+    expect(isUntitledChat('   ')).toBe(true);
+    expect(isUntitledChat(null)).toBe(true);
+    expect(isUntitledChat(undefined)).toBe(true);
+  });
+
+  it('treats anything the user typed as titled', () => {
+    expect(isUntitledChat('Deployment runbook')).toBe(false);
+    // Only the exact sentinel is claimable — a title that merely contains it
+    // is the user's.
+    expect(isUntitledChat('Untitled thoughts')).toBe(false);
+    expect(isUntitledChat('untitled')).toBe(false);
+  });
+
+  it('does not treat the display placeholder as claimable', () => {
+    // "Untitled chat" is what the UI renders for empty content; if a user
+    // typed it verbatim it is their title, not the sentinel.
+    expect(isUntitledChat(UNTITLED_CHAT_LABEL)).toBe(false);
   });
 });
 

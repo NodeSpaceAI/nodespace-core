@@ -11,6 +11,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { backendAdapter } from '$lib/services/backend-adapter';
 import { humanizeSchemaId } from '$lib/plugins/schema-plugin-loader';
+import { UNTITLED_CHAT_TITLE } from '$lib/utils/ai-chat-title';
 import type { Node } from '$lib/types';
 
 /**
@@ -30,6 +31,18 @@ import type { Node } from '$lib/types';
 const NAME_AS_CONTENT_TYPES = new Set(['project', 'skill', 'collection', 'agent-guidance', 'tool']);
 
 /**
+ * Types whose seed content is a fixed string rather than the
+ * `"Untitled {Type}"` form `NAME_AS_CONTENT_TYPES` derives.
+ *
+ * `ai-chat` seeds the bare `"Untitled"`: that exact value is the sentinel the
+ * daemon's background titler tests for before generating a title, so it has to
+ * match `UNTITLED_CHAT_TITLE` byte for byte — `humanizeSchemaId` would yield
+ * "Untitled Ai Chat" and the titler would read it as a user-chosen title and
+ * leave it alone forever.
+ */
+const SEED_CONTENT_OVERRIDES = new Map<string, string>([['ai-chat', UNTITLED_CHAT_TITLE]]);
+
+/**
  * Mint a fresh instance of the given schema type and return the created node.
  *
  * The node is created as a root (`parentId: null`) with no properties; the
@@ -37,11 +50,14 @@ const NAME_AS_CONTENT_TYPES = new Set(['project', 'skill', 'collection', 'agent-
  * is the schema's id — the same key `QueryNodeViewer` queries on — so the new
  * node matches that type's result list. Body-content types start empty ("start
  * typing"); name-as-content Core types (see `NAME_AS_CONTENT_TYPES`) seed
- * `"Untitled {Type}"` so they pass their non-empty-content validation.
+ * `"Untitled {Type}"` so they pass their non-empty-content validation; types in
+ * `SEED_CONTENT_OVERRIDES` seed a fixed string instead.
  */
 export async function createSchemaInstance(typeId: string): Promise<Node> {
   const newId = uuidv4();
-  const content = NAME_AS_CONTENT_TYPES.has(typeId) ? `Untitled ${humanizeSchemaId(typeId)}` : '';
+  const content =
+    SEED_CONTENT_OVERRIDES.get(typeId) ??
+    (NAME_AS_CONTENT_TYPES.has(typeId) ? `Untitled ${humanizeSchemaId(typeId)}` : '');
   await backendAdapter.createNode({
     id: newId,
     nodeType: typeId,
