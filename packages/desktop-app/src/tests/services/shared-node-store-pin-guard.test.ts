@@ -127,6 +127,13 @@ function sourceFiles(dir: string): string[] {
  * in prose isn't mistaken for a real call site. Not a full comment parser — good
  * enough for this codebase's comment shapes, matching node-accent-colors.test.ts's
  * precedent of a targeted regex over a full AST parse.
+ *
+ * Known gap: a TRAILING comment on a code line (`const x = 1; // pinNodes(...)`)
+ * is not stripped, so in principle a comment could satisfy PIN_CALL and mask a
+ * real unpinned read on the same line. No file in this codebase does that today
+ * (grep for a trailing `//` after a `getNode`/`ensureNode`/`pinNodes` call finds
+ * none), but a reviewer adding a new call site should know a same-line trailing
+ * comment isn't a substitute for this check actually seeing a real pin call.
  */
 function stripCommentLines(source: string): string {
   return source
@@ -154,7 +161,8 @@ describe('SharedNodeStore pin-reachability guard', () => {
         const code = stripCommentLines(fs.readFileSync(path.join(srcRoot, rel), 'utf8'));
         return READ_CALL.test(code) && !PIN_CALL.test(code);
       })
-      .filter((rel) => !(rel in REACHABLE_WITHOUT_PIN));
+      .filter((rel) => !(rel in REACHABLE_WITHOUT_PIN))
+      .sort();
 
     expect(
       offenders,
