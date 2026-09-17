@@ -25,6 +25,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { proSync } from '$lib/stores/pro-sync.svelte';
+  import { labsFlags } from '$lib/stores/labs-flags.svelte';
   import { membership } from '$lib/stores/membership.svelte';
   import { resolveProSyncVariant } from '$lib/plugins/ui-extensions.svelte';
   import { Badge } from '$lib/components/ui/badge';
@@ -42,6 +43,14 @@
   }
   let { onNavigateToDatabase }: Props = $props();
 
+  // Direct `proSync.isPro` read that bypasses the `resolveProSyncVariant()`
+  // chokepoint (ADR-049) — this card must ALSO stay hidden behind the Labs
+  // "Team synchronization" toggle (default OFF), a pure client-side
+  // visibility flag; it does not touch `proSync.isPro`/tier-detection itself,
+  // and community builds are unaffected either way (`proSync.isPro` is always
+  // `false` there regardless of the flag).
+  const syncUiEnabled = $derived(proSync.isPro && labsFlags.syncEnabled);
+
   // Sign-in is a GLOBAL daemon concept (one OAuth session), independent of
   // which database is bound to what — unlike `proSync`'s per-database-
   // attributed `userEmail` getter (ADR-053: the store forces a synthetic
@@ -57,7 +66,7 @@
   const signedIn = $derived(identityEmail !== '');
 
   async function loadIdentity(): Promise<void> {
-    if (!proSync.isPro) return;
+    if (!syncUiEnabled) return;
     identityLoading = true;
     try {
       const identity = await invoke<{ personId: string; email: string }>('pro_current_person');
@@ -105,7 +114,7 @@
     <CardHeader class="p-5 pb-4">
       <div class="mb-1.5 flex items-center gap-2.5">
         <span class="text-foreground text-[0.9375rem] font-semibold">NodeSpace Pro</span>
-        {#if !proSync.isPro}
+        {#if !syncUiEnabled}
           <Badge variant="secondary">Not available</Badge>
         {:else if identityLoading}
           <Badge variant="secondary">Loading…</Badge>
@@ -115,7 +124,7 @@
           <Badge variant="secondary">Signed out</Badge>
         {/if}
       </div>
-      {#if !proSync.isPro}
+      {#if !syncUiEnabled}
         <p class="text-muted-foreground m-0 text-sm leading-relaxed">
           This build doesn't include NodeSpace Pro sync.
         </p>
@@ -143,7 +152,7 @@
         </p>
       {/if}
     </CardHeader>
-    {#if proSync.isPro && signedIn}
+    {#if syncUiEnabled && signedIn}
       {#if resolveProSyncVariant() === 'consent'}
         <CardContent class="px-5 pb-3">
           <p class="text-muted-foreground mb-2 text-sm leading-relaxed">
@@ -175,7 +184,7 @@
   </Card>
 </div>
 
-{#if proSync.isPro}
+{#if syncUiEnabled}
   <InvitationsInbox
     open={inboxOpen}
     onClose={() => (inboxOpen = false)}

@@ -8,6 +8,7 @@
   import IdentityCard from './identity-card.svelte';
   import { databaseStore, type DatabaseInfo } from '$lib/stores/database.svelte';
   import { proSync } from '$lib/stores/pro-sync.svelte';
+  import { labsFlags } from '$lib/stores/labs-flags.svelte';
   import { createLogger } from '$lib/utils/logger';
 
   const log = createLogger('DatabaseSettings');
@@ -106,7 +107,7 @@
     <div class="flex gap-2">
       <Button variant="outline" size="sm" onclick={() => (newDialogOpen = true)}>New</Button>
       <Button variant="outline" size="sm" onclick={openExisting}>Open existing…</Button>
-      {#if proSync.isPro}
+      {#if proSync.isPro && labsFlags.syncEnabled}
         <Button variant="outline" size="sm" onclick={() => (addSyncedDialogOpen = true)}>
           Add synced database…
         </Button>

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { Badge } from '$lib/components/ui/badge';
   import { Card, CardHeader } from '$lib/components/ui/card';
   import { Switch } from '$lib/components/ui/switch';
   import { labsFlags } from '$lib/stores/labs-flags.svelte';
@@ -32,14 +31,23 @@
   </Card>
 
   <!-- Team synchronization -->
-  <Card class="mb-4 gap-0 rounded-lg py-0 opacity-60" aria-disabled="true">
+  <Card class="mb-4 gap-0 rounded-lg py-0">
     <CardHeader class="p-5 pb-4">
-      <div class="mb-1.5 flex items-center gap-2.5">
-        <span class="text-foreground text-[0.9375rem] font-semibold">Team synchronization</span>
-        <Badge variant="secondary">In development</Badge>
+      <div class="mb-1.5 flex items-center justify-between gap-2.5">
+        <div class="flex items-center gap-2.5">
+          <span class="text-foreground text-[0.9375rem] font-semibold">Team synchronization</span>
+        </div>
+        <Switch
+          checked={labsFlags.syncEnabled}
+          onCheckedChange={(checked) => (labsFlags.syncEnabled = checked)}
+          aria-label={labsFlags.syncEnabled
+            ? 'Disable Team synchronization'
+            : 'Enable Team synchronization'}
+        />
       </div>
       <p class="text-muted-foreground m-0 text-sm leading-relaxed">
-        Share collections and collaborate with your team across devices. Not available yet.
+        Share collections and collaborate with your team across devices. Experimental — may not
+        work correctly.
       </p>
     </CardHeader>
   </Card>

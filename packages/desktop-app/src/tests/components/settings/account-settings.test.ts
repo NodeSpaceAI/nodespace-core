@@ -29,6 +29,7 @@ vi.mock('@tauri-apps/api/core', () =>
 
 import AccountSettings from '$lib/components/settings/sections/account-settings.svelte';
 import { proSync } from '$lib/stores/pro-sync.svelte';
+import { labsFlags } from '$lib/stores/labs-flags.svelte';
 import { membership } from '$lib/stores/membership.svelte';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import { DATABASE_SETTINGS_NODE_ID } from '$lib/plugins/ui-extensions';
@@ -67,12 +68,19 @@ describe('AccountSettings', () => {
     SharedNodeStore.resetInstance();
     proSync.tier = 'unknown';
     proSync.userEmail = '';
+    // The Labs "Team synchronization" toggle (default OFF) is a separate,
+    // client-side visibility gate ANDed with `proSync.isPro` for this card
+    // (see the dedicated describe block below) — default it ON here so the
+    // pre-existing tests continue to exercise `proSync.isPro`/sign-in-state
+    // behavior in isolation, as they did before that gate existed.
+    labsFlags.syncEnabled = true;
   });
 
   afterEach(() => {
     cleanup();
     proSync.tier = 'unknown';
     proSync.userEmail = '';
+    labsFlags.syncEnabled = false;
     membership.reset();
     vi.restoreAllMocks();
   });
@@ -221,5 +229,51 @@ describe('AccountSettings', () => {
     // proSync.signOut() clears userEmail, and signOut() also clears the
     // locally-tracked global identity — the card should fall back to signed-out.
     expect(container.textContent).toContain('Signed out');
+  });
+
+  describe('Labs "Team synchronization" toggle (default OFF)', () => {
+    it('hides all Pro card content on a signed-out Pro-capable build when the flag is off (default)', () => {
+      proSync.tier = 'pro';
+      labsFlags.syncEnabled = false;
+      const { container } = render(AccountSettings);
+
+      // Identical to the community-build ("not Pro") rendering — the flag being
+      // off must look exactly like the surface not existing at all.
+      expect(container.textContent).toContain('Not available');
+      expect(container.textContent).toContain("This build doesn't include NodeSpace Pro sync.");
+      expect(container.querySelectorAll('button')).toHaveLength(0);
+      // The card must not probe the daemon for identity while hidden.
+      expect(mockInvoke).not.toHaveBeenCalledWith('pro_current_person');
+    });
+
+    it('hides Pro card content even for an already-signed-in Pro user when the flag is off', async () => {
+      proSync.tier = 'pro';
+      labsFlags.syncEnabled = false;
+      mockIdentity(SIGNED_IN);
+      const { container } = render(AccountSettings);
+
+      expect(container.textContent).toContain('Not available');
+      expect(container.textContent).not.toContain('alice@example.com');
+      expect(container.querySelectorAll('button')).toHaveLength(0);
+      expect(mockInvoke).not.toHaveBeenCalledWith('pro_current_person');
+    });
+
+    it('flipping the flag on reveals exactly the pre-existing signed-in behavior, unchanged', async () => {
+      proSync.tier = 'pro';
+      labsFlags.syncEnabled = false;
+      mockIdentity(SIGNED_IN);
+      const { container } = render(AccountSettings);
+      expect(container.textContent).toContain('Not available');
+
+      labsFlags.syncEnabled = true;
+
+      await waitFor(() => expect(container.textContent).toContain('Signed in'));
+      expect(container.textContent).toContain('alice@example.com');
+      const buttons = Array.from(container.querySelectorAll('button')).map((b) =>
+        b.textContent?.trim()
+      );
+      expect(buttons).toContain('Invitations');
+      expect(buttons).toContain('Sign out');
+    });
   });
 });

@@ -20,6 +20,7 @@
 import './pro-plugin';
 
 import { proSync } from '$lib/stores/pro-sync.svelte';
+import { labsFlags } from '$lib/stores/labs-flags.svelte';
 import { SharedNodeStore } from '$lib/services/shared-node-store.svelte';
 import {
   uiExtensionRegistry,
@@ -66,8 +67,17 @@ export function activeDatabaseSettings(): DatabaseSettings | undefined {
  *
  * A plain function (not a `$derived`) so it composes into any consumer's own
  * derivation; its reads are reactive because the underlying sources are.
+ *
+ * Gated by the Labs "Team synchronization" toggle (`labsFlags.syncEnabled`,
+ * default `false`): this is a pure client-side visibility flag over these
+ * EXISTING Pro sign-in/collaboration surfaces, checked before axis 1, so a
+ * signed-out fresh install shows no sync/sign-in entry point anywhere until
+ * the user opts in from Settings → Labs. It does not touch `proSync.tier`/
+ * tier-detection itself, and has no effect on community builds — those are
+ * already `teaser` via axis 1 regardless of this flag.
  */
 export function resolveProSyncVariant(): ProSyncVariant {
+  if (!labsFlags.syncEnabled) return 'teaser';
   if (proSync.tier !== 'pro') return 'teaser';
   const settings = activeDatabaseSettings();
   // `auth_status` on the settings node hydrates asynchronously — on a fresh
