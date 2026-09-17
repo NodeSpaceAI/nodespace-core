@@ -1333,6 +1333,16 @@ async fn total_estimate_of(service: &NodeService, cycle_type: &str, cycle_id: &s
         .and_then(|v| v.as_i64())
 }
 
+async fn item_count_of(service: &NodeService, cycle_type: &str, cycle_id: &str) -> Option<i64> {
+    service
+        .get_node(cycle_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|n| user_field(&n, cycle_type, "item_count").cloned())
+        .and_then(|v| v.as_i64())
+}
+
 /// `NodeService::update_node` takes an `expected_version` (optimistic
 /// concurrency) alongside the `NodeUpdate`; this test file's existing tests
 /// only ever mutate nodes through play actions (`update_node` action type),
@@ -1356,6 +1366,145 @@ async fn patch_node_properties(
             nodespace_core::models::NodeUpdate::default().with_properties(properties),
         )
         .await?;
+    Ok(())
+}
+
+/// Positive half: `sum(...)` correctly recomputes FRESH each time its own
+/// Regression test for a real bug caught in review: a freshly created Cycle
+/// with ZERO Issues assigned yet -- the ordinary starting state for the
+/// motivating "Cycle running total" use case, and the state every such
+/// Cycle is in for at least a moment -- must resolve `sum(trigger.node.issues,
+/// estimate)`/`count(trigger.node.issues)` to `0`, not hard-fail the action.
+///
+/// Before the `GraphResolver::resolve_path` fix this PR also makes, a
+/// declared "many" relationship with zero CURRENT matches resolved to
+/// `Missing`, not an empty collection -- indistinguishable, at the raw
+/// row-count level, from "no such relationship at all". Since an action
+/// failure disables the WHOLE PLAY (`rule_processor_loop`'s
+/// `ActionResult::Failed` handling calls `lifecycle.disable_play`), this
+/// meant the aggregate play would self-disable on its very first trigger
+/// for any Cycle that hadn't yet had an Issue attached -- silently, with no
+/// further recomputation ever happening again for that play, even after
+/// Issues were later added.
+#[tokio::test]
+async fn recompute_over_a_relationship_with_zero_current_matches_does_not_fail_the_action(
+) -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let issue_type = "agg_issue_zero";
+    let cycle_type = "agg_cycle_zero";
+
+    create_schema(
+        &service,
+        issue_type,
+        json!([{ "name": "estimate", "type": "number" }]),
+    )
+    .await?;
+    create_schema_with_relationships(
+        &service,
+        cycle_type,
+        json!([
+            { "name": "touch", "type": "string" },
+            { "name": "total_estimate", "type": "number" },
+            { "name": "item_count", "type": "number" }
+        ]),
+        json!([{
+            "name": "issues",
+            "targetType": issue_type,
+            "direction": "out",
+            "cardinality": "many",
+            "reverseName": "cycle",
+            "reverseCardinality": "one"
+        }]),
+    )
+    .await?;
+
+    let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
+
+    create_play(
+        &service,
+        "recompute-cycle-total-zero",
+        json!([{
+            "name": "recompute-total",
+            "trigger": {
+                "type": "graph_event",
+                "on": "property_changed",
+                "node_type": cycle_type,
+                "property_key": format!("{cycle_type}.touch")
+            },
+            "conditions": [],
+            "actions": [{
+                "action_type": "update_node",
+                "params": {
+                    "node_id": "{trigger.node.id}",
+                    "properties": {
+                        "total_estimate": "{sum(trigger.node.issues, estimate)}",
+                        "item_count": "{count(trigger.node.issues)}"
+                    }
+                }
+            }]
+        }]),
+    )
+    .await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Cycle created with NO issues ever attached.
+    let cycle = Node::new(
+        cycle_type.to_string(),
+        "empty cycle".to_string(),
+        json!({ "touch": "v0", "total_estimate": 99, "item_count": 99 }),
+    );
+    let cycle_id = cycle.id.clone();
+    service.create_node(cycle).await?;
+
+    patch_node_properties(&service, &cycle_id, json!({ "touch": "v1" })).await?;
+
+    let recomputed_to_zero = wait_until(|| {
+        let service = Arc::clone(&service);
+        let cycle_id = cycle_id.clone();
+        async move {
+            total_estimate_of(&service, cycle_type, &cycle_id).await == Some(0)
+                && item_count_of(&service, cycle_type, &cycle_id).await == Some(0)
+        }
+    })
+    .await;
+    assert!(
+        recomputed_to_zero,
+        "sum(...)/count(...) over a zero-item relationship collection must resolve \
+         to 0, not hard-fail the action"
+    );
+
+    // Prove the play is still ACTIVE (not disabled by the zero-item
+    // recompute above): attach a real Issue and confirm a later trigger
+    // still fires and recomputes correctly.
+    let issue = Node::new(
+        issue_type.to_string(),
+        "issue".to_string(),
+        json!({ "estimate": 7 }),
+    );
+    let issue_id = issue.id.clone();
+    service.create_node(issue).await?;
+    service
+        .create_relationship(&cycle_id, "issues", &issue_id, json!({}))
+        .await?;
+    patch_node_properties(&service, &cycle_id, json!({ "touch": "v2" })).await?;
+
+    let recomputed_after_adding_issue = wait_until(|| {
+        let service = Arc::clone(&service);
+        let cycle_id = cycle_id.clone();
+        async move {
+            total_estimate_of(&service, cycle_type, &cycle_id).await == Some(7)
+                && item_count_of(&service, cycle_type, &cycle_id).await == Some(1)
+        }
+    })
+    .await;
+    assert!(
+        recomputed_after_adding_issue,
+        "the play must still be ACTIVE after the zero-item recompute -- a later \
+         trigger must still fire and recompute correctly, proving the zero-item \
+         case did not silently disable the play"
+    );
+
+    shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }
 
