@@ -96,9 +96,14 @@ pub async fn install_recipe(
         }
 
         let properties = rewrite_schema_ids(&play.properties(), &renames);
-        let outcome =
-            create_node_resolving_collisions(node_service, play.play_id, "play", play.name, properties)
-                .await;
+        let outcome = create_node_resolving_collisions(
+            node_service,
+            play.play_id,
+            "play",
+            play.name,
+            properties,
+        )
+        .await;
         failed |= matches!(outcome, StepOutcome::Failed { .. });
         steps.push(StepReport { label, outcome });
     }
@@ -258,7 +263,10 @@ fn rewrite_schema_ids(
             None => value.clone(),
         },
         serde_json::Value::Array(items) => serde_json::Value::Array(
-            items.iter().map(|v| rewrite_schema_ids(v, renames)).collect(),
+            items
+                .iter()
+                .map(|v| rewrite_schema_ids(v, renames))
+                .collect(),
         ),
         serde_json::Value::Object(map) => serde_json::Value::Object(
             map.iter()
@@ -311,7 +319,10 @@ mod tests {
 
         let out = rewrite_schema_ids(&payload, &renames);
         assert_eq!(out["rules"][0]["trigger"]["node_type"], "cycle__2");
-        assert_eq!(out["rules"][0]["actions"][0]["params"]["node_type"], "cycle__2");
+        assert_eq!(
+            out["rules"][0]["actions"][0]["params"]["node_type"],
+            "cycle__2"
+        );
         assert_eq!(
             out["unrelated"], "a cycle of work",
             "only exact id matches are rewritten, never prose"

@@ -2,6 +2,13 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { createLogger } from '$lib/utils/logger';
+  import {
+    installMethodology,
+    listMethodologies,
+    summarizeReport,
+    type InstallReport,
+    type Methodology
+  } from '$lib/services/methodology-service';
   import { toError } from '$lib/types/errors';
   import { focusTrap } from '$lib/actions/focus-trap';
   import { splitFullName } from '$lib/utils/split-full-name';
@@ -27,7 +34,7 @@
 
   // ── types ──────────────────────────────────────────────────────────────────
 
-  type WizardStep = 'identity' | 'path' | 'skill' | 'summary';
+  type WizardStep = 'identity' | 'path' | 'skill' | 'methodology' | 'summary';
 
   interface OnboardingStatus {
     completed: boolean;
@@ -131,6 +138,10 @@
   // Whether the PATH export was already present before we ran
   let pathWasAlreadyConfigured = $state(false);
 
+  // Declared here rather than beside the rest of the methodology state below,
+  // because `stepSequence` reads it to decide whether to offer the step at all.
+  let methodologies = $state<Methodology[]>([]);
+
   // ── derived step sequence ──────────────────────────────────────────────────
 
   const stepSequence = $derived(
@@ -140,6 +151,7 @@
       if (showIdentity) steps.push('identity');
       steps.push('path');
       if (showSkill) steps.push('skill');
+      if (methodologies.length > 0) steps.push('methodology');
       steps.push('summary');
       return steps;
     })()
@@ -192,6 +204,19 @@
           // failing inside it: offer the step with generic wording.
           showSkill = true;
           log.warn('Could not detect agents', err);
+        });
+
+      // Drives whether the methodology step is offered at all. Unlike the
+      // skill step, a failure here drops the step rather than showing it with
+      // generic wording: there is nothing to pick from, so the step would be
+      // an empty question.
+      listMethodologies()
+        .then((available) => {
+          methodologies = available;
+          log.debug('Methodologies loaded', { count: available.length });
+        })
+        .catch((err) => {
+          log.warn('Could not load methodologies', err);
         });
     }
     loadIdentity();
@@ -313,6 +338,43 @@
   // "your coding agents" when detection came back empty (a failed or
   // not-yet-resolved probe) — vague, but never wrong, which a guess at one
   // specific agent would not be.
+  // ── methodology step ───────────────────────────────────────────────────────
+  //
+  // The execution path lives in `methodology-service`, not here: onboarding is
+  // expected to be reworked, and a Settings install has to be the same call.
+  // This step only picks an id and renders the report.
+
+  let selectedMethodology = $state<string | null>(null);
+  let methodologyReport = $state<InstallReport | null>(null);
+  let methodologyChosen = $state(false);
+
+  async function handleInstallMethodology() {
+    if (selectedMethodology === null) return;
+    isLoading = true;
+    stepError = null;
+    try {
+      const report = await installMethodology(selectedMethodology);
+      methodologyReport = report;
+      methodologyChosen = true;
+      // A partial install resolves rather than throwing, so `success` decides
+      // whether this reads as done or as an error — not the catch branch.
+      if (report.success) {
+        stepSuccess = true;
+      } else {
+        stepError = summarizeReport(report);
+      }
+      log.info('Methodology installed', {
+        methodology: selectedMethodology,
+        success: report.success
+      });
+    } catch (err) {
+      stepError = toError(err).message;
+      log.error('Failed to install methodology', err);
+    } finally {
+      isLoading = false;
+    }
+  }
+
   const detectedAgentsLabel = $derived(
     detectedAgents.length > 0 ? formatAgentList(detectedAgents) : 'your coding agents'
   );
@@ -551,6 +613,65 @@
         {/if}
       {/if}
 
+      <!-- ── Methodology step ───────────────────────────────────────────── -->
+      <!--
+        The wizard's first non-binary step. The others are act-or-skip; this
+        one asks the user to choose among options, so the primary action stays
+        disabled until something is selected rather than defaulting to one.
+        Picking a methodology for someone is worse than asking twice.
+      -->
+      {#if currentStep === 'methodology'}
+        <div class="onboarding-header">
+          <h2>How do you track work?</h2>
+          <p>
+            Installs node types, automations and guidance for a workflow you already know.
+            Everything it adds is ordinary content — inspect, edit or delete any of it later.
+            You can also do this from Settings at any time.
+          </p>
+        </div>
+
+        {#if stepSuccess && methodologyReport !== null}
+          <div class="success-banner">{summarizeReport(methodologyReport)}</div>
+          <div class="step-actions">
+            <button class="primary-button" onclick={nextStep}>Next</button>
+          </div>
+        {:else}
+          {#if stepError}
+            <div class="error-banner">{stepError}</div>
+          {/if}
+
+          <div class="methodology-options">
+            {#each methodologies as methodology (methodology.id)}
+              <label class="methodology-option" class:selected={selectedMethodology === methodology.id}>
+                <input
+                  type="radio"
+                  name="methodology"
+                  value={methodology.id}
+                  checked={selectedMethodology === methodology.id}
+                  disabled={isLoading}
+                  onchange={() => (selectedMethodology = methodology.id)}
+                />
+                <span class="methodology-text">
+                  <span class="methodology-name">{methodology.name}</span>
+                  <span class="methodology-description">{methodology.description}</span>
+                </span>
+              </label>
+            {/each}
+          </div>
+
+          <div class="step-actions">
+            <button
+              class="primary-button"
+              onclick={handleInstallMethodology}
+              disabled={isLoading || selectedMethodology === null}
+            >
+              {isLoading ? 'Installing…' : 'Install'}
+            </button>
+            <button class="skip-button" onclick={skipCurrentStep} disabled={isLoading}>Skip</button>
+          </div>
+        {/if}
+      {/if}
+
       <!-- ── Summary step ───────────────────────────────────────────────── -->
       {#if currentStep === 'summary'}
         <div class="onboarding-header">
@@ -624,6 +745,31 @@
                   NodeSpace skill
                 {/if}
                 {#if !skillDone}<span class="summary-note">(skipped)</span>{/if}
+              </span>
+            </li>
+          {/if}
+
+          {#if methodologies.length > 0}
+            <li class:configured={methodologyChosen} class:skipped={!methodologyChosen}>
+              <span class="summary-icon">
+                {#if methodologyChosen}
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                {:else}
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                {/if}
+              </span>
+              <span>
+                {#if methodologyChosen && methodologyReport !== null}
+                  Work tracking — {methodologyReport.recipeId}
+                {:else}
+                  Work tracking
+                {/if}
+                {#if !methodologyChosen}<span class="summary-note">(skipped)</span>{/if}
               </span>
             </li>
           {/if}
@@ -737,6 +883,57 @@
   }
 
   /* Banners */
+  /* ── methodology step ──────────────────────────────────────────────────── */
+
+  .methodology-options {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .methodology-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.625rem;
+    padding: 0.75rem 0.875rem;
+    border: 1px solid hsl(var(--border));
+    border-radius: 0.375rem;
+    cursor: pointer;
+  }
+
+  .methodology-option:hover {
+    background: hsl(var(--muted) / 0.5);
+  }
+
+  .methodology-option.selected {
+    border-color: hsl(var(--primary));
+    background: hsl(var(--primary) / 0.05);
+  }
+
+  .methodology-option input {
+    margin-top: 0.125rem;
+    flex-shrink: 0;
+  }
+
+  .methodology-text {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .methodology-name {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: hsl(var(--foreground));
+  }
+
+  .methodology-description {
+    font-size: 0.8125rem;
+    line-height: 1.5;
+    color: hsl(var(--muted-foreground));
+  }
+
   .success-banner {
     font-size: 0.875rem;
     color: hsl(var(--success));
