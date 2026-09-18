@@ -273,6 +273,17 @@ nodespace conflicts merge --survivor <node-id> --conflict-id <conflict-id>  # co
 
 A Play is a node, managed with `query`/`node update`; see `references/cli.md`.
 
+### Set up a work-tracking methodology
+
+Asked to set a workspace up for Linear-style work tracking — Issues, Cycles,
+rollover, validation gates — read **`references/linear-recipe.md`** and follow
+it. It is the same content the desktop app installs, phrased as CLI calls.
+
+Only on request. A methodology shapes how a whole workspace tracks work, so
+offer it if a user describes a workflow it fits; never install one because a
+workspace happens to contain tasks. If `issue` or `cycle` already exists, stop
+and ask — a second install is not a merge.
+
 ### Bulk import from markdown
 
 ```bash

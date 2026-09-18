@@ -69,7 +69,10 @@ struct BufferWriter(Arc<std::sync::Mutex<Vec<u8>>>);
 
 impl std::io::Write for BufferWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("log buffer poisoned").extend_from_slice(buf);
+        self.0
+            .lock()
+            .expect("log buffer poisoned")
+            .extend_from_slice(buf);
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
