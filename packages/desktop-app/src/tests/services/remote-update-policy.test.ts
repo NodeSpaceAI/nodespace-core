@@ -213,4 +213,69 @@ describe('shouldSkipStaleAiChatUpdate', () => {
     } as Node;
     expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource)).toBe(true);
   });
+
+  // Regression coverage for the model-selection revert bug: a property-only
+  // optimistic write (e.g. model selection) does not bump the local node's
+  // `.version` — only the write's own response does — so while it is still
+  // in flight, an unrelated echo (e.g. the node's own creation broadcast)
+  // can race in and report the SAME version the local node is still sitting
+  // at, while actually being the pre-write snapshot. The `pending` param
+  // makes an equal-version snapshot untrusted outright whenever a local
+  // write is still outstanding, rather than falling through to the message
+  // count (which a property-only change like model selection never moves).
+  it('skips an equal-version snapshot when a local write is pending, even with equal message counts', () => {
+    const existing = {
+      ...makeNode({ nodeType: 'ai-chat', version: 1 }),
+      messages: []
+    } as Node;
+    const incoming = {
+      ...makeNode({ nodeType: 'ai-chat', version: 1 }),
+      messages: []
+    } as Node;
+    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource, true)).toBe(true);
+  });
+
+  it('skips an equal-version snapshot when pending, even if it has MORE messages', () => {
+    // The old message-count-only tiebreak would have accepted this (more
+    // messages reads as "not stale") — `pending` overrides that for the
+    // equal-version case specifically, since a property-only write in
+    // flight is not reflected in message count at all.
+    const existing = {
+      ...makeNode({ nodeType: 'ai-chat', version: 2 }),
+      messages: [1]
+    } as Node;
+    const incoming = {
+      ...makeNode({ nodeType: 'ai-chat', version: 2 }),
+      messages: [1, 2]
+    } as Node;
+    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource, true)).toBe(true);
+  });
+
+  it('does not skip an equal-version snapshot when nothing is pending (default, unchanged behavior)', () => {
+    const existing = {
+      ...makeNode({ nodeType: 'ai-chat', version: 3 }),
+      messages: [1]
+    } as Node;
+    const incoming = {
+      ...makeNode({ nodeType: 'ai-chat', version: 3 }),
+      messages: [1, 2]
+    } as Node;
+    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource)).toBe(false);
+    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource, false)).toBe(false);
+  });
+
+  it('a strictly newer incoming version still applies even while pending', () => {
+    // `pending` only tightens the EQUAL-version case — a genuinely newer
+    // broadcast (the in-flight write's own confirmation, or a real foreign
+    // write) must still win.
+    const existing = {
+      ...makeNode({ nodeType: 'ai-chat', version: 1 }),
+      messages: []
+    } as Node;
+    const incoming = {
+      ...makeNode({ nodeType: 'ai-chat', version: 2 }),
+      messages: ['unrelated']
+    } as Node;
+    expect(shouldSkipStaleAiChatUpdate(incoming, existing, databaseSource, true)).toBe(false);
+  });
 });

@@ -71,8 +71,10 @@ export type RemoteUpdateDecision =
  * replay — same-connection echoes are now suppressed daemon-side, see this
  * module's doc comment) and must not raise a phantom notification.
  *
- * ai-chat nodes are exempt from the skip — see `shouldSkipStaleAiChatUpdate`
- * for that separate guard (version, then message count — not editing state).
+ * ai-chat nodes are exempt from the focus/content-editing skip — see
+ * `shouldSkipStaleAiChatUpdate` for that separate guard (version, then
+ * message count, plus a same-version-with-a-pending-write check — not
+ * focus).
  */
 export function decideRemoteUpdate(
   incoming: Node,
@@ -114,17 +116,39 @@ export function decideRemoteUpdate(
  *
  *   - incoming version strictly older  → stale, skip.
  *   - incoming version strictly newer  → authoritative, apply.
- *   - versions equal or uncomparable   → fall back to the message count,
- *     which is what distinguishes two broadcasts of the same generation.
+ *   - versions equal, pending is true  → stale, skip (see `pending` below).
+ *   - versions equal (or uncomparable), pending false → fall back to the
+ *     message count, which is what distinguishes two broadcasts of the same
+ *     generation.
  *
  * This is the same policy the OCC hydration path applies, so the two writers
  * into this store (conflict hydration and daemon broadcast) can no longer
  * disagree about which snapshot wins.
+ *
+ * `pending` — true when the local node has a write of its own still in
+ * flight (`SimplePersistenceCoordinator.hasPending`, or the equivalent
+ * point-in-time capture a caller already holds, e.g. `decideRemoteUpdate`'s
+ * own `hasPending` param). A property-only optimistic write (e.g. model
+ * selection) promotes its fields onto the local node immediately but does
+ * NOT bump `.version` — only the write's own RPC response does, once it
+ * resolves. So while that write is in flight, an incoming broadcast can
+ * legitimately report the SAME version the local node is still sitting at,
+ * while actually being the PRE-write snapshot arriving late (an unrelated
+ * echo — e.g. the node's own creation broadcast, re-fetched unconditionally
+ * — racing the in-flight write). Message count alone cannot always tell
+ * these apart (an unset `model`/`provider` is not reflected in the message
+ * array at all), so an equal-version snapshot is untrusted outright whenever
+ * a local write is still outstanding, rather than relying solely on
+ * `decideRemoteUpdate`'s separately-computed `hasPending` check downstream.
+ * Worst case this skips an equal-version snapshot that would have been a
+ * harmless no-op anyway (the in-flight write's own response carries the
+ * same data) — never a wrongly-applied one.
  */
 export function shouldSkipStaleAiChatUpdate(
   incoming: Node,
   existingNode: Node | undefined,
-  source: UpdateSource
+  source: UpdateSource,
+  pending = false
 ): boolean {
   if (incoming.nodeType !== 'ai-chat' || source.type !== 'database' || !existingNode) {
     return false;
@@ -135,6 +159,9 @@ export function shouldSkipStaleAiChatUpdate(
   if (typeof incomingVersion === 'number' && typeof existingVersion === 'number') {
     if (incomingVersion !== existingVersion) {
       return incomingVersion < existingVersion;
+    }
+    if (pending) {
+      return true;
     }
   }
 

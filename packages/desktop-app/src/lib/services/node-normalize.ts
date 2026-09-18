@@ -34,17 +34,26 @@ interface PromotedField {
 }
 
 /**
- * Optimistic-only mirror of the backend's typed-field promotion
- * (`node_to_typed_value` / `flatten_properties_for_api` in
- * `packages/nodespace-types/src/convert.rs`). For each node type, lists the
- * type-specific fields the backend lifts from the stored `properties` bag up to
- * the TOP LEVEL of the node (the fields viewers actually read).
+ * Mirror of the backend's typed-field promotion (`node_to_typed_value` /
+ * `flatten_properties_for_api` in `packages/nodespace-types/src/convert.rs`).
+ * For each node type, lists the type-specific fields the backend lifts from
+ * the stored `properties` bag up to the TOP LEVEL of the node (the fields
+ * viewers actually read).
  *
- * Used ONLY so an optimistic (pre-round-trip) `updateNode` reflects these fields
- * immediately instead of waiting a full RPC round trip. The backend response is
- * always spread over the node afterward, so any drift between this map and
- * convert.rs degrades optimistic latency only — never correctness. Keep in sync
- * with convert.rs when the promoted field set changes.
+ * Two independent consumers:
+ * - `promoteTypedFields` below, for an optimistic (pre-round-trip)
+ *   `updateNode` — reflects these fields immediately instead of waiting a
+ *   full RPC round trip. The backend response is always spread over the node
+ *   afterward, so drift here degrades optimistic latency only.
+ * - `flattenTypedFieldsFromStorage` below, for the browser/dev-proxy HTTP
+ *   transport (`packages/dev-tools/src/dev-proxy.ts`), which has no access to
+ *   `node_to_typed_value` (Rust) and returns nodes straight from storage
+ *   shape. Drift here is NOT latency-only — a promoted field this map omits
+ *   never reaches the top level over that transport at all, silently
+ *   breaking any viewer that reads it (e.g. `AiChatNodeViewer`'s
+ *   `node?.provider`/`node?.model`).
+ *
+ * Keep in sync with convert.rs when the promoted field set changes.
  */
 export const OPTIMISTIC_TYPED_FIELDS: Record<string, readonly PromotedField[]> = {
   'ai-chat': [
@@ -125,5 +134,42 @@ export function promoteTypedFields(
     }
   }
 
+  return promoted;
+}
+
+/**
+ * Promote a fetched node's namespaced typed-field bucket to top-level fields.
+ *
+ * Storage/wire shape from the browser HTTP transport is always namespaced
+ * (`properties.<type>.*` — e.g. `properties['ai-chat'].model`), never flat:
+ * unlike `promoteTypedFields` above (built for a partial WRITE payload, which
+ * ai-chat sends flat), this reads a FULL fetched node's own bucket. This is
+ * the browser-transport counterpart to the backend's `node_to_typed_value`
+ * (`packages/nodespace-types/src/convert.rs`) — the Tauri IPC layer routes
+ * every node through that function before it reaches the frontend, so
+ * `nodeToAiChatNode`/`nodeToTaskNode` trust top-level fields are already
+ * present and never read `properties.<type>` themselves. The dev-proxy HTTP
+ * bridge (`packages/dev-tools/src/dev-proxy.ts`) has no access to that Rust
+ * function and returns storage-shape `properties` verbatim, so it must call
+ * this before handing a node to the frontend — otherwise a node's typed
+ * fields silently read as `undefined` at the top level for that transport
+ * only, even though the underlying data is intact.
+ */
+export function flattenTypedFieldsFromStorage(
+  nodeType: string,
+  properties: unknown
+): Record<string, unknown> {
+  const fields = OPTIMISTIC_TYPED_FIELDS[nodeType];
+  if (!fields || !isPlainObject(properties)) return {};
+
+  const bucket = properties[nodeType];
+  if (!isPlainObject(bucket)) return {};
+
+  const promoted: Record<string, unknown> = {};
+  for (const { from, to } of fields) {
+    if (Object.prototype.hasOwnProperty.call(bucket, from)) {
+      promoted[to] = bucket[from];
+    }
+  }
   return promoted;
 }

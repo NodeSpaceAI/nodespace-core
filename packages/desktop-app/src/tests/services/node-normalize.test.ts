@@ -3,6 +3,7 @@ import {
   normalizeNodeData,
   deepMergeProperties,
   promoteTypedFields,
+  flattenTypedFieldsFromStorage,
   OPTIMISTIC_TYPED_FIELDS
 } from '$lib/services/node-normalize';
 import type { Node } from '$lib/types/node';
@@ -162,5 +163,74 @@ describe('promoteTypedFields', () => {
       provider: 'native',
       model: 'claude-sonnet-5'
     });
+  });
+});
+
+describe('flattenTypedFieldsFromStorage', () => {
+  // Regression coverage: the browser/dev-proxy HTTP transport
+  // (packages/dev-tools/src/dev-proxy.ts) returns a fetched node's
+  // `properties` exactly as stored — namespaced under the node's own type,
+  // e.g. `{"ai-chat": {"provider": "native", "model": "...", ...}}` — never
+  // flattened to the top level the way the Tauri IPC layer's
+  // `node_to_typed_value` (packages/nodespace-types/src/convert.rs) does.
+  // `nodeToAiChatNode`/`nodeToTaskNode` trust that promotion already
+  // happened and read top-level fields directly with no namespaced
+  // fallback, so without this function a node re-fetched over that
+  // transport — e.g. `browser-sync-service.ts`'s `fetchAndUpdateNode`,
+  // triggered by an SSE broadcast for the model-selection write itself —
+  // silently carries `provider`/`model` as `undefined`, clobbering a
+  // viewer's just-confirmed optimistic state with the same version number.
+
+  it('promotes an ai-chat node fetched in real storage shape', () => {
+    const properties = {
+      'ai-chat': {
+        context_tokens: 0,
+        created_nodes: [],
+        messages: [],
+        provider: 'native',
+        model: 'gemma-4-e4b-q4km',
+        session_status: 'active',
+        turn_status: 'idle'
+      }
+    };
+    const promoted = flattenTypedFieldsFromStorage('ai-chat', properties);
+    expect(promoted).toEqual({
+      provider: 'native',
+      model: 'gemma-4-e4b-q4km',
+      sessionStatus: 'active',
+      turnStatus: 'idle',
+      messages: []
+    });
+  });
+
+  it('promotes a task node fetched in real storage shape', () => {
+    const properties = {
+      task: { status: 'in_progress', priority: 'high', dueDate: '2024-12-31' }
+    };
+    const promoted = flattenTypedFieldsFromStorage('task', properties);
+    expect(promoted).toEqual({ status: 'in_progress', priority: 'high', dueDate: '2024-12-31' });
+  });
+
+  it('omits a field absent from the storage bucket rather than promoting undefined', () => {
+    // A freshly-created ai-chat node before model selection: `model` and
+    // `provider` are not yet set on the bucket at all.
+    const properties = { 'ai-chat': { messages: [], turn_status: 'idle', session_status: 'active' } };
+    const promoted = flattenTypedFieldsFromStorage('ai-chat', properties);
+    expect('model' in promoted).toBe(false);
+    expect('provider' in promoted).toBe(false);
+    expect(promoted).toEqual({ turnStatus: 'idle', sessionStatus: 'active', messages: [] });
+  });
+
+  it('returns nothing for a node type with no typed-field map', () => {
+    expect(flattenTypedFieldsFromStorage('text', { text: { foo: 'bar' } })).toEqual({});
+  });
+
+  it('returns nothing when the node type has no own bucket at all', () => {
+    expect(flattenTypedFieldsFromStorage('ai-chat', {})).toEqual({});
+    expect(flattenTypedFieldsFromStorage('ai-chat', undefined)).toEqual({});
+  });
+
+  it('returns nothing when the own bucket is present but not an object', () => {
+    expect(flattenTypedFieldsFromStorage('ai-chat', { 'ai-chat': 'not-an-object' })).toEqual({});
   });
 });
