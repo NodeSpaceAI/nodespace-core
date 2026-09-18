@@ -1,12 +1,9 @@
 //! `nodespace playbook ...` — inspect and control Play automation rule-sets.
 //!
-//! Per ADR-035's capability-parity clause, four of these five operations are
+//! Per ADR-035's capability-parity clause, three of these four operations are
 //! thin reductions to an existing generic verb rather than bespoke RPC/CLI
 //! surface:
 //! - `list` -> `ExecuteQuery` filtered to `node_type: "play"`
-//! - `logs` -> `ExecuteQuery` filtered to `node_type: "playbook_log"` with a
-//!   `play_id` property filter (log nodes carry a flat `play_id` property,
-//!   not a relationship — see `packages/core/src/playbook/logging.rs`)
 //! - `enable`/`disable` -> `UpdateNode` setting `lifecycle_status` to
 //!   `"active"`/`"archived"` (the engine's `handle_play_updated` already
 //!   treats any non-`"active"` status as disabled)
@@ -31,8 +28,6 @@ use crate::NodeClient;
 pub enum PlaybookAction {
     /// List all installed Plays and their lifecycle status.
     List(PlaybookListArgs),
-    /// Show execution-error history for a Play (log nodes it produced).
-    Logs(PlaybookLogsArgs),
     /// Re-enable a disabled Play after fixing the underlying issue.
     Enable(PlaybookIdArgs),
     /// Manually disable a Play.
@@ -46,12 +41,6 @@ pub enum PlaybookAction {
 
 #[derive(Args, Debug)]
 pub struct PlaybookListArgs {}
-
-#[derive(Args, Debug)]
-pub struct PlaybookLogsArgs {
-    /// Play ID to show log entries for.
-    pub play_id: String,
-}
 
 #[derive(Args, Debug)]
 pub struct PlaybookIdArgs {
@@ -68,7 +57,6 @@ pub struct GetWorkflowStateArgs {
 pub async fn run(client: &mut NodeClient, action: PlaybookAction, json: bool) -> Result<()> {
     match action {
         PlaybookAction::List(args) => list(client, args, json).await,
-        PlaybookAction::Logs(args) => logs(client, args, json).await,
         PlaybookAction::Enable(args) => set_lifecycle_status(client, args, "active", json).await,
         PlaybookAction::Disable(args) => set_lifecycle_status(client, args, "archived", json).await,
         PlaybookAction::GetWorkflowState(args) => get_workflow_state(client, args, json).await,
@@ -80,29 +68,6 @@ async fn list(client: &mut NodeClient, _args: PlaybookListArgs, json: bool) -> R
         .execute_query(ExecuteQueryRequest {
             target_type: "play".to_string(),
             filters_json: None,
-            sorting_json: None,
-            limit: 0,
-        })
-        .await
-        .context("ExecuteQuery RPC failed")?
-        .into_inner();
-
-    output::print_node_list(&response, json)
-}
-
-async fn logs(client: &mut NodeClient, args: PlaybookLogsArgs, json: bool) -> Result<()> {
-    let filters_json = serde_json::json!([{
-        "type": "property",
-        "operator": "equals",
-        "property": "play_id",
-        "value": args.play_id,
-    }])
-    .to_string();
-
-    let response = client
-        .execute_query(ExecuteQueryRequest {
-            target_type: "playbook_log".to_string(),
-            filters_json: Some(filters_json),
             sorting_json: None,
             limit: 0,
         })

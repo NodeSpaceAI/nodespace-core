@@ -3051,12 +3051,12 @@ async fn spawn_test_daemon_with_playbook() -> (
     );
 }
 
-/// `nodespace playbook list`/`logs` reduce to `ExecuteQuery` (per ADR-035
+/// `nodespace playbook list` reduces to `ExecuteQuery` (per ADR-035
 /// capability parity) — this proves that reduction actually reaches the real
-/// daemon and returns the play/playbook_log nodes it should, not just that
-/// the CLI command builds a well-formed request.
+/// daemon and returns the play nodes it should, not just that the CLI command
+/// builds a well-formed request.
 #[tokio::test]
-async fn playbook_list_and_logs_round_trip() {
+async fn playbook_list_round_trip() {
     let (sock, shutdown, _tempdir, node_service, _lifecycle) =
         spawn_test_daemon_with_playbook().await;
     let mut client = connect(&sock, DatabaseIdInterceptor::none())
@@ -3077,7 +3077,7 @@ async fn playbook_list_and_logs_round_trip() {
         "Test Play".to_string(),
         serde_json::json!({ "rules": [] }),
     );
-    let play_id = node_service
+    node_service
         .create_node(play)
         .await
         .expect("create play node");
@@ -3089,17 +3089,6 @@ async fn playbook_list_and_logs_round_trip() {
     )
     .await
     .expect("playbook list (one play)");
-
-    // No log entries for this play yet: logs must return empty without error.
-    commands::playbook::run(
-        &mut client,
-        commands::playbook::PlaybookAction::Logs(commands::playbook::PlaybookLogsArgs {
-            play_id: play_id.clone(),
-        }),
-        true,
-    )
-    .await
-    .expect("playbook logs (empty)");
 
     let _ = shutdown.send(());
 }

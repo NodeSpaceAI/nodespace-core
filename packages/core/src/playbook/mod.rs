@@ -28,7 +28,6 @@ pub mod cron_runner;
 pub mod engine;
 pub mod graph_resolver;
 pub mod lifecycle;
-pub mod logging;
 pub mod path_extractor;
 pub mod seeded;
 #[cfg(test)]

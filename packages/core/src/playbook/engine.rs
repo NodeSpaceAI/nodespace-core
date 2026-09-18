@@ -9,14 +9,11 @@
 //! - Phase 3: CEL condition evaluation (via `cel.rs`)
 //! - Phase 4: Action execution (via `actions.rs`)
 //! - Phase 5: CronRunner spawn and shutdown (via `cron_runner.rs`)
-//! - Phase 6: Cycle detection (max depth 10) + log node deduplication
+//! - Phase 6: Cycle detection (max depth 10)
 //! - Phase 7: Save-time validation before play activation
 
 use crate::db::events::{persisted_chain_depth, DomainEvent, EventEnvelope};
 use crate::playbook::lifecycle::{trigger_keys_for_event, PlaybookLifecycleManager};
-use crate::playbook::logging::{
-    create_or_update_log_node, create_or_update_repair_log_node, PlayErrorType, MAX_CHAIN_DEPTH,
-};
 use crate::playbook::types::*;
 use crate::services::NodeService;
 use std::sync::{Arc, RwLock};
@@ -154,68 +151,32 @@ impl PlaybookEngine {
         result
     }
 
-    /// Log each error from a failed `validate_play` call as a `playbook_log`
-    /// node, shared by `load_active_plays`/`handle_play_created`/
-    /// `handle_play_updated` (all three re-run the same save-time validation
-    /// and need identical error-reporting behavior).
+    /// Report each error from a failed `validate_play` call.
     ///
-    /// `error_fingerprint`'s dedup key deliberately excludes the error
-    /// message, so two errors that share a fingerprint collapse into one log
-    /// node (`occurrences` incremented, the second error's own text
-    /// discarded). Each `PlayValidationError`'s own `(location, kind)` —
-    /// e.g. `"rule[1].action[0]:reject_action_on_reactive_rule"` — is passed
-    /// as the fingerprint identity here instead of a constant placeholder,
-    /// so two structurally different errors on the same play (a
-    /// reject-on-Reactive-rule problem on one rule and a missing-message
-    /// problem on another, say) produce two distinct fingerprints/log nodes
-    /// rather than one that silently loses the second error.
+    /// Shared by `load_active_plays` / `handle_play_created` /
+    /// `handle_play_updated`, which all re-run the same save-time validation
+    /// and need identical error reporting.
     ///
-    /// `(location, kind)` is not itself guaranteed unique within one
-    /// `validate_play` pass: a single condition or action can legitimately
-    /// produce more than one same-kind error at the same location —
-    /// e.g. `BrokenPath` for two broken dot-paths referenced by the same
-    /// condition, or `InvariantOutOfScopeTarget` for both `source_id` and
-    /// `target_id` on the same `add_relationship` action. Without further
-    /// disambiguation those would collide onto one fingerprint and silently
-    /// reproduce the exact bug this helper exists to fix. So each error's
-    /// identity is additionally suffixed with its ordinal among prior errors
-    /// sharing its `(location, kind)` in this same `errors` slice (omitted
-    /// for the first/only one, to keep the common single-error-per-location
-    /// case stable across restarts) — `validate_play` iterates rules,
-    /// conditions and paths in a fixed, deterministic order, so the ordinal
-    /// is itself deterministic and stable across repeated validation passes
-    /// over the same play.
-    async fn log_validation_errors(
+    /// Every error is reported independently, so two structurally different
+    /// problems on the same play both surface with their own message. This
+    /// used to require fingerprint disambiguation, because errors were
+    /// written to the graph as deduplicated `playbook_log` nodes and two
+    /// errors sharing a fingerprint collapsed into one, silently discarding
+    /// the second's text. Diagnostics now go to tracing, where each event
+    /// stands alone, so no dedup identity is computed at all.
+    fn log_validation_errors(
         &self,
         play_id: &str,
         errors: &[crate::playbook::validation::PlayValidationError],
     ) {
-        for (i, err) in errors.iter().enumerate() {
-            warn!("  Validation error: {}", err);
-            let prior_same_kind_at_location = errors[..i]
-                .iter()
-                .filter(|e| e.location() == err.location() && e.kind() == err.kind())
-                .count();
-            let error_identity = if prior_same_kind_at_location == 0 {
-                format!("{}:{}", err.location(), err.kind())
-            } else {
-                format!(
-                    "{}:{}:{}",
-                    err.location(),
-                    err.kind(),
-                    prior_same_kind_at_location
-                )
-            };
-            let _ = create_or_update_log_node(
-                &self.node_service,
-                play_id,
-                &error_identity,
-                0,
-                PlayErrorType::CompileError,
-                &err.to_string(),
-                "n/a",
-            )
-            .await;
+        for err in errors {
+            warn!(
+                play_id = %play_id,
+                location = %err.location(),
+                kind = %err.kind(),
+                error = %err,
+                "Play validation error"
+            );
         }
     }
 
@@ -365,7 +326,7 @@ impl PlaybookEngine {
                     node.id,
                     errors.len()
                 );
-                self.log_validation_errors(&node.id, &errors).await;
+                self.log_validation_errors(&node.id, &errors);
                 continue;
             }
 
@@ -579,7 +540,7 @@ impl PlaybookEngine {
     /// absent — the node violates an invariant this device holds), runs the
     /// rule's actions as an ordinary write (no transaction to join — the
     /// node already committed on the originating device) and records a
-    /// repair log node. A rule whose condition now fails is left alone: the
+    /// logs the repair. A rule whose condition now fails is left alone: the
     /// node already carries the required effect (applied by whichever device
     /// originated it, or by an earlier repair — this device's own or one
     /// that already synced in), so re-running would be redundant at best.
@@ -675,17 +636,12 @@ impl PlaybookEngine {
 
             match action_result {
                 crate::playbook::actions::ActionResult::Success => {
-                    let _ = create_or_update_repair_log_node(
-                        &self.node_service,
-                        &rule_ref.play_id,
-                        &rule_ref.rule.name,
-                        &node.id,
-                        &format!(
-                            "Repaired invariant '{}' (play {}) on node received via sync",
-                            rule_ref.rule.name, rule_ref.play_id
-                        ),
-                    )
-                    .await;
+                    info!(
+                        node_id = %node.id,
+                        play_id = %rule_ref.play_id,
+                        rule = %rule_ref.rule.name,
+                        "Repair-and-log: repaired invariant on node received via sync"
+                    );
                 }
                 crate::playbook::actions::ActionResult::Failed(err) => {
                     warn!(
@@ -693,18 +649,10 @@ impl PlaybookEngine {
                         play_id = %rule_ref.play_id,
                         rule = %rule_ref.rule.name,
                         error = %err,
+                        error_type = "action_error",
+                        rule_index = rule_ref.rule_index,
                         "Repair-and-log: invariant repair action failed"
                     );
-                    let _ = create_or_update_log_node(
-                        &self.node_service,
-                        &rule_ref.play_id,
-                        &rule_ref.rule.name,
-                        rule_ref.rule_index,
-                        PlayErrorType::ActionError,
-                        &format!("Invariant repair action failed: {}", err),
-                        &node.id,
-                    )
-                    .await;
                 }
             }
         }
@@ -713,7 +661,7 @@ impl PlaybookEngine {
     /// Handle a new play node being created — validate, then parse and activate.
     ///
     /// Phase 7: runs save-time validation before activation. If validation fails,
-    /// the play is disabled and a log node is created for each error.
+    /// the play is disabled and each error is logged.
     async fn handle_play_created(&self, node_id: &str) {
         match self.node_service.get_node(node_id).await {
             Ok(Some(node)) if node.lifecycle_status == "active" => {
@@ -721,17 +669,12 @@ impl PlaybookEngine {
                 let parsed_rules = match parse_rules_for_validation(&node) {
                     Ok(rules) => rules,
                     Err(e) => {
-                        warn!("Failed to parse play {} for validation: {}", node_id, e);
-                        let _ = create_or_update_log_node(
-                            &self.node_service,
-                            node_id,
-                            "parse",
-                            0,
-                            PlayErrorType::CompileError,
-                            &format!("Failed to parse play rules: {}", e),
-                            "n/a",
-                        )
-                        .await;
+                        warn!(
+                            play_id = %node_id,
+                            error_type = "compile_error",
+                            error = %e,
+                            "Failed to parse play rules for validation"
+                        );
                         let mut lifecycle =
                             self.lifecycle.write().expect("lifecycle lock poisoned");
                         lifecycle.disable_play(node_id);
@@ -749,7 +692,7 @@ impl PlaybookEngine {
                         node_id,
                         errors.len()
                     );
-                    self.log_validation_errors(node_id, &errors).await;
+                    self.log_validation_errors(node_id, &errors);
                     // Disable the play — do not activate
                     let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
                     lifecycle.disable_play(node_id);
@@ -838,17 +781,12 @@ impl PlaybookEngine {
             };
             let message =
                 crate::playbook::seeded::edit_or_disable_warning(node_id, action, &old_rule_names);
-            warn!("{}", message);
-            let _ = create_or_update_log_node(
-                &self.node_service,
-                node_id,
-                "seeded-play-protection",
-                0,
-                PlayErrorType::SeededPlayWarning,
-                &message,
-                node_id,
-            )
-            .await;
+            warn!(
+                play_id = %node_id,
+                error_type = "seeded_play_warning",
+                "{}",
+                message
+            );
         }
 
         let needs_activation = matches!(
@@ -880,7 +818,7 @@ impl PlaybookEngine {
                         node_id,
                         errors.len()
                     );
-                    self.log_validation_errors(node_id, &errors).await;
+                    self.log_validation_errors(node_id, &errors);
                     let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
                     lifecycle.disable_play(node_id);
                     return;
@@ -992,7 +930,7 @@ impl PlaybookEngine {
                         schema_node_type,
                         broken.iter().map(|(id, _)| id).collect::<Vec<_>>()
                     );
-                    // Phase 6 will create log nodes for each disabled play
+                    // Each disabled play is logged by the caller
                 }
             }
             Ok(None) => {
@@ -1044,8 +982,7 @@ fn parse_rules_for_validation(
 ///
 /// Enforces cycle detection: when `exceeds_max_chain_depth` reports the next
 /// execution would pass `MAX_CHAIN_DEPTH`, the work item is skipped,
-/// offending plays are disabled, and log nodes are created with
-/// fingerprint-based deduplication.
+/// offending plays are disabled, and the limit breach is logged.
 pub(crate) async fn rule_processor_loop(
     mut rx: mpsc::Receiver<ExecutionWorkItem>,
     lifecycle: Arc<RwLock<PlaybookLifecycleManager>>,
@@ -1057,7 +994,7 @@ pub(crate) async fn rule_processor_loop(
         let depth = effective_chain_depth(&work_item);
 
         // Cycle detection: if the next execution would exceed MAX_CHAIN_DEPTH,
-        // skip this work item, disable offending plays, and create log nodes.
+        // skip this work item and disable offending plays.
         if exceeds_max_chain_depth(depth) {
             warn!(
                 "Cycle limit reached (depth {}), skipping work item for node {}",
@@ -1071,20 +1008,15 @@ pub(crate) async fn rule_processor_loop(
                     lm.disable_play(&rule_ref.play_id);
                 }
 
-                // Create (or deduplicate) a log node for this error
-                let _ = create_or_update_log_node(
-                    &node_service,
-                    &rule_ref.play_id,
-                    &rule_ref.rule.name,
-                    rule_ref.rule_index,
-                    PlayErrorType::CycleLimit,
-                    &format!(
-                        "Cycle depth limit ({}) exceeded for rule '{}' in play {}",
-                        MAX_CHAIN_DEPTH, rule_ref.rule.name, rule_ref.play_id,
-                    ),
-                    &work_item.trigger_node.id,
-                )
-                .await;
+                warn!(
+                    play_id = %rule_ref.play_id,
+                    rule = %rule_ref.rule.name,
+                    rule_index = rule_ref.rule_index,
+                    trigger_node_id = %work_item.trigger_node.id,
+                    error_type = "cycle_limit",
+                    max_chain_depth = MAX_CHAIN_DEPTH,
+                    "Cycle depth limit exceeded; play disabled"
+                );
             }
 
             continue;
@@ -1235,16 +1167,15 @@ pub(crate) async fn rule_processor_loop(
                         let mut lm = lifecycle.write().expect("lifecycle lock poisoned");
                         lm.disable_play(&rule_ref.play_id);
                     }
-                    let _ = create_or_update_log_node(
-                        &node_service,
-                        &rule_ref.play_id,
-                        &rule_ref.rule.name,
-                        rule_ref.rule_index,
-                        PlayErrorType::ActionError,
-                        &log_message,
-                        &work_item.trigger_node.id,
-                    )
-                    .await;
+                    warn!(
+                        play_id = %rule_ref.play_id,
+                        rule = %rule_ref.rule.name,
+                        rule_index = rule_ref.rule_index,
+                        trigger_node_id = %work_item.trigger_node.id,
+                        error_type = "action_error",
+                        "{}",
+                        log_message
+                    );
                     // Skip remaining rules from this play in the current batch
                     continue;
                 }

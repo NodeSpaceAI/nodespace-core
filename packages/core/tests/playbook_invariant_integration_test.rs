@@ -33,6 +33,50 @@ use tempfile::TempDir;
 use tokio::sync::watch;
 use tokio::time::timeout;
 
+/// Captures `tracing` output for the duration of a test, so a diagnostic the
+/// engine emits as a `warn!` can be asserted on.
+///
+/// Play errors are operational telemetry rather than knowledge, so they are
+/// logged rather than written into the graph; that makes the subscriber, not
+/// a node query, the place to observe them.
+struct CapturedLogs {
+    buffer: Arc<std::sync::Mutex<Vec<u8>>>,
+    _guard: tracing::subscriber::DefaultGuard,
+}
+
+impl CapturedLogs {
+    fn install() -> Self {
+        let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer(move || BufferWriter(writer.clone()))
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        Self {
+            buffer,
+            _guard: guard,
+        }
+    }
+
+    fn contents(&self) -> String {
+        String::from_utf8_lossy(&self.buffer.lock().expect("log buffer poisoned")).into_owned()
+    }
+}
+
+struct BufferWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for BufferWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("log buffer poisoned").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 async fn create_test_service() -> Result<(Arc<NodeService>, TempDir)> {
     let temp_dir = TempDir::new()?;
     let db_path = temp_dir.path().join("test.db");
@@ -440,7 +484,6 @@ async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Resul
         ]),
     )
     .await?;
-    create_schema(&service, "playbook_log", json!([])).await?;
 
     let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
 
@@ -480,30 +523,6 @@ async fn sync_applied_node_violating_invariant_is_repaired_and_logged() -> Resul
         "the violating node must be repaired (approved=true applied)"
     );
 
-    let log_found = wait_until(|| {
-        let service = Arc::clone(&service);
-        async move {
-            match service
-                .query_nodes_by_type("playbook_log", Some("active"))
-                .await
-            {
-                Ok(logs) => logs.iter().any(|n| {
-                    n.properties
-                        .get("playbook_log")
-                        .and_then(|p| p.get("kind"))
-                        .and_then(|v| v.as_str())
-                        == Some("repair")
-                }),
-                Err(_) => false,
-            }
-        }
-    })
-    .await;
-    assert!(
-        log_found,
-        "a repair log node must be created recording what was repaired"
-    );
-
     shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }
@@ -524,7 +543,6 @@ async fn sync_applied_node_already_satisfying_invariant_is_not_touched() -> Resu
         ]),
     )
     .await?;
-    create_schema(&service, "playbook_log", json!([])).await?;
 
     let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
     create_play(
@@ -556,14 +574,6 @@ async fn sync_applied_node_already_satisfying_invariant_is_not_touched() -> Resu
         Some(&json!("approved-elsewhere")),
         "a node whose invariant condition already fails must be left exactly as synced"
     );
-    let logs = service
-        .query_nodes_by_type("playbook_log", Some("active"))
-        .await?;
-    assert!(
-        logs.is_empty(),
-        "no repair should be logged when nothing was violated"
-    );
-
     shutdown_engine(shutdown_tx, task).await;
     Ok(())
 }
@@ -667,10 +677,12 @@ async fn reactive_rule_still_fires_normally_alongside_an_invariant_rule() -> Res
 // ---------------------------------------------------------------------------
 
 /// Disabling a seeded play that carries an invariant rule surfaces an
-/// explicit warning naming the concrete consequence (a `playbook_log` node),
-/// not just a silent lifecycle_status flip.
+/// explicit warning naming the concrete consequence, not just a silent
+/// lifecycle_status flip. The warning goes to tracing (engine diagnostics are
+/// not graph nodes), so this captures the subscriber output to assert on it.
 #[tokio::test]
 async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
+    let logs = CapturedLogs::install();
     let (service, _tmp) = create_test_service().await?;
     create_schema(
         &service,
@@ -678,7 +690,6 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
         json!([{ "name": "status", "type": "string" }]),
     )
     .await?;
-    create_schema(&service, "playbook_log", json!([])).await?;
 
     let (_engine, shutdown_tx, task) = spawn_engine(&service).await;
 
@@ -706,25 +717,13 @@ async fn disabling_a_seeded_invariant_play_logs_a_warning() -> Result<()> {
         .update_node("pb-seeded-warn", current.version, update)
         .await?;
 
-    let warned = wait_until(|| {
-        let service = Arc::clone(&service);
-        async move {
-            match service
-                .query_nodes_by_type("playbook_log", Some("active"))
-                .await
-            {
-                Ok(logs) => logs.iter().any(|n| {
-                    let content = &n.content;
-                    content.contains("seeded-invariant-rule") && content.contains("pb-seeded-warn")
-                }),
-                Err(_) => false,
-            }
-        }
-    })
-    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let logged = logs.contents();
     assert!(
-        warned,
-        "disabling a seeded invariant play must log a warning naming the play and rule"
+        logged.contains("seeded-invariant-rule") && logged.contains("pb-seeded-warn"),
+        "disabling a seeded invariant play must log a warning naming the play and \
+         rule; captured tracing output was: {logged}"
     );
 
     shutdown_engine(shutdown_tx, task).await;
