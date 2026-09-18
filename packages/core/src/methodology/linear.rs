@@ -34,13 +34,13 @@ use serde_json::json;
 ///
 /// Two weeks is Linear's own default and the most common sprint length. It is
 /// an ordinary schema default rather than a constant baked into the
-/// cycle-creation Play, so changing it is a field edit, not a Play rewrite —
-/// the Play reads `{item.duration_days}` off the preceding cycle.
+/// rollover Play, so changing it is a field edit, not a Play rewrite —
+/// the Play reads `{trigger.node.duration_days}` off the ending cycle.
 const DEFAULT_CYCLE_DAYS: i64 = 14;
 
-/// Cron for the two scheduled Plays: once daily at 00:05.
+/// Cron for the cycle-rollover Play: once daily at 00:05.
 ///
-/// Both are date-boundary driven — "has the current cycle ended" is only ever
+/// It is date-boundary driven — "has the current cycle ended" is only ever
 /// true at a day boundary — so a daily tick is the natural granularity, and a
 /// few minutes after midnight avoids racing the boundary itself. The engine's
 /// `CronRunner` wakes every 60s and evaluates against local wall clock, so
@@ -59,12 +59,15 @@ pub fn recipe() -> MethodologyRecipe {
         schemas: vec![issue_schema(), cycle_schema()],
         field_value_extensions: vec![issue_status_values(), issue_priority_values()],
         plays: vec![
-            cycle_creation_play(),
             cycle_rollover_play(),
             sub_issue_completion_gate(),
             blocker_gate(),
         ],
-        skills: vec![creating_an_issue(), working_with_cycles(), validation_rules()],
+        skills: vec![
+            creating_an_issue(),
+            working_with_cycles(),
+            validation_rules(),
+        ],
     }
 }
 
@@ -245,26 +248,36 @@ fn issue_priority_values() -> FieldValueExtension {
 // Plays
 // ---------------------------------------------------------------------------
 
-/// Create the next cycle before the current one ends.
+/// Close out an ending cycle: create its successor, then move unfinished work
+/// into it.
 ///
-/// Scans cycles daily; when one ends today, creates its successor starting
-/// tomorrow and running for that cycle's own `duration_days`. Both dates come
-/// from `add_days` (#2640) — neither CEL nor action-value resolution can
-/// compute a date otherwise.
+/// One Play with two actions rather than two Plays, because the second action
+/// needs the first's output. The successor's id is only reachable as
+/// `{actions[0].result.id}` — nothing in the binding context can name "the
+/// cycle starting tomorrow", so a separate rollover Play has no way to
+/// address the node it is supposed to move work into.
 ///
-/// Derived identity (ADR-074) makes this safe on several devices at once: the
-/// created node's id is a function of `(rule_id, action_index, [scanned cycle
+/// Running both on the end date also removes a cross-day dependency: a
+/// rollover that fired the next morning would be assuming the creation Play
+/// had already succeeded, and would silently do nothing if it had not.
+///
+/// Both dates come from `add_days`; neither CEL nor action-value resolution
+/// can otherwise compute one.
+///
+/// Derived identity (ADR-074) makes this safe on several devices at once. The
+/// created cycle's id is a function of `(rule_id, action_index, [ending cycle
 /// id])`, so every device computes the same id for the same successor and the
-/// writes collapse to one row rather than N siblings.
-fn cycle_creation_play() -> PlayStep {
+/// writes collapse to one row. The `for_each` extends that path with each
+/// task's own id, so the reassignments collapse the same way.
+fn cycle_rollover_play() -> PlayStep {
     PlayStep {
-        play_id: "linear-cycle-creation",
-        name: "Create the next cycle",
-        description:
-            "When a cycle reaches its end date, create its successor starting the next day, \
-             spanning that cycle's own duration_days.",
+        play_id: "linear-cycle-rollover",
+        name: "Close out the ending cycle",
+        description: "On the day a cycle ends, create its successor — starting the next day and \
+             spanning that cycle's own duration_days — then move any unfinished work into \
+             it. Work that is done or cancelled stays where it is.",
         rules: json!([{
-            "name": "create-successor-cycle",
+            "name": "create-successor-and-roll-over",
             "trigger": {
                 "type": "scheduled",
                 "cron": DAILY_AFTER_MIDNIGHT,
@@ -273,54 +286,30 @@ fn cycle_creation_play() -> PlayStep {
             "conditions": [
                 "node.end_date == today()",
             ],
-            "actions": [{
-                "action_type": "create_node",
-                "params": {
-                    "node_type": "cycle",
-                    "content": "Next cycle",
-                    "properties": {
-                        "start_date": "{add_days(trigger.node.end_date, 1)}",
-                        "end_date": "{add_days(trigger.node.end_date, trigger.node.duration_days)}",
-                        "duration_days": "{trigger.node.duration_days}",
+            "actions": [
+                {
+                    "action_type": "create_node",
+                    "params": {
+                        "node_type": "cycle",
+                        "content": "Next cycle",
+                        "properties": {
+                            "start_date": "{add_days(trigger.node.end_date, 1)}",
+                            "end_date":
+                                "{add_days(trigger.node.end_date, trigger.node.duration_days)}",
+                            "duration_days": "{trigger.node.duration_days}",
+                        },
                     },
                 },
-            }],
-        }]),
-    }
-}
-
-/// Move unfinished work out of an ended cycle.
-///
-/// Runs the day after a cycle ends, so the successor the creation Play makes
-/// on the end date already exists. Reassignment is an `add_relationship` onto
-/// the successor; the old edge is left in place as history, matching how
-/// Linear shows which cycle an issue slipped from.
-fn cycle_rollover_play() -> PlayStep {
-    PlayStep {
-        play_id: "linear-cycle-rollover",
-        name: "Roll unfinished work into the next cycle",
-        description:
-            "The day after a cycle ends, move each of its unfinished tasks to the successor \
-             cycle. Work that is done or cancelled stays where it was.",
-        rules: json!([{
-            "name": "rollover-incomplete-tasks",
-            "trigger": {
-                "type": "scheduled",
-                "cron": DAILY_AFTER_MIDNIGHT,
-                "node_type": "cycle",
-            },
-            "conditions": [
-                "node.end_date == add_days(today(), -1)",
-            ],
-            "actions": [{
-                "action_type": "add_relationship",
-                "for_each": "node.tasks",
-                "params": {
-                    "source_id": "{trigger.node.id}",
-                    "relationship_type": "tasks",
-                    "target_id": "{item.id}",
+                {
+                    "action_type": "add_relationship",
+                    "for_each": "node.tasks",
+                    "params": {
+                        "source_id": "{actions[0].result.id}",
+                        "relationship_type": "tasks",
+                        "target_id": "{item.id}",
+                    },
                 },
-            }],
+            ],
         }]),
     }
 }
@@ -714,6 +703,36 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Rollover must move work into the cycle the same rule just created, not
+    /// back into the one that is ending.
+    ///
+    /// Worth pinning explicitly because the wrong version installs perfectly
+    /// happily: `{trigger.node.id}` is a valid binding that resolves to a real
+    /// cycle, so every structural check passes and the Play simply re-adds
+    /// each task to the cycle it is already in. Nothing fails; the work just
+    /// never moves.
+    #[test]
+    fn rollover_reassigns_tasks_to_the_newly_created_cycle() {
+        let play = cycle_rollover_play();
+        let rules = play.rules.as_array().expect("rules");
+        let actions = rules[0]["actions"].as_array().expect("actions");
+
+        assert_eq!(
+            actions[0]["action_type"], "create_node",
+            "the successor must be created before anything can be moved into it"
+        );
+        assert_eq!(actions[0]["params"]["node_type"], "cycle");
+
+        let reassign = &actions[1];
+        assert_eq!(reassign["action_type"], "add_relationship");
+        assert_eq!(
+            reassign["params"]["source_id"], "{actions[0].result.id}",
+            "must target the created successor, not the ending cycle"
+        );
+        assert_eq!(reassign["for_each"], "node.tasks");
+        assert_eq!(reassign["params"]["target_id"], "{item.id}");
     }
 
     #[test]

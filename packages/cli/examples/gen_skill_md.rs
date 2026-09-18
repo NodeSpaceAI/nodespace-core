@@ -95,6 +95,13 @@ fn regions() -> Vec<GeneratedRegion> {
                           packages/cli/examples/gen_skill_md.rs",
             render: render_builtin_relationships_block,
         },
+        GeneratedRegion {
+            id: "linear-recipe",
+            file: "references/linear-recipe.md",
+            source_note: "packages/core/src/methodology/linear.rs, \
+                          packages/cli/examples/gen_skill_md.rs",
+            render: render_linear_recipe_block,
+        },
     ]
 }
 
@@ -354,6 +361,116 @@ fn render_builtin_relationships_block() -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Region: linear-recipe
+// ---------------------------------------------------------------------------
+
+/// Renders the Linear-style recipe as the CLI calls that reproduce it.
+///
+/// The recipe itself is typed Rust in `nodespace_core::methodology`, executed
+/// in-process by the desktop app. An external agent has no access to that, so
+/// this restates the same content as literal `nodespace` verbs — the transport
+/// every external agent already has, whether over a shell or the MCP
+/// passthrough.
+///
+/// Generated rather than hand-written because the two would drift, and the
+/// failure would be silent in the worst way: an agent following a stale doc
+/// installs a schema subtly different from the one the GUI installs, and the
+/// two workspaces diverge with nothing to flag it.
+///
+/// Plays are rendered as `node create --type play`. There is no
+/// `playbook create` verb — a Play is an ordinary node whose `rules` property
+/// the engine reads — and inventing one in the docs would send an agent at a
+/// command that does not exist.
+fn render_linear_recipe_block() -> String {
+    use nodespace_core::methodology::recipe_by_id;
+
+    let recipe = recipe_by_id("linear").expect("the linear recipe ships with this build");
+    let mut out = String::new();
+
+    let _ = writeln!(out, "## {}\n", recipe.name);
+    let _ = writeln!(out, "{}\n", recipe.description);
+    let _ = writeln!(
+        out,
+        "Run these in order. Each step depends on the ones before it: a Play whose trigger \
+         names a type is rejected until that type's schema exists, so a re-ordered sequence \
+         fails rather than half-installing.\n"
+    );
+
+    let _ = writeln!(out, "### 1. Schemas\n");
+    for step in &recipe.schemas {
+        let _ = writeln!(out, "Create `{}`:\n", step.schema_id);
+        let _ = writeln!(
+            out,
+            "```bash\nnodespace schema create --params '{}'\n```\n",
+            compact_json(&step.params)
+        );
+    }
+
+    let _ = writeln!(out, "### 2. Vocabulary extensions\n");
+    let _ = writeln!(
+        out,
+        "These append values to fields `issue` **inherits** from `task`, so every new value \
+         carries `mapsTo` naming the base value it collapses to when something reading at \
+         `task` scope looks at it. Without that a base-scoped Play or query would meet a \
+         value it has never heard of.\n"
+    );
+    for ext in &recipe.field_value_extensions {
+        let _ = writeln!(out, "Extend `{}.{}`:\n", ext.schema_id, ext.field);
+        let _ = writeln!(
+            out,
+            "```bash\nnodespace schema update --params '{}'\n```\n",
+            compact_json(&ext.params)
+        );
+    }
+
+    let _ = writeln!(out, "### 3. Plays\n");
+    let _ = writeln!(
+        out,
+        "A Play is a node of type `play` carrying a `rules` property. Its rules are \
+         validated on write — conditions are CEL-compiled and every referenced type and \
+         path is checked — so a malformed Play is refused here, not at execution time.\n"
+    );
+    for play in &recipe.plays {
+        let _ = writeln!(out, "**{}** — {}\n", play.name, play.description);
+        let _ = writeln!(
+            out,
+            "```bash\nnodespace node create --type play --content '{}' \\\n  --properties '{}'\n```\n",
+            play.name,
+            compact_json(&play.properties())
+        );
+    }
+
+    let _ = writeln!(out, "### 4. Guidance skills\n");
+    let _ = writeln!(
+        out,
+        "Skill nodes carrying usage guidance, discovered through the ordinary skill-search \
+         mechanism. Each is a `skill` root node whose markdown body becomes ordinary child \
+         nodes. Deliberately several narrow skills rather than one broad one: retrieval \
+         scores a precise match far better than a skill diluted across every intent.\n"
+    );
+    for skill in &recipe.skills {
+        let description = skill.root_properties["description"].as_str().unwrap_or("");
+        let _ = writeln!(out, "**{}** — {}\n", skill.title, description);
+    }
+    let _ = writeln!(
+        out,
+        "Create each with `nodespace node create --type skill`, then add its guidance as \
+         markdown children. The bodies are long-form prose; read them from \
+         `packages/core/src/methodology/linear.rs` rather than reproducing them here."
+    );
+
+    out.trim_end().to_string()
+}
+
+/// Serializes `value` for embedding in a single-quoted shell argument.
+///
+/// Compact rather than pretty-printed: a `--params` payload is one shell word,
+/// and embedded newlines would break the surrounding quoting.
+fn compact_json(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).expect("recipe JSON is serializable")
+}
+
+// ---------------------------------------------------------------------------
 // Splicing
 // ---------------------------------------------------------------------------
 
@@ -480,12 +597,21 @@ fn main() -> ExitCode {
                 println!("Skill content is up to date.");
                 ExitCode::SUCCESS
             } else {
+                // Name the sources of the regions that actually went stale,
+                // read from their own `source_note`, rather than a fixed list
+                // — a hardcoded one sends whoever hits this at the wrong file
+                // as soon as a region is added.
+                let sources: Vec<&str> = regions()
+                    .iter()
+                    .filter(|r| stale.contains(&r.file))
+                    .map(|r| r.source_note)
+                    .collect();
                 eprintln!(
                     "stale generated content in: {}\n\
-                     A generated region no longer matches its source \
-                     (packages/agent/src/skill_rules.rs, or the clap definitions in \
-                     packages/cli/src/lib.rs). Run `bun run skill:gen` and commit the result.",
-                    stale.join(", ")
+                     A generated region no longer matches its source ({}). \
+                     Run `bun run skill:gen` and commit the result.",
+                    stale.join(", "),
+                    sources.join("; ")
                 );
                 ExitCode::FAILURE
             }

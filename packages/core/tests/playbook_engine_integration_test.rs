@@ -727,10 +727,6 @@ async fn scheduled_play_computes_end_date_via_add_days_and_writes_it_to_a_new_no
     Ok(())
 }
 
-
-
-
-
 // ---------------------------------------------------------------------------
 // sum(collection, field) aggregate binding call
 //
