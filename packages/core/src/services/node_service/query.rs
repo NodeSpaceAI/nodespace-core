@@ -662,3 +662,86 @@ impl NodeService {
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 }
+
+#[cfg(test)]
+mod scope_context_tests {
+    //! `ScopeContext` resolves every schema read up front, so the per-row
+    //! filter path stays synchronous and store-free (ADR-078).
+    //!
+    //! Property filtering runs per row. A schema read inside that loop would
+    //! turn an in-memory filter into one DB round-trip per matched node —
+    //! 10,000 of them at the fetch cap. The design has this property today;
+    //! these pin it so a future edit that reintroduces an `await` there fails
+    //! here rather than silently regressing into per-row I/O.
+
+    use super::*;
+
+    /// The signature `apply_property_filters` must keep: synchronous, and
+    /// carrying no `NodeService` or store handle.
+    type ApplyFilters = fn(Vec<Node>, &[PropertyFilter], Option<&ScopeContext>) -> Vec<Node>;
+
+    /// The signature `node_matches_property_filter` must keep — the body that
+    /// runs once per row.
+    type MatchesFilter = fn(&Node, &PropertyFilter, Option<&ScopeContext>) -> bool;
+
+    /// The filter path must stay a plain synchronous function that receives
+    /// no `NodeService` and no store handle.
+    ///
+    /// This is a **compile-time** assertion, and that is the whole point:
+    /// adding an `.await` inside `node_matches_property_filter` makes it
+    /// `async`, which changes its type from `fn(..) -> bool` to
+    /// `fn(..) -> impl Future`, and these coercions stop compiling. A runtime
+    /// test cannot catch that — there is no store handle in scope to count
+    /// queries against, precisely because the signature does not carry one.
+    ///
+    /// Taking the functions as `fn` pointers (not closures) is what makes the
+    /// check bite: a closure would coerce around an added parameter, a bare
+    /// `fn` item will not.
+    #[test]
+    fn filter_path_is_synchronous_and_store_free() {
+        // `apply_property_filters` — the per-row loop's owner.
+        let _apply: ApplyFilters = NodeService::apply_property_filters;
+
+        // `node_matches_property_filter` — the body evaluated once per row.
+        let _matches: MatchesFilter = NodeService::node_matches_property_filter;
+    }
+
+    /// Every `ScopeContext` field is populated by construction, so nothing the
+    /// per-row path consults can be lazily fetched later.
+    ///
+    /// The lazy-fetch shape is the realistic regression: not an `await` added
+    /// to the filter body outright, but a field changed to `Option<_>` and
+    /// filled on first use, which would need store access from inside the row
+    /// loop. Reading every accessor off a fully-constructed context — with no
+    /// `NodeService` anywhere in scope — pins that they answer from owned
+    /// data alone.
+    #[test]
+    fn scope_context_answers_every_read_from_owned_data() {
+        let enum_field = crate::models::SchemaField {
+            name: "state".to_string(),
+            ..Default::default()
+        };
+
+        let ctx = ScopeContext {
+            chain: vec!["ticket".to_string(), "workitem".to_string()],
+            scope_type: "ticket".to_string(),
+            scope_fields: vec![enum_field.clone()],
+            node_fields: std::collections::HashMap::from([("bug".to_string(), vec![enum_field])]),
+        };
+
+        assert_eq!(ctx.chain(), ["ticket", "workitem"]);
+        assert!(ctx.declares_field("state"));
+        assert!(!ctx.declares_field("severity"));
+
+        // A node of exactly the queried type reads natively — no resolution.
+        assert!(!ctx.may_resolve_values("ticket"));
+        // A type with no pre-resolved fields has nothing to resolve through.
+        assert!(!ctx.may_resolve_values("unrelated"));
+        // A descendant carrying pre-resolved fields does.
+        assert!(ctx.may_resolve_values("bug"));
+
+        // `resolve_value` reaches only into `node_fields`/`scope_fields`; an
+        // unknown type is `None` rather than a lookup.
+        assert_eq!(ctx.resolve_value("state", "open", "unknown"), None);
+    }
+}
