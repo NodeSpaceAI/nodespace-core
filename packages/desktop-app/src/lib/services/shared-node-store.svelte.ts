@@ -2075,12 +2075,19 @@ export class SharedNodeStore {
                   // superseded. `current_node` is normally the newest state
                   // (the daemon fetches it at conflict time), so this skips
                   // only in the genuine out-of-order case.
+                  // `hadQueuedWrite`, not a live `hasPending()` read, for the
+                  // same self-referential reason documented on the
+                  // `decideRemoteUpdate` call a few lines below: this fires
+                  // from inside the very write's own catch handler, before
+                  // its `executingOperations` entry has cleared.
                   const hydrationIsStale =
                     currentNode !== null &&
-                    shouldSkipStaleAiChatUpdate(currentNode, this.nodes.get(nodeId), {
-                      type: 'database',
-                      reason: 'occ-resync'
-                    });
+                    shouldSkipStaleAiChatUpdate(
+                      currentNode,
+                      this.nodes.get(nodeId),
+                      { type: 'database', reason: 'occ-resync' },
+                      hadQueuedWrite
+                    );
                   if (hydrationIsStale) {
                     log.debug(
                       `OCC hydration for ${nodeId} is older than local state — ` +
@@ -2339,9 +2346,10 @@ export class SharedNodeStore {
     const isFocused = focusManager.editingNodeId === node.id;
     const hasPending = PersistenceCoordinator.getInstance().hasPending(node.id);
 
-    if (shouldSkipStaleAiChatUpdate(node, existingNode, source)) {
-      log.debug(`setNode: skipping ai-chat database update with fewer messages`, {
-        nodeId: node.id
+    if (shouldSkipStaleAiChatUpdate(node, existingNode, source, hasPending)) {
+      log.debug(`setNode: skipping stale/racing ai-chat database update`, {
+        nodeId: node.id,
+        hasPending
       });
       return;
     }
@@ -2750,12 +2758,22 @@ export class SharedNodeStore {
     for (const node of normalizedNodes) {
       const existingNode = this.nodes.get(node.id);
 
+      // Computed once, ahead of both guards below (mirrors setNode's
+      // ordering): `shouldSkipStaleAiChatUpdate`'s equal-version case also
+      // needs it, not just `decideRemoteUpdate`.
+      const isFocused = focusManager.editingNodeId === node.id;
+      const hasPending = PersistenceCoordinator.getInstance().hasPending(node.id);
+
       // Same guard as setNode: never overwrite an ai-chat node with a stale
-      // snapshot (older version, or same version with fewer messages). These
-      // nodes come from a fresh tree load, so they carry current server
-      // versions — which is exactly what the guard compares on.
-      if (shouldSkipStaleAiChatUpdate(node, existingNode, source)) {
-        log.debug(`batchSetNodes: skipping ai-chat stale snapshot`, { nodeId: node.id });
+      // snapshot (older version, or same version with fewer messages, or
+      // same version while a local write is still in flight). These nodes
+      // come from a fresh tree load, so they carry current server versions —
+      // which is exactly what the guard compares on.
+      if (shouldSkipStaleAiChatUpdate(node, existingNode, source, hasPending)) {
+        log.debug(`batchSetNodes: skipping stale/racing ai-chat snapshot`, {
+          nodeId: node.id,
+          hasPending
+        });
         continue;
       }
 
@@ -2764,8 +2782,6 @@ export class SharedNodeStore {
       // node the user is actively editing — `doLoadChildrenTree` passes a
       // database source, so a reload for a parent whose child is mid-keystroke
       // would overwrite the child's optimistic content.
-      const isFocused = focusManager.editingNodeId === node.id;
-      const hasPending = PersistenceCoordinator.getInstance().hasPending(node.id);
       const decision = decideRemoteUpdate(node, existingNode, source, { isFocused, hasPending });
       if (!decision.apply) {
         log.debug(

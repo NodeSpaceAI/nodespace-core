@@ -1,7 +1,11 @@
 /* eslint-disable no-undef */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { browserSyncService } from '$lib/services/browser-sync-service';
-import { SharedNodeStore, sharedNodeStore } from '$lib/services/shared-node-store.svelte';
+import {
+  SharedNodeStore,
+  sharedNodeStore,
+  SimplePersistenceCoordinator
+} from '$lib/services/shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import { getClientId } from '$lib/services/client-id';
 import type { SseEvent } from '$lib/types/sse-events';
@@ -698,6 +702,51 @@ describe('BrowserSyncService - SSE Event Ordering', () => {
 
       // Node should not be in store
       expect(sharedNodeStore.getNode('invisible-node')).toBeUndefined();
+    });
+
+    it('should skip the creation-echo fetch when the node has a pending local write', async () => {
+      // Reproduces the race behind the AI Chat model-selection revert bug:
+      // a node's OWN creation broadcast can echo back and, if a follow-up
+      // write to the SAME node (e.g. model selection, fired immediately
+      // after "+ New chat") is already in flight when the echo's re-fetch
+      // resolves, land at the same version the in-flight write's optimistic
+      // apply is still sitting at. A never-resolving `immediate` operation
+      // keeps `hasPending()` true for the duration of this test, standing
+      // in for that in-flight write.
+      const getNodeSpy = vi.spyOn(backendAdapterModule.backendAdapter, 'getNode');
+      SimplePersistenceCoordinator.getInstance().persist(
+        'pending-node',
+        () => new Promise(() => {}),
+        { mode: 'immediate' }
+      );
+
+      testableService.handleEvent({
+        type: 'nodeCreated',
+        nodeType: 'ai-chat',
+        nodeId: 'pending-node'
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(getNodeSpy).not.toHaveBeenCalled();
+      expect(sharedNodeStore.getNode('pending-node')).toBeUndefined();
+    });
+
+    it('still fetches on nodeCreated for a node with no pending local write (unchanged default)', async () => {
+      const nodeData = createTestNode('fresh-node', 'Created elsewhere');
+      registerMockNode(nodeData);
+      const getNodeSpy = vi.spyOn(backendAdapterModule.backendAdapter, 'getNode');
+
+      testableService.handleEvent({
+        type: 'nodeCreated',
+        nodeType: 'text',
+        nodeId: 'fresh-node'
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(getNodeSpy).toHaveBeenCalledWith('fresh-node');
+      expect(sharedNodeStore.getNode('fresh-node')).toBeDefined();
     });
 
     it('should handle API fetch errors for nodeCreated gracefully', async () => {

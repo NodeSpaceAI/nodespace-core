@@ -18,7 +18,7 @@
 
 /* global EventSource, MessageEvent */
 
-import { sharedNodeStore } from './shared-node-store.svelte';
+import { sharedNodeStore, SimplePersistenceCoordinator } from './shared-node-store.svelte';
 import { structureTree } from '$lib/stores/reactive-structure-tree.svelte';
 import type { SseEvent } from '$lib/types/sse-events';
 import { backendAdapter } from './backend-adapter';
@@ -226,9 +226,29 @@ class BrowserSyncService {
           );
         }
 
-        // Fetch full node data only if we need to display it
-        // For now, always fetch since the node might be in the current view
-        this.fetchAndUpdateNode(event.nodeId, 'nodeCreated');
+        // Fetch full node data only if we need to display it — for a node
+        // this session hasn't seen before, always fetch, since it might
+        // belong in the current view (sidebar list, tree, ...).
+        //
+        // Skip the fetch when a local write for this exact node is still in
+        // flight: that write is almost certainly what CAUSED this creation
+        // (e.g. `createSchemaInstance`'s own POST, or a follow-up write
+        // issued immediately after, before this echo had a chance to
+        // arrive — the "+ New chat" then model-selection sequence is the
+        // reproduction case). A re-fetch racing that write can return the
+        // PRE-write snapshot at the SAME version number the write's own
+        // optimistic apply is still sitting at (the optimistic apply never
+        // bumps `.version` — only the write's response does), which is
+        // exactly the equal-version case `shouldSkipStaleAiChatUpdate`
+        // otherwise has to reason about after the fact. The in-flight
+        // write's own response (or a later, correctly-guarded `nodeUpdated`
+        // echo) hydrates the real state regardless, so skipping here loses
+        // nothing.
+        if (!SimplePersistenceCoordinator.getInstance().hasPending(event.nodeId)) {
+          this.fetchAndUpdateNode(event.nodeId, 'nodeCreated');
+        } else {
+          log.debug('Node has a pending local write, skipping creation echo fetch:', event.nodeId);
+        }
         break;
       }
 
