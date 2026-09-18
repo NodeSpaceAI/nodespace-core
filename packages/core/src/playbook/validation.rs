@@ -580,6 +580,74 @@ async fn ensure_schema_cached(
     cache.insert(node_type.to_string(), schema);
 }
 
+/// If `segment` is the declared reverse name of a relationship reaching
+/// `node_type`, the type on the other end — i.e. where the walk continues.
+///
+/// Mirrors the reverse half of [`crate::ops::rel_ops::resolve_relationship_name`],
+/// minus the parts that need a concrete node. That resolver probes an untyped
+/// declaration (`target_type: None`) against a real node to avoid resolving to
+/// a guaranteed-empty traversal; validation has no node, so an untyped
+/// declaration is accepted on the strength of its name alone.
+///
+/// Checked across `node_type`'s whole `extends` chain, not just the type
+/// itself: `issue extends task`, and `task.blocks` declares `blocked_by`
+/// targeting `task`, so an issue reaches that reverse name through
+/// inheritance (ADR-078). Matching only the concrete type would refuse
+/// `node.blocked_by` on an issue while allowing it on a task.
+async fn resolve_reverse_segment(
+    node_type: &str,
+    segment: &str,
+    node_service: &NodeService,
+) -> Option<String> {
+    let chain = node_service
+        .resolve_type_chain(node_type)
+        .await
+        .unwrap_or_else(|_| vec![node_type.to_string()]);
+
+    for scope in chain {
+        let Ok(inbound) = node_service.get_inbound_relationships(&scope).await else {
+            continue;
+        };
+        if let Some(source) = inbound
+            .into_iter()
+            .find_map(|(source_type, rel)| (rel.reverse_name == segment).then_some(source_type))
+        {
+            return Some(source);
+        }
+    }
+    None
+}
+
+/// If `segment` is a relationship declared anywhere in `node_type`'s
+/// `extends` chain, its declaration.
+///
+/// An extending schema inherits its ancestors' relationships (ADR-078), so a
+/// forward name declared on `task` is legal on `issue` and must validate
+/// there too.
+async fn resolve_forward_segment(
+    node_type: &str,
+    segment: &str,
+    node_service: &NodeService,
+    schema_cache: &mut HashMap<String, Option<SchemaNode>>,
+) -> Option<crate::models::schema::SchemaRelationship> {
+    let chain = node_service
+        .resolve_type_chain(node_type)
+        .await
+        .unwrap_or_else(|_| vec![node_type.to_string()]);
+
+    for scope in chain {
+        ensure_schema_cached(&scope, node_service, schema_cache).await;
+        let found = schema_cache
+            .get(&scope)
+            .and_then(|s| s.as_ref())
+            .and_then(|s| s.relationships.iter().find(|r| r.name == segment).cloned());
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
 /// Validate a dot-path against the schema graph.
 ///
 /// Walks the path segments starting from the trigger schema, checking each segment:
@@ -653,9 +721,28 @@ async fn validate_schema_path(
             continue;
         }
 
-        // Check if the segment is a relationship on this schema
-        let relationship = schema.relationships.iter().find(|r| r.name == *segment);
-        if let Some(rel) = relationship {
+        // A segment may also spell the far end of a DECLARED relationship.
+        // The forward name lives on this schema; a reverse name (`blocked_by`
+        // for `task.blocks`) lives on whichever schema declares the forward
+        // half and targets this type. `GraphResolver` resolves both —
+        // direction is decided per segment in `fetch_related_nodes` — so
+        // validating only the forward spelling would refuse Plays the engine
+        // runs fine.
+        //
+        // Matched against inbound declarations by schema alone, with no node
+        // in hand: this asks whether the name is *declarable* here, which is
+        // all save-time validation can know.
+        if let Some(target) = resolve_reverse_segment(&current_type, segment, node_service).await {
+            current_type = target;
+            continue;
+        }
+
+        // Check if the segment is a relationship anywhere in this type's
+        // chain — an extending schema inherits its ancestors' relationships,
+        // so a forward name declared on `task` is legal on `issue` too.
+        let relationship =
+            resolve_forward_segment(&current_type, segment, node_service, schema_cache).await;
+        if let Some(rel) = relationship.as_ref() {
             if let Some(ref target_type) = rel.target_type {
                 // Follow the relationship to the target schema
                 current_type = target_type.clone();
