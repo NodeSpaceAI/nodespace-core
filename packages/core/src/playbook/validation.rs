@@ -712,6 +712,44 @@ async fn ensure_schema_cached(
     cache.insert(node_type.to_string(), schema);
 }
 
+/// If `segment` is the declared reverse name of a relationship reaching
+/// `node_type`, the type on the other end — i.e. where the walk continues.
+///
+/// Mirrors the reverse half of [`crate::ops::rel_ops::resolve_relationship_name`],
+/// minus the parts that need a concrete node. That resolver probes an untyped
+/// declaration (`target_type: None`) against a real node to avoid resolving to
+/// a guaranteed-empty traversal; validation has no node, so an untyped
+/// declaration is accepted on the strength of its name alone.
+///
+/// Checked across `node_type`'s whole `extends` chain, not just the type
+/// itself: `issue extends task`, and `task.blocks` declares `blocked_by`
+/// targeting `task`, so an issue reaches that reverse name through
+/// inheritance (ADR-078). Matching only the concrete type would refuse
+/// `node.blocked_by` on an issue while allowing it on a task.
+async fn resolve_reverse_segment(
+    node_type: &str,
+    segment: &str,
+    node_service: &NodeService,
+) -> Option<String> {
+    let chain = node_service
+        .resolve_type_chain(node_type)
+        .await
+        .unwrap_or_else(|_| vec![node_type.to_string()]);
+
+    for scope in chain {
+        let Ok(inbound) = node_service.get_inbound_relationships(&scope).await else {
+            continue;
+        };
+        if let Some(source) = inbound
+            .into_iter()
+            .find_map(|(source_type, rel)| (rel.reverse_name == segment).then_some(source_type))
+        {
+            return Some(source);
+        }
+    }
+    None
+}
+
 /// Validate a dot-path against the schema graph.
 ///
 /// Walks the path segments starting from the trigger schema, checking each segment:
@@ -852,6 +890,25 @@ async fn validate_schema_path(
             continue;
         }
 
+        // A segment may also spell the far end of a DECLARED relationship. The
+        // forward name is in the effective set below; a reverse name
+        // (`blocked_by` for `task.blocks`) lives on whichever schema declares
+        // the forward half and targets this type, so it appears in no forward
+        // set at all. `GraphResolver` resolves both — direction is decided per
+        // segment in `fetch_related_nodes` — so validating only the forward
+        // spelling would refuse Plays the engine runs fine.
+        //
+        // Matched against inbound declarations by schema alone, with no node
+        // in hand: this asks whether the name is *declarable* here, which is
+        // all save-time validation can know.
+        if let Some(target) = resolve_reverse_segment(&current_type, segment, node_service).await {
+            current_type = target;
+            continue;
+        }
+
+        // Forward names come from the effective set, which already spans the
+        // `extends` chain (`resolve_relationships`), so an inherited
+        // relationship resolves without a second chain walk here.
         let relationship = relationships.iter().find(|r| r.name == *segment);
         if let Some(rel) = relationship {
             if let Some(ref target_type) = rel.target_type {
