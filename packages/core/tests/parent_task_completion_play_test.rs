@@ -304,6 +304,52 @@ async fn a_second_parent_edge_is_rejected() -> Result<()> {
     Ok(())
 }
 
+/// Reparenting must keep working: it is delete-then-insert inside one
+/// transaction at the store layer, below `create_relationship`, so the
+/// single-parent guard never sees it.
+///
+/// Worth pinning explicitly — a guard that rejects a second parent is exactly
+/// the shape that breaks a move implemented as "attach new, detach old", and
+/// nothing else in this file would catch that regression.
+#[tokio::test]
+async fn reparenting_still_works_with_the_single_parent_guard() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    let parent_a = task_node(&service, "open").await?;
+    let parent_b = task_node(&service, "open").await?;
+    let child = task_node(&service, "open").await?;
+    service
+        .create_relationship(&parent_a, "has_child", &child, json!({}))
+        .await?;
+
+    service
+        .move_node_unchecked(
+            &child,
+            Some(&parent_b),
+            nodespace_core::services::InsertPosition::End,
+        )
+        .await?;
+
+    let parent = service
+        .get_parent(&child)
+        .await?
+        .expect("the moved node must have a parent");
+    assert_eq!(
+        parent.id, parent_b,
+        "the move must re-point the parent edge"
+    );
+
+    // And exactly one edge survives — a move that left the old edge behind
+    // would produce the two-parent state the guard exists to prevent.
+    let children_of_a = service.get_children(&parent_a).await?;
+    assert!(
+        children_of_a.is_empty(),
+        "the previous parent must no longer claim the child"
+    );
+
+    Ok(())
+}
+
 /// ADR-079 §4: the rollup climbs the ancestor spine, one level per firing —
 /// the Play's own write to the parent re-triggers it with the parent now in
 /// the child position.

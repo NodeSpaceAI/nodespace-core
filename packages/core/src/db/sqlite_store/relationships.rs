@@ -516,6 +516,28 @@ impl SqliteStore {
         Ok(row.get::<i64>(0).unwrap_or(0))
     }
 
+    /// `_in_tx` twin of [`Self::get_parent_id`] (ADR-069 §1a).
+    ///
+    /// Reads the CHILD side (`out_node`), unlike
+    /// [`Self::check_relationship_exists_in_tx`], which counts a node's
+    /// outgoing edges by `in_node`. "Does this node already have a parent?" is
+    /// the opposite direction from "does this node have children?".
+    pub(crate) async fn get_parent_id_in_tx(tx: &Tx<'_>, child_id: &str) -> Result<Option<String>> {
+        let mut rows = tx
+            .conn()
+            .query(
+                "SELECT in_node FROM relationship WHERE out_node = ?1 AND relationship_type = 'has_child' LIMIT 1",
+                libsql::params![child_id.to_string()],
+            )
+            .await
+            .context("Failed to get parent id")?;
+        if let Some(row) = rows.next().await? {
+            Ok(Some(row.get::<String>(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
     /// `_in_tx` twin of [`Self::get_relationship_id`] (ADR-069 §1a).
     pub(crate) async fn get_relationship_id_in_tx(
         tx: &Tx<'_>,
