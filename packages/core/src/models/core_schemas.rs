@@ -1425,6 +1425,80 @@ pub fn get_core_schemas() -> Vec<SchemaNode> {
             title_template: None,
             properties_header_summary_template: None,
         },
+        // Play schema — a workflow definition node (`playbook-system.md`,
+        // "Built-in Node Types"). The engine queries these by type at startup
+        // and on every play mutation.
+        //
+        // `rules` is the play's rule array. It is NOT validated by the schema's
+        // generic machinery: `create_node`/`update_node` call
+        // `validate_play_rules` separately, which parses each rule's trigger,
+        // conditions and actions. The field is declared here so a play node has
+        // a real, inspectable type like every other core node — not to move
+        // rule validation into the schema layer.
+        //
+        // Deliberately no `log`/`playbook_log` schema alongside this one:
+        // `create_or_update_log_node` writes nine properties today, and
+        // declaring them would switch on required-field and enum enforcement
+        // over a surface that has never had it. ADR-076 records what that costs
+        // when the declared vocabulary and the writing code have drifted
+        // (`ai-chat.status`, 16 broken tests). Tracked separately.
+        SchemaNode {
+            id: "play".to_string(),
+            content: "Play".to_string(),
+            version: 1,
+            created_at: now,
+            modified_at: now,
+            is_core: true,
+            schema_version: 1,
+            fields: vec![
+                SchemaField {
+                    name: "rules".to_string(),
+                    friendly_name: "Rules".to_string(),
+                    field_type: "array".to_string(),
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: false,
+                    // Not `required`: a play node is created before its rules
+                    // are filled in by some flows, and `validate_play_rules`
+                    // is what enforces rule shape either way.
+                    required: Some(false),
+                    extensible: None,
+                    default: Some(serde_json::json!([])),
+                    description: Some(
+                        "Rule definitions: each a trigger, conditions and actions".to_string(),
+                    ),
+                    item_type: Some("object".to_string()),
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+                SchemaField {
+                    name: "description".to_string(),
+                    friendly_name: "Description".to_string(),
+                    field_type: "string".to_string(),
+                    local_only: false,
+                    protection: SchemaProtectionLevel::Core,
+                    core_values: None,
+                    user_values: None,
+                    indexed: true,
+                    required: Some(false),
+                    extensible: None,
+                    default: None,
+                    description: Some("What this play automates, in one line".to_string()),
+                    item_type: None,
+                    fields: None,
+                    item_fields: None,
+                    unique: None,
+                    unique_case_insensitive: None,
+                },
+            ],
+            relationships: vec![],
+            title_template: None,
+            properties_header_summary_template: None,
+        },
         // Database Settings schema — a singleton container for database-level
         // configuration. `sync_enabled` is user intent; `auth_status` is
         // system-managed cloud bind state. ADR-037 moved role and auth_status off
@@ -1550,7 +1624,37 @@ mod tests {
     #[test]
     fn test_get_core_schemas_returns_all() {
         let schemas = get_core_schemas();
-        assert_eq!(schemas.len(), 18);
+        // Assert the ids, not just the count: a bare length check reports
+        // "expected 18, got 19" when a schema is added and says nothing about
+        // which one, and passes unchanged if one is swapped for another.
+        let mut ids: Vec<&str> = schemas.iter().map(|s| s.id.as_str()).collect();
+        ids.sort_unstable();
+        // Sorted, so this literal reads as a set rather than pinning the
+        // declaration order in `get_core_schemas`.
+        assert_eq!(
+            ids,
+            [
+                "agent-guidance",
+                "ai-chat",
+                "checkbox",
+                "code-block",
+                "collection",
+                "database-settings",
+                "date",
+                "header",
+                "horizontal-line",
+                "ordered-list",
+                "person",
+                "play",
+                "project",
+                "query",
+                "quote-block",
+                "skill",
+                "table",
+                "task",
+                "text",
+            ]
+        );
     }
 
     #[test]

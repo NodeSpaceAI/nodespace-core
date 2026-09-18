@@ -670,7 +670,12 @@ async fn test_update_schema_remove_fields_allows_user_protected_field_on_core_sc
         &svc,
         json!({
             "schema_id": "task",
-            "remove_fields": ["priority"]
+            "remove_fields": ["priority"],
+            // Removing a field is destructive, and a core Play triggers on
+            // `task` (ADR-079), so the impact guard asks for confirmation.
+            // That guard is not what this test is about — it asserts the
+            // *field-protection* rule, so confirm and let it through.
+            "force": true
         }),
     )
     .await;
@@ -2565,7 +2570,12 @@ async fn test_update_schema_core_type_rename_cannot_drop_namespace_prefix() {
         &svc,
         json!({
             "schema_id": "task",
-            "rename_fields": [{ "from": "custom:effort", "to": "effort" }]
+            "rename_fields": [{ "from": "custom:effort", "to": "effort" }],
+            // A rename is destructive and a core Play triggers on `task`
+            // (ADR-079), so the impact guard would reject this first. This test
+            // asserts the *namespace-prefix* rule, so confirm past that guard
+            // to reach the rejection it is actually about.
+            "force": true
         }),
     )
     .await;
@@ -2600,7 +2610,10 @@ async fn test_update_schema_core_type_rename_cannot_drop_namespace_prefix() {
         &svc,
         json!({
             "schema_id": "task",
-            "rename_fields": [{ "from": "custom:effort", "to": "custom:effort_points" }]
+            "rename_fields": [{ "from": "custom:effort", "to": "custom:effort_points" }],
+            // Destructive, same as the rename above — confirm past the
+            // core-Play impact guard (ADR-079).
+            "force": true
         }),
     )
     .await

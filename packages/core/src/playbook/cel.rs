@@ -215,7 +215,13 @@ fn is_core_key(key: &str) -> bool {
 /// rather than surfaced raw — handing a base-scoped condition a value it has
 /// never heard of is the hazard `maps_to` exists to prevent, and an absent key
 /// makes the condition simply not match.
-fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value {
+///
+/// `pub(crate)`: also the read path for nodes reached by traversal
+/// (`GraphResolver::enrich_context`), so a related node is projected and
+/// value-resolved exactly as the trigger node is. ADR-078 requires one shared
+/// resolution function rather than per-consumer logic — a second
+/// implementation for related nodes is how the two surfaces drift apart.
+pub(crate) fn scoped_node_value(node: &Node, scope: Option<&CelScope>) -> Value {
     let Some(scope) = scope else {
         return node_to_cel_value(node);
     };
