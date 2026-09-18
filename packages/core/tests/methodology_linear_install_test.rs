@@ -232,6 +232,59 @@ async fn plays_reference_types_the_recipe_creates_first() -> Result<()> {
 // install_recipe: the path the GUI actually calls
 // ---------------------------------------------------------------------------
 
+/// The report's wire shape is a contract with the desktop app, which decodes
+/// it into its own mirrored types. Pinned here because a drift in either
+/// side's serde attributes surfaces as a decode error at install time — with
+/// the install already done and the report, the only record of what landed,
+/// lost.
+#[tokio::test]
+async fn the_install_report_serializes_to_the_shape_clients_decode() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+
+    // A pre-existing `cycle` guarantees a suffixed outcome, so every variant
+    // that carries data is exercised rather than just the happy one.
+    handle_create_schema(
+        &service,
+        serde_json::json!({
+            "name": "Cycle",
+            "description": "A bicycle in the shed",
+            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+        }),
+    )
+    .await
+    .expect("pre-existing schema");
+
+    let report = install_recipe(&service, &linear()).await;
+    let json: serde_json::Value = serde_json::to_value(&report)?;
+
+    assert_eq!(json["recipeId"], "linear", "camelCase, not recipe_id");
+    assert_eq!(json["success"], true);
+
+    let steps = json["steps"].as_array().expect("steps is an array");
+    for step in steps {
+        assert!(step["label"].is_string());
+        assert!(
+            step["outcome"]["kind"].is_string(),
+            "outcome is internally tagged on `kind`"
+        );
+    }
+
+    let suffixed = steps
+        .iter()
+        .find(|s| s["outcome"]["kind"] == "suffixed")
+        .expect("the colliding cycle must report a suffixed outcome");
+    assert_eq!(suffixed["outcome"]["requested"], "cycle");
+    assert!(suffixed["outcome"]["created"].is_string());
+
+    let created = steps
+        .iter()
+        .find(|s| s["outcome"]["kind"] == "created")
+        .expect("a non-colliding step must report created");
+    assert!(created["outcome"]["id"].is_string());
+
+    Ok(())
+}
+
 /// The installer reports every step as done, with nothing re-keyed, into an
 /// empty workspace.
 #[tokio::test]

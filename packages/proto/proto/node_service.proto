@@ -98,6 +98,17 @@ service NodeService {
   rpc CreateSchema(SchemaParamsRequest) returns (SchemaResultResponse);
   rpc UpdateSchema(SchemaParamsRequest) returns (SchemaResultResponse);
 
+  // Methodologies
+  //
+  // Install a first-party work-tracking recipe (schemas, vocabulary
+  // extensions, Plays and guidance skills) in one call. One RPC rather than
+  // the caller driving CreateSchema/UpdateSchema/CreateNode itself, because
+  // the steps are ordered and a collision on any id has to re-key every later
+  // reference to it — logic that belongs beside the recipe, not duplicated
+  // into each client.
+  rpc ListMethodologies(ListMethodologiesRequest) returns (ListMethodologiesResponse);
+  rpc InstallMethodology(InstallMethodologyRequest) returns (InstallMethodologyResponse);
+
   // Structured queries
   rpc ExecuteQuery(ExecuteQueryRequest) returns (NodeListResponse);
   // Count nodes matching the same filter shape as ExecuteQuery, without
@@ -949,6 +960,41 @@ message SchemaParamsRequest {
   // JSON-encoded CreateSchemaParams or UpdateSchemaParams (see
   // packages/core/src/schema/mod.rs for the field shape).
   string params_json = 1;
+}
+
+message ListMethodologiesRequest {}
+
+message ListMethodologiesResponse {
+  repeated Methodology methodologies = 1;
+}
+
+// A recipe on offer, for a picker to render. Carries no steps: a client
+// chooses by id and the daemon executes, so the step sequence never crosses
+// the wire and cannot be edited in flight.
+message Methodology {
+  string id = 1;           // stable key, e.g. "linear"
+  string name = 2;         // display name, e.g. "Linear-style"
+  string description = 3;  // one paragraph on what installing it sets up
+}
+
+message InstallMethodologyRequest {
+  // Which recipe to install, by `Methodology.id`. An unknown id is
+  // NOT_FOUND rather than a silent no-op.
+  string methodology_id = 1;
+}
+
+message InstallMethodologyResponse {
+  // JSON-encoded InstallReport: per-step label and outcome, plus `success`.
+  //
+  // A step whose id was taken reports `suffixed` with both the requested and
+  // created ids, which the caller is expected to surface — installation
+  // re-keys rather than adopting or overwriting, and that must never be
+  // silent.
+  //
+  // A failed step is reported in here, not on the Status channel: the
+  // install is partial by then, and the report says how far it got. A
+  // Status would discard exactly that.
+  string report_json = 1;
 }
 
 message SchemaResultResponse {
