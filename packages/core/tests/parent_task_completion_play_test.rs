@@ -219,19 +219,74 @@ async fn a_cancelled_sibling_counts_as_finished() -> Result<()> {
 /// ADR-079 §3: a task with no children must never
 /// auto-complete itself. Guaranteed by empty-collection-is-false, including
 /// under `.all()` — the opposite of CEL's usual vacuous truth.
+///
+/// Paired with a positive control in the same test: a sibling hierarchy that
+/// DOES complete. Without it this would pass just as well if the Play were
+/// disabled, misseeded, or never fired at all — the failure mode a negative
+/// assertion is least able to distinguish on its own.
 #[tokio::test]
 async fn a_childless_task_never_auto_completes() -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
     let (tx, engine_task) = spawn_engine(&service).await;
 
     let lonely = task_node(&service, "open").await?;
-    set_status(&service, &lonely, "in_progress").await?;
 
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    // Positive control: a parent whose only child completes.
+    let control_parent = task_node(&service, "open").await?;
+    let control_child = task_node(&service, "open").await?;
+    service
+        .create_relationship(&control_parent, "has_child", &control_child, json!({}))
+        .await?;
+
+    set_status(&service, &lonely, "in_progress").await?;
+    set_status(&service, &control_child, "done").await?;
+
+    assert!(
+        wait_for_status(&service, &control_parent, "done").await,
+        "positive control must complete — otherwise this test proves nothing \
+         about the childless case"
+    );
+
     assert_eq!(
         status_of(&service, &lonely).await.as_deref(),
         Some("in_progress"),
         "a task with no children must not complete itself"
+    );
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
+/// The outline is single-parent by construction (`get_parent` resolves with
+/// `LIMIT 1`), so a node holding two `has_child` parents is malformed. The
+/// Play must decline to act rather than complete whichever parent sorts first.
+#[tokio::test]
+async fn a_malformed_multi_parent_child_completes_neither_parent() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let parent_a = task_node(&service, "open").await?;
+    let parent_b = task_node(&service, "open").await?;
+    let child = task_node(&service, "open").await?;
+    service
+        .create_relationship(&parent_a, "has_child", &child, json!({}))
+        .await?;
+    service
+        .create_relationship(&parent_b, "has_child", &child, json!({}))
+        .await?;
+
+    set_status(&service, &child, "done").await?;
+    tokio::time::sleep(Duration::from_millis(400)).await;
+
+    assert_eq!(
+        status_of(&service, &parent_a).await.as_deref(),
+        Some("open"),
+        "a malformed multi-parent hierarchy must not be acted on"
+    );
+    assert_eq!(
+        status_of(&service, &parent_b).await.as_deref(),
+        Some("open"),
+        "neither parent may be picked arbitrarily"
     );
 
     shutdown_engine(tx, engine_task).await;
@@ -265,6 +320,70 @@ async fn completion_cascades_to_the_grandparent() -> Result<()> {
     assert!(
         wait_for_status(&service, &grandparent, "done").await,
         "completion must cascade to the grandparent"
+    );
+
+    shutdown_engine(tx, engine_task).await;
+    Ok(())
+}
+
+/// ADR-079 §2, end to end: the shipped Play — authored against `task`, with no
+/// knowledge that `bug` exists — must complete a parent whose children are
+/// `bug` nodes carrying `bug`'s own extended status vocabulary.
+///
+/// This is the acceptance criterion the scope unit tests cover only in pieces:
+/// they prove `maps_to` resolution works, this proves the *seeded* Play
+/// actually benefits from it across a relationship walk. `shipped` is
+/// `bug`-only and maps to `done` at `task` scope, so a `task`-scoped condition
+/// asking for `done` must match it.
+#[tokio::test]
+async fn the_play_completes_a_parent_whose_children_are_an_extending_subtype() -> Result<()> {
+    let (service, _tmp) = create_test_service().await?;
+
+    nodespace_core::schema::handle_create_schema(
+        &service,
+        json!({ "name": "Bug", "extends": "task", "fields": [] }),
+    )
+    .await
+    .expect("creating a task-extending schema should succeed");
+
+    nodespace_core::schema::handle_update_schema(
+        &service,
+        json!({
+            "schema_id": "bug",
+            "add_field_values": [{
+                "field": "status",
+                "values": [{ "value": "shipped", "label": "Shipped", "mapsTo": "done" }]
+            }],
+            // Additive, so the impact guard does not ask — asserted directly
+            // by the additive/destructive split. `force` is deliberately NOT
+            // passed here: if extending an inherited enum ever starts
+            // demanding it again, this test is where that regresses.
+        }),
+    )
+    .await
+    .expect("extending an inherited enum should succeed without force");
+
+    let (tx, engine_task) = spawn_engine(&service).await;
+
+    let parent = task_node(&service, "open").await?;
+    let bug = service
+        .create_node(Node::new(
+            "bug".to_string(),
+            "a bug".to_string(),
+            json!({ "status": "open" }),
+        ))
+        .await?;
+    service
+        .create_relationship(&parent, "has_child", &bug, json!({}))
+        .await?;
+
+    // `shipped` is vocabulary `task` has never heard of; it must read as `done`.
+    set_status(&service, &bug, "shipped").await?;
+
+    assert!(
+        wait_for_status(&service, &parent, "done").await,
+        "a subtype child's extended status must resolve at task scope through \
+         maps_to, so the base-scoped Play completes the parent unchanged"
     );
 
     shutdown_engine(tx, engine_task).await;

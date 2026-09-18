@@ -1593,6 +1593,10 @@ pub async fn handle_update_schema(
             .remove_relationships
             .as_ref()
             .is_some_and(|r| !r.is_empty())
+        // Re-pointing `extends` is destructive even though it adds no syntax:
+        // the previous parent's fields leave the effective field set, so a
+        // Play reading an inherited field stops resolving it (ADR-078).
+        || params.extends.is_some()
     {
         crate::playbook::validation::SchemaChangeKind::Destructive
     } else {

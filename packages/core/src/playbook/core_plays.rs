@@ -40,6 +40,17 @@ pub const PARENT_TASK_COMPLETION_PLAY_ID: &str = "play-core-parent-task-completi
 ///   no children never completes, because an empty collection evaluates to
 ///   `false` here — including under `.all()` — so no explicit count guard is
 ///   needed.
+///
+/// **Single-parent assumption.** `child_of` is the outline's parent edge, and
+/// the whole hierarchy is single-parent by construction: `SqliteStore::get_parent`
+/// and `get_parent_id` both resolve it with `LIMIT 1`, so no read path has ever
+/// contemplated a second one. A node holding two `has_child` parents is already
+/// malformed with respect to that model — nothing in the product creates one —
+/// and this Play no-ops there rather than picking a parent arbitrarily: the
+/// resolver yields a `Collection` for a multi-row walk, `.has_child` cannot
+/// continue from it, and the condition is simply false. That is the desired
+/// failure: declining to act on a malformed hierarchy, not silently completing
+/// whichever parent happened to sort first.
 /// - **Action** — set the parent's `status` to `done`. Never `cancelled`: a
 ///   parent whose children were all cancelled has completed as a unit of work,
 ///   and propagating `cancelled` upward would assert an intent this Play has no

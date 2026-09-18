@@ -649,10 +649,7 @@ async fn validate_schema_path(
         // as the best available guess. That keeps a later segment checkable
         // when the type happens to be right, and at worst declines to catch a
         // broken segment — never invents an error for a valid path.
-        let is_builtin = crate::models::schema::BUILTIN_RELATIONSHIP_NAMES
-            .contains(&segment.as_str())
-            || crate::models::schema::builtin_forward_name(segment).is_some();
-        if is_builtin {
+        if crate::models::schema::is_reserved_relationship_name(segment) {
             continue;
         }
 

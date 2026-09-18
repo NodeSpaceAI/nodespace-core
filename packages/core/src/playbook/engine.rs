@@ -890,15 +890,52 @@ impl PlaybookEngine {
                     return;
                 }
 
-                let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-                let disabled = lifecycle.handle_schema_update(schema_node_type, new_version);
+                // Referencing the changed type is not the same as being broken
+                // by the change. Disabling every Play that merely mentions it
+                // means an additive edit — `add_field_values` adding a status
+                // value, blessed by ADR-076 — silently stops core automation
+                // that the change provably cannot break.
+                //
+                // So candidates are re-validated against the NEW schema and
+                // only genuinely-broken Plays are disabled. Validation needs
+                // store access, so it runs outside the lifecycle lock: gather
+                // candidates under a read lock, validate, then take the write
+                // lock to disable.
+                let candidates = {
+                    let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
+                    lifecycle
+                        .plays_referencing_schema(schema_node_type)
+                        .into_iter()
+                        .filter_map(|id| lifecycle.rules_for_play(&id).map(|rules| (id, rules)))
+                        .collect::<Vec<_>>()
+                };
 
-                if !disabled.is_empty() {
+                let mut broken = Vec::new();
+                for (play_id, rules) in candidates {
+                    if let Err(errors) =
+                        crate::playbook::validation::validate_play(&rules, &self.node_service).await
+                    {
+                        broken.push((play_id, errors));
+                    }
+                }
+
+                if !broken.is_empty() {
+                    let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+                    for (play_id, _) in &broken {
+                        warn!(
+                            "Schema '{}' updated to version '{}', disabling play {} — its rules \
+                             no longer validate against the new schema",
+                            schema_node_type, new_version, play_id
+                        );
+                        lifecycle.disable_play(play_id);
+                    }
+                    drop(lifecycle);
+
                     warn!(
                         "Schema drift: {} plays disabled due to schema '{}' update: {:?}",
-                        disabled.len(),
+                        broken.len(),
                         schema_node_type,
-                        disabled
+                        broken.iter().map(|(id, _)| id).collect::<Vec<_>>()
                     );
                     // Phase 6 will create log nodes for each disabled play
                 }

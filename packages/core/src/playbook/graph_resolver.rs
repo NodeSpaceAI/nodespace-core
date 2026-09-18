@@ -160,6 +160,15 @@ impl GraphResolver {
             // Checked before properties so these names mean the node's
             // identity consistently, rather than being shadowed by a
             // same-named user property on some types but not others.
+            //
+            // This walk starts at `i == 0`, so the rule applies to the ROOT
+            // node's own first segment as well as to traversed nodes: a task
+            // storing a user property literally named `content` resolves
+            // `node.content` to the struct field, not that property. Core-wins
+            // is the deliberate choice — it matches what `node.id` already
+            // means in every CEL condition (`cel.rs`'s `is_core_key`), and the
+            // alternative would make a path's meaning depend on which types
+            // happen to declare a colliding field.
             if let Some(core_val) = core_field_value(&current_node, segment) {
                 let result = ResolvedValue::Scalar(core_val);
                 self.cache
@@ -479,6 +488,11 @@ impl GraphResolver {
                 continue;
             }
             let nodes = self.resolve_collection(root_node, &coll.collection).await;
+            // Load-bearing: leaving the key ABSENT for an empty collection is
+            // what makes `.all()` over "no children" evaluate false rather than
+            // vacuously true (`playbook-engine.md`). Inserting an empty list
+            // here instead would make a childless parent satisfy the completion
+            // rollup's condition and auto-complete itself (ADR-079 §3).
             if !nodes.is_empty() {
                 let list: Vec<Value> = nodes
                     .iter()
