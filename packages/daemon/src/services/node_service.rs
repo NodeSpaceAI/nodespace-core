@@ -58,19 +58,18 @@ use crate::nodespace::{
     GetRootsRequest, GetSchemaDefinitionRequest, GetWorkflowStateRequest, GetWorkflowStateResponse,
     InstallMethodologyRequest, InstallMethodologyResponse, ListConflictsRequest,
     ListMethodologiesRequest, ListMethodologiesResponse, MentionAutocompleteRequest,
-    MentionIdsResponse, MentionResponse, Methodology,
-    MentionTargetRequest, MergeNodesRequest, MergeNodesResponse, MoveChildrenToParentRequest,
-    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
-    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
-    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
-    OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest,
-    RelationshipDeletedPayload, RelationshipPayload, RemoveNodeFromCollectionRequest,
-    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
-    ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
-    SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
-    UpdateNodesBatchResponse, UpdateRelationshipPropertiesRequest,
-    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
-    WatchRequest,
+    MentionIdsResponse, MentionResponse, MentionTargetRequest, MergeNodesRequest,
+    MergeNodesResponse, Methodology, MoveChildrenToParentRequest, MoveChildrenToParentResponse,
+    MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse,
+    NodeReference, NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
+    OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
+    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipPayload,
+    RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
+    ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
+    SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
+    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse,
+    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
+    UpdateTaskNodeRequest, UpsertNodeWithParentRequest, WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -1904,14 +1903,13 @@ impl GrpcNodeService for NodeServiceImpl {
         let this = self.route(&request).await?;
         let req = request.into_inner();
 
-        let recipe = nodespace_core::methodology::recipe_by_id(&req.methodology_id).ok_or_else(
-            || {
+        let recipe =
+            nodespace_core::methodology::recipe_by_id(&req.methodology_id).ok_or_else(|| {
                 Status::not_found(format!(
                     "unknown methodology '{}' — call ListMethodologies for what this build ships",
                     req.methodology_id
                 ))
-            },
-        )?;
+            })?;
 
         // A partial install returns Ok with `success: false`. The report is
         // the only record of how far it got, and a Status would throw that
