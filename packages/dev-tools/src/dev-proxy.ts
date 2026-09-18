@@ -17,6 +17,7 @@ import {
   HTTP_ROUTE_PATTERNS,
   type InsertPosition,
 } from '../../desktop-app/src/lib/services/adapter-core.ts';
+import { flattenTypedFieldsFromStorage } from '../../desktop-app/src/lib/services/node-normalize.ts';
 import { createNodeSpaceClients } from './grpc-client.ts';
 import { mapGrpcError } from './grpc-error-mapping.ts';
 
@@ -261,7 +262,20 @@ function nodeDataToApiNode(n: ProtoNodeData): Record<string, unknown> {
     // all still blank legitimately computes to "" (see NodeData.title's own
     // doc comment in node_service.proto). Only true absence collapses to
     // null; an empty string passes through unchanged.
-    title: n.title === undefined ? null : n.title
+    title: n.title === undefined ? null : n.title,
+    // The gRPC `properties` field above is always storage shape
+    // (`{"ai-chat": {...}}`) — this proxy has no access to the Rust
+    // `node_to_typed_value` that the Tauri IPC layer routes every node
+    // through to promote type-specific fields (ai-chat's provider/model,
+    // task's status/priority, ...) to the top level. Without this spread,
+    // every frontend `nodeTo*` converter — which trusts that promotion
+    // already happened (see `ai-chat-node.ts`'s doc comment) — reads those
+    // fields as `undefined` for any node fetched over this HTTP transport,
+    // even though the underlying data is intact. A daemon broadcast's
+    // resulting re-fetch (`browser-sync-service.ts`'s `fetchAndUpdateNode`)
+    // would then silently clobber a viewer's just-confirmed optimistic
+    // state with an "unset" snapshot of the very same version.
+    ...flattenTypedFieldsFromStorage(n.nodeType, properties)
   };
 }
 
