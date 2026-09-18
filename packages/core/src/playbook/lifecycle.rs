@@ -82,6 +82,10 @@ impl PlaybookLifecycleManager {
     /// The same trigger key re-keyed under each *strict* ancestor of its node
     /// type — the type itself is excluded, since the caller has already looked
     /// that one up directly.
+    ///
+    /// Both halves of the key are rewritten: the node type *and* the
+    /// type-namespaced property key, which travel together. See
+    /// [`renamespace_property_key`].
     fn ancestor_keys(&self, key: &TriggerKey) -> Vec<TriggerKey> {
         let node_type = match key {
             TriggerKey::NodeEvent { node_type, .. } => node_type,
@@ -105,7 +109,17 @@ impl PlaybookLifecycleManager {
                 } => TriggerKey::NodeEvent {
                     event: event.clone(),
                     node_type: ancestor.clone(),
-                    property_key: property_key.clone(),
+                    // Re-namespace the property key to the ancestor as well.
+                    // A real `PropertyChanged` event carries a type-namespaced
+                    // key (`bug.status`), so carrying it through verbatim
+                    // produces `(task, "bug.status")` — which no Play
+                    // registered on `task` can ever match, since it registered
+                    // `(task, "task.status")`. Rewriting only `node_type`
+                    // silently defeats the whole fan-out for exactly the
+                    // property-changed triggers it exists to serve.
+                    property_key: property_key
+                        .as_deref()
+                        .map(|k| renamespace_property_key(k, node_type, ancestor)),
                 },
                 TriggerKey::RelationshipEvent { event, .. } => TriggerKey::RelationshipEvent {
                     event: event.clone(),
@@ -224,24 +238,17 @@ impl PlaybookLifecycleManager {
         self.activate_play(node)
     }
 
-    /// Handle a schema update — check if any active plays reference the
-    /// affected schema's node_type (either directly as a trigger or via dot-path
-    /// traversal in conditions) and need to be disabled.
+    /// Plays that *reference* the changed schema — candidates for drift, not
+    /// yet known to be broken by it.
     ///
-    /// Uses path extraction to find plays whose conditions traverse
-    /// through the changed schema, not just those that trigger on it directly.
-    ///
-    /// Returns the list of play IDs that were disabled due to schema drift.
-    pub fn handle_schema_update(
-        &mut self,
-        schema_node_type: &str,
-        new_schema_version: &str,
-    ) -> Vec<String> {
-        let mut disabled = Vec::new();
-
-        // Collect play IDs that reference this schema either directly or via paths
-        let affected: Vec<String> = self
-            .active_playbooks
+    /// Referencing a type is not the same as being broken by a change to it: a
+    /// Play triggering on `task` is untouched when `task` gains a status value,
+    /// and disabling it there would silently stop core automation for an
+    /// [ADR-076]-blessed extension. Callers resolve candidates to actual
+    /// breakage by re-validating against the new schema, which requires store
+    /// access this lock-held method deliberately does not take.
+    pub fn plays_referencing_schema(&self, schema_node_type: &str) -> Vec<String> {
+        self.active_playbooks
             .iter()
             .filter(|(_, pb)| pb.status == PlayStatus::Active)
             .filter(|(_, pb)| {
@@ -249,18 +256,15 @@ impl PlaybookLifecycleManager {
                     || play_has_paths_through_schema(pb, schema_node_type)
             })
             .map(|(id, _)| id.clone())
-            .collect();
+            .collect()
+    }
 
-        for pb_id in affected {
-            warn!(
-                "Schema '{}' updated to version '{}', disabling play {}",
-                schema_node_type, new_schema_version, pb_id
-            );
-            self.disable_play(&pb_id);
-            disabled.push(pb_id);
-        }
-
-        disabled
+    /// The parsed rules of one active play, for re-validation after a schema
+    /// change.
+    pub fn rules_for_play(&self, play_id: &str) -> Option<Vec<Arc<ParsedRule>>> {
+        self.active_playbooks
+            .get(play_id)
+            .map(|pb| pb.rules.clone())
     }
 
     /// Lookup rules matching a set of trigger keys.
@@ -375,6 +379,23 @@ fn trigger_keys_for_graph_event(
 }
 
 /// Check if a play's rules reference a given node_type.
+/// Re-point a type-namespaced property key from one type to another.
+///
+/// A `PropertyChanged` event's key is `<node_type>.<field>` (`bug.status`),
+/// matching the stored bucket shape. When a subtype's event fans out to an
+/// ancestor's trigger key, the namespace must move with it — a Play registered
+/// on `task` indexed itself under `task.status`, not `bug.status`.
+///
+/// A bare key (no dot) has no namespace to move and is returned unchanged:
+/// wildcard/`None` keys and any bare spelling still match as they did. Only the
+/// leading segment is replaced, so a field name containing a dot keeps its tail.
+fn renamespace_property_key(key: &str, from_type: &str, to_type: &str) -> String {
+    match key.split_once('.') {
+        Some((namespace, field)) if namespace == from_type => format!("{to_type}.{field}"),
+        _ => key.to_string(),
+    }
+}
+
 fn play_references_node_type(play: &ParsedPlay, node_type: &str) -> bool {
     play.rules.iter().any(|rule| match &rule.trigger {
         ParsedTrigger::GraphEvent { node_type: nt, .. } => nt == node_type,
@@ -807,11 +828,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // handle_schema_update — path-aware drift detection
+    // plays_referencing_schema — path-aware drift CANDIDATE detection
     // -----------------------------------------------------------------------
 
     #[test]
-    fn schema_update_disables_directly_referencing_play() {
+    fn schema_change_flags_directly_referencing_play_as_a_candidate() {
         let mut lm = PlaybookLifecycleManager::new();
         let node = make_play_node(
             "pb-drift-1",
@@ -824,16 +845,20 @@ mod tests {
         );
         lm.activate_play(&node).unwrap();
 
-        let disabled = lm.handle_schema_update("task", "2");
-        assert_eq!(disabled, vec!["pb-drift-1"]);
+        // A candidate, not a verdict: the engine re-validates each against the
+        // new schema and disables only those that actually broke. Referencing a
+        // type an ADDITIVE change touched must not disable anything.
+        let candidates = lm.plays_referencing_schema("task");
+        assert_eq!(candidates, vec!["pb-drift-1"]);
         assert_eq!(
             lm.active_playbooks()["pb-drift-1"].status,
-            PlayStatus::Disabled
+            PlayStatus::Active,
+            "identifying a candidate must not itself disable it"
         );
     }
 
     #[test]
-    fn schema_update_disables_play_with_path_through_schema() {
+    fn schema_change_flags_a_play_whose_path_traverses_the_schema() {
         let mut lm = PlaybookLifecycleManager::new();
         // Play triggers on "task" but has conditions traversing through "epic"
         let node = make_play_node(
@@ -848,12 +873,12 @@ mod tests {
         lm.activate_play(&node).unwrap();
 
         // Updating "epic" schema should detect the path traversal
-        let disabled = lm.handle_schema_update("epic", "2");
-        assert_eq!(disabled, vec!["pb-drift-2"]);
+        let candidates = lm.plays_referencing_schema("epic");
+        assert_eq!(candidates, vec!["pb-drift-2"]);
     }
 
     #[test]
-    fn schema_update_does_not_affect_unrelated_play() {
+    fn schema_change_ignores_an_unrelated_play() {
         let mut lm = PlaybookLifecycleManager::new();
         let node = make_play_node(
             "pb-drift-3",
@@ -867,8 +892,8 @@ mod tests {
         lm.activate_play(&node).unwrap();
 
         // Updating "invoice" schema should not affect this play
-        let disabled = lm.handle_schema_update("invoice", "2");
-        assert!(disabled.is_empty());
+        let candidates = lm.plays_referencing_schema("invoice");
+        assert!(candidates.is_empty());
         assert_eq!(
             lm.active_playbooks()["pb-drift-3"].status,
             PlayStatus::Active
@@ -876,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_update_skips_already_disabled_plays() {
+    fn schema_change_skips_already_disabled_plays() {
         let mut lm = PlaybookLifecycleManager::new();
         let node = make_play_node(
             "pb-drift-4",
@@ -890,9 +915,9 @@ mod tests {
         lm.activate_play(&node).unwrap();
         lm.disable_play("pb-drift-4");
 
-        let disabled = lm.handle_schema_update("task", "2");
+        let candidates = lm.plays_referencing_schema("task");
         assert!(
-            disabled.is_empty(),
+            candidates.is_empty(),
             "already-disabled plays should not appear"
         );
     }
@@ -1192,6 +1217,86 @@ mod tests {
             rules.len(),
             1,
             "a property-scoped Play on the base should match the same property on a subtype"
+        );
+    }
+
+    /// The same fan-out, with the TYPE-NAMESPACED key a real event carries.
+    ///
+    /// `PropertyChanged` events spell the key `<node_type>.<field>`
+    /// (`PropertyChange::key`, "namespaced, e.g. task.status"), and a Play
+    /// registered on `task` indexes itself under `task.status`. Fanning a
+    /// subtype's event out by rewriting only `node_type` yields
+    /// `(task, "bug.status")` — a key nothing is registered under — so the
+    /// Play never fires on a subtype at all.
+    ///
+    /// The sibling test above uses a bare `status`, which has no namespace to
+    /// move and so cannot catch this. That is why the bug survived: the
+    /// mechanism was tested only in the one spelling where it could not fail.
+    #[test]
+    fn namespaced_property_keys_are_renamespaced_when_fanning_out_to_an_ancestor() {
+        let mut lm = PlaybookLifecycleManager::new();
+        let node = make_play_node(
+            "pb-prop-ns",
+            json!([{
+                "name": "r1",
+                "trigger": {
+                    "type": "graph_event",
+                    "on": "property_changed",
+                    "node_type": "task",
+                    "property_key": "task.status"
+                },
+                "conditions": [],
+                "actions": []
+            }]),
+        );
+        lm.activate_play(&node)
+            .expect("play activation should succeed");
+        lm.set_ancestor_cache(HashMap::from([(
+            "bug".to_string(),
+            vec!["bug".to_string(), "task".to_string()],
+        )]));
+
+        let rules = lm.lookup_rules(&[TriggerKey::NodeEvent {
+            event: NodeEventType::PropertyChanged,
+            node_type: "bug".to_string(),
+            property_key: Some("bug.status".to_string()),
+        }]);
+        assert_eq!(
+            rules.len(),
+            1,
+            "a subtype's namespaced property event must reach a base-scoped Play"
+        );
+
+        // A field the base does not declare still re-namespaces, and simply
+        // matches nothing — the fan-out re-keys, it does not filter.
+        let unmatched = lm.lookup_rules(&[TriggerKey::NodeEvent {
+            event: NodeEventType::PropertyChanged,
+            node_type: "bug".to_string(),
+            property_key: Some("bug.severity".to_string()),
+        }]);
+        assert!(
+            unmatched.is_empty(),
+            "a subtype-only field must not match a Play registered on another field"
+        );
+    }
+
+    #[test]
+    fn renamespace_property_key_only_moves_a_matching_leading_namespace() {
+        assert_eq!(
+            renamespace_property_key("bug.status", "bug", "task"),
+            "task.status"
+        );
+        // Bare keys have no namespace to move.
+        assert_eq!(renamespace_property_key("status", "bug", "task"), "status");
+        // A namespace belonging to some other type is left alone.
+        assert_eq!(
+            renamespace_property_key("other.status", "bug", "task"),
+            "other.status"
+        );
+        // Only the leading segment is replaced; a dotted tail survives.
+        assert_eq!(
+            renamespace_property_key("bug.a.b", "bug", "task"),
+            "task.a.b"
         );
     }
 }

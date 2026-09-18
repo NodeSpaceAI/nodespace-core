@@ -1582,10 +1582,34 @@ pub async fn handle_update_schema(
 
     // Check if any active plays would be affected by this schema change.
     // Done before any mutations so a blocked rename doesn't partially execute.
-    let affected =
-        crate::playbook::validation::check_schema_change_impact(&params.schema_id, node_service)
-            .await
-            .map_err(|e| MarkdownError::internal_error(format!("Impact analysis failed: {}", e)))?;
+    //
+    // Only removals and renames can invalidate a Play's references; adding a
+    // field, an enum value or a relationship provably cannot, and must not make
+    // every user pass `force=true` to extend a type a core Play happens to
+    // trigger on (ADR-079).
+    let change_kind = if params.remove_fields.as_ref().is_some_and(|f| !f.is_empty())
+        || params.rename_fields.as_ref().is_some_and(|f| !f.is_empty())
+        || params
+            .remove_relationships
+            .as_ref()
+            .is_some_and(|r| !r.is_empty())
+        // Re-pointing `extends` is destructive even though it adds no syntax:
+        // the previous parent's fields leave the effective field set, so a
+        // Play reading an inherited field stops resolving it (ADR-078).
+        || params.extends.is_some()
+    {
+        crate::playbook::validation::SchemaChangeKind::Destructive
+    } else {
+        crate::playbook::validation::SchemaChangeKind::Additive
+    };
+
+    let affected = crate::playbook::validation::check_schema_change_impact(
+        &params.schema_id,
+        change_kind,
+        node_service,
+    )
+    .await
+    .map_err(|e| MarkdownError::internal_error(format!("Impact analysis failed: {}", e)))?;
 
     if !affected.is_empty() && !params.force {
         let names: Vec<String> = affected.iter().map(|a| a.to_string()).collect();

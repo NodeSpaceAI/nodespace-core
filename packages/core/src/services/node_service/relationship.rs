@@ -523,6 +523,38 @@ impl NodeService {
                         .map_err(|e| NodeServiceError::collection_cycle(e.to_string()))?;
                 }
             }
+
+            // The outline is single-parent, and every read path assumes it:
+            // `get_parent`/`get_parent_id` resolve with `LIMIT 1`, so a second
+            // parent does not produce an error — it silently hides one of them
+            // and makes which parent a node has depend on row order.
+            //
+            // A built-in skips the declared-cardinality check below (it has no
+            // `SchemaRelationship` to carry `cardinality: One`), so until now
+            // nothing rejected the second edge: `relationship create --type
+            // has_child` from the CLI, or the agent's `create_relationship`
+            // tool, would just add it. Enforce at the service entry point,
+            // which every external caller reaches, rather than in each one.
+            //
+            // Mirrored in `create_relationship_in_tx`. The reparenting paths
+            // (`move_node`, `bulk_create_has_child`, `create_parent_edge_in_tx`)
+            // do NOT pass through here and need no guard: each is structurally
+            // single-parent already — delete-then-insert in one transaction, a
+            // skip of already-parented children, or a child created in the same
+            // transaction that cannot yet hold a parent.
+            if relationship_name == "has_child" {
+                if let Some(existing) = self.store.get_parent_id(target_id).await.map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to check existing parent: {e}"))
+                })? {
+                    if existing != source_id {
+                        return Err(NodeServiceError::invalid_update(format!(
+                            "Node '{target_id}' already has parent '{existing}'; the outline is \
+                             single-parent. Move the node instead of adding a second `has_child` \
+                             edge."
+                        )));
+                    }
+                }
+            }
         } else {
             // Custom relationship: validate against source node's schema
             let source = self
@@ -787,6 +819,31 @@ impl NodeService {
                     )
                     .await
                     .map_err(|e| NodeServiceError::collection_cycle(e.to_string()))?;
+                }
+            }
+
+            // Single-parent, same as the non-tx twin. An invariant Play's
+            // `add_relationship` action reaches this path, so leaving it out
+            // would make the guard's own rationale — enforce where every
+            // surface converges — false for the one surface that runs in a
+            // transaction.
+            if relationship_name == "has_child" {
+                if let Some(existing) =
+                    crate::db::SqliteStore::get_parent_id_in_tx(tx.store_tx(), target_id)
+                        .await
+                        .map_err(|e| {
+                            NodeServiceError::query_failed(format!(
+                                "Failed to check existing parent: {e}"
+                            ))
+                        })?
+                {
+                    if existing != source_id {
+                        return Err(NodeServiceError::invalid_update(format!(
+                            "Node '{target_id}' already has parent '{existing}'; the outline is \
+                             single-parent. Move the node instead of adding a second `has_child` \
+                             edge."
+                        )));
+                    }
                 }
             }
         } else {

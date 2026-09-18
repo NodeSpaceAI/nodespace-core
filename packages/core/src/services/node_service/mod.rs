@@ -1232,6 +1232,10 @@ impl NodeService {
         // edge. Must run AFTER the local person seed — the owner edge attaches to it.
         service.seed_database_settings_if_needed().await?;
 
+        // ADR-079: Plays that ship with the product. After the core schemas,
+        // which a play node's own type and its rules' `task` trigger depend on.
+        crate::playbook::core_plays::seed_core_plays_if_needed(&service).await?;
+
         Ok(service)
     }
 

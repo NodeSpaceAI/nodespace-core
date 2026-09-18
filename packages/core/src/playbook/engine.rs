@@ -627,10 +627,13 @@ impl PlaybookEngine {
         };
 
         for rule_ref in invariant_rules {
-            let mut resolver =
-                crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&self.node_service));
             let cel_scope =
                 PlaybookEngine::cel_scope_for(&self.node_service, &rule_ref.rule, &node).await;
+            // The resolver reads related nodes at this rule's scope too, so a
+            // traversed node is projected exactly as the trigger node is.
+            let mut resolver =
+                crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&self.node_service))
+                    .with_scope(cel_scope.clone());
             let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 &node,
@@ -929,15 +932,65 @@ impl PlaybookEngine {
                     return;
                 }
 
-                let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-                let disabled = lifecycle.handle_schema_update(schema_node_type, new_version);
+                // Referencing the changed type is not the same as being broken
+                // by the change. Disabling every Play that merely mentions it
+                // means an additive edit — `add_field_values` adding a status
+                // value, blessed by ADR-076 — silently stops core automation
+                // that the change provably cannot break.
+                //
+                // So candidates are re-validated against the NEW schema and
+                // only genuinely-broken Plays are disabled. Validation needs
+                // store access, so it runs outside the lifecycle lock: gather
+                // candidates under a read lock, validate, then take the write
+                // lock to disable.
+                let candidates = {
+                    let lifecycle = self.lifecycle.read().expect("lifecycle lock poisoned");
+                    lifecycle
+                        .plays_referencing_schema(schema_node_type)
+                        .into_iter()
+                        .filter_map(|id| lifecycle.rules_for_play(&id).map(|rules| (id, rules)))
+                        .collect::<Vec<_>>()
+                };
 
-                if !disabled.is_empty() {
+                let mut broken = Vec::new();
+                for (play_id, rules) in candidates {
+                    if let Err(errors) =
+                        crate::playbook::validation::validate_play(&rules, &self.node_service).await
+                    {
+                        broken.push((play_id, errors));
+                    }
+                }
+
+                if !broken.is_empty() {
+                    let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
+                    for (play_id, errors) in &broken {
+                        // Name the actual errors. This is the one path that
+                        // stops automation at runtime, and `validate_play`
+                        // checks the whole play against every schema it
+                        // references — not just the one that changed — so the
+                        // triggering schema is not necessarily the culprit.
+                        // Without the errors, the warning would misattribute a
+                        // pre-existing break to whichever schema was touched
+                        // first.
+                        let detail = errors
+                            .iter()
+                            .map(|e| e.to_string())
+                            .collect::<Vec<_>>()
+                            .join("; ");
+                        warn!(
+                            "Schema '{}' updated to version '{}', disabling play {} — its rules \
+                             no longer validate: {}",
+                            schema_node_type, new_version, play_id, detail
+                        );
+                        lifecycle.disable_play(play_id);
+                    }
+                    drop(lifecycle);
+
                     warn!(
                         "Schema drift: {} plays disabled due to schema '{}' update: {:?}",
-                        disabled.len(),
+                        broken.len(),
                         schema_node_type,
-                        disabled
+                        broken.iter().map(|(id, _)| id).collect::<Vec<_>>()
                     );
                     // Phase 6 will create log nodes for each disabled play
                 }
@@ -1076,6 +1129,9 @@ pub(crate) async fn rule_processor_loop(
                 &work_item.trigger_node,
             )
             .await;
+            // Each rule in this work item carries its own registered scope, so
+            // the shared resolver is re-pointed per rule rather than per item.
+            resolver.set_scope(cel_scope.clone());
             let condition_result = crate::playbook::cel::evaluate_conditions_at_scope(
                 &rule_ref.rule.conditions,
                 &work_item.trigger_node,
@@ -1589,6 +1645,106 @@ mod scope_tests {
             eval(&svc, &rule, &node).await,
             "a mid-chain bucket must be read on a 3-level chain; node properties were {:?}",
             node.properties
+        );
+    }
+
+    /// A related node reached by traversal must be read at the SAME scope the
+    /// trigger node is (ADR-078: "every read surface is affected; none can be
+    /// left alone").
+    ///
+    /// The trigger node's own projection has been covered since `extends`
+    /// landed, but a node arriving through `GraphResolver::enrich_context` was
+    /// still built with `node_to_cel_value` — the node's-own-type view. For a
+    /// subtype child that reads the wrong bucket entirely: `state` is declared
+    /// by `ticket`, so a `bug` instance stores it at `properties.ticket.state`,
+    /// and a view built at `["bug"]` alone never opens `ticket`.
+    ///
+    /// Note this needs no extended vocabulary to fail — the child below stores
+    /// a plain, inherited `done`. Bucket projection is the broad requirement;
+    /// `maps_to` translation (the next test) is the narrower one that rides on
+    /// top of it.
+    #[tokio::test]
+    async fn a_related_subtype_node_is_read_at_the_reading_scope() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+
+        let parent = make_bug(&svc, json!({ "state": "open" })).await;
+        let child = make_bug(&svc, json!({ "state": "done" })).await;
+        svc.create_relationship(&parent.id, "has_child", &child.id, json!({}))
+            .await
+            .expect("relationship creation failed");
+
+        // Read the child THROUGH the relationship, at `ticket` scope.
+        let rule = rule_on("ticket", "node.has_child.all(c, c.state == 'done')");
+        let scope = PlaybookEngine::cel_scope_for(&svc, &rule, &parent).await;
+        let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&svc))
+            .with_scope(scope.clone());
+        let event = DomainEvent::NodeCreated {
+            node_id: parent.id.clone(),
+            node_type: parent.node_type.clone(),
+        };
+        let passed = matches!(
+            evaluate_conditions_at_scope(
+                &rule.conditions,
+                &parent,
+                &event,
+                Some(&mut resolver),
+                scope.as_ref(),
+            )
+            .await,
+            ConditionResult::Pass
+        );
+
+        assert!(
+            passed,
+            "a related subtype node must be projected to the reading scope; \
+             child properties were {:?}",
+            child.properties
+        );
+    }
+
+    /// The narrower half: a related node whose stored value belongs to a
+    /// vocabulary the reading scope has never heard of must be translated
+    /// through `maps_to`, not compared raw.
+    ///
+    /// `backlog` is `bug`-only and maps to `open` at `ticket` scope, so a
+    /// `ticket`-scoped condition asking for `open` must match it.
+    #[tokio::test]
+    async fn a_related_nodes_extended_value_resolves_through_maps_to() {
+        let (svc, _tmp) = test_service().await;
+        seed_chain(&svc).await;
+
+        let parent = make_bug(&svc, json!({ "state": "open" })).await;
+        let child = make_bug(&svc, json!({ "state": "backlog" })).await;
+        svc.create_relationship(&parent.id, "has_child", &child.id, json!({}))
+            .await
+            .expect("relationship creation failed");
+
+        let rule = rule_on("ticket", "node.has_child.all(c, c.state == 'open')");
+        let scope = PlaybookEngine::cel_scope_for(&svc, &rule, &parent).await;
+        let mut resolver = crate::playbook::graph_resolver::GraphResolver::new(Arc::clone(&svc))
+            .with_scope(scope.clone());
+        let event = DomainEvent::NodeCreated {
+            node_id: parent.id.clone(),
+            node_type: parent.node_type.clone(),
+        };
+        let passed = matches!(
+            evaluate_conditions_at_scope(
+                &rule.conditions,
+                &parent,
+                &event,
+                Some(&mut resolver),
+                scope.as_ref(),
+            )
+            .await,
+            ConditionResult::Pass
+        );
+
+        assert!(
+            passed,
+            "a related node's extended value must resolve through maps_to; \
+             child properties were {:?}",
+            child.properties
         );
     }
 }

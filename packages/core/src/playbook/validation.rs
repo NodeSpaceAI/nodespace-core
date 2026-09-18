@@ -637,6 +637,22 @@ async fn validate_schema_path(
             return;
         }
 
+        // A built-in structural relationship (`has_child`/`child_of`,
+        // `mentions`/`mentioned_by`, ...) has no `SchemaRelationship` behind it
+        // — it is not declared on any schema, in either direction. The resolver
+        // walks these by name at runtime (`rel_ops::resolve_relationship_name`),
+        // so rejecting them here would fail a path the engine can traverse
+        // perfectly well, which is what a rollup Play's `node.child_of` hits.
+        //
+        // Any node type can nest under any other, so a built-in yields no
+        // target type to narrow to: traversal continues with the current type
+        // as the best available guess. That keeps a later segment checkable
+        // when the type happens to be right, and at worst declines to catch a
+        // broken segment — never invents an error for a valid path.
+        if crate::models::schema::is_reserved_relationship_name(segment) {
+            continue;
+        }
+
         // Check if the segment is a relationship on this schema
         let relationship = schema.relationships.iter().find(|r| r.name == *segment);
         if let Some(rel) = relationship {
@@ -1227,6 +1243,27 @@ impl std::fmt::Display for AffectedPlay {
     }
 }
 
+/// Whether a proposed schema change can invalidate an existing Play reference.
+///
+/// A Play names fields, enum values and relationships by name. Adding more of
+/// any of them leaves every existing name resolving exactly as before, so an
+/// additive change is not capable of breaking a Play — whereas removing or
+/// renaming one is precisely how a Play's path goes stale.
+///
+/// Deliberately a two-way split rather than a per-field diff: the question the
+/// impact check answers is "must the user confirm this?", and a change that
+/// removes or renames *anything* on the type warrants the prompt, even if the
+/// specific name a given Play uses survives. Narrowing further would mean
+/// resolving each Play's references against the post-change schema, which is
+/// the job save-time validation already does when the change lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchemaChangeKind {
+    /// Only adds: new fields, new enum values, new relationships, metadata.
+    Additive,
+    /// Removes or renames something a Play may reference by name.
+    Destructive,
+}
+
 /// Check which active plays would be affected by a schema change.
 ///
 /// Queries all active play nodes, parses their rules, and checks whether
@@ -1237,17 +1274,30 @@ impl std::fmt::Display for AffectedPlay {
 /// - `create_node` actions targeting the schema's node_type
 /// - Relationship actions whose `relationship_type` matches the schema's node_type
 ///
-/// TODO: This is currently over-broad — any change to a schema (including adding
-/// new fields, which can't break plays) triggers the warning. Making this
-/// diff-aware (only flag breaking changes like field removal/rename) requires
-/// accepting the proposed schema changes as a parameter, which is a larger
-/// refactor. The conservative approach is acceptable for v1.
+/// Only *destructive* changes are reported. A schema change that purely adds —
+/// a new field, a new enum value, a new relationship — cannot invalidate a
+/// reference that already resolves, so a Play referencing this type is left
+/// alone and the caller is not asked to confirm anything. See
+/// [`SchemaChangeKind`].
+///
+/// This distinction became load-bearing once a Play shipped as core (ADR-079):
+/// with an always-installed Play triggering on `task`, an unconditional check
+/// makes *every* `task` schema edit — including adding a status value — demand
+/// `force=true` from every user, for a Play the change provably cannot break.
 ///
 /// Returns a list of affected plays with their broken paths.
 pub async fn check_schema_change_impact(
     schema_node_type: &str,
+    change: SchemaChangeKind,
     node_service: &NodeService,
 ) -> Result<Vec<AffectedPlay>, String> {
+    // An additive change cannot break an existing reference: every field,
+    // value and relationship a Play already names is still there afterwards.
+    // Skip the scan entirely rather than collecting matches and discarding
+    // them, so the common case costs no play-node query at all.
+    if change == SchemaChangeKind::Additive {
+        return Ok(Vec::new());
+    }
     use crate::playbook::types::{parse_rule, parse_rules_from_properties};
 
     let play_nodes = node_service
@@ -2155,9 +2205,25 @@ mod tests {
             )
             .await;
 
-            let affected = check_schema_change_impact("vi_task", &svc).await.unwrap();
+            let affected =
+                check_schema_change_impact("vi_task", SchemaChangeKind::Destructive, &svc)
+                    .await
+                    .unwrap();
             assert_eq!(affected.len(), 1);
             assert_eq!(affected[0].play_id, "pb-impact-1");
+
+            // Same play, same type, additive change: nothing to confirm. A new
+            // field or enum value leaves every name this play references
+            // resolving exactly as before. Without this, a core Play triggering
+            // on `task` (ADR-079) would make every user pass `force=true` to
+            // add a status value.
+            let additive = check_schema_change_impact("vi_task", SchemaChangeKind::Additive, &svc)
+                .await
+                .unwrap();
+            assert!(
+                additive.is_empty(),
+                "an additive change cannot break a play, so must not be reported: {additive:?}"
+            );
             assert!(
                 affected[0]
                     .broken_paths
@@ -2188,9 +2254,10 @@ mod tests {
             .await;
 
             // Changing "vi_invoice" should not affect the vi_order play
-            let affected = check_schema_change_impact("vi_invoice", &svc)
-                .await
-                .unwrap();
+            let affected =
+                check_schema_change_impact("vi_invoice", SchemaChangeKind::Destructive, &svc)
+                    .await
+                    .unwrap();
             assert!(
                 affected.is_empty(),
                 "unrelated schema change should not affect plays: {:?}",
@@ -2233,7 +2300,10 @@ mod tests {
             )
             .await;
 
-            let affected = check_schema_change_impact("vi_epic", &svc).await.unwrap();
+            let affected =
+                check_schema_change_impact("vi_epic", SchemaChangeKind::Destructive, &svc)
+                    .await
+                    .unwrap();
             assert_eq!(affected.len(), 1);
             assert_eq!(affected[0].play_id, "pb-impact-3");
             assert!(

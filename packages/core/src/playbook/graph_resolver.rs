@@ -13,7 +13,7 @@
 use crate::models::Node;
 use crate::ops::rel_ops::{self, ResolvedRelName};
 use crate::ops::OpsError;
-use crate::playbook::cel::{json_to_cel, key, node_to_cel_value};
+use crate::playbook::cel::{json_to_cel, key, scoped_node_value};
 use crate::playbook::path_extractor::{CollectionPath, ExtractedPath};
 use crate::services::NodeService;
 use cel_interpreter::Value;
@@ -49,6 +49,18 @@ pub struct GraphResolver {
     /// a single root dominates, but keying on segments alone would silently
     /// serve one node's answer for another's the moment that stopped holding.
     cache: HashMap<(String, Vec<String>), ResolvedValue>,
+    /// The scope a resolved node's CEL value is built at (ADR-078).
+    ///
+    /// A node reached by traversal is read at the *reading* scope, exactly as
+    /// the trigger node is: a Play registered on `task` sees a `bug` child's
+    /// `task` fields, with `bug`-only values resolved through `maps_to`.
+    /// Without it the child is built at its own scope and an extended value
+    /// (`backlog`) reaches a base-scoped condition raw, never matching — a
+    /// silent false, not an error.
+    ///
+    /// `None` reads at each node's own scope, which is every Play in a
+    /// database where nothing declares `extends`.
+    scope: Option<crate::playbook::cel::CelScope>,
 }
 
 impl GraphResolver {
@@ -56,7 +68,25 @@ impl GraphResolver {
         Self {
             node_service,
             cache: HashMap::new(),
+            scope: None,
         }
+    }
+
+    /// Set the scope resolved nodes are read at. See [`GraphResolver::scope`].
+    pub fn with_scope(mut self, scope: Option<crate::playbook::cel::CelScope>) -> Self {
+        self.set_scope(scope);
+        self
+    }
+
+    /// Point an existing resolver at a different reading scope.
+    ///
+    /// One resolver is reused across the rules of a work item, and each rule
+    /// carries its own registered scope. The segment cache holds `ResolvedValue`s
+    /// — raw `Node`s, not yet projected — so it stays valid across a scope
+    /// change and is deliberately kept: projection happens at read time in
+    /// `enrich_context`, after the cache is consulted.
+    pub fn set_scope(&mut self, scope: Option<crate::playbook::cel::CelScope>) {
+        self.scope = scope;
     }
 
     /// Resolve a dot-path starting from a root node.
@@ -119,6 +149,39 @@ impl GraphResolver {
         for i in start_idx..segments.len() {
             let segment = &segments[i];
             let is_last = i == segments.len() - 1;
+
+            // A core Node field is not a property and lives in no bucket, so
+            // the property lookup below cannot see it. Without this, walking to
+            // a related node and reading its identity — `node.child_of.id`, the
+            // shape an action needs to address that node — resolves to
+            // `Missing` and fails the action, even though `node.child_of`
+            // alone resolves fine.
+            //
+            // Checked before properties so these names mean the node's
+            // identity consistently, rather than being shadowed by a
+            // same-named user property on some types but not others.
+            //
+            // This walk starts at `i == 0`, so the rule applies to the ROOT
+            // node's own first segment as well as to traversed nodes: a task
+            // storing a user property literally named `content` resolves
+            // `node.content` to the struct field, not that property. Core-wins
+            // is the deliberate choice — it matches what `node.id` already
+            // means in every CEL condition (`cel.rs`'s `is_core_key`), and the
+            // alternative would make a path's meaning depend on which types
+            // happen to declare a colliding field.
+            if let Some(core_val) = core_field_value(&current_node, segment) {
+                let result = ResolvedValue::Scalar(core_val);
+                self.cache
+                    .insert(cache_key(&segments[..=i]), result.clone());
+                if is_last {
+                    self.cache.insert(cache_key(segments), result.clone());
+                    return result;
+                }
+                // A scalar is terminal: there is nothing to walk into.
+                let missing = ResolvedValue::Missing;
+                self.cache.insert(cache_key(segments), missing.clone());
+                return missing;
+            }
 
             // Try as a property first (check node.properties)
             if let Some(prop_val) = get_node_property(&current_node, segment) {
@@ -398,13 +461,19 @@ impl GraphResolver {
             let segments = &path.segments[1..];
             match self.resolve_path(root_node, segments).await {
                 ResolvedValue::Node(n) => {
-                    resolved_values.insert(path.segments.clone(), node_to_cel_value(&n));
+                    resolved_values.insert(
+                        path.segments.clone(),
+                        scoped_node_value(&n, self.scope.as_ref()),
+                    );
                 }
                 ResolvedValue::Scalar(v) => {
                     resolved_values.insert(path.segments.clone(), json_to_cel(&v));
                 }
                 ResolvedValue::Collection(nodes) => {
-                    let list: Vec<Value> = nodes.iter().map(node_to_cel_value).collect();
+                    let list: Vec<Value> = nodes
+                        .iter()
+                        .map(|n| scoped_node_value(n, self.scope.as_ref()))
+                        .collect();
                     resolved_values.insert(path.segments.clone(), Value::List(list.into()));
                 }
                 ResolvedValue::Missing => {
@@ -419,13 +488,44 @@ impl GraphResolver {
                 continue;
             }
             let nodes = self.resolve_collection(root_node, &coll.collection).await;
+            // Load-bearing: an empty collection leaves the key ABSENT rather
+            // than injecting an empty list.
+            //
+            // The mechanism is the absence, not CEL semantics: CEL's `.all()`
+            // over an empty list returns `true` (vacuous truth), exactly as the
+            // spec says. What produces `false` is that the key is missing, so
+            // evaluation raises `NoSuchKey`, which `evaluate_conditions_at_scope`
+            // maps to `Fail`. Inserting an empty list here would hand `.all()`
+            // a real empty list, it would return vacuously true, and a childless
+            // parent would auto-complete itself (ADR-079 §4).
             if !nodes.is_empty() {
-                let list: Vec<Value> = nodes.iter().map(node_to_cel_value).collect();
+                let list: Vec<Value> = nodes
+                    .iter()
+                    .map(|n| scoped_node_value(n, self.scope.as_ref()))
+                    .collect();
                 resolved_values.insert(coll.collection.segments.clone(), Value::List(list.into()));
             }
         }
 
         resolved_values
+    }
+}
+
+/// A core Node field read by name, or `None` if the name is not one.
+///
+/// These are node identity/metadata, not schema properties: they live in their
+/// own struct fields rather than in any type bucket, so no property lookup can
+/// reach them. The same set `cel.rs` exposes on a CEL `node` map (`is_core_key`)
+/// — the two must agree, or a name resolves in a condition but not in the
+/// action binding that acts on it.
+fn core_field_value(node: &Node, name: &str) -> Option<serde_json::Value> {
+    match name {
+        "id" => Some(serde_json::Value::String(node.id.clone())),
+        "node_type" => Some(serde_json::Value::String(node.node_type.clone())),
+        "content" => Some(serde_json::Value::String(node.content.clone())),
+        "version" => Some(serde_json::Value::from(node.version)),
+        "lifecycle_status" => Some(serde_json::Value::String(node.lifecycle_status.clone())),
+        _ => None,
     }
 }
 
@@ -1749,6 +1849,51 @@ mod tests {
             match forward {
                 ResolvedValue::Node(n) => assert_eq!(n.id, "gr-rev-c1"),
                 other => panic!("expected the child Node, got {:?}", other),
+            }
+        }
+
+        /// A related node's core fields resolve, not just its properties.
+        ///
+        /// `id`/`node_type`/`content` are struct fields, in no type bucket, so
+        /// the property lookup cannot see them. Reaching a node and reading its
+        /// identity is how an action addresses it — `{trigger.node.child_of.id}`
+        /// is exactly what the parent-completion Play's `update_node` needs
+        /// (ADR-079) — and without this the path resolved to `Missing` and
+        /// failed the action, which disables the whole Play, even though
+        /// `node.child_of` alone resolved fine.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn a_related_nodes_core_fields_resolve() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "gr_core_task", json!([])).await;
+
+            let parent = make_node("gr-core-p1", "gr_core_task", json!({"status": "open"}));
+            svc.create_node(parent.clone()).await.unwrap();
+            let child = make_node("gr-core-c1", "gr_core_task", json!({"status": "done"}));
+            svc.create_node(child.clone()).await.unwrap();
+            svc.create_relationship("gr-core-p1", "has_child", "gr-core-c1", json!({}))
+                .await
+                .unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            for (segment, want) in [("id", "gr-core-p1"), ("node_type", "gr_core_task")] {
+                let result = resolver
+                    .resolve_path(&child, &["child_of".to_string(), segment.to_string()])
+                    .await;
+                match result {
+                    ResolvedValue::Scalar(v) => assert_eq!(
+                        v.as_str(),
+                        Some(want),
+                        "child_of.{segment} must resolve to the parent's {segment}"
+                    ),
+                    other => panic!("expected a Scalar for child_of.{segment}, got {other:?}"),
+                }
+            }
+
+            // A core field on the root node itself resolves the same way, with
+            // no traversal involved.
+            match resolver.resolve_path(&child, &["id".to_string()]).await {
+                ResolvedValue::Scalar(v) => assert_eq!(v.as_str(), Some("gr-core-c1")),
+                other => panic!("expected the node's own id, got {other:?}"),
             }
         }
 
