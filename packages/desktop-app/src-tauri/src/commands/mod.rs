@@ -10,6 +10,7 @@ pub mod database;
 pub mod embeddings;
 pub mod import;
 pub mod local_agent;
+pub mod methodology;
 pub mod nodes;
 pub mod onboarding;
 pub mod pro_sync;
