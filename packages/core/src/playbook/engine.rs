@@ -921,11 +921,24 @@ impl PlaybookEngine {
 
                 if !broken.is_empty() {
                     let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-                    for (play_id, _) in &broken {
+                    for (play_id, errors) in &broken {
+                        // Name the actual errors. This is the one path that
+                        // stops automation at runtime, and `validate_play`
+                        // checks the whole play against every schema it
+                        // references — not just the one that changed — so the
+                        // triggering schema is not necessarily the culprit.
+                        // Without the errors, the warning would misattribute a
+                        // pre-existing break to whichever schema was touched
+                        // first.
+                        let detail = errors
+                            .iter()
+                            .map(|e| e.to_string())
+                            .collect::<Vec<_>>()
+                            .join("; ");
                         warn!(
                             "Schema '{}' updated to version '{}', disabling play {} — its rules \
-                             no longer validate against the new schema",
-                            schema_node_type, new_version, play_id
+                             no longer validate: {}",
+                            schema_node_type, new_version, play_id, detail
                         );
                         lifecycle.disable_play(play_id);
                     }

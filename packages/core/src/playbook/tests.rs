@@ -837,7 +837,7 @@ mod playbook_tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_schema_update_disables_referencing_plays() {
+    fn test_schema_change_flags_referencing_plays_as_candidates() {
         let mut mgr = PlaybookLifecycleManager::new();
 
         // Play referencing "invoice" node type
@@ -859,14 +859,16 @@ mod playbook_tests {
         mgr.activate_play(&node).unwrap();
         assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Active);
 
-        // Schema for "invoice" is updated
-        let disabled = mgr.handle_schema_update("invoice", "2.0.0");
-        assert_eq!(disabled, vec!["pb1"]);
-        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Disabled);
+        // Schema for "invoice" is updated. Referencing it makes the play a
+        // drift CANDIDATE; the engine re-validates before disabling anything,
+        // so an additive change leaves it running.
+        let candidates = mgr.plays_referencing_schema("invoice");
+        assert_eq!(candidates, vec!["pb1"]);
+        assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Active);
     }
 
     #[test]
-    fn test_schema_update_ignores_unrelated_plays() {
+    fn test_schema_change_ignores_unrelated_plays() {
         let mut mgr = PlaybookLifecycleManager::new();
 
         let node = make_play_node(
@@ -882,8 +884,8 @@ mod playbook_tests {
         mgr.activate_play(&node).unwrap();
 
         // Schema for "invoice" is updated — should NOT affect "task" play
-        let disabled = mgr.handle_schema_update("invoice", "2.0.0");
-        assert!(disabled.is_empty());
+        let candidates = mgr.plays_referencing_schema("invoice");
+        assert!(candidates.is_empty());
         assert_eq!(mgr.get_play("pb1").unwrap().status, PlayStatus::Active);
     }
 

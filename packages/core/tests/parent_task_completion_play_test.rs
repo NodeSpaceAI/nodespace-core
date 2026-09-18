@@ -257,39 +257,50 @@ async fn a_childless_task_never_auto_completes() -> Result<()> {
     Ok(())
 }
 
-/// The outline is single-parent by construction (`get_parent` resolves with
-/// `LIMIT 1`), so a node holding two `has_child` parents is malformed. The
-/// Play must decline to act rather than complete whichever parent sorts first.
+/// The rollup's single-parent assumption is enforced at write time, not merely
+/// assumed: a second `has_child` edge onto the same node is rejected.
+///
+/// Before this was enforced, a built-in relationship skipped the declared-
+/// cardinality check (it has no `SchemaRelationship` to carry it), so the CLI's
+/// `relationship create --type has_child` and the agent's `create_relationship`
+/// tool could both produce a two-parent node. Nothing errored — `get_parent`'s
+/// `LIMIT 1` silently hid one parent, and this Play then skipped the node with
+/// no signal.
 #[tokio::test]
-async fn a_malformed_multi_parent_child_completes_neither_parent() -> Result<()> {
+async fn a_second_parent_edge_is_rejected() -> Result<()> {
     let (service, _tmp) = create_test_service().await?;
-    let (tx, engine_task) = spawn_engine(&service).await;
 
     let parent_a = task_node(&service, "open").await?;
     let parent_b = task_node(&service, "open").await?;
     let child = task_node(&service, "open").await?;
+
     service
         .create_relationship(&parent_a, "has_child", &child, json!({}))
         .await?;
-    service
+
+    let err = service
         .create_relationship(&parent_b, "has_child", &child, json!({}))
+        .await
+        .expect_err("a second has_child parent must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("already has parent"),
+        "the error must name the conflict, got: {msg}"
+    );
+
+    // The first parent still owns the edge — a rejected write changes nothing.
+    let parent = service
+        .get_parent(&child)
+        .await?
+        .expect("the original parent edge must survive");
+    assert_eq!(parent.id, parent_a);
+
+    // Re-asserting the SAME edge is not a second parent, so it is allowed —
+    // callers that re-attach an existing child must not start failing.
+    service
+        .create_relationship(&parent_a, "has_child", &child, json!({}))
         .await?;
 
-    set_status(&service, &child, "done").await?;
-    tokio::time::sleep(Duration::from_millis(400)).await;
-
-    assert_eq!(
-        status_of(&service, &parent_a).await.as_deref(),
-        Some("open"),
-        "a malformed multi-parent hierarchy must not be acted on"
-    );
-    assert_eq!(
-        status_of(&service, &parent_b).await.as_deref(),
-        Some("open"),
-        "neither parent may be picked arbitrarily"
-    );
-
-    shutdown_engine(tx, engine_task).await;
     Ok(())
 }
 

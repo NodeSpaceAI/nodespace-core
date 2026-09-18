@@ -523,6 +523,31 @@ impl NodeService {
                         .map_err(|e| NodeServiceError::collection_cycle(e.to_string()))?;
                 }
             }
+
+            // The outline is single-parent, and every read path assumes it:
+            // `get_parent`/`get_parent_id` resolve with `LIMIT 1`, so a second
+            // parent does not produce an error — it silently hides one of them
+            // and makes which parent a node has depend on row order.
+            //
+            // A built-in skips the declared-cardinality check below (it has no
+            // `SchemaRelationship` to carry `cardinality: One`), so until now
+            // nothing rejected the second edge: `relationship create --type
+            // has_child` from the CLI, or the agent's `create_relationship`
+            // tool, would just add it. Enforce here, where every surface
+            // converges, rather than in each caller.
+            if relationship_name == "has_child" {
+                if let Some(existing) = self.store.get_parent_id(target_id).await.map_err(|e| {
+                    NodeServiceError::query_failed(format!("Failed to check existing parent: {e}"))
+                })? {
+                    if existing != source_id {
+                        return Err(NodeServiceError::invalid_update(format!(
+                            "Node '{target_id}' already has parent '{existing}'; the outline is \
+                             single-parent. Move the node instead of adding a second `has_child` \
+                             edge."
+                        )));
+                    }
+                }
+            }
         } else {
             // Custom relationship: validate against source node's schema
             let source = self

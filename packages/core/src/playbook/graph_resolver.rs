@@ -488,11 +488,16 @@ impl GraphResolver {
                 continue;
             }
             let nodes = self.resolve_collection(root_node, &coll.collection).await;
-            // Load-bearing: leaving the key ABSENT for an empty collection is
-            // what makes `.all()` over "no children" evaluate false rather than
-            // vacuously true (`playbook-engine.md`). Inserting an empty list
-            // here instead would make a childless parent satisfy the completion
-            // rollup's condition and auto-complete itself (ADR-079 §3).
+            // Load-bearing: an empty collection leaves the key ABSENT rather
+            // than injecting an empty list.
+            //
+            // The mechanism is the absence, not CEL semantics: CEL's `.all()`
+            // over an empty list returns `true` (vacuous truth), exactly as the
+            // spec says. What produces `false` is that the key is missing, so
+            // evaluation raises `NoSuchKey`, which `evaluate_conditions_at_scope`
+            // maps to `Fail`. Inserting an empty list here would hand `.all()`
+            // a real empty list, it would return vacuously true, and a childless
+            // parent would auto-complete itself (ADR-079 §4).
             if !nodes.is_empty() {
                 let list: Vec<Value> = nodes
                     .iter()

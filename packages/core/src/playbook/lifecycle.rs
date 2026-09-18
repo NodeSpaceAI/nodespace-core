@@ -238,14 +238,6 @@ impl PlaybookLifecycleManager {
         self.activate_play(node)
     }
 
-    /// Handle a schema update — check if any active plays reference the
-    /// affected schema's node_type (either directly as a trigger or via dot-path
-    /// traversal in conditions) and need to be disabled.
-    ///
-    /// Uses path extraction to find plays whose conditions traverse
-    /// through the changed schema, not just those that trigger on it directly.
-    ///
-    /// Returns the list of play IDs that were disabled due to schema drift.
     /// Plays that *reference* the changed schema — candidates for drift, not
     /// yet known to be broken by it.
     ///
@@ -273,28 +265,6 @@ impl PlaybookLifecycleManager {
         self.active_playbooks
             .get(play_id)
             .map(|pb| pb.rules.clone())
-    }
-
-    pub fn handle_schema_update(
-        &mut self,
-        schema_node_type: &str,
-        new_schema_version: &str,
-    ) -> Vec<String> {
-        let mut disabled = Vec::new();
-
-        // Collect play IDs that reference this schema either directly or via paths
-        let affected: Vec<String> = self.plays_referencing_schema(schema_node_type);
-
-        for pb_id in affected {
-            warn!(
-                "Schema '{}' updated to version '{}', disabling play {}",
-                schema_node_type, new_schema_version, pb_id
-            );
-            self.disable_play(&pb_id);
-            disabled.push(pb_id);
-        }
-
-        disabled
     }
 
     /// Lookup rules matching a set of trigger keys.
@@ -858,11 +828,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // handle_schema_update — path-aware drift detection
+    // plays_referencing_schema — path-aware drift CANDIDATE detection
     // -----------------------------------------------------------------------
 
     #[test]
-    fn schema_update_disables_directly_referencing_play() {
+    fn schema_change_flags_directly_referencing_play_as_a_candidate() {
         let mut lm = PlaybookLifecycleManager::new();
         let node = make_play_node(
             "pb-drift-1",
@@ -875,16 +845,20 @@ mod tests {
         );
         lm.activate_play(&node).unwrap();
 
-        let disabled = lm.handle_schema_update("task", "2");
-        assert_eq!(disabled, vec!["pb-drift-1"]);
+        // A candidate, not a verdict: the engine re-validates each against the
+        // new schema and disables only those that actually broke. Referencing a
+        // type an ADDITIVE change touched must not disable anything.
+        let candidates = lm.plays_referencing_schema("task");
+        assert_eq!(candidates, vec!["pb-drift-1"]);
         assert_eq!(
             lm.active_playbooks()["pb-drift-1"].status,
-            PlayStatus::Disabled
+            PlayStatus::Active,
+            "identifying a candidate must not itself disable it"
         );
     }
 
     #[test]
-    fn schema_update_disables_play_with_path_through_schema() {
+    fn schema_change_flags_a_play_whose_path_traverses_the_schema() {
         let mut lm = PlaybookLifecycleManager::new();
         // Play triggers on "task" but has conditions traversing through "epic"
         let node = make_play_node(
@@ -899,12 +873,12 @@ mod tests {
         lm.activate_play(&node).unwrap();
 
         // Updating "epic" schema should detect the path traversal
-        let disabled = lm.handle_schema_update("epic", "2");
-        assert_eq!(disabled, vec!["pb-drift-2"]);
+        let candidates = lm.plays_referencing_schema("epic");
+        assert_eq!(candidates, vec!["pb-drift-2"]);
     }
 
     #[test]
-    fn schema_update_does_not_affect_unrelated_play() {
+    fn schema_change_ignores_an_unrelated_play() {
         let mut lm = PlaybookLifecycleManager::new();
         let node = make_play_node(
             "pb-drift-3",
@@ -918,8 +892,8 @@ mod tests {
         lm.activate_play(&node).unwrap();
 
         // Updating "invoice" schema should not affect this play
-        let disabled = lm.handle_schema_update("invoice", "2");
-        assert!(disabled.is_empty());
+        let candidates = lm.plays_referencing_schema("invoice");
+        assert!(candidates.is_empty());
         assert_eq!(
             lm.active_playbooks()["pb-drift-3"].status,
             PlayStatus::Active
@@ -927,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_update_skips_already_disabled_plays() {
+    fn schema_change_skips_already_disabled_plays() {
         let mut lm = PlaybookLifecycleManager::new();
         let node = make_play_node(
             "pb-drift-4",
@@ -941,9 +915,9 @@ mod tests {
         lm.activate_play(&node).unwrap();
         lm.disable_play("pb-drift-4");
 
-        let disabled = lm.handle_schema_update("task", "2");
+        let candidates = lm.plays_referencing_schema("task");
         assert!(
-            disabled.is_empty(),
+            candidates.is_empty(),
             "already-disabled plays should not appear"
         );
     }
