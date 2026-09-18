@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 use nodespace_core::db::SqliteStore;
-use nodespace_core::methodology::{recipe_by_id, MethodologyRecipe};
+use nodespace_core::methodology::{install_recipe, recipe_by_id, MethodologyRecipe, StepOutcome};
 use nodespace_core::models::Node;
 use nodespace_core::schema::{handle_create_schema, handle_update_schema};
 use nodespace_core::services::NodeService;
@@ -225,5 +225,175 @@ async fn plays_reference_types_the_recipe_creates_first() -> Result<()> {
 
     // And the declared order works.
     install(&service, &recipe).await?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// install_recipe: the path the GUI actually calls
+// ---------------------------------------------------------------------------
+
+/// The installer reports every step as done, with nothing re-keyed, into an
+/// empty workspace.
+#[tokio::test]
+async fn install_recipe_reports_every_step_created_in_a_clean_workspace() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let recipe = linear();
+
+    let report = install_recipe(&service, &recipe).await;
+
+    assert!(
+        report.success,
+        "install should succeed in a clean workspace; first failure: {:?}",
+        report.failure()
+    );
+    assert!(
+        report.suffixed().is_empty(),
+        "nothing should be re-keyed when no id is taken"
+    );
+
+    let expected = recipe.schemas.len()
+        + recipe.field_value_extensions.len()
+        + recipe.plays.len()
+        + recipe.skills.len();
+    assert_eq!(report.steps.len(), expected, "one report row per step");
+
+    for step in &report.steps {
+        assert!(
+            matches!(step.outcome, StepOutcome::Created { .. }),
+            "{} should be Created, got {:?}",
+            step.label,
+            step.outcome
+        );
+    }
+    Ok(())
+}
+
+/// A workspace that already has a `cycle` keeps it. The recipe's own cycle
+/// lands under a suffixed id, and the report says so.
+///
+/// This is the acceptance criterion's core case: never silent adoption (the
+/// stranger's `cycle` has none of the fields the Plays read), never silent
+/// overwrite, and never a blocking dialog.
+#[tokio::test]
+async fn an_existing_schema_id_is_re_keyed_and_disclosed_not_adopted() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+
+    // Someone's unrelated "Cycle" — same name, entirely different shape.
+    handle_create_schema(
+        &service,
+        serde_json::json!({
+            "name": "Cycle",
+            "description": "A bicycle in the shed",
+            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+        }),
+    )
+    .await
+    .expect("the pre-existing schema should be created");
+
+    let report = install_recipe(&service, &linear()).await;
+    assert!(
+        report.success,
+        "a collision must be resolved, not fatal; first failure: {:?}",
+        report.failure()
+    );
+
+    let suffixed = report.suffixed();
+    assert_eq!(suffixed.len(), 1, "exactly the cycle schema should re-key");
+    assert_eq!(suffixed[0].0, "cycle");
+    assert_ne!(suffixed[0].1, "cycle", "must land under a different id");
+
+    // The pre-existing schema is untouched.
+    let existing = service
+        .get_schema_node("cycle")
+        .await?
+        .expect("the original cycle schema must survive");
+    assert!(
+        existing.get_field("colour").is_some(),
+        "the user's own schema must be left exactly as it was"
+    );
+    assert!(
+        existing.get_field("start_date").is_none(),
+        "the recipe must not have written its fields into someone else's schema"
+    );
+    Ok(())
+}
+
+/// Re-keying rewrites later references, so the installed set stays internally
+/// consistent rather than half-pointing at the stranger's schema.
+#[tokio::test]
+async fn re_keying_follows_through_to_the_plays_that_reference_it() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+
+    handle_create_schema(
+        &service,
+        serde_json::json!({
+            "name": "Cycle",
+            "description": "A bicycle in the shed",
+            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+        }),
+    )
+    .await
+    .expect("pre-existing schema");
+
+    let report = install_recipe(&service, &linear()).await;
+    assert!(report.success, "first failure: {:?}", report.failure());
+
+    let new_id = report.suffixed()[0].1.to_string();
+
+    let play = service
+        .get_node("linear-cycle-rollover")
+        .await?
+        .expect("the rollover play should exist");
+    let rules = play
+        .properties
+        .get("play")
+        .and_then(|b| b.get("rules"))
+        .or_else(|| play.properties.get("rules"))
+        .expect("rules")
+        .to_string();
+
+    assert!(
+        rules.contains(&new_id),
+        "the rollover Play must target the re-keyed cycle ({new_id}), not the original"
+    );
+    Ok(())
+}
+
+/// Installing twice leaves the first install intact and re-keys the second,
+/// rather than erroring out or overwriting.
+#[tokio::test]
+async fn installing_twice_re_keys_rather_than_failing_or_overwriting() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let recipe = linear();
+
+    let first = install_recipe(&service, &recipe).await;
+    assert!(first.success, "first failure: {:?}", first.failure());
+    assert!(first.suffixed().is_empty());
+
+    let second = install_recipe(&service, &recipe).await;
+    assert!(
+        second.success,
+        "a second install should resolve collisions, not fail: {:?}",
+        second.failure()
+    );
+    // Every id-bearing step collides the second time: both schemas and all
+    // three play nodes. Vocabulary extensions do not — they target the
+    // re-keyed schema, which has no values yet — and skills reconcile by
+    // seed key rather than colliding.
+    assert_eq!(
+        second.suffixed().len(),
+        recipe.schemas.len() + recipe.plays.len(),
+        "each schema and play collides on a second install and must be re-keyed; got {:?}",
+        second.suffixed()
+    );
+
+    // The originals still exist, unchanged.
+    for step in &recipe.schemas {
+        assert!(
+            service.get_schema_node(step.schema_id).await?.is_some(),
+            "{} from the first install must survive the second",
+            step.schema_id
+        );
+    }
     Ok(())
 }

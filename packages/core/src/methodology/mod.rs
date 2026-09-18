@@ -23,9 +23,13 @@
 //! validation and relationship-declaration persistence all apply unchanged. A
 //! recipe cannot install a schema a hand-authored call could not.
 
+pub mod install;
 pub mod linear;
 
+pub use install::install_recipe;
+
 use crate::markdown::NodeTemplate;
+use serde::{Deserialize, Serialize};
 
 /// A methodology recipe: the content to install, plus the identity the GUI
 /// picker and the generated reference doc both present it under.
@@ -97,6 +101,67 @@ impl PlayStep {
             "description": self.description,
             "rules": self.rules,
             "_seed": { "default_rules": self.rules },
+        })
+    }
+}
+
+/// What one step did, reported so the caller can disclose it.
+///
+/// Collision handling is disclosed rather than silent: a step whose target id
+/// was taken reports [`StepOutcome::Suffixed`] naming both ids, so the user
+/// sees that their existing `cycle` was left alone and a `cycle__2` created
+/// instead — never a dialog, never a surprise.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum StepOutcome {
+    /// Created under the id the recipe asked for.
+    Created { id: String },
+    /// The requested id was taken; created under a suffixed id instead.
+    Suffixed { requested: String, created: String },
+    /// Not attempted, because an earlier step failed.
+    Skipped,
+    /// Failed. The install stops here.
+    Failed { message: String },
+}
+
+/// One row of an [`InstallReport`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepReport {
+    pub label: String,
+    pub outcome: StepOutcome,
+}
+
+/// The result of installing a recipe: one outcome per step, in execution order.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallReport {
+    pub recipe_id: String,
+    pub steps: Vec<StepReport>,
+    /// Whether every step completed (`Created` or `Suffixed`).
+    pub success: bool,
+}
+
+impl InstallReport {
+    /// Ids re-keyed because the recipe's preferred id was taken — the
+    /// disclosure the GUI surfaces without blocking on a confirmation.
+    pub fn suffixed(&self) -> Vec<(&str, &str)> {
+        self.steps
+            .iter()
+            .filter_map(|s| match &s.outcome {
+                StepOutcome::Suffixed { requested, created } => {
+                    Some((requested.as_str(), created.as_str()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The first failure's message, if the install stopped early.
+    pub fn failure(&self) -> Option<&str> {
+        self.steps.iter().find_map(|s| match &s.outcome {
+            StepOutcome::Failed { message } => Some(message.as_str()),
+            _ => None,
         })
     }
 }
