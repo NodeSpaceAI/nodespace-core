@@ -1,5 +1,6 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "nodespace-core",
@@ -27,7 +28,7 @@
     },
     "packages/desktop-app": {
       "name": "nodespace-app",
-      "version": "0.2.10",
+      "version": "0.3.0",
       "dependencies": {
         "@tauri-apps/api": "^2.8.0",
         "@tauri-apps/plugin-dialog": "^2.6.0",
