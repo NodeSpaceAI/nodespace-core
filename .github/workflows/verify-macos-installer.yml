@@ -96,11 +96,25 @@ jobs:
           # state is a currently-rejected .pkg, so without this it would
           # file a fresh duplicate on every single scheduled run until
           # someone fixes it.
+          #
+          # Deliberately NOT `gh issue list --search ...`: --search goes
+          # through GitHub's search index, which is only eventually
+          # consistent. A workflow_dispatch re-run shortly after this
+          # workflow just filed the tracking issue (e.g. someone re-running
+          # to confirm a fix, or two runs landing close together around the
+          # cron boundary) could hit the index before it catches up, see no
+          # match, and file a duplicate anyway -- defeating the point of
+          # this check. `--state open` with no `--search` hits the regular
+          # issues list endpoint instead, which reflects a just-created
+          # issue immediately; --limit is generous since we're filtering by
+          # exact title client-side rather than relying on the API to
+          # narrow it, and gh's own default limit (30) could otherwise miss
+          # a match if there are more open issues than that.
           # `$t` below is a jq variable (bound by --arg), not a shell
           # variable; it must stay unexpanded.
           # shellcheck disable=SC2016
-          EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open \
-            --search "in:title \"${TITLE}\"" --json number,title | \
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open --limit 200 \
+            --json number,title | \
             jq -r --arg t "${TITLE}" '[.[] | select(.title == $t)] | .[0].number // empty')
 
           if [[ -n "${EXISTING}" ]]; then
