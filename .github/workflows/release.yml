@@ -245,6 +245,24 @@ jobs:
           echo "Sidecars built:"
           ls -la "${BIN_DIR}/"
 
+      # Mirrors the equivalent step in build-tauri-macos-arm above. tauri.conf.json's
+      # `bundle.resources` includes `resources/models/**/*` on every platform, but that
+      # directory is gitignored (packages/desktop-app/src-tauri/resources/.gitignore) and
+      # not committed, so a fresh runner checkout has it empty unless a step populates it
+      # first. The macOS job has always done this; the Windows leg never did -- a glob
+      # that matches zero files is not a tauri-bundler error, so the .msi/.exe silently
+      # shipped without the embedding model with no build-time signal.
+      - name: Download embedding model for bundling (Windows)
+        if: steps.filter.outputs.skip != 'true' && matrix.platform == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p packages/desktop-app/src-tauri/resources/models
+          gh release download models-v2 --pattern "nomic-embed-text-v1.5.Q8_0.gguf" --dir packages/desktop-app/src-tauri/resources/models/
+          echo "Model downloaded:"
+          ls -la packages/desktop-app/src-tauri/resources/models/
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build and stage skill resources
         if: steps.filter.outputs.skip != 'true'
         run: bun run build:skill
