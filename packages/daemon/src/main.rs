@@ -746,6 +746,39 @@ fn defuse_serve_drain_watchdog(slot: &std::sync::Mutex<Option<Arc<AtomicBool>>>)
     }
 }
 
+/// Shared `on_timeout` for every [`watch_for_shutdown_signal`] call site
+/// (both `serve_grpc` implementations and both `serve_headless`
+/// implementations) -- forces exit if tonic's own connection/stream drain
+/// hasn't finished within [`SHUTDOWN_WATCHDOG_TIMEOUT`] of shutdown being
+/// signaled. Factored out so the four call sites can't drift out of sync on
+/// the message or the exit behavior.
+///
+/// This is a real, accepted tradeoff, not just a safety net: `serve_with_
+/// incoming_shutdown`'s drain genuinely waits for every in-flight
+/// connection/stream to finish on its own (confirmed against tonic's
+/// source) rather than cutting it short, so a legitimately slow request
+/// still in flight at signal time -- a large import stream, a client slow
+/// to notice a cancelled subscription -- can now hit this timeout and force
+/// an exit *before* [`drain_and_release_gpu`]'s own database/GPU cleanup
+/// runs, where an unbounded wait previously would have let it finish
+/// cleanly. That is deliberately preferred over the alternative this
+/// replaces: an unbounded hang is worse for every real caller (a process
+/// supervisor's own much less graceful `SIGKILL` after its own timeout, or
+/// -- pre-fix -- no timeout at all) than a bounded, self-directed exit that
+/// skips the last bit of cleanup. Matches the tradeoff `main`'s tray-mode
+/// path already made for this exact watchdog before headless mode had any
+/// bound here at all.
+fn force_exit_on_serve_drain_timeout() {
+    tracing::error!(
+        timeout_secs = SHUTDOWN_WATCHDOG_TIMEOUT.as_secs(),
+        "serve_with_incoming_shutdown did not finish draining connections/streams in time -- \
+         forcing exit. If you see this, please report it: either a client connection (e.g. an \
+         open WatchNodes stream) is stalling tonic's own graceful shutdown, or a legitimately \
+         long-running request was still in flight when shutdown was signaled."
+    );
+    std::process::exit(0);
+}
+
 /// Drain every open database's compute, then release the shared GPU context
 /// once. Common to both platforms' tray-mode `serve_grpc`.
 ///
@@ -1042,6 +1075,22 @@ mod watch_for_shutdown_signal_tests {
 /// nothing pumps its run loop is a separate, still-open problem -- the same
 /// class of tray-mode shutdown hang this file's own watchdog documentation
 /// already flags as unresolved (see [`bridge_grpc_completion_to_tray`]).
+///
+/// Known gap left open deliberately: this function's own default is
+/// unchanged (still `false`, tray mode) -- only the one launcher known to
+/// need headless behavior, the `nodespace-cli` Homebrew formula, was updated
+/// to set the variable explicitly. Every existing headless-intent call site
+/// this codebase already has (the desktop app's own Tauri test harness, its
+/// daemon e2e harness, the skill eval preflight script) already sets this
+/// variable explicitly too, so nothing currently regresses -- but a future
+/// headless launcher (a systemd unit, a Docker entrypoint, a Linux distro
+/// package, or a person running `nodespaced` bare from memory) that forgets
+/// to set it would silently reproduce this exact class of hang. Flipping
+/// this function's default to headless-by-default, with tray mode becoming
+/// the opt-in (needed only by the desktop app's own bundled daemon launch),
+/// would close that class of bug at the root instead of per-launcher --
+/// deliberately left as a follow-up rather than folded into this fix, since
+/// it touches the desktop app's own daemon-launch code path.
 fn headless() -> bool {
     matches!(std::env::var("NODESPACED_HEADLESS").as_deref(), Ok("1"))
 }
@@ -1103,16 +1152,11 @@ async fn serve_headless() -> Result<()> {
     let _ = tokio::fs::remove_file(&sock).await;
     let listener = bind_uds_owner_only(&sock)?;
 
-    let (wrapped_shutdown, serve_drain_watchdog) =
-        watch_for_shutdown_signal(shutdown, SHUTDOWN_WATCHDOG_TIMEOUT, || {
-            tracing::error!(
-                timeout_secs = SHUTDOWN_WATCHDOG_TIMEOUT.as_secs(),
-                "serve_with_incoming_shutdown did not finish draining connections/streams in \
-                 time -- forcing exit. If you see this, please report it: something is \
-                 stalling tonic's own graceful shutdown."
-            );
-            std::process::exit(0);
-        });
+    let (wrapped_shutdown, serve_drain_watchdog) = watch_for_shutdown_signal(
+        shutdown,
+        SHUTDOWN_WATCHDOG_TIMEOUT,
+        force_exit_on_serve_drain_timeout,
+    );
 
     tracing::info!(sock = %sock.display(), "gRPC server listening");
 
@@ -1189,15 +1233,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
             }
         },
         SHUTDOWN_WATCHDOG_TIMEOUT,
-        || {
-            tracing::error!(
-                timeout_secs = SHUTDOWN_WATCHDOG_TIMEOUT.as_secs(),
-                "serve_with_incoming_shutdown did not finish draining connections/streams in \
-                 time -- forcing exit. If you see this, please report it: a client (e.g. an \
-                 open WatchNodes stream) is likely stalling tonic's own graceful shutdown."
-            );
-            std::process::exit(0);
-        },
+        force_exit_on_serve_drain_timeout,
     );
 
     tracing::info!(sock = %sock.display(), "gRPC server listening");
@@ -1275,9 +1311,13 @@ impl tokio::io::AsyncWrite for NamedPipeConn {
 
 /// Headless server loop for Windows — uses a Named Pipe instead of UDS.
 ///
-/// Wrapped by the same two watchdogs the Unix headless loop and [`serve_grpc`]
-/// use — see [`serve_headless`]'s own (Unix) doc comment for why this path
-/// needs that coverage rather than calling the drain steps directly.
+/// Wrapped by the same two watchdogs [`serve_grpc`] uses (see
+/// [`watch_for_shutdown_signal`] and [`drain_and_release_gpu`]) rather than
+/// calling the drain steps directly, for the same reason the Unix headless
+/// loop is: see [`headless`]'s own doc comment for the root cause this
+/// closes off. (Not a cross-reference to the Unix `serve_headless` --
+/// `#[cfg(unix)]` items like it don't exist in a Windows build, so an
+/// intra-doc link to one here would silently resolve to nothing useful.)
 #[cfg(windows)]
 async fn serve_headless() -> Result<()> {
     use tokio_util::sync::CancellationToken;
@@ -1319,15 +1359,7 @@ async fn serve_headless() -> Result<()> {
             cancel.cancel();
         },
         SHUTDOWN_WATCHDOG_TIMEOUT,
-        || {
-            tracing::error!(
-                timeout_secs = SHUTDOWN_WATCHDOG_TIMEOUT.as_secs(),
-                "serve_with_incoming_shutdown did not finish draining connections/streams in \
-                 time -- forcing exit. If you see this, please report it: something is \
-                 stalling tonic's own graceful shutdown."
-            );
-            std::process::exit(0);
-        },
+        force_exit_on_serve_drain_timeout,
     );
 
     tracing::info!(pipe = %name, "gRPC server listening (Named Pipe, owner-only DACL)");
@@ -1423,15 +1455,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
             }
         },
         SHUTDOWN_WATCHDOG_TIMEOUT,
-        || {
-            tracing::error!(
-                timeout_secs = SHUTDOWN_WATCHDOG_TIMEOUT.as_secs(),
-                "serve_with_incoming_shutdown did not finish draining connections/streams in \
-                 time -- forcing exit. If you see this, please report it: a client (e.g. an \
-                 open WatchNodes stream) is likely stalling tonic's own graceful shutdown."
-            );
-            std::process::exit(0);
-        },
+        force_exit_on_serve_drain_timeout,
     );
 
     // Claim the pipe name exclusively, with an owner-only DACL, before doing
