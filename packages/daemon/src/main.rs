@@ -944,6 +944,35 @@ mod drain_and_release_gpu_tests {
                  serve_with_incoming_shutdown returns -- a function missing either call silently \
                  loses watchdog coverage for tonic's own connection/stream drain"
             );
+            assert!(
+                body.contains("force_exit_on_serve_drain_timeout"),
+                "{label} must pass force_exit_on_serve_drain_timeout as watch_for_shutdown_signal's \
+                 on_timeout callback -- a function that reverts to its own inline closure here can \
+                 still pass the two checks above while silently drifting from the other three \
+                 sites' timeout message and exit behavior"
+            );
+            // The watchdog is armed the instant shutdown is signaled, independent of
+            // whether `serve_with_incoming_shutdown` itself later resolves `Ok` or `Err` --
+            // so `defuse_serve_drain_watchdog` must run before the `?` that can
+            // propagate an `Err`, not after it. A `?` reached first would skip the
+            // defuse on that path, leaving the watchdog armed to force-exit later (e.g.
+            // during runtime teardown) and silently turn a real failure into a
+            // reported success.
+            // Searches for the literal `.context("gRPC server terminated with error")?`
+            // expression (not a bare `?`) so this can't be tripped up by an
+            // unrelated `?` character inside a doc comment elsewhere in the body.
+            let defuse_pos = body
+                .find("defuse_serve_drain_watchdog(")
+                .expect("checked above");
+            let propagate_pos = body.find(".context(\"gRPC server terminated with error\")?");
+            if let Some(propagate_pos) = propagate_pos {
+                assert!(
+                    defuse_pos < propagate_pos,
+                    "{label} must call defuse_serve_drain_watchdog BEFORE propagating a \
+                     possible Err with `?` from serve_with_incoming_shutdown's result -- \
+                     defusing after the `?` skips it entirely on the error path"
+                );
+            }
         }
     }
 }
@@ -1170,14 +1199,21 @@ async fn serve_headless() -> Result<()> {
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
     };
-    build_base_router(
+    let serve_result = build_base_router(
         Server::builder().layer(DbManagerLayer::new(manager)),
         base_services,
     )
     .serve_with_incoming_shutdown(UnixListenerStream::new(listener), wrapped_shutdown)
-    .await
-    .context("gRPC server terminated with error")?;
+    .await;
+    // Defuse before propagating a possible `Err` below: the watchdog is armed
+    // the instant shutdown is signaled, independent of how
+    // `serve_with_incoming_shutdown` itself resolves, so an early `?` on the
+    // error path must not skip defusing it -- an orphaned armed watchdog
+    // would otherwise force `std::process::exit(0)` later (e.g. during
+    // runtime teardown), silently turning a real failure into a reported
+    // success.
     defuse_serve_drain_watchdog(&serve_drain_watchdog);
+    serve_result.context("gRPC server terminated with error")?;
     let _ = tokio::fs::remove_file(&sock_cleanup).await;
     // Drain every open database's compute, then release the shared GPU once.
     drain_and_release_gpu(shutdown_manager, shared_model).await;
@@ -1248,16 +1284,18 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
     };
-    build_base_router(
+    let serve_result = build_base_router(
         Server::builder()
             .layer(TrayMetricsLayer::new(controller))
             .layer(DbManagerLayer::new(manager)),
         base_services,
     )
     .serve_with_incoming_shutdown(UnixListenerStream::new(listener), combined_shutdown)
-    .await
-    .context("gRPC server terminated with error")?;
+    .await;
+    // See the Unix `serve_headless` comment on the equivalent line: defuse
+    // before propagating, so an `Err` here can't leave the watchdog armed.
     defuse_serve_drain_watchdog(&serve_drain_watchdog);
+    serve_result.context("gRPC server terminated with error")?;
     let _ = tokio::fs::remove_file(&sock_cleanup).await;
     drain_and_release_gpu(shutdown_manager, shared_model).await;
     Ok(())
@@ -1407,14 +1445,16 @@ async fn serve_headless() -> Result<()> {
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
     };
-    build_base_router(
+    let serve_result = build_base_router(
         Server::builder().layer(DbManagerLayer::new(manager)),
         base_services,
     )
     .serve_with_incoming_shutdown(incoming, wrapped_shutdown)
-    .await
-    .context("gRPC server terminated with error")?;
+    .await;
+    // See the Unix `serve_headless` comment on the equivalent line: defuse
+    // before propagating, so an `Err` here can't leave the watchdog armed.
     defuse_serve_drain_watchdog(&serve_drain_watchdog);
+    serve_result.context("gRPC server terminated with error")?;
     // Drain every open database's compute, then release the shared GPU once.
     drain_and_release_gpu(shutdown_manager, shared_model).await;
     Ok(())
@@ -1512,7 +1552,7 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         embeddings: bundle.embeddings_service_grpc.clone(),
         database: DatabaseServiceImpl::new(manager.clone()),
     };
-    build_base_router(
+    let serve_result = build_base_router(
         Server::builder()
             .layer(TrayMetricsLayer::new(controller))
             .layer(DbManagerLayer::new(manager)),
@@ -1522,9 +1562,11 @@ async fn serve_grpc(controller: tray::TrayController) -> Result<()> {
         combined_shutdown.await;
         cancel.cancel();
     })
-    .await
-    .context("gRPC server terminated with error")?;
+    .await;
+    // See the Unix `serve_headless` comment on the equivalent line: defuse
+    // before propagating, so an `Err` here can't leave the watchdog armed.
     defuse_serve_drain_watchdog(&serve_drain_watchdog);
+    serve_result.context("gRPC server terminated with error")?;
     drain_and_release_gpu(shutdown_manager, shared_model).await;
     Ok(())
 }

@@ -349,6 +349,13 @@ export function renderFormula(version: string, digests: FormulaDigests): string 
     # signal is handled and the process exits cleanly in well under a
     # second. \`brew services start/stop nodespace-cli\` relies on a clean
     # exit here -- \`stop\` sends SIGTERM and waits.
+    #
+    # Verified this way on macOS only. \`environment_variables\` is Homebrew's
+    # own cross-platform Services DSL primitive -- the same declaration is
+    # documented to translate into both the generated launchd plist (macOS)
+    # and the generated systemd unit (Linux) -- but that Linux translation
+    # was not independently re-verified against a live \`brew services start\`
+    # on this formula's Linux targets.
     environment_variables NODESPACED_HEADLESS: "1"
     log_path var/"log/nodespace/nodespaced.log"
     error_log_path var/"log/nodespace/nodespaced.log"
