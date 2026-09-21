@@ -831,7 +831,7 @@
   }
 
   .retry-button:hover {
-    opacity: 0.9;
+    background: hsl(var(--primary-hover));
   }
 
   .empty-state p {
@@ -868,7 +868,7 @@
   }
 
   .new-instance-button:hover:not(:disabled) {
-    opacity: 0.9;
+    background: hsl(var(--primary-hover));
   }
 
   .new-instance-button:disabled {
