@@ -73,6 +73,25 @@ pub fn resolve_db_path() -> Result<PathBuf> {
 /// this helper: it holds the UDS whose mode is the whole local-authorization
 /// boundary (ADR-052), the database file, the database registry, and the
 /// settings file (which carries third-party API keys).
+///
+/// `dir` is not always daemon-owned, though: `NODESPACED_SOCKET`,
+/// `NODESPACE_HOME` and `NODESPACED_DB_PATH` let a caller point straight at a
+/// directory this process never created and does not own — most commonly a
+/// shared system directory such as `/tmp` used directly (rather than a fresh,
+/// owned subdirectory under it) for a one-off isolated/CI/sandboxed daemon.
+/// `chmod` on a directory you don't own always fails with `EPERM`, regardless
+/// of whether that directory's current mode is actually insecure, so treating
+/// every `chmod` failure as fatal made an already-secure custom directory
+/// (one some other process created at `0o700` and handed off, e.g.) refuse to
+/// start, and made a genuinely insecure one (`/tmp` itself, mode `0o1777`)
+/// fail with a bare, unexplained `EPERM` and no indication of why. Both cases
+/// re-stat `dir` after a failed `chmod` and judge the mode we're actually left
+/// with rather than the attempt: already owner-only (no group/other bits) is
+/// fine even though we couldn't have narrowed it ourselves, and still
+/// group/other-accessible is a hard, named error explaining exactly what's
+/// wrong and how to fix it (this is also the same invariant
+/// `bind_uds_owner_only` re-checks fail-closed right before binding, so a
+/// caller that skips this helper is still caught there).
 #[cfg(unix)]
 pub async fn create_dir_owner_only(dir: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -82,9 +101,23 @@ pub async fn create_dir_owner_only(dir: &std::path::Path) -> Result<()> {
         .create(dir)
         .await
         .with_context(|| format!("create dir {}", dir.display()))?;
-    tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .await
-        .with_context(|| format!("chmod 0o700 {}", dir.display()))
+    if let Err(chmod_err) =
+        tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await
+    {
+        let mode = std::fs::metadata(dir)
+            .with_context(|| format!("stat {} after failed chmod", dir.display()))?
+            .permissions()
+            .mode()
+            & 0o777;
+        anyhow::ensure!(
+            mode & 0o077 == 0,
+            "{} is mode {mode:o} (group/other-accessible) and this process does not own it, so \
+             it cannot be narrowed to owner-only ({chmod_err}) -- point at a directory you own \
+             (e.g. a dedicated subdirectory), not a shared system directory like its parent",
+            dir.display(),
+        );
+    }
+    Ok(())
 }
 
 /// Windows has no POSIX permission-bit model to apply here. Directory access
