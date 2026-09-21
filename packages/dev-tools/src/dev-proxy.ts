@@ -122,7 +122,10 @@ function startWatchBridge(): void {
     try {
       await ready(watchClient);
     } catch (err) {
-      console.error('[dev-proxy] WatchNodes channel not ready, retrying in 2s:', (err as Error).message);
+      console.error(
+        '[dev-proxy] WatchNodes channel not ready, retrying in 2s:',
+        err instanceof Error ? err.message : String(err)
+      );
       setTimeout(connect, 2000);
       return;
     }
@@ -139,8 +142,13 @@ function startWatchBridge(): void {
       // below), but if it ever did, `void connect()` at every call site below
       // means nothing catches a thrown-not-rejected failure here — silently
       // stopping the reconnect loop for good, the exact "never recovers"
-      // symptom this bridge exists to avoid.
-      console.error('[dev-proxy] WatchNodes call threw, retrying in 2s:', (err as Error).message);
+      // symptom this bridge exists to avoid. `err` is deliberately treated as
+      // unknown (not cast to Error) since whatever was thrown is not
+      // guaranteed to be an Error instance.
+      console.error(
+        '[dev-proxy] WatchNodes call threw, retrying in 2s:',
+        err instanceof Error ? err.message : String(err)
+      );
       setTimeout(connect, 2000);
       return;
     }
