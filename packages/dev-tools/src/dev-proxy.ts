@@ -18,7 +18,7 @@ import {
   type InsertPosition,
 } from '../../desktop-app/src/lib/services/adapter-core.ts';
 import { flattenTypedFieldsFromStorage } from '../../desktop-app/src/lib/services/node-normalize.ts';
-import { createNodeSpaceClients } from './grpc-client.ts';
+import { createNodeSpaceClients, createRunOnceGuard } from './grpc-client.ts';
 import { mapGrpcError } from './grpc-error-mapping.ts';
 
 const PORT = parseInt(process.env.DEV_PROXY_PORT ?? '3001', 10);
@@ -122,14 +122,57 @@ function startWatchBridge(): void {
     try {
       await ready(watchClient);
     } catch (err) {
-      console.error('[dev-proxy] WatchNodes channel not ready, retrying in 2s:', (err as Error).message);
+      console.error(
+        '[dev-proxy] WatchNodes channel not ready, retrying in 2s:',
+        err instanceof Error ? err.message : String(err)
+      );
       setTimeout(connect, 2000);
       return;
     }
-    const stream = (watchClient as unknown as Record<string, Function>).watchNodes({
-      nodeType: '',
-      rootId: ''
-    }) as grpc.ClientReadableStream<ProtoNodeEvent>;
+
+    let stream: grpc.ClientReadableStream<ProtoNodeEvent>;
+    try {
+      stream = (watchClient as unknown as Record<string, Function>).watchNodes({
+        nodeType: '',
+        rootId: ''
+      }) as grpc.ClientReadableStream<ProtoNodeEvent>;
+    } catch (err) {
+      // watchNodes() itself isn't expected to throw synchronously (gRPC-js
+      // surfaces connection failures via the stream's own 'error' event
+      // below), but if it ever did, `void connect()` at every call site below
+      // means nothing catches a thrown-not-rejected failure here — silently
+      // stopping the reconnect loop for good, the exact "never recovers"
+      // symptom this bridge exists to avoid. `err` is deliberately treated as
+      // unknown (not cast to Error) since whatever was thrown is not
+      // guaranteed to be an Error instance.
+      console.error(
+        '[dev-proxy] WatchNodes call threw, retrying in 2s:',
+        err instanceof Error ? err.message : String(err)
+      );
+      setTimeout(connect, 2000);
+      return;
+    }
+
+    // Reports this stream's terminal outcome (and schedules its reconnect) at
+    // most once. A fresh guard per stream — rather than one shared across the
+    // whole bridge's lifetime — matters because gRPC-js's ClientReadableStream
+    // reliably fires BOTH 'error' and 'end' for a single dropped connection
+    // (confirmed with GRPC_TRACE against a real daemon kill: every observed
+    // drop logged "WatchNodes stream error" immediately followed by
+    // "WatchNodes stream ended"). See createRunOnceGuard's doc comment in
+    // ./grpc-client.ts for why scoping the guard to the stream, instead of
+    // sharing it across reconnect attempts, also keeps an old, superseded
+    // stream's late event from ever touching a newer attempt's state, and why
+    // both events use the same reconnect delay rather than whichever fires
+    // first winning arbitrarily.
+    const guard = createRunOnceGuard();
+    function reconnectOnce(log: () => void): void {
+      guard.run(() => {
+        resetBridgeAttached();
+        log();
+        setTimeout(connect, 1000);
+      });
+    }
 
     stream.on('data', (event: ProtoNodeEvent) => {
       if (event.created) {
@@ -153,15 +196,13 @@ function startWatchBridge(): void {
     });
 
     stream.on('error', (err: Error) => {
-      console.error('[dev-proxy] WatchNodes stream error, reconnecting in 2s:', err.message);
-      resetBridgeAttached();
-      setTimeout(connect, 2000);
+      reconnectOnce(() =>
+        console.error('[dev-proxy] WatchNodes stream error, reconnecting in 1s:', err.message)
+      );
     });
 
     stream.on('end', () => {
-      console.log('[dev-proxy] WatchNodes stream ended, reconnecting in 1s');
-      resetBridgeAttached();
-      setTimeout(connect, 1000);
+      reconnectOnce(() => console.log('[dev-proxy] WatchNodes stream ended, reconnecting in 1s'));
     });
 
     // All three listeners above are now wired, so this bridge will relay

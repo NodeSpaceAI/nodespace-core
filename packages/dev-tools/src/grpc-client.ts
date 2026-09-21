@@ -151,6 +151,49 @@ export const WATCH_CHANNEL_OPTIONS: grpc.ClientOptions = {
   'grpc.use_local_subchannel_pool': 1
 };
 
+/**
+ * Ensures `run()`'s callback executes at most once for this instance; every
+ * call after the first is a no-op. Unlike a flag shared across an entire
+ * long-lived bridge, callers are expected to construct a FRESH instance per
+ * logical attempt (e.g. per `ClientReadableStream`) — that scoping is what
+ * makes the guard immune to cross-talk from an unrelated, already-superseded
+ * attempt, rather than relying on event-ordering luck.
+ *
+ * `startWatchBridge()`'s `connect()` in dev-proxy.ts constructs one of these
+ * per `WatchNodes` stream to fix a real bug found live-testing daemon-restart
+ * recovery: a `ClientReadableStream` whose connection drops reliably fires
+ * BOTH `'error'` and `'end'` for that one disconnect (confirmed with
+ * `GRPC_TRACE` against a real daemon kill — every observed drop logged
+ * "WatchNodes stream error" immediately followed by "WatchNodes stream
+ * ended"). Scheduling a reconnect from both handlers independently — the
+ * original code — creates two concurrent `connect()` chains per disconnect;
+ * each one that itself fails again doubles the count. That compounds across
+ * repeated daemon restarts into many overlapping `WatchNodes` stream attempts
+ * that never quiesce: needless load on the daemon, and a proxy log that never
+ * stops retrying even though any single chain would have recovered — which is
+ * what made the bridge look like it "never recovers" after a restart.
+ *
+ * A single guard shared across every reconnect attempt (rather than one per
+ * stream) would fix that same-stream double-event case but not structurally:
+ * it would still allow a late event from an already-superseded stream to act
+ * on a newer, already-healthy attempt's state, and it would arbitrarily let
+ * whichever of 'error'/'end' happens to fire first dictate the reconnect
+ * delay instead of the call site choosing one deliberately. Scoping to the
+ * stream avoids both.
+ */
+export function createRunOnceGuard(): {
+  run: (callback: () => void) => void;
+} {
+  let hasRun = false;
+  return {
+    run(callback) {
+      if (hasRun) return;
+      hasRun = true;
+      callback();
+    }
+  };
+}
+
 export function resolveSocketAddress(): string {
   const sock =
     process.env.NODESPACED_SOCKET ?? `${process.env.HOME}/.nodespace/daemon.sock`;
