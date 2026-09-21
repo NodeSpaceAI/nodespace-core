@@ -1,7 +1,7 @@
 /**
- * Regression coverage for the bug behind core#2756: after the daemon a
- * dev-proxy process is watching gets killed and replaced by a new daemon on
- * the same Unix socket, `startWatchBridge()`'s `WatchNodes` bridge
+ * Regression coverage for a real dev-proxy bug: after the daemon a dev-proxy
+ * process is watching gets killed and replaced by a new daemon on the same
+ * Unix socket, `startWatchBridge()`'s `WatchNodes` bridge
  * (packages/dev-tools/src/dev-proxy.ts) never recovered — it retried
  * indefinitely even though the replacement daemon was fully healthy and
  * serving every other RPC.
@@ -56,7 +56,7 @@ describe('createSingleFlightScheduler', () => {
     expect(callback).toHaveBeenCalledTimes(1);
   });
 
-  it("collapses an 'error'+'end' pair for the same dropped stream into one reconnect — the core#2756 fix", () => {
+  it("collapses an 'error'+'end' pair for the same dropped stream into one reconnect", () => {
     // Mirrors startWatchBridge()'s stream.on('error', ...) firing first with
     // a 2s delay, immediately followed by stream.on('end', ...) firing with a
     // 1s delay, for the SAME disconnect — the observed, reliable grpc-js
