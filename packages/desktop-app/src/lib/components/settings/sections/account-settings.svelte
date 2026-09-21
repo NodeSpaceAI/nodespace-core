@@ -126,7 +126,8 @@
       </div>
       {#if !syncUiEnabled}
         <p class="text-muted-foreground m-0 text-sm leading-relaxed">
-          This build doesn't include NodeSpace Pro sync.
+          Team synchronization is under heavy development. To help us test this capability,
+          contact us at developer@nodespace.ai
         </p>
       {:else if identityLoading}
         <p class="text-muted-foreground m-0 text-sm leading-relaxed">Checking sign-in status…</p>
