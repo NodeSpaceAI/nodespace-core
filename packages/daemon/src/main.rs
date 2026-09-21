@@ -876,8 +876,9 @@ mod drain_and_release_gpu_tests {
     /// never routed through either helper at all, in either implementation
     /// -- unlike tray mode, headless shutdown had no timeout anywhere in its
     /// path. A hang there had no forced exit to fall back on, which is
-    /// exactly the shape core#2758 hit (a `nodespaced` that had to be
-    /// `SIGKILL`ed after `SIGTERM`/`SIGINT` never returned).
+    /// exactly the shape a real, live-reproduced hang took: a `nodespaced`
+    /// with no client ever attached that never returned after
+    /// `SIGTERM`/`SIGINT` and had to be `SIGKILL`ed.
     #[test]
     fn every_serve_loop_uses_the_shared_watchdog_helpers() {
         let source = include_str!("main.rs");
@@ -1030,8 +1031,9 @@ mod watch_for_shutdown_signal_tests {
 /// this variable explicitly (`scripts/update-homebrew-formula.ts`) rather
 /// than relying on this default. Tray mode's *own* SIGTERM handling
 /// remaining fragile when nothing pumps its run loop is a separate,
-/// still-open problem -- the same class core#2357's own doc comments
-/// already flag as unresolved (see [`bridge_grpc_completion_to_tray`]).
+/// still-open problem -- the same class of tray-mode shutdown hang this
+/// file's own watchdog documentation already flags as unresolved (see
+/// [`bridge_grpc_completion_to_tray`]).
 fn headless() -> bool {
     matches!(std::env::var("NODESPACED_HEADLESS").as_deref(), Ok("1"))
 }
