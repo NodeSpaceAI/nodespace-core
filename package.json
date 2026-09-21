@@ -44,6 +44,7 @@
     "skill:check": "cargo run -q -p nodespace-cli --example gen_skill_md -- --check",
     "build:skill": "bun run skill:check && bun run scripts/build-skill.ts",
     "build:pkg:macos": "bash scripts/build-pkg.sh",
+    "pkg:verify-gatekeeper": "bun run scripts/verify-pkg-gatekeeper.ts",
     "download:models": "bun run scripts/download-models.ts",
     "download:models:bundle": "bun run scripts/download-models.ts --bundle",
     "gh:status": "bun run scripts/gh-utils.ts issues:status",

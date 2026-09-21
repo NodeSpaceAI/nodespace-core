@@ -1,0 +1,129 @@
+name: Verify macOS .pkg installer (Gatekeeper)
+
+# Re-checks the CURRENTLY PUBLISHED .pkg release asset against live
+# Gatekeeper on a freshly-provisioned runner -- independent of, and any
+# amount of time after, the release build that produced it.
+#
+# Why this exists: release.yml's build-pkg-macos job already runs
+# `spctl --assess --type install` against the .pkg it just built, but only
+# on the SAME runner, seconds after notarization -- that
+# proves the file passed Gatekeeper *once, immediately*, not that it will
+# still pass for a real user's download days or weeks later. v0.3.0's
+# published .pkg passed that build-time check and was still correctly
+# signed, notarized (Apple notary service: Accepted), and stapled when a
+# real end-user install attempt hit a hard Gatekeeper rejection days after
+# release. A .pkg's outer container must itself pass a live "type install"
+# assessment before an install can proceed -- unlike a .dmg, where
+# Gatekeeper only ever assesses the contained .app -- so .pkg is uniquely
+# exposed to this class of after-the-fact drift that a same-runner,
+# moments-after-build check cannot observe.
+#
+# This workflow re-runs that exact assessment daily, on a fresh runner (not
+# the one that built the release), against whatever is CURRENTLY live on
+# the release page, so a regression is caught automatically within a day
+# instead of via the next real user's failed install.
+
+permissions:
+  contents: read
+  issues: write
+
+on:
+  schedule:
+    - cron: "40 7 * * *" # once daily, off-peak UTC
+  workflow_dispatch: {}
+
+jobs:
+  verify-pkg-gatekeeper:
+    name: bun run pkg:verify-gatekeeper
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.11"
+
+      - name: Re-assess the published .pkg against live Gatekeeper
+        id: verify
+        # tee'd to a file so the failure step can quote the actual spctl
+        # output -- a genuine Gatekeeper rejection and "the check itself
+        # couldn't run" (network/gh/auth) both fail loud, but an operator
+        # triaging the auto-filed issue needs to tell them apart from the
+        # message alone (same reasoning as homebrew-drift-check.yml).
+        # `shell: bash` is required for the pipe -- with no `shell:` key
+        # Actions runs `bash -e {0}` without pipefail, so tee's exit code
+        # would win and a real rejection would report GREEN.
+        shell: bash
+        run: bun run pkg:verify-gatekeeper 2>&1 | tee gatekeeper-output.txt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Open (or update) an issue on failure (loud, with the actual message)
+        if: failure()
+        # `shell: bash` (with pipefail) is required below: `gh issue list`'s
+        # own `--jq` takes exactly one value, so `--jq --arg t "$TITLE"
+        # '...'` (an earlier version of this step) fed it the literal
+        # string "--arg" as the filter and left `t`/"$TITLE"/the real
+        # filter as stray positional args `gh` doesn't accept -- it errored
+        # out before the dedup/create logic ever ran, silently skipping the
+        # exact failure this workflow exists to report. `gh`'s own `--jq`
+        # doesn't support `--arg` at all; piping into the real `jq` binary
+        # does. Without pipefail, a `gh issue list` failure upstream of the
+        # pipe would be masked by `jq`'s own exit code.
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TITLE="macOS .pkg installer fails live Gatekeeper assessment"
+          {
+            echo "The scheduled macOS .pkg Gatekeeper check failed against the currently-published release. Run: ${RUN_URL}"
+            echo
+            echo "Output:"
+            echo '```'
+            cat gatekeeper-output.txt 2>/dev/null || echo "(no output captured)"
+            echo '```'
+            echo
+            echo "If the output above starts with \"GATEKEEPER REJECTED\", a real user's install of the"
+            echo "current .pkg release asset will fail the same way -- treat as release-blocking."
+            echo "Any other message means the check itself failed to run (network/gh/auth) -- not necessarily a rejection; check the run log."
+          } > issue-body.txt
+
+          # Reuse an already-open issue from a prior failed run instead of
+          # filing a new one on every failure -- this check's starting
+          # state is a currently-rejected .pkg, so without this it would
+          # file a fresh duplicate on every single scheduled run until
+          # someone fixes it.
+          #
+          # Deliberately NOT `gh issue list --search ...`: --search goes
+          # through GitHub's search index, which is only eventually
+          # consistent. A workflow_dispatch re-run shortly after this
+          # workflow just filed the tracking issue (e.g. someone re-running
+          # to confirm a fix, or two runs landing close together around the
+          # cron boundary) could hit the index before it catches up, see no
+          # match, and file a duplicate anyway -- defeating the point of
+          # this check. `--state open` with no `--search` hits the regular
+          # issues list endpoint instead, which reflects a just-created
+          # issue immediately; --limit is generous since we're filtering by
+          # exact title client-side rather than relying on the API to
+          # narrow it, and gh's own default limit (30) could otherwise miss
+          # a match if there are more open issues than that.
+          # `$t` below is a jq variable (bound by --arg), not a shell
+          # variable; it must stay unexpanded.
+          # shellcheck disable=SC2016
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open --limit 200 \
+            --json number,title | \
+            jq -r --arg t "${TITLE}" '[.[] | select(.title == $t)] | .[0].number // empty')
+
+          if [[ -n "${EXISTING}" ]]; then
+            echo "Existing open issue #${EXISTING} -- commenting instead of filing a duplicate."
+            gh issue comment "${EXISTING}" --repo "${{ github.repository }}" --body-file issue-body.txt
+          else
+            gh issue create \
+              --repo "${{ github.repository }}" \
+              --title "${TITLE}" \
+              --body-file issue-body.txt \
+              --label "bug,foundation"
+          fi
