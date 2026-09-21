@@ -132,6 +132,14 @@ cp "${PKG_RESOURCES}/app.nodespace.daemon.plist" \
 chmod 755 "${PAYLOAD_ROOT}/usr/local/bin/nodespace"
 chmod 755 "${PAYLOAD_ROOT}/usr/local/bin/nodespaced"
 
+# The upload-artifact/download-artifact round-trip that hands TAURI_APP_PATH
+# between CI jobs (a bare directory, zipped and unzipped) does not reliably
+# preserve the Unix executable bit, so the binaries inside the copied .app
+# bundle can silently lose +x before they ever reach this script. Restore it
+# explicitly on just the executables — never recursively on the whole bundle,
+# which would also touch Info.plist/resources/etc.
+chmod 755 "${PAYLOAD_ROOT}/Applications/NodeSpace.app/Contents/MacOS/"*
+
 # ---------------------------------------------------------------------------
 # Build component package
 # ---------------------------------------------------------------------------
