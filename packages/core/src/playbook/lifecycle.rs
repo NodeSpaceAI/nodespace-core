@@ -1194,7 +1194,7 @@ mod tests {
                     "type": "graph_event",
                     "on": "property_changed",
                     "node_type": "task",
-                    "property_key": "status"
+                    "property_key": "task.status"
                 },
                 "conditions": [],
                 "actions": []
@@ -1207,11 +1207,17 @@ mod tests {
             vec!["issue".to_string(), "task".to_string()],
         )]));
 
-        // The property key must be carried across the re-key, not dropped.
+        // The property key must be carried across the re-key, not dropped —
+        // and, per `renamespace_property_key`, re-namespaced from the event's
+        // own type to the ancestor's. A real PropertyChanged event on an
+        // `issue` node carries "issue.status" (never bare "status" — that
+        // spelling is production-impossible and is now rejected at save time
+        // by `validate_play`), so that is what a real fan-out lookup key
+        // looks like.
         let rules = lm.lookup_rules(&[TriggerKey::NodeEvent {
             event: NodeEventType::PropertyChanged,
             node_type: "issue".to_string(),
-            property_key: Some("status".to_string()),
+            property_key: Some("issue.status".to_string()),
         }]);
         assert_eq!(
             rules.len(),

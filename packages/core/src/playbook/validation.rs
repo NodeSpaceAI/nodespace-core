@@ -13,6 +13,9 @@
 //! 2. All referenced `version` values in action params must match the schema's `schema_version`
 //! 3. All property paths in conditions resolve against the schema graph
 //! 4. All relationship types in actions must exist on the referenced schemas
+//! 5. A `property_changed` trigger's `property_key` must be namespaced to its
+//!    own `node_type` (`<node_type>.<field>`) — the only spelling a real,
+//!    type-namespaced `PropertyChanged` event can ever match
 //!
 //! If any check fails, the play is not saved. All errors are collected
 //! (not short-circuited) so the caller can present every issue at once.
@@ -155,6 +158,31 @@ pub enum PlayValidationError {
         duplicate_of_location: String,
         location: String,
     },
+    /// A `property_changed` trigger's `property_key` has no namespace prefix
+    /// matching the trigger's own declared `node_type`.
+    ///
+    /// Every real `PropertyChanged` event carries a type-namespaced key
+    /// (`PropertyChange::key`, "namespaced, e.g. `task.status`" —
+    /// `packages/core/src/db/events.rs`), and the engine indexes a Play's
+    /// trigger under exactly the `property_key` its author wrote, verbatim
+    /// (`trigger_keys_for_graph_event`, `packages/core/src/playbook/lifecycle.rs`)
+    /// — nothing normalises either side. A bare spelling (`"status"`) or a
+    /// spelling namespaced under some other type (`"bug.status"` on a `task`
+    /// trigger) is therefore indexed under a key no real event for this
+    /// trigger's `node_type` will ever carry: the trigger is silently dead —
+    /// no error at save time, no log at runtime, just a rule that never
+    /// fires. Rejected here instead, loudly, at authoring time.
+    ///
+    /// `expected` names the correctly-namespaced spelling the author should
+    /// have written, given the trigger's own `node_type` and the field
+    /// portion of what was actually written (the part after the first `.`,
+    /// or the whole string when there was no `.` at all).
+    UnnamespacedPropertyChangedKey {
+        node_type: String,
+        property_key: String,
+        expected: String,
+        location: String,
+    },
 }
 
 impl std::fmt::Display for PlayValidationError {
@@ -288,6 +316,20 @@ impl std::fmt::Display for PlayValidationError {
                  one rule's actions, or remove the duplicate)",
                 rule_name, location, duplicate_of_rule_name, duplicate_of_location
             ),
+            Self::UnnamespacedPropertyChangedKey {
+                node_type,
+                property_key,
+                expected,
+                location,
+            } => write!(
+                f,
+                "property_changed trigger at {} on node_type '{}' has property_key '{}', \
+                 which is not namespaced to '{}.' (real PropertyChanged events always carry a \
+                 type-namespaced key, and the trigger is indexed under exactly what you wrote — \
+                 an un-namespaced property_key never matches a real event and the rule silently \
+                 never fires; declare it as '{}')",
+                location, node_type, property_key, node_type, expected
+            ),
         }
     }
 }
@@ -318,7 +360,8 @@ impl PlayValidationError {
             | Self::InvariantRelationshipNeedsExplicitOrder { location, .. }
             | Self::RejectActionOnReactiveRule { location }
             | Self::RejectActionHasForEach { location }
-            | Self::DuplicateActionList { location, .. } => location,
+            | Self::DuplicateActionList { location, .. }
+            | Self::UnnamespacedPropertyChangedKey { location, .. } => location,
         }
     }
 
@@ -345,6 +388,7 @@ impl PlayValidationError {
             Self::RejectActionOnReactiveRule { .. } => "reject_action_on_reactive_rule",
             Self::RejectActionHasForEach { .. } => "reject_action_has_for_each",
             Self::DuplicateActionList { .. } => "duplicate_action_list",
+            Self::UnnamespacedPropertyChangedKey { .. } => "unnamespaced_property_changed_key",
         }
     }
 }
@@ -396,6 +440,37 @@ pub async fn validate_play(
                 errors.push(PlayValidationError::InvalidCronExpression {
                     cron: cron.clone(),
                     message: e.to_string(),
+                    location: format!("rule[{}].trigger", rule_idx),
+                });
+            }
+        }
+
+        // -- Validate a property_changed trigger's property_key is namespaced --
+        //
+        // `None` (wildcard — "matches all property changes") is untouched: there
+        // is no key to namespace. A `Some(key)` is only ever indexed verbatim
+        // under this rule's own `node_type` (`trigger_keys_for_graph_event`), so
+        // the one spelling that can ever match a real, type-namespaced
+        // `PropertyChanged` event is `<node_type>.<field>` — checked against the
+        // exact `node_type` this trigger declared, not merely "has a dot
+        // somewhere": a key namespaced under some OTHER type (`"bug.status"` on
+        // a `task` trigger) looks namespaced but still matches nothing here and
+        // is rejected the same as a fully bare `"status"`.
+        if let ParsedTrigger::GraphEvent {
+            on: GraphEventType::PropertyChanged,
+            node_type,
+            property_key: Some(key),
+        } = &rule.trigger
+        {
+            let namespace_matches = key
+                .split_once('.')
+                .is_some_and(|(namespace, _)| namespace == node_type);
+            if !namespace_matches {
+                let field = key.split_once('.').map_or(key.as_str(), |(_, f)| f);
+                errors.push(PlayValidationError::UnnamespacedPropertyChangedKey {
+                    node_type: node_type.clone(),
+                    property_key: key.clone(),
+                    expected: format!("{}.{}", node_type, field),
                     location: format!("rule[{}].trigger", rule_idx),
                 });
             }
@@ -1485,6 +1560,21 @@ mod tests {
         })
     }
 
+    /// A `property_changed` rule with the given `property_key` (`None` = wildcard).
+    fn make_property_changed_rule(node_type: &str, property_key: Option<&str>) -> Arc<ParsedRule> {
+        Arc::new(ParsedRule {
+            name: "test-property-changed-rule".to_string(),
+            class: RuleClass::Reactive,
+            trigger: ParsedTrigger::GraphEvent {
+                on: GraphEventType::PropertyChanged,
+                node_type: node_type.to_string(),
+                property_key: property_key.map(str::to_string),
+            },
+            conditions: vec![],
+            actions: vec![],
+        })
+    }
+
     fn make_scheduled_rule(cron: &str, node_type: &str, conditions: Vec<&str>) -> Arc<ParsedRule> {
         Arc::new(ParsedRule {
             name: "test-scheduled-rule".to_string(),
@@ -1745,6 +1835,125 @@ mod tests {
             )];
             let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
+        }
+
+        #[tokio::test]
+        async fn test_bare_property_changed_key_is_rejected() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vt_widget", 1, json!([])).await;
+
+            // The obvious-looking spelling — no namespace at all. Indexed
+            // verbatim under (vt_widget, "status"), which no real
+            // PropertyChanged event (always "vt_widget.status") can match.
+            let rules = vec![make_property_changed_rule("vt_widget", Some("status"))];
+            let result = validate_play(&rules, &svc).await;
+            let errors = result.expect_err("bare property_key must be rejected");
+            assert_eq!(errors.len(), 1);
+            match &errors[0] {
+                PlayValidationError::UnnamespacedPropertyChangedKey {
+                    node_type,
+                    property_key,
+                    expected,
+                    location,
+                } => {
+                    assert_eq!(node_type, "vt_widget");
+                    assert_eq!(property_key, "status");
+                    assert_eq!(expected, "vt_widget.status");
+                    assert_eq!(location, "rule[0].trigger");
+                }
+                other => panic!("expected UnnamespacedPropertyChangedKey, got {:?}", other),
+            }
+            assert!(errors[0].to_string().contains("vt_widget.status"));
+        }
+
+        #[tokio::test]
+        async fn test_property_key_namespaced_to_a_different_type_is_rejected() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vt_widget", 1, json!([])).await;
+
+            // Has a dot, so it LOOKS namespaced — but the namespace belongs to
+            // some other type, not this trigger's own `node_type`. Still
+            // matches no real event for this trigger and must be rejected the
+            // same as a fully bare key.
+            let rules = vec![make_property_changed_rule(
+                "vt_widget",
+                Some("vt_other.status"),
+            )];
+            let result = validate_play(&rules, &svc).await;
+            let errors = result.expect_err("wrongly-namespaced property_key must be rejected");
+            assert_eq!(errors.len(), 1);
+            match &errors[0] {
+                PlayValidationError::UnnamespacedPropertyChangedKey {
+                    node_type,
+                    property_key,
+                    expected,
+                    ..
+                } => {
+                    assert_eq!(node_type, "vt_widget");
+                    assert_eq!(property_key, "vt_other.status");
+                    // The field portion (after the first dot) is preserved;
+                    // only the namespace is corrected.
+                    assert_eq!(expected, "vt_widget.status");
+                }
+                other => panic!("expected UnnamespacedPropertyChangedKey, got {:?}", other),
+            }
+        }
+
+        #[tokio::test]
+        async fn test_namespaced_property_changed_key_passes_validation() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vt_widget", 1, json!([])).await;
+
+            // The only spelling a real event can ever carry.
+            let rules = vec![make_property_changed_rule(
+                "vt_widget",
+                Some("vt_widget.status"),
+            )];
+            let result = validate_play(&rules, &svc).await;
+            assert!(
+                result.is_ok(),
+                "a properly-namespaced property_key must not be rejected: {:?}",
+                result.err()
+            );
+        }
+
+        #[tokio::test]
+        async fn test_wildcard_property_changed_key_passes_validation() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vt_widget", 1, json!([])).await;
+
+            // `None` = wildcard, matches all property changes — nothing to
+            // namespace, must not be flagged.
+            let rules = vec![make_property_changed_rule("vt_widget", None)];
+            let result = validate_play(&rules, &svc).await;
+            assert!(
+                result.is_ok(),
+                "a wildcard (None) property_key must not be rejected: {:?}",
+                result.err()
+            );
+        }
+
+        #[tokio::test]
+        async fn test_bare_property_key_on_non_property_changed_trigger_is_not_flagged() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vt_widget", 1, json!([])).await;
+
+            // The namespace check is scoped to `property_changed` triggers
+            // only — a `node_created` trigger's `property_key` (unused by the
+            // engine for that event type) must not trip this check.
+            let rules = vec![Arc::new(ParsedRule {
+                name: "test-rule".to_string(),
+                class: RuleClass::Reactive,
+                trigger: ParsedTrigger::GraphEvent {
+                    on: GraphEventType::NodeCreated,
+                    node_type: "vt_widget".to_string(),
+                    property_key: Some("status".to_string()),
+                },
+                conditions: vec![],
+                actions: vec![],
+            })];
+            let result = validate_play(&rules, &svc).await;
+            assert!(result.is_ok(), "unexpected errors: {:?}", result.err());
         }
 
         #[tokio::test]
@@ -3590,11 +3799,17 @@ mod tests {
                 ParsedTrigger::GraphEvent { node_type, .. } => node_type.clone(),
                 ParsedTrigger::Scheduled { node_type, .. } => node_type.clone(),
             };
+            // Namespaced to `node_type`, matching what `validate_play` now
+            // requires of a `property_changed` trigger's `property_key` —
+            // this helper exists to give a rule a *different trigger type*
+            // for the duplicate-action-list tests below, not to exercise
+            // property_key namespacing itself.
+            let property_key = Some(format!("{}.status", node_type));
             Arc::new(ParsedRule {
                 trigger: ParsedTrigger::GraphEvent {
                     on: GraphEventType::PropertyChanged,
                     node_type,
-                    property_key: Some("status".to_string()),
+                    property_key,
                 },
                 ..(**rule).clone()
             })
