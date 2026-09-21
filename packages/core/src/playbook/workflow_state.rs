@@ -139,13 +139,18 @@ pub async fn get_workflow_state(
         // known-in-advance set of property keys a rule on this node_type
         // could plausibly be registered under, so one exact-key lookup per
         // declared field covers every such rule without linearly scanning
-        // every active play.
+        // every active play. The trigger key itself is always type-namespaced
+        // (`<node_type>.<field>`, e.g. "task.status" — see
+        // `validate_play`'s `UnnamespacedPropertyChangedKey` check and
+        // `trigger_keys_for_graph_event`, which indexes verbatim under
+        // whatever `property_key` a rule declared), so the lookup key built
+        // here must match that same namespaced shape or it can never hit.
         if let Some(s) = &schema {
             for field in &s.fields {
                 keys.push(TriggerKey::NodeEvent {
                     event: NodeEventType::PropertyChanged,
                     node_type: node.node_type.clone(),
-                    property_key: Some(field.name.clone()),
+                    property_key: Some(format!("{}.{}", node.node_type, field.name)),
                 });
             }
         }
@@ -683,7 +688,7 @@ mod tests {
                 "pb-4",
                 json!([{
                     "name": "r1",
-                    "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "wf_task3", "property_key": "status" },
+                    "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "wf_task3", "property_key": "wf_task3.status" },
                     "conditions": ["trigger.property.old_value == 'open'"],
                     "actions": []
                 }]),
@@ -733,5 +738,55 @@ mod tests {
         let state = get_workflow_state(&lifecycle, &svc, &node).await;
         assert_eq!(state.rules.len(), 1);
         assert!(state.rules[0].all_conditions_satisfied);
+    }
+
+    /// Regression: a `property_changed` trigger's `property_key` is always
+    /// stored type-namespaced (`<node_type>.<field>`, e.g. "task.status" —
+    /// the only spelling `validate_play` accepts, per
+    /// `UnnamespacedPropertyChangedKey`), which is also the exact key
+    /// `trigger_keys_for_graph_event` indexes it under. The candidate lookup
+    /// here must build that same namespaced shape or a property-key-scoped
+    /// rule can never be found, even when its condition is currently
+    /// satisfied. Before the fix, this failed with `state.rules.len() == 0`.
+    #[tokio::test]
+    async fn namespaced_property_changed_trigger_is_returned_as_candidate() {
+        let (svc, _tmp) = test_service().await;
+
+        let task_schema = Node::new_with_id(
+            "wf_task4".to_string(),
+            "schema".to_string(),
+            "wf_task4".to_string(),
+            json!({
+                "isCore": false, "schemaVersion": 1, "description": "wf_task4",
+                "fields": [{"name": "status", "friendlyName": "Status", "type": "string"}],
+                "relationships": []
+            }),
+        );
+        svc.create_node(task_schema).await.unwrap();
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            let play = make_play_node(
+                "pb-6",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "wf_task4", "property_key": "wf_task4.status" },
+                    "conditions": ["node.status == 'done'"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let task = make_test_node("wf_task4", json!({"status": "done"}));
+        let state = get_workflow_state(&lifecycle, &svc, &task).await;
+        assert_eq!(
+            state.rules.len(),
+            1,
+            "expected the property-key-scoped rule to be returned as a candidate"
+        );
+        assert!(state.rules[0].all_conditions_satisfied);
+        assert_eq!(state.rules[0].conditions[0], ConditionState::Satisfied);
     }
 }
