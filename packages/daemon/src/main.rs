@@ -864,33 +864,50 @@ mod drain_and_release_gpu_tests {
         );
     }
 
-    /// Both tray-mode `serve_grpc` implementations (Unix and Windows) must
-    /// route their post-serve drain through `drain_and_release_gpu`, not
-    /// call `shutdown_all`/`release_shared_gpu` directly -- a platform that
-    /// regresses back to the old inline pattern silently loses watchdog
-    /// coverage for exactly the segment already confirmed to hang.
+    /// Both tray-mode `serve_grpc` implementations AND both headless
+    /// `serve_headless` implementations (Unix and Windows, four functions
+    /// total) must route their post-serve drain through
+    /// `drain_and_release_gpu`, not call `shutdown_all`/`release_shared_gpu`
+    /// directly -- a function that regresses back to the old inline pattern
+    /// silently loses watchdog coverage for exactly the segment already
+    /// confirmed to hang.
+    ///
+    /// `serve_headless` used to be exactly that regression, permanently: it
+    /// never routed through either helper at all, in either implementation
+    /// -- unlike tray mode, headless shutdown had no timeout anywhere in its
+    /// path. A hang there had no forced exit to fall back on, which is
+    /// exactly the shape core#2758 hit (a `nodespaced` that had to be
+    /// `SIGKILL`ed after `SIGTERM`/`SIGINT` never returned).
     #[test]
-    fn both_platforms_tray_mode_serve_grpc_use_the_shared_drain_helper() {
+    fn every_serve_loop_uses_the_shared_watchdog_helpers() {
         let source = include_str!("main.rs");
         for (label, marker) in [
-            ("unix", "#[cfg(unix)]\nasync fn serve_grpc"),
-            ("windows", "#[cfg(windows)]\nasync fn serve_grpc"),
+            ("unix serve_grpc", "#[cfg(unix)]\nasync fn serve_grpc"),
+            ("windows serve_grpc", "#[cfg(windows)]\nasync fn serve_grpc"),
+            (
+                "unix serve_headless",
+                "#[cfg(unix)]\nasync fn serve_headless",
+            ),
+            (
+                "windows serve_headless",
+                "#[cfg(windows)]\nasync fn serve_headless",
+            ),
         ] {
             let start = source
                 .find(marker)
-                .unwrap_or_else(|| panic!("{label} serve_grpc not found"));
+                .unwrap_or_else(|| panic!("{label} not found"));
             let body = braced_body(source, start);
             assert!(
                 body.contains("drain_and_release_gpu("),
-                "{label} serve_grpc must route its post-serve drain through drain_and_release_gpu, \
+                "{label} must route its post-serve drain through drain_and_release_gpu, \
                  not call shutdown_all/release_shared_gpu inline"
             );
             assert!(
                 body.contains("watch_for_shutdown_signal(")
                     && body.contains("defuse_serve_drain_watchdog("),
-                "{label} serve_grpc must wrap its shutdown-trigger future with \
-                 watch_for_shutdown_signal and defuse it with defuse_serve_drain_watchdog after \
-                 serve_with_incoming_shutdown returns -- a platform missing either call silently \
+                "{label} must wrap its shutdown-trigger future with watch_for_shutdown_signal \
+                 and defuse it with defuse_serve_drain_watchdog after \
+                 serve_with_incoming_shutdown returns -- a function missing either call silently \
                  loses watchdog coverage for tonic's own connection/stream drain"
             );
         }
@@ -977,6 +994,44 @@ mod watch_for_shutdown_signal_tests {
     }
 }
 
+/// Whether `main` should take the plain async [`serve_headless`] path instead
+/// of handing the main thread to `tray::run`'s `tao`/`NSApplication` event
+/// loop.
+///
+/// Defaults to `false` (tray mode) so the desktop app's bundled daemon --
+/// which never sets this variable -- keeps its tray icon. That default is
+/// exactly what made the `nodespace-cli` Homebrew formula's daemon (no GUI,
+/// no bundled app, nothing that wants a tray icon) hang forever on
+/// `SIGTERM`/`SIGINT` with **zero clients ever attached**: unless
+/// `NODESPACED_HEADLESS=1` is set, that "headless" CLI daemon was *actually*
+/// entering tray mode too, since its `brew services` launch never set the
+/// variable either.
+///
+/// Root-caused with a live thread sample (`sample`, macOS) on a hung,
+/// zero-client instance taken well after `kill -TERM`: every `tokio-rt-
+/// worker` thread and the I/O driver were fully parked (`kevent`/condvar
+/// wait, 0% CPU, no busy loop), and the daemon's own `"SIGTERM received"`
+/// log line -- which fires synchronously the instant
+/// [`install_shutdown_handler`]'s future resolves, before any other work --
+/// never printed at all, even minutes later. The identical binary, signaled
+/// the identical way, with `NODESPACED_HEADLESS=1` set (so the tao/
+/// `NSApplication` event loop never starts and the main thread runs
+/// [`serve_headless`] directly instead) logs `"SIGTERM received"` and exits
+/// cleanly in well under a second, every time, including after real gRPC
+/// traffic. So once `tao`'s event loop has taken the main thread on macOS,
+/// something about that state stops tokio's own `SIGTERM`/`SIGINT` handlers
+/// (installed via `tokio::signal::unix::signal`, independent low-level
+/// `sigaction` registration) from ever being invoked -- this function's
+/// `false` default is what routes a should-be-headless deployment into that
+/// state. The exact AppKit/tao mechanism was not pinned down further (that
+/// would need platform-level tracing of `sigaction`, out of scope here);
+/// what's fixed here is making sure a real headless deployment never
+/// exercises that path in the first place, via the Homebrew formula setting
+/// this variable explicitly (`scripts/update-homebrew-formula.ts`) rather
+/// than relying on this default. Tray mode's *own* SIGTERM handling
+/// remaining fragile when nothing pumps its run loop is a separate,
+/// still-open problem -- the same class core#2357's own doc comments
+/// already flag as unresolved (see [`bridge_grpc_completion_to_tray`]).
 fn headless() -> bool {
     matches!(std::env::var("NODESPACED_HEADLESS").as_deref(), Ok("1"))
 }
@@ -993,6 +1048,20 @@ fn edition() -> &'static str {
 /// Headless server loop. Used by Linux CI and any environment without a
 /// display server. Shutdown is signal-driven (SIGTERM / SIGINT), there is
 /// no tray.
+///
+/// Wrapped by the same two watchdogs [`serve_grpc`] uses (see
+/// [`watch_for_shutdown_signal`] and [`drain_and_release_gpu`]) — this path
+/// used to call `serve_with_incoming_shutdown`/`shutdown_all`/
+/// `release_shared_gpu` directly, with no timeout anywhere, so a stall
+/// anywhere in shutdown had no bound at all and no forced exit to fall back
+/// on. That gap was real, not theoretical: it is exactly how a `nodespaced`
+/// with no client ever attached turned out to require `SIGKILL` after
+/// `SIGTERM`/`SIGINT` — see [`headless`]'s own doc comment for how that hang
+/// was actually root-caused (a *different* bug, in `main`'s tray-mode
+/// default, not in the drain logic here). This wiring stays regardless,
+/// as real protection for this path against a future stall in either
+/// segment, matching [`drain_and_release_gpu`]'s own reasoning for keeping
+/// its watchdog even once its originally-suspected segment was cleared.
 #[cfg(unix)]
 async fn serve_headless() -> Result<()> {
     use tokio_stream::wrappers::UnixListenerStream;
@@ -1024,6 +1093,17 @@ async fn serve_headless() -> Result<()> {
     let _ = tokio::fs::remove_file(&sock).await;
     let listener = bind_uds_owner_only(&sock)?;
 
+    let (wrapped_shutdown, serve_drain_watchdog) =
+        watch_for_shutdown_signal(shutdown, SHUTDOWN_WATCHDOG_TIMEOUT, || {
+            tracing::error!(
+                timeout_secs = SHUTDOWN_WATCHDOG_TIMEOUT.as_secs(),
+                "serve_with_incoming_shutdown did not finish draining connections/streams in \
+                 time -- forcing exit. If you see this, please report it: something is \
+                 stalling tonic's own graceful shutdown."
+            );
+            std::process::exit(0);
+        });
+
     tracing::info!(sock = %sock.display(), "gRPC server listening");
 
     let sock_cleanup = sock.clone();
@@ -1040,13 +1120,13 @@ async fn serve_headless() -> Result<()> {
         Server::builder().layer(DbManagerLayer::new(manager)),
         base_services,
     )
-    .serve_with_incoming_shutdown(UnixListenerStream::new(listener), shutdown)
+    .serve_with_incoming_shutdown(UnixListenerStream::new(listener), wrapped_shutdown)
     .await
     .context("gRPC server terminated with error")?;
+    defuse_serve_drain_watchdog(&serve_drain_watchdog);
     let _ = tokio::fs::remove_file(&sock_cleanup).await;
     // Drain every open database's compute, then release the shared GPU once.
-    shutdown_manager.shutdown_all().await;
-    release_shared_gpu(&shared_model).await;
+    drain_and_release_gpu(shutdown_manager, shared_model).await;
     Ok(())
 }
 
@@ -1184,6 +1264,10 @@ impl tokio::io::AsyncWrite for NamedPipeConn {
 }
 
 /// Headless server loop for Windows — uses a Named Pipe instead of UDS.
+///
+/// Wrapped by the same two watchdogs the Unix headless loop and [`serve_grpc`]
+/// use — see [`serve_headless`]'s own (Unix) doc comment for why this path
+/// needs that coverage rather than calling the drain steps directly.
 #[cfg(windows)]
 async fn serve_headless() -> Result<()> {
     use tokio_util::sync::CancellationToken;
@@ -1214,13 +1298,30 @@ async fn serve_headless() -> Result<()> {
         )
     })?;
 
-    tracing::info!(pipe = %name, "gRPC server listening (Named Pipe, owner-only DACL)");
-
     // CancellationToken is cloned into the acceptor stream so that
     // `server.connect().await` races against shutdown rather than blocking
     // indefinitely after tonic stops polling the stream.
     let cancel = CancellationToken::new();
     let cancel_stream = cancel.clone();
+    let (wrapped_shutdown, serve_drain_watchdog) = watch_for_shutdown_signal(
+        async move {
+            shutdown.await;
+            cancel.cancel();
+        },
+        SHUTDOWN_WATCHDOG_TIMEOUT,
+        || {
+            tracing::error!(
+                timeout_secs = SHUTDOWN_WATCHDOG_TIMEOUT.as_secs(),
+                "serve_with_incoming_shutdown did not finish draining connections/streams in \
+                 time -- forcing exit. If you see this, please report it: something is \
+                 stalling tonic's own graceful shutdown."
+            );
+            std::process::exit(0);
+        },
+    );
+
+    tracing::info!(pipe = %name, "gRPC server listening (Named Pipe, owner-only DACL)");
+
     let incoming = {
         let name = name.clone();
         async_stream::stream! {
@@ -1268,15 +1369,12 @@ async fn serve_headless() -> Result<()> {
         Server::builder().layer(DbManagerLayer::new(manager)),
         base_services,
     )
-    .serve_with_incoming_shutdown(incoming, async move {
-        shutdown.await;
-        cancel.cancel();
-    })
+    .serve_with_incoming_shutdown(incoming, wrapped_shutdown)
     .await
     .context("gRPC server terminated with error")?;
+    defuse_serve_drain_watchdog(&serve_drain_watchdog);
     // Drain every open database's compute, then release the shared GPU once.
-    shutdown_manager.shutdown_all().await;
-    release_shared_gpu(&shared_model).await;
+    drain_and_release_gpu(shutdown_manager, shared_model).await;
     Ok(())
 }
 
