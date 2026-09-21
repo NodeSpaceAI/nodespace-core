@@ -27,6 +27,8 @@
  *                                 # `nsis`
  *   cargo install --locked cargo-xwin
  *   rustup target add x86_64-pc-windows-msvc
+ *   gh auth login                 # authenticates the embedding-model download
+ *                                 # below against this (private) repo
  *
  * Every one of the above is checked below with an actionable error instead
  * of a confusing failure three steps later -- this list was arrived at by
@@ -70,6 +72,7 @@ const WORKSPACE_ROOT = join(import.meta.dir, '..');
 const DESKTOP_APP_DIR = join(WORKSPACE_ROOT, 'packages', 'desktop-app');
 const BIN_DIR = join(DESKTOP_APP_DIR, 'src-tauri', 'binaries');
 const TARGET_RELEASE_DIR = join(WORKSPACE_ROOT, 'target', TARGET, 'release');
+const MODELS_DIR = join(DESKTOP_APP_DIR, 'src-tauri', 'resources', 'models');
 
 // Binary names, not cargo package names -- nodespaced/nodespace are bin
 // targets built via `--bin <name>`, not `-p <name>` (those are
@@ -116,6 +119,7 @@ export interface PrereqFacts {
   hasLldLink: boolean;
   hasNinja: boolean;
   hasMakensis: boolean;
+  hasGh: boolean;
   /** `null` means rustup itself isn't installed/runnable, which is a
    * different problem than "installed but missing the target". */
   installedRustTargets: string[] | null;
@@ -169,6 +173,18 @@ export function missingPrerequisites(facts: PrereqFacts): string[] {
     problems.push('makensis (NSIS) is not installed.\n' + '    Install with: brew install makensis');
   }
 
+  // gh: this script downloads the embedding model bundled into the NSIS
+  // installer (mirroring release.yml's Windows leg) via `gh release
+  // download`, which needs the CLI on PATH and authenticated against this
+  // (private) repo.
+  if (!facts.hasGh) {
+    problems.push(
+      'gh (GitHub CLI) is not installed.\n' +
+        '    Install with: brew install gh\n' +
+        '    Then authenticate against this (private) repo with: gh auth login',
+    );
+  }
+
   if (facts.installedRustTargets === null) {
     problems.push('rustup is not installed or not on PATH.\n' + '    Install from: https://rustup.rs');
   } else if (!facts.installedRustTargets.includes(TARGET)) {
@@ -202,6 +218,7 @@ async function checkPrerequisites(): Promise<PrereqResult> {
     hasLldLink: await commandExists('lld-link'),
     hasNinja: await commandExists('ninja'),
     hasMakensis: await commandExists('makensis'),
+    hasGh: await commandExists('gh'),
     installedRustTargets,
   });
 
@@ -213,6 +230,27 @@ async function checkPrerequisites(): Promise<PrereqResult> {
   }
 
   return { ok: true, llvmBin };
+}
+
+/**
+ * Same step release.yml's build-tauri-macos-arm job runs before `tauri
+ * build`: tauri.conf.json's `bundle.resources` includes
+ * `resources/models/**\/*`, which is gitignored and empty on a fresh
+ * checkout, so without this the produced NSIS installer silently ships
+ * without the embedding model -- the exact bug this cross-compile path
+ * exists to reproduce "as closely as a non-Windows host allows" (see module
+ * doc above). `--skip-existing`, not `--clobber`: this script is re-run
+ * repeatedly on the same dev machine, so a model already downloaded by a
+ * previous run should be reused rather than re-fetched (146MB) every time.
+ * Requires `gh` to be installed and authenticated locally, same as any other
+ * `gh` usage in this repo's tooling.
+ */
+async function downloadEmbeddingModel(): Promise<void> {
+  mkdirSync(MODELS_DIR, { recursive: true });
+  console.log('\n==> Downloading embedding model for bundling');
+  await $`gh release download models-v2 --pattern "nomic-embed-text-v1.5.Q8_0.gguf" --dir ${MODELS_DIR}/ --skip-existing`.cwd(
+    WORKSPACE_ROOT,
+  );
 }
 
 async function buildSidecar(bin: string, env: Record<string, string | undefined>): Promise<void> {
@@ -249,6 +287,8 @@ async function main(): Promise<void> {
 
   const { ok, llvmBin } = await checkPrerequisites();
   if (!ok || !llvmBin) process.exit(1);
+
+  await downloadEmbeddingModel();
 
   // cargo-xwin's default backend (clang-cl) resolves the compiler from
   // PATH. Homebrew's llvm is keg-only (never symlinked into

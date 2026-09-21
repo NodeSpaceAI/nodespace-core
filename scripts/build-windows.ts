@@ -172,6 +172,19 @@ export function buildRemoteScript(repoPath: string): string {
     'git pull',
     'bun install --frozen-lockfile',
     'bun run --cwd packages/desktop-app sync',
+    // Same step release.yml's build-tauri-macos-arm job runs before `tauri
+    // build`: tauri.conf.json's `bundle.resources` includes
+    // `resources/models/**/*`, which is gitignored and empty on a fresh
+    // checkout, so without this the produced .msi/.exe silently ships
+    // without the embedding model -- the exact bug this VM build path
+    // exists to reproduce with "full CI parity" (see module doc above).
+    // `--skip-existing`, not `--clobber`: unlike a CI runner, this VM's
+    // checkout persists across runs, so a model already downloaded by a
+    // previous build should be reused rather than re-fetched (146MB) every
+    // time. Requires `gh` to be installed and authenticated on the VM --
+    // add to the one-time VM setup alongside the Rust/WiX prerequisites.
+    'mkdir -p packages/desktop-app/src-tauri/resources/models',
+    'gh release download models-v2 --pattern "nomic-embed-text-v1.5.Q8_0.gguf" --dir packages/desktop-app/src-tauri/resources/models/ --skip-existing',
     `cargo build --release --bin nodespaced --target ${TARGET}`,
     `cargo build --release --bin nodespace --target ${TARGET}`,
     'mkdir -p packages/desktop-app/src-tauri/binaries',

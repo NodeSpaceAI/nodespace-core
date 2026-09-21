@@ -12,6 +12,7 @@ const ALL_PRESENT: PrereqFacts = {
   hasLldLink: true,
   hasNinja: true,
   hasMakensis: true,
+  hasGh: true,
   installedRustTargets: [TARGET],
 };
 
@@ -66,6 +67,17 @@ describe("missingPrerequisites", () => {
     expect(problems[0]).toContain("brew install makensis");
   });
 
+  // The regression this guards: the embedding-model download this script
+  // added (mirroring release.yml's Windows leg) needs `gh` on PATH and
+  // authenticated, which nothing else in this prerequisite list checked for.
+  test("reports gh missing with its install and auth commands", () => {
+    const problems = missingPrerequisites({ ...ALL_PRESENT, hasGh: false });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/gh \(GitHub CLI\) is not installed/);
+    expect(problems[0]).toContain("brew install gh");
+    expect(problems[0]).toContain("gh auth login");
+  });
+
   test("reports rustup itself missing (installedRustTargets: null) distinctly from a missing target", () => {
     const problems = missingPrerequisites({ ...ALL_PRESENT, installedRustTargets: null });
     expect(problems).toHaveLength(1);
@@ -94,8 +106,9 @@ describe("missingPrerequisites", () => {
       hasLldLink: false,
       hasNinja: false,
       hasMakensis: false,
+      hasGh: false,
       installedRustTargets: null,
     });
-    expect(problems).toHaveLength(6);
+    expect(problems).toHaveLength(7);
   });
 });
