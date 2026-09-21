@@ -37,7 +37,7 @@
 //! `0o1777`) -- the only reliable way to exercise this failure mode at all.
 
 use nodespace_app_lib::daemon_setup::{wait_for_daemon, DaemonStatus};
-use nodespace_app_test_support::{EnvGuard, SpawnedDaemon, DAEMON_CONNECT_TIMEOUT};
+use nodespace_app_test_support::{EnvGuard, SpawnedDaemon, CONNECT_MUTEX, DAEMON_CONNECT_TIMEOUT};
 use std::time::Duration;
 
 /// Neither test in this file cares about the embedding model -- they're
@@ -49,17 +49,29 @@ use std::time::Duration;
 /// running on the machine, and none of llama.cpp's very verbose native
 /// stderr logging (not gated by `RUST_LOG`) cluttering the captured log this
 /// file's assertions inspect.
-fn no_model_load_guard() -> EnvGuard {
-    EnvGuard::set(
+///
+/// `NODESPACED_MODEL_PATH` is process-global `std::env` state, same as
+/// `NODESPACED_SOCKET` elsewhere in this suite (see `EnvGuard`'s own doc
+/// comment): `SpawnedDaemon::spawn_with_socket`'s child inherits it at spawn
+/// time, so setting and restoring it must be serialized against every other
+/// test in this binary via the same `CONNECT_MUTEX` those tests share, or
+/// two tests running concurrently (the default without the pre-push gate's
+/// `--test-threads=1`) could interleave: one test's guard restoring the
+/// variable while another test's child is mid-spawn, sending it the wrong
+/// value.
+async fn hold_mutex_and_skip_model_load() -> (tokio::sync::MutexGuard<'static, ()>, EnvGuard) {
+    let mutex_guard = CONNECT_MUTEX.lock().await;
+    let env_guard = EnvGuard::set(
         "NODESPACED_MODEL_PATH",
         std::env::temp_dir().join("nonexistent-nodespace-test-model.gguf"),
-    )
+    );
+    (mutex_guard, env_guard)
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn custom_socket_in_a_freshly_created_owned_directory_binds_and_serves() {
-    let _model_guard = no_model_load_guard();
+    let (_mutex_guard, _model_guard) = hold_mutex_and_skip_model_load().await;
     let tmp_dir = tempfile::tempdir().expect("create temp dir for daemon fixture");
     // `nested/` does not exist yet -- the daemon itself must create it
     // (owner-only) before it can bind a socket inside it. No existing test
@@ -85,13 +97,13 @@ async fn custom_socket_in_a_freshly_created_owned_directory_binds_and_serves() {
 #[cfg(unix)]
 #[tokio::test]
 async fn custom_socket_directly_in_a_foreign_shared_directory_fails_fast_and_loud() {
-    let _model_guard = no_model_load_guard();
+    let (_mutex_guard, _model_guard) = hold_mutex_and_skip_model_load().await;
     // Isolate NODESPACE_HOME/the database as usual; only the socket path
     // itself is redirected to land directly in `/tmp` -- see the module doc
     // comment for why the literal path, not `std::env::temp_dir()`.
     let tmp_dir = tempfile::tempdir().expect("create temp dir for daemon fixture");
     let socket_path = std::path::PathBuf::from(format!(
-        "/tmp/ns-regression-2759-{}.sock",
+        "/tmp/ns-foreign-dir-socket-bind-test-{}.sock",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&socket_path);
@@ -123,8 +135,8 @@ async fn custom_socket_directly_in_a_foreign_shared_directory_fails_fast_and_lou
 
     let log = daemon.captured_log().join("\n");
     assert!(
-        log.contains("group/other-accessible") || log.contains("cannot be narrowed to owner-only"),
-        "the failure must be logged immediately with a specific, actionable reason -- not a bare \
-         permission error and not silence -- got:\n{log}"
+        log.contains("cannot narrow it to owner-only") && log.contains("this process is uid"),
+        "the failure must be logged immediately with a specific, actionable reason naming the \
+         ownership/mode mismatch -- not a bare permission error and not silence -- got:\n{log}"
     );
 }
