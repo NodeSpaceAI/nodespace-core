@@ -34,6 +34,7 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use nodespace_app_lib::services::GrpcClient;
@@ -75,6 +76,7 @@ pub struct SpawnedDaemon {
     child: Child,
     pub socket_path: PathBuf,
     _tmp_dir: tempfile::TempDir,
+    captured_log: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl SpawnedDaemon {
@@ -86,10 +88,22 @@ impl SpawnedDaemon {
     pub fn spawn() -> Self {
         let tmp_dir = tempfile::tempdir().expect("create temp dir for daemon fixture");
         let socket_path = tmp_dir.path().join("daemon.sock");
+        Self::spawn_with_socket(tmp_dir, socket_path)
+    }
+
+    /// Like [`Self::spawn`], but with the socket at a caller-chosen path
+    /// instead of the standard `<tmp_dir>/daemon.sock` — for tests that need
+    /// to control exactly what `NODESPACED_SOCKET` resolves to and where its
+    /// directory does or doesn't already exist (e.g. a path the daemon must
+    /// create a new owner-only directory for, or one that lands directly in
+    /// an already-existing, non-owned directory such as the system temp root).
+    /// `NODESPACE_HOME`/the database path are still isolated under `tmp_dir`
+    /// regardless of where `socket_path` itself points.
+    pub fn spawn_with_socket(tmp_dir: tempfile::TempDir, socket_path: PathBuf) -> Self {
         let db_path = tmp_dir.path().join("db");
 
         let binary = resolve_daemon_binary();
-        tracing::info!(binary = %binary.display(), "spawning nodespaced for readiness test");
+        tracing::info!(binary = %binary.display(), socket = %socket_path.display(), "spawning nodespaced for readiness test");
 
         let mut child = Command::new(&binary)
             .env("NODESPACED_SOCKET", &socket_path)
@@ -125,27 +139,66 @@ impl SpawnedDaemon {
         // ai-chat integration test. E2E_VERBOSE prints instead of discarding,
         // matching the TypeScript harness's same-named escape hatch.
         let verbose = std::env::var_os("E2E_VERBOSE").is_some();
+        let captured_log = Arc::new(std::sync::Mutex::new(Vec::new()));
         if let Some(stdout) = child.stdout.take() {
-            spawn_drain_thread(stdout, "stdout", verbose);
+            spawn_drain_thread(stdout, "stdout", verbose, captured_log.clone());
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_drain_thread(stderr, "stderr", verbose);
+            spawn_drain_thread(stderr, "stderr", verbose, captured_log.clone());
         }
 
         Self {
             child,
             socket_path,
             _tmp_dir: tmp_dir,
+            captured_log,
         }
+    }
+
+    /// Poll the child process's exit status for up to `timeout`, returning
+    /// as soon as it has exited rather than sleeping out the whole timeout.
+    /// For tests asserting a daemon fails fast on a bad startup config,
+    /// instead of hanging or being silently killed once the test's own
+    /// timeout elsewhere trips.
+    pub fn wait_for_exit(&mut self, timeout: Duration) -> Option<std::process::ExitStatus> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                return Some(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Every stdout/stderr line the daemon has printed so far, in the order
+    /// each pipe delivered it (stdout/stderr interleaving is not preserved
+    /// across the two independent drain threads, but every line from either
+    /// stream is included). Lets a test assert on the daemon's own log output
+    /// — e.g. that a startup failure named a specific, actionable reason —
+    /// without needing `E2E_VERBOSE` to merely echo it.
+    pub fn captured_log(&self) -> Vec<String> {
+        self.captured_log
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 }
 
-/// Continuously read `pipe` to EOF on a background thread, either discarding
-/// it or echoing it line-by-line to this process's own stderr under
+/// Continuously read `pipe` to EOF on a background thread: always appends
+/// each line to the shared `captured` buffer (so a test can assert on it
+/// afterward), and additionally echoes it to this process's own stderr under
 /// `E2E_VERBOSE`. Must run for the daemon's entire lifetime — dropping the
 /// thread (not reading to EOF) reintroduces the exact deadlock this exists
-/// to prevent.
-fn spawn_drain_thread(pipe: impl Read + Send + 'static, label: &'static str, verbose: bool) {
+/// to prevent (see the comment at the call site).
+fn spawn_drain_thread(
+    pipe: impl Read + Send + 'static,
+    label: &'static str,
+    verbose: bool,
+    captured: Arc<std::sync::Mutex<Vec<String>>>,
+) {
     std::thread::spawn(move || {
         let reader = BufReader::new(pipe);
         for line in reader.lines() {
@@ -153,6 +206,10 @@ fn spawn_drain_thread(pipe: impl Read + Send + 'static, label: &'static str, ver
             if verbose {
                 eprintln!("[nodespaced {label}] {line}");
             }
+            captured
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(line);
         }
     });
 }

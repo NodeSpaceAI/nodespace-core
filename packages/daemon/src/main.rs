@@ -460,7 +460,19 @@ fn main() -> Result<()> {
         .context("build tokio runtime")?;
 
     if headless() {
-        return runtime.block_on(async { serve_headless().await });
+        let result = runtime.block_on(async { serve_headless().await });
+        if let Err(ref e) = result {
+            // Log this immediately, loudly, and with the full context chain --
+            // don't rely solely on the process's final `Result` print, which
+            // only happens once every task on `runtime` (including any
+            // detached background work still draining) has finished, and can
+            // therefore be surprisingly delayed after the real failure.
+            tracing::error!(
+                error = format!("{e:#}"),
+                "nodespaced (headless) failed to start"
+            );
+        }
+        return result;
     }
 
     // The tray's seed closure runs synchronously when `tray::run` is called,
@@ -536,7 +548,19 @@ async fn bridge_grpc_completion_to_tray(
 ) -> Result<()> {
     let outcome = task.await;
     controller.grpc_task_finished();
-    resurface_grpc_task_outcome(outcome)
+    let result = resurface_grpc_task_outcome(outcome);
+    if let Err(ref e) = result {
+        // Log this immediately and loudly, with the full context chain: the
+        // tray loop's own "gRPC task finished outside of tray Quit" line
+        // (logged where `GrpcTaskFinished` is handled) says only THAT the
+        // task stopped, never why. Without this, the actual reason (e.g. a
+        // failed bind) only surfaces via `main`'s final `Result` print, which
+        // waits for `tray::run` to return AND every task on the runtime
+        // (including any detached background work still draining) to finish
+        // -- easily minutes after the real failure, with nothing in between.
+        tracing::error!(error = format!("{e:#}"), "gRPC server task failed");
+    }
+    result
 }
 
 /// Pure mapping from the gRPC task's raw `JoinHandle` outcome back to the

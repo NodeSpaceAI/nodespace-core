@@ -73,18 +73,62 @@ pub fn resolve_db_path() -> Result<PathBuf> {
 /// this helper: it holds the UDS whose mode is the whole local-authorization
 /// boundary (ADR-052), the database file, the database registry, and the
 /// settings file (which carries third-party API keys).
+///
+/// `dir` is not always daemon-owned, though: `NODESPACED_SOCKET`,
+/// `NODESPACE_HOME` and `NODESPACED_DB_PATH` let a caller point straight at a
+/// directory this process never created and does not own — most commonly a
+/// shared system directory such as `/tmp` used directly (rather than a fresh,
+/// owned subdirectory under it) for a one-off isolated/CI/sandboxed daemon.
+/// `chmod` on a directory you don't own always fails with `EPERM`, so
+/// treating every `chmod` failure as fatal made even a directory this
+/// process legitimately owns, but can't `chmod` for some other reason (a
+/// filesystem like virtiofs/9p/FUSE that rejects `chmod` independent of
+/// actual access, say), refuse to start — with a bare, unexplained `EPERM`
+/// and no indication of why.
+///
+/// A failed `chmod` is therefore only tolerated when re-stating `dir`
+/// afterward proves BOTH that this process owns it (matching effective uid)
+/// AND that its mode is already owner-only: mode bits alone are not enough,
+/// because a directory some other uid owns can show a mode of `0o700` and
+/// still grant this process zero access whatsoever — those bits govern the
+/// *owner's* access, and a non-owner is locked out by them just the same as
+/// by any wider mode's group/other bits being unset for a different reason.
+/// Failing that combined check is a hard, named error explaining exactly
+/// what's wrong (this is a stronger check than `bind_uds_owner_only`'s own
+/// fail-closed re-check right before binding, which only looks at mode bits
+/// — so a caller that skips this helper is still caught there for the
+/// foreign-mode-bits case, if not the foreign-owner-with-narrow-bits one).
 #[cfg(unix)]
 pub async fn create_dir_owner_only(dir: &std::path::Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     tokio::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
         .await
         .with_context(|| format!("create dir {}", dir.display()))?;
-    tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
-        .await
-        .with_context(|| format!("chmod 0o700 {}", dir.display()))
+    if let Err(chmod_err) =
+        tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await
+    {
+        let metadata = std::fs::metadata(dir)
+            .with_context(|| format!("stat {} after failed chmod", dir.display()))?;
+        let mode = metadata.permissions().mode() & 0o777;
+        let owner_uid = metadata.uid();
+        // SAFETY: `geteuid()` takes no arguments, has no preconditions, and
+        // cannot fail -- it just returns this process's effective uid.
+        let our_uid = unsafe { libc::geteuid() };
+        anyhow::ensure!(
+            owner_uid == our_uid && mode & 0o077 == 0,
+            "{} is owned by uid {owner_uid} (this process is uid {our_uid}) at mode {mode:o}, and this \
+             process cannot narrow it to owner-only ({chmod_err}). A narrow mode alone doesn't \
+             make a directory usable: owned by a different uid, it grants this process no \
+             access at all, not even to create a socket inside it -- point at a directory this \
+             process actually owns (e.g. a dedicated subdirectory), not a shared system \
+             directory like its parent",
+            dir.display(),
+        );
+    }
+    Ok(())
 }
 
 /// Windows has no POSIX permission-bit model to apply here. Directory access
