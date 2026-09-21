@@ -590,7 +590,7 @@
   }
 
   .retry-button:hover {
-    opacity: 0.9;
+    background: hsl(var(--primary-hover));
   }
 
   .empty-state p {

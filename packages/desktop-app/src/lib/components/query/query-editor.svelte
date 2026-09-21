@@ -406,7 +406,7 @@
   }
 
   .btn-save:hover {
-    opacity: 0.9;
+    background: hsl(var(--primary-hover));
   }
 
   .btn-preview,

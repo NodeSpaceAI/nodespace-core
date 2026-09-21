@@ -688,7 +688,7 @@
   }
 
   .launch-button:hover:not(:disabled) {
-    opacity: 0.9;
+    background: hsl(var(--primary-hover));
   }
 
   .launch-button:disabled {

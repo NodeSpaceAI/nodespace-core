@@ -743,7 +743,7 @@
     color: hsl(var(--primary-foreground));
     border-color: hsl(var(--primary));
   }
-  .btn--primary:hover:not(:disabled) { opacity: 0.9; }
+  .btn--primary:hover:not(:disabled) { background: hsl(var(--primary-hover)); }
 
   .btn--ghost {
     border: none;

@@ -130,6 +130,6 @@
   }
 
   .send-button:not(:disabled):hover {
-    opacity: 0.9;
+    background: hsl(var(--primary-hover));
   }
 </style>
