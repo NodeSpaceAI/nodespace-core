@@ -1008,32 +1008,40 @@ mod watch_for_shutdown_signal_tests {
 /// entering tray mode too, since its `brew services` launch never set the
 /// variable either.
 ///
-/// Root-caused with a live thread sample (`sample`, macOS) on a hung,
-/// zero-client instance taken well after `kill -TERM`: every `tokio-rt-
-/// worker` thread and the I/O driver were fully parked (`kevent`/condvar
-/// wait, 0% CPU, no busy loop), and the daemon's own `"SIGTERM received"`
-/// log line -- which fires synchronously the instant
-/// [`install_shutdown_handler`]'s future resolves, before any other work --
-/// never printed at all, even minutes later. The identical binary, signaled
-/// the identical way, with `NODESPACED_HEADLESS=1` set (so the tao/
-/// `NSApplication` event loop never starts and the main thread runs
-/// [`serve_headless`] directly instead) logs `"SIGTERM received"` and exits
-/// cleanly in well under a second, every time, including after real gRPC
-/// traffic. So once `tao`'s event loop has taken the main thread on macOS,
-/// something about that state stops tokio's own `SIGTERM`/`SIGINT` handlers
-/// (installed via `tokio::signal::unix::signal`, independent low-level
-/// `sigaction` registration) from ever being invoked -- this function's
-/// `false` default is what routes a should-be-headless deployment into that
-/// state. The exact AppKit/tao mechanism was not pinned down further (that
-/// would need platform-level tracing of `sigaction`, out of scope here);
-/// what's fixed here is making sure a real headless deployment never
-/// exercises that path in the first place, via the Homebrew formula setting
-/// this variable explicitly (`scripts/update-homebrew-formula.ts`) rather
-/// than relying on this default. Tray mode's *own* SIGTERM handling
-/// remaining fragile when nothing pumps its run loop is a separate,
-/// still-open problem -- the same class of tray-mode shutdown hang this
-/// file's own watchdog documentation already flags as unresolved (see
-/// [`bridge_grpc_completion_to_tray`]).
+/// Root-caused two ways on real, live-hung instances (repeated, independent
+/// reproductions on separate machines): a `sample` (macOS) thread dump taken
+/// on a hung, zero-client instance shows every `tokio-rt-worker` thread and
+/// the I/O driver fully parked (`kevent`/condvar wait, 0% CPU, no busy loop)
+/// -- the process is genuinely stuck, not slow -- while the **main thread**
+/// sits forever inside `tray::run`'s `EventLoop::run_return` ->
+/// `-[NSApplication run]` -> `mach_msg2_trap`, i.e. parked in the tao/
+/// `NSApplication` event loop with nothing telling it to quit.
+///
+/// The exact symptom on top of that shared root cause varies by run and was
+/// not fully pinned down (would need platform-level tracing of `sigaction`
+/// and tao's `EventLoopProxy` wakeup path, out of scope here): sometimes the
+/// daemon's own `"SIGTERM received"` log line -- which fires synchronously
+/// the instant [`install_shutdown_handler`]'s future resolves, before any
+/// other work -- never prints at all, even minutes later; other times it
+/// prints almost immediately and the async shutdown sequence
+/// (`shutdown_all`/`release_shared_gpu`) completes in well under a second,
+/// but the OS process still lingers for tens of seconds to minutes before
+/// exiting (or needing `SIGKILL`) -- consistent with the main thread being
+/// stuck as above regardless of whether the signal task itself got promptly
+/// scheduled. The identical binary, signaled the identical way, with
+/// `NODESPACED_HEADLESS=1` set (so the tao/`NSApplication` event loop never
+/// starts and the main thread runs [`serve_headless`] directly instead)
+/// exits cleanly in well under a second, every time, including after real
+/// gRPC traffic -- this function's `false` default is what routes a
+/// should-be-headless deployment into the state that can produce either
+/// symptom above. What's fixed here is making sure a real headless
+/// deployment never exercises that path in the first place, via the
+/// Homebrew formula setting this variable explicitly
+/// (`scripts/update-homebrew-formula.ts`) rather than relying on this
+/// default. Tray mode's *own* SIGTERM handling remaining fragile when
+/// nothing pumps its run loop is a separate, still-open problem -- the same
+/// class of tray-mode shutdown hang this file's own watchdog documentation
+/// already flags as unresolved (see [`bridge_grpc_completion_to_tray`]).
 fn headless() -> bool {
     matches!(std::env::var("NODESPACED_HEADLESS").as_deref(), Ok("1"))
 }
