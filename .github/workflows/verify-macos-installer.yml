@@ -62,6 +62,17 @@ jobs:
 
       - name: Open (or update) an issue on failure (loud, with the actual message)
         if: failure()
+        # `shell: bash` (with pipefail) is required below: `gh issue list`'s
+        # own `--jq` takes exactly one value, so `--jq --arg t "$TITLE"
+        # '...'` (an earlier version of this step) fed it the literal
+        # string "--arg" as the filter and left `t`/"$TITLE"/the real
+        # filter as stray positional args `gh` doesn't accept -- it errored
+        # out before the dedup/create logic ever ran, silently skipping the
+        # exact failure this workflow exists to report. `gh`'s own `--jq`
+        # doesn't support `--arg` at all; piping into the real `jq` binary
+        # does. Without pipefail, a `gh issue list` failure upstream of the
+        # pipe would be masked by `jq`'s own exit code.
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -89,8 +100,8 @@ jobs:
           # variable; it must stay unexpanded.
           # shellcheck disable=SC2016
           EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open \
-            --search "in:title \"${TITLE}\"" --json number,title \
-            --jq --arg t "${TITLE}" '[.[] | select(.title == $t)] | .[0].number // empty')
+            --search "in:title \"${TITLE}\"" --json number,title | \
+            jq -r --arg t "${TITLE}" '[.[] | select(.title == $t)] | .[0].number // empty')
 
           if [[ -n "${EXISTING}" ]]; then
             echo "Existing open issue #${EXISTING} -- commenting instead of filing a duplicate."
