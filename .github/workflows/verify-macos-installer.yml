@@ -32,10 +32,20 @@ on:
     - cron: "40 7 * * *" # once daily, off-peak UTC
   workflow_dispatch: {}
 
+# Serializes overlapping runs (the daily schedule landing near a manual
+# workflow_dispatch, or two dispatches close together) so the issue-dedup
+# lookup in the failure step never races two runs into both seeing "no
+# existing issue" and both filing a duplicate. Never cancel a run already
+# checking Gatekeeper -- let it finish and report before the next starts.
+concurrency:
+  group: verify-macos-installer
+  cancel-in-progress: false
+
 jobs:
   verify-pkg-gatekeeper:
     name: bun run pkg:verify-gatekeeper
     runs-on: macos-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
