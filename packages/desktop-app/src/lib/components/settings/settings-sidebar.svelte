@@ -1,5 +1,6 @@
 <script lang="ts">
     import { cn } from '$lib/utils';
+    import { labsFlags } from '$lib/stores/labs-flags.svelte';
 
     interface Props {
         activeCategory: string;
@@ -8,16 +9,22 @@
 
     let { activeCategory, onCategoryChange }: Props = $props();
 
-    const categories = [
+    // "Account" is gated behind the Labs "Team synchronization" toggle
+    // (default OFF) — the tab itself, not just its content, stays hidden
+    // until a user opts in, so no "NodeSpace Pro" surface is reachable at
+    // all until then. Reactive ($derived), same convention as
+    // navigation-sidebar.svelte's `{#if labsFlags.aiChatEnabled}` gating of
+    // its AI Chats section.
+    const categories = $derived([
         { id: 'database', label: 'Database' },
-        { id: 'account', label: 'Account' },
+        ...(labsFlags.syncEnabled ? [{ id: 'account', label: 'Account' }] : []),
         { id: 'display', label: 'Display' },
         { id: 'ai-models', label: 'AI Models' },
         { id: 'import', label: 'Import Sources' },
         { id: 'integrations', label: 'Integrations' },
         { id: 'labs', label: 'Labs' },
         { id: 'about', label: 'About' },
-    ];
+    ]);
 </script>
 
 <nav class="border-border bg-muted/30 min-w-[200px] w-[200px] border-r py-4">

@@ -90,7 +90,11 @@ describe('AccountSettings', () => {
     const { container } = render(AccountSettings);
 
     expect(container.textContent).toContain('Not available');
-    expect(container.textContent).toContain("This build doesn't include NodeSpace Pro sync.");
+    // Normalize whitespace — Prettier wraps this sentence onto multiple
+    // source/DOM lines, so raw textContent has embedded newlines/indentation.
+    expect(container.textContent?.replace(/\s+/g, ' ').trim()).toContain(
+      'Team synchronization is under heavy development. To help us test this capability, contact us at developer@nodespace.ai'
+    );
     // No sign-out / invitations controls at all.
     expect(container.querySelectorAll('button')).toHaveLength(0);
     // Community tier never probes the daemon for identity.
@@ -240,7 +244,9 @@ describe('AccountSettings', () => {
       // Identical to the community-build ("not Pro") rendering — the flag being
       // off must look exactly like the surface not existing at all.
       expect(container.textContent).toContain('Not available');
-      expect(container.textContent).toContain("This build doesn't include NodeSpace Pro sync.");
+      expect(container.textContent?.replace(/\s+/g, ' ').trim()).toContain(
+        'Team synchronization is under heavy development. To help us test this capability, contact us at developer@nodespace.ai'
+      );
       expect(container.querySelectorAll('button')).toHaveLength(0);
       // The card must not probe the daemon for identity while hidden.
       expect(mockInvoke).not.toHaveBeenCalledWith('pro_current_person');

@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { loadSettings, settingsStore } from '$lib/stores/settings.svelte';
+    import { labsFlags } from '$lib/stores/labs-flags.svelte';
     import SettingsSidebar from './settings-sidebar.svelte';
     import DatabaseSettings from './sections/database-settings.svelte';
     import AccountSettings from './sections/account-settings.svelte';
@@ -18,6 +19,18 @@
 
     onMount(() => {
         loadSettings();
+    });
+
+    // Defense in depth: settings-sidebar.svelte already hides the "Account"
+    // tab while the Labs "Team synchronization" flag is off, but that only
+    // stops a *click*. Fall back to Database if this view is ever reached
+    // while off some other way (e.g. a future `settingsStore.initialCategory`
+    // caller, or the flag being turned off elsewhere) — no "NodeSpace Pro"
+    // surface may render while the flag is off, tab-click or not.
+    $effect(() => {
+        if (activeCategory === 'account' && !labsFlags.syncEnabled) {
+            activeCategory = 'database';
+        }
     });
 </script>
 

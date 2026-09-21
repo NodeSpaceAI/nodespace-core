@@ -96,13 +96,14 @@ describe('LabsSettings', () => {
     expect(cards[0].getAttribute('aria-disabled')).not.toBe('true');
   });
 
-  it('marks the Team synchronization copy "Experimental — may not work correctly"', () => {
+  it('marks the Team synchronization copy with the "under heavy development" message', () => {
     const { container } = render(LabsSettings);
 
     const cards = container.querySelectorAll('[data-slot="card"]');
     const normalized = cards[1].textContent?.replace(/\s+/g, ' ').trim();
-    expect(normalized).toContain('Experimental — may not work correctly.');
-    expect(normalized).not.toContain('In development');
+    expect(normalized).toContain(
+      'Team synchronization is under heavy development. To help us test this capability, contact us at developer@nodespace.ai'
+    );
   });
 
   it('clicking the Team synchronization Switch flips labsFlags.syncEnabled and reflects the new checked state', async () => {

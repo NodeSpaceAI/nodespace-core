@@ -46,8 +46,9 @@
         />
       </div>
       <p class="text-muted-foreground m-0 text-sm leading-relaxed">
-        Share collections and collaborate with your team across devices. Experimental — may not
-        work correctly.
+        Share collections and collaborate with your team across devices. Team synchronization is
+        under heavy development. To help us test this capability, contact us at
+        developer@nodespace.ai
       </p>
     </CardHeader>
   </Card>
