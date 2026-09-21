@@ -60,12 +60,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Open an issue on failure (loud, with the actual message)
+      - name: Open (or update) an issue on failure (loud, with the actual message)
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TITLE="macOS .pkg installer fails live Gatekeeper assessment"
           {
             echo "The scheduled macOS .pkg Gatekeeper check failed against the currently-published release. Run: ${RUN_URL}"
             echo
@@ -78,8 +79,26 @@ jobs:
             echo "current .pkg release asset will fail the same way -- treat as release-blocking."
             echo "Any other message means the check itself failed to run (network/gh/auth) -- not necessarily a rejection; check the run log."
           } > issue-body.txt
-          gh issue create \
-            --repo "${{ github.repository }}" \
-            --title "macOS .pkg installer fails live Gatekeeper assessment" \
-            --body-file issue-body.txt \
-            --label "bug,foundation"
+
+          # Reuse an already-open issue from a prior failed run instead of
+          # filing a new one on every failure -- this check's starting
+          # state is a currently-rejected .pkg, so without this it would
+          # file a fresh duplicate on every single scheduled run until
+          # someone fixes it.
+          # `$t` below is a jq variable (bound by --arg), not a shell
+          # variable; it must stay unexpanded.
+          # shellcheck disable=SC2016
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search "in:title \"${TITLE}\"" --json number,title \
+            --jq --arg t "${TITLE}" '[.[] | select(.title == $t)] | .[0].number // empty')
+
+          if [[ -n "${EXISTING}" ]]; then
+            echo "Existing open issue #${EXISTING} -- commenting instead of filing a duplicate."
+            gh issue comment "${EXISTING}" --repo "${{ github.repository }}" --body-file issue-body.txt
+          else
+            gh issue create \
+              --repo "${{ github.repository }}" \
+              --title "${TITLE}" \
+              --body-file issue-body.txt \
+              --label "bug,foundation"
+          fi

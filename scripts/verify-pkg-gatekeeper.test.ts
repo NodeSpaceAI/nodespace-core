@@ -33,7 +33,7 @@ describe("pickPkgFilename", () => {
     expect(pickPkgFilename(["NodeSpace.pkg.sha256", "notes.txt"])).toBeUndefined();
   });
 
-  test("picks the first .pkg entry when more than one is present", () => {
-    expect(pickPkgFilename(["a.pkg", "b.pkg"])).toBe("a.pkg");
+  test("throws when more than one .pkg entry is present, rather than silently picking one", () => {
+    expect(() => pickPkgFilename(["a.pkg", "b.pkg"])).toThrow(/expected exactly one \.pkg entry, found 2/);
   });
 });

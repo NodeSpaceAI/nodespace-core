@@ -40,8 +40,7 @@ import { $ } from "bun";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-export const CORE_REPO = "NodeSpaceAI/nodespace-core";
+import { CORE_REPO } from "./update-homebrew-cask";
 
 export interface GatekeeperCheckResult {
   ok: boolean;
@@ -50,18 +49,30 @@ export interface GatekeeperCheckResult {
 }
 
 /** Picks the .pkg filename out of a directory listing (one name per
- * entry). Pure and offline so it's covered by the fast unit suite --
- * everything else in this file talks to `gh`/`spctl` and is deliberately
- * left untested here, matching update-homebrew-cask.test.ts's convention. */
+ * entry). Throws if more than one entry matches -- today only one macOS
+ * .pkg target is ever published per release, so a second match means
+ * something changed about what's published and silently picking one would
+ * hide that, rather than fail loud the way update-homebrew-cask.ts's
+ * resolveArchDigests does on a missing/ambiguous asset. Pure and offline
+ * so it's covered by the fast unit suite -- everything else in this file
+ * talks to `gh`/`spctl` and is deliberately left untested here, matching
+ * update-homebrew-cask.test.ts's convention. */
 export function pickPkgFilename(entries: string[]): string | undefined {
-  return entries.map((e) => e.trim()).find((e) => e.endsWith(".pkg"));
+  const matches = entries.map((e) => e.trim()).filter((e) => e.endsWith(".pkg"));
+  if (matches.length > 1) {
+    throw new Error(`expected exactly one .pkg entry, found ${matches.length}: ${matches.join(", ")}`);
+  }
+  return matches[0];
 }
 
 /** Downloads the .pkg for `tag` (or the latest release, if omitted) into
  * `destDir` and returns its local path. */
 export async function downloadPublishedPkg(destDir: string, tag?: string): Promise<string> {
   if (tag) {
-    await $`gh release download ${tag} --repo ${CORE_REPO} --pattern "NodeSpace_*.pkg" --dir ${destDir} --clobber`.quiet();
+    // Matches update-homebrew-cask.ts's normalizeVersion/fetchReleaseAssets
+    // convention: accept a bare version too, not just a full `vX.Y.Z` tag.
+    const normalizedTag = tag.startsWith("v") ? tag : `v${tag}`;
+    await $`gh release download ${normalizedTag} --repo ${CORE_REPO} --pattern "NodeSpace_*.pkg" --dir ${destDir} --clobber`.quiet();
   } else {
     await $`gh release download --repo ${CORE_REPO} --pattern "NodeSpace_*.pkg" --dir ${destDir} --clobber`.quiet();
   }
@@ -74,8 +85,11 @@ export async function downloadPublishedPkg(destDir: string, tag?: string): Promi
 }
 
 /** Runs the exact assessment a real install attempt is subject to. Returns
- * ok:false (not a throw) on a Gatekeeper rejection -- that is the
- * condition this check exists to detect, not a script error. */
+ * ok:false (not a throw) on a genuine Gatekeeper rejection -- that is the
+ * condition this check exists to detect, not a script error. Throws for
+ * anything else (spctl killed by a signal, an unexpected exit code, etc.)
+ * so a check that couldn't actually run is never reported as a
+ * Gatekeeper verdict. */
 export function assessGatekeeperInstall(pkgPath: string): GatekeeperCheckResult {
   const pkgName = pkgPath.split("/").pop() ?? pkgPath;
   const proc = Bun.spawnSync(["spctl", "--assess", "--type", "install", "--verbose", pkgPath], {
@@ -83,7 +97,19 @@ export function assessGatekeeperInstall(pkgPath: string): GatekeeperCheckResult 
     stderr: "pipe",
   });
   const detail = `${proc.stdout.toString()}${proc.stderr.toString()}`.trim();
-  return { ok: proc.exitCode === 0, pkgName, detail };
+  if (proc.exitCode === 0) {
+    return { ok: true, pkgName, detail };
+  }
+  // spctl's documented exit codes: 0 = accepted, 3 = assessment denied --
+  // confirmed empirically against the actual rejected v0.3.0 .pkg this
+  // check exists to catch. Any other exit code (bad invocation, spctl
+  // itself crashing, killed by a signal) is not a Gatekeeper verdict.
+  if (proc.exitCode === 3) {
+    return { ok: false, pkgName, detail };
+  }
+  throw new Error(
+    `spctl exited ${proc.exitCode ?? `via signal ${proc.signalCode}`} (expected 0 or 3) -- not a Gatekeeper verdict:\n${detail}`,
+  );
 }
 
 function usage(): void {
@@ -109,21 +135,28 @@ async function main(): Promise<void> {
 
   const tag = process.argv[2];
   const workDir = mkdtempSync(join(tmpdir(), "nodespace-pkg-gatekeeper-"));
+  // process.exit() terminates immediately without running a pending
+  // `finally` -- so the exit call is deliberately OUTSIDE the try/finally
+  // below, after cleanup has already run, rather than inside it (which
+  // would leak workDir on the very path -- a real rejection -- this
+  // script exists to report).
+  let result: GatekeeperCheckResult;
   try {
     const pkgPath = await downloadPublishedPkg(workDir, tag);
-    const result = assessGatekeeperInstall(pkgPath);
-    if (result.ok) {
-      console.log(`GATEKEEPER OK: ${result.pkgName} is accepted by \`spctl --assess --type install\`.`);
-      return;
-    }
-    console.error(
-      `GATEKEEPER REJECTED: ${result.pkgName} fails \`spctl --assess --type install\` -- a real ` +
-        `install attempt with this exact file will be blocked. spctl output:\n${result.detail}`,
-    );
-    process.exit(1);
+    result = assessGatekeeperInstall(pkgPath);
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }
+
+  if (result.ok) {
+    console.log(`GATEKEEPER OK: ${result.pkgName} is accepted by \`spctl --assess --type install\`.`);
+    return;
+  }
+  console.error(
+    `GATEKEEPER REJECTED: ${result.pkgName} fails \`spctl --assess --type install\` -- a real ` +
+      `install attempt with this exact file will be blocked. spctl output:\n${result.detail}`,
+  );
+  process.exit(1);
 }
 
 if (import.meta.main) {
