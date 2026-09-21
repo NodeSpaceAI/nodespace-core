@@ -151,6 +151,44 @@ export const WATCH_CHANNEL_OPTIONS: grpc.ClientOptions = {
   'grpc.use_local_subchannel_pool': 1
 };
 
+/**
+ * Ensures at most one delayed callback from `trigger()` is pending at a time;
+ * later `trigger()` calls are no-ops until `reset()` is called — the pending
+ * callback firing does NOT clear the guard by itself, so a caller that reuses
+ * one of these across attempts (as `connect()` does) must call `reset()` at
+ * the start of each fresh attempt.
+ *
+ * `startWatchBridge()`'s `connect()` in dev-proxy.ts uses one of these to fix
+ * a real bug found live-testing daemon-restart recovery: a `ClientReadableStream`
+ * whose connection drops reliably fires BOTH `'error'` and `'end'` for that one
+ * disconnect (confirmed with `GRPC_TRACE` against a real daemon kill — every
+ * observed drop logged "WatchNodes stream error" immediately followed by
+ * "WatchNodes stream ended"). Scheduling a reconnect from both handlers
+ * independently — the original code — creates two concurrent `connect()`
+ * chains per disconnect; each one that itself fails again doubles the count.
+ * That compounds across repeated daemon restarts into many overlapping
+ * `WatchNodes` stream attempts that never quiesce: needless load on the
+ * daemon, and a proxy log that never stops retrying even though any single
+ * chain would have recovered — which is what made the bridge look like it
+ * "never recovers" after a restart.
+ */
+export function createSingleFlightScheduler(): {
+  trigger: (delayMs: number, callback: () => void) => void;
+  reset: () => void;
+} {
+  let pending = false;
+  return {
+    trigger(delayMs, callback) {
+      if (pending) return;
+      pending = true;
+      setTimeout(callback, delayMs);
+    },
+    reset() {
+      pending = false;
+    }
+  };
+}
+
 export function resolveSocketAddress(): string {
   const sock =
     process.env.NODESPACED_SOCKET ?? `${process.env.HOME}/.nodespace/daemon.sock`;

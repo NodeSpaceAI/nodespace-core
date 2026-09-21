@@ -18,7 +18,7 @@ import {
   type InsertPosition,
 } from '../../desktop-app/src/lib/services/adapter-core.ts';
 import { flattenTypedFieldsFromStorage } from '../../desktop-app/src/lib/services/node-normalize.ts';
-import { createNodeSpaceClients } from './grpc-client.ts';
+import { createNodeSpaceClients, createSingleFlightScheduler } from './grpc-client.ts';
 import { mapGrpcError } from './grpc-error-mapping.ts';
 
 const PORT = parseInt(process.env.DEV_PROXY_PORT ?? '3001', 10);
@@ -108,7 +108,15 @@ function resetBridgeAttached(): void {
 }
 
 function startWatchBridge(): void {
+  // Collapses the 'error'+'end' pair a dropped stream reliably fires into a
+  // single reconnect attempt — see createSingleFlightScheduler's doc comment
+  // in ./grpc-client.ts for why that pairing existing unguarded was the real
+  // bug behind the bridge appearing to never recover from a daemon restart.
+  const reconnectScheduler = createSingleFlightScheduler();
+
   async function connect(): Promise<void> {
+    reconnectScheduler.reset();
+
     // Gate the long-lived watch stream on the channel reaching READY too, so a
     // proxy started before the daemon opens the stream promptly once the
     // socket appears (per the bounded reconnect backoff) instead of churning
@@ -122,8 +130,13 @@ function startWatchBridge(): void {
     try {
       await ready(watchClient);
     } catch (err) {
-      console.error('[dev-proxy] WatchNodes channel not ready, retrying in 2s:', (err as Error).message);
-      setTimeout(connect, 2000);
+      reconnectScheduler.trigger(2000, () => {
+        console.error(
+          '[dev-proxy] WatchNodes channel not ready, retrying in 2s:',
+          (err as Error).message
+        );
+        void connect();
+      });
       return;
     }
     const stream = (watchClient as unknown as Record<string, Function>).watchNodes({
@@ -153,15 +166,19 @@ function startWatchBridge(): void {
     });
 
     stream.on('error', (err: Error) => {
-      console.error('[dev-proxy] WatchNodes stream error, reconnecting in 2s:', err.message);
       resetBridgeAttached();
-      setTimeout(connect, 2000);
+      reconnectScheduler.trigger(2000, () => {
+        console.error('[dev-proxy] WatchNodes stream error, reconnecting in 2s:', err.message);
+        void connect();
+      });
     });
 
     stream.on('end', () => {
-      console.log('[dev-proxy] WatchNodes stream ended, reconnecting in 1s');
       resetBridgeAttached();
-      setTimeout(connect, 1000);
+      reconnectScheduler.trigger(1000, () => {
+        console.log('[dev-proxy] WatchNodes stream ended, reconnecting in 1s');
+        void connect();
+      });
     });
 
     // All three listeners above are now wired, so this bridge will relay
