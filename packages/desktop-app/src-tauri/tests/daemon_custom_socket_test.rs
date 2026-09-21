@@ -1,5 +1,5 @@
-//! Regression coverage for core#2759: a `NODESPACED_SOCKET` override pointed
-//! at a custom path used to make `nodespaced` silently never bind/listen —
+//! Regression coverage: a `NODESPACED_SOCKET` override pointed at a custom
+//! path used to make `nodespaced` silently never bind/listen —
 //! no "gRPC server listening" line, no error, no socket file, while every
 //! other startup step (schema seeding, embedding-model load, Play engine)
 //! kept right on succeeding and logging normally. Root cause: the daemon's
@@ -34,8 +34,7 @@
 //! `create_dir_owner_only`'s `chmod` succeeds when you own the directory).
 //! `/tmp` itself, unlike `TMPDIR`, is the one location guaranteed on every
 //! Unix to be a pre-existing, shared, non-owned directory (root-owned,
-//! `0o1777`) -- the actual shape of core#2759's own reproduction and the
-//! only reliable way to exercise this failure mode at all.
+//! `0o1777`) -- the only reliable way to exercise this failure mode at all.
 
 use nodespace_app_lib::daemon_setup::{wait_for_daemon, DaemonStatus};
 use nodespace_app_test_support::{EnvGuard, SpawnedDaemon, DAEMON_CONNECT_TIMEOUT};
