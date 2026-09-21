@@ -300,21 +300,19 @@
 
 /* NodeSpace Design System Components - from patterns.html */
 
-/* Perfect Node Alignment System - CSS Variables Architecture */
-.node-viewer {
+/* Perfect Node Alignment System - CSS Variables Architecture
+   .base-node-viewer is the live root element (see base-node-viewer.svelte) that
+   NodeRow's chevron and circle positioning actually inherit from; this selector
+   is the single declaration site for the system's variables, not the legacy
+   .node-viewer selector this system originally documented, which matches no
+   live element. --baseline-correction previously lived there too but is
+   genuinely unused (no `var(--baseline-correction)` reference exists anywhere
+   in this codebase), so it was removed rather than carried over here. */
+.base-node-viewer {
   /* Dynamic Circle Positioning System - All values configurable from here */
   --circle-offset: 22px; /* Circle center distance from container left edge - reserves space for chevrons */
   --circle-diameter: 20px; /* Circle size (width and height) */
   --circle-text-gap: 8px; /* Gap between circle edge and text content */
-
-  /* Base correction factor for text visual center alignment */
-  --baseline-correction: -0.06375em;
-}
-
-/* .base-node-viewer is the live root element (see base-node-viewer.svelte) that
-   NodeRow's chevron positioning actually inherits from; --node-spacing-indent
-   is declared against that selector, not .node-viewer above, so it reaches it. */
-.base-node-viewer {
   --node-spacing-indent: 2.5rem; /* Indentation distance between parent and child levels */
 }
 

@@ -1496,15 +1496,11 @@
   }
 
   .base-node-viewer {
-    /* Dynamic Circle Positioning System - All values configurable from here */
-    --circle-offset: 22px; /* Circle center distance from container left edge - reserves space for chevrons */
-    --circle-diameter: 20px; /* Circle size (width and height) */
-    --circle-text-gap: 8px; /* Gap between circle edge and text content */
-
     /* Default font values for positioning calculations */
     --font-size: 1rem;
     --line-height: 1.6;
-    /* Note: --icon-vertical-position is defined globally in app.css */
+    /* Note: --circle-offset/--circle-diameter/--circle-text-gap and
+       --icon-vertical-position are defined globally in app.css */
   }
 
   .node-container {
