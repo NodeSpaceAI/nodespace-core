@@ -57,4 +57,22 @@ describe('SettingsPane — Account routing guard when the Labs flag is off', () 
 
     await waitFor(() => expect(getByText('NodeSpace Pro')).toBeTruthy());
   });
+
+  it('redirects to Database if the flag flips off while "account" is already the active view', async () => {
+    // No UI path can reach this today (Labs and Account are mutually
+    // exclusive views within one settings pane, so a user can't flip the
+    // Switch while Account is showing) — but the $effect's own doc comment
+    // claims this case is covered ("the flag being turned off elsewhere"),
+    // so back that claim directly rather than leaving it implicit.
+    labsFlags.syncEnabled = true;
+    settingsStore.initialCategory = 'account';
+    const { getByText, queryByText } = render(SettingsPane);
+
+    await waitFor(() => expect(getByText('NodeSpace Pro')).toBeTruthy());
+
+    labsFlags.syncEnabled = false;
+
+    await waitFor(() => expect(getByText('Databases')).toBeTruthy());
+    expect(queryByText('NodeSpace Pro')).toBeNull();
+  });
 });
