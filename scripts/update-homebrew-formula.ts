@@ -338,6 +338,25 @@ export function renderFormula(version: string, digests: FormulaDigests): string 
     # still works normally -- it unloads the service definition rather
     # than fighting KeepAlive.
     keep_alive true
+    # Without this, \`nodespaced\` defaults to its GUI-app tray mode (a
+    # \`tao\`/\`NSApplication\` event loop taking over the process's main
+    # thread) -- the right default for the cask's bundled daemon, but never
+    # for this formula, which ships no GUI at all. Verified directly on a
+    # real daemon: with the env var unset, \`kill -TERM\`/\`SIGINT\` is never
+    # observed by the process at all (a live thread sample shows every
+    # worker thread and the run loop fully parked, 0% CPU, forever) and it
+    # requires \`SIGKILL\`; with \`NODESPACED_HEADLESS=1\` set, the identical
+    # signal is handled and the process exits cleanly in well under a
+    # second. \`brew services start/stop nodespace-cli\` relies on a clean
+    # exit here -- \`stop\` sends SIGTERM and waits.
+    #
+    # Verified this way on macOS only. \`environment_variables\` is Homebrew's
+    # own cross-platform Services DSL primitive -- the same declaration is
+    # documented to translate into both the generated launchd plist (macOS)
+    # and the generated systemd unit (Linux) -- but that Linux translation
+    # was not independently re-verified against a live \`brew services start\`
+    # on this formula's Linux targets.
+    environment_variables NODESPACED_HEADLESS: "1"
     log_path var/"log/nodespace/nodespaced.log"
     error_log_path var/"log/nodespace/nodespaced.log"
   end
@@ -345,7 +364,7 @@ export function renderFormula(version: string, digests: FormulaDigests): string 
   def caveats
     <<~EOS
       nodespaced (the daemon) must be running before \`nodespace\` commands work:
-        nodespaced &            # run directly, or
+        NODESPACED_HEADLESS=1 nodespaced &   # run directly, or
         brew services start nodespace-cli   # run as a background service
 
       This is the headless CLI only -- no GUI, no Applications entry. For
