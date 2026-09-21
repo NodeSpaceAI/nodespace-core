@@ -215,6 +215,26 @@ async function checkPrerequisites(): Promise<PrereqResult> {
   return { ok: true, llvmBin };
 }
 
+/**
+ * tauri.conf.json's `bundle.resources` includes `resources/models/**\/*`,
+ * which is gitignored and empty on a fresh checkout, so without this the
+ * produced NSIS installer silently ships without the embedding model -- the
+ * exact bug this cross-compile path exists to reproduce "as closely as a
+ * non-Windows host allows" (see module doc above). Unlike release.yml's CI
+ * step (which fetches a pre-vetted copy from the `models-v2` GitHub Release
+ * for build-pipeline reliability), this is a local dev machine, so it uses
+ * the repo's own canonical, integrity-verified downloader
+ * (scripts/download-models.ts, ADR-058) directly: it hashes an
+ * already-downloaded file before reusing it -- so a truncated/corrupt file
+ * left by an interrupted previous run gets re-fetched, not silently reused
+ * -- and creates its own target directory, unlike `copySidecarBinaries`
+ * below.
+ */
+async function downloadEmbeddingModel(): Promise<void> {
+  console.log('\n==> Downloading embedding model for bundling');
+  await $`bun run download:models:bundle`.cwd(WORKSPACE_ROOT);
+}
+
 async function buildSidecar(bin: string, env: Record<string, string | undefined>): Promise<void> {
   console.log(`\n==> cargo xwin build --release --bin ${bin} --target ${TARGET}`);
   await $`cargo xwin build --release --bin ${bin} --target ${TARGET}`.cwd(WORKSPACE_ROOT).env(env);
@@ -249,6 +269,8 @@ async function main(): Promise<void> {
 
   const { ok, llvmBin } = await checkPrerequisites();
   if (!ok || !llvmBin) process.exit(1);
+
+  await downloadEmbeddingModel();
 
   // cargo-xwin's default backend (clang-cl) resolves the compiler from
   // PATH. Homebrew's llvm is keg-only (never symlinked into

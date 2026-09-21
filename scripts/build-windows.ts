@@ -172,6 +172,19 @@ export function buildRemoteScript(repoPath: string): string {
     'git pull',
     'bun install --frozen-lockfile',
     'bun run --cwd packages/desktop-app sync',
+    // tauri.conf.json's `bundle.resources` includes `resources/models/**/*`,
+    // which is gitignored and empty on a fresh checkout, so without this the
+    // produced .msi/.exe silently ships without the embedding model -- the
+    // exact bug this VM build path exists to reproduce with "full CI parity"
+    // (see module doc above). Unlike release.yml's CI steps (which fetch a
+    // pre-vetted copy from the `models-v2` GitHub Release for build-pipeline
+    // reliability), this and Tier 1 use the repo's own canonical, integrity-
+    // verified downloader (scripts/download-models.ts, ADR-058): it hashes
+    // an already-downloaded file before reusing it -- unlike a bare
+    // `--skip-existing` flag, a truncated/corrupt file left by an
+    // interrupted previous run gets re-fetched, not silently reused -- and
+    // needs no `gh` auth on the VM at all.
+    'bun run download:models:bundle',
     `cargo build --release --bin nodespaced --target ${TARGET}`,
     `cargo build --release --bin nodespace --target ${TARGET}`,
     'mkdir -p packages/desktop-app/src-tauri/binaries',

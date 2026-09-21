@@ -85,6 +85,7 @@ describe("buildRemoteScript", () => {
       "git pull",
       "bun install --frozen-lockfile",
       "bun run --cwd packages/desktop-app sync",
+      "bun run download:models:bundle",
       "cargo build --release --bin nodespaced --target x86_64-pc-windows-msvc",
       "cargo build --release --bin nodespace --target x86_64-pc-windows-msvc",
       "mkdir -p packages/desktop-app/src-tauri/binaries",
