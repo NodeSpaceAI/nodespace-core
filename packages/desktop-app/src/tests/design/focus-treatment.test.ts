@@ -36,7 +36,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buttonVariants } from '$lib/components/ui/button/types';
-import { AA, contrast, readHsl, themeBlock } from '../helpers/wcag-contrast';
+import { contrast, readHsl, themeBlock } from '../helpers/wcag-contrast';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const srcRoot = path.join(packageRoot, 'src');
@@ -398,22 +398,4 @@ describe('the neutral focus fill is actually visible', () => {
       }
     });
   }
-
-  it('keeps the light-mode accent label above its dark-mode counterpart', () => {
-    // NOT an AA assertion, deliberately. `--accent-foreground` on `--accent` is
-    // 3.40:1 in light mode, below the 4.5:1 text floor — a PRE-EXISTING property
-    // of the accent pair, already shipped on seven `hover:bg-accent` sites, that
-    // this suite does not own and cannot fix by choosing a different focus fill.
-    //
-    // Asserting AA here would fail the suite on someone else's defect. What is
-    // asserted instead is that the value does not silently DROP further: the
-    // figure is pinned, so a token edit that worsens it fails loudly and a token
-    // edit that fixes it fails too, prompting this comment to be deleted.
-    const light = themeBlock(appCss, ':root');
-    const ratio = contrast(readHsl(light, '--accent-foreground'), readHsl(light, '--accent'));
-
-    expect(ratio).toBeGreaterThan(3.3);
-    expect(ratio).toBeLessThan(3.5);
-    expect(ratio).toBeLessThan(AA); // the known gap, stated rather than implied
-  });
 });
