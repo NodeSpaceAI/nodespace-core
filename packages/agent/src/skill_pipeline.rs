@@ -1571,8 +1571,8 @@ mod tests {
         let md = &schema_skill.markdown_content;
 
         assert!(
-            md.contains("unique_case_insensitive"),
-            "Schema Creation guidance must mention unique_case_insensitive"
+            md.contains("uniqueCaseInsensitive"),
+            "Schema Creation guidance must mention uniqueCaseInsensitive"
         );
         assert!(
             md.to_lowercase().contains("advisory only"),

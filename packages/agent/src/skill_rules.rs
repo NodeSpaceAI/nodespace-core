@@ -190,8 +190,8 @@ pub const TITLE_TEMPLATE_PLACEHOLDERS: SchemaRule = SchemaRule {
 
 pub const UNIQUE_FIELD_FLAGS: SchemaRule = SchemaRule {
     id: "unique-field-flags",
-    imperative: "UNIQUE FIELDS: Set \"unique\": true on a field when the user's request implies each instance should have a distinct value for it (e.g. \"each ticket should have a unique key\" -> flag key unique). Use \"unique_case_insensitive\": true instead of \"unique\" when case shouldn't matter (e.g. email, username). ADVISORY ONLY: this does NOT prevent duplicates from being created — it only lets the system suggest a likely existing match (e.g. surface the existing node) when a new value collides. Never tell the user a unique flag will block or reject a duplicate; describe it as a duplicate warning/suggestion, not an enforced constraint. Example: {\"name\": \"key\", \"type\": \"text\", \"unique_case_insensitive\": true}.",
-    prose: "**Unique fields:** set `\"unique\": true` on a field when the user's request implies each instance should have a distinct value for it (e.g. \"each ticket should have a unique key\" → flag `key` unique). Use `\"unique_case_insensitive\": true` instead when case shouldn't matter — email and username are the common case. This is advisory only: it does not prevent duplicates from being created, it only lets the system surface a likely existing match when a new value collides. Never describe it to the user as blocking or rejecting duplicates — it's a suggestion, not an enforced constraint. Example: `{\"name\":\"key\",\"type\":\"text\",\"unique_case_insensitive\":true}`.",
+    imperative: "UNIQUE FIELDS: Set \"unique\": true on a field when the user's request implies each instance should have a distinct value for it (e.g. \"each ticket should have a unique key\" -> flag key unique). Use \"uniqueCaseInsensitive\": true instead of \"unique\" when case shouldn't matter (e.g. email, username). ADVISORY ONLY: this does NOT prevent duplicates from being created — it only lets the system suggest a likely existing match (e.g. surface the existing node) when a new value collides. Never tell the user a unique flag will block or reject a duplicate; describe it as a duplicate warning/suggestion, not an enforced constraint. Example: {\"name\": \"key\", \"type\": \"text\", \"uniqueCaseInsensitive\": true}.",
+    prose: "**Unique fields:** set `\"unique\": true` on a field when the user's request implies each instance should have a distinct value for it (e.g. \"each ticket should have a unique key\" → flag `key` unique). Use `\"uniqueCaseInsensitive\": true` instead when case shouldn't matter — email and username are the common case. This is advisory only: it does not prevent duplicates from being created, it only lets the system surface a likely existing match when a new value collides. Never describe it to the user as blocking or rejecting duplicates — it's a suggestion, not an enforced constraint. Example: `{\"name\":\"key\",\"type\":\"text\",\"uniqueCaseInsensitive\":true}`.",
 };
 
 /// All schema-authoring rules, in the order they should be rendered.
@@ -401,5 +401,108 @@ mod tests {
                 r.skill_md_key_phrase
             );
         }
+    }
+
+    /// Extracts the JSON object following "Example: " in a rule's doc text
+    /// (optionally wrapped in a single pair of markdown backticks). Brace
+    /// balancing is delegated to
+    /// [`crate::local_agent::tools::extract_json_object`] rather than
+    /// reimplemented here — it already tracks string-literal state, so a
+    /// `{`/`}` inside a quoted value (e.g. a description quoting a
+    /// `{placeholder}`) doesn't throw off the match the way a naive counter
+    /// would.
+    fn extract_example_json(text: &str) -> &str {
+        let marker = "Example: ";
+        let after = text
+            .rfind(marker)
+            .map(|i| &text[i + marker.len()..])
+            .unwrap_or_else(|| panic!("no \"Example: \" marker found in: {text:?}"));
+        let after = after.strip_prefix('`').unwrap_or(after);
+        crate::local_agent::tools::extract_json_object(after)
+            .unwrap_or_else(|| panic!("no JSON object after \"Example: \" in: {text:?}"))
+    }
+
+    /// `UNIQUE_FIELD_FLAGS`'s documented `uniqueCaseInsensitive` example
+    /// (both the imperative form seeded into the in-app agent prompt and the
+    /// prose form rendered into the shipped skill) must deserialize as a real
+    /// `SchemaField` through the exact wire format `create_schema`/
+    /// `update_schema` accept. `SchemaField` is `#[serde(rename_all =
+    /// "camelCase", deny_unknown_fields)]` (`nodespace-types::schema`), so a
+    /// doc example written in the struct's own snake_case field name — as
+    /// this rule's text once was — is rejected as an unknown field the
+    /// moment it's copied verbatim, rather than caught here.
+    #[test]
+    fn unique_field_flags_example_matches_schema_field_wire_format() {
+        for text in [UNIQUE_FIELD_FLAGS.imperative, UNIQUE_FIELD_FLAGS.prose] {
+            let json = extract_example_json(text);
+            let field: nodespace_core::models::SchemaField = serde_json::from_str(json)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "documented example {json} failed to deserialize as SchemaField \
+                         (wire key mismatch?): {e}"
+                    )
+                });
+            assert_eq!(
+                field.unique_case_insensitive,
+                Some(true),
+                "documented example should set uniqueCaseInsensitive: true"
+            );
+        }
+    }
+
+    /// `packages/skill/references/cli.md`'s "Create a schema with a unique
+    /// field" worked example is hand-maintained prose living outside the
+    /// `<!-- BEGIN GENERATED: schema-rules -->` marker `gen_skill_md.rs`
+    /// regenerates from `UNIQUE_FIELD_FLAGS` — regenerating the skill (or
+    /// `checked_in_skill_md_is_up_to_date`, `skill_md_generation.rs`) cannot
+    /// catch this example drifting on its own, since it's never produced
+    /// from source. This is the exact artifact the tracking issue reported:
+    /// a complete `nodespace schema create` command that fails if copied
+    /// verbatim.
+    #[test]
+    fn cli_md_unique_field_worked_example_matches_schema_field_wire_format() {
+        let cli_md_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../skill/references/cli.md");
+        let cli_md = std::fs::read_to_string(&cli_md_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", cli_md_path.display()));
+
+        let marker = "# Create a schema with a unique field";
+        let after_comment = cli_md.find(marker).map(|i| &cli_md[i..]).unwrap_or_else(|| {
+            panic!("cli.md no longer has a {marker:?} worked example — update this test if it moved")
+        });
+
+        let command_line = after_comment
+            .lines()
+            .find(|l| l.starts_with("nodespace schema create"))
+            .unwrap_or_else(|| panic!("no `nodespace schema create` line follows {marker:?}"));
+
+        let params_marker = "--params '";
+        let quote_start = command_line
+            .find(params_marker)
+            .map(|i| i + params_marker.len())
+            .unwrap_or_else(|| panic!("no {params_marker:?} found in: {command_line}"));
+        let quote_end = command_line[quote_start..]
+            .rfind('\'')
+            .map(|i| quote_start + i)
+            .unwrap_or_else(|| panic!("unterminated --params string in: {command_line}"));
+        let json = &command_line[quote_start..quote_end];
+
+        let params: nodespace_core::schema::CreateSchemaParams = serde_json::from_str(json)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "cli.md worked example failed to deserialize as CreateSchemaParams \
+                     (wire key mismatch?): {e}"
+                )
+            });
+        let key_field = params
+            .fields
+            .as_ref()
+            .and_then(|fields| fields.iter().find(|f| f.name == "key"))
+            .unwrap_or_else(|| panic!("worked example no longer declares a \"key\" field"));
+        assert_eq!(
+            key_field.unique_case_insensitive,
+            Some(true),
+            "cli.md worked example should set uniqueCaseInsensitive: true on the \"key\" field"
+        );
     }
 }
