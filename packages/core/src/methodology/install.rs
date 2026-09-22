@@ -324,6 +324,35 @@ fn rename_note(renames: &HashMap<String, String>) -> Option<String> {
     Some(note)
 }
 
+/// Follow a re-key through the `targetType` of each relationship in
+/// `params[key]`.
+///
+/// Shared because `create_schema` spells the array `relationships` and
+/// `update_schema` spells it `add_relationships`, but the element shape and
+/// the rule are identical. Two near-identical copies is how a fix reaches one
+/// and not the other — the shape of defect this PR has already hit three
+/// times.
+///
+/// Only `targetType` moves. A relationship's `name` and `reverseName` are
+/// vocabulary that may legitimately spell a schema id.
+fn rewrite_relationship_targets(
+    params: &mut serde_json::Value,
+    key: &str,
+    renames: &HashMap<String, String>,
+) {
+    let Some(relationships) = params.get_mut(key).and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    for relationship in relationships {
+        let Some(target) = relationship.get("targetType").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if let Some(renamed) = renames.get(target) {
+            relationship["targetType"] = serde_json::json!(renamed);
+        }
+    }
+}
+
 /// Follow a re-key through an `update_schema` payload's **id-bearing keys
 /// only** — `schema_id`, `extends`, and each added relationship's
 /// `targetType`.
@@ -352,19 +381,7 @@ fn rewrite_update_schema_step_ids(
         }
     }
 
-    if let Some(relationships) = out
-        .get_mut("add_relationships")
-        .and_then(|v| v.as_array_mut())
-    {
-        for relationship in relationships {
-            let Some(target) = relationship.get("targetType").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            if let Some(renamed) = renames.get(target) {
-                relationship["targetType"] = serde_json::json!(renamed);
-            }
-        }
-    }
+    rewrite_relationship_targets(&mut out, "add_relationships", renames);
 
     out
 }
@@ -483,10 +500,9 @@ fn rewrite_action_ids(rule: &mut serde_json::Value, renames: &HashMap<String, St
 /// only** — `extends` and each relationship's `targetType`.
 ///
 /// Key-targeted rather than a blanket value walk over the payload, which is
-/// what an earlier version of this did.
-/// That is safe for the Play, vocabulary and skill payloads, whose ids all sit
-/// in value position. A `create_schema` payload is a different shape: it also
-/// carries user-authored vocabulary in value position — `fields[].name`,
+/// what an earlier version of this did. No recipe payload turned out to
+/// tolerate a blanket walk: each carries user-authored vocabulary in value
+/// position alongside its ids. Here that is `fields[].name`,
 /// `friendlyName`, a relationship's `name` and `reverseName`, enum values,
 /// `title_template` tokens — and schema ids share one namespace of bare
 /// lowercase identifiers with all of it. `cycle`, `issue` and `status` are
@@ -521,16 +537,7 @@ fn rewrite_schema_step_ids(
         }
     }
 
-    if let Some(relationships) = out.get_mut("relationships").and_then(|v| v.as_array_mut()) {
-        for relationship in relationships {
-            let Some(target) = relationship.get("targetType").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            if let Some(renamed) = renames.get(target) {
-                relationship["targetType"] = serde_json::json!(renamed);
-            }
-        }
-    }
+    rewrite_relationship_targets(&mut out, "relationships", renames);
 
     out
 }
