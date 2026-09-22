@@ -3728,6 +3728,29 @@ impl SqliteStore {
         //
         // Order within each class is preserved, so a message whose tokens all
         // share a class behaves exactly as before.
+        //
+        // RESIDUAL, stated because the argument above does not cover it. The
+        // bias helps when the filler competing for the budget is lowercase. It
+        // does nothing when the competing tokens are capitalised too, because
+        // front-first truncation then applies WITHIN the capitalised class —
+        // the same defect this selection replaced, one level down:
+        //
+        //   "Could You Kindly Update The Customer Record And Billing Address
+        //    For Northwind Trading"
+        //     -> kindly update customer record and billing   (entity dropped)
+        //
+        // Materially less severe than the bug it replaced: it needs an unusual
+        // register rather than merely a second conversational turn, and it
+        // degrades to a weak one-token match rather than to `NoMatch`, so it
+        // does not produce a false "does not exist" claim. Left unfixed rather
+        // than patched with a further heuristic — "prefer the longest run of
+        // adjacent capitalised tokens" was tried and gives no discrimination
+        // here, since a Title Case sentence is one long run.
+        //
+        // Note also that the cap's own justification reasons about the IDEAL
+        // token set (an entity name is two or three tokens), while the cap
+        // actually applies to the SELECTED set. Those coincide only when
+        // selection puts the name first.
         let all: Vec<String> = message
             .split_whitespace()
             .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()))

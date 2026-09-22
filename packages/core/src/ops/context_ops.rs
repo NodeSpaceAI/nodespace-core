@@ -1821,7 +1821,12 @@ mod tests {
         // A budget one line short of the full rendering: the first entity must
         // survive and the second must be dropped. Exercises the partial-
         // truncation path rather than the all-or-nothing ends.
-        let one_line_short = full.len() - 20;
+        //
+        // Derived from the dropped line's own length rather than a fixed
+        // offset, so the boundary stays correct if the rendered line format
+        // changes.
+        let second_line = format!("- \"{}\" ({}) id={}\n", "Contoso Ltd", "customer", "def456");
+        let one_line_short = full.len() - second_line.len();
         let out = ctx_with(EntityResolution::Resolved(two)).format_for_prompt(one_line_short);
 
         assert!(out.len() <= one_line_short, "budget exceeded: {out}");

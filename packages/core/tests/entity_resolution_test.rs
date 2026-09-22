@@ -298,6 +298,41 @@ mod entity_resolution_tests {
         Ok(())
     }
 
+    /// KNOWN RESIDUAL, pinned so it is visible rather than folklore.
+    ///
+    /// The capitalised-first selection fixes the case where the filler
+    /// competing for the token budget is lowercase. When the competing tokens
+    /// are capitalised too — a Title Case register — front-first truncation
+    /// applies within the capitalised class and the entity can still be cut.
+    ///
+    /// Less severe than the bug it replaced, in the way that matters: this
+    /// degrades to a WEAK match rather than to `NoMatch`, so it does not
+    /// produce a false "this does not exist" claim that would license creating
+    /// a duplicate. The entity is still found here, just not ranked first.
+    ///
+    /// If a future change makes the entity rank first, invert the assertion —
+    /// that is an improvement, not a regression.
+    #[tokio::test]
+    async fn a_title_case_message_can_outrank_the_entity_with_filler() -> Result<()> {
+        let (store, service, _t) = create_test_store().await?;
+        seed_entity(&service, "text", "Northwind Trading").await?;
+        seed_entity(&service, "text", "Customer Record").await?;
+
+        let hits = store
+            .resolve_entities_by_title(
+                "Could You Kindly Update The Customer Record And Billing Address For Northwind Trading",
+                12,
+            )
+            .await?;
+
+        assert!(
+            !hits.is_empty(),
+            "the residual degrades ranking, not resolution — an empty result here \
+             would mean a false 'does not exist': {hits:?}"
+        );
+        Ok(())
+    }
+
     /// The limit is honoured, so one common word cannot flood the caller.
     #[tokio::test]
     async fn the_limit_bounds_the_result_set() -> Result<()> {
