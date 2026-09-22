@@ -40,7 +40,7 @@ nodespace schema create --params '{"description":"A unit of work in a Linear-sty
 Create `cycle`:
 
 ```bash
-nodespace schema create --params '{"description":"A time-boxed iteration. Its upcoming/active/past state is derived by comparing start_date and end_date to today — deliberately not stored, so there is no second copy of the truth to keep in sync.","fields":[{"description":"First day of the cycle.","friendlyName":"Start date","indexed":true,"name":"start_date","protection":"user","required":true,"type":"date"},{"description":"Last day of the cycle. A cycle whose end_date has passed is over; the rollover Play moves its unfinished work forward.","friendlyName":"End date","indexed":true,"name":"end_date","protection":"user","required":true,"type":"date"},{"default":14,"description":"How many days the NEXT cycle should span. Read by the cycle-creation Play when it computes the successor'\''s end_date, so changing cadence is a field edit rather than a Play rewrite.","friendlyName":"Duration (days)","indexed":false,"name":"duration_days","protection":"user","required":false,"type":"number"}],"name":"Cycle","relationships":[{"cardinality":"many","description":"Work assigned to this cycle. Targets `task`, not `issue`: subtype-aware querying already reaches issues through it, and targeting the base type keeps a plain task assignable to a cycle.","direction":"out","name":"tasks","reverseCardinality":"one","reverseName":"cycle","targetType":"task"}]}'
+nodespace schema create --params '{"description":"A time-boxed iteration. Its upcoming/active/past state is derived by comparing start_date and end_date to today — deliberately not stored, so there is no second copy of the truth to keep in sync.","fields":[{"description":"First day of the cycle.","friendlyName":"Start date","indexed":true,"name":"start_date","protection":"user","required":true,"type":"date"},{"description":"Last day of the cycle. A cycle whose end_date has passed is over; on that day the rollover Play moves its tasks into the successor.","friendlyName":"End date","indexed":true,"name":"end_date","protection":"user","required":true,"type":"date"},{"default":14,"description":"How many days the NEXT cycle should span. Read by the cycle-creation Play when it computes the successor'\''s end_date, so changing cadence is a field edit rather than a Play rewrite.","friendlyName":"Duration (days)","indexed":false,"name":"duration_days","protection":"user","required":false,"type":"number"}],"name":"Cycle","relationships":[{"cardinality":"many","description":"Work assigned to this cycle. Targets `task`, not `issue`: subtype-aware querying already reaches issues through it, and targeting the base type keeps a plain task assignable to a cycle.","direction":"out","name":"tasks","reverseCardinality":"one","reverseName":"cycle","targetType":"task"}]}'
 ```
 
 ### 2. Vocabulary extensions
@@ -67,7 +67,7 @@ A Play is a node of type `play` carrying a `rules` property. Its rules are valid
 
 ```bash
 nodespace node create --type play --content 'Close out the ending cycle' \
-  --properties '{"_seed":{"default_rules":[{"actions":[{"action_type":"create_node","params":{"content":"Next cycle","node_type":"cycle","properties":{"duration_days":"{trigger.node.duration_days}","end_date":"{add_days(trigger.node.end_date, trigger.node.duration_days)}","start_date":"{add_days(trigger.node.end_date, 1)}"}}},{"action_type":"add_relationship","for_each":"node.tasks","params":{"relationship_type":"tasks","source_id":"{actions[0].result.id}","target_id":"{item.id}"}}],"conditions":["node.end_date == today()"],"name":"create-successor-and-roll-over","trigger":{"cron":"0 5 0 * * * *","node_type":"cycle","type":"scheduled"}}]},"description":"On the day a cycle ends, create its successor — starting the next day and spanning that cycle'\''s own duration_days — then move the ending cycle'\''s tasks into it. Every task moves, finished ones included: the engine has no per-item filter for a for_each yet.","rules":[{"actions":[{"action_type":"create_node","params":{"content":"Next cycle","node_type":"cycle","properties":{"duration_days":"{trigger.node.duration_days}","end_date":"{add_days(trigger.node.end_date, trigger.node.duration_days)}","start_date":"{add_days(trigger.node.end_date, 1)}"}}},{"action_type":"add_relationship","for_each":"node.tasks","params":{"relationship_type":"tasks","source_id":"{actions[0].result.id}","target_id":"{item.id}"}}],"conditions":["node.end_date == today()"],"name":"create-successor-and-roll-over","trigger":{"cron":"0 5 0 * * * *","node_type":"cycle","type":"scheduled"}}]}'
+  --properties '{"_seed":{"default_rules":[{"actions":[{"action_type":"create_node","params":{"content":"Next cycle","node_type":"cycle","properties":{"duration_days":"{trigger.node.duration_days}","end_date":"{add_days(trigger.node.end_date, trigger.node.duration_days)}","start_date":"{add_days(trigger.node.end_date, 1)}"}}},{"action_type":"add_relationship","for_each":"trigger.node.tasks","params":{"relationship_type":"tasks","source_id":"{actions[0].result.id}","target_id":"{item.id}"}},{"action_type":"remove_relationship","for_each":"trigger.node.tasks","params":{"relationship_type":"tasks","source_id":"{trigger.node.id}","target_id":"{item.id}"}}],"conditions":["node.end_date == today()"],"name":"create-successor-and-roll-over","trigger":{"cron":"0 5 0 * * * *","node_type":"cycle","type":"scheduled"}}]},"description":"On the day a cycle ends, create its successor — starting the next day and spanning that cycle'\''s own duration_days — then move the ending cycle'\''s tasks into it. Every task moves, finished ones included: the engine has no per-item filter for a for_each yet.","rules":[{"actions":[{"action_type":"create_node","params":{"content":"Next cycle","node_type":"cycle","properties":{"duration_days":"{trigger.node.duration_days}","end_date":"{add_days(trigger.node.end_date, trigger.node.duration_days)}","start_date":"{add_days(trigger.node.end_date, 1)}"}}},{"action_type":"add_relationship","for_each":"trigger.node.tasks","params":{"relationship_type":"tasks","source_id":"{actions[0].result.id}","target_id":"{item.id}"}},{"action_type":"remove_relationship","for_each":"trigger.node.tasks","params":{"relationship_type":"tasks","source_id":"{trigger.node.id}","target_id":"{item.id}"}}],"conditions":["node.end_date == today()"],"name":"create-successor-and-roll-over","trigger":{"cron":"0 5 0 * * * *","node_type":"cycle","type":"scheduled"}}]}'
 ```
 
 **Block closing an issue with open sub-issues** — Rejects a status change to done while any child issue is still open. Close the children first, or move them out from under this issue.
@@ -99,11 +99,18 @@ Create each with `nodespace node create --type skill`, then add its guidance as 
 
 ## After installing
 
-The two scheduled Plays run daily, just after midnight, on whichever devices are
-online. Nothing happens the moment you install — the first cycle is created when
-one is due.
+The scheduled Play runs daily, just after midnight, on whichever devices are
+online.
 
-Tell the user what landed: two new node types, two vocabulary extensions on
-`task`, four Plays, and the guidance skills. Mention that the validation gates
-will reject some status changes by design, so a later rejection reads as the
-system working rather than a bug.
+**Create the first cycle yourself.** The Play triggers on an existing cycle
+reaching its end date, so with no cycle in the graph nothing ever fires. Create
+one with a `start_date` and `end_date`; the automation takes over from there.
+
+Tell the user what landed: two new node types, two vocabulary extensions on the
+inherited `task.status` and `task.priority` (stored on `issue`, leaving `task`
+itself untouched), three Plays, and the guidance skills.
+
+Mention two things they will otherwise meet as surprises: the validation gates
+reject some status changes by design, so a later rejection is the system
+working; and rollover moves every task in the ending cycle, completed ones
+included, because a `for_each` cannot filter per item yet.

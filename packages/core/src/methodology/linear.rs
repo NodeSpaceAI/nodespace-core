@@ -156,7 +156,7 @@ fn cycle_schema() -> SchemaStep {
                     "required": true,
                     "description":
                         "Last day of the cycle. A cycle whose end_date has passed is over; \
-                         the rollover Play moves its unfinished work forward.",
+                         on that day the rollover Play moves its tasks into the successor.",
                 },
                 {
                     "name": "duration_days",
@@ -248,8 +248,8 @@ fn issue_priority_values() -> FieldValueExtension {
 // Plays
 // ---------------------------------------------------------------------------
 
-/// Close out an ending cycle: create its successor, then move unfinished work
-/// into it.
+/// Close out an ending cycle: create its successor, then move its tasks into
+/// it.
 ///
 /// One Play with two actions rather than two Plays, because the second action
 /// needs the first's output. The successor's id is only reachable as
@@ -260,6 +260,26 @@ fn issue_priority_values() -> FieldValueExtension {
 /// Running both on the end date also removes a cross-day dependency: a
 /// rollover that fired the next morning would be assuming the creation Play
 /// had already succeeded, and would silently do nothing if it had not.
+///
+/// The reassignment is add-then-remove, and both halves are required. Adding
+/// alone does not move anything: only the FORWARD cardinality is enforced on
+/// write, `cycle.tasks` is `many` on that side, and the idempotency check is
+/// keyed on `(source, target, name)` — so a second cycle claiming the same
+/// task is accepted rather than rejected or replaced. Without the removal a
+/// task accumulates one edge per cycle forever and every `sum(cycle.tasks,
+/// estimate)` double-counts.
+///
+/// Add before remove, deliberately: a failure between the two leaves the task
+/// in both cycles, which is visible and repairable, rather than in neither,
+/// which silently loses it.
+///
+/// **Every task moves, including finished ones.** `for_each` has no per-item
+/// filter — `ActionDefinition` carries only `action_type`, `params` and
+/// `for_each`, and rule conditions compile once against the trigger node, so
+/// nothing can see `item`. Filtering to incomplete work needs a capability
+/// the engine does not have. This is stated plainly in the Play's own
+/// description and in the seeded guidance rather than described as intent,
+/// because an agent reading either will act on it.
 ///
 /// Both dates come from `add_days`; neither CEL nor action-value resolution
 /// can otherwise compute one.
@@ -303,9 +323,18 @@ fn cycle_rollover_play() -> PlayStep {
                 },
                 {
                     "action_type": "add_relationship",
-                    "for_each": "node.tasks",
+                    "for_each": "trigger.node.tasks",
                     "params": {
                         "source_id": "{actions[0].result.id}",
+                        "relationship_type": "tasks",
+                        "target_id": "{item.id}",
+                    },
+                },
+                {
+                    "action_type": "remove_relationship",
+                    "for_each": "trigger.node.tasks",
+                    "params": {
+                        "source_id": "{trigger.node.id}",
                         "relationship_type": "tasks",
                         "target_id": "{item.id}",
                     },
@@ -732,8 +761,13 @@ mod tests {
     /// cycle, so every structural check passes and the Play simply re-adds
     /// each task to the cycle it is already in. Nothing fails; the work just
     /// never moves.
+    ///
+    /// This asserts SHAPE only, which is exactly its limitation — it cannot
+    /// see whether the actions achieve anything. `rollover_moves_a_task_...`
+    /// in `tests/methodology_linear_execution_test.rs` runs them and counts
+    /// the edges, and is what actually pins the behavior.
     #[test]
-    fn rollover_reassigns_tasks_to_the_newly_created_cycle() {
+    fn rollover_adds_to_the_successor_then_removes_from_the_ending_cycle() {
         let play = cycle_rollover_play();
         let rules = play.rules.as_array().expect("rules");
         let actions = rules[0]["actions"].as_array().expect("actions");
@@ -744,14 +778,48 @@ mod tests {
         );
         assert_eq!(actions[0]["params"]["node_type"], "cycle");
 
-        let reassign = &actions[1];
-        assert_eq!(reassign["action_type"], "add_relationship");
+        let add = &actions[1];
+        assert_eq!(add["action_type"], "add_relationship");
         assert_eq!(
-            reassign["params"]["source_id"], "{actions[0].result.id}",
+            add["params"]["source_id"], "{actions[0].result.id}",
             "must target the created successor, not the ending cycle"
         );
-        assert_eq!(reassign["for_each"], "node.tasks");
-        assert_eq!(reassign["params"]["target_id"], "{item.id}");
+        assert_eq!(add["params"]["target_id"], "{item.id}");
+
+        // Adding alone is not a move: only forward cardinality is enforced on
+        // write, and `tasks` is `many` there, so the old edge survives unless
+        // something removes it.
+        let remove = actions
+            .get(2)
+            .expect("a third action must remove the old edge, or the task ends up in both cycles");
+        assert_eq!(remove["action_type"], "remove_relationship");
+        assert_eq!(
+            remove["params"]["source_id"], "{trigger.node.id}",
+            "the removal must target the ENDING cycle"
+        );
+        assert_eq!(remove["params"]["target_id"], "{item.id}");
+
+        // Add before remove: a failure between them leaves the task in both
+        // cycles (visible, repairable) rather than in neither (silently lost).
+        assert!(
+            actions
+                .iter()
+                .position(|a| a["action_type"] == "add_relationship")
+                < actions
+                    .iter()
+                    .position(|a| a["action_type"] == "remove_relationship"),
+            "add must precede remove"
+        );
+
+        // `node.*` is condition syntax; action bindings only know
+        // `trigger.node.*`, `item.*` and `actions[N].*`. A bare `node.tasks`
+        // fails at runtime with `unknown binding root: 'node'`.
+        for action in [add, remove] {
+            assert_eq!(
+                action["for_each"], "trigger.node.tasks",
+                "for_each must use an action-binding root"
+            );
+        }
     }
 
     #[test]

@@ -247,3 +247,181 @@ async fn sub_issue_gate_allows_closing_when_every_child_is_done() -> Result<()> 
 
     shutdown(tx, task).await
 }
+
+/// Rollover must MOVE a task, not copy it.
+///
+/// This is the test whose absence let a commit claiming to fix the
+/// leaves-it-in-both-cycles bug pass the whole gate without the fix. Adding an
+/// edge to the successor is not a move: only forward cardinality is enforced
+/// on write, `cycle.tasks` is `many` on that side, and the idempotency check
+/// is keyed on `(source, target, name)` — so nothing rejects a second cycle
+/// claiming the same task. Counting the edges afterwards is the only way to
+/// see it.
+///
+/// Drives the rule's actions directly rather than waiting for the cron tick:
+/// `CronRunner` wakes on a 60-second poll, which no test should sit through,
+/// and what is under test is what the actions DO once they run.
+#[tokio::test]
+async fn rollover_moves_a_task_rather_than_leaving_it_in_both_cycles() -> Result<()> {
+    let (service, _tmp, tx, task) = service_with_recipe().await?;
+
+    let ending = service
+        .create_node(Node::new(
+            "cycle".to_string(),
+            "Ending cycle".to_string(),
+            serde_json::json!({
+                "start_date": "2026-01-01",
+                "end_date": chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                "duration_days": 14,
+            }),
+        ))
+        .await?;
+    let work = service
+        .create_node(Node::new(
+            "issue".to_string(),
+            "Unfinished work".to_string(),
+            serde_json::json!({ "status": "in_progress" }),
+        ))
+        .await?;
+    service
+        .create_relationship(&ending, "tasks", &work, serde_json::json!({}))
+        .await?;
+
+    assert_eq!(
+        service
+            .get_related_nodes(&ending, "tasks", "out")
+            .await?
+            .len(),
+        1,
+        "precondition: the ending cycle holds the task"
+    );
+
+    run_rollover(&service, &ending).await?;
+
+    let cycles = service.query_nodes_by_type("cycle", Some("active")).await?;
+    let successor = cycles
+        .iter()
+        .find(|c| c.id != ending)
+        .expect("the rule should have created a successor cycle");
+
+    let in_successor = service
+        .get_related_nodes(successor.id.as_str(), "tasks", "out")
+        .await?;
+    assert_eq!(in_successor.len(), 1, "the task must land in the successor");
+    assert_eq!(
+        in_successor[0].id, work,
+        "the successor must hold the original task, not a copy"
+    );
+
+    assert_eq!(
+        service
+            .get_related_nodes(&ending, "tasks", "out")
+            .await?
+            .len(),
+        0,
+        "the task must be GONE from the ending cycle — an add without a remove \
+         leaves it in both, so every later estimate sum double-counts it"
+    );
+
+    shutdown(tx, task).await
+}
+
+/// Run the rollover play's single rule against `trigger`, the way the
+/// CronRunner would once its cron matched.
+async fn run_rollover(service: &Arc<NodeService>, trigger_id: &str) -> Result<()> {
+    use nodespace_core::db::events::{DomainEvent, PlaybookExecutionContext};
+    use nodespace_core::playbook::types::{parse_rule, parse_rules_from_properties};
+
+    let play_id = "linear-cycle-rollover";
+    let play = service
+        .get_node(play_id)
+        .await?
+        .unwrap_or_else(|| panic!("{play_id} should be installed"));
+    let trigger = service
+        .get_node(trigger_id)
+        .await?
+        .expect("trigger node exists");
+
+    let defs = parse_rules_from_properties(&play.properties)
+        .map_err(|e| anyhow::anyhow!("parsing {play_id}: {e:?}"))?;
+    let rule = parse_rule(defs.first().expect("the play declares a rule"))
+        .map_err(|e| anyhow::anyhow!("parsing rule: {e:?}"))?;
+
+    let event = DomainEvent::NodeCreated {
+        node_type: trigger.node_type.clone(),
+        node_id: trigger.id.clone(),
+    };
+    let ctx = PlaybookExecutionContext {
+        originating_event_id: "test-rollover".to_string(),
+        depth: 1,
+        source_playbook_id: play_id.to_string(),
+    };
+
+    match nodespace_core::playbook::actions::execute_actions(
+        &rule.actions,
+        &trigger,
+        &event,
+        service,
+        ctx,
+    )
+    .await
+    {
+        nodespace_core::playbook::actions::ActionResult::Success => Ok(()),
+        nodespace_core::playbook::actions::ActionResult::Failed(e) => {
+            Err(anyhow::anyhow!("rollover actions failed: {e}"))
+        }
+    }
+}
+
+/// The relationship viewer must count an inherited edge between two subtypes.
+///
+/// Making `get_inbound_relationships` subtype-aware is what surfaced
+/// `task.blocks` as an inbound declaration for `issue` — correct, and what
+/// makes the blocker gate work. But the viewer then narrowed each group to
+/// nodes whose type equalled the DECLARER's (`task`), so an `issue` on the far
+/// end was dropped and the group rendered a confident "0" rather than a
+/// visibly missing entry.
+///
+/// A count that is wrong reads as truth; a group that is absent at least reads
+/// as absent. That is why this is worth a test of its own.
+#[tokio::test]
+async fn the_relationship_viewer_counts_an_inherited_edge_between_subtypes() -> Result<()> {
+    let (service, _tmp, tx, task) = service_with_recipe().await?;
+
+    let blocker = service
+        .create_node(Node::new(
+            "issue".to_string(),
+            "The blocker".to_string(),
+            serde_json::json!({ "status": "open" }),
+        ))
+        .await?;
+    let blocked = service
+        .create_node(Node::new(
+            "issue".to_string(),
+            "The blocked issue".to_string(),
+            serde_json::json!({ "status": "open" }),
+        ))
+        .await?;
+    service
+        .create_relationship(&blocker, "blocks", &blocked, serde_json::json!({}))
+        .await?;
+
+    let groups = nodespace_core::ops::rel_ops::get_node_relationships(&service, &blocked)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let blocks_group = groups
+        .groups
+        .iter()
+        .find(|g| g.relationship_name == "blocks" && g.direction == "in")
+        .expect("an inbound `blocks` group should exist for a blocked issue");
+
+    assert_eq!(
+        blocks_group.count, 1,
+        "the blocking issue must be counted — an exact type match against the \
+         declaring schema (`task`) drops every subtype instance and renders 0"
+    );
+    assert_eq!(blocks_group.related[0].id, blocker);
+
+    shutdown(tx, task).await
+}
