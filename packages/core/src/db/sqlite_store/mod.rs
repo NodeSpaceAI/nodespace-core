@@ -234,6 +234,17 @@ pub async fn ensure_sqlite_vec_registered() {
 /// workaround: see `rust:test:core` in `package.json` (and
 /// `rust:test:libsql-linked` for the same treatment applied to
 /// `nodespace-agent`/`nodespace-daemon`/`nodespace-cli`, above).
+/// Outcome of the `node_title_fts` staleness check, so that "a healthy index
+/// was left alone" is observable to a test. See
+/// [`SqliteStore::backfill_title_fts_if_stale`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitleFtsRepair {
+    /// The index already matched `node`; nothing was written.
+    AlreadyHealthy,
+    /// The index disagreed with `node` and was cleared and refilled.
+    Refilled,
+}
+
 pub struct SqliteStore {
     /// The store's SQLite connections. Reachable only through
     /// [`SqliteStore::write`] / [`SqliteStore::read`] — the raw handles live in
@@ -344,7 +355,8 @@ impl SqliteStore {
                 .context("Failed to backfill FTS5 index")?;
         }
 
-        Self::backfill_title_fts_if_stale(conn).await
+        Self::backfill_title_fts_if_stale(conn).await?;
+        Ok(())
     }
 
     /// The same index-integrity repair for `node_title_fts`, which needs its own
@@ -370,7 +382,13 @@ impl SqliteStore {
     /// `count(*) FROM node_title_fts` is a real row count here, unlike the
     /// external-content case that forces `node_fts` to read its shadow
     /// `node_fts_docsize` table.
-    async fn backfill_title_fts_if_stale(conn: &libsql::Connection) -> Result<()> {
+    ///
+    /// Returns whether it repaired. A needless repair still produces a correct
+    /// index, so inspecting the resulting rows cannot distinguish "was already
+    /// healthy" from "was rebuilt under a write lock, as it will be on every
+    /// future open". Convergence is exactly that distinction, so it has to be
+    /// reported to be testable.
+    async fn backfill_title_fts_if_stale(conn: &libsql::Connection) -> Result<TitleFtsRepair> {
         let count = |sql: &'static str| async move {
             let mut r = conn.query(sql, ()).await?;
             let n: i64 = r
@@ -392,8 +410,9 @@ impl SqliteStore {
             .context("Failed to count titled node rows")?;
         if indexed != titled_count {
             Self::refill_title_fts(conn).await?;
+            return Ok(TitleFtsRepair::Refilled);
         }
-        Ok(())
+        Ok(TitleFtsRepair::AlreadyHealthy)
     }
 
     /// Clear and refill `node_title_fts` from `node`, as ONE transaction.
@@ -720,6 +739,30 @@ mod tests {
     /// seeds core schema nodes, which carry titles and so legitimately occupy
     /// the index — an absolute row count would assert on that seed rather than
     /// on the node under test.
+    /// How many rows the title index SHOULD hold, computed from `node`.
+    ///
+    /// Deliberately spells the predicate out a third time rather than reusing
+    /// the production query: a test that asks the code under test what the
+    /// right answer is cannot detect the code changing its mind. This pins the
+    /// intended shape — every titled row, where "titled" excludes both NULL and
+    /// '' — so a production predicate drifting in EITHER direction shows up as
+    /// a mismatch.
+    async fn expected_title_fts_rows(store: &Arc<SqliteStore>) -> Result<i64> {
+        let mut rows = store
+            .read()
+            .await?
+            .query(
+                "SELECT count(*) FROM node WHERE title IS NOT NULL AND title != ''",
+                (),
+            )
+            .await?;
+        Ok(rows
+            .next()
+            .await?
+            .expect("count(*) always returns a row")
+            .get(0)?)
+    }
+
     async fn title_fts_rows_for(store: &Arc<SqliteStore>, id: &str) -> Result<i64> {
         let mut rows = store
             .read()
@@ -1131,17 +1174,27 @@ mod tests {
              the empty-title one either"
         );
 
-        // Convergence: the refill's predicate must agree with the staleness
-        // count's, or the repair re-runs on every open forever. Reopening a
-        // just-repaired database must therefore be a no-op, which is only
-        // observable with an empty-title row present.
+        // Convergence: after a repair, the index must satisfy the very check
+        // that triggered it, so the next open does nothing.
+        //
+        // Asserting the row count is NOT enough, in either direction. A repair
+        // that runs needlessly still leaves a correct index behind, so the rows
+        // look identical whether the database was healthy or was just rebuilt
+        // under a write lock — as it would be on every open, forever. Only the
+        // repair's own verdict distinguishes them.
         drop(store);
         let reopened = Arc::new(SqliteStore::new(db_path).await?);
         assert_eq!(
             title_fts_row_count(&reopened).await?,
-            1,
-            "reopening a repaired database must leave the index alone; a differing \
-             count here means the repair never converges and rebuilds every open"
+            expected_title_fts_rows(&reopened).await?,
+            "the repaired index must hold exactly the titled rows"
+        );
+        assert_eq!(
+            SqliteStore::backfill_title_fts_if_stale(&*reopened.write().await).await?,
+            TitleFtsRepair::AlreadyHealthy,
+            "a just-repaired index must satisfy the staleness check it was \
+             repaired for; anything else means the refill and the count use \
+             different predicates and every open rebuilds the whole index"
         );
         Ok(())
     }
