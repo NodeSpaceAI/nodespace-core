@@ -165,12 +165,11 @@ async fn create_schema_resolving_collisions(
     renames: &HashMap<String, String>,
 ) -> StepOutcome {
     // Schema params carry ids too — `extends` names a parent, a relationship's
-    // `targetType` names a target — so an earlier re-key has to reach them the
-    // same way it reaches the vocabulary, Play and skill steps. The shipped
-    // recipe cannot hit this (both point at core `task`, which is never
-    // suffixed), but a recipe whose second schema extends its first would
-    // silently extend the stranger's schema instead.
-    let params = rewrite_schema_ids(&step.params, renames);
+    // `targetType` names a target — so an earlier re-key has to reach them.
+    // The shipped recipe cannot hit this (both point at core `task`, which is
+    // never suffixed), but a recipe whose second schema extends its first
+    // would otherwise silently extend the stranger's schema.
+    let params = rewrite_schema_step_ids(&step.params, renames);
 
     match handle_create_schema(node_service, params.clone()).await {
         Ok(_) => {
@@ -188,7 +187,10 @@ async fn create_schema_resolving_collisions(
 
     // Taken. `name` drives the derived id, so suffixing the name is what
     // moves the schema to a free id.
-    let base_name = params["name"].as_str().unwrap_or(step.schema_id);
+    // The author's own name, never a rewritten one: `name` is display text
+    // that derives the id, so substituting it would build the suffix ladder on
+    // a string the recipe never wrote.
+    let base_name = step.params["name"].as_str().unwrap_or(step.schema_id);
     for n in 2..=MAX_SUFFIX_ATTEMPTS {
         let mut params = params.clone();
         params["name"] = serde_json::json!(format!("{base_name} {n}"));
@@ -358,6 +360,61 @@ fn rename_note(renames: &HashMap<String, String>) -> Option<String> {
     Some(note)
 }
 
+/// Follow a re-key through a `create_schema` payload's **id-bearing keys
+/// only** — `extends` and each relationship's `targetType`.
+///
+/// Deliberately NOT [`rewrite_schema_ids`], which is a blanket value walk.
+/// That is safe for the Play, vocabulary and skill payloads, whose ids all sit
+/// in value position. A `create_schema` payload is a different shape: it also
+/// carries user-authored vocabulary in value position — `fields[].name`,
+/// `friendlyName`, a relationship's `name` and `reverseName`, enum values,
+/// `title_template` tokens — and schema ids share one namespace of bare
+/// lowercase identifiers with all of it. `cycle`, `issue` and `status` are
+/// each plausible as a schema id AND as a field name.
+///
+/// A blanket walk therefore renames the author's fields behind their back. It
+/// fails loudly when a `title_template` references the renamed field, and
+/// silently otherwise — storing a field under a name the recipe never wrote,
+/// which is the corruption re-keying exists to prevent.
+///
+/// The id-bearing keys were enumerated from `CreateSchemaParams`' six fields:
+/// `name` is display text (and derives the id, so substituting it would build
+/// a suffix ladder on a string the author never wrote), `description` is
+/// prose, `fields` and `title_template` are user vocabulary. That leaves
+/// `extends` and each relationship's `targetType`.
+///
+/// `EdgeField` also carries a `target_type`, deliberately not handled: it has
+/// no consumer anywhere in core — declared, never read — so it cannot hold a
+/// live schema reference. If one is ever wired up, it belongs here.
+fn rewrite_schema_step_ids(
+    params: &serde_json::Value,
+    renames: &HashMap<String, String>,
+) -> serde_json::Value {
+    let mut out = params.clone();
+    if renames.is_empty() {
+        return out;
+    }
+
+    if let Some(parent) = out.get("extends").and_then(|v| v.as_str()) {
+        if let Some(renamed) = renames.get(parent) {
+            out["extends"] = serde_json::json!(renamed);
+        }
+    }
+
+    if let Some(relationships) = out.get_mut("relationships").and_then(|v| v.as_array_mut()) {
+        for relationship in relationships {
+            let Some(target) = relationship.get("targetType").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Some(renamed) = renames.get(target) {
+                relationship["targetType"] = serde_json::json!(renamed);
+            }
+        }
+    }
+
+    out
+}
+
 fn resolved_id(id: &str, renames: &HashMap<String, String>) -> String {
     renames.get(id).cloned().unwrap_or_else(|| id.to_string())
 }
@@ -374,49 +431,6 @@ impl StepReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A schema step's own params must follow an earlier re-key.
-    ///
-    /// The shipped recipe cannot exercise this: `issue` extends core `task`
-    /// and `cycle.tasks` targets core `task`, and a core type is never
-    /// suffixed. So the rewrite is checked directly here rather than through
-    /// an install — otherwise the only evidence would be an install that
-    /// never reaches the branch, which proves nothing about it.
-    ///
-    /// Without the rewrite, a recipe whose second schema extends its first
-    /// would silently extend whatever stranger's schema already held that id
-    /// — inheriting the wrong fields, with no error at any point.
-    #[test]
-    fn a_schema_steps_own_params_follow_an_earlier_re_key() {
-        let mut renames = HashMap::new();
-        renames.insert("base".to_string(), "base__2".to_string());
-
-        let params = serde_json::json!({
-            "name": "Derived",
-            "extends": "base",
-            "relationships": [{
-                "name": "items",
-                "targetType": "base",
-                "direction": "out",
-                "cardinality": "many",
-                "reverseName": "owner",
-                "reverseCardinality": "one",
-            }],
-        });
-
-        let out = rewrite_schema_ids(&params, &renames);
-
-        assert_eq!(
-            out["extends"], "base__2",
-            "a parent that was re-keyed must be followed, or the subtype \
-             inherits from a stranger's schema"
-        );
-        assert_eq!(
-            out["relationships"][0]["targetType"], "base__2",
-            "a relationship target that was re-keyed must be followed too"
-        );
-        assert_eq!(out["name"], "Derived", "unrelated values are untouched");
-    }
 
     #[test]
     fn rewrite_follows_a_rename_through_nested_payloads() {

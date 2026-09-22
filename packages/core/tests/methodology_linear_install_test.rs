@@ -607,3 +607,93 @@ async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
 
     Ok(())
 }
+
+/// A field name that happens to spell a re-keyed schema id must survive
+/// untouched.
+///
+/// Schema ids and user-chosen vocabulary share one namespace of bare lowercase
+/// identifiers — `cycle`, `issue`, `status` are all plausible as either. So a
+/// rewrite over a `create_schema` payload cannot be a blanket value walk the
+/// way it can for the Play, vocabulary and skill payloads: those carry ids in
+/// value position, while this one also carries `fields[].name`,
+/// `reverseName`, enum values and `title_template` tokens.
+///
+/// Rewriting those renames the author's field behind their back. Here it fails
+/// loudly, because `title_template` cross-checks field names; a recipe with no
+/// template gets the silent version, storing a field under a name the recipe
+/// never wrote — the exact corruption the re-key exists to prevent, arriving
+/// through the fix for it.
+#[tokio::test]
+async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
+    use nodespace_core::methodology::{MethodologyRecipe, SchemaStep};
+
+    let (service, _tmp) = test_service().await?;
+
+    // Squat the id the recipe's first schema wants, forcing a re-key.
+    handle_create_schema(
+        &service,
+        serde_json::json!({
+            "name": "Cycle",
+            "description": "Someone else's cycle",
+            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+        }),
+    )
+    .await
+    .expect("squatter schema");
+
+    let recipe = MethodologyRecipe {
+        id: "vocab-collision",
+        name: "Vocabulary collision",
+        description: "A recipe whose second schema names a field after its first.",
+        schemas: vec![
+            SchemaStep {
+                schema_id: "cycle",
+                params: serde_json::json!({
+                    "name": "Cycle",
+                    "description": "The recipe's own cycle",
+                    "fields": [{ "name": "length", "type": "string", "protection": "user" }],
+                }),
+            },
+            SchemaStep {
+                schema_id: "report",
+                params: serde_json::json!({
+                    "name": "Report",
+                    "description": "Has a field called `cycle`, which is not a schema reference",
+                    "fields": [
+                        { "name": "cycle", "type": "string", "protection": "user" },
+                        { "name": "summary", "type": "string", "protection": "user" },
+                    ],
+                    "title_template": "{cycle} report",
+                }),
+            },
+        ],
+        field_value_extensions: vec![],
+        plays: vec![],
+        skills: vec![],
+    };
+
+    let report = install_recipe(&service, &recipe).await;
+    assert!(
+        report.success,
+        "a field named after a re-keyed schema must not break the install: {:?}",
+        report.failure()
+    );
+
+    let schema = service
+        .get_schema_node("report")
+        .await?
+        .expect("report schema should exist");
+    let field_names: Vec<&str> = schema.fields.iter().map(|f| f.name.as_str()).collect();
+
+    assert!(
+        field_names.contains(&"cycle"),
+        "the `cycle` field must keep the name the recipe wrote, got {field_names:?}"
+    );
+    assert_eq!(
+        schema.title_template.as_deref(),
+        Some("{cycle} report"),
+        "a title_template token naming that field must still resolve"
+    );
+
+    Ok(())
+}

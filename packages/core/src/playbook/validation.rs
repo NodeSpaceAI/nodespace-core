@@ -3092,11 +3092,19 @@ mod tests {
         /// it asserts the FORWARD name wins, so it passes whether or not the
         /// reverse branch works at all.
         ///
-        /// Deliberately routed through a subtype: `vr_child extends vr_task`,
-        /// and the reverse name is declared toward `vr_task`. That is the
-        /// shape the recipe actually needs (`blocked_by` reaching an `issue`
-        /// via `task.blocks`) and the one that was silently rejected before
-        /// the chain-walk landed.
+        /// The fixture routes through a subtype (`vr_child extends vr_task`,
+        /// with the reverse name declared toward `vr_task`) because that is
+        /// the shape the Linear recipe needs — `blocked_by` reaching an
+        /// `issue` via `task.blocks`.
+        ///
+        /// It does NOT pin the outer `extends` walk in this function, though.
+        /// Removing that walk leaves this test green, because
+        /// `get_inbound_relationships` already expands ancestors internally,
+        /// so the very first scope matches and the loop never iterates. What
+        /// this test pins is the reverse branch existing at all. The
+        /// duplicated ancestor expansion between the two is redundant work on
+        /// every reverse segment and worth collapsing; whichever survives,
+        /// this test still covers the branch.
         #[tokio::test]
         async fn test_reverse_name_from_another_schema_validates_through_extends() {
             let (svc, _tmp) = create_test_service().await;

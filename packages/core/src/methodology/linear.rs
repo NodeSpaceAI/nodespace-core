@@ -178,6 +178,11 @@ fn cycle_schema() -> SchemaStep {
                     "targetType": "task",
                     "direction": "out",
                     "cardinality": "many",
+                    // Shares a spelling with the `cycle` schema id. Safe
+                    // because the install's schema rewrite is key-targeted
+                    // (`extends`/`targetType` only) rather than a blanket
+                    // value walk — a reverse NAME is vocabulary, not a
+                    // reference, and must survive a re-key untouched.
                     "reverseName": "cycle",
                     "reverseCardinality": "one",
                     "description":
