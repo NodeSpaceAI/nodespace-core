@@ -404,9 +404,13 @@ mod tests {
     }
 
     /// Extracts the JSON object following "Example: " in a rule's doc text
-    /// (optionally wrapped in a single pair of markdown backticks), by
-    /// balancing braces rather than assuming no nested `{}` — a future
-    /// example may nest an object-valued field.
+    /// (optionally wrapped in a single pair of markdown backticks). Brace
+    /// balancing is delegated to
+    /// [`crate::local_agent::tools::extract_json_object`] rather than
+    /// reimplemented here — it already tracks string-literal state, so a
+    /// `{`/`}` inside a quoted value (e.g. a description quoting a
+    /// `{placeholder}`) doesn't throw off the match the way a naive counter
+    /// would.
     fn extract_example_json(text: &str) -> &str {
         let marker = "Example: ";
         let after = text
@@ -414,23 +418,8 @@ mod tests {
             .map(|i| &text[i + marker.len()..])
             .unwrap_or_else(|| panic!("no \"Example: \" marker found in: {text:?}"));
         let after = after.strip_prefix('`').unwrap_or(after);
-        let start = after
-            .find('{')
-            .unwrap_or_else(|| panic!("no JSON object after \"Example: \" in: {text:?}"));
-        let mut depth = 0usize;
-        for (i, c) in after[start..].char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return &after[start..start + i + 1];
-                    }
-                }
-                _ => {}
-            }
-        }
-        panic!("unbalanced braces in example JSON: {text:?}");
+        crate::local_agent::tools::extract_json_object(after)
+            .unwrap_or_else(|| panic!("no JSON object after \"Example: \" in: {text:?}"))
     }
 
     /// `UNIQUE_FIELD_FLAGS`'s documented `uniqueCaseInsensitive` example
@@ -459,5 +448,61 @@ mod tests {
                 "documented example should set uniqueCaseInsensitive: true"
             );
         }
+    }
+
+    /// `packages/skill/references/cli.md`'s "Create a schema with a unique
+    /// field" worked example is hand-maintained prose living outside the
+    /// `<!-- BEGIN GENERATED: schema-rules -->` marker `gen_skill_md.rs`
+    /// regenerates from `UNIQUE_FIELD_FLAGS` — regenerating the skill (or
+    /// `checked_in_skill_md_is_up_to_date`, `skill_md_generation.rs`) cannot
+    /// catch this example drifting on its own, since it's never produced
+    /// from source. This is the exact artifact the tracking issue reported:
+    /// a complete `nodespace schema create` command that fails if copied
+    /// verbatim.
+    #[test]
+    fn cli_md_unique_field_worked_example_matches_schema_field_wire_format() {
+        let cli_md_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../skill/references/cli.md");
+        let cli_md = std::fs::read_to_string(&cli_md_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", cli_md_path.display()));
+
+        let marker = "# Create a schema with a unique field";
+        let after_comment = cli_md.find(marker).map(|i| &cli_md[i..]).unwrap_or_else(|| {
+            panic!("cli.md no longer has a {marker:?} worked example — update this test if it moved")
+        });
+
+        let command_line = after_comment
+            .lines()
+            .find(|l| l.starts_with("nodespace schema create"))
+            .unwrap_or_else(|| panic!("no `nodespace schema create` line follows {marker:?}"));
+
+        let params_marker = "--params '";
+        let quote_start = command_line
+            .find(params_marker)
+            .map(|i| i + params_marker.len())
+            .unwrap_or_else(|| panic!("no {params_marker:?} found in: {command_line}"));
+        let quote_end = command_line[quote_start..]
+            .rfind('\'')
+            .map(|i| quote_start + i)
+            .unwrap_or_else(|| panic!("unterminated --params string in: {command_line}"));
+        let json = &command_line[quote_start..quote_end];
+
+        let params: nodespace_core::schema::CreateSchemaParams = serde_json::from_str(json)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "cli.md worked example failed to deserialize as CreateSchemaParams \
+                     (wire key mismatch?): {e}"
+                )
+            });
+        let key_field = params
+            .fields
+            .as_ref()
+            .and_then(|fields| fields.iter().find(|f| f.name == "key"))
+            .unwrap_or_else(|| panic!("worked example no longer declares a \"key\" field"));
+        assert_eq!(
+            key_field.unique_case_insensitive,
+            Some(true),
+            "cli.md worked example should set uniqueCaseInsensitive: true on the \"key\" field"
+        );
     }
 }
