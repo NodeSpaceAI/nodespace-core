@@ -18,6 +18,10 @@
 //! - an undeclared name errors instead of returning a silent zero, while a
 //!   declared name with no edges still returns an ordinary empty result
 //! - built-in structural names still traverse without being declared
+//! - a reverse name combined with `--direction in` ignores the requested
+//!   direction and still returns the real traversal, rather than resolving
+//!   the name and then flipping direction a second time onto a query that
+//!   can never have edges (the double-reversal that silently returned zero)
 
 use anyhow::Result;
 use nodespace_core::{
@@ -117,11 +121,14 @@ async fn reverse_name_matches_forward_name_with_direction_in() -> Result<()> {
     Ok(())
 }
 
-/// `--direction` is relative to the name given. Asking for `decisions` inbound
-/// means "edges pointing at the reviewer the other way" — the forward name read
-/// outbound — which is a real, empty traversal here, not the reverse one again.
+/// A reverse name names one specific traversal — there is no second direction
+/// it could also mean — so `--direction` is ignored once a name resolves as
+/// reverse. `decisions --direction in` must return exactly what `decisions`
+/// (default `out`) returns, not the forward name's true outbound side (which
+/// is empty here and, applied through the reverse alias, was indistinguishable
+/// from "no edges exist" — the double-reversal this test used to enshrine).
 #[tokio::test]
-async fn reverse_name_flips_the_requested_direction() -> Result<()> {
+async fn reverse_name_ignores_the_requested_direction() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
     create_adr_pair(&svc).await?;
     make_node(&svc, "p1", "reviewer").await?;
@@ -129,10 +136,15 @@ async fn reverse_name_flips_the_requested_direction() -> Result<()> {
     svc.create_relationship("adr1", "decided_by", "p1", json!({}))
         .await?;
 
-    let flipped = rel_ops::get_related_nodes(&svc, get("p1", "decisions", "in")).await?;
-    assert_eq!(flipped.relationship_name, "decided_by");
-    assert_eq!(flipped.direction, "out");
-    assert_eq!(flipped.count, 0);
+    let via_in = rel_ops::get_related_nodes(&svc, get("p1", "decisions", "in")).await?;
+    let via_out = rel_ops::get_related_nodes(&svc, get("p1", "decisions", "out")).await?;
+    assert_eq!(via_in.relationship_name, "decided_by");
+    assert_eq!(via_in.direction, "in");
+    assert_eq!(
+        via_in.count, 1,
+        "reverse name + --direction in must not double-reverse to zero"
+    );
+    assert_eq!(via_in.related_nodes, via_out.related_nodes);
     Ok(())
 }
 
@@ -485,5 +497,114 @@ async fn self_referential_reverse_name_resolves() -> Result<()> {
         inbound_forward.related_nodes[0]["id"], reverse.related_nodes[0]["id"],
         "reverseName and `--type supersedes --direction in` must agree"
     );
+    Ok(())
+}
+
+/// The exact regression reported: `Invoice.billed_to → Customer`, reverseName
+/// `invoices`. `--type invoices --direction in` used to resolve `invoices` to
+/// its forward form `billed_to`, then flip `--direction in` onto that
+/// already-reversed name — landing on `(billed_to, out)`, which can never have
+/// edges (a customer is never the source of a `billed_to` edge) and silently
+/// returned `count: 0, exit 0`, indistinguishable from "no invoices billed to
+/// this customer". All three spellings from the issue must now agree.
+#[tokio::test]
+async fn reverse_name_with_direction_in_matches_the_issue_repro() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Customer",
+            "fields": [{ "name": "email", "type": "string", "protection": "user", "indexed": false }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("customer schema: {e}"))?;
+
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Invoice",
+            "fields": [{ "name": "amount", "type": "number", "protection": "user", "indexed": false }],
+            "relationships": [{
+                "name": "billed_to",
+                "targetType": "customer",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "invoices",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("invoice schema: {e}"))?;
+
+    make_node(&svc, "cust1", "customer").await?;
+    make_node(&svc, "inv1", "invoice").await?;
+    make_node(&svc, "inv2", "invoice").await?;
+    svc.create_relationship("inv1", "billed_to", "cust1", json!({}))
+        .await?;
+    svc.create_relationship("inv2", "billed_to", "cust1", json!({}))
+        .await?;
+
+    // `--type billed_to --direction in` — the pre-existing workaround.
+    let by_forward_in = rel_ops::get_related_nodes(&svc, get("cust1", "billed_to", "in")).await?;
+    assert_eq!(by_forward_in.count, 2);
+
+    // `--type invoices` (default out) — the declared reverseName.
+    let by_reverse_default =
+        rel_ops::get_related_nodes(&svc, get("cust1", "invoices", "out")).await?;
+    assert_eq!(by_reverse_default.count, 2);
+
+    // `--type invoices --direction in` — the reported bug. Must not silently
+    // return 0; must agree with the other two spellings.
+    let by_reverse_in = rel_ops::get_related_nodes(&svc, get("cust1", "invoices", "in")).await?;
+    assert_eq!(
+        by_reverse_in.count, 2,
+        "reverseName + --direction in must not silently double-reverse to zero"
+    );
+    assert_eq!(by_reverse_in.relationship_name, "billed_to");
+    assert_eq!(by_reverse_in.direction, "in");
+
+    let ids = |output: &rel_ops::GetRelatedOutput| -> Vec<String> {
+        let mut ids: Vec<String> = output
+            .related_nodes
+            .iter()
+            .map(|n| n["id"].as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids(&by_reverse_in), ids(&by_forward_in));
+    assert_eq!(ids(&by_reverse_in), ids(&by_reverse_default));
+    Ok(())
+}
+
+/// The same double-reversal, for a built-in's fixed inverse spelling rather
+/// than a schema-declared `reverseName`. `ResolvedRelName::Reverse` covers
+/// both — a built-in reverse name is just as much "one specific traversal,
+/// no second direction" as a declared one, so `child_of --direction in` must
+/// resolve identically to `child_of` (default `out`), not flip onto
+/// `has_child --direction out` (this node's own children — a different,
+/// silently wrong answer for anything but a node with no children).
+#[tokio::test]
+async fn builtin_reverse_name_ignores_the_requested_direction() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    make_node(&svc, "parent1", "text").await?;
+    make_node(&svc, "child1", "text").await?;
+    svc.create_relationship("parent1", "has_child", "child1", json!({}))
+        .await?;
+
+    let via_default = rel_ops::get_related_nodes(&svc, get("child1", "child_of", "out")).await?;
+    let via_in = rel_ops::get_related_nodes(&svc, get("child1", "child_of", "in")).await?;
+
+    assert_eq!(via_default.count, 1);
+    assert_eq!(via_default.related_nodes[0]["id"], "parent1");
+    assert_eq!(
+        via_in.count, 1,
+        "built-in reverse name + --direction in must not double-reverse to zero"
+    );
+    assert_eq!(via_in.related_nodes, via_default.related_nodes);
+    assert_eq!(via_in.relationship_name, "has_child");
+    assert_eq!(via_in.direction, "in");
     Ok(())
 }

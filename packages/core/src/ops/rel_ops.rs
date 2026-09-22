@@ -139,7 +139,10 @@ pub enum ResolvedRelName {
     /// A reverse name: either the `reverse_name` of a relationship declared by a
     /// schema targeting this node's type, or a built-in's fixed inverse
     /// (`child_of`, `has_member`, …). Edges are stored under the FORWARD name,
-    /// so traversing by this name rewrites the name and flips the direction.
+    /// so traversing by this name rewrites the name and always queries it
+    /// inbound (`direction: "in"`) — a reverse name names exactly one
+    /// traversal, so the caller-supplied direction plays no part in choosing
+    /// it (see [`get_related_nodes`]'s doc comment).
     Reverse {
         /// The forward name the edges are actually stored under.
         forward_name: String,
@@ -330,9 +333,25 @@ pub async fn resolve_relationship_name(
 /// (see [`resolve_relationship_name`]): a declared `reverse_name` traverses the
 /// inverse edge, and an undeclared name errors rather than returning an empty
 /// result. The returned `relationship_name`/`direction` describe the traversal
-/// that actually ran — a reverse name comes back as the forward name with the
-/// flipped direction — so callers rendering the edge (the CLI's `--name-->`
+/// that actually ran — a reverse name comes back as the forward name with
+/// direction `"in"` — so callers rendering the edge (the CLI's `--name-->`
 /// line) show the real direction rather than the one that was asked for.
+///
+/// `input.direction` is **ignored** when the name resolves to
+/// [`ResolvedRelName::Reverse`]. A reverse name — a declared `reverse_name` or
+/// a built-in's fixed inverse (`child_of`) — names one specific traversal
+/// (the forward relationship, read from the target end); there is no second,
+/// meaningful direction it could also mean. An earlier version flipped the
+/// stored direction relative to whatever `input.direction` carried, so
+/// `--direction in` on top of an already-reverse name flipped it a *second*
+/// time and queried the forward relationship's true outbound side — which,
+/// for the (usual) case where the declaring and target types differ, cannot
+/// ever have edges, so the call silently returned `count: 0`, indistinguishable
+/// from "no edges exist". That outbound query is not lost: it is exactly what
+/// the literal forward name already expresses (`--type billed_to` with no
+/// flag, or `--direction out`), so resolving both spellings of `--direction`
+/// to the one real traversal loses no capability and removes the silent-zero
+/// trap.
 pub async fn get_related_nodes(
     node_service: &Arc<NodeService>,
     input: GetRelatedInput,
@@ -354,7 +373,8 @@ pub async fn get_related_nodes(
     .await?;
 
     // A reverse name addresses the same edges from the other end: rewrite to
-    // the stored forward name and flip the direction the caller asked for.
+    // the stored forward name, always queried inbound (see the doc comment
+    // above — `input.direction` does not apply to this case).
     let (relationship_name, direction, source_type) = match &resolved {
         ResolvedRelName::Builtin | ResolvedRelName::Forward | ResolvedRelName::InboundForward => (
             input.relationship_name.clone(),
@@ -364,14 +384,7 @@ pub async fn get_related_nodes(
         ResolvedRelName::Reverse {
             forward_name,
             source_type,
-        } => {
-            let flipped = if input.direction == "in" { "out" } else { "in" };
-            (
-                forward_name.clone(),
-                flipped.to_string(),
-                source_type.clone(),
-            )
-        }
+        } => (forward_name.clone(), "in".to_string(), source_type.clone()),
     };
 
     let nodes = node_service
