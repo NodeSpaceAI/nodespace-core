@@ -384,24 +384,53 @@ async fn walk_path_against_schema(
         // ancestor without redeclaring it (the normal, intended usage) must
         // still count as a real field here, or a condition referencing it
         // is misclassified as Unresolvable ("likely a typo") instead of the
-        // correct NotYetMet. Relationships are unaffected — schema
-        // relationships aren't part of this merge, so `current_schema`'s
-        // own declarations are still used for the relationship check below.
+        // correct NotYetMet.
         let known_fields: Vec<String> = match node_service.resolve_field_owners(&current_type).await
         {
             Ok((fields, _owners, _chain)) => fields.into_iter().map(|f| f.name).collect(),
             Err(e) => {
+                // Degrade to `current_schema`'s own directly-declared fields
+                // (the pre-fix behavior), not an empty set: before this
+                // change, `known_fields` was a free in-memory read off
+                // `current_schema` that could never independently fail. An
+                // empty fallback here would make a real DB error (lock
+                // contention, etc.) misreport a field that unambiguously
+                // exists on the node's own schema as `Unresolvable` — worse
+                // than pre-fix behavior, and inconsistent with
+                // `get_workflow_state`'s matching fallback above.
                 tracing::warn!(
                     node_type = %current_type,
                     error = %e,
                     "walk_path_against_schema: effective-field resolution failed; typo \
-                     detection degraded to no known fields at this hop"
+                     detection degraded to this schema's own directly-declared fields at this hop"
                 );
-                Vec::new()
+                current_schema
+                    .map(|s| s.fields.iter().map(|f| f.name.clone()).collect())
+                    .unwrap_or_default()
             }
         };
-        let relationship =
-            current_schema.and_then(|s| s.relationships.iter().find(|r| r.name == *segment));
+
+        // Same extends-chain merge as `known_fields` above, but for declared
+        // relationships: a subtype schema that inherits (doesn't redeclare) a
+        // relationship from an ancestor must still be recognized here, or a
+        // condition traversing it is misclassified as a typo the same way an
+        // inherited field was before this fix.
+        let relationship: Option<crate::models::schema::SchemaRelationship> =
+            match node_service.resolve_relationships(&current_type).await {
+                Ok(rels) => rels.into_iter().find(|r| r.name == *segment),
+                Err(e) => {
+                    tracing::warn!(
+                        node_type = %current_type,
+                        error = %e,
+                        "walk_path_against_schema: effective-relationship resolution failed; \
+                         typo detection degraded to this schema's own directly-declared \
+                         relationships at this hop"
+                    );
+                    current_schema
+                        .and_then(|s| s.relationships.iter().find(|r| r.name == *segment))
+                        .cloned()
+                }
+            };
 
         let is_field =
             CORE_FIELDS.contains(&segment.as_str()) || known_fields.iter().any(|f| f == segment);
@@ -988,6 +1017,89 @@ mod tests {
             other => panic!(
                 "expected NotYetMet for a genuinely inherited field, got {:?} — inherited \
                  fields must not be misclassified as a typo",
+                other
+            ),
+        }
+    }
+
+    /// Regression for the same classify_failure gap as above, but for a
+    /// declared *relationship* rather than a field: a condition traversing a
+    /// relationship declared only on an ancestor schema (inherited, not
+    /// redeclared) must be classified `NotYetMet`, not misclassified as
+    /// `Unresolvable`. Before the fix, `walk_path_against_schema`'s
+    /// relationship lookup checked only the subtype's own directly-declared
+    /// relationships (none here), so `story` looked like neither a field nor
+    /// a relationship and was reported as a typo.
+    #[tokio::test]
+    async fn inherited_relationship_condition_reports_not_yet_met_not_unresolvable() {
+        let (svc, _tmp) = test_service().await;
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_rel_target",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("relationship target schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_rel_base",
+                "fields": [],
+                "relationships": [{
+                    "name": "story",
+                    "targetType": "wf_rel_target",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "tasks",
+                    "reverseCardinality": "many"
+                }]
+            }),
+        )
+        .await
+        .expect("base schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_rel_sub",
+                "extends": "wf_rel_base",
+                "fields": []
+            }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            let play = make_play_node(
+                "pb-inherit-rel",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_rel_sub" },
+                    "conditions": ["node.story.status == 'active'"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let task = make_test_node("wf_rel_sub", json!({}));
+        let state = get_workflow_state(&lifecycle, &svc, &task).await;
+        assert_eq!(state.rules.len(), 1);
+        match &state.rules[0].conditions[0] {
+            ConditionState::NotYetMet { condition } => {
+                assert_eq!(condition, "node.story.status == 'active'");
+            }
+            other => panic!(
+                "expected NotYetMet for a genuinely inherited relationship, got {:?} — \
+                 inherited relationships must not be misclassified as a typo",
                 other
             ),
         }
