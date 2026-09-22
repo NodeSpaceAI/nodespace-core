@@ -410,7 +410,7 @@ impl GraphResolver {
         // returns many nodes of one type, and the chain is a property of the
         // type, so resolving it once per distinct type is the same answer for
         // a fraction of the queries.
-        let mut verdict: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+        let mut verdict: HashMap<String, bool> = HashMap::new();
         let mut kept = Vec::with_capacity(nodes.len());
         for n in nodes {
             let satisfies = match verdict.get(&n.node_type) {

@@ -351,6 +351,32 @@ async fn run_rollover(service: &Arc<NodeService>, trigger_id: &str) -> Result<()
         node_type: trigger.node_type.clone(),
         node_id: trigger.id.clone(),
     };
+
+    // Evaluate the conditions first, as `rule_processor_loop` does before it
+    // reaches `execute_actions`. Skipping this would let a condition that is
+    // broken, malformed, or resolves to an empty set pass unnoticed — the
+    // silent-no-op failure mode these tests exist to catch, and the one that
+    // hid C3.
+    let mut resolver = nodespace_core::playbook::graph_resolver::GraphResolver::new(
+        std::sync::Arc::clone(service),
+    );
+    let verdict = nodespace_core::playbook::cel::evaluate_conditions_at_scope(
+        &rule.conditions,
+        &trigger,
+        &event,
+        Some(&mut resolver),
+        None,
+    )
+    .await;
+    if !matches!(
+        verdict,
+        nodespace_core::playbook::cel::ConditionResult::Pass
+    ) {
+        return Err(anyhow::anyhow!(
+            "the rule's conditions did not pass for this trigger: {verdict:?} — \
+             the actions would never have run in production"
+        ));
+    }
     let ctx = PlaybookExecutionContext {
         originating_event_id: "test-rollover".to_string(),
         depth: 1,
@@ -422,6 +448,153 @@ async fn the_relationship_viewer_counts_an_inherited_edge_between_subtypes() -> 
          declaring schema (`task`) drops every subtype instance and renders 0"
     );
     assert_eq!(blocks_group.related[0].id, blocker);
+
+    shutdown(tx, task).await
+}
+
+/// A cycle that is not ending today must be left alone.
+///
+/// Without this, `run_rollover`'s condition check has nothing proving it
+/// discriminates — a condition that passed unconditionally would satisfy every
+/// other test in this file. This is the negative half that makes the positive
+/// one mean something.
+#[tokio::test]
+async fn rollover_leaves_a_cycle_that_is_not_ending_today_alone() -> Result<()> {
+    let (service, _tmp, tx, task) = service_with_recipe().await?;
+
+    // Ends well in the future, so the rule's `end_date == today()` is false.
+    let ongoing = service
+        .create_node(Node::new(
+            "cycle".to_string(),
+            "Ongoing cycle".to_string(),
+            serde_json::json!({
+                "start_date": "2026-01-01",
+                "end_date": "2099-12-31",
+                "duration_days": 14,
+            }),
+        ))
+        .await?;
+    let work = service
+        .create_node(Node::new(
+            "issue".to_string(),
+            "Work in progress".to_string(),
+            serde_json::json!({ "status": "in_progress" }),
+        ))
+        .await?;
+    service
+        .create_relationship(&ongoing, "tasks", &work, serde_json::json!({}))
+        .await?;
+
+    let before = service
+        .query_nodes_by_type("cycle", Some("active"))
+        .await?
+        .len();
+
+    let outcome = run_rollover(&service, &ongoing).await;
+    assert!(
+        outcome.is_err(),
+        "the condition must reject a cycle that is not ending today, so the \
+         actions never run"
+    );
+
+    assert_eq!(
+        service
+            .query_nodes_by_type("cycle", Some("active"))
+            .await?
+            .len(),
+        before,
+        "no successor should have been created"
+    );
+    assert_eq!(
+        service
+            .get_related_nodes(&ongoing, "tasks", "out")
+            .await?
+            .len(),
+        1,
+        "the task must stay where it is"
+    );
+
+    shutdown(tx, task).await
+}
+
+/// Two inbound groups on one node are each narrowed against their own
+/// declarer.
+///
+/// `cycle.tasks` is declared on `cycle` and `task.blocks` on `task`, so a node
+/// sitting in both groups must see the cycle under one and the blocking issue
+/// under the other — never the same set twice.
+///
+/// Honest scope note: this does NOT pin the verdict cache's key. I tried,
+/// by replacing `source_type` in the key with a constant, and both this test
+/// and the single-group one stayed green. `collect_related` scopes each
+/// group's candidates by relationship name before narrowing, so a `tasks` edge
+/// never reaches the `blocks` group and there is nothing for a wrong key to
+/// confuse. The `source_type` component is defensive rather than load-bearing,
+/// and is documented as such at the cache. What this test does pin is that
+/// sharing one cache across groups did not start mixing them up.
+#[tokio::test]
+async fn two_inbound_groups_are_narrowed_against_their_own_declarers() -> Result<()> {
+    let (service, _tmp, tx, task) = service_with_recipe().await?;
+
+    // `cycle.tasks` targets `task`, so an issue in a cycle is one inbound
+    // group; `task.blocks` gives a second, with a different declarer.
+    let cycle = service
+        .create_node(Node::new(
+            "cycle".to_string(),
+            "A cycle".to_string(),
+            serde_json::json!({
+                "start_date": "2026-01-01",
+                "end_date": "2099-12-31",
+                "duration_days": 14,
+            }),
+        ))
+        .await?;
+    let blocker = service
+        .create_node(Node::new(
+            "issue".to_string(),
+            "The blocker".to_string(),
+            serde_json::json!({ "status": "open" }),
+        ))
+        .await?;
+    let subject = service
+        .create_node(Node::new(
+            "issue".to_string(),
+            "In a cycle and blocked".to_string(),
+            serde_json::json!({ "status": "open" }),
+        ))
+        .await?;
+
+    service
+        .create_relationship(&cycle, "tasks", &subject, serde_json::json!({}))
+        .await?;
+    service
+        .create_relationship(&blocker, "blocks", &subject, serde_json::json!({}))
+        .await?;
+
+    let out = nodespace_core::ops::rel_ops::get_node_relationships(&service, &subject)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let group = |name: &str| {
+        out.groups
+            .iter()
+            .find(|g| g.relationship_name == name && g.direction == "in")
+            .unwrap_or_else(|| panic!("expected an inbound `{name}` group"))
+    };
+
+    // Declared on `cycle`, so the cycle is the member — an issue is not.
+    let tasks = group("tasks");
+    assert_eq!(tasks.count, 1, "the cycle belongs to the `tasks` group");
+    assert_eq!(tasks.related[0].id, cycle);
+
+    // Declared on `task`, so the blocking issue is the member — the cycle is
+    // not, even though both groups were narrowed by the same shared cache.
+    let blocks = group("blocks");
+    assert_eq!(
+        blocks.count, 1,
+        "the blocking issue belongs to the `blocks` group"
+    );
+    assert_eq!(blocks.related[0].id, blocker);
 
     shutdown(tx, task).await
 }
