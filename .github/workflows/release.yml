@@ -189,6 +189,23 @@ jobs:
       # regression in this mechanism rather than build-pkg.sh's.
       - name: Tar .app bundle (preserves executable bit through artifact round-trip)
         run: |
+          # Fail fast here, in this cheap producing job, if the Tauri build
+          # step above didn't actually produce bundle content. Before this
+          # tar step existed, `upload-artifact`'s own `if-no-files-found:
+          # error` (below) caught an empty bundle/macos directly. `tar -cf`
+          # of an empty directory still produces a small but genuinely
+          # non-empty tar file, so that same check on the tar file is
+          # trivially satisfied regardless of whether the bundle itself was
+          # empty — silently moving this failure mode one job downstream,
+          # to the "Verify tar/untar preserved the executable bit" step in
+          # build-pkg-macos, after that job has already spun up a runner and
+          # imported Apple certs into a keychain. Check for real content
+          # explicitly, before tarring, to catch it at the original, cheap
+          # point instead.
+          if [[ -z "$(ls -A target/aarch64-apple-darwin/release/bundle/macos 2>/dev/null)" ]]; then
+            echo "::error::target/aarch64-apple-darwin/release/bundle/macos is empty — Tauri build did not produce bundle content"
+            exit 1
+          fi
           tar -cf app-bundle.tar -C target/aarch64-apple-darwin/release/bundle/macos .
 
       - name: Upload .app bundle for pkg job
