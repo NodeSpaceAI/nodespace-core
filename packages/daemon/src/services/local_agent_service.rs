@@ -16,8 +16,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nodespace_agent::agent_types::{
     AgentToolExecutor, ChatInferenceEngine, ChatMessage, ChatModelSpec, ClarifyPrompt,
-    InferenceError, InferenceUsage, LocalAgentStatus, ModelManager, ModelStatus, PriorWrite, Role,
-    StreamingChunk, ToolExecutionRecord,
+    InferenceError, InferenceUsage, LocalAgentStatus, MentionedEntity, ModelManager, ModelStatus,
+    PriorWrite, Role, StreamingChunk, ToolExecutionRecord,
 };
 use nodespace_agent::local_agent::agent_loop::{
     canonical_args, canonical_args_identity, LocalAgentService,
@@ -786,8 +786,16 @@ impl LocalAgentServiceImpl {
         // Create an ephemeral session seeded with prior history.
         let session_id = service.create_session(None, prior_history).await;
 
-        if let Ok(ctx_str) = ctx {
+        if let Ok((ctx_str, mentioned_entities)) = ctx {
             service.set_session_context(&session_id, ctx_str).await;
+            // What the prompt lists as already existing, handed to the
+            // tool-execution path so a create that duplicates it is refused
+            // rather than left to the model to notice.
+            if !mentioned_entities.is_empty() {
+                service
+                    .set_session_mentioned_entities(&session_id, mentioned_entities)
+                    .await;
+            }
         }
 
         // Carry the currently active model's cached routing-probe verdict
@@ -2768,12 +2776,18 @@ fn schema_retrieval_query(prior_history: &[ChatMessage], user_message: &str) -> 
     nodespace_core::ops::context_ops::build_retrieval_query(&prior_turns, user_message)
 }
 
+/// Build the turn's workspace context: the rendered prompt block, plus the
+/// entities it lists under `MENTIONED ENTITIES` in structured form for the
+/// duplicate-create guard.
+///
+/// Both come from the same `WorkspaceContext`, so the guard refuses against
+/// exactly the resolution the model was shown.
 async fn build_workspace_context(
     node_service: &Arc<NodeService>,
     embedding_service: Option<Arc<NodeEmbeddingService>>,
     query: Option<&str>,
     entity_query: Option<&str>,
-) -> Result<String, ()> {
+) -> Result<(String, Vec<MentionedEntity>), ()> {
     let mut context = nodespace_core::ops::context_ops::build_workspace_context(
         node_service,
         embedding_service.as_ref(),
@@ -2825,7 +2839,18 @@ async fn build_workspace_context(
         }
     }
 
-    Ok(context.format_for_prompt(4000))
+    let mentioned_entities = match &context.resolved_entities {
+        nodespace_core::ops::context_ops::EntityResolution::Resolved(entities) => entities
+            .iter()
+            .map(|e| MentionedEntity {
+                id: e.id.clone(),
+                title: e.title.clone(),
+                node_type: e.node_type.clone(),
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    Ok((context.format_for_prompt(4000), mentioned_entities))
 }
 
 #[cfg(test)]
@@ -3023,7 +3048,7 @@ mod tests {
 
         let query = "book the venue, log the customer, raise an invoice, add a \
                      release plan, and file an incident report";
-        let rendered = build_workspace_context(&node_service, None, Some(query), Some(query))
+        let (rendered, _) = build_workspace_context(&node_service, None, Some(query), Some(query))
             .await
             .expect("workspace context");
 

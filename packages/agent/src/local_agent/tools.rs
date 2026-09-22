@@ -579,7 +579,7 @@ fn ok_result(tool_call_id: &str, name: &str, data: Value) -> ToolResult {
 
 /// Prefix a bare node ID with `nodespace://` so the model sees the URI format
 /// it should use when referencing nodes in responses.
-fn node_uri(id: &str) -> String {
+pub(crate) fn node_uri(id: &str) -> String {
     if id.is_empty() || id.starts_with("nodespace://") {
         id.to_string()
     } else {
