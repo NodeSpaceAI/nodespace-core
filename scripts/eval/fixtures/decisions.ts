@@ -417,10 +417,36 @@ const FIXTURES: DecisionScenario[] = [
     // Scored on the OPERATION rather than the schema: what changed with the
     // tier is not which type gets picked but whether the model acts on the
     // existing node instead of creating a duplicate.
+    // Measured: with Northwind seeded and rendered in MENTIONED ENTITIES, the
+    // model called `create_node` on 3 of 3 reps — a silent duplicate. The
+    // resolution worked; what was missing was any instruction for what to DO
+    // about a collision, and any tool to do it with (`route_clarify` was not
+    // on this skill's whitelist).
+    //
+    // `route_clarify` is the answer this scenario wants: "Add X" when X exists
+    // is genuinely ambiguous — a second distinct record is a real thing to
+    // want — so the turn should hand the choice back rather than guess.
+    //
+    // It does not pass today, and the cause is NOT missing instruction.
+    // Verified on the locked model with the entity rendered and
+    // `route_clarify` on the menu: guidance prose, the `create_node` tool
+    // description, and both together all produced `create_node` and a silent
+    // duplicate. That third result is the notable one — ADR-064 measured the
+    // tool-schema channel at 100% compliance where prose reached 87.5%, and it
+    // moved this not at all. "Do not do the obvious thing when a condition
+    // holds" appears to be a harder ask than the output-shape constraints that
+    // measurement covered.
+    //
+    // Left asserting the wanted behaviour rather than the observed one, so it
+    // reads as a known gap instead of silently blessing the duplicate. Closing
+    // it needs a deterministic guard — the system already holds the resolved
+    // entity, so the collision is detectable before the write without any
+    // model judgment — which is a change to the write path rather than to any
+    // prompt, and is tracked on its own.
     prompt: "Add Northwind Trading to the companies we sell to.",
     expected: {
       decision: "operation",
-      oneOf: ["update_node", "search_nodes", "resolve_query"],
+      oneOf: ["route_clarify", "update_node", "search_nodes", "resolve_query"],
     },
     entityResolution: true,
   },
@@ -431,8 +457,20 @@ const FIXTURES: DecisionScenario[] = [
     // message about seating can only mean the venue. The disambiguating signal
     // is structural (which type even has that field), not semantic similarity,
     // which is the case embedding distance alone cannot resolve.
+    //
+    // Scored on the OPERATION, not the schema, and that is a fixture fix
+    // rather than a weakening. Measured: the model called `update_node`, which
+    // is right — setting a capacity on an existing venue is an update — but
+    // `update_node` takes a node id, so no schema decision is ever recorded
+    // and a `decision: "schema"` assertion could not pass however well the
+    // model reasoned. It was asserting on a decision the correct operation
+    // does not make. What this scenario can actually observe is whether the
+    // turn updates the existing record rather than creating a second one.
     prompt: "Northwind can seat 200 people now.",
-    expected: { decision: "schema", matches: /venue|event/i },
+    expected: {
+      decision: "operation",
+      oneOf: ["update_node", "search_nodes", "resolve_query", "get_node"],
+    },
     ambiguous: true,
     entityResolution: true,
   },

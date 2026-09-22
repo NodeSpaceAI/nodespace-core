@@ -211,12 +211,35 @@ const ENTITY_CANDIDATE_LIMIT: i64 = 12;
 /// match*, which is scale-free.
 ///
 /// bm25 is negative and more negative is better, so "within the factor" means
-/// `score <= best * FACTOR` — a candidate at 60% of the best score survives,
-/// one far weaker does not. Set loose rather than tight deliberately: the
-/// motivating case ("is Acme a customer or a project?") is two genuinely
-/// comparable matches, and a tight cutoff would drop the ambiguity that the
-/// turn most needs to see.
-const ENTITY_SCORE_CUTOFF_FACTOR: f64 = 0.55;
+/// `score <= best * FACTOR` — a candidate at this fraction of the best score
+/// survives, one far weaker does not. Set loose rather than tight
+/// deliberately: the motivating case ("is Acme a customer or a project?") is
+/// two genuinely comparable matches, and a tight cutoff would drop the
+/// ambiguity the turn most needs to see.
+///
+/// Calibrated against a measured probe of the landed index (a seeded workspace
+/// of 8 entities plus 5 decoys whose titles carry a real message's noise
+/// words). For "Northwind Trading" the scores were:
+///
+/// ```text
+///   -6.53  Northwind Trading              (the intended entity)
+///   -3.27  Northwind Logistics            (a real sibling entity)
+///   -2.13  Trading terms for new customers (a noise-word decoy)
+/// ```
+///
+/// 0.45 puts the bar at -2.94 there: the sibling entity survives and the decoy
+/// does not, which is the discrimination that matters — a bare or partial name
+/// legitimately matching two entities is the case this tier exists to surface,
+/// while a decoy sharing one common word is not. An earlier 0.55 put the bar
+/// at -3.59 and dropped the sibling, collapsing exactly the ambiguity the
+/// "render all candidates" policy was chosen to preserve.
+///
+/// Relative rather than absolute, despite that probe suggesting an absolute
+/// band around -2.5 to -3.0: bm25 is corpus-dependent, so a fixed threshold
+/// calibrated on 51 indexed rows would drift as the workspace grows. The
+/// relative form asks "is this candidate comparable to the best match", which
+/// is scale-free; the probe calibrates the factor, not a raw score.
+const ENTITY_SCORE_CUTOFF_FACTOR: f64 = 0.45;
 
 /// Character budget applied to each blended prior turn.
 ///
@@ -1712,6 +1735,36 @@ mod tests {
         assert!(
             entity_at < schema_at,
             "entities must precede schemas — the top tier constrains the one below: {out}"
+        );
+    }
+
+    /// The cutoff must keep a real sibling entity and drop a noise-word decoy.
+    ///
+    /// Scores are from a measured probe of the landed index: querying
+    /// "Northwind Trading" against a seeded workspace returned the intended
+    /// entity at -6.53, a sibling entity (`Northwind Logistics`) at -3.27, and
+    /// a decoy titled "Trading terms for new customers" at -2.13.
+    ///
+    /// Both directions matter. A factor tight enough to drop the sibling
+    /// destroys the ambiguity this tier exists to surface — a bare or partial
+    /// name matching two entities is the case that needs disambiguating, not a
+    /// case to silently resolve. A factor loose enough to admit the decoy
+    /// floods the block with nodes that merely share a common word.
+    #[test]
+    fn the_score_cutoff_keeps_siblings_and_drops_noise_words() {
+        let best = -6.53_f64;
+        let sibling = -3.27_f64;
+        let decoy = -2.13_f64;
+        let bar = best * ENTITY_SCORE_CUTOFF_FACTOR;
+
+        assert!(
+            sibling <= bar,
+            "a real sibling entity ({sibling}) must survive the bar ({bar}) — \
+             dropping it collapses the ambiguity the tier exists to surface"
+        );
+        assert!(
+            decoy > bar,
+            "a noise-word decoy ({decoy}) must not survive the bar ({bar})"
         );
     }
 
