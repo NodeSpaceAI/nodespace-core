@@ -240,6 +240,72 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
         ()
     ).await.context("Failed to create FTS5 delete trigger")?;
 
+    // FTS5 index over `node.title` — a SEPARATE table from `node_fts` above,
+    // not a second column on it, because the two answer different questions:
+    // `node_fts` over `content` answers "which nodes *discuss* X?" (one long row
+    // per node, the whole body), while this one answers "which node *is* X?"
+    // (one short row per nameable node, whose text is that node's own name).
+    // Sharing a table would degrade both — a query for an entity name would rank
+    // every node whose body merely mentions it alongside the node itself.
+    //
+    // `title` is the system's own maintained answer to "is this a nameable
+    // thing": `NodeService::compute_title()` sets it for title-templated schema
+    // instances, tasks, collections and root nodes, and leaves it NULL for
+    // child/body nodes. Indexing only non-NULL titles therefore makes every row
+    // in this index an entity.
+    //
+    // NOT an external-content table (no `content='node'`), unlike `node_fts`.
+    // That is deliberate and load-bearing: FTS5 has no partial-index syntax, so
+    // "only when title IS NOT NULL" lives in the triggers below — but an
+    // external-content table's `'rebuild'` command re-derives every row from the
+    // content table, which would silently reinstate exactly the NULL-title rows
+    // the triggers skip. (`backfill_fts_if_stale` in `sqlite_store/mod.rs` issues
+    // that rebuild for `node_fts`.) A standalone table owns its own rows, so the
+    // partial invariant survives; the cost is that it duplicates the title text,
+    // which is a short string per nameable node.
+    conn.execute(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS node_title_fts USING fts5(id UNINDEXED, title)",
+        (),
+    )
+    .await
+    .context("Failed to create title FTS5 table")?;
+
+    // The `WHERE new.title IS NOT NULL` guard rides on `INSERT ... SELECT`
+    // because a plain `VALUES` clause cannot carry a WHERE.
+    conn.execute(
+        r#"CREATE TRIGGER IF NOT EXISTS node_title_fts_insert AFTER INSERT ON node BEGIN
+            INSERT INTO node_title_fts(rowid, id, title)
+            SELECT new.rowid, new.id, new.title WHERE new.title IS NOT NULL;
+        END"#,
+        (),
+    )
+    .await
+    .context("Failed to create title FTS5 insert trigger")?;
+
+    // Delete-then-conditionally-reinsert. The unconditional DELETE is what
+    // removes a row whose title transitions non-NULL -> NULL: the reinsert is
+    // then skipped by the same guard, so the node leaves the index rather than
+    // keeping a stale name. A conditional delete would strand that row forever.
+    conn.execute(
+        r#"CREATE TRIGGER IF NOT EXISTS node_title_fts_update AFTER UPDATE ON node BEGIN
+            DELETE FROM node_title_fts WHERE rowid = old.rowid;
+            INSERT INTO node_title_fts(rowid, id, title)
+            SELECT new.rowid, new.id, new.title WHERE new.title IS NOT NULL;
+        END"#,
+        (),
+    )
+    .await
+    .context("Failed to create title FTS5 update trigger")?;
+
+    conn.execute(
+        r#"CREATE TRIGGER IF NOT EXISTS node_title_fts_delete AFTER DELETE ON node BEGIN
+            DELETE FROM node_title_fts WHERE rowid = old.rowid;
+        END"#,
+        (),
+    )
+    .await
+    .context("Failed to create title FTS5 delete trigger")?;
+
     // sqlite-vec virtual table for embedding KNN search. Keyed by `embedding.id`
     // (the per-chunk UUID); holds ONLY real, non-stale vectors (see upsert/
     // delete/mark-stale paths). vec0 is a fast brute-force SIMD scan, not an ANN
