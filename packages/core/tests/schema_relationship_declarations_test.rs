@@ -711,3 +711,98 @@ async fn update_relationship_properties_refuses_to_corrupt_a_declaration_edge() 
     assert_eq!(schema.relationships[0].name, "widgets");
     Ok(())
 }
+
+/// An unknown or misspelled key inside a relationship entry must be rejected
+/// at schema-save time, exactly like the same mistake in `fields[]` or at the
+/// top level — not silently dropped, leaving the relationship created as
+/// though it had been written correctly.
+///
+/// Two shapes that were genuinely silent before this fix: an entirely
+/// unknown key, and a snake_case typo of a real *optional* field
+/// (`target_type` instead of `targetType`) — the misspelled spelling isn't a
+/// known field, so it used to vanish and `target_type` stayed silently unset
+/// rather than becoming the type the caller intended. (A typo of a
+/// *required* field with no correctly spelled counterpart present, e.g.
+/// `reverse_name` alone with no `reverseName`, was already a hard error
+/// before this fix too — serde reports "missing field `reverseName`"
+/// regardless of `deny_unknown_fields`; see
+/// `test_schema_relationship_requires_both_reverse_fields` in
+/// `nodespace-types` for that floor.)
+#[tokio::test]
+async fn misspelled_relationship_key_is_rejected_not_silently_dropped() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+
+    // An entirely bogus key, at create_schema time.
+    let err = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Invoice",
+            "fields": [],
+            "relationships": [{
+                "name": "billed_to",
+                "targetType": "customer",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "invoices",
+                "reverseCardinality": "many",
+                "bogusRel": 1
+            }]
+        }),
+    )
+    .await
+    .expect_err("an unknown key in a relationship entry must be rejected");
+    assert!(
+        err.to_string().contains("bogusRel"),
+        "error should name the offending key: {err}"
+    );
+    // The rejection must not leave a half-created schema behind.
+    assert!(svc.get_schema_node("invoice").await?.is_none());
+
+    // The realistic case: a snake_case typo of the optional `targetType`,
+    // via update_schema's `add_relationships`. Every required field is
+    // present and correctly spelled, so pre-fix this silently created the
+    // relationship with `target_type` unset instead of the customer type the
+    // caller intended.
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Customer",
+            "fields": []
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Invoice",
+            "fields": []
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "invoice",
+            "add_relationships": [{
+                "name": "billed_to",
+                "target_type": "customer",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "invoices",
+                "reverseCardinality": "many"
+            }]
+        }),
+    )
+    .await
+    .expect_err("a snake_case typo of targetType must be rejected, not dropped");
+    assert!(
+        err.to_string().contains("target_type"),
+        "error should name the offending key: {err}"
+    );
+    // No relationship was silently created off the bad entry.
+    let schema = svc.get_schema_node("invoice").await?.expect("invoice");
+    assert!(schema.relationships.is_empty());
+    Ok(())
+}
