@@ -382,8 +382,8 @@ parameters_schema:
             "description": "Set true when each instance should have a distinct value for this field (e.g. an email or a ticket key). ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides.",
             "type": "boolean"
           },
-          "unique_case_insensitive": {
-            "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'unique_case_insensitive' on the same field.",
+          "uniqueCaseInsensitive": {
+            "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'uniqueCaseInsensitive' on the same field.",
             "type": "boolean"
           }
         },
@@ -583,8 +583,8 @@ parameters_schema:
             "description": "Set true when each instance should have a distinct value for this field (e.g. an email or SKU). ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides.",
             "type": "boolean"
           },
-          "unique_case_insensitive": {
-            "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'unique_case_insensitive' on the same field.",
+          "uniqueCaseInsensitive": {
+            "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'uniqueCaseInsensitive' on the same field.",
             "type": "boolean"
           }
         },
