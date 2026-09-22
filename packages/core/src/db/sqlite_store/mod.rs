@@ -234,6 +234,17 @@ pub async fn ensure_sqlite_vec_registered() {
 /// workaround: see `rust:test:core` in `package.json` (and
 /// `rust:test:libsql-linked` for the same treatment applied to
 /// `nodespace-agent`/`nodespace-daemon`/`nodespace-cli`, above).
+/// Outcome of the `node_title_fts` staleness check, so that "a healthy index
+/// was left alone" is observable to a test. See
+/// [`SqliteStore::backfill_title_fts_if_stale`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TitleFtsRepair {
+    /// The index already matched `node`; nothing was written.
+    AlreadyHealthy,
+    /// The index disagreed with `node` and was cleared and refilled.
+    Refilled,
+}
+
 pub struct SqliteStore {
     /// The store's SQLite connections. Reachable only through
     /// [`SqliteStore::write`] / [`SqliteStore::read`] — the raw handles live in
@@ -342,6 +353,120 @@ impl SqliteStore {
             conn.execute("INSERT INTO node_fts(node_fts) VALUES('rebuild')", ())
                 .await
                 .context("Failed to backfill FTS5 index")?;
+        }
+
+        Self::backfill_title_fts_if_stale(conn).await?;
+        Ok(())
+    }
+
+    /// The same index-integrity repair for `node_title_fts`, which needs its own
+    /// because that index differs from `node_fts` in two ways that both matter
+    /// here.
+    ///
+    /// First, it is PARTIAL: only titled rows are indexed, so the healthy count
+    /// is `count(*) FROM node WHERE nullif(title, '') IS NOT NULL`, not
+    /// `count(*) FROM node`. Comparing against the plain node count would call a
+    /// correct index stale on every startup of any database holding a single
+    /// child node.
+    ///
+    /// Like `backfill_fts_if_stale`, this compares CARDINALITY, so an index
+    /// holding the right number of wrong rows reads as healthy. That is a known
+    /// limit of both checks rather than a property of this one: it catches
+    /// truncation and partial writes, not substitution.
+    ///
+    /// Second, it is STANDALONE rather than external-content, so `'rebuild'` is
+    /// not available (it re-derives rows from a content table this index does not
+    /// have) — and would be wrong anyway, since it cannot express the NULL-title
+    /// skip. Repair is therefore an explicit delete-and-refill from `node`.
+    ///
+    /// `count(*) FROM node_title_fts` is a real row count here, unlike the
+    /// external-content case that forces `node_fts` to read its shadow
+    /// `node_fts_docsize` table.
+    ///
+    /// Returns whether it repaired. A needless repair still produces a correct
+    /// index, so inspecting the resulting rows cannot distinguish "was already
+    /// healthy" from "was rebuilt under a write lock, as it will be on every
+    /// future open". Convergence is exactly that distinction, so it has to be
+    /// reported to be testable.
+    async fn backfill_title_fts_if_stale(conn: &libsql::Connection) -> Result<TitleFtsRepair> {
+        let count = |sql: &'static str| async move {
+            let mut r = conn.query(sql, ()).await?;
+            let n: i64 = r
+                .next()
+                .await?
+                .map(|row| row.get(0))
+                .transpose()?
+                .unwrap_or(0);
+            Ok::<i64, anyhow::Error>(n)
+        };
+        let indexed = count("SELECT count(*) FROM node_title_fts")
+            .await
+            .context("Failed to count indexed title FTS docs")?;
+        // MUST match the triggers' guard in `schema.rs` exactly. If this
+        // predicate is narrower or wider than theirs, a correctly-maintained
+        // index reports stale on every open and refills itself forever.
+        let titled_count = count("SELECT count(*) FROM node WHERE nullif(title, '') IS NOT NULL")
+            .await
+            .context("Failed to count titled node rows")?;
+        if indexed != titled_count {
+            Self::refill_title_fts(conn).await?;
+            return Ok(TitleFtsRepair::Refilled);
+        }
+        Ok(TitleFtsRepair::AlreadyHealthy)
+    }
+
+    /// Clear and refill `node_title_fts` from `node`, as ONE transaction.
+    ///
+    /// The atomicity is the point. Repair is two statements — a DELETE and a
+    /// refill — and `backfill_fts_if_stale` runs after `create_schema` has
+    /// committed, so without an explicit transaction these execute in
+    /// autocommit. A crash between them would leave the index EMPTY: not the
+    /// stale state the repair was called to fix, but a strictly worse one,
+    /// where every entity lookup silently returns nothing. (It would
+    /// self-correct on the next open, since an empty index fails the count
+    /// check too — but only after however long that takes.) `node_fts` needs no
+    /// equivalent because its `'rebuild'` is a single atomic statement.
+    ///
+    /// `BEGIN IMMEDIATE` and the unconditional rollback-on-failure follow
+    /// `create_schema`'s reasoning: take the write lock up front rather than
+    /// lazily, and never leave an open transaction on the store's one
+    /// long-lived writer connection, which would fail every later write on it
+    /// for the life of the process.
+    async fn refill_title_fts(conn: &libsql::Connection) -> Result<()> {
+        conn.execute("BEGIN IMMEDIATE", ())
+            .await
+            .context("Failed to begin title FTS5 refill transaction")?;
+
+        let body = async {
+            conn.execute("DELETE FROM node_title_fts", ())
+                .await
+                .context("Failed to clear title FTS5 index")?;
+            conn.execute(
+                // Same `nullif` predicate as the triggers and the staleness
+                // count. All three must agree: if the refill indexes rows the
+                // count does not expect, the repair never converges and every
+                // open rebuilds the whole index under a write lock.
+                "INSERT INTO node_title_fts(rowid, id, title) \
+                 SELECT rowid, id, title FROM node WHERE nullif(title, '') IS NOT NULL",
+                (),
+            )
+            .await
+            .context("Failed to backfill title FTS5 index")?;
+            Ok::<(), anyhow::Error>(())
+        };
+
+        if let Err(e) = body.await {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            return Err(e);
+        }
+
+        if let Err(e) = conn
+            .execute("COMMIT", ())
+            .await
+            .context("Failed to commit title FTS5 refill transaction")
+        {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            return Err(e);
         }
         Ok(())
     }
@@ -575,6 +700,502 @@ mod tests {
             .expect("the row written before reopening must still be there")
             .get(0)?;
         assert_eq!(content, "keep");
+        Ok(())
+    }
+
+    /// Ids matching `title` in the title FTS index, for the title-index tests
+    /// below. Queries the index directly rather than through a search API,
+    /// because what is under test is the index's contents, not a ranking.
+    async fn title_fts_ids(store: &Arc<SqliteStore>, term: &str) -> Result<Vec<String>> {
+        let mut rows = store
+            .read()
+            .await?
+            .query(
+                "SELECT id FROM node_title_fts WHERE node_title_fts MATCH ?1",
+                libsql::params![term],
+            )
+            .await?;
+        let mut ids = Vec::new();
+        while let Some(row) = rows.next().await? {
+            ids.push(row.get::<String>(0)?);
+        }
+        Ok(ids)
+    }
+
+    async fn title_fts_row_count(store: &Arc<SqliteStore>) -> Result<i64> {
+        let mut rows = store
+            .read()
+            .await?
+            .query("SELECT count(*) FROM node_title_fts", ())
+            .await?;
+        Ok(rows
+            .next()
+            .await?
+            .expect("count(*) always returns a row")
+            .get(0)?)
+    }
+
+    /// Index rows for one node id. Scoped per-node because `create_test_store`
+    /// seeds core schema nodes, which carry titles and so legitimately occupy
+    /// the index — an absolute row count would assert on that seed rather than
+    /// on the node under test.
+    /// How many rows the title index SHOULD hold, computed from `node`.
+    ///
+    /// Deliberately spells the predicate out a third time rather than reusing
+    /// the production query: a test that asks the code under test what the
+    /// right answer is cannot detect the code changing its mind. This pins the
+    /// intended shape — every titled row, where "titled" excludes both NULL and
+    /// '' — so a production predicate drifting in EITHER direction shows up as
+    /// a mismatch.
+    async fn expected_title_fts_rows(store: &Arc<SqliteStore>) -> Result<i64> {
+        let mut rows = store
+            .read()
+            .await?
+            .query(
+                "SELECT count(*) FROM node WHERE title IS NOT NULL AND title != ''",
+                (),
+            )
+            .await?;
+        Ok(rows
+            .next()
+            .await?
+            .expect("count(*) always returns a row")
+            .get(0)?)
+    }
+
+    async fn title_fts_rows_for(store: &Arc<SqliteStore>, id: &str) -> Result<i64> {
+        let mut rows = store
+            .read()
+            .await?
+            .query(
+                "SELECT count(*) FROM node_title_fts WHERE id = ?1",
+                libsql::params![id],
+            )
+            .await?;
+        Ok(rows
+            .next()
+            .await?
+            .expect("count(*) always returns a row")
+            .get(0)?)
+    }
+
+    /// The index is PARTIAL: a node whose `title` is NULL must never appear in
+    /// it. FTS5 has no partial-index syntax, so this is trigger logic, and
+    /// getting it wrong silently fills the entity index with body nodes —
+    /// exactly the noise a title index exists to avoid.
+    #[tokio::test]
+    async fn title_fts_skips_null_titles() -> Result<()> {
+        let (store, _t) = create_test_store().await?;
+
+        store
+            .write()
+            .await
+            .execute(
+                "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                 VALUES ('titled', 'text', 'body', 'Northwind Trading', \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (),
+            )
+            .await?;
+        // Same term in `content`, but NULL title: this is the row that must not
+        // be indexed. It is what separates "which node IS Northwind" from
+        // "which nodes mention Northwind".
+        store
+            .write()
+            .await
+            .execute(
+                "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                 VALUES ('untitled', 'text', 'northwind trading mentioned here', NULL, \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (),
+            )
+            .await?;
+
+        assert_eq!(
+            title_fts_ids(&store, "northwind").await?,
+            vec!["titled".to_string()],
+            "only the titled node belongs in the title index; the NULL-title node \
+             matches the same term in its content and must still be absent"
+        );
+        // Membership, not just matchability. FTS5 indexes a NULL title as a row
+        // with no terms, which no MATCH can return — so the assertion above
+        // still passes if the NULL guard is dropped and the row is indexed
+        // empty. Only a row count catches that, and an unindexed NULL title is
+        // what keeps this index one-row-per-entity.
+        assert_eq!(
+            title_fts_rows_for(&store, "untitled").await?,
+            0,
+            "a NULL-title node must not occupy a row in the title index at all, \
+             even an empty one that matches no term"
+        );
+        assert_eq!(title_fts_rows_for(&store, "titled").await?, 1);
+        Ok(())
+    }
+
+    /// The transition that a conditional delete would get wrong: a node whose
+    /// title is cleared must LEAVE the index, not keep a stale name. The update
+    /// trigger deletes unconditionally and only then re-inserts under the
+    /// NULL guard, so clearing a title removes the row.
+    #[tokio::test]
+    async fn title_fts_removes_a_node_whose_title_becomes_null() -> Result<()> {
+        let (store, _t) = create_test_store().await?;
+
+        store
+            .write()
+            .await
+            .execute(
+                "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                 VALUES ('n', 'text', 'body', 'Contoso Ltd', \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (),
+            )
+            .await?;
+        assert_eq!(
+            title_fts_ids(&store, "contoso").await?,
+            vec!["n".to_string()],
+            "fixture must be indexed first, or the clearing below proves nothing"
+        );
+
+        store
+            .write()
+            .await
+            .execute("UPDATE node SET title = NULL WHERE id = 'n'", ())
+            .await?;
+
+        assert!(
+            title_fts_ids(&store, "contoso").await?.is_empty(),
+            "a node whose title became NULL must be removed from the title index, \
+             not left behind under its old name"
+        );
+        assert_eq!(
+            title_fts_rows_for(&store, "n").await?,
+            0,
+            "the row must be gone from the index, not merely unmatched by this term"
+        );
+        Ok(())
+    }
+
+    /// The opposite transition, which a delete-only trigger would get wrong:
+    /// a node that GAINS a title must enter the index. `compute_title()` fills
+    /// `title` in after the insert for title-templated types, so an entity's
+    /// first appearance in this index is routinely an UPDATE, not an INSERT.
+    #[tokio::test]
+    async fn title_fts_indexes_a_node_that_gains_a_title() -> Result<()> {
+        let (store, _t) = create_test_store().await?;
+
+        store
+            .write()
+            .await
+            .execute(
+                "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                 VALUES ('n', 'text', 'body', NULL, \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (),
+            )
+            .await?;
+        assert_eq!(title_fts_rows_for(&store, "n").await?, 0);
+
+        store
+            .write()
+            .await
+            .execute("UPDATE node SET title = 'Fabrikam Inc' WHERE id = 'n'", ())
+            .await?;
+
+        assert_eq!(
+            title_fts_ids(&store, "fabrikam").await?,
+            vec!["n".to_string()],
+            "a node that gained a title must become findable by it"
+        );
+        Ok(())
+    }
+
+    /// The commonest real transition: a titled node is renamed. This is what a
+    /// title-templated instance does whenever a property feeding its template
+    /// changes, so it happens far more often than gaining or losing a title.
+    /// The old name must stop matching, the new one must start, and the node
+    /// must still occupy exactly one row — a re-insert without the preceding
+    /// delete would leave it matchable under both names at once.
+    #[tokio::test]
+    async fn title_fts_reindexes_a_renamed_node() -> Result<()> {
+        let (store, _t) = create_test_store().await?;
+
+        store
+            .write()
+            .await
+            .execute(
+                "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                 VALUES ('n', 'text', 'body', 'Northwind Trading', \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (),
+            )
+            .await?;
+
+        store
+            .write()
+            .await
+            .execute("UPDATE node SET title = 'Contoso Ltd' WHERE id = 'n'", ())
+            .await?;
+
+        assert!(
+            title_fts_ids(&store, "northwind").await?.is_empty(),
+            "the old name must stop matching after a rename"
+        );
+        assert_eq!(
+            title_fts_ids(&store, "contoso").await?,
+            vec!["n".to_string()],
+            "the new name must match after a rename"
+        );
+        assert_eq!(
+            title_fts_rows_for(&store, "n").await?,
+            1,
+            "a renamed node must hold exactly one index row, not one per name it has had"
+        );
+        Ok(())
+    }
+
+    /// An empty-string title is "no title", not a title that happens to be
+    /// blank. `compute_title()` reaches `Some("")` by two routes — a
+    /// `titleTemplate` whose fields are all absent, and `strip_markdown("")` on
+    /// an empty task — and `'' IS NOT NULL`, so only the `nullif` in the
+    /// triggers keeps those rows out. Without it they are indexed as term-less
+    /// rows: matched by nothing, but occupying the index and breaking the
+    /// one-row-per-entity invariant the design rests on.
+    #[tokio::test]
+    async fn title_fts_skips_empty_string_titles() -> Result<()> {
+        let (store, _t) = create_test_store().await?;
+
+        store
+            .write()
+            .await
+            .execute(
+                "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                 VALUES ('blank', 'text', 'body', '', \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (),
+            )
+            .await?;
+        assert_eq!(
+            title_fts_rows_for(&store, "blank").await?,
+            0,
+            "an empty-string title must not occupy a row, exactly as a NULL one does not"
+        );
+
+        // And the same transition the NULL case pins: a real title emptied out
+        // must leave the index rather than linger under its old name.
+        store
+            .write()
+            .await
+            .execute(
+                "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                 VALUES ('emptied', 'text', 'body', 'Fabrikam Inc', \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (),
+            )
+            .await?;
+        assert_eq!(title_fts_rows_for(&store, "emptied").await?, 1);
+
+        store
+            .write()
+            .await
+            .execute("UPDATE node SET title = '' WHERE id = 'emptied'", ())
+            .await?;
+
+        assert!(
+            title_fts_ids(&store, "fabrikam").await?.is_empty(),
+            "a title emptied to '' must stop matching its old name"
+        );
+        assert_eq!(
+            title_fts_rows_for(&store, "emptied").await?,
+            0,
+            "a title emptied to '' must leave the index entirely"
+        );
+        Ok(())
+    }
+
+    /// Deleting a node must take its title row with it, or the index hands back
+    /// ids that no longer resolve.
+    #[tokio::test]
+    async fn title_fts_drops_a_deleted_node() -> Result<()> {
+        let (store, _t) = create_test_store().await?;
+
+        store
+            .write()
+            .await
+            .execute(
+                "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                 VALUES ('n', 'text', 'body', 'Tailspin Toys', \
+                 '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (),
+            )
+            .await?;
+        assert_eq!(title_fts_rows_for(&store, "n").await?, 1);
+
+        store
+            .write()
+            .await
+            .execute("DELETE FROM node WHERE id = 'n'", ())
+            .await?;
+
+        assert_eq!(
+            title_fts_rows_for(&store, "n").await?,
+            0,
+            "a deleted node must not leave its title behind in the index"
+        );
+        Ok(())
+    }
+
+    /// The staleness repair must not fire on a healthy database that merely
+    /// holds NULL-title rows. The index is partial, so the correct comparison
+    /// is against `count(*) WHERE title IS NOT NULL`; comparing against the
+    /// plain node count would call this database stale and refill it on every
+    /// single open.
+    #[tokio::test]
+    async fn title_fts_backfill_treats_null_titles_as_healthy() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("partial.db");
+
+        {
+            let store = SqliteStore::new(db_path.clone()).await?;
+            store
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                     VALUES ('a', 'text', 'body', 'Northwind Trading', \
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    (),
+                )
+                .await?;
+            store
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                     VALUES ('b', 'text', 'child body', NULL, \
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    (),
+                )
+                .await?;
+            // An empty-string title counts as untitled on BOTH sides of the
+            // staleness comparison. If the trigger guard and the count
+            // predicate ever disagree about '', this row makes a healthy
+            // database refill itself on every single open.
+            store
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                     VALUES ('c', 'text', 'blank title', '', \
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    (),
+                )
+                .await?;
+        }
+
+        // Reopening runs the staleness check. One titled node, two not.
+        let store = Arc::new(SqliteStore::new(db_path).await?);
+        assert_eq!(
+            title_fts_row_count(&store).await?,
+            1,
+            "the NULL-title and empty-title rows must stay out of the index across a reopen"
+        );
+        assert_eq!(
+            title_fts_ids(&store, "northwind").await?,
+            vec!["a".to_string()]
+        );
+        Ok(())
+    }
+
+    /// The repair path itself: an index desynced from `node` (a bulk restore,
+    /// an interrupted write, a VACUUM that renumbered rowids) must be refilled
+    /// on open — and refilled to the PARTIAL shape, not to every node.
+    #[tokio::test]
+    async fn title_fts_backfill_repairs_a_desynced_index() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let db_path = temp_dir.path().join("desynced.db");
+
+        {
+            let store = SqliteStore::new(db_path.clone()).await?;
+            store
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                     VALUES ('a', 'text', 'body', 'Northwind Trading', \
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    (),
+                )
+                .await?;
+            store
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                     VALUES ('b', 'text', 'child body', NULL, \
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    (),
+                )
+                .await?;
+            // An empty-title row, present while the index is REPAIRED rather
+            // than only while it is maintained by triggers. This is what makes
+            // the refill's predicate observable: the healthy-path test seeds
+            // '' but never desyncs, and the desync test used to seed only a
+            // real title and NULL, so a refill that indexed '' rows satisfied
+            // both while still disagreeing with the staleness count forever.
+            store
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                     VALUES ('c', 'text', 'blank title', '', \
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    (),
+                )
+                .await?;
+            // Desync the index behind the triggers' back, standing in for a
+            // restore or interrupted write.
+            store
+                .write()
+                .await
+                .execute("DELETE FROM node_title_fts", ())
+                .await?;
+        }
+
+        let store = Arc::new(SqliteStore::new(db_path.clone()).await?);
+        assert_eq!(
+            title_fts_ids(&store, "northwind").await?,
+            vec!["a".to_string()],
+            "a desynced title index must be refilled on open"
+        );
+        assert_eq!(
+            title_fts_row_count(&store).await?,
+            1,
+            "the refill must reinstate only titled rows — not every node, and not \
+             the empty-title one either"
+        );
+
+        // Convergence: after a repair, the index must satisfy the very check
+        // that triggered it, so the next open does nothing.
+        //
+        // Asserting the row count is NOT enough, in either direction. A repair
+        // that runs needlessly still leaves a correct index behind, so the rows
+        // look identical whether the database was healthy or was just rebuilt
+        // under a write lock — as it would be on every open, forever. Only the
+        // repair's own verdict distinguishes them.
+        drop(store);
+        let reopened = Arc::new(SqliteStore::new(db_path).await?);
+        assert_eq!(
+            title_fts_row_count(&reopened).await?,
+            expected_title_fts_rows(&reopened).await?,
+            "the repaired index must hold exactly the titled rows"
+        );
+        assert_eq!(
+            SqliteStore::backfill_title_fts_if_stale(&*reopened.write().await).await?,
+            TitleFtsRepair::AlreadyHealthy,
+            "a just-repaired index must satisfy the staleness check it was \
+             repaired for; anything else means the refill and the count use \
+             different predicates and every open rebuilds the whole index"
+        );
         Ok(())
     }
 
