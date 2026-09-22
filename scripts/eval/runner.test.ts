@@ -725,10 +725,14 @@ describe("parseTurnOutput", () => {
     expect(turn.emptyGeneration).toBeUndefined();
   });
 
+  // The marker carries one JSON object. These cover this parser's own
+  // behaviour; the emitter → scrape → parse contract is pinned mechanically by
+  // decision-roundtrip.test.ts, which parses log lines the real Rust tracing
+  // layer emitted rather than strings written here by hand.
   test("parses both decision kinds with their candidate sets", () => {
     const out = [
-      "[decision operation] selected=create_node candidates=create_node, search_nodes",
-      "[decision schema] selected=invoice candidates=invoice, customer",
+      '[decision operation] {"candidates":["create_node","search_nodes"],"off_menu":false,"selected":"create_node"}',
+      '[decision schema] {"candidates":["invoice","customer"],"off_menu":false,"selected":"invoice"}',
       "assistant> done",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
@@ -748,12 +752,12 @@ describe("parseTurnOutput", () => {
     ]);
   });
 
-  test("round-trips an unselected decision back to null, not the literal none", () => {
-    // A scorer must not have to know the marker's wire spelling for "picked
-    // nothing" — and this is ADR-056's Scenario 6 shape, the failure class the
-    // decision record exists to make visible.
+  test("parses an unselected decision as null", () => {
+    // ADR-056's Scenario 6 shape, the failure class the decision record exists
+    // to make visible. JSON null carries it directly, so unlike the delimited
+    // form there is no sentinel spelling a scorer has to know.
     const out = [
-      "[decision operation] selected=none candidates=search_nodes, update_node",
+      '[decision operation] {"candidates":["search_nodes","update_node"],"off_menu":false,"selected":null}',
       "assistant> I'd be happy to help.",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
@@ -764,9 +768,22 @@ describe("parseTurnOutput", () => {
     ]);
   });
 
+  test("keeps an empty selection distinct from no selection", () => {
+    // Two different outcomes: `null` is declining to pick, `""` is a name the
+    // model produced that happens to be blank. Folding them together would
+    // erase the difference.
+    const out = [
+      '[decision schema] {"candidates":["invoice"],"off_menu":true,"selected":""}',
+      "assistant> done",
+    ].join("\n");
+    const turn = parseTurnOutput(out, 100);
+    expect(turn.decisions?.[0].selected).toBe("");
+    expect(turn.decisions?.[0].selected).not.toBeNull();
+  });
+
   test("parses a multi-word skill selection intact (regression)", () => {
     const out = [
-      "[decision skill] selected=Schema Creation candidates=Schema Creation, Node Creation",
+      '[decision skill] {"candidates":["Schema Creation","Node Creation"],"off_menu":false,"selected":"Schema Creation"}',
       "assistant> done",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
@@ -778,14 +795,37 @@ describe("parseTurnOutput", () => {
     ]);
   });
 
+  test("a candidate name containing a comma stays one candidate", () => {
+    // The bug this format was introduced for: the delimited form split this
+    // name in two, producing a corrupted record that reads as a valid one.
+    const out = [
+      '[decision schema] {"candidates":["Company, Sold To","invoice"],"off_menu":false,"selected":"Company, Sold To"}',
+      "assistant> done",
+    ].join("\n");
+    const turn = parseTurnOutput(out, 100);
+    expect(turn.decisions?.[0].candidates).toEqual([
+      "Company, Sold To",
+      "invoice",
+    ]);
+    expect(turn.decisions?.[0].selected).toBe("Company, Sold To");
+  });
+
   test("carries the off-menu flag without it leaking into the selection", () => {
     const out = [
-      "[decision schema] selected=album [off-menu] candidates=invoice, customer",
+      '[decision schema] {"candidates":["invoice","customer"],"off_menu":true,"selected":"album"}',
       "assistant> created",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);
     expect(turn.decisions?.[0].selected).toBe("album");
     expect(turn.decisions?.[0].offMenu).toBe(true);
+  });
+
+  test("drops a malformed payload rather than recording an empty decision", () => {
+    // A record with no candidates and no selection reads downstream as
+    // "offered nothing, picked nothing" — a real and meaningfully different
+    // outcome from a line that failed to parse.
+    const out = ["[decision schema] {not json}", "assistant> hi"].join("\n");
+    expect(parseTurnOutput(out, 100).decisions).toBeUndefined();
   });
 
   test("decisions is undefined (not empty) when no marker is present", () => {
@@ -800,14 +840,14 @@ describe("parseTurnOutput", () => {
     // model text, and a model quoting a marker-shaped string must not be
     // mistaken for the harness's own signal.
     const out =
-      "assistant> I logged it as [decision schema] selected=album candidates=x";
+      'assistant> I logged it as [decision schema] {"candidates":[],"off_menu":false,"selected":"album"}';
     const turn = parseTurnOutput(out, 100);
     expect(turn.decisions).toBeUndefined();
   });
 
   test("keeps an empty candidate set from collapsing into a phantom candidate", () => {
     const out = [
-      "[decision operation] selected=none candidates=",
+      '[decision operation] {"candidates":[],"off_menu":false,"selected":null}',
       "assistant> hi",
     ].join("\n");
     const turn = parseTurnOutput(out, 100);

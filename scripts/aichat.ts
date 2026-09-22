@@ -138,6 +138,54 @@ function stripAnsi(s: string): string {
 }
 
 /**
+ * Read one complete JSON object out of `line` starting at `start`, ignoring
+ * whatever follows it.
+ *
+ * `JSON.parse` on the rest of the line would throw the moment tracing emitted
+ * another field after this one, so parsing the remainder wholesale would
+ * reintroduce exactly the "this field must be last on the line" constraint the
+ * JSON payload exists to delete. Scanning to the matching brace instead makes
+ * the read independent of field order.
+ *
+ * String state is tracked because a value may legitimately contain a brace —
+ * a schema id or skill name is not a controlled input — and a naive depth
+ * count would stop at the wrong character. Escapes are honoured for the same
+ * reason: a `\"` inside a value must not be read as closing the string.
+ *
+ * Returns `undefined` for a line whose payload is absent, truncated, or not an
+ * object, so the caller can skip a marker it cannot trust rather than emit a
+ * malformed one.
+ */
+function extractJsonObject(line: string, start: number): unknown | undefined {
+  if (line[start] !== "{") return undefined;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < line.length; i++) {
+    const c = line[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(line.slice(start, i + 1));
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
  * Turn a daemon log slice (ANSI already stripped) into the `[marker] ...`
  * lines `cmdSend` prints to stdout for the eval runner to scrape.
  *
@@ -251,37 +299,35 @@ export function formatTurnLogLines(slice: string): string[] {
       }
     }
   }
-  // The two named decisions per ReAct iteration (agent_loop.rs's "Agent
+  // The three named decisions per ReAct iteration (agent_loop.rs's "Agent
   // decision: ..." lines, via local_agent::decisions). Each carries the
   // candidate set alongside the outcome, because an outcome alone is not
   // scoreable: whether calling `search_nodes` was right depends on what else
   // was on offer that turn.
   //
-  // `decision_candidates` is matched to END OF LINE for the same reason
-  // `routed_skills` is — tracing leaves the value unquoted, and a
-  // comma-separated list of names cannot be delimited by anything shorter than
-  // the line end. agent_loop.rs emits it last on the line for that reason, so
-  // the two fields read before it are safe to match normally.
+  // The payload arrives as one JSON object and is forwarded as one, rather
+  // than being unpacked into a delimited marker and re-split downstream. The
+  // delimited form it replaces could not represent a name containing a comma
+  // (the list was joined and split on one) or a quote (tracing quotes a field
+  // only when it must, so the scrape needed a quoted pattern plus a bare
+  // fallback, and neither survived an embedded quote). Both are reachable:
+  // `create_schema` derives type ids from the model's own phrasing.
+  //
+  // Forwarding verbatim also means this scrape asserts nothing about the
+  // payload's internal shape — it reads `decision` for the marker name and
+  // hands the rest to the parser, so the two cannot disagree about a field
+  // only one of them knows.
   for (const l of lines.filter((l) => l.includes("Agent decision:"))) {
     const kind = l.match(/decision="?(skill|schema|operation)"?/)?.[1];
     if (!kind) continue;
-    // Quoted form first: tracing quotes a string field when it contains a
-    // space, and skill names do ("Schema Creation"). An unquoted-only pattern
-    // truncated `selected` to its first word — invisible for tool names and
-    // type ids, which never contain spaces, and wrong for every skill.
-    const selected =
-      l.match(/decision_selected="([^"]*)"/)?.[1] ??
-      l.match(/decision_selected=(\S*)/)?.[1] ??
-      "";
-    const offMenu = /decision_off_menu=true/.test(l) ? " [off-menu]" : "";
-    const candidates = l.match(/decision_candidates="?(.*?)"?$/)?.[1]?.trim() ?? "";
-    // An empty `selected` is a real outcome (the model was offered tools and
-    // called none — ADR-056's Scenario 6 shape), so it is rendered as an
-    // explicit `none` rather than omitted. Dropping the marker would make that
-    // failure indistinguishable from a turn this scrape could not parse.
-    out.push(
-      `[decision ${kind}] selected=${selected || "none"}${offMenu} candidates=${candidates}`,
-    );
+    const payloadIdx = l.indexOf("decision_payload=");
+    if (payloadIdx === -1) continue;
+    const payload = extractJsonObject(l, payloadIdx + "decision_payload=".length);
+    if (payload === undefined) continue;
+    // Re-stringified from the parsed value rather than forwarded as the raw
+    // slice, so the marker carries exactly the object and nothing that
+    // happened to follow it on the log line.
+    out.push(`[decision ${kind}] ${JSON.stringify(payload)}`);
   }
   for (const l of lines.filter((l) => l.includes("Tool executed"))) {
     const tool = l.match(/tool="?([a-z_]+)"?/)?.[1] ?? "?";

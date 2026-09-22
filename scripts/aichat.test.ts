@@ -139,54 +139,85 @@ describe("formatTurnLogLines", () => {
     expect(lines.filter((l) => l.startsWith("[routed skills]"))).toHaveLength(1);
   });
 
+  // The decision payload arrives as one JSON object. These cover this
+  // scrape's own behaviour against hand-written lines; the emitter → scrape →
+  // parse contract itself is pinned mechanically by
+  // scripts/eval/decision-roundtrip.test.ts, which reads log lines the real
+  // Rust tracing layer emitted rather than lines written here by hand.
   test("captures both named decisions with their candidate sets", () => {
-    // Verbatim tracing shape: `decision_candidates` is unquoted and last on the
-    // line, because a comma-separated list of names cannot be delimited by
-    // anything shorter than the line end.
     const slice = [
-      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_selected="create_node" decision_off_menu=false decision_candidates=create_node, search_nodes, get_node`,
-      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_selected="invoice" decision_off_menu=false decision_candidates=invoice, customer`,
+      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_payload={"candidates":["create_node","search_nodes","get_node"],"off_menu":false,"selected":"create_node"}`,
+      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_payload={"candidates":["invoice","customer"],"off_menu":false,"selected":"invoice"}`,
     ].join("\n");
     const lines = formatTurnLogLines(slice);
     expect(lines).toContain(
-      "[decision operation] selected=create_node candidates=create_node, search_nodes, get_node",
+      '[decision operation] {"candidates":["create_node","search_nodes","get_node"],"off_menu":false,"selected":"create_node"}',
     );
     expect(lines).toContain(
-      "[decision schema] selected=invoice candidates=invoice, customer",
+      '[decision schema] {"candidates":["invoice","customer"],"off_menu":false,"selected":"invoice"}',
     );
   });
 
   test("keeps a multi-word skill name intact (regression)", () => {
-    // Verbatim from a live daemon: tracing quotes the value because it
-    // contains a space. An unquoted-only pattern truncated this to "Schema",
-    // which was invisible for tool names and type ids (never spaced) and wrong
-    // for every skill.
-    const slice = `2026-09-22T13:45:00Z  INFO nodespace_agent: Agent decision: skill selected iteration=0 decision="skill" decision_selected="Schema Creation" decision_off_menu=false decision_candidates=Schema Creation, Conflict Resolution, Relationship Management`;
+    // Under the delimited format `decision_selected` was matched as a
+    // non-whitespace run, truncating this to "Schema" — invisible for tool
+    // names and type ids (never spaced) and wrong for every skill. The JSON
+    // payload removes the class of bug rather than the one instance.
+    const slice = `2026-09-22T13:45:00Z  INFO nodespace_agent: Agent decision: skill selected iteration=0 decision="skill" decision_payload={"candidates":["Schema Creation","Conflict Resolution"],"off_menu":false,"selected":"Schema Creation"}`;
     const lines = formatTurnLogLines(slice);
     expect(lines).toContain(
-      "[decision skill] selected=Schema Creation candidates=Schema Creation, Conflict Resolution, Relationship Management",
+      '[decision skill] {"candidates":["Schema Creation","Conflict Resolution"],"off_menu":false,"selected":"Schema Creation"}',
     );
   });
 
-  test("marks a selection the candidate set never offered", () => {
-    // The most diagnostic signal the record carries: unlike a close call
-    // between plausible candidates, naming a type that was never on offer
-    // cannot be explained as a hard choice.
-    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_selected="album" decision_off_menu=true decision_candidates=invoice, customer`;
+  test("a candidate name containing a comma stays one candidate", () => {
+    // The bug the JSON payload was introduced for. The delimited form joined
+    // candidates with ", " and was split on ",", so this name became two.
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_payload={"candidates":["Company, Sold To","invoice"],"off_menu":false,"selected":"Company, Sold To"}`;
     const lines = formatTurnLogLines(slice);
     expect(lines).toContain(
-      "[decision schema] selected=album [off-menu] candidates=invoice, customer",
+      '[decision schema] {"candidates":["Company, Sold To","invoice"],"off_menu":false,"selected":"Company, Sold To"}',
     );
   });
 
-  test("records an empty selection as an explicit none, not an omitted marker", () => {
+  test("reads the payload even when another field follows it on the line", () => {
+    // Field order carries no meaning now. Under the delimited format the
+    // candidate list had to be last on the line, an invariant documented in
+    // three files and enforced in none — so a reordering broke the scrape
+    // silently. The payload is read to its matching brace instead.
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected decision="operation" decision_payload={"candidates":["get_node"],"off_menu":false,"selected":"get_node"} iteration=0`;
+    const lines = formatTurnLogLines(slice);
+    expect(lines).toContain(
+      '[decision operation] {"candidates":["get_node"],"off_menu":false,"selected":"get_node"}',
+    );
+  });
+
+  test("a brace inside a candidate name does not truncate the payload", () => {
+    // The payload is read by scanning to the matching brace, so the scan
+    // tracks string state: a brace inside a value must not be counted as
+    // structure. Names are not a controlled input.
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected decision="schema" decision_payload={"candidates":["a } brace","invoice"],"off_menu":false,"selected":"a } brace"}`;
+    const lines = formatTurnLogLines(slice);
+    expect(lines).toContain(
+      '[decision schema] {"candidates":["a } brace","invoice"],"off_menu":false,"selected":"a } brace"}',
+    );
+  });
+
+  test("skips a decision line whose payload is truncated", () => {
+    // A half-written line is dropped rather than forwarded as a marker the
+    // parser would have to guess at.
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected decision="schema" decision_payload={"candidates":["inv`;
+    expect(formatTurnLogLines(slice).filter((l) => l.startsWith("[decision"))).toHaveLength(0);
+  });
+
+  test("records an empty selection without dropping the marker", () => {
     // ADR-056's Scenario 6 shape: tools were offered and none was called.
     // Dropping the marker would make that failure indistinguishable from a
     // line this scrape could not parse.
-    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=1 decision="operation" decision_selected="" decision_off_menu=false decision_candidates=search_nodes, update_node`;
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=1 decision="operation" decision_payload={"candidates":["search_nodes","update_node"],"off_menu":false,"selected":null}`;
     const lines = formatTurnLogLines(slice);
     expect(lines).toContain(
-      "[decision operation] selected=none candidates=search_nodes, update_node",
+      '[decision operation] {"candidates":["search_nodes","update_node"],"off_menu":false,"selected":null}',
     );
   });
 
@@ -195,8 +226,8 @@ describe("formatTurnLogLines", () => {
     // last line, decisions are per-round: a ReAct turn that searched and then
     // wrote made two operation decisions and both are scoreable.
     const slice = [
-      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_selected="search_nodes" decision_off_menu=false decision_candidates=search_nodes, update_node`,
-      `2026-09-22T10:00:02Z  INFO nodespace_agent: Agent decision: operation selected iteration=1 decision="operation" decision_selected="update_node" decision_off_menu=false decision_candidates=search_nodes, update_node`,
+      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_payload={"candidates":["search_nodes","update_node"],"off_menu":false,"selected":"search_nodes"}`,
+      `2026-09-22T10:00:02Z  INFO nodespace_agent: Agent decision: operation selected iteration=1 decision="operation" decision_payload={"candidates":["search_nodes","update_node"],"off_menu":false,"selected":"update_node"}`,
     ].join("\n");
     const lines = formatTurnLogLines(slice);
     expect(lines.filter((l) => l.startsWith("[decision operation]"))).toHaveLength(2);

@@ -126,37 +126,48 @@ function runTurn(env: EvalEnv, chatId: string, message: string): TurnRecord {
  * genuinely made no decision — the same "absent is not false" rule
  * `stage2CandidatesInjected` follows.
  *
- * `candidates=` runs to end of line because the value is a comma-separated list
- * of names that tracing emits unquoted; `selected=` is matched as a
- * non-whitespace run for the same reason it can be, being a single identifier.
+ * The payload is one JSON object, parsed as one. The delimited form this
+ * replaces split the candidate list on `","`, so a name containing a comma
+ * silently became two candidates — a corrupted record indistinguishable from a
+ * valid one to any scorer counting `candidates.length` or testing membership.
+ * `selected` had the matching flaw on quotes. Both inputs are reachable:
+ * `create_schema` derives type ids from the model's own phrasing.
+ *
  * Anchored to line start like every other marker here: `out` carries arbitrary
  * raw model text via `[raw]` lines, and the model narrating a marker-shaped
- * string must not be read as the harness's own signal.
+ * string must not be read as the harness's own signal. A `[raw]` line is itself
+ * JSON-encoded, so a marker-shaped string inside one cannot reach column zero.
  */
 function parseDecisions(out: string): DecisionRecord[] | undefined {
   const rows = [
-    ...out.matchAll(
-      // `selected` is matched up to the ` [off-menu]` flag or ` candidates=`,
-      // NOT as a non-whitespace run: skill names contain spaces ("Schema
-      // Creation"), so `\S*?` silently truncated them to the first word. Tool
-      // names and type ids never contain spaces, which is why this only
-      // surfaced once skill routing was recorded.
-      /^\[decision (skill|schema|operation)\] selected=(.*?)( \[off-menu\])? candidates=(.*)$/gm,
-    ),
+    ...out.matchAll(/^\[decision (skill|schema|operation)\] (\{.*\})$/gm),
   ];
   if (rows.length === 0) return undefined;
-  return rows.map((m) => ({
-    kind: m[1] as "skill" | "schema" | "operation",
-    // `none` is the marker's rendering of "offered options, picked nothing".
-    // It round-trips back to null rather than the literal string, so a scorer
-    // never has to know the wire spelling.
-    selected: m[2] === "none" ? null : m[2],
-    offMenu: m[3] !== undefined,
-    candidates: m[4]
-      .split(",")
-      .map((c) => c.trim())
-      .filter((c) => c.length > 0),
-  }));
+  const records: DecisionRecord[] = [];
+  for (const m of rows) {
+    let payload: { selected?: unknown; off_menu?: unknown; candidates?: unknown };
+    try {
+      payload = JSON.parse(m[2]);
+    } catch {
+      // A malformed payload is dropped rather than recorded as a decision with
+      // empty fields, which would read downstream as "offered nothing, picked
+      // nothing" — a real and meaningfully different outcome.
+      continue;
+    }
+    records.push({
+      kind: m[1] as "skill" | "schema" | "operation",
+      // JSON `null` carries "picked nothing" directly, so unlike the delimited
+      // form there is no sentinel spelling for a scorer to know. An empty
+      // string stays an empty string and is NOT folded into null: the two are
+      // different outcomes.
+      selected: typeof payload.selected === "string" ? payload.selected : null,
+      offMenu: payload.off_menu === true,
+      candidates: Array.isArray(payload.candidates)
+        ? payload.candidates.filter((c): c is string => typeof c === "string")
+        : [],
+    });
+  }
+  return records.length === 0 ? undefined : records;
 }
 
 /**

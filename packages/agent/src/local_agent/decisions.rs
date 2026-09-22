@@ -113,15 +113,47 @@ impl DecisionRecord {
             .is_some_and(|s| !self.candidates.iter().any(|c| c == s))
     }
 
-    /// Render the candidate set for one structured-log field.
+    /// Render the whole decision as one JSON object for the structured log.
     ///
-    /// Comma-separated to match `routed_skill_names`, whose shape the log
-    /// scrapers here already parse. That function's own doc comment records why
-    /// the exact shape is a contract rather than a detail: the first scraper
-    /// written against it silently matched nothing because its shape was assumed
-    /// instead of asserted.
-    pub fn candidates_field(&self) -> String {
-        self.candidates.join(", ")
+    /// JSON-encoded rather than emitted as three delimited fields, following
+    /// `raw_response`'s precedent in `agent_loop.rs`: *"A JSON string escapes
+    /// newlines and quotes, so this line is always exactly one line no matter
+    /// what the model generated."* The same argument applies to every value
+    /// here, and to the list structure around them.
+    ///
+    /// The delimited form this replaces joined candidates with `", "` and was
+    /// recovered by splitting on `","`, so a candidate name containing a comma
+    /// silently became two candidates — a corrupted record that reads as a
+    /// valid one. `selected` was no better: tracing quotes a string field only
+    /// when it must, which for that field meant only when the value contained a
+    /// space, so the scraper carried a quoted pattern plus a bare fallback and
+    /// neither survived a value containing a quote character. Neither input is
+    /// fully controlled: skill names are user-authorable in principle, and
+    /// `create_schema` derives type ids from the model's own phrasing.
+    ///
+    /// Encoding the whole payload rather than just the list also removes the
+    /// constraint that the candidate field be **last on the line**. That
+    /// invariant existed because an unquoted comma-separated list cannot be
+    /// delimited by anything shorter than the line end; it was documented in
+    /// three files and enforced in none, so a field reordering would have
+    /// broken the scrape silently. A JSON object makes field order irrelevant.
+    ///
+    /// `selected` stays a distinct JSON `null` versus `""`: the empty string is
+    /// a real outcome elsewhere in this pipeline, and collapsing the two would
+    /// erase the difference between "picked nothing" and "picked something
+    /// nameless".
+    pub fn payload_field(&self) -> String {
+        // Infallible in practice — the value is built here from a String, a
+        // bool and a Vec<String>, none of which can fail to serialise. A
+        // fallback rather than an unwrap so a logging call can never panic the
+        // agent loop, and a shape the parser rejects loudly rather than one it
+        // might mistake for a real record.
+        serde_json::to_string(&serde_json::json!({
+            "selected": self.selected,
+            "off_menu": self.selected_off_menu(),
+            "candidates": self.candidates,
+        }))
+        .unwrap_or_else(|_| "null".to_string())
     }
 }
 
@@ -554,19 +586,92 @@ mod tests {
 
     /// The log shape is a contract: `routed_skill_names` records that the first
     /// scraper written against its format silently matched nothing because the
-    /// shape was assumed rather than asserted.
+    /// shape was assumed rather than asserted. The cross-language half of this
+    /// contract is pinned by `tests/decision_marker_golden.rs`; these assert
+    /// the encoding itself.
     #[test]
-    fn candidates_field_is_comma_separated_like_routed_skill_names() {
+    fn payload_field_is_a_json_object_carrying_all_three_values() {
         let rec = record_operation(
             &["search_nodes".to_string(), "get_node".to_string()],
             &["get_node".to_string()],
         );
-        assert_eq!(rec.candidates_field(), "search_nodes, get_node");
+        let v: serde_json::Value = serde_json::from_str(&rec.payload_field()).unwrap();
+        assert_eq!(v["selected"], json!("get_node"));
+        assert_eq!(v["off_menu"], json!(false));
+        assert_eq!(v["candidates"], json!(["search_nodes", "get_node"]));
+    }
+
+    /// The failure the delimited format made silent. A name containing the
+    /// join string used to split into two candidates, yielding a corrupted
+    /// record that read as a valid one to any scorer counting candidates or
+    /// testing membership.
+    #[test]
+    fn a_candidate_containing_the_old_delimiter_survives_as_one_candidate() {
+        let rec = record_schema(
+            &["Company, Sold To".to_string(), "invoice".to_string()],
+            Some("Company, Sold To".to_string()),
+        );
+        let v: serde_json::Value = serde_json::from_str(&rec.payload_field()).unwrap();
+        assert_eq!(
+            v["candidates"],
+            json!(["Company, Sold To", "invoice"]),
+            "a comma inside a name must not split it into two candidates"
+        );
+        assert_eq!(v["selected"], json!("Company, Sold To"));
+        assert_eq!(
+            v["off_menu"],
+            json!(false),
+            "the selection is in the candidate set — a split name would have \
+             made this look off-menu"
+        );
+    }
+
+    /// Quotes and newlines are the other two shapes that broke the delimited
+    /// form: tracing quoted a field only when it contained a space, so an
+    /// embedded quote escaped no pattern, and a newline broke the
+    /// one-line-per-record assumption every scraper here relies on.
+    #[test]
+    fn quotes_and_newlines_in_a_name_stay_on_one_line_and_decode_intact() {
+        let rec = record_schema(
+            &["a \" quote".to_string(), "a \n newline".to_string()],
+            Some("a \" quote".to_string()),
+        );
+        let encoded = rec.payload_field();
+        assert!(
+            !encoded.contains('\n'),
+            "the encoded payload must be exactly one line, got: {encoded}"
+        );
+        let v: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(v["candidates"], json!(["a \" quote", "a \n newline"]));
+        assert_eq!(v["selected"], json!("a \" quote"));
+    }
+
+    /// `null` and `""` are different outcomes and the encoding must keep them
+    /// apart. The empty string is a name the model produced that happens to be
+    /// blank; `null` is the model declining to pick at all — ADR-056's
+    /// Scenario 6 shape, and the failure class that motivated this module.
+    #[test]
+    fn an_unselected_decision_encodes_null_not_an_empty_string() {
+        let none = record_operation(&["search_nodes".to_string()], &[]);
+        let v: serde_json::Value = serde_json::from_str(&none.payload_field()).unwrap();
+        assert_eq!(v["selected"], json!(null));
+        assert!(v["selected"].is_null());
+
+        let empty = record_schema(&["invoice".to_string()], Some(String::new()));
+        let v: serde_json::Value = serde_json::from_str(&empty.payload_field()).unwrap();
+        assert_eq!(v["selected"], json!(""));
+        assert!(
+            !v["selected"].is_null(),
+            "an empty selection is not the same outcome as no selection"
+        );
     }
 
     #[test]
-    fn candidates_field_is_empty_for_an_empty_surface() {
-        assert_eq!(record_operation(&[], &[]).candidates_field(), "");
+    fn payload_field_encodes_an_empty_surface_as_an_empty_array() {
+        let v: serde_json::Value =
+            serde_json::from_str(&record_operation(&[], &[]).payload_field()).unwrap();
+        assert_eq!(v["candidates"], json!([]));
+        assert_eq!(v["selected"], json!(null));
     }
 
     #[test]
