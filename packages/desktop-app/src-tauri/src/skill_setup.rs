@@ -582,7 +582,21 @@ enum Installer {
 /// Resolve which [`Installer`] to use: the compiled standalone binary if
 /// it's available for this platform/build, the plain JS script otherwise.
 fn resolve_installer<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Installer, String> {
-    if let Some((binary, resource_root)) = resolve_compiled_installer_path(app)? {
+    if let Some((binary, resource_root)) = resolve_compiled_installer_path(app) {
+        // Checked (and self-healed) here, right before the compiled binary is
+        // actually selected -- not inside `resolve_compiled_installer_path`
+        // itself. That function's only job is "is the compiled path even
+        // applicable" (binary AND resource root both present); folding a
+        // fallible executable-bit check into the middle of it previously
+        // meant a binary-present-but-unfixable-permissions build with an
+        // ALSO-missing resource root would hard-error here instead of
+        // correctly falling through to `Installer::Script` (the same
+        // "compiled path isn't usable on this build, try the fallback"
+        // outcome a missing resource root alone already produces). Placing
+        // the check here, after both pieces are confirmed present, restores
+        // that fallback behavior and keeps `resolve_compiled_installer_path`
+        // a simple, infallible existence check.
+        ensure_installer_executable(&binary)?;
         return Ok(Installer::Compiled {
             binary,
             resource_root,
@@ -597,50 +611,33 @@ fn resolve_installer<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Installer,
 /// `daemon_setup::sidecar_path_from_exe`'s doc comment for why sidecars land
 /// beside the running executable rather than under a Resources tree) — plus
 /// the resource root it needs (`SKILL.md`/`shims`/`references`, staged the
-/// same place `dist/install.js` already was).
-///
-/// `Ok(None)` when the compiled binary or resource root is simply absent —
-/// e.g. a platform this hasn't been wired up for yet, or a dev/source
-/// checkout that hasn't run the compile step — the caller falls through to
-/// [`Installer::Script`] in that case, same as before.
-///
-/// `Err` is distinct from that: the binary IS present but lacks its
-/// executable bit and [`ensure_installer_executable`]'s self-heal couldn't
-/// repair it. That is a real, actionable failure worth surfacing on its own
-/// terms (a specific "not executable" message) rather than silently falling
-/// through to the script installer — which, in a real packaged build, has no
-/// bundled `dist/install.js` fallback and no reason to have `bun`/`node` on
-/// the end user's machine either (see module docs), so it would very likely
-/// fail too, just with a much less specific error.
+/// same place `dist/install.js` already was). Returns `None` when either
+/// piece is missing, e.g. a platform this hasn't been wired up for yet, or a
+/// dev/source checkout that hasn't run the compile step — the caller falls
+/// through to [`Installer::Script`] in that case. A purely existence-based
+/// check: whether the binary that IS found is actually executable is
+/// [`resolve_installer`]'s concern, not this function's (see its call site).
 fn resolve_compiled_installer_path<R: tauri::Runtime>(
     app: &AppHandle<R>,
-) -> Result<Option<(PathBuf, PathBuf)>, String> {
+) -> Option<(PathBuf, PathBuf)> {
     use tauri::path::BaseDirectory;
 
-    let Some(exe) = std::env::current_exe().ok() else {
-        return Ok(None);
-    };
+    let exe = std::env::current_exe().ok()?;
     let binary_name = crate::daemon_setup::bundled_sidecar_name("nodespace-skill-installer");
-    let Some(binary) = crate::daemon_setup::sidecar_path_from_exe(&exe, &binary_name) else {
-        return Ok(None);
-    };
+    let binary = crate::daemon_setup::sidecar_path_from_exe(&exe, &binary_name)?;
     if !binary.exists() {
-        return Ok(None);
+        return None;
     }
 
-    ensure_installer_executable(&binary)?;
-
-    let Ok(resource_root) = app
+    let resource_root = app
         .path()
         .resolve("resources/skill", BaseDirectory::Resource)
-    else {
-        return Ok(None);
-    };
+        .ok()?;
     if !resource_root.exists() {
-        return Ok(None);
+        return None;
     }
 
-    Ok(Some((binary, resource_root)))
+    Some((binary, resource_root))
 }
 
 /// Ensure the bundled `nodespace-skill-installer` sidecar carries the
@@ -659,47 +656,78 @@ fn resolve_compiled_installer_path<R: tauri::Runtime>(
 /// re-signing step, and no quarantine flag to clear — it never leaves the
 /// already-notarized bundle Gatekeeper trusted once, at launch (see
 /// `daemon_setup::has_quarantine_attribute`'s doc comment for why that
-/// distinction matters for the daemon sidecars). The repair is just:
+/// distinction matters for the daemon sidecars). The repair itself is just:
 /// `chmod` it in place, via the exact same
 /// [`crate::daemon_setup::set_executable`] helper `extract_sidecar_if_changed`
 /// itself uses.
 ///
+/// That repair is NOT guaranteed to succeed, and its likeliest failure mode
+/// is worth stating plainly: a `.pkg`-installed build's `.app` bundle
+/// contents (including this binary) are owned by `root:wheel` --
+/// `scripts/build-pkg.sh`'s `pkgbuild` invocation passes no `--ownership`
+/// flag, so `pkgbuild`'s documented default (`recommended`) applies, which
+/// sets payload files under `/Applications` to root ownership -- while
+/// `nodespace-app` itself always runs as the logged-in, non-root user. A
+/// non-owning, non-root process cannot `chmod` a file it doesn't own, so on
+/// a `.pkg` install this self-heal's `chmod` will itself fail with `EPERM`
+/// whenever it's actually needed, and this function correctly falls into its
+/// "fail with a clear, actionable error" branch below -- not a bug, and
+/// exactly the second acceptable outcome the issue this function implements
+/// asked for, alongside self-healing. The REAL fix for a `.pkg` install
+/// losing this bit is the two defenses that run with sufficient privilege to
+/// actually restore it: `build-pkg.sh`'s own build-time `chmod` on the
+/// payload, and `scripts/pkg-resources/postinstall`'s install-time `chmod`
+/// (which runs as root). This runtime self-heal's `chmod` actually succeeding
+/// is realistically limited to installs where the running process owns the
+/// file -- a dev/source checkout, or the Homebrew Cask/`.dmg` distribution
+/// channel (`release.yml`'s `sync-homebrew-cask` job depends only on the
+/// `.dmg`-producing job, never `build-pkg.sh`/`postinstall`, so files placed
+/// there by a user's own drag-to-`/Applications` are user-owned, not root-
+/// owned) -- for THAT channel this runtime self-heal is not a 4th redundant
+/// layer on top of the `.pkg` channel's three; it's the only one.
+///
 /// Returns a clear, actionable error when the binary is missing `+x` and
-/// that repair itself fails — e.g. the bundle is on a read-only volume, or
-/// its files are owned by a different user than the one running the app.
-/// This is surfaced to the user as an `install_skill` failure (see module
-/// docs on failure surfacing), not silently swallowed the way the previous
-/// `.exists()`-only check would have let a non-executable binary reach
-/// `compiled_installer_command().output()` and fail with a bare OS "Permission
-/// denied" tied to no visible cause.
+/// that repair itself fails -- e.g. the bundle is on a read-only volume, or
+/// (per the above) its files are owned by a different user than the one
+/// running the app. This is surfaced to the user as an `install_skill`
+/// failure (see module docs on failure surfacing), not silently swallowed
+/// the way the previous `.exists()`-only check would have let a
+/// non-executable binary reach `compiled_installer_command().output()` and
+/// fail with a bare OS "Permission denied" tied to no visible cause.
 #[cfg(unix)]
 fn ensure_installer_executable(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
 
-    let metadata = std::fs::metadata(path).map_err(|e| {
+    let c_path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
         format!(
-            "Cannot stat the bundled skill installer at {}: {e}",
+            "Bundled skill installer path is not representable as a C string: {}",
             path.display()
         )
     })?;
-    // `& 0o111` treats ANY executable bit (owner, group, or other) as
-    // healthy, not specifically the one the runtime user actually needs
-    // (the app is installed as root via the .pkg, then run by a non-root
-    // user, so it's really the other-execute bit that matters). A binary
-    // with only the owner bit set would pass this check yet still fail to
-    // exec for that user. A deliberate pragmatic proxy, not an oversight:
-    // the real-world failure mode this guards (a CI artifact round-trip
-    // stripping +x) empirically strips the mode uniformly, and the repair
-    // path below always normalizes to 0o755 regardless of which bits were
-    // actually missing — so this check only needs to distinguish "some
-    // sane mode is already set" from "definitely broken," not diagnose
-    // exactly which bit is missing.
-    if metadata.permissions().mode() & 0o111 != 0 {
+
+    // access(2) with X_OK asks the kernel directly whether THIS process's
+    // real uid/gid can execute the file -- covering owner/group/other bits
+    // and actual process identity together, unlike checking the raw mode
+    // bits (`metadata().permissions().mode() & 0o111 != 0`, an earlier
+    // version of this function): that's true the moment ANY category can
+    // execute the file, not specifically the category this process falls
+    // into. Irrelevant for a dev checkout where the process owns the file,
+    // but not for a `.pkg` install, where the app always runs as a non-root
+    // user and the bundle's contents are root-owned (see this function's own
+    // doc comment) -- there, only the other-execute bit matters, and a mode
+    // with just the owner bit set would have passed the old check while
+    // still being unexecutable by the real caller.
+    //
+    // SAFETY: `c_path` is a valid, NUL-terminated C string for the duration
+    // of this call (it isn't dropped until this function returns), and
+    // `access` only reads through the pointer it's given.
+    if unsafe { libc::access(c_path.as_ptr(), libc::X_OK) } == 0 {
         return Ok(());
     }
 
     tracing::warn!(
-        "Bundled skill installer at {} lost its executable bit — repairing",
+        "Bundled skill installer at {} is not executable by this process — repairing",
         path.display()
     );
     crate::daemon_setup::set_executable(path).map_err(|e| repair_failed_message(path, &e))
@@ -1119,9 +1147,7 @@ mod tests {
         let handle = app.handle().clone();
 
         assert!(
-            resolve_compiled_installer_path(&handle)
-                .expect("no compiled binary present is Ok(None), not an error")
-                .is_none(),
+            resolve_compiled_installer_path(&handle).is_none(),
             "mock_app() has no bundled compiled installer sidecar"
         );
 
@@ -1198,8 +1224,8 @@ mod tests {
         );
     }
 
-    /// `resolve_compiled_installer_path`'s `Err` branch (distinct from
-    /// `Ok(None)` "not applicable") depends entirely on this message being
+    /// `resolve_installer`'s `Err` branch (see its call to
+    /// `ensure_installer_executable`) depends entirely on this message being
     /// actionable — asserted directly on the pure formatter rather than by
     /// forcing a real OS-level chmod failure: chmod-ing a file you own
     /// generally succeeds regardless of the containing directory's

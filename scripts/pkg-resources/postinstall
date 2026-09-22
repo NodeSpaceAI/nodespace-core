@@ -99,7 +99,9 @@ if [[ -d "${APP_MACOS_DIR}" ]]; then
     APP_MACOS_BINS=("${APP_MACOS_DIR}/"*)
     shopt -u nullglob
     if [[ ${#APP_MACOS_BINS[@]} -gt 0 ]]; then
-        chmod 755 "${APP_MACOS_BINS[@]}" || true
+        if ! chmod 755 "${APP_MACOS_BINS[@]}"; then
+            echo "Warning: failed to chmod ${APP_MACOS_DIR}/* — continuing install" >&2
+        fi
     fi
 fi
 
