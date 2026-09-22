@@ -669,11 +669,16 @@ fn comparable_title(s: &str) -> String {
 ///
 /// Disarmed for an entity that a clarification the user has answered in the
 /// current intent (`answered_clarifications`, taken at turn start) asked
-/// about — named by title or id. That is the confirmation turn, where a user
-/// who asked for a second, separate record must be able to get one; asking
-/// again there would make the duplicate unreachable. Scoped to that entity so
-/// an unrelated clarification answered earlier in the intent (a routing
-/// question, say) does not wave a duplicate through.
+/// about. That is the confirmation turn, where a user who asked for a second,
+/// separate record must be able to get one; asking again there would make the
+/// duplicate unreachable.
+///
+/// Recognised by the record's id, never its title. A routing question that
+/// happens to name the entity ("should Northwind Trading be a customer or a
+/// company?") is not a confirmation, and a title match could not tell the two
+/// apart — nor respect word boundaries for a short title. Every clarification
+/// raised after a duplicate refusal carries the id, because
+/// `duplicate_entity_backstop` guarantees it.
 ///
 /// This cannot tell "create a second one" from "use the existing one" in the
 /// user's answer: both disarm it, and acting on the answer is the model's
@@ -696,9 +701,9 @@ fn mentioned_entity_duplicated_by<'a>(
         .iter()
         .find(|e| e.node_type == node_type && comparable_title(&e.title) == title)
         .filter(|e| {
-            !answered_clarifications.iter().any(|asked| {
-                comparable_title(asked).contains(&title) || asked.contains(e.id.as_str())
-            })
+            !answered_clarifications
+                .iter()
+                .any(|asked| asked.contains(e.id.as_str()))
         })
 }
 
@@ -755,10 +760,17 @@ fn is_duplicate_entity_refusal(record: &ToolExecutionRecord) -> bool {
 /// A later successful write is left alone: the model acted on what the
 /// refusal told it (updated the existing record, say), and that correction
 /// stands.
+///
+/// When the model DID ask, its question stands, but is made to carry the
+/// existing record's id if it does not already. The confirmation turn's
+/// escape hatch recognises the question by that id alone (see
+/// [`mentioned_entity_duplicated_by`]), and a model-authored `route_clarify`
+/// reaches the user as labels only — its option ids are dropped.
+///
+/// Only the turn's last refusal is raised. Several refused duplicates in one
+/// turn is a case not yet seen; the others are still refused, just not asked
+/// about by name.
 fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnResult) {
-    if result.clarify.is_some() {
-        return;
-    }
     let Some(refused_at) = result
         .tool_calls_made
         .iter()
@@ -769,12 +781,27 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
     let existing = &result.tool_calls_made[refused_at].result["existing"];
     let field = |k: &str| existing.get(k).and_then(|v| v.as_str()).unwrap_or_default();
     let (id, title, node_type) = (field("id"), field("title"), field("node_type"));
+    let bare_id = id.strip_prefix("nodespace://").unwrap_or(id);
+
+    if let Some(clarify) = result.clarify.as_mut() {
+        if !bare_id.is_empty() && !result.response.contains(bare_id) {
+            clarify
+                .question
+                .push_str(&format!(" (\"{title}\" already exists as {id}.)"));
+            let clarification = format_clarification(&clarify.question, &clarify.options);
+            replace_turn_reply(session, &clarification);
+            result.response = clarification;
+        }
+        return;
+    }
 
     // Only a write aimed at the EXISTING record counts as the model resolving
     // the collision. Any write would be too broad: in "add Northwind and
     // Tailspin", the Tailspin create succeeding says nothing about Northwind,
-    // and releasing on it would let "Added both." through unchallenged.
-    let bare_id = id.strip_prefix("nodespace://").unwrap_or(id);
+    // and releasing on it would let "Added both." through unchallenged. A
+    // write that merely references the record — a child created under it, a
+    // relationship to it — counts too, deliberately: the model has acted on
+    // the existing record rather than duplicating it.
     let resolved_after = !bare_id.is_empty()
         && result.tool_calls_made[refused_at + 1..].iter().any(|r| {
             !r.is_error
@@ -785,51 +812,64 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
         return;
     }
 
+    // The reply being replaced may have been the only report of other writes
+    // this turn did complete, so they are named in the question itself. The
+    // first paragraph is what the chat UI renders above the option chips;
+    // anything after it would reach the model but not the user.
+    let done: Vec<String> = result
+        .tool_calls_made
+        .iter()
+        .filter(|r| !r.is_error && super::tools::is_write_tool(&r.name))
+        .map(|r| {
+            let label = humanize_tool_name(&r.name);
+            ["content", "title", "name"]
+                .iter()
+                .find_map(|k| r.args.get(*k).and_then(|v| v.as_str()))
+                .map_or_else(|| label.to_string(), |name| format!("{label} \"{name}\""))
+        })
+        .collect();
+    let done_note = if done.is_empty() {
+        String::new()
+    } else {
+        format!(" Done this turn: {}.", done.join(", "))
+    };
     let question = format!(
         "\"{title}\" already exists as a {node_type} ({id}). Did you mean that record, or \
-         do you want a second, separate one?"
+         do you want a second, separate one?{done_note}"
     );
     let options = vec![
         format!("Use the existing \"{title}\" ({id})"),
         format!("Create a second \"{title}\""),
     ];
-    let mut clarification = format_clarification(&question, &options);
-    // The reply being replaced may have been the only report of other writes
-    // this turn did complete; keep them visible rather than asking as though
-    // nothing happened. Appended, so the text still opens with the
-    // clarification opener the confirmation turn recognises.
-    let completed: Vec<ToolExecutionRecord> = result
-        .tool_calls_made
-        .iter()
-        .filter(|r| !r.is_error && super::tools::is_write_tool(&r.name))
-        .cloned()
-        .collect();
-    if !completed.is_empty() {
-        clarification.push_str("\n\nAlready done:\n");
-        clarification.push_str(&summarize_executions(&completed));
-    }
+    let clarification = format_clarification(&question, &options);
     tracing::warn!(
         session_id = %session.id,
         existing_id = %id,
         "Duplicate create refused and left unresolved by the model — asking the user"
     );
 
-    // The turn's reply is normally the session's last message; replace it so
-    // the history carries the question rather than the reply it stands in for.
-    // Only the LAST message is considered — searching further back could
-    // overwrite an earlier turn's answer.
+    replace_turn_reply(session, &clarification);
+    result.response = clarification;
+    result.clarify = Some(crate::agent_types::ClarifyPrompt { question, options });
+}
+
+/// Make `reply` the turn's final assistant message in the session history.
+///
+/// The turn's reply is normally the session's last message; replacing it lets
+/// the history carry the question rather than the reply it stands in for.
+/// Only the LAST message is considered — searching further back could
+/// overwrite an earlier turn's answer.
+fn replace_turn_reply(session: &mut AgentSession, reply: &str) {
     match session.messages.last_mut() {
         Some(last) if matches!(last.role, Role::Assistant) && last.tool_calls.is_empty() => {
-            last.content = clarification.clone();
+            last.content = reply.to_string();
         }
         _ => {
             session
                 .messages
-                .push(ChatMessage::text(Role::Assistant, clarification.clone()));
+                .push(ChatMessage::text(Role::Assistant, reply.to_string()));
         }
     }
-    result.response = clarification;
-    result.clarify = Some(crate::agent_types::ClarifyPrompt { question, options });
 }
 
 /// Whether `all_tool_executions` (this turn's history) already contains a
@@ -8839,6 +8879,47 @@ mod tests {
             "the model's question must not be overwritten, got {:?}",
             clarify.question
         );
+        // Its option ids never reach the user, so the record's id is carried
+        // in the question — the confirmation turn recognises it by that id.
+        assert!(
+            result.response.contains("nodespace://nw-1"),
+            "the model's clarification must carry the existing id, got {:?}",
+            result.response
+        );
+        assert_eq!(
+            session.messages.last().map(|m| m.content.as_str()),
+            Some(result.response.as_str())
+        );
+    }
+
+    /// A routing question that merely NAMES the entity is not a confirmation:
+    /// only a clarification carrying the record's id disarms the guard.
+    #[tokio::test]
+    async fn a_clarification_naming_the_entity_without_its_id_does_not_disarm() {
+        let mut session = session_mentioning_northwind();
+        session.messages = vec![
+            ChatMessage::text(Role::User, "Track Northwind Trading for me."),
+            ChatMessage::text(
+                Role::Assistant,
+                format_clarification(
+                    "Should Northwind Trading be a customer or a company you sell to?",
+                    &["A customer".to_string(), "A company we sell to".to_string()],
+                ),
+            ),
+        ];
+        let (_, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                text_round("Added Northwind Trading."),
+            ],
+        )
+        .await;
+
+        assert!(
+            !calls.iter().any(|c| c == "create_node"),
+            "naming the entity is not confirming a duplicate of it, got {calls:?}"
+        );
     }
 
     /// A write after the refusal is the model acting on what it was told —
@@ -8928,7 +9009,8 @@ mod tests {
             ChatMessage::text(
                 Role::Assistant,
                 format_clarification(
-                    "\"Northwind Trading\" already exists. Did you mean that record?",
+                    "\"Northwind Trading\" already exists (nodespace://nw-1). Did you mean \
+                     that record?",
                     &["Create a second \"Northwind Trading\"".to_string()],
                 ),
             ),
@@ -8975,10 +9057,12 @@ mod tests {
             "an unrelated write must not stand in for resolving Northwind, got {:?}",
             result.response
         );
+        // In the question itself: the chat UI renders only the first paragraph
+        // above the option chips.
+        let question = result.clarify.map(|c| c.question).unwrap_or_default();
         assert!(
-            result.response.contains("Already done"),
-            "the Tailspin write must not vanish from the reply, got {:?}",
-            result.response
+            question.contains("Tailspin Toys"),
+            "the Tailspin write must not vanish from what the user sees, got {question:?}"
         );
     }
 

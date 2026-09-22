@@ -114,6 +114,15 @@ describe("duplicate-entity outcome scoring", () => {
     ).toBe(true);
   });
 
+  test("tools called with no recorded outcomes fails loudly", () => {
+    // Without per-call outcomes a landed create is indistinguishable from a
+    // refused one; reading absence as "none succeeded" would pass a duplicate.
+    const t = { ...turn("I can take that a couple of ways. Northwind Trading", []) };
+    t.toolsCalled = ["create_node"];
+    delete t.toolCalls;
+    expect(passes(t)).toBe(false);
+  });
+
   test("neither asking nor acting fails", () => {
     expect(passes(turn("It already exists.", [["create_node", true]]))).toBe(false);
   });
