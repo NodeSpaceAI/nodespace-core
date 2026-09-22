@@ -575,6 +575,39 @@ impl NodeService {
         ))
     }
 
+    /// The effective/merged relationship set across `node_type`'s extends
+    /// chain (ADR-078) — the relationship counterpart to
+    /// [`Self::resolve_field_owners`]. A relationship declared only on an
+    /// ancestor schema (inherited, not redeclared) is returned exactly as if
+    /// it were the node's own.
+    ///
+    /// Nearest-first, first-declared wins on a name collision — the same
+    /// shadowing rule [`crate::schema::extends_chain::flatten_chain_fields`]
+    /// applies to fields, kept here rather than reused directly since a
+    /// relationship carries no `SchemaField`-shaped data to flatten.
+    pub async fn resolve_relationships(
+        &self,
+        node_type: &str,
+    ) -> Result<Vec<crate::models::schema::SchemaRelationship>, NodeServiceError> {
+        let chain = self.resolve_type_chain(node_type).await?;
+
+        let mut out: Vec<crate::models::schema::SchemaRelationship> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for schema_id in &chain {
+            let Some(schema) = self.get_schema_node(schema_id).await? else {
+                continue;
+            };
+            for rel in schema.relationships {
+                if seen.insert(rel.name.clone()) {
+                    out.push(rel);
+                }
+            }
+        }
+
+        Ok(out)
+    }
+
     /// Rename a field across all node instances and update the schema definition.
     ///
     /// Only `name` is rewritten — `friendly_name` is left exactly as stored,

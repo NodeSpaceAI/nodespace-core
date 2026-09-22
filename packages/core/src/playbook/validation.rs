@@ -32,7 +32,7 @@ use crate::services::NodeService;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
 // Validation Errors
@@ -705,14 +705,15 @@ async fn validate_schema_path(
         // reuse it rather than re-deriving the merge from `schema` (same
         // fix pattern `walk_path_against_schema` in `workflow_state.rs`
         // applies to the identical gap in its diagnostic candidate
-        // enumeration). Relationships are unaffected — schema relationships
-        // aren't part of this merge, so `schema`'s own declarations are
-        // still used for the relationship check below.
+        // enumeration). On a resolution error, fall back to this schema's
+        // own fields rather than an empty set — a transient failure must
+        // not misreport a field that unambiguously exists on the node's own
+        // schema as broken.
         let known_fields: Vec<String> = match node_service.resolve_field_owners(&current_type).await
         {
             Ok((fields, _owners, _chain)) => fields.into_iter().map(|f| f.name).collect(),
             Err(e) => {
-                tracing::warn!(
+                warn!(
                     node_type = %current_type,
                     error = %e,
                     "validate_schema_path: effective-field resolution failed; path validation \
@@ -754,8 +755,28 @@ async fn validate_schema_path(
             continue;
         }
 
-        // Check if the segment is a relationship on this schema
-        let relationship = schema.relationships.iter().find(|r| r.name == *segment);
+        // Check if the segment is a relationship on the *effective* schema
+        // — own directly-declared relationships plus everything inherited
+        // across the extends chain, not just `schema.relationships`.
+        // Mirrors the field resolution above: a relationship declared only
+        // on an ancestor schema (inherited, not redeclared) must still be
+        // recognized here, or a condition traversing it is wrongly
+        // rejected with `BrokenPath`. On a resolution error, fall back to
+        // this schema's own relationships rather than an empty set.
+        let known_relationships: Vec<crate::models::schema::SchemaRelationship> =
+            match node_service.resolve_relationships(&current_type).await {
+                Ok(rels) => rels,
+                Err(e) => {
+                    warn!(
+                        node_type = %current_type,
+                        error = %e,
+                        "validate_schema_path: effective-relationship resolution failed; path \
+                         validation degraded to this schema's own directly-declared relationships"
+                    );
+                    schema.relationships.clone()
+                }
+            };
+        let relationship = known_relationships.iter().find(|r| r.name == *segment);
         if let Some(rel) = relationship {
             if let Some(ref target_type) = rel.target_type {
                 // Follow the relationship to the target schema
@@ -2438,6 +2459,99 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "a condition referencing a genuinely inherited (extends-chain) field must \
+                 validate successfully, not be rejected as BrokenPath: {:?}",
+                result
+            );
+        }
+
+        /// Regression for the identical extends-chain gap as above, but for
+        /// a *relationship* segment rather than a field: `validate_schema_path`
+        /// must resolve a path segment against the effective relationship set
+        /// of the current schema — own directly-declared relationships plus
+        /// everything inherited across the `extends` chain — not just that
+        /// schema's own relationships.
+        ///
+        /// `vp_rel_target` declares field `status`; `vp_rel_base` declares
+        /// relationship `manager` targeting `vp_rel_target`; `vp_rel_sub`
+        /// `extends` `vp_rel_base` with no relationships of its own
+        /// (inheriting, not redeclaring); `vp_task_rel` declares relationship
+        /// `owner` targeting `vp_rel_sub`. A Play condition
+        /// `node.owner.manager.status == 'active'` traverses: `owner` (declared
+        /// directly on `vp_task_rel`) to `vp_rel_sub`, then `manager` — a
+        /// relationship genuinely inherited by `vp_rel_sub` from
+        /// `vp_rel_base`, not redeclared — to `vp_rel_target`, then reads the
+        /// field `status`. Before fixing the relationship lookup, `manager`
+        /// resolved against `vp_rel_sub`'s own (empty) relationships list and
+        /// was rejected as `BrokenPath`.
+        #[tokio::test]
+        async fn test_inherited_relationship_through_relationship_passes_validation() {
+            let (svc, _tmp) = create_test_service().await;
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vp_rel_target",
+                    "fields": [
+                        { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                    ]
+                }),
+            )
+            .await
+            .expect("relationship target schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vp_rel_base",
+                    "fields": [],
+                    "relationships": [{
+                        "name": "manager",
+                        "targetType": "vp_rel_target",
+                        "direction": "out",
+                        "cardinality": "one",
+                        "reverseName": "reports",
+                        "reverseCardinality": "many"
+                    }]
+                }),
+            )
+            .await
+            .expect("base schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vp_rel_sub",
+                    "extends": "vp_rel_base",
+                    "fields": []
+                }),
+            )
+            .await
+            .expect("subtype schema creation failed");
+
+            create_schema(
+                &svc,
+                "vp_task_rel",
+                1,
+                json!([{
+                    "name": "owner",
+                    "targetType": "vp_rel_sub",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "owned_tasks",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            let rules = vec![make_rule(
+                "vp_task_rel",
+                vec!["node.owner.manager.status == 'active'"],
+                vec![],
+            )];
+            let result = validate_play(&rules, &svc).await;
+            assert!(
+                result.is_ok(),
+                "a condition traversing a genuinely inherited (extends-chain) relationship must \
                  validate successfully, not be rejected as BrokenPath: {:?}",
                 result
             );
