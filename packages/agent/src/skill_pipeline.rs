@@ -1661,6 +1661,12 @@ mod tests {
             "Schema Creation guidance must state that a single-field identity \
              goes directly into content, with no template and no duplicate field"
         );
+        assert!(
+            md.contains("markdown primitives"),
+            "Schema Creation guidance must name markdown primitives as the case \
+             where content IS prose, not a name — the exception that keeps the \
+             premise from over-generalizing to every node type"
+        );
     }
 
     /// `GROUPING_IS_COLLECTIONS` and `COLLECTION_AT_CREATE_TIME` are

@@ -429,7 +429,7 @@ Two scoping notes. Only declarations *between schemas* block the delete — rela
 
 Two limits worth knowing. Only relationships you declare can carry `edgeFields`: the built-in structural names (`member_of`, `has_child`, `mentions`, `has_role`) are reserved and rejected as declarations, so an edge field cannot be attached to them. And `required`/`default` on an edge field are recorded but not enforced at write time — an omitted enum key is stored absent rather than filled in from `default`, so don't rely on a default to supply a value.
 
-**Title template:** `content` is a node's name for entity types (`Customer`, `Person`, `Invoice`) — NodeSpace surfaces it as the title automatically. Only markdown primitives (`text`, `header`, `quote-block`, `code-block`) use `content` as a prose body instead of a name. Three cases:
+**Title template:** `content` is a node's name for entity types (`Customer`, `Person`, `Invoice`) — for a node created without a parent, NodeSpace surfaces it as the title automatically. Only markdown primitives (`text`, `header`, `quote-block`, `code-block`, etc.) use `content` as a prose body instead of a name. Three cases:
 - **Single-field identity** — e.g. `Customer`: one field's value is the whole title. Put it directly in `content`; don't set `title_template`, and don't add a separate field (e.g. `company_name`) that duplicates it.
 - **Composed identity** — e.g. `Person` (`first_name` + `last_name`): no single field holds the full title, so assemble one with `title_template: "{first_name} {last_name}"`, using `{field_name}` placeholders — every placeholder must be a defined field.
 - **Markdown primitive** — `text`, `header`, etc.: `content` is prose, not a name; `title_template` doesn't apply.
