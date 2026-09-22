@@ -442,9 +442,20 @@ fn blocker_gate() -> PlayStep {
 // ---------------------------------------------------------------------------
 
 // Narrow and task-scoped, mirroring the built-in skills' own shape rather
-// than one broad "Linear methodology" skill. ADR-038's retrieval drops a
-// skill scoring below 0.8 similarity, which rewards precise matches and
-// penalizes a single skill diluted across several intents.
+// than one broad "Linear methodology" skill.
+//
+// Retrieval (`skill_ops::find_skills`) is pure KNN cosine over skill ROOTS,
+// limit-capped, with the threshold at 0.0 — the cosine noise floor, not a
+// confidence cutoff (ADR-038 describes an 0.8 floor; the code deliberately
+// moved past that so the model judges confidence from the raw score). Two
+// consequences for anything seeded here:
+//
+//   - The markdown body is NOT indexed. Only the root's title and
+//     `description` are, so the description is the entire retrieval surface.
+//   - Nothing is filtered out; a weak description is out-RANKED. These
+//     compete directly with the 11 built-ins, so "Creating an Issue" loses to
+//     "Node Creation" on a query like "file a bug" unless its description is
+//     written in the words a request actually arrives in.
 //
 // These carry the cross-schema narrative no per-schema description can: how
 // an Issue relates to a Cycle, what rollover does, why a write was rejected.
