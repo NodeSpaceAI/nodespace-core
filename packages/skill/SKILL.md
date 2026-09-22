@@ -214,7 +214,7 @@ nodespace node get "2026-05-30"
 ### Define a new entity type, then create an instance
 
 ```bash
-# 1. Create the schema (one schema per request; `references/cli.md` covers field/enum/relationship shape)
+# 1. Create the schema (only the types asked for; a linked pair is two calls, target first — see `references/cli.md`)
 nodespace schema create --params '{"name":"Ticket","fields":[{"name":"status","type":"text"}]}'
 
 # 2. Create an instance

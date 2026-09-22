@@ -60,7 +60,7 @@ pub const CREATING_TWO_LINKED_TYPES: SchemaRule = SchemaRule {
 
 pub const SCHEMA_ALREADY_EXISTS: SchemaRule = SchemaRule {
     id: "schema-already-exists",
-    imperative: "SUCCESS: After create_schema returns a schema object (with fields, type_id, etc.), the schema was created. Respond to the user immediately — do NOT call create_schema again. If create_schema returns an error saying the schema already exists, stop and tell the user the type already exists and they can create instances with create_node.",
+    imperative: "SUCCESS: After create_schema returns a schema object (with fields, type_id, etc.), that type was created — do NOT call create_schema again FOR THAT SAME TYPE to re-verify or retry it. If the user asked for other types too (see CREATING TWO LINKED TYPES), go straight on to the next one; only once every type asked for exists do you stop and report. If create_schema returns an error saying the schema already exists, stop and tell the user the type already exists and they can create instances with create_node.",
     prose: "If `create` reports the schema already exists, stop and tell the user — they can create instances with `node create` against the existing type.",
 };
 

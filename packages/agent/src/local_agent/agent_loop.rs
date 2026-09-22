@@ -636,16 +636,66 @@ fn duplicate_write_result(prior: &crate::agent_types::PriorWrite) -> serde_json:
 /// Whether `all_tool_executions` (this turn's history) already contains a
 /// successful `create_schema` call.
 ///
-/// Structural backstop for `ONE_SCHEMA_PER_REQUEST`: nothing in the tool
-/// surface stops the model from calling `create_schema` a second time within
-/// the same skill invocation (Schema Creation's `max_iterations: 3` permits
-/// it, and `stage2_tools` does not enforce call counts). Split out so the
-/// guard site and its test can share the exact same notion of "already
-/// created a schema this turn."
+/// Split out so the guard site and its test share the exact same notion of
+/// "already created a schema this turn."
 fn schema_already_created_this_turn(executions: &[ToolExecutionRecord]) -> bool {
     executions
         .iter()
         .any(|r| r.name == "create_schema" && !r.is_error)
+}
+
+/// Whether `user_message` plausibly names `schema_name` as a type to create.
+///
+/// The comparison is deliberately loose — the model title-cases and
+/// pluralizes freely ("invoice" for "invoices", "Feature Writeups" for
+/// "feature writeups") — so it lowercases both sides, and for a multi-word
+/// name requires every word to appear rather than the exact phrase.
+///
+/// Loose in this direction is the safe way round. A false *positive* only
+/// permits a second type the user probably did ask for; a false *negative*
+/// refuses a legitimate call, which is the failure this guard's relaxation
+/// exists to remove. Single characters are ignored so a stray "a" or "I"
+/// cannot match everything.
+fn user_message_names_type(user_message: &str, schema_name: &str) -> bool {
+    let haystack = user_message.to_lowercase();
+    let name = schema_name.to_lowercase();
+    let mut words = name
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.chars().count() > 1)
+        .peekable();
+    if words.peek().is_none() {
+        return false;
+    }
+    words.all(|word| {
+        // Match the singular stem too, so "Invoice" is found in "invoices".
+        let stem = word.strip_suffix('s').unwrap_or(word);
+        haystack.contains(word) || haystack.contains(stem)
+    })
+}
+
+/// Whether a second `create_schema` this turn should be refused.
+///
+/// Structural backstop for the restraint policy: nothing in the tool surface
+/// stops the model from calling `create_schema` again within one skill
+/// invocation (Schema Creation's `max_iterations: 3` permits it, and
+/// `stage2_tools` does not enforce call counts), and a model that invents a
+/// related type the user never asked for leaves the graph holding a type
+/// nobody wanted.
+///
+/// It is *not* a one-call-per-turn cap. A user who asks for a linked pair
+/// ("Customer and Invoice, linked") is asking for two types, which the schema
+/// rules tell the model to create as two sequential calls — the target type
+/// first, then the type declaring the relationship. Refusing the second call
+/// there would make the prompt instruct an action the runtime blocks, and
+/// would silently deliver half of what was asked for. So the refusal turns on
+/// whether the user named the type, not on how many calls have happened.
+fn second_schema_should_be_refused(
+    executions: &[ToolExecutionRecord],
+    incoming_name: &str,
+    user_message: &str,
+) -> bool {
+    schema_already_created_this_turn(executions)
+        && !user_message_names_type(user_message, incoming_name)
 }
 
 /// Build the tool result returned in place of a refused second `create_schema`
@@ -653,16 +703,23 @@ fn schema_already_created_this_turn(executions: &[ToolExecutionRecord]) -> bool 
 ///
 /// Mirrors [`duplicate_write_result`]'s shape (informative, not a bare
 /// failure) but is flagged as an error: unlike a duplicate write, this is a
-/// genuine policy violation (`ONE_SCHEMA_PER_REQUEST`) that the model should
-/// stop and report rather than retry differently.
-fn second_schema_refused_result() -> serde_json::Value {
+/// genuine policy violation that the model should stop and report rather than
+/// retry differently.
+///
+/// Reached only when the user did not name the type (see
+/// [`second_schema_should_be_refused`]), so the message says that rather than
+/// claiming a one-type-per-request cap the runtime no longer enforces.
+fn second_schema_refused_result(incoming_name: &str) -> serde_json::Value {
     serde_json::json!({
-        "error": "second_schema_in_one_request",
-        "message": "Not executed: a schema was already created earlier in this request. \
-             Create exactly one type per request — do not also create a related type the \
-             user didn't ask for. Stop here and report the schema that was already created. \
-             If the user's request genuinely named two separate types, tell them the second \
-             one needs its own follow-up request.",
+        "error": "unrequested_schema_in_one_request",
+        "message": format!(
+            "Not executed: a schema was already created earlier in this request, and \
+             \"{incoming_name}\" is not a type the user asked for. Create only the types \
+             the user named — do not also create a related type they didn't ask for. \
+             Stop here and report the schema that was already created. (Creating a second \
+             type IS allowed when the user named it, e.g. \"Customer and Invoice, linked\" \
+             — that is two calls, the relationship's target type first.)"
+        ),
     })
 }
 
@@ -2474,29 +2531,38 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                     })),
                                 )
                             } else if tc.function_name == "create_schema"
-                                && schema_already_created_this_turn(&all_tool_executions)
+                                && second_schema_should_be_refused(
+                                    &all_tool_executions,
+                                    args.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                                    user_message,
+                                )
                             {
-                                // Structural backstop for ONE_SCHEMA_PER_REQUEST
-                                // (see #1905): the prose rule already says "create
-                                // exactly the type asked for", but nothing stops a
-                                // second create_schema call within the same skill
+                                // Structural backstop for the restraint policy:
+                                // the prose rule already says "only the types
+                                // asked for", but nothing stops a second
+                                // create_schema call within the same skill
                                 // invocation from actually executing — Schema
                                 // Creation's max_iterations permits up to three
-                                // create_schema calls per turn. Refuse the second
-                                // one outright rather than letting the model split
-                                // a request across two types and silently leave
-                                // one half-populated.
+                                // create_schema calls per turn. Refuse one for a
+                                // type the user never named, rather than letting
+                                // the model invent a related type as a side
+                                // effect. A type the user DID name is allowed
+                                // through: a linked pair is legitimately two
+                                // calls.
                                 tracing::warn!(
                                     session_id = %session.id,
                                     iteration = iteration,
-                                    "Second create_schema call in one skill invocation refused"
+                                    "Second create_schema call for an unrequested type refused"
+                                );
+                                let refused = second_schema_refused_result(
+                                    args.get("name").and_then(|v| v.as_str()).unwrap_or(""),
                                 );
                                 (
                                     args,
                                     Some(Ok(crate::agent_types::ToolResult {
                                         tool_call_id: tc.id.clone(),
                                         name: tc.function_name.clone(),
-                                        result: second_schema_refused_result(),
+                                        result: refused,
                                         is_error: true,
                                     })),
                                 )
@@ -8401,12 +8467,14 @@ mod tests {
         )
     }
 
-    /// The acceptance criterion: a second `create_schema` call within the same
-    /// skill invocation must not reach the executor, even though nothing in
-    /// the tool whitelist or max_iterations mechanically prevents the model
-    /// from attempting it.
+    /// A second `create_schema` for a type the user *did* name must execute.
+    ///
+    /// "keep track of invoices and customers" names both types, and the schema
+    /// rules tell the model to create a linked pair as two sequential calls.
+    /// Refusing the second one here would deliver half the request and make
+    /// the prompt instruct an action the runtime blocks.
     #[tokio::test]
-    async fn second_create_schema_in_one_turn_is_not_executed() {
+    async fn second_create_schema_for_a_type_the_user_named_executes() {
         let engine = Arc::new(MockEngine::new(vec![
             // Round 1: create_schema for "Invoice"
             vec![
@@ -8426,8 +8494,8 @@ mod tests {
                     },
                 },
             ],
-            // Round 2: model tries a second, different create_schema call —
-            // e.g. splitting "track invoices and customers" into two types.
+            // Round 2: the second type the user named. "Customer" appears in
+            // the request, so the guard must let it through.
             vec![
                 StreamingChunk::ToolCallStart {
                     id: "tc_2".to_string(),
@@ -8482,8 +8550,104 @@ mod tests {
                 .iter()
                 .filter(|c| *c == "create_schema")
                 .count(),
+            2,
+            "both types the user named should reach the executor, got {:?}",
+            calls.lock().unwrap()
+        );
+
+        let second = result
+            .tool_calls_made
+            .iter()
+            .filter(|r| r.name == "create_schema")
+            .nth(1)
+            .expect("the second create_schema call must produce a tool result");
+        assert!(
+            !second.is_error,
+            "creating a type the user explicitly named is not a policy violation"
+        );
+    }
+
+    /// The restraint policy still has teeth: a second `create_schema` for a
+    /// type the user never mentioned is refused, so the model cannot invent a
+    /// related type as a side effect of the one that was asked for.
+    #[tokio::test]
+    async fn second_create_schema_for_an_unrequested_type_is_not_executed() {
+        let engine = Arc::new(MockEngine::new(vec![
+            // Round 1: the type the user actually asked for.
+            vec![
+                StreamingChunk::ToolCallStart {
+                    id: "tc_1".to_string(),
+                    name: "create_schema".to_string(),
+                    provider_extra: None,
+                },
+                StreamingChunk::ToolCallArgs {
+                    id: "tc_1".to_string(),
+                    args_json: r#"{"name":"Invoice","fields":[]}"#.to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                    },
+                },
+            ],
+            // Round 2: an invented related type, nowhere in the request.
+            vec![
+                StreamingChunk::ToolCallStart {
+                    id: "tc_2".to_string(),
+                    name: "create_schema".to_string(),
+                    provider_extra: None,
+                },
+                StreamingChunk::ToolCallArgs {
+                    id: "tc_2".to_string(),
+                    args_json: r#"{"name":"Sprint","fields":[]}"#.to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 12,
+                        completion_tokens: 5,
+                    },
+                },
+            ],
+            // Round 3: final summary
+            vec![
+                StreamingChunk::Token {
+                    text: "Created the Invoice type.".to_string(),
+                },
+                StreamingChunk::Done {
+                    usage: InferenceUsage {
+                        prompt_tokens: 15,
+                        completion_tokens: 6,
+                    },
+                },
+            ],
+        ]));
+
+        let executor = Arc::new(RecordingToolExecutor::new(schema_executor()));
+        let calls = executor.calls_handle();
+        let agent_loop = LocalAgentLoop::new(engine, executor);
+
+        let mut session = new_session();
+        let result = agent_loop
+            .run_turn(
+                &mut session,
+                "keep track of invoices",
+                |_| {},
+                |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .expect("turn should succeed");
+
+        assert_eq!(
+            calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|c| *c == "create_schema")
+                .count(),
             1,
-            "only the first create_schema call should reach the executor, got {:?}",
+            "the unrequested second type must not reach the executor, got {:?}",
             calls.lock().unwrap()
         );
 
@@ -8492,11 +8656,48 @@ mod tests {
             .iter()
             .filter(|r| r.name == "create_schema")
             .nth(1)
-            .expect("the second create_schema call must still produce a tool result");
+            .expect("the refused call must still produce a tool result");
         assert!(
             refused.is_error,
-            "a refused second schema creation is a policy violation, not a benign no-op"
+            "inventing an unrequested type is a policy violation, not a benign no-op"
         );
+    }
+
+    /// The loose matching that decides "did the user ask for this type?".
+    /// Case and plural differences are the common shapes — the model
+    /// title-cases and singularizes freely — and a name the request never
+    /// mentions must not match.
+    #[test]
+    fn user_message_names_type_tolerates_case_and_plurals() {
+        // The shapes that must match.
+        assert!(user_message_names_type(
+            "keep track of invoices and customers",
+            "Invoice"
+        ));
+        assert!(user_message_names_type(
+            "keep track of invoices and customers",
+            "Customer"
+        ));
+        assert!(user_message_names_type("track our INVOICES", "invoice"));
+        assert!(user_message_names_type(
+            "somewhere for feature writeups",
+            "Feature Writeup"
+        ));
+
+        // ...and the ones that must not.
+        assert!(!user_message_names_type("create an ADR type", "Sprint"));
+        assert!(!user_message_names_type(
+            "keep track of invoices",
+            "Customer"
+        ));
+        // A name whose words are only partly present is not a match.
+        assert!(!user_message_names_type(
+            "somewhere for writeups",
+            "Feature Writeup"
+        ));
+        // An empty or punctuation-only name can never match everything.
+        assert!(!user_message_names_type("anything at all", ""));
+        assert!(!user_message_names_type("anything at all", "-"));
     }
 
     /// A single `create_schema` call in a turn must execute normally — the
