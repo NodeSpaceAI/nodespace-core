@@ -415,7 +415,13 @@ pub async fn resolve_routing(
         Some(sel) => {
             Some(commands::database::resolve_database_id_by_selection(&mut db, sel).await?)
         }
-        None => commands::database::resolve_default_database_id(&mut db).await?,
+        // Every data-plane command reaches this, including ones that never
+        // mention the registry. Re-frame a registry-side failure in the
+        // caller's terms rather than surfacing a bare "List RPC failed" from
+        // `nodespace search`.
+        None => commands::database::resolve_default_database_id(&mut db)
+            .await
+            .context("could not determine which database to use")?,
     };
     match id {
         Some(id) => {
