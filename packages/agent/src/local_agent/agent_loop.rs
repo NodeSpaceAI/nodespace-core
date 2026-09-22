@@ -2560,10 +2560,18 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
                 // Field count from the tool RESULT, not its arguments: the result is the
                 // executor's report of what it persisted, while args are only the model's
-                // report of what it asked for. Logged as a bare integer because both
-                // previews truncate at 300 chars — a realistic create_schema payload
-                // exceeds that, so a parser reading them would fail on exactly the
-                // well-formed calls it is meant to pass.
+                // report of what it asked for. That distinction is load-bearing and is
+                // upheld on the other side of the seam — `handle_create_schema` builds
+                // its output by reading the committed schema node back, precisely so
+                // this count cannot be the model's own input echoed home. A result
+                // assembled from the request instead would make every non-empty call
+                // report a non-zero count regardless of what landed, and the no-op
+                // guard below would wave through a write that persisted nothing.
+                //
+                // Logged as a bare integer because both previews truncate at 300
+                // chars — a realistic create_schema payload exceeds that, so a parser
+                // reading them would fail on exactly the well-formed calls it is
+                // meant to pass.
                 //
                 // Two shapes report it: `fields` (create_schema — the array it
                 // persisted) and `property_count` (create_node and update_node

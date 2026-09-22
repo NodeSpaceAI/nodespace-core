@@ -1050,6 +1050,32 @@ pub struct NodeService {
     /// tools that construct a bare `NodeService`) is unaffected.
     pub(crate) playbook_lifecycle:
         Arc<std::sync::OnceLock<Arc<RwLock<crate::playbook::lifecycle::PlaybookLifecycleManager>>>>,
+
+    /// Test-only fault injector for post-commit write verification.
+    ///
+    /// A write path that confirms its own result by reading the committed row
+    /// back (see `handle_create_schema`) is, by construction, indistinguishable
+    /// from one that echoes its request — *as long as the write keeps
+    /// succeeding*. The whole point of the read-back is the case where it does
+    /// not, and that case cannot be reached through the public API: the store
+    /// is sealed, so there is no way to make a committed row vanish. Without a
+    /// seam, the verification is untestable and silently rots.
+    ///
+    /// While unset — always, outside tests — every verification read behaves
+    /// normally, so this is inert in production. A test sets it via
+    /// [`Self::set_write_verification_fault`] to make the next verification
+    /// read report the row as absent, which is exactly the observable shape of
+    /// "the write reported success but nothing landed".
+    pub(crate) write_verification_fault: Arc<RwLock<Option<WriteVerificationFault>>>,
+}
+
+/// How a test makes a post-commit verification read fail. See
+/// [`NodeService::set_write_verification_fault`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteVerificationFault {
+    /// The verification read reports the row as absent, as though the write
+    /// had silently not landed.
+    ReportMissing,
 }
 
 impl Clone for NodeService {
@@ -1068,6 +1094,9 @@ impl Clone for NodeService {
             embedding_waker: self.embedding_waker.clone(),
             subtree_access_gate: self.subtree_access_gate.clone(),
             playbook_lifecycle: self.playbook_lifecycle.clone(),
+            // Shared, so a fault armed on one handle is observed by the clone
+            // the write path actually runs against.
+            write_verification_fault: self.write_verification_fault.clone(),
         }
     }
 }
@@ -1223,6 +1252,7 @@ impl NodeService {
             embedding_waker: std::sync::Arc::new(std::sync::OnceLock::new()),
             subtree_access_gate: Arc::new(std::sync::OnceLock::new()),
             playbook_lifecycle: Arc::new(std::sync::OnceLock::new()),
+            write_verification_fault: Arc::new(RwLock::new(None)),
         };
 
         // ADR-037: every install has exactly one local PersonNode (the user).
@@ -2369,6 +2399,47 @@ impl NodeService {
         &self,
     ) -> Option<&Arc<RwLock<crate::playbook::lifecycle::PlaybookLifecycleManager>>> {
         self.playbook_lifecycle.get()
+    }
+
+    /// Arm (or, with `None`, disarm) the post-commit write-verification fault.
+    ///
+    /// **Test-only.** Nothing in the shipping daemon calls this, and while
+    /// unarmed — the default, and the only state production ever sees — every
+    /// verification read behaves exactly as it would without this seam.
+    ///
+    /// It exists because the behavior it fakes cannot otherwise be produced:
+    /// a write path that verifies itself by reading the committed row back is
+    /// observationally identical to one that echoes its request, right up
+    /// until a write silently fails to land — and the store is sealed by
+    /// design, so no test can make a committed row disappear. Arming this is
+    /// the only way to reach the branch the verification exists for, and
+    /// therefore the only way a regression test can fail when someone removes
+    /// it. See [`WriteVerificationFault`].
+    pub fn set_write_verification_fault(&self, fault: Option<WriteVerificationFault>) {
+        let mut guard = self
+            .write_verification_fault
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        *guard = fault;
+    }
+
+    /// Read a schema node back for post-commit verification, honoring an armed
+    /// [`WriteVerificationFault`].
+    ///
+    /// Identical to [`Self::get_schema_node`] in production, where no fault is
+    /// ever armed.
+    pub(crate) async fn get_schema_node_verifying(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::models::SchemaNode>, NodeServiceError> {
+        let fault = *self
+            .write_verification_fault
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        match fault {
+            Some(WriteVerificationFault::ReportMissing) => Ok(None),
+            None => self.get_schema_node(id).await,
+        }
     }
 
     /// Begin batched event emission for bulk operations.
