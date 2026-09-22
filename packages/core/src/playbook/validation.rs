@@ -694,8 +694,34 @@ async fn validate_schema_path(
             }
         };
 
-        // Check if the segment is a field on this schema
-        let is_field = schema.fields.iter().any(|f| f.name == *segment);
+        // Check if the segment is a field on the *effective* schema — own
+        // directly-declared fields plus everything inherited across the
+        // ADR-078 `extends` chain, not just `schema.fields`. A subtype
+        // schema that inherits a field from an ancestor without redeclaring
+        // it (the normal, intended `extends` usage) must still count as a
+        // real field here, or a condition referencing it is wrongly
+        // rejected with `BrokenPath` and the play can never be saved at
+        // all. `resolve_field_owners` already walks and merges that chain;
+        // reuse it rather than re-deriving the merge from `schema` (same
+        // fix pattern `walk_path_against_schema` in `workflow_state.rs`
+        // applies to the identical gap in its diagnostic candidate
+        // enumeration). Relationships are unaffected — schema relationships
+        // aren't part of this merge, so `schema`'s own declarations are
+        // still used for the relationship check below.
+        let known_fields: Vec<String> = match node_service.resolve_field_owners(&current_type).await
+        {
+            Ok((fields, _owners, _chain)) => fields.into_iter().map(|f| f.name).collect(),
+            Err(e) => {
+                tracing::warn!(
+                    node_type = %current_type,
+                    error = %e,
+                    "validate_schema_path: effective-field resolution failed; path validation \
+                     degraded to this schema's own directly-declared fields"
+                );
+                schema.fields.iter().map(|f| f.name.clone()).collect()
+            }
+        };
+        let is_field = known_fields.iter().any(|f| f == segment);
         if is_field {
             // Fields are terminal — if there are more segments after this, it's broken
             if i + 1 < segments.len() - 1 {
@@ -2337,6 +2363,82 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "single-hop paths should skip schema validation"
+            );
+        }
+
+        /// Regression for the ADR-078 extends-chain gap in save-time
+        /// validation (identical root cause to #2769/PR#2817's diagnostic-
+        /// path fix, but here it blocks a save rather than misreporting a
+        /// diagnostic): `validate_schema_path` must resolve a condition
+        /// segment against the *effective* field set of the target schema —
+        /// its own directly-declared fields plus everything inherited
+        /// across the `extends` chain — not just that schema's own fields.
+        ///
+        /// Reproduces the exact issue scenario: `vp_epic_base` declares
+        /// `priority`; `vp_epic` `extends` `vp_epic_base` with no fields of
+        /// its own (the normal, intended `extends` usage — inheriting
+        /// rather than redeclaring); `vp_task_epic` declares a relationship
+        /// `epic` targeting `vp_epic`. A Play condition
+        /// `node.epic.priority == 'high'` references a field that is
+        /// genuinely inherited, not redeclared. Before the fix this was
+        /// rejected with `BrokenPath` ("'priority' is not a field or
+        /// relationship on schema 'vp_epic'") and the play could never be
+        /// saved at all, even though `priority` resolves correctly via the
+        /// extends chain everywhere else (the runtime engine, and now the
+        /// #2769-fixed diagnostic path).
+        #[tokio::test]
+        async fn test_inherited_field_through_relationship_passes_validation() {
+            let (svc, _tmp) = create_test_service().await;
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vp_epic_base",
+                    "fields": [
+                        { "name": "priority", "type": "string", "protection": "user", "indexed": false }
+                    ]
+                }),
+            )
+            .await
+            .expect("base schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vp_epic",
+                    "extends": "vp_epic_base",
+                    "fields": []
+                }),
+            )
+            .await
+            .expect("subtype schema creation failed");
+
+            create_schema(
+                &svc,
+                "vp_task_epic",
+                1,
+                json!([{
+                    "name": "epic",
+                    "targetType": "vp_epic",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "tasks",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            let rules = vec![make_rule(
+                "vp_task_epic",
+                vec!["node.epic.priority == 'high'"],
+                vec![],
+            )];
+            let result = validate_play(&rules, &svc).await;
+            assert!(
+                result.is_ok(),
+                "a condition referencing a genuinely inherited (extends-chain) field must \
+                 validate successfully, not be rejected as BrokenPath: {:?}",
+                result
             );
         }
 
