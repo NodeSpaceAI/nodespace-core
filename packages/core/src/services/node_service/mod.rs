@@ -23,6 +23,7 @@ use crate::behaviors::NodeBehaviorRegistry;
 use crate::db::events::DomainEvent;
 use crate::db::{SqliteStore, StoreChange, StoreOperation, Tx};
 use crate::models::{FilterOperator, Node, NodeFilter, NodeUpdate, PropertyFilter};
+use crate::playbook::types::namespaced_property_key;
 use crate::services::error::NodeServiceError;
 use crate::services::NodeAccessor;
 use async_trait::async_trait;
@@ -101,7 +102,7 @@ fn compute_property_changes(old: &Value, new: &Value) -> Vec<crate::db::events::
                             let new_ns_val = new_ns.get(ns_key);
                             if old_ns_val != new_ns_val {
                                 changes.push(PropertyChange {
-                                    key: format!("{}.{}", key, ns_key),
+                                    key: namespaced_property_key(key, ns_key),
                                     old_value: old_ns_val.cloned(),
                                     new_value: new_ns_val.cloned(),
                                 });

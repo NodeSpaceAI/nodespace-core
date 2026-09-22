@@ -97,6 +97,25 @@ pub struct WorkflowState {
     pub rules: Vec<RuleWorkflowState>,
 }
 
+/// Log a schema/extends-chain resolution failure and record it in
+/// `degraded` (see `WorkflowState::degraded_reasons`) together, in one call.
+///
+/// Every degrade site in this module goes through this rather than calling
+/// `tracing::warn!`/`degraded.push` separately — a future site copying only
+/// one half of that pair (e.g. logging but forgetting to record, or vice
+/// versa) would silently reintroduce the exact "invisible degradation" bug
+/// class `degraded_reasons` exists to close.
+fn record_degradation(
+    degraded: &mut Vec<String>,
+    node_type: &str,
+    error: impl std::fmt::Display,
+    site: &str,
+    msg: String,
+) {
+    tracing::warn!(node_type = %node_type, error = %error, "{site}: {msg}");
+    degraded.push(msg);
+}
+
 /// Evaluate every active Play rule whose trigger matches `node`'s type against
 /// `node`'s current state, and report per-condition satisfaction.
 ///
@@ -126,17 +145,29 @@ pub async fn get_workflow_state(
     {
         Ok(schema) => schema,
         Err(e) => {
-            // A real lookup failure (not "no schema for this type") — the
-            // typo-vs-unmet distinction degrades to the conservative
-            // NotYetMet classification for this node, but that degradation
-            // should be visible rather than indistinguishable from a genuine
-            // schemaless type.
+            // A real lookup failure (not "no schema for this type"). `schema`
+            // is only ever consulted here as a *fallback* source — every
+            // real classification below comes from `resolve_field_owners`/
+            // `resolve_relationships`, independent async calls that can
+            // still succeed even though this one didn't. So this does NOT
+            // definitely degrade the final classification (an overclaiming
+            // message here previously asserted it always would); it only
+            // means the fallback this node would otherwise have, if one of
+            // those independent calls also fails, is unavailable.
             let msg = format!(
-                "schema lookup for '{}' failed ({e}); typo detection degraded to NotYetMet for this node",
+                "schema lookup for '{}' failed ({e}); this node's fallback schema \
+                 snapshot is unavailable for the rest of this response — later, \
+                 independent field/relationship resolution calls are unaffected by \
+                 this and may still succeed",
                 node.node_type
             );
-            tracing::warn!(node_type = %node.node_type, error = %e, "get_workflow_state: {msg}");
-            degraded.push(msg);
+            record_degradation(
+                &mut degraded,
+                &node.node_type,
+                &e,
+                "get_workflow_state",
+                msg,
+            );
             None
         }
     };
@@ -157,8 +188,13 @@ pub async fn get_workflow_state(
                  candidates degraded to this node's own directly-declared schema fields",
                 node.node_type
             );
-            tracing::warn!(node_type = %node.node_type, error = %e, "get_workflow_state: {msg}");
-            degraded.push(msg);
+            record_degradation(
+                &mut degraded,
+                &node.node_type,
+                &e,
+                "get_workflow_state",
+                msg,
+            );
             schema
                 .as_ref()
                 .map(|s| s.fields.clone())
@@ -446,8 +482,7 @@ async fn walk_path_against_schema(
                      fields at this hop",
                     condition.source
                 );
-                tracing::warn!(node_type = %current_type, error = %e, "walk_path_against_schema: {msg}");
-                degraded.push(msg);
+                record_degradation(degraded, &current_type, &e, "walk_path_against_schema", msg);
                 current_schema
                     .map(|s| s.fields.iter().map(|f| f.name.clone()).collect())
                     .unwrap_or_default()
@@ -471,8 +506,7 @@ async fn walk_path_against_schema(
                          directly-declared relationships at this hop",
                     condition.source
                 );
-                tracing::warn!(node_type = %current_type, error = %e, "walk_path_against_schema: {msg}");
-                degraded.push(msg);
+                record_degradation(degraded, &current_type, &e, "walk_path_against_schema", msg);
                 current_schema
                     .and_then(|s| s.relationships.iter().find(|r| r.name == *segment))
                     .cloned()
@@ -505,18 +539,23 @@ async fn walk_path_against_schema(
                 Err(e) => {
                     // A genuine lookup failure, not "no schema for this
                     // type" (that's `Ok(None)`, left as-is below). Recorded
-                    // rather than silently swallowed: `known_fields`/
-                    // `relationship` at the *next* hop fall back to this
-                    // schema's own fields/relationships, so losing it here
-                    // to a transient error degrades the next hop's typo
-                    // detection the same way the two fallbacks above do.
+                    // rather than silently swallowed: this schema is only
+                    // ever consulted as a *fallback* at the next hop — its
+                    // own `known_fields`/`relationship` come from
+                    // independent `resolve_field_owners`/
+                    // `resolve_relationships` calls that can still succeed
+                    // even though this one didn't, so losing it here does
+                    // not definitely degrade the next hop's typo detection;
+                    // it only removes the fallback that hop would otherwise
+                    // have if one of those calls also fails.
                     let msg = format!(
                         "schema lookup for '{target_type}' failed ({e}) while walking '{}'; \
-                         typo detection for the remaining hops degraded to no known schema",
+                         the fallback schema snapshot for the next hop is unavailable — \
+                         that hop's own field/relationship resolution is unaffected by \
+                         this and may still succeed",
                         condition.source
                     );
-                    tracing::warn!(node_type = %target_type, error = %e, "walk_path_against_schema: {msg}");
-                    degraded.push(msg);
+                    record_degradation(degraded, &target_type, &e, "walk_path_against_schema", msg);
                     None
                 }
             };

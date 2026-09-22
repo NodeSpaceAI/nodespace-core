@@ -1113,6 +1113,17 @@ impl NodeService {
     /// Convenience method that returns a SchemaNode with its relationships.
     /// Use this when you need the complete schema definition including relationships.
     ///
+    /// **Returns `schema_id`'s own directly-declared fields and relationships
+    /// only — not merged across the ADR-078 `extends` chain.** A schema that
+    /// `extends` a parent will not have the parent's fields/relationships
+    /// folded in here; reading `.fields`/`.relationships` straight off this
+    /// return value silently drops anything inherited. Callers that need the
+    /// effective set across the whole chain (as most schema-aware reads
+    /// should) want [`Self::resolve_field_owners`] and
+    /// [`Self::resolve_relationships`] instead — both already do this
+    /// resolution and are the established way this codebase avoids that
+    /// exact bug class.
+    ///
     /// # Arguments
     ///
     /// * `schema_id` - The schema ID (e.g., "task", "invoice")
