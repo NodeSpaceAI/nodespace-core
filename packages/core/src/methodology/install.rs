@@ -408,17 +408,57 @@ fn rewrite_play_step_ids(
 }
 
 /// Rewrite the id-bearing keys of one rule in place.
+///
+/// `TriggerDefinition`'s five fields: `node_type` and `property_key` are
+/// id-bearing (the latter through its namespace, see below); `type`, `on` and
+/// `cron` are not. `ActionDefinition`'s three: `params.node_type` and
+/// `params.target_type` are ids, while `action_type` and `for_each` are not —
+/// and `params.relationship_type` is a relationship NAME, matched against
+/// `schema.relationships[].name` by the validator, never a schema id.
 fn rewrite_rule_ids(rule: &mut serde_json::Value, renames: &HashMap<String, String>) {
-    if let Some(node_type) = rule
+    // Read before mutating: `property_key`'s namespace is compared against the
+    // node type the rule was AUTHORED with, so rewriting `node_type` first
+    // would leave nothing to match against.
+    let authored_node_type = rule
         .get("trigger")
         .and_then(|t| t.get("node_type"))
         .and_then(|v| v.as_str())
-    {
-        if let Some(renamed) = renames.get(node_type) {
-            rule["trigger"]["node_type"] = serde_json::json!(renamed);
+        .map(str::to_string);
+
+    if let Some(node_type) = authored_node_type.as_deref() {
+        let Some(renamed) = renames.get(node_type) else {
+            return rewrite_action_ids(rule, renames);
+        };
+        rule["trigger"]["node_type"] = serde_json::json!(renamed);
+
+        // `property_key` is `<node_type>.<field>`, so its leading segment is
+        // the same schema id and must move with it. Leaving it behind makes
+        // the pair jointly incoherent: the trigger indexes under
+        // `{issue_2, "issue.status"}` while a real event carries
+        // `"issue_2.status"`, and the lookup is an exact match.
+        //
+        // Guarded on the namespace equalling the authored type, mirroring
+        // `lifecycle::renamespace_property_key` — a key namespaced to some
+        // OTHER type is not this rename's business.
+        if let Some(key) = rule["trigger"]
+            .get("property_key")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+        {
+            if let Some((namespace, field)) = key.split_once('.') {
+                if namespace == node_type {
+                    rule["trigger"]["property_key"] =
+                        serde_json::json!(format!("{renamed}.{field}"));
+                }
+            }
         }
     }
 
+    rewrite_action_ids(rule, renames);
+}
+
+/// Rewrite the id-bearing params of one rule's actions in place.
+fn rewrite_action_ids(rule: &mut serde_json::Value, renames: &HashMap<String, String>) {
     let Some(actions) = rule.get_mut("actions").and_then(|v| v.as_array_mut()) else {
         return;
     };
@@ -427,8 +467,8 @@ fn rewrite_rule_ids(rule: &mut serde_json::Value, renames: &HashMap<String, Stri
             continue;
         };
         // `node_type` names a type to create; `target_type` names one to
-        // relate to. `relationship_type` is a relationship NAME, not an id,
-        // and is deliberately left alone.
+        // relate to. `relationship_type` is deliberately absent: it is a
+        // relationship name, not a schema id.
         for key in ["node_type", "target_type"] {
             if let Some(id) = params.get(key).and_then(|v| v.as_str()) {
                 if let Some(renamed) = renames.get(id) {

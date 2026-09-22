@@ -806,3 +806,81 @@ async fn a_vocabulary_extension_targets_the_field_the_recipe_wrote() -> Result<(
 
     Ok(())
 }
+
+/// A `property_changed` trigger's `property_key` must follow the re-key its
+/// sibling `node_type` follows.
+///
+/// `property_key` is type-namespaced — `"<node_type>.<field>"` — so its
+/// leading segment is a schema id. Rewriting `node_type` and not it leaves the
+/// two jointly incoherent: the trigger index registers
+/// `{ node_type: "issue_2", property_key: "issue.status" }`, while a real
+/// event on an `issue_2` node produces `"issue_2.status"`. The lookup is an
+/// exact hash match, so it can never hit, and the ancestor fan-out
+/// re-namespaces toward `task` rather than back to `issue`.
+///
+/// Both shipped gates are `invariant`-class rules whose whole purpose is to
+/// VETO writes. A miss here does not degrade them, it disables them — closing
+/// an issue with open sub-issues and starting a blocked issue both silently
+/// succeed, while the UI shows two installed, enabled Plays. A guard that
+/// fails open is worse than an absent one.
+///
+/// Asserts consistency rather than a literal, so it pins the class: whatever
+/// id the schema lands under, the namespace must equal it.
+#[tokio::test]
+async fn a_re_keyed_trigger_keeps_its_property_key_namespace_consistent() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+
+    // Squat `issue`, forcing the recipe's own issue schema to re-key.
+    handle_create_schema(
+        &service,
+        serde_json::json!({
+            "name": "Issue",
+            "description": "Someone else's issue",
+            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+        }),
+    )
+    .await
+    .expect("squatter schema");
+
+    let report = install_recipe(&service, &linear()).await;
+    assert!(report.success, "install failed: {:?}", report.failure());
+
+    for play_id in ["linear-sub-issue-gate", "linear-blocker-gate"] {
+        let play = service
+            .get_node(play_id)
+            .await?
+            .unwrap_or_else(|| panic!("{play_id} should be installed"));
+
+        let rules = play
+            .properties
+            .get("play")
+            .and_then(|b| b.get("rules"))
+            .or_else(|| play.properties.get("rules"))
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("{play_id} should carry rules"));
+
+        for rule in rules {
+            let trigger = &rule["trigger"];
+            let Some(property_key) = trigger.get("property_key").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let node_type = trigger["node_type"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{play_id}'s trigger should name a node_type"));
+
+            let (namespace, _field) = property_key
+                .split_once('.')
+                .unwrap_or_else(|| panic!("{play_id}: property_key must be namespaced"));
+
+            assert_eq!(
+                namespace, node_type,
+                "{play_id}: property_key's namespace ({namespace}) must equal its \
+                 trigger node_type ({node_type}), or the registered trigger key \
+                 can never match a real event and this invariant gate silently \
+                 stops vetoing anything"
+            );
+        }
+    }
+
+    Ok(())
+}
