@@ -359,14 +359,32 @@ impl PlaybookEngine {
             if let Err(errors) =
                 crate::playbook::validation::validate_play(&parsed_rules, &self.node_service).await
             {
+                self.log_validation_errors(&node.id, &errors).await;
+                if crate::playbook::validation::has_genuine_failure(&errors) {
+                    warn!(
+                        "Play {} failed save-time validation with {} error(s) at load time, \
+                         skipping activation",
+                        node.id,
+                        errors.len()
+                    );
+                    continue;
+                }
+                // Every error is SchemaResolutionFailed — inconclusive (a
+                // transient DB error), not evidence this play is broken.
+                // Unlike the other three call sites gated the same way,
+                // this one has no later event to retry validation on: a
+                // play skipped here at startup stays un-activated for the
+                // rest of the process's life, which is a worse outcome for
+                // a play a user already set active in a previous session
+                // than optimistically activating it despite the unconfirmed
+                // verdict. Falls through to activate below.
                 warn!(
-                    "Play {} failed save-time validation with {} error(s) at load time, \
-                     skipping activation",
+                    "Play {} save-time validation was inconclusive ({} resolution failure(s)) \
+                     at load time — activating anyway rather than leaving it off for the \
+                     process lifetime on an unconfirmed verdict",
                     node.id,
                     errors.len()
                 );
-                self.log_validation_errors(&node.id, &errors).await;
-                continue;
             }
 
             let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
@@ -744,16 +762,37 @@ impl PlaybookEngine {
                     crate::playbook::validation::validate_play(&parsed_rules, &self.node_service)
                         .await
                 {
+                    self.log_validation_errors(node_id, &errors).await;
+                    if crate::playbook::validation::has_genuine_failure(&errors) {
+                        warn!(
+                            "Play {} failed save-time validation with {} error(s)",
+                            node_id,
+                            errors.len()
+                        );
+                        // Disable the play — do not activate
+                        let mut lifecycle =
+                            self.lifecycle.write().expect("lifecycle lock poisoned");
+                        lifecycle.disable_play(node_id);
+                        return;
+                    }
+                    // Every error is SchemaResolutionFailed — validation
+                    // could not reach a definitive verdict (a transient DB
+                    // error), not evidence this play is broken. Returning
+                    // here without activating would NOT "leave state
+                    // unchanged": this play has never been in the lifecycle
+                    // manager at all, so skipping activation makes it
+                    // invisible to `plays_referencing_schema` and therefore
+                    // to every future schema-drift re-validation too — a
+                    // permanent ghost, worse than disabling it. Fall
+                    // through and activate anyway, same as
+                    // `load_active_plays`'s identical reasoning.
                     warn!(
-                        "Play {} failed save-time validation with {} error(s)",
+                        "Play {} save-time validation was inconclusive ({} resolution \
+                         failure(s)) — activating anyway rather than leaving it invisible to \
+                         future re-validation on an unconfirmed verdict",
                         node_id,
                         errors.len()
                     );
-                    self.log_validation_errors(node_id, &errors).await;
-                    // Disable the play — do not activate
-                    let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-                    lifecycle.disable_play(node_id);
-                    return;
                 }
 
                 let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
@@ -875,15 +914,46 @@ impl PlaybookEngine {
                     crate::playbook::validation::validate_play(&parsed_rules, &self.node_service)
                         .await
                 {
+                    self.log_validation_errors(node_id, &errors).await;
+                    if crate::playbook::validation::has_genuine_failure(&errors) {
+                        warn!(
+                            "Play {} failed validation on update with {} error(s)",
+                            node_id,
+                            errors.len()
+                        );
+                        let mut lifecycle =
+                            self.lifecycle.write().expect("lifecycle lock poisoned");
+                        lifecycle.disable_play(node_id);
+                        return;
+                    }
+                    // Every error is SchemaResolutionFailed — inconclusive,
+                    // not evidence of a real break. Returning here without
+                    // (re-)activating would NOT "leave state unchanged" in
+                    // any of the three cases `needs_activation` covers:
+                    // - `None -> active` (first-ever activation): the play
+                    //   was never in the lifecycle manager, so skipping
+                    //   leaves it permanently invisible to future
+                    //   schema-drift re-validation — a ghost, same failure
+                    //   mode `load_active_plays` guards against.
+                    // - `Disabled -> active` (re-enable): same — it stays
+                    //   disabled with no future retry, silently ignoring
+                    //   the user's re-enable.
+                    // - `Active -> active` (edit while running): the OLD,
+                    //   pre-edit rules would keep executing under the
+                    //   `lifecycle_status: active` node the user just
+                    //   edited, silently discarding their change with
+                    //   nothing but a log line to show for it.
+                    // All three are worse than proceeding on an unconfirmed
+                    // verdict, so fall through and (re-)activate with the
+                    // new rules anyway, same reasoning as
+                    // `handle_play_created`/`load_active_plays`.
                     warn!(
-                        "Play {} failed validation on update with {} error(s)",
+                        "Play {} validation on update was inconclusive ({} resolution \
+                         failure(s)) — (re-)activating anyway rather than silently dropping \
+                         this update on an unconfirmed verdict",
                         node_id,
                         errors.len()
                     );
-                    self.log_validation_errors(node_id, &errors).await;
-                    let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-                    lifecycle.disable_play(node_id);
-                    return;
                 }
             }
 
@@ -957,7 +1027,30 @@ impl PlaybookEngine {
                     if let Err(errors) =
                         crate::playbook::validation::validate_play(&rules, &self.node_service).await
                     {
-                        broken.push((play_id, errors));
+                        if crate::playbook::validation::has_genuine_failure(&errors) {
+                            broken.push((play_id, errors));
+                        } else {
+                            // Every error is SchemaResolutionFailed —
+                            // validation could not reach a definitive
+                            // verdict (a transient DB error while
+                            // re-resolving the extends chain), not evidence
+                            // this play is actually broken by the schema
+                            // change. Disabling it here would silently take
+                            // a working, unrelated automation offline over
+                            // nothing more than a hiccup — precisely the
+                            // failure mode `SchemaResolutionFailed` exists
+                            // to surface instead of hide. Left running; a
+                            // later schema/play write gives re-validation
+                            // another chance to reach a real verdict.
+                            warn!(
+                                "Play {} re-validation after schema '{}' update was \
+                                 inconclusive ({} resolution failure(s)) — leaving it active \
+                                 rather than disabling on an unconfirmed verdict",
+                                play_id,
+                                schema_node_type,
+                                errors.len()
+                            );
+                        }
                     }
                 }
 

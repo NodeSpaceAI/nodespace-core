@@ -498,7 +498,7 @@ async fn walk_path_against_schema(
             .resolve_relationships(&current_type)
             .await
         {
-            Ok(rels) => rels.into_iter().find(|r| r.name == *segment),
+            Ok((rels, _owners)) => rels.into_iter().find(|r| r.name == *segment),
             Err(e) => {
                 let msg = format!(
                     "effective-relationship resolution for '{current_type}' failed ({e}) \
