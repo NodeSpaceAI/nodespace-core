@@ -61,6 +61,24 @@ pub enum TriggerKey {
     },
 }
 
+/// Build a type-namespaced `property_changed` key (`<node_type>.<field>`).
+///
+/// This is the only spelling `trigger_keys_for_graph_event` ever indexes a
+/// specific-property `PropertyChanged` trigger under, and the only spelling
+/// `validate_play`'s `UnnamespacedPropertyChangedKey` check accepts — so
+/// every playbook-domain site that builds or rebuilds one of these keys
+/// (registering a trigger, validating one, re-namespacing one for ancestor
+/// fan-out, or enumerating candidate keys for a diagnostic) must produce
+/// exactly this shape or it can never match a real event.
+///
+/// Distinct from the near-identical `<node_type>.<field>` discriminator
+/// `node_service::conflicts` builds for unique-field-collision ids — that is
+/// a different domain (conflict identity, not trigger matching) and
+/// deliberately not unified with this one.
+pub fn namespaced_property_key(node_type: &str, field: &str) -> String {
+    format!("{node_type}.{field}")
+}
+
 // ---------------------------------------------------------------------------
 // Parsed play representation (in-memory)
 // ---------------------------------------------------------------------------

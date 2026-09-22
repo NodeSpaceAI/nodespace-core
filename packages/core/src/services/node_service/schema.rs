@@ -575,6 +575,55 @@ impl NodeService {
         ))
     }
 
+    /// The effective/merged relationship set across `node_type`'s extends
+    /// chain (ADR-078) — the relationship counterpart to
+    /// [`Self::resolve_field_owners`]. A relationship declared only on an
+    /// ancestor schema (inherited, not redeclared) is returned exactly as if
+    /// it were the node's own.
+    ///
+    /// Nearest-first, first-declared wins on a name collision — the same
+    /// shadowing rule [`crate::schema::extends_chain::flatten_chain_fields`]
+    /// applies to fields, kept here rather than reused directly since a
+    /// relationship carries no `SchemaField`-shaped data to flatten.
+    ///
+    /// Excludes the `extends`/`extended_by` type-system relationship
+    /// (`is_type_system_relationship`). A schema that declares `extends` has
+    /// it stored as an ordinary row in the same declaration table other
+    /// relationships live in (see `TYPE_SYSTEM_RELATIONSHIPS`'s doc — it is
+    /// deliberately not excluded from *storage* reads, since
+    /// `declared_parent`/`declared_extends_parent` need to find it there).
+    /// But it is a statement about the schema graph, not a data relationship
+    /// any real node instance ever carries — surfacing it here would let a
+    /// condition segment literally named `extends`/`extended_by` pass this
+    /// function's "is this a real, traversable relationship" check and be
+    /// classified `NotYetMet` instead of the correct `Unresolvable`, since no
+    /// data node ever has such an edge to eventually satisfy it.
+    pub async fn resolve_relationships(
+        &self,
+        node_type: &str,
+    ) -> Result<Vec<crate::models::schema::SchemaRelationship>, NodeServiceError> {
+        let chain = self.resolve_type_chain(node_type).await?;
+
+        let mut out: Vec<crate::models::schema::SchemaRelationship> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for schema_id in &chain {
+            let Some(schema) = self.get_schema_node(schema_id).await? else {
+                continue;
+            };
+            for rel in schema.relationships {
+                if crate::models::schema::is_type_system_relationship(&rel.name) {
+                    continue;
+                }
+                if seen.insert(rel.name.clone()) {
+                    out.push(rel);
+                }
+            }
+        }
+
+        Ok(out)
+    }
+
     /// Rename a field across all node instances and update the schema definition.
     ///
     /// Only `name` is rewritten — `friendly_name` is left exactly as stored,
@@ -1079,6 +1128,17 @@ impl NodeService {
     ///
     /// Convenience method that returns a SchemaNode with its relationships.
     /// Use this when you need the complete schema definition including relationships.
+    ///
+    /// **Returns `schema_id`'s own directly-declared fields and relationships
+    /// only — not merged across the ADR-078 `extends` chain.** A schema that
+    /// `extends` a parent will not have the parent's fields/relationships
+    /// folded in here; reading `.fields`/`.relationships` straight off this
+    /// return value silently drops anything inherited. Callers that need the
+    /// effective set across the whole chain (as most schema-aware reads
+    /// should) want [`Self::resolve_field_owners`] and
+    /// [`Self::resolve_relationships`] instead — both already do this
+    /// resolution and are the established way this codebase avoids that
+    /// exact bug class.
     ///
     /// # Arguments
     ///
