@@ -3,7 +3,18 @@ use super::*;
 
 /// Token cap on an entity-resolution query. Matches `BM25_MAX_TOKENS`'s intent
 /// — bound a long message to a fixed query cost — but is its own constant
-/// because the two searches answer different questions and may want to diverge.
+/// because the two searches answer different questions.
+///
+/// 6 rather than `BM25_MAX_TOKENS`' 4: an entity name is frequently two or
+/// three tokens ("Northwind Trading", "Acme Holdings International"), and a
+/// cap that tight would spend the whole budget on one name and leave nothing
+/// for a second entity in the same message.
+///
+/// WHICH tokens the cap keeps matters more than the number, and that is the
+/// part with a measured failure behind it — see the selection logic in
+/// `resolve_entities_by_title`. Raising this alone would not have fixed it:
+/// the budget was being spent front-first on whatever the sentence opened
+/// with, so a longer prefix simply moved the cliff.
 const ENTITY_RESOLUTION_MAX_TOKENS: usize = 6;
 
 /// One node whose `title` matched an entity-resolution query.

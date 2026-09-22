@@ -472,6 +472,12 @@ async fn resolve_entities(
     };
 
     let Some(best) = candidates.first().map(|c| c.score) else {
+        // Logged, not silent. The type distinguishes "ran and found nothing"
+        // from "never ran"; the logs did not, so a resolver that was failing
+        // to see the entity at all looked exactly like one correctly
+        // reporting absence. That is how a truncation bug went unnoticed
+        // through three measured runs.
+        tracing::debug!(query = q, "workspace_context: entity resolution — no match");
         return EntityResolution::NoMatch;
     };
 
@@ -479,6 +485,7 @@ async fn resolve_entities(
     // and survivors are at or below it. `best` is the most negative score, so
     // multiplying by a factor < 1 moves the bar toward zero — i.e. loosens it.
     let bar = best * ENTITY_SCORE_CUTOFF_FACTOR;
+    let candidates_len = candidates.len();
     let kept: Vec<_> = candidates
         .into_iter()
         .filter(|c| c.score <= bar)
@@ -486,6 +493,11 @@ async fn resolve_entities(
         .collect();
 
     if kept.is_empty() {
+        tracing::debug!(
+            query = q,
+            candidates = candidates_len,
+            "workspace_context: entity resolution — all candidates below cutoff"
+        );
         EntityResolution::NoMatch
     } else {
         tracing::debug!(
@@ -722,19 +734,28 @@ impl WorkspaceContext {
                 }
             }
             EntityResolution::Resolved(entities) => {
+                // Lines are built BEFORE the header is emitted, so the header
+                // never appears alone. Writing it first and then discovering
+                // the first line does not fit would leave a heading that
+                // promises resolved ids above an empty list — which reads as a
+                // fourth state this design does not have, and is worse than
+                // rendering nothing: the model is told entities were resolved
+                // and then shown none.
                 let header = format!("\n{RESOLVED_ENTITIES_HEADER}\n");
-                if out.len() + header.len() <= max_chars {
-                    out.push_str(&header);
-                    for e in entities {
-                        // id last and unquoted so it is copyable verbatim; the
-                        // type is what lets the model tell two same-named
-                        // entities apart.
-                        let line = format!("- \"{}\" ({}) id={}\n", e.title, e.node_type, e.id);
-                        if out.len() + line.len() > max_chars {
-                            break;
-                        }
-                        out.push_str(&line);
+                let mut lines = String::new();
+                for e in entities {
+                    // id last and unquoted so it is copyable verbatim; the
+                    // type is what lets the model tell two same-named
+                    // entities apart.
+                    let line = format!("- \"{}\" ({}) id={}\n", e.title, e.node_type, e.id);
+                    if out.len() + header.len() + lines.len() + line.len() > max_chars {
+                        break;
                     }
+                    lines.push_str(&line);
+                }
+                if !lines.is_empty() {
+                    out.push_str(&header);
+                    out.push_str(&lines);
                 }
             }
         }
@@ -1787,18 +1808,53 @@ mod tests {
     }
 
     /// The tier honours the character budget like every other section, so a
-    /// long entity list cannot crowd out the rest of the context block.
+    /// long entity list cannot crowd out the rest of the context block — and
+    /// a budget that admits only SOME entities renders those, not none.
     #[test]
     fn entity_tier_respects_the_char_budget() {
-        let out = ctx_with(EntityResolution::Resolved(vec![
+        let two = vec![
             entity("Northwind Trading", "company_sold_to", "abc123", -2.5),
             entity("Contoso Ltd", "customer", "def456", -2.4),
-        ]))
-        .format_for_prompt(RESOLVED_ENTITIES_HEADER.len() + 40);
+        ];
+        let full = ctx_with(EntityResolution::Resolved(two.clone())).format_for_prompt(4000);
+
+        // A budget one line short of the full rendering: the first entity must
+        // survive and the second must be dropped. Exercises the partial-
+        // truncation path rather than the all-or-nothing ends.
+        let one_line_short = full.len() - 20;
+        let out = ctx_with(EntityResolution::Resolved(two)).format_for_prompt(one_line_short);
+
+        assert!(out.len() <= one_line_short, "budget exceeded: {out}");
+        assert!(
+            out.contains("abc123"),
+            "the first entity must still render when the budget admits it: {out}"
+        );
+        assert!(
+            !out.contains("def456"),
+            "the second entity must be dropped by the budget: {out}"
+        );
+    }
+
+    /// A budget too small for even one entity line renders NOTHING — not a
+    /// header with an empty list.
+    ///
+    /// The header promises resolved ids. Emitting it above nothing tells the
+    /// model entities were found and then shows none, which is a fourth state
+    /// `EntityResolution` deliberately does not have. Rendering the lines
+    /// before committing to the header is what prevents it.
+    #[test]
+    fn a_budget_too_small_for_any_entity_renders_no_header() {
+        let out = ctx_with(EntityResolution::Resolved(vec![entity(
+            "Northwind Trading",
+            "company_sold_to",
+            "abc123",
+            -2.5,
+        )]))
+        .format_for_prompt(RESOLVED_ENTITIES_HEADER.len() + 5);
 
         assert!(
-            out.len() <= RESOLVED_ENTITIES_HEADER.len() + 40,
-            "budget exceeded: {out}"
+            !out.contains(RESOLVED_ENTITIES_HEADER),
+            "a header with no entities under it is worse than no header: {out}"
         );
     }
 }

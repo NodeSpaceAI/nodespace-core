@@ -272,6 +272,32 @@ mod entity_resolution_tests {
         Ok(())
     }
 
+    /// Two multi-token names in one message both resolve.
+    ///
+    /// This is what the token cap has to be wide enough for. Entity names run
+    /// to two or three tokens apiece, so a message naming two of them needs
+    /// room for both — a cap tight enough to hold only the first would make
+    /// the second silently unresolvable, and "resolved to nothing" is rendered
+    /// as a positive claim that it does not exist.
+    #[tokio::test]
+    async fn two_multi_token_names_in_one_message_both_resolve() -> Result<()> {
+        let (store, service, _t) = create_test_store().await?;
+        let northwind = seed_entity(&service, "text", "Northwind Trading").await?;
+        let contoso = seed_entity(&service, "text", "Contoso Holdings").await?;
+
+        let hits = store
+            .resolve_entities_by_title("move Northwind Trading under Contoso Holdings", 12)
+            .await?;
+
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        assert!(
+            ids.contains(&northwind.as_str()) && ids.contains(&contoso.as_str()),
+            "both named entities must resolve — a cap too tight drops the second \
+             and renders it as nonexistent: {hits:?}"
+        );
+        Ok(())
+    }
+
     /// The limit is honoured, so one common word cannot flood the caller.
     #[tokio::test]
     async fn the_limit_bounds_the_result_set() -> Result<()> {
