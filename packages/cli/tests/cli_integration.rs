@@ -259,6 +259,7 @@ async fn create_get_update_children_delete_round_trip() {
             node_type: "text".into(),
             content: "root via CLI".into(),
             parent: None,
+            properties: vec![],
             collections: vec![],
             collection_ids: vec![],
         }),
@@ -294,6 +295,7 @@ async fn create_get_update_children_delete_round_trip() {
             node_type: "text".into(),
             content: "child via CLI".into(),
             parent: Some(parent_id.clone()),
+            properties: vec![],
             collections: vec![],
             collection_ids: vec![],
         }),
@@ -2246,6 +2248,7 @@ async fn database_routing_isolates_writes() {
             node_type: "text".into(),
             content: "isolated-to-second".into(),
             parent: None,
+            properties: vec![],
             collections: vec![],
             collection_ids: vec![],
         }),
@@ -2500,6 +2503,7 @@ async fn node_create_collection_paths_are_repeatable_and_auto_create() {
             node_type: "text".into(),
             content: "collected via CLI".into(),
             parent: None,
+            properties: vec![],
             // Neither path exists yet: `docs:rust` is nested, so `docs` and
             // `rust` are both created and wired member_of.
             collections: vec!["docs:rust".into(), "reference".into()],
@@ -2777,6 +2781,7 @@ async fn node_create_unresolvable_collection_is_an_error() {
             node_type: "text".into(),
             content: "should fail".into(),
             parent: None,
+            properties: vec![],
             // An empty path has no segments to resolve.
             collections: vec!["".into()],
             collection_ids: vec![],
@@ -2789,6 +2794,184 @@ async fn node_create_unresolvable_collection_is_an_error() {
         err.to_string().contains("CreateNode RPC failed"),
         "unexpected error: {err}"
     );
+
+    let _ = shutdown.send(());
+}
+
+/// A schema field that is `required` with no `default` can only be satisfied
+/// at create time (validation runs on create; `update` cannot run before the
+/// node exists). Before `--property` existed on `node create`, such a field
+/// made the type entirely uninstantiable from the CLI. Confirms both halves:
+/// creating without `--property` still fails with the validation error
+/// (existing behavior, unchanged), and supplying the field via `--property`
+/// now succeeds and the value round-trips into storage.
+#[tokio::test]
+async fn node_create_required_field_without_default_needs_property_flag() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    commands::schema::run(
+        &mut client,
+        commands::schema::SchemaAction::Create(commands::schema::SchemaParamsArgs {
+            params: Some(
+                serde_json::json!({
+                    "name": "Customer",
+                    "fields": [
+                        {"name": "company_name", "type": "text", "required": true}
+                    ]
+                })
+                .to_string(),
+            ),
+            params_file: None,
+        }),
+        true,
+    )
+    .await
+    .expect("schema create");
+
+    // Without --property the required field cannot be supplied at all:
+    // creation must still fail with the daemon's validation error, exactly
+    // as before this flag existed.
+    let err = commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Create(commands::node::CreateArgs {
+            node_type: "customer".into(),
+            content: "Northwind Labs".into(),
+            parent: None,
+            properties: vec![],
+            collections: vec![],
+            collection_ids: vec![],
+        }),
+        true,
+    )
+    .await
+    .expect_err("required field with no default must fail without --property");
+    let err_chain = format!("{err:?}");
+    assert!(
+        err_chain.contains("Required field 'company_name' is missing"),
+        "unexpected error: {err_chain}"
+    );
+
+    // With --property, the same create now succeeds.
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Create(commands::node::CreateArgs {
+            node_type: "customer".into(),
+            content: "Northwind Labs".into(),
+            parent: None,
+            properties: vec![("company_name".into(), serde_json::json!("Northwind Labs"))],
+            collections: vec![],
+            collection_ids: vec![],
+        }),
+        true,
+    )
+    .await
+    .expect("create with required property supplied via --property");
+
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+    let found = raw
+        .query_nodes_simple(QueryNodesSimpleRequest {
+            node_type: Some("customer".into()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("query")
+        .into_inner();
+    assert_eq!(found.nodes.len(), 1, "exactly one customer node expected");
+    let node = raw
+        .get_node(GetNodeRequest {
+            node_id: found.nodes[0].id.clone(),
+        })
+        .await
+        .expect("get node")
+        .into_inner()
+        .node_data
+        .expect("node_data");
+    let props: serde_json::Value =
+        serde_json::from_str(&node.properties).expect("parse properties");
+    assert_eq!(props["customer"]["company_name"], "Northwind Labs");
+
+    let _ = shutdown.send(());
+}
+
+/// `--property` on `node create` is repeatable, mirroring `node update`, so
+/// several required fields can all be satisfied in one call.
+#[tokio::test]
+async fn node_create_multiple_property_flags_set_multiple_fields() {
+    let (sock, shutdown, _tempdir) = spawn_test_daemon().await;
+    let mut client = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("connect");
+
+    commands::schema::run(
+        &mut client,
+        commands::schema::SchemaAction::Create(commands::schema::SchemaParamsArgs {
+            params: Some(
+                serde_json::json!({
+                    "name": "Invoice",
+                    "fields": [
+                        {"name": "invoice_number", "type": "text", "required": true},
+                        {"name": "amount", "type": "number", "required": true}
+                    ]
+                })
+                .to_string(),
+            ),
+            params_file: None,
+        }),
+        true,
+    )
+    .await
+    .expect("schema create");
+
+    commands::node::run(
+        &mut client,
+        commands::node::NodeAction::Create(commands::node::CreateArgs {
+            node_type: "invoice".into(),
+            content: "INV-1001".into(),
+            parent: None,
+            properties: vec![
+                ("invoice_number".into(), serde_json::json!("INV-1001")),
+                ("amount".into(), serde_json::json!(500)),
+            ],
+            collections: vec![],
+            collection_ids: vec![],
+        }),
+        true,
+    )
+    .await
+    .expect("create with both required properties supplied via repeated --property");
+
+    let mut raw = connect(&sock, DatabaseIdInterceptor::none())
+        .await
+        .expect("raw connect");
+    let found = raw
+        .query_nodes_simple(QueryNodesSimpleRequest {
+            node_type: Some("invoice".into()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .expect("query")
+        .into_inner();
+    assert_eq!(found.nodes.len(), 1, "exactly one invoice node expected");
+    let node = raw
+        .get_node(GetNodeRequest {
+            node_id: found.nodes[0].id.clone(),
+        })
+        .await
+        .expect("get node")
+        .into_inner()
+        .node_data
+        .expect("node_data");
+    let props: serde_json::Value =
+        serde_json::from_str(&node.properties).expect("parse properties");
+    assert_eq!(props["invoice"]["invoice_number"], "INV-1001");
+    assert_eq!(props["invoice"]["amount"], 500);
 
     let _ = shutdown.send(());
 }
