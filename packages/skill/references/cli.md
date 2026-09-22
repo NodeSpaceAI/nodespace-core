@@ -309,13 +309,25 @@ Both node IDs must already exist — search for missing IDs first (`nodespace se
 
 ### Play automation rule-sets
 
-A Play (`trigger → conditions → actions`) is a `node_type: "play"` node, so its lifecycle is managed with generic verbs — no bespoke enable/disable/list/logs commands exist:
+A Play (`trigger → conditions → actions`) is a `node_type: "play"` node, so its lifecycle is managed with generic verbs — no bespoke enable/disable/list commands exist:
 
 ```bash
 nodespace query --type play                                                  # list installed Plays
-nodespace query --type playbook_log --filters '[{"type":"property","operator":"equals","property":"play_id","value":"<play-id>"}]'  # execution-error history for one Play
 nodespace node update <play-id> --lifecycle-status archived                  # disable a Play
 nodespace node update <play-id> --lifecycle-status active                    # re-enable a disabled Play
+```
+
+A Play's execution errors are **not** in the graph. Engine diagnostics (a failed
+action, a cycle-limit breach, a rule that would not compile) are operational
+telemetry rather than knowledge, so they go to the daemon log rather than
+becoming nodes — there is nothing to query for them. Read them with
+`nodespace logs`, which resolves the log path for you (it differs between a
+desktop-app install and a Homebrew service):
+
+```bash
+nodespace logs --filter <play-id>
+nodespace logs --filter <play-id> --lines 200
+nodespace logs --path-only                    # just print where the log lives
 ```
 
 `get-workflow-state` is the one purpose-built verb — it runs the engine's condition evaluation out of band from a live trigger, which a generic verb cannot do:
@@ -644,6 +656,14 @@ Structured property query with comparison operators (equals/contains/gt/lt/gte/l
 
 Developer diagnostics: database path, size, node counts, schema count, daemon process memory
 
+### `nodespace logs`
+
+Read the daemon's log — where Play execution errors go
+
+- `--filter <FILTER>` — Show only lines containing this text — a play id, a rule name, an error type. Matched literally, not as a regex
+- `--lines <LINES>` — How many matching lines to show, most recent last
+- `--path-only` — Print the resolved log file path and exit without reading it
+
 ### `nodespace import`
 
 Import markdown files into NodeSpace
@@ -719,10 +739,6 @@ Inspect and manage node type schema definitions
 Inspect and control Play automation rule-sets (list, logs, enable, disable, get-workflow-state)
 
 **`nodespace playbook list`** — List all installed Plays and their lifecycle status
-
-**`nodespace playbook logs`** — Show execution-error history for a Play (log nodes it produced)
-
-- `<PLAY_ID>` — Play ID to show log entries for (required)
 
 **`nodespace playbook enable`** — Re-enable a disabled Play after fixing the underlying issue
 

@@ -395,13 +395,42 @@ impl GraphResolver {
         // This is live, not hypothetical: `tasks` is declared both on `project`
         // (reverse `project`) and on `person` (reverse `assignee`), so an
         // unnarrowed `node.assignee` would return the project too.
-        Ok(match source_type {
-            Some(source_type) => nodes
-                .into_iter()
-                .filter(|n| n.node_type == source_type)
-                .collect(),
-            None => nodes,
-        })
+        //
+        // Matched against the declarer's whole descendant set, not its exact
+        // id: `task.blocks` declares reverse `blocked_by` with source_type
+        // `task`, and an `issue` IS a task (ADR-078), so an issue blocking an
+        // issue must survive this filter. Comparing the concrete type alone
+        // silently dropped every subtype instance, which read as "nothing
+        // blocks this" rather than as an error.
+        let Some(source_type) = source_type else {
+            return Ok(nodes);
+        };
+        //
+        // Memoized per node_type rather than per node: a traversal commonly
+        // returns many nodes of one type, and the chain is a property of the
+        // type, so resolving it once per distinct type is the same answer for
+        // a fraction of the queries.
+        let mut verdict: HashMap<String, bool> = HashMap::new();
+        let mut kept = Vec::with_capacity(nodes.len());
+        for n in nodes {
+            let satisfies = match verdict.get(&n.node_type) {
+                Some(known) => *known,
+                None => {
+                    let chain = self
+                        .node_service
+                        .resolve_type_chain(&n.node_type)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let answer = chain.contains(&source_type);
+                    verdict.insert(n.node_type.clone(), answer);
+                    answer
+                }
+            };
+            if satisfies {
+                kept.push(n);
+            }
+        }
+        Ok(kept)
     }
 
     /// Whether `segment` is declared as a "many" cardinality relationship on

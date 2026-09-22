@@ -1657,6 +1657,22 @@ mod tests {
         );
     }
 
+    /// Engine diagnostics do not live in the graph: there is no `log` or
+    /// `playbook_log` core schema, and Play errors are written to a log file
+    /// instead. Pinned as a test because the absence is deliberate — a Play
+    /// failure is operational telemetry, not knowledge, and writing it back
+    /// into the substrate the engine watches is a self-trigger hazard.
+    #[test]
+    fn test_no_engine_diagnostic_schema_in_graph() {
+        let schemas = get_core_schemas();
+        for id in ["log", "playbook_log"] {
+            assert!(
+                !schemas.iter().any(|s| s.id == id),
+                "`{id}` must not be a graph type — engine diagnostics go to the log file"
+            );
+        }
+    }
+
     #[test]
     fn test_all_schemas_are_core() {
         let schemas = get_core_schemas();

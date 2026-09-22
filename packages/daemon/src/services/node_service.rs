@@ -56,19 +56,20 @@ use crate::nodespace::{
     GetNodeRelationshipsRequest, GetNodeRelationshipsResponse, GetNodeRequest,
     GetNodesBatchRequest, GetNodesBatchResponse, GetRelatedNodesRequest, GetRelatedNodesResponse,
     GetRootsRequest, GetSchemaDefinitionRequest, GetWorkflowStateRequest, GetWorkflowStateResponse,
-    ListConflictsRequest, MentionAutocompleteRequest, MentionIdsResponse, MentionResponse,
-    MentionTargetRequest, MergeNodesRequest, MergeNodesResponse, MoveChildrenToParentRequest,
-    MoveChildrenToParentResponse, MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted,
-    NodeEvent, NodeListResponse, NodeReference, NodeReferenceListResponse, NodeResponse,
-    NodeSortOrder, NodeTreeResponse, OptionalConflictResponse, OptionalNodeResponse,
-    OptionalStringClear, OptionalTimestampClear, QueryNodesSimpleRequest,
-    RelationshipDeletedPayload, RelationshipPayload, RemoveNodeFromCollectionRequest,
-    RenameCollectionRequest, ReorderNodeRequest, ReorderNodeResponse, ResetSeedNodeRequest,
-    ResetSeedNodeResponse, ResolveConflictRequest, SchemaParamsRequest, SchemaResultResponse,
-    SearchRequest, SetLocalPersonIdentityRequest, UpdateNodeRequest, UpdateNodesBatchRequest,
-    UpdateNodesBatchResponse, UpdateRelationshipPropertiesRequest,
-    UpdateRelationshipPropertiesResponse, UpdateTaskNodeRequest, UpsertNodeWithParentRequest,
-    WatchRequest,
+    InstallMethodologyRequest, InstallMethodologyResponse, ListConflictsRequest,
+    ListMethodologiesRequest, ListMethodologiesResponse, MentionAutocompleteRequest,
+    MentionIdsResponse, MentionResponse, MentionTargetRequest, MergeNodesRequest,
+    MergeNodesResponse, Methodology, MoveChildrenToParentRequest, MoveChildrenToParentResponse,
+    MoveNodeRequest, NodeCollectionsRequest, NodeData, NodeDeleted, NodeEvent, NodeListResponse,
+    NodeReference, NodeReferenceListResponse, NodeResponse, NodeSortOrder, NodeTreeResponse,
+    OptionalConflictResponse, OptionalNodeResponse, OptionalStringClear, OptionalTimestampClear,
+    QueryNodesSimpleRequest, RelationshipDeletedPayload, RelationshipPayload,
+    RemoveNodeFromCollectionRequest, RenameCollectionRequest, ReorderNodeRequest,
+    ReorderNodeResponse, ResetSeedNodeRequest, ResetSeedNodeResponse, ResolveConflictRequest,
+    SchemaParamsRequest, SchemaResultResponse, SearchRequest, SetLocalPersonIdentityRequest,
+    UpdateNodeRequest, UpdateNodesBatchRequest, UpdateNodesBatchResponse,
+    UpdateRelationshipPropertiesRequest, UpdateRelationshipPropertiesResponse,
+    UpdateTaskNodeRequest, UpsertNodeWithParentRequest, WatchRequest,
 };
 
 /// The most rows a paged query RPC will return, whatever the request asks for:
@@ -1613,16 +1614,7 @@ impl GrpcNodeService for NodeServiceImpl {
         let result =
             nodespace_core::markdown::handle_get_markdown_from_node_id(&this.node_service, params)
                 .await
-                .map_err(|e| match e {
-                    nodespace_core::markdown::MarkdownError::NotFound(m) => Status::not_found(m),
-                    nodespace_core::markdown::MarkdownError::InvalidParams(m) => {
-                        Status::invalid_argument(m)
-                    }
-                    nodespace_core::markdown::MarkdownError::CreationFailed(m) => {
-                        Status::failed_precondition(format!("Node creation failed: {m}"))
-                    }
-                    nodespace_core::markdown::MarkdownError::Internal(m) => Status::internal(m),
-                })?;
+                .map_err(markdown_error_to_status)?;
 
         let markdown = result["markdown"]
             .as_str()
@@ -1875,6 +1867,50 @@ impl GrpcNodeService for NodeServiceImpl {
         Ok(Response::new(SchemaResultResponse {
             result_json: result.to_string(),
         }))
+    }
+
+    async fn list_methodologies(
+        &self,
+        _request: Request<ListMethodologiesRequest>,
+    ) -> Result<Response<ListMethodologiesResponse>, Status> {
+        // Compiled-in content, so no routing or store access is needed to
+        // answer what is on offer.
+        let methodologies = nodespace_core::methodology::all_recipes()
+            .into_iter()
+            .map(|r| Methodology {
+                id: r.id.to_string(),
+                name: r.name.to_string(),
+                description: r.description.to_string(),
+            })
+            .collect();
+
+        Ok(Response::new(ListMethodologiesResponse { methodologies }))
+    }
+
+    async fn install_methodology(
+        &self,
+        request: Request<InstallMethodologyRequest>,
+    ) -> Result<Response<InstallMethodologyResponse>, Status> {
+        let this = self.route(&request).await?;
+        let req = request.into_inner();
+
+        let recipe =
+            nodespace_core::methodology::recipe_by_id(&req.methodology_id).ok_or_else(|| {
+                Status::not_found(format!(
+                    "unknown methodology '{}' — call ListMethodologies for what this build ships",
+                    req.methodology_id
+                ))
+            })?;
+
+        // A partial install returns Ok with `success: false`. The report is
+        // the only record of how far it got, and a Status would throw that
+        // away at exactly the moment the caller needs it most.
+        let report = nodespace_core::methodology::install_recipe(&this.node_service, &recipe).await;
+
+        let report_json = serde_json::to_string(&report)
+            .map_err(|e| Status::internal(format!("failed to encode install report: {e}")))?;
+
+        Ok(Response::new(InstallMethodologyResponse { report_json }))
     }
 
     async fn update_schema(
@@ -2727,6 +2763,7 @@ fn markdown_error_to_status(err: nodespace_core::markdown::MarkdownError) -> Sta
         MarkdownError::NotFound(msg) => Status::not_found(msg),
         MarkdownError::CreationFailed(msg) => Status::internal(msg),
         MarkdownError::Internal(msg) => Status::internal(msg),
+        MarkdownError::AlreadyExists { message, .. } => Status::already_exists(message),
     }
 }
 

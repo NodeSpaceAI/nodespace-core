@@ -1378,95 +1378,30 @@ mod playbook_tests {
     }
 
     // -----------------------------------------------------------------------
-    // Phase 6: Logging and cycle detection tests
+    // Cycle detection
     // -----------------------------------------------------------------------
 
     #[test]
     fn test_max_chain_depth_is_10() {
-        use crate::playbook::logging::MAX_CHAIN_DEPTH;
         assert_eq!(MAX_CHAIN_DEPTH, 10);
-    }
-
-    #[test]
-    fn test_error_fingerprint_consistent() {
-        use crate::playbook::logging::{error_fingerprint, PlayErrorType};
-
-        let fp1 = error_fingerprint("pb-123", "my_rule", 0, &PlayErrorType::CycleLimit);
-        let fp2 = error_fingerprint("pb-123", "my_rule", 0, &PlayErrorType::CycleLimit);
-
-        // Same inputs → same fingerprint
-        assert_eq!(fp1, fp2);
-        // SHA-256 hex is 64 characters
-        assert_eq!(fp1.len(), 64);
-    }
-
-    #[test]
-    fn test_error_fingerprint_different_for_different_inputs() {
-        use crate::playbook::logging::{error_fingerprint, PlayErrorType};
-
-        let base = error_fingerprint("pb-123", "my_rule", 0, &PlayErrorType::CycleLimit);
-
-        // Different play_id
-        let different_pb = error_fingerprint("pb-456", "my_rule", 0, &PlayErrorType::CycleLimit);
-        assert_ne!(base, different_pb);
-
-        // Different rule_name
-        let different_rule =
-            error_fingerprint("pb-123", "other_rule", 0, &PlayErrorType::CycleLimit);
-        assert_ne!(base, different_rule);
-
-        // Different error_location_index
-        let different_idx = error_fingerprint("pb-123", "my_rule", 5, &PlayErrorType::CycleLimit);
-        assert_ne!(base, different_idx);
-
-        // Different error_type
-        let different_type = error_fingerprint("pb-123", "my_rule", 0, &PlayErrorType::MissingPath);
-        assert_ne!(base, different_type);
-    }
-
-    #[test]
-    fn test_error_fingerprint_excludes_dynamic_data() {
-        use crate::playbook::logging::{error_fingerprint, PlayErrorType};
-
-        // The fingerprint is only based on play_id, rule_name,
-        // error_location_index, and error_type. Dynamic data excluded by design.
-        let fp1 = error_fingerprint("pb-123", "rule_a", 2, &PlayErrorType::ActionError);
-        let fp2 = error_fingerprint("pb-123", "rule_a", 2, &PlayErrorType::ActionError);
-        assert_eq!(fp1, fp2);
-    }
-
-    #[test]
-    fn test_play_error_type_display() {
-        use crate::playbook::logging::PlayErrorType;
-
-        assert_eq!(PlayErrorType::CycleLimit.to_string(), "cycle_limit");
-        assert_eq!(PlayErrorType::MissingPath.to_string(), "missing_path");
-        assert_eq!(PlayErrorType::TypeMismatch.to_string(), "type_mismatch");
-        assert_eq!(
-            PlayErrorType::VersionConflict.to_string(),
-            "version_conflict"
-        );
-        assert_eq!(PlayErrorType::CompileError.to_string(), "compile_error");
-        assert_eq!(PlayErrorType::ActionError.to_string(), "action_error");
     }
 
     #[test]
     fn test_depth_enforcement_boundary_values() {
         use crate::db::events::PlaybookExecutionContext;
-        use crate::playbook::logging::MAX_CHAIN_DEPTH;
 
         // Verify the constant is what we expect so the boundary checks below are valid
         assert_eq!(MAX_CHAIN_DEPTH, 10);
 
-        // depth=0, no playbook_context → depth+1 = 1, within limit
+        // depth=0, no playbook_context -> depth+1 = 1, within limit
         let depth: u8 = 0;
         assert!(depth < MAX_CHAIN_DEPTH);
 
-        // depth=9 → depth+1 = 10, exactly at limit
+        // depth=9 -> depth+1 = 10, exactly at limit
         let depth: u8 = 9;
         assert!(depth < MAX_CHAIN_DEPTH);
 
-        // depth=10 → depth+1 = 11, exceeds limit
+        // depth=10 -> depth+1 = 11, exceeds limit
         let depth: u8 = 10;
         assert!(depth >= MAX_CHAIN_DEPTH);
 
@@ -1477,36 +1412,6 @@ mod playbook_tests {
             source_playbook_id: "pb-1".to_string(),
         };
         assert!(ctx.depth + 1 > MAX_CHAIN_DEPTH);
-    }
-
-    #[test]
-    fn test_all_error_type_fingerprints_are_unique() {
-        use crate::playbook::logging::{error_fingerprint, PlayErrorType};
-
-        let types = [
-            PlayErrorType::CycleLimit,
-            PlayErrorType::MissingPath,
-            PlayErrorType::TypeMismatch,
-            PlayErrorType::VersionConflict,
-            PlayErrorType::CompileError,
-            PlayErrorType::ActionError,
-        ];
-
-        let fingerprints: Vec<String> = types
-            .iter()
-            .map(|t| error_fingerprint("pb-1", "rule-1", 0, t))
-            .collect();
-
-        // All fingerprints should be unique
-        for i in 0..fingerprints.len() {
-            for j in (i + 1)..fingerprints.len() {
-                assert_ne!(
-                    fingerprints[i], fingerprints[j],
-                    "Error types {:?} and {:?} produced the same fingerprint",
-                    types[i], types[j]
-                );
-            }
-        }
     }
 
     // -----------------------------------------------------------------------
@@ -1619,7 +1524,6 @@ mod playbook_tests {
     fn effective_chain_depth_at_persisted_max_still_trips_cycle_limit_on_next_hop() {
         use super::super::engine::{effective_chain_depth, exceeds_max_chain_depth};
         use crate::db::events::PLAYBOOK_CHAIN_DEPTH_PROPERTY;
-        use crate::playbook::logging::MAX_CHAIN_DEPTH;
 
         let trigger_node = node_with_properties(
             "node:synced-max",
@@ -1669,7 +1573,6 @@ mod playbook_tests {
     #[test]
     fn exceeds_max_chain_depth_does_not_wrap_at_u8_max() {
         use super::super::engine::exceeds_max_chain_depth;
-        use crate::playbook::logging::MAX_CHAIN_DEPTH;
 
         assert!(exceeds_max_chain_depth(u8::MAX));
         assert!(exceeds_max_chain_depth(MAX_CHAIN_DEPTH));

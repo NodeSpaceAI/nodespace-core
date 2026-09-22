@@ -776,6 +776,10 @@ pub fn run() {
             // Schema read commands (mutation commands removed, not used by UI)
             commands::schemas::get_all_schemas,
             commands::schemas::get_schema_definition,
+            // Methodology recipes (list + install; the install itself lives
+            // in packages/core, reached over the in-process gRPC server)
+            commands::methodology::list_methodologies,
+            commands::methodology::install_methodology,
             // File import commands for bulk markdown import
             commands::import::import_markdown_file,
             commands::import::import_markdown_files,

@@ -242,7 +242,7 @@ nodespace node create --type text --content "Retry budget" --collection docs:rus
 nodespace node update <node-id> --collection docs:rust
 ```
 
-A collection costs the same one flag as a single `tags` array element, so prefer it for any durable grouping: don't add a `tags`/`categories`/`topics`/`labels` field to a schema for something collections already model. Unlike an array value, a collection shows in the UI, is renamed once not per member, nests, and needs no schema change to join — `member_of` is structural, legal between any two nodes undeclared.
+Prefer a collection for any durable grouping: don't add a `tags`/`categories`/`topics`/`labels` field for something collections already model. Unlike an array value, a collection shows in the UI, is renamed once not per member, nests, and needs no schema change to join — `member_of` is structural, legal between any two nodes undeclared.
 
 ### Delete a node, or a whole node type
 
@@ -269,9 +269,10 @@ nodespace conflicts merge --survivor <node-id> --conflict-id <conflict-id>  # co
 
 `merge` is the one irreversible-feeling action here — it archives the losing node and re-points its edges immediately when called. Only call it once the user has confirmed which node should survive; `dismiss` and `adopt` don't touch either node. Full options and output shape in `references/cli.md`.
 
-### Inspect or control a Play automation rule-set
+### Plays and work-tracking setups
 
 A Play is a node, managed with `query`/`node update`; see `references/cli.md`.
+For Linear-style work tracking, follow `references/linear-recipe.md`.
 
 ### Bulk import from markdown
 

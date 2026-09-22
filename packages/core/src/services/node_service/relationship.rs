@@ -471,6 +471,59 @@ impl NodeService {
     /// # Ok(())
     /// # }
     /// ```
+    /// Find `relationship_name` on `schema_id` or any of its `extends`
+    /// ancestors, as a declaration a caller may create an edge under.
+    ///
+    /// The lookup walks the chain because an extending schema inherits its
+    /// ancestors' relationships (ADR-078): `task.blocks` is declared on `task`,
+    /// and an `issue` IS a task, so `blocks` must be creatable from an issue.
+    /// Checking only the node's own type made inherited relationships
+    /// unusable — `create_relationship` rejected them outright, which meant a
+    /// subtype could never participate in an edge its parent declares.
+    async fn resolve_declared_relationship(
+        &self,
+        schema_id: &str,
+        relationship_name: &str,
+    ) -> Result<crate::models::schema::SchemaRelationship, NodeServiceError> {
+        // Hydrated fetch: declarations come from the relationship table via
+        // the one shared store query path (`get_schema_declarations`).
+        let chain = self.resolve_type_chain(schema_id).await?;
+
+        for scope in &chain {
+            let Some(schema_node) = self.get_schema_node(scope).await? else {
+                continue;
+            };
+            if let Some(rel) = schema_node.get_relationship(relationship_name) {
+                return Ok(rel.clone());
+            }
+        }
+
+        // Nearest scope first, so the node's own type is reported even when the
+        // chain is longer — that is the type the caller named.
+        Err(NodeServiceError::invalid_update(format!(
+            "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions, has_role) are universal.",
+            relationship_name, schema_id
+        )))
+    }
+
+    /// Whether `node_type` satisfies a declaration expecting `expected_type` —
+    /// true when they match, or when `expected_type` is an ancestor of
+    /// `node_type` (ADR-078).
+    async fn type_satisfies(
+        &self,
+        node_type: &str,
+        expected_type: &str,
+    ) -> Result<bool, NodeServiceError> {
+        if node_type == expected_type {
+            return Ok(true);
+        }
+        Ok(self
+            .resolve_type_chain(node_type)
+            .await?
+            .iter()
+            .any(|scope| scope == expected_type))
+    }
+
     pub async fn create_relationship(
         &self,
         source_id: &str,
@@ -574,20 +627,9 @@ impl NodeService {
             }
 
             let schema_id = &source.node_type;
-            // Hydrated fetch: declarations come from the relationship table via
-            // the one shared store query path (`get_schema_declarations`).
-            let schema_node = self.get_schema_node(schema_id).await?.ok_or_else(|| {
-                NodeServiceError::query_failed(format!("Schema '{}' not found", schema_id))
-            })?;
-
-            let relationship = schema_node
-                .get_relationship(relationship_name)
-                .ok_or_else(|| {
-                    NodeServiceError::invalid_update(format!(
-                        "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions, has_role) are universal.",
-                        relationship_name, schema_id
-                    ))
-                })?;
+            let relationship = self
+                .resolve_declared_relationship(schema_id, relationship_name)
+                .await?;
 
             declared_reverse_name = Some(relationship.reverse_name.clone());
 
@@ -606,7 +648,15 @@ impl NodeService {
 
             // Validate target node type (skip when target_type is None — accepts any type)
             if let Some(expected_type) = &relationship.target_type {
-                if target.node_type != *expected_type {
+                // A subtype satisfies its ancestor's declared target type
+                // (ADR-078): `task.blocks` targets `task`, and an `issue` IS a
+                // task, so an issue is a legal target. Comparing the concrete
+                // type alone made an inherited relationship undeclarable from
+                // one subtype to another.
+                if !self
+                    .type_satisfies(&target.node_type, expected_type)
+                    .await?
+                {
                     return Err(NodeServiceError::invalid_update(format!(
                         "Target node type '{}' doesn't match expected type '{}' for relationship '{}'",
                         target.node_type, expected_type, relationship_name
@@ -861,18 +911,9 @@ impl NodeService {
             }
 
             let schema_id = &source.node_type;
-            let schema_node = self.get_schema_node(schema_id).await?.ok_or_else(|| {
-                NodeServiceError::query_failed(format!("Schema '{}' not found", schema_id))
-            })?;
-
-            let relationship = schema_node
-                .get_relationship(relationship_name)
-                .ok_or_else(|| {
-                    NodeServiceError::invalid_update(format!(
-                        "Relationship '{}' not defined in schema '{}'. Built-in relationships (member_of, has_child, mentions, has_role) are universal.",
-                        relationship_name, schema_id
-                    ))
-                })?;
+            let relationship = self
+                .resolve_declared_relationship(schema_id, relationship_name)
+                .await?;
 
             declared_reverse_name = Some(relationship.reverse_name.clone());
 
@@ -890,7 +931,15 @@ impl NodeService {
             }
 
             if let Some(expected_type) = &relationship.target_type {
-                if target.node_type != *expected_type {
+                // A subtype satisfies its ancestor's declared target type
+                // (ADR-078): `task.blocks` targets `task`, and an `issue` IS a
+                // task, so an issue is a legal target. Comparing the concrete
+                // type alone made an inherited relationship undeclarable from
+                // one subtype to another.
+                if !self
+                    .type_satisfies(&target.node_type, expected_type)
+                    .await?
+                {
                     return Err(NodeServiceError::invalid_update(format!(
                         "Target node type '{}' doesn't match expected type '{}' for relationship '{}'",
                         target.node_type, expected_type, relationship_name
@@ -1500,14 +1549,27 @@ impl NodeService {
     ) -> Result<Vec<(String, crate::models::schema::SchemaRelationship)>, NodeServiceError> {
         let schemas = self.get_all_schemas().await?;
 
+        // A relationship targeting an ancestor also reaches its descendants
+        // (ADR-078): `task.blocks` targets `task`, and an `issue` IS a task, so
+        // `blocked_by` must resolve on an issue exactly as it does on a task.
+        //
+        // Without this the inheritance is half-real — an `issue` inherits
+        // `task`'s fields and matches `task`-scoped queries, but a relationship
+        // pointing at `task` resolves to nothing from the issue's end. That
+        // asymmetry is invisible at save time (a Play referencing
+        // `node.blocked_by` validates fine) and silently empty at runtime,
+        // which makes a condition over it read as false rather than fail.
+        let scope_chain = self.resolve_type_chain(target_type).await?;
+
         let mut inbound = Vec::new();
         for schema in schemas {
             for relationship in schema.relationships {
-                // Include typed relationships matching this target, and untyped (None) relationships
+                // Include typed relationships matching this target or any of
+                // its ancestors, plus untyped (None) relationships.
                 let matches = relationship
                     .target_type
                     .as_deref()
-                    .map(|t| t == target_type)
+                    .map(|t| scope_chain.iter().any(|scope| scope == t))
                     .unwrap_or(true); // None = untyped, applies to all types
                 if matches {
                     inbound.push((schema.id.clone(), relationship));

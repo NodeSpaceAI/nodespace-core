@@ -566,3 +566,59 @@ fn every_schema_rule_reaches_the_skill() {
         missing.join(", ")
     );
 }
+
+/// Every `bash` block in the generated recipe doc must survive POSIX word
+/// splitting.
+///
+/// The doc exists to be copy-pasted by an external agent, and its Play blocks
+/// embed CEL conditions carrying single-quoted string literals
+/// (`node.status == 'done'`) inside a single-quoted `--params` argument. An
+/// unescaped quote there closes the argument early: the agent gets a mangled
+/// command rather than a parse error it could notice.
+///
+/// Checked against the rendered artifact rather than the generator, because
+/// `--check` only proves the doc matches its source — a broken generator and a
+/// broken doc stay happily in sync. This is what notices that they are both
+/// wrong.
+#[test]
+fn generated_recipe_doc_emits_parseable_shell() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skill/references/linear-recipe.md");
+    let doc = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+
+    let mut blocks = 0;
+    let mut rest = doc.as_str();
+    while let Some(start) = rest.find("```bash\n") {
+        let after = &rest[start + 8..];
+        let Some(end) = after.find("```") else { break };
+        let block = &after[..end];
+        rest = &after[end..];
+        blocks += 1;
+
+        // Join shell line-continuations, then split the whole block the way a
+        // shell would.
+        let joined = block.replace("\\\n", " ");
+        let words = shell_words::split(&joined).unwrap_or_else(|e| {
+            panic!(
+                "generated bash block {blocks} does not parse as a shell command \
+                 ({e}). A CEL string literal's quote is almost certainly \
+                 terminating the surrounding --params argument; see \
+                 `compact_json` in gen_skill_md.rs.\n\n{block}"
+            )
+        });
+
+        assert_eq!(
+            words.first().map(String::as_str),
+            Some("nodespace"),
+            "block {blocks} should invoke nodespace, got {:?}",
+            words.first()
+        );
+    }
+
+    assert!(
+        blocks >= 4,
+        "expected the recipe doc to carry several command blocks, found {blocks} — \
+         if the doc's shape changed, update this test rather than dropping the check"
+    );
+}

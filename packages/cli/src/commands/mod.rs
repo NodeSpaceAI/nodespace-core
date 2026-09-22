@@ -2,6 +2,7 @@ pub mod conflicts;
 pub mod database;
 pub mod diagnostics;
 pub mod import;
+pub mod logs;
 pub mod mcp;
 pub mod mention;
 pub mod model;

@@ -137,6 +137,12 @@ pub enum Command {
     /// Developer diagnostics: database path, size, node counts, schema count,
     /// daemon process memory.
     Diagnostics(commands::diagnostics::DiagnosticsArgs),
+    /// Read the daemon's log — where Play execution errors go.
+    ///
+    /// Engine diagnostics are operational telemetry rather than knowledge, so
+    /// they are logged rather than written into the graph; there is nothing to
+    /// query for them.
+    Logs(commands::logs::LogsArgs),
     /// Import markdown files into NodeSpace.
     Import {
         #[command(subcommand)]
@@ -468,6 +474,9 @@ pub async fn run(cli: Cli) -> Result<()> {
             let mut client = connect(&sock, interceptor).await?;
             commands::query::run(&mut client, args, json).await
         }
+        // No daemon connection: the log is a local file, and the daemon being
+        // down is exactly when it is most worth reading.
+        Command::Logs(args) => commands::logs::run(args, json),
         Command::Diagnostics(args) => {
             let (interceptor, target_id) = resolve_routing(&sock, selection).await?;
             let mut node_client = connect(&sock, interceptor).await?;

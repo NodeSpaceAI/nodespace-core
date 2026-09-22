@@ -13,6 +13,18 @@ use std::sync::Arc;
 
 use crate::playbook::cel::CompiledCondition;
 
+/// Maximum depth for play execution chains (ADR-060 §5).
+///
+/// A Play's actions are themselves graph writes, so they can trigger further
+/// Plays. When `depth + 1 > MAX_CHAIN_DEPTH`, the engine stops processing the
+/// work item and disables the offending play, which is what stops a cycle of
+/// Plays triggering each other from running unbounded.
+///
+/// Enforced in two places: `PlaybookEngine`'s work-item loop, and
+/// `persisted_chain_depth` (`db::events`), which clamps a depth read back off
+/// a node's properties into `0..=MAX_CHAIN_DEPTH` rather than trusting it.
+pub const MAX_CHAIN_DEPTH: u8 = 10;
+
 // ---------------------------------------------------------------------------
 // Trigger types
 // ---------------------------------------------------------------------------
