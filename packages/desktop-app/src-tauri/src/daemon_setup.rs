@@ -943,8 +943,16 @@ pub(crate) fn sidecar_path_from_exe(exe_path: &Path, sidecar_name: &str) -> Opti
     Some(exe_path.parent()?.join(sidecar_name))
 }
 
+/// `pub(crate)` (not just `fn`) so `skill_setup`'s own executable-bit
+/// self-heal for the `nodespace-skill-installer` sidecar (see
+/// `skill_setup::ensure_installer_executable`) can reuse the exact same
+/// chmod logic rather than duplicating it -- the two are guarding the
+/// identical failure mode (a bundled sidecar losing `+x`), just for
+/// sidecars that live in different places at runtime (this module's
+/// `nodespaced`/`nodespace` under `~/.nodespace/bin/`, the skill
+/// installer in place inside the app bundle).
 #[cfg(unix)]
-fn set_executable(path: &Path) -> Result<()> {
+pub(crate) fn set_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut perms = std::fs::metadata(path)
         .with_context(|| format!("Cannot stat {}", path.display()))?
@@ -955,7 +963,7 @@ fn set_executable(path: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn set_executable(_path: &Path) -> Result<()> {
+pub(crate) fn set_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
 
