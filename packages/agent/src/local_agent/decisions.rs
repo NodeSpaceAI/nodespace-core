@@ -178,13 +178,19 @@ pub fn record_schema(candidates: &[String], selected: Option<String>) -> Decisio
 /// **Clearing the score gate is not sufficient**, and an earlier version of
 /// this function took the first gate-clearer, which was wrong. A schema-typed
 /// retrieval hit carries `tools: []` and is pinned by the lexical backstop at a
-/// confidence above any cosine-derived score a real skill can reach, so on
-/// every turn that names a schema outright — which is most of the schema
-/// scenarios in the decision eval, by construction — it sorts first and would
-/// have been recorded as the skill that led the turn. It leads nothing: it
-/// contributes no tool to the offered surface. `routing` owns that predicate
-/// because two consumers already re-derived it and were both wrong the same
-/// way.
+/// confidence above any cosine-derived score a real skill can reach, so on any
+/// turn where that backstop fires it sorts first and would have been recorded
+/// as the skill that led the turn. It leads nothing: it contributes no tool to
+/// the offered surface. `routing` owns that predicate because two consumers
+/// already re-derived it and were both wrong the same way.
+///
+/// The backstop fires on a word-boundary match against a schema's id or display
+/// name, so the exposure is any message naming a type outright — a shape the
+/// decision eval's schema scenarios have by construction. It did not actually
+/// fire in the recorded baseline (0 of 30 skill decisions carried a non-skill
+/// candidate), which is why that baseline did not need re-measuring after this
+/// fix. Reachable-in-principle and observed-in-practice are different claims,
+/// and only the first justifies the guard.
 ///
 /// The tool-less candidate still appears in `candidates`: it was genuinely
 /// retrieved, and "retrieved but contributed nothing" is worth seeing.
@@ -392,6 +398,46 @@ mod tests {
         let strong = skill("Node Creation", 0.80, &["create_node"]);
         let rec = record_skill(&[weak, strong]);
         assert_eq!(rec.selected.as_deref(), Some("Node Creation"));
+    }
+
+    /// The likeliest real shape of the bug this function was corrected for: a
+    /// query naming a schema outright retrieves the schema hit and nothing
+    /// tool-bearing clears alongside it. Distinct from the empty-slice case —
+    /// here retrieval *did* return something, and the turn still falls open to
+    /// the full tool surface because nothing it returned can scope it.
+    #[test]
+    fn all_candidates_tool_less_leads_nothing_but_still_records_them() {
+        let rec = record_skill(&[skill("Company Sold To", 1.0, &[])]);
+        assert_eq!(
+            rec.selected, None,
+            "a turn whose only candidate whitelists no tool has no leading skill"
+        );
+        assert_eq!(
+            rec.candidates,
+            vec!["Company Sold To"],
+            "retrieval did return it, so it stays visible — this is not the \
+             same observation as retrieval returning nothing"
+        );
+    }
+
+    /// Ties resolve to one candidate because `DecisionRecord.selected` has no
+    /// shape for "these two tied". Pins that the answer is one of the tied
+    /// candidates and never a lower-scoring one — `max_by`'s last-maximal rule
+    /// is stable for a given input order but is not a modelled preference, so
+    /// the assertion is on the property that matters rather than on which name
+    /// happens to win.
+    #[test]
+    fn a_tie_records_one_of_the_tied_candidates_never_a_lesser_one() {
+        let rec = record_skill(&[
+            skill("Node Creation", 0.85, &["create_node"]),
+            skill("Graph Editing", 0.85, &["update_node"]),
+            skill("Research", 0.20, &["search_nodes"]),
+        ]);
+        let selected = rec.selected.expect("a tie still has a leader");
+        assert!(
+            selected == "Node Creation" || selected == "Graph Editing",
+            "expected one of the tied top scorers, got {selected}"
+        );
     }
 
     #[test]

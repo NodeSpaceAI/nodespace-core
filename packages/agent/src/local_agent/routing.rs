@@ -383,9 +383,21 @@ pub fn clears_score_gate(candidate: &SkillCandidate) -> bool {
 ///
 /// This narrows the population the max folds over; it does **not** relax the
 /// global-max rule either consumer applies with the result.
+/// Whether a candidate is in the running to lead the turn: it clears its own
+/// blast-radius bar **and** whitelists at least one tool.
+///
+/// The predicate itself, named once. Both consumers below filter on it, and an
+/// earlier revision wrote it out twice — which is the shape this file's own
+/// history warns about, since the rule has already drifted between call sites
+/// three times. A duplicated `&&` looks too cheap to be worth naming and is
+/// exactly what silently diverges.
+fn is_tool_bearing_contender(candidate: &SkillCandidate) -> bool {
+    clears_score_gate(candidate) && !candidate.tools.is_empty()
+}
+
 fn top_tool_bearing_score<'a>(candidates: impl Iterator<Item = &'a SkillCandidate>) -> f32 {
     candidates
-        .filter(|c| clears_score_gate(c) && !c.tools.is_empty())
+        .filter(|c| is_tool_bearing_contender(c))
         .map(|c| c.score)
         .fold(f32::NEG_INFINITY, f32::max)
 }
@@ -410,10 +422,20 @@ fn top_tool_bearing_score<'a>(candidates: impl Iterator<Item = &'a SkillCandidat
 /// [`top_tool_bearing_score`] gives — callers do sort by score descending, but
 /// a rule about which candidate leads should not depend on another function's
 /// ordering staying that way.
+///
+/// **Ties differ from [`top_tool_bearing_score`], deliberately.** That function
+/// returns a *score*, and its consumers admit every candidate matching it
+/// (`c.score >= top_score`), so tied candidates all contribute — see
+/// `declare_write_tool_fields_unions_tied_top_scoring_candidates`. This returns
+/// *one* candidate, because its consumer records a single name: `DecisionRecord`
+/// has no shape for "these two tied". On a tie `max_by` yields the last maximal
+/// element, so the answer is stable for a given input order but is not a
+/// modelled preference between equals. Do not use this where the union matters;
+/// use [`top_tool_bearing_score`] and compare against it.
 pub fn leading_tool_bearing_candidate(candidates: &[SkillCandidate]) -> Option<&SkillCandidate> {
     candidates
         .iter()
-        .filter(|c| clears_score_gate(c) && !c.tools.is_empty())
+        .filter(|c| is_tool_bearing_contender(c))
         .max_by(|a, b| a.score.total_cmp(&b.score))
 }
 
