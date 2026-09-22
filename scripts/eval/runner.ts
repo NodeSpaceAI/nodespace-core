@@ -25,6 +25,7 @@ import {
   EXIT_USAGE,
 } from "./preflight.ts";
 import type {
+  DecisionRecord,
   EvalFixture,
   EvalResults,
   GuidanceProvenance,
@@ -118,6 +119,47 @@ function runTurn(env: EvalEnv, chatId: string, message: string): TurnRecord {
 }
 
 /**
+ * Parse the `[decision ...]` markers for one turn, in round order.
+ *
+ * Returns `undefined` rather than `[]` when no marker is present, so a results
+ * file from a build predating the markers stays distinguishable from a turn that
+ * genuinely made no decision — the same "absent is not false" rule
+ * `stage2CandidatesInjected` follows.
+ *
+ * `candidates=` runs to end of line because the value is a comma-separated list
+ * of names that tracing emits unquoted; `selected=` is matched as a
+ * non-whitespace run for the same reason it can be, being a single identifier.
+ * Anchored to line start like every other marker here: `out` carries arbitrary
+ * raw model text via `[raw]` lines, and the model narrating a marker-shaped
+ * string must not be read as the harness's own signal.
+ */
+function parseDecisions(out: string): DecisionRecord[] | undefined {
+  const rows = [
+    ...out.matchAll(
+      // `selected` is matched up to the ` [off-menu]` flag or ` candidates=`,
+      // NOT as a non-whitespace run: skill names contain spaces ("Schema
+      // Creation"), so `\S*?` silently truncated them to the first word. Tool
+      // names and type ids never contain spaces, which is why this only
+      // surfaced once skill routing was recorded.
+      /^\[decision (skill|schema|operation)\] selected=(.*?)( \[off-menu\])? candidates=(.*)$/gm,
+    ),
+  ];
+  if (rows.length === 0) return undefined;
+  return rows.map((m) => ({
+    kind: m[1] as "skill" | "schema" | "operation",
+    // `none` is the marker's rendering of "offered options, picked nothing".
+    // It round-trips back to null rather than the literal string, so a scorer
+    // never has to know the wire spelling.
+    selected: m[2] === "none" ? null : m[2],
+    offMenu: m[3] !== undefined,
+    candidates: m[4]
+      .split(",")
+      .map((c) => c.trim())
+      .filter((c) => c.length > 0),
+  }));
+}
+
+/**
  * Parse aichat.ts's stdout for one turn into a `TurnRecord`.
  *
  * Split out from `runTurn` so this — the actual marker-parsing logic, where
@@ -192,6 +234,11 @@ export function parseTurnOutput(out: string, latencyMs: number): TurnRecord {
     rawOutput,
     emptyGeneration:
       out.match(/^\[empty-generation\]$/m) !== null || undefined,
+    decisions: parseDecisions(out),
+    routingMs: (() => {
+      const m = out.match(/^\[routing ms\] (\d+)/m);
+      return m ? Number(m[1]) : undefined;
+    })(),
   };
 }
 

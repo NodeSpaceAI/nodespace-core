@@ -210,6 +210,15 @@ export function formatTurnLogLines(slice: string): string[] {
     // on the line for exactly that reason. A quoted-only pattern silently
     // matched nothing and put this marker right back in the state the dead
     // `scoped tool list` scrape was in.
+    // Wall-clock spent on Stage 1 alone: one generative pass whose entire
+    // output is a structural choice among three routing tools. Captured
+    // separately from the turn's total because it is the cost of *deciding*
+    // rather than of answering, and the two are the terms of any
+    // decision-model comparison — a replacement that is more accurate but no
+    // cheaper, or cheaper but less accurate, are different propositions and a
+    // single turn-level number cannot tell them apart.
+    const routingMs = routingLine.match(/routing_latency_ms=(\d+)/)?.[1];
+    if (routingMs) out.push(`[routing ms] ${routingMs}`);
     const skills = routingLine.match(/routed_skills="?(.*?)"?$/)?.[1]?.trim();
     if (skills) out.push(`[routed skills] ${skills}`);
   }
@@ -241,6 +250,38 @@ export function formatTurnLogLines(slice: string): string[] {
         // trust.
       }
     }
+  }
+  // The two named decisions per ReAct iteration (agent_loop.rs's "Agent
+  // decision: ..." lines, via local_agent::decisions). Each carries the
+  // candidate set alongside the outcome, because an outcome alone is not
+  // scoreable: whether calling `search_nodes` was right depends on what else
+  // was on offer that turn.
+  //
+  // `decision_candidates` is matched to END OF LINE for the same reason
+  // `routed_skills` is — tracing leaves the value unquoted, and a
+  // comma-separated list of names cannot be delimited by anything shorter than
+  // the line end. agent_loop.rs emits it last on the line for that reason, so
+  // the two fields read before it are safe to match normally.
+  for (const l of lines.filter((l) => l.includes("Agent decision:"))) {
+    const kind = l.match(/decision="?(skill|schema|operation)"?/)?.[1];
+    if (!kind) continue;
+    // Quoted form first: tracing quotes a string field when it contains a
+    // space, and skill names do ("Schema Creation"). An unquoted-only pattern
+    // truncated `selected` to its first word — invisible for tool names and
+    // type ids, which never contain spaces, and wrong for every skill.
+    const selected =
+      l.match(/decision_selected="([^"]*)"/)?.[1] ??
+      l.match(/decision_selected=(\S*)/)?.[1] ??
+      "";
+    const offMenu = /decision_off_menu=true/.test(l) ? " [off-menu]" : "";
+    const candidates = l.match(/decision_candidates="?(.*?)"?$/)?.[1]?.trim() ?? "";
+    // An empty `selected` is a real outcome (the model was offered tools and
+    // called none — ADR-056's Scenario 6 shape), so it is rendered as an
+    // explicit `none` rather than omitted. Dropping the marker would make that
+    // failure indistinguishable from a turn this scrape could not parse.
+    out.push(
+      `[decision ${kind}] selected=${selected || "none"}${offMenu} candidates=${candidates}`,
+    );
   }
   for (const l of lines.filter((l) => l.includes("Tool executed"))) {
     const tool = l.match(/tool="?([a-z_]+)"?/)?.[1] ?? "?";

@@ -35,6 +35,7 @@
     "chat": "bun run scripts/aichat.ts",
     "eval:routing": "bun run scripts/eval/routing.ts",
     "eval:agent": "bun run scripts/eval/agent-matrix.ts",
+    "eval:decisions": "bun run scripts/eval/decisions.ts",
     "prompt:dump": "bun run scripts/prompt-dump.ts",
     "build:sidecars": "bun run scripts/build-sidecars.ts",
     "build:macos": "bun run scripts/build-macos.ts",
