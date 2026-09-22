@@ -20,6 +20,7 @@ use crate::agent_types::{
     ChatModelSpec, InferenceError, InferenceRequest, InferenceUsage, LocalAgentStatus, Role,
     StreamingChunk, ToolCallRaw, ToolExecutionRecord,
 };
+use crate::local_agent::decisions;
 use crate::local_agent::otlp_tracer::TRACER_NAME;
 use crate::local_agent::prompt_templates;
 use crate::local_agent::response_processing::{normalize_response, normalize_response_traced};
@@ -1997,6 +1998,59 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 response_preview_truncated,
                 "Agent loop: inference round completed"
             );
+
+            // The two selections this round made, recorded as named decisions
+            // rather than left implicit in the tool call. Neither line gates or
+            // changes anything — they exist so the decisions can be scored on
+            // their own, which end-to-end scenario pass/fail cannot do (ADR-056
+            // records that those scores "describe the harness as much as the
+            // model"). See `super::decisions` for why the candidate set is
+            // recorded alongside the outcome.
+            {
+                let called: Vec<String> = tool_calls
+                    .iter()
+                    .map(|tc| tc.function_name.clone())
+                    .collect();
+                let offered: Vec<String> = tools.iter().map(|t| t.name.clone()).collect();
+                let op = decisions::record_operation(&offered, &called);
+                tracing::info!(
+                    iteration,
+                    decision = op.kind.as_str(),
+                    decision_candidates = %op.candidates_field(),
+                    decision_selected = op.selected.as_deref().unwrap_or(""),
+                    decision_off_menu = op.selected_off_menu(),
+                    "Agent decision: operation selected"
+                );
+
+                // Read from the same retrieved metadata the Stage-2 block
+                // renders, so the recorded candidate set is what the model was
+                // shown rather than a second derivation that could drift.
+                let schema_candidates = decisions::schema_candidates(&routed.candidates);
+                // Only the first call's type is scored, matching the operation
+                // record: one round is one decision about where to start.
+                let selected_type = tool_calls
+                    .first()
+                    .and_then(|tc| {
+                        serde_json::from_str::<serde_json::Value>(&tc.arguments_json)
+                            .ok()
+                            .map(|args| (tc.function_name.clone(), args))
+                    })
+                    .and_then(|(name, args)| decisions::selected_schema(&name, &args));
+                // A turn with neither candidates nor a selection made no schema
+                // decision at all; recording one would put a null in the
+                // denominator of every accuracy figure computed from this.
+                if !schema_candidates.is_empty() || selected_type.is_some() {
+                    let sc = decisions::record_schema(&schema_candidates, selected_type);
+                    tracing::info!(
+                        iteration,
+                        decision = sc.kind.as_str(),
+                        decision_candidates = %sc.candidates_field(),
+                        decision_selected = sc.selected.as_deref().unwrap_or(""),
+                        decision_off_menu = sc.selected_off_menu(),
+                        "Agent decision: schema selected"
+                    );
+                }
+            }
             // Full, untruncated generation — deliberately `debug`, not `info`, so
             // production's default log level is unaffected and this exists only
             // when explicitly requested (`RUST_LOG=debug`). Every false eval
