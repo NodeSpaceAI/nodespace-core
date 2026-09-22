@@ -210,12 +210,12 @@ describe("GitHubClient project-board membership", () => {
 // invocation and a search-index eventual-consistency race -- exactly the
 // class of bug a small, unit-tested function should catch before merge.
 describe("NodeSpaceGitHubManager.findOrCreateTrackingIssue", () => {
-  function makeStubClient(openIssues: Array<{ number: number; title: string }>) {
+  function makeStubClient(issues: Array<{ number: number; title: string; state?: string }>) {
     const listIssues = mock(async (_options: { state?: string }) =>
-      openIssues.map((issue) => ({
+      issues.map((issue) => ({
         number: issue.number,
         title: issue.title,
-        state: "open",
+        state: issue.state ?? "open",
         assignees: [],
         labels: [],
         body: "",
@@ -311,5 +311,85 @@ describe("NodeSpaceGitHubManager.findOrCreateTrackingIssue", () => {
     expect(result.number).toBe(102);
     expect(addPRComment).toHaveBeenCalledWith(102, "Run: https://example.test/run/4");
     expect(createIssue).not.toHaveBeenCalled();
+  });
+
+  // Defense in depth: findOrCreateTrackingIssue asks GitHubClient#listIssues
+  // for state: "open" and additionally checks issue.state === "open" itself
+  // before matching. This covers that second check independently of the
+  // server-side filter -- a closed issue with a matching title must never
+  // be mistaken for the tracking issue to comment on, even if something
+  // upstream (a stubbed/mocked client in a future test, a future API
+  // contract change) ever returns one despite the open-only request.
+  test("never matches a closed issue even if one with the same title is present", async () => {
+    const { client, addPRComment, createIssue } = makeStubClient([
+      { number: 100, title: "macOS .pkg installer fails live Gatekeeper assessment", state: "closed" },
+    ]);
+    const manager = new NodeSpaceGitHubManager(client);
+
+    const result = await manager.findOrCreateTrackingIssue({
+      title: "macOS .pkg installer fails live Gatekeeper assessment",
+      body: "Run: https://example.test/run/5",
+    });
+
+    expect(addPRComment).not.toHaveBeenCalled();
+    expect(createIssue).toHaveBeenCalledTimes(1);
+    expect(result.action).toBe("created");
+  });
+});
+
+// Covers GitHubClient.listIssues directly (stubbed octokit, same pattern as
+// the "GitHubClient project-board membership" suite above): pagination and
+// pull-request filtering, both load-bearing for
+// NodeSpaceGitHubManager.findOrCreateTrackingIssue's exact-title dedup —
+// an unpaginated call could silently miss an older still-open tracking
+// issue past the first page, and an unfiltered one could match an open
+// PR's title instead of a real issue's.
+describe("GitHubClient.listIssues", () => {
+  function makeClientWithStubbedOctokit(pages: Array<Array<Record<string, unknown>>>) {
+    let call = 0;
+    const listForRepo = mock(async () => {
+      const data = pages[call] ?? [];
+      call += 1;
+      return { data };
+    });
+    // octokit.paginate walks listForRepo's pages itself in production; the
+    // stub here just concatenates every configured page, which is the
+    // observable contract this test cares about (paginate calling the
+    // route repeatedly and flattening the results).
+    const paginate = mock(async () => pages.flat());
+
+    const client = new GitHubClient("stub-token");
+    (client as unknown as { octokit: unknown }).octokit = {
+      paginate,
+      rest: { issues: { listForRepo } },
+    };
+
+    return { client, paginate, listForRepo };
+  }
+
+  test("returns issues spanning more than one page", async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => ({ number: i + 1, title: `Issue ${i + 1}`, state: "open" }));
+    const page2 = [{ number: 101, title: "Issue 101 (past the first page)", state: "open" }];
+    const { client, paginate } = makeClientWithStubbedOctokit([page1, page2]);
+
+    const issues = await client.listIssues({ state: "open" });
+
+    expect(paginate).toHaveBeenCalledTimes(1);
+    expect(issues).toHaveLength(101);
+    expect(issues.map((i) => i.number)).toContain(101);
+  });
+
+  test("filters out pull requests, which the underlying endpoint returns mixed in with issues", async () => {
+    const { client } = makeClientWithStubbedOctokit([
+      [
+        { number: 1, title: "A real issue", state: "open" },
+        { number: 2, title: "An open PR with a coincidentally matching title", state: "open", pull_request: {} },
+      ],
+    ]);
+
+    const issues = await client.listIssues({ state: "open" });
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0].number).toBe(1);
   });
 });

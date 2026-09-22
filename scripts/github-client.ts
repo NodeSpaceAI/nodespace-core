@@ -420,16 +420,33 @@ export class GitHubClient {
       params.assignee = options.assignee;
     }
 
-    const response = await this.octokit.rest.issues.listForRepo(params);
-    
-    return response.data.map(issue => ({
-      number: issue.number,
-      title: issue.title,
-      state: issue.state,
-      assignees: issue.assignees?.map(a => ({ login: a.login })) || [],
-      labels: issue.labels?.map(l => ({ name: (typeof l === 'string' ? l : l.name) || "" })) || [],
-      body: issue.body || ""
-    }));
+    // Paginated (not a single 100-item page): a caller doing exact-title
+    // dedup against "every open issue" (findOrCreateTrackingIssue) must not
+    // silently miss a match past the first page once the repo has more
+    // open issues than that -- the hand-rolled `gh issue list` this
+    // replaced used `--limit 200` specifically to stay ahead of the real
+    // count, and a narrower cap here would reintroduce the same
+    // duplicate-tracking-issue risk that helper exists to prevent.
+    const data = await this.octokit.paginate(this.octokit.rest.issues.listForRepo, params);
+
+    // The REST "list issues" endpoint returns pull requests mixed in with
+    // real issues (GitHub represents every PR as an issue under the hood);
+    // an issue-only caller must filter them out itself, keyed on the
+    // `pull_request` field only a PR carries. `gh issue list` (what this
+    // client replaced) already excludes PRs, so this keeps the same
+    // contract -- without it, an open PR whose title happens to match an
+    // issue title could be mistaken for that issue by an exact-title match
+    // (e.g. findOrCreateTrackingIssue).
+    return data
+      .filter(issue => !("pull_request" in issue))
+      .map(issue => ({
+        number: issue.number,
+        title: issue.title,
+        state: issue.state,
+        assignees: issue.assignees?.map(a => ({ login: a.login })) || [],
+        labels: issue.labels?.map(l => ({ name: (typeof l === 'string' ? l : l.name) || "" })) || [],
+        body: issue.body || ""
+      }));
   }
 
   /**

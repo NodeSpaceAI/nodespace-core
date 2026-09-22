@@ -38,6 +38,7 @@ jobs:
   drift-check:
     name: bun run homebrew:drift-check (cask)
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
     # Serializes overlapping runs of this job (the daily schedule landing
     # near a manual workflow_dispatch, or two dispatches close together) so
     # the tracking-issue dedup lookup in the failure step never races two
@@ -45,7 +46,10 @@ jobs:
     # duplicate -- same reasoning as verify-macos-installer.yml. Scoped to
     # this job only (not shared with formula-drift-check below): the two
     # checks are deliberately independent, and one's transient failure must
-    # not block the other's run.
+    # not block the other's run. `timeout-minutes` bounds how long a hung
+    # run can occupy this concurrency slot -- without it, cancel-in-progress:
+    # false means a wedged run (network stall, hung `bun install`) would
+    # otherwise queue every later scheduled run behind it indefinitely.
     concurrency:
       group: homebrew-drift-check-cask
       cancel-in-progress: false
@@ -57,6 +61,15 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.11"
+
+      # Unconditional (not gated on failure): the tracking-issue dedup
+      # helper (bun run gh:tracking-issue, below) needs node_modules
+      # (@octokit/rest) and only runs in the failure path -- if this were
+      # also `if: failure()`, a broken install would fail silently right
+      # when the workflow most needs to report loud. Running it here means
+      # a broken install shows up as an ordinary red step on every run.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
       - name: Check tap cask version against latest release
         id: drift
@@ -72,10 +85,6 @@ jobs:
         run: bun run homebrew:drift-check 2>&1 | tee drift-output.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install dependencies (needed for the tracking-issue dedup helper)
-        if: failure()
-        run: bun install --frozen-lockfile
 
       - name: Open (or update) an issue on failure (loud, with the actual message)
         if: failure()
@@ -115,8 +124,10 @@ jobs:
   formula-drift-check:
     name: bun run homebrew:formula-drift-check (nodespace-cli)
     runs-on: ubuntu-22.04
-    # Same per-job serialization as drift-check above, scoped separately so
-    # the two independent checks never block each other.
+    timeout-minutes: 10
+    # Same per-job serialization (and timeout-minutes, for the same
+    # hung-run-blocks-every-later-run reason) as drift-check above, scoped
+    # separately so the two independent checks never block each other.
     concurrency:
       group: homebrew-drift-check-formula
       cancel-in-progress: false
@@ -129,6 +140,10 @@ jobs:
         with:
           bun-version: "1.3.11"
 
+      # Same unconditional install as the cask job above -- see its comment.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
       - name: Check tap nodespace-cli formula version against latest release
         id: drift
         # Same tee'd-to-a-file / `shell: bash` reasoning as the cask check
@@ -138,10 +153,6 @@ jobs:
         run: bun run homebrew:formula-drift-check 2>&1 | tee drift-output.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install dependencies (needed for the tracking-issue dedup helper)
-        if: failure()
-        run: bun install --frozen-lockfile
 
       - name: Open (or update) an issue on failure (loud, with the actual message)
         if: failure()

@@ -341,7 +341,13 @@ class NodeSpaceGitHubManager {
     labels?: string[];
   }): Promise<{ number: number; url: string; action: "commented" | "created" }> {
     const openIssues = await this.client.listIssues({ state: "open" });
-    const existing = openIssues.find((issue) => issue.title === options.title);
+    // `issue.state === "open"` is checked again here, redundantly with the
+    // `{ state: "open" }` request above -- defense in depth against ever
+    // matching a closed issue (and silently absorbing a comment into it
+    // instead of filing a fresh one) if that server-side filter is ever
+    // loosened, mocked incorrectly in a future test, or an API contract
+    // changes out from under this call.
+    const existing = openIssues.find((issue) => issue.state === "open" && issue.title === options.title);
 
     if (existing) {
       const comment = await this.client.addPRComment(existing.number, options.body);
@@ -358,6 +364,39 @@ class NodeSpaceGitHubManager {
 }
 
 // CLI Interface
+
+// Shared --body / --body-file parsing for the CLI cases below
+// (issues:create, issues:comment/pr:comment, tracking-issue:find-or-create).
+// Prefers --body when both are given, matching each call site's previous
+// behavior. Returns undefined only when NEITHER flag is present -- an
+// explicit `--body ""` is returned as `""`, not treated as absent.
+//
+// Each call site used to re-implement this with `args[bodyIndex + 1]`
+// truthiness checks, which conflate "the flag wasn't given" with "the flag
+// was given an empty string": for issues:comment/pr:comment specifically,
+// that meant an explicit `--body ""` fell through to that case's own
+// positional-arg fallback and silently picked up a stale `args[2]` value
+// instead of honoring the empty override.
+async function parseBodyArg(args: string[]): Promise<string | undefined> {
+  const bodyIndex = args.indexOf("--body");
+  const bodyFileIndex = args.indexOf("--body-file");
+
+  if (bodyIndex !== -1 && args[bodyIndex + 1] !== undefined) {
+    return args[bodyIndex + 1];
+  }
+
+  if (bodyFileIndex !== -1 && args[bodyFileIndex + 1] !== undefined) {
+    try {
+      return await Bun.file(args[bodyFileIndex + 1]).text();
+    } catch (error: unknown) {
+      console.error(`❌ Failed to read body file: ${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  }
+
+  return undefined;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
@@ -417,8 +456,6 @@ async function main() {
         if (hasNamedFlags) {
           // Named flags mode
           const titleIndex = args.indexOf("--title");
-          const bodyIndex = args.indexOf("--body");
-          const bodyFileIndex = args.indexOf("--body-file");
           const labelsIndex = args.indexOf("--labels");
           const assigneesIndex = args.indexOf("--assignees");
 
@@ -426,17 +463,9 @@ async function main() {
             title = args[titleIndex + 1];
           }
 
-          if (bodyIndex !== -1 && args[bodyIndex + 1]) {
-            body = args[bodyIndex + 1];
-          } else if (bodyFileIndex !== -1 && args[bodyFileIndex + 1]) {
-            // Read body from file
-            const bodyFilePath = args[bodyFileIndex + 1];
-            try {
-              body = await Bun.file(bodyFilePath).text();
-            } catch (error: unknown) {
-              console.error(`❌ Failed to read body file: ${error instanceof Error ? error.message : String(error)}`);
-              process.exit(1);
-            }
+          const parsedBody = await parseBodyArg(args);
+          if (parsedBody !== undefined) {
+            body = parsedBody;
           }
 
           if (labelsIndex !== -1 && args[labelsIndex + 1]) {
@@ -576,26 +605,10 @@ async function main() {
       case "issues:comment":
       case "pr:comment": {
         const issueNumber = parseInt(args[1]);
-        let body = "";
-
-        // Support both --body flag and direct string
-        const bodyIndex = args.indexOf("--body");
-        const bodyFileIndex = args.indexOf("--body-file");
-
-        if (bodyIndex !== -1 && args[bodyIndex + 1]) {
-          body = args[bodyIndex + 1];
-        } else if (bodyFileIndex !== -1 && args[bodyFileIndex + 1]) {
-          // Read from file
-          try {
-            body = await Bun.file(args[bodyFileIndex + 1]).text();
-          } catch (error: unknown) {
-            console.error(`❌ Failed to read body file: ${error instanceof Error ? error.message : String(error)}`);
-            process.exit(1);
-          }
-        } else if (args[2]) {
-          // Backward compatibility: direct string as second arg
-          body = args[2];
-        }
+        const parsedBody = await parseBodyArg(args);
+        // Backward compatibility: a direct string as the second positional
+        // arg, only when neither --body nor --body-file was given.
+        const body = parsedBody !== undefined ? parsedBody : args[2] || "";
 
         if (!issueNumber || !body) {
           console.error('Usage:');
@@ -611,23 +624,10 @@ async function main() {
 
       case "tracking-issue:find-or-create": {
         const titleIndex = args.indexOf("--title");
-        const bodyIndex = args.indexOf("--body");
-        const bodyFileIndex = args.indexOf("--body-file");
         const labelsIndex = args.indexOf("--labels");
 
         const title = titleIndex !== -1 ? args[titleIndex + 1] : undefined;
-
-        let body: string | undefined;
-        if (bodyIndex !== -1 && args[bodyIndex + 1]) {
-          body = args[bodyIndex + 1];
-        } else if (bodyFileIndex !== -1 && args[bodyFileIndex + 1]) {
-          try {
-            body = await Bun.file(args[bodyFileIndex + 1]).text();
-          } catch (error: unknown) {
-            console.error(`❌ Failed to read body file: ${error instanceof Error ? error.message : String(error)}`);
-            process.exit(1);
-          }
-        }
+        const body = await parseBodyArg(args);
 
         const labels =
           labelsIndex !== -1 && args[labelsIndex + 1]

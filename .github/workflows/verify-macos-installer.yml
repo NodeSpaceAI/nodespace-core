@@ -55,6 +55,18 @@ jobs:
         with:
           bun-version: "1.3.11"
 
+      # Unconditional (not gated on failure): the tracking-issue dedup
+      # helper (bun run gh:tracking-issue, below) needs node_modules
+      # (@octokit/rest) and only runs in the failure path -- if this were
+      # also `if: failure()`, a broken install would fail silently right
+      # when the workflow most needs to report loud, since the failure
+      # step would itself then fail with no tracking issue filed. Running
+      # it here instead means a broken install shows up as an ordinary red
+      # step on every run, not just a meta-failure hidden inside the one
+      # case this workflow exists to catch.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
       - name: Re-assess the published .pkg against live Gatekeeper
         id: verify
         # tee'd to a file so the failure step can quote the actual spctl
@@ -69,10 +81,6 @@ jobs:
         run: bun run pkg:verify-gatekeeper 2>&1 | tee gatekeeper-output.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Install dependencies (needed for the tracking-issue dedup helper)
-        if: failure()
-        run: bun install --frozen-lockfile
 
       - name: Open (or update) an issue on failure (loud, with the actual message)
         if: failure()
