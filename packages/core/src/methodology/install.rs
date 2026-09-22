@@ -310,8 +310,8 @@ fn rename_note(renames: &HashMap<String, String>) -> Option<String> {
     let mut note = String::from(
         "\n\n## Type names in this workspace\n\n\
          Some names this guidance uses were already taken when the methodology \
-         was installed, so the types were created under different ones. Where \
-         the text above says the first name, use the second:\n\n",
+         was installed, so the types were created under different ones. \
+         Wherever this skill names the first, use the second:\n\n",
     );
     for (requested, created) in pairs {
         note.push_str(&format!("- `{requested}` → `{created}`\n"));

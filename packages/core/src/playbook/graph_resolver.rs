@@ -405,14 +405,28 @@ impl GraphResolver {
         let Some(source_type) = source_type else {
             return Ok(nodes);
         };
+        //
+        // Memoized per node_type rather than per node: a traversal commonly
+        // returns many nodes of one type, and the chain is a property of the
+        // type, so resolving it once per distinct type is the same answer for
+        // a fraction of the queries.
+        let mut verdict: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
         let mut kept = Vec::with_capacity(nodes.len());
         for n in nodes {
-            let chain = self
-                .node_service
-                .resolve_type_chain(&n.node_type)
-                .await
-                .map_err(|e| e.to_string())?;
-            if chain.contains(&source_type) {
+            let satisfies = match verdict.get(&n.node_type) {
+                Some(known) => *known,
+                None => {
+                    let chain = self
+                        .node_service
+                        .resolve_type_chain(&n.node_type)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    let answer = chain.contains(&source_type);
+                    verdict.insert(n.node_type.clone(), answer);
+                    answer
+                }
+            };
+            if satisfies {
                 kept.push(n);
             }
         }

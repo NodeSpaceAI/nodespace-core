@@ -606,13 +606,33 @@ pub async fn get_node_relationships(
         if BUILTIN_RELATIONSHIP_NAMES.contains(&rel.name.as_str()) {
             continue;
         }
-        let mut related = collect_related(node_service, node_id, &rel.name, "in").await?;
+        let related = collect_related(node_service, node_id, &rel.name, "in").await?;
         // The "in" query keys only on relationship_type; two schemas can declare
         // the same relationship name targeting this type, so restrict this group
         // to nodes of the declaring source type — otherwise e.g. `task` and `bug`
         // both declaring `assigned_to → person` would each surface the other's
         // edges under the wrong group and double the count.
-        related.retain(|r| r.node_type == source_type);
+        //
+        // Matched against each node's ancestor chain rather than by equality:
+        // `task.blocks` declares its reverse toward `task`, so an `issue` on
+        // the far end IS a valid member of that group (ADR-078). An exact
+        // comparison silently dropped every subtype instance, which rendered
+        // as a confident "0" rather than as a visibly missing group.
+        //
+        // Resolved per node rather than once for the declarer, because the
+        // question is "is THIS node a `source_type`" — the answer depends on
+        // the node's own chain, not the declarer's descendants.
+        let mut kept = Vec::with_capacity(related.len());
+        for r in related {
+            let chain = node_service
+                .resolve_type_chain(&r.node_type)
+                .await
+                .map_err(|e| OpsError::Internal(format!("Failed to resolve type chain: {e}")))?;
+            if chain.contains(&source_type) {
+                kept.push(r);
+            }
+        }
+        let related = kept;
         // Emit the group even with no edges yet — symmetric with the outbound
         // branch above — so a type reached only through a derived inbound
         // relationship (e.g. `task`, whose `project` link is declared outbound on
