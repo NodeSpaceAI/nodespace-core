@@ -79,6 +79,30 @@ chmod 755 "${INSTALL_PREFIX}/nodespaced" || true
 chown root:wheel "${INSTALL_PREFIX}/nodespace" || true
 chown root:wheel "${INSTALL_PREFIX}/nodespaced" || true
 
+# The .app bundle's own executables (NodeSpace itself, plus the externalBin
+# sidecars staged beside it -- nodespace-skill-installer and any other
+# bundled binaries) get the same install-time defense-in-depth as the two
+# CLI binaries above. build-pkg.sh already chmods these before packaging
+# (see its own comment), but this postinstall-time chmod is a second,
+# independent line of defense against the executable bit being lost
+# somewhere between that build step and the actual install on the user's
+# machine -- the same reasoning build-pkg.sh's own chmod already applies to
+# itself relative to the CI artifact round-trip.
+#
+# nullglob so a missing or empty Contents/MacOS (never expected -- the .app
+# always ships with its own executable at minimum -- but not otherwise
+# diagnosed here) skips the chmod instead of passing a literal, unmatched
+# glob pattern to it.
+APP_MACOS_DIR="/Applications/NodeSpace.app/Contents/MacOS"
+if [[ -d "${APP_MACOS_DIR}" ]]; then
+    shopt -s nullglob
+    APP_MACOS_BINS=("${APP_MACOS_DIR}/"*)
+    shopt -u nullglob
+    if [[ ${#APP_MACOS_BINS[@]} -gt 0 ]]; then
+        chmod 755 "${APP_MACOS_BINS[@]}" || true
+    fi
+fi
+
 # ---------------------------------------------------------------------------
 # LaunchAgent: load the service for the current (GUI) user.
 # The plist was installed to /Library/LaunchAgents/ so it applies to all

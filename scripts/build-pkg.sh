@@ -132,6 +132,7 @@ cp "${PKG_RESOURCES}/app.nodespace.daemon.plist" \
 chmod 755 "${PAYLOAD_ROOT}/usr/local/bin/nodespace"
 chmod 755 "${PAYLOAD_ROOT}/usr/local/bin/nodespaced"
 
+# --- BEGIN macos-chmod (verified by scripts/build-pkg-macos-chmod.test.ts) ---
 # The upload-artifact/download-artifact round-trip that hands TAURI_APP_PATH
 # between CI jobs does not reliably preserve the Unix executable bit, so the
 # binaries inside the copied .app bundle can silently lose +x before they
@@ -147,7 +148,23 @@ chmod 755 "${PAYLOAD_ROOT}/usr/local/bin/nodespaced"
 # binaries are executable before packaging. Restore it explicitly on just the
 # executables — never recursively on the whole bundle, which would also touch
 # Info.plist/resources/etc.
-chmod 755 "${PAYLOAD_ROOT}/Applications/NodeSpace.app/Contents/MacOS/"*
+#
+# shopt/nullglob + explicit empty-check first, matching the pattern
+# release.yml's verify_layout() already uses for this exact same glob: not
+# reachable today given the current externalBin config (always exactly 3
+# external binaries plus the app's own executable), but without this an
+# empty Contents/MacOS would leave the glob unexpanded and hand chmod the
+# literal, unmatched pattern — a confusing raw BSD-glob "No such file or
+# directory" instead of a clear diagnostic naming the actual problem.
+shopt -s nullglob
+macos_bins=("${PAYLOAD_ROOT}/Applications/NodeSpace.app/Contents/MacOS/"*)
+shopt -u nullglob
+if [[ ${#macos_bins[@]} -eq 0 ]]; then
+    echo "error: ${PAYLOAD_ROOT}/Applications/NodeSpace.app/Contents/MacOS has no files to chmod" >&2
+    exit 1
+fi
+chmod 755 "${macos_bins[@]}"
+# --- END macos-chmod ---
 
 # ---------------------------------------------------------------------------
 # Build component package

@@ -20,6 +20,13 @@
 //! compile step, or a platform this hasn't been wired up for yet. See
 //! `resolve_installer_path`.
 //!
+//! Before the compiled binary is invoked, [`resolve_compiled_installer_path`]
+//! checks (and self-heals, via [`ensure_installer_executable`]) that it still
+//! carries the executable bit a build-time chmod or artifact round-trip
+//! could otherwise silently strip — mirroring the runtime self-heal
+//! `daemon_setup::extract_sidecar_if_changed` already does for the
+//! `nodespaced`/`nodespace` sidecars.
+//!
 //! Also verifies that the `nodespace` CLI is resolvable on $PATH and emits a
 //! warning if not (the skill is useless until the CLI is installed).
 //!
@@ -575,7 +582,7 @@ enum Installer {
 /// Resolve which [`Installer`] to use: the compiled standalone binary if
 /// it's available for this platform/build, the plain JS script otherwise.
 fn resolve_installer<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Installer, String> {
-    if let Some((binary, resource_root)) = resolve_compiled_installer_path(app) {
+    if let Some((binary, resource_root)) = resolve_compiled_installer_path(app)? {
         return Ok(Installer::Compiled {
             binary,
             resource_root,
@@ -590,31 +597,119 @@ fn resolve_installer<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<Installer,
 /// `daemon_setup::sidecar_path_from_exe`'s doc comment for why sidecars land
 /// beside the running executable rather than under a Resources tree) — plus
 /// the resource root it needs (`SKILL.md`/`shims`/`references`, staged the
-/// same place `dist/install.js` already was). Returns `None` when either
-/// piece is missing, e.g. a platform this hasn't been wired up for yet, or a
-/// dev/source checkout that hasn't run the compile step — the caller falls
-/// through to [`Installer::Script`] in that case.
+/// same place `dist/install.js` already was).
+///
+/// `Ok(None)` when the compiled binary or resource root is simply absent —
+/// e.g. a platform this hasn't been wired up for yet, or a dev/source
+/// checkout that hasn't run the compile step — the caller falls through to
+/// [`Installer::Script`] in that case, same as before.
+///
+/// `Err` is distinct from that: the binary IS present but lacks its
+/// executable bit and [`ensure_installer_executable`]'s self-heal couldn't
+/// repair it. That is a real, actionable failure worth surfacing on its own
+/// terms (a specific "not executable" message) rather than silently falling
+/// through to the script installer — which, in a real packaged build, has no
+/// bundled `dist/install.js` fallback and no reason to have `bun`/`node` on
+/// the end user's machine either (see module docs), so it would very likely
+/// fail too, just with a much less specific error.
 fn resolve_compiled_installer_path<R: tauri::Runtime>(
     app: &AppHandle<R>,
-) -> Option<(PathBuf, PathBuf)> {
+) -> Result<Option<(PathBuf, PathBuf)>, String> {
     use tauri::path::BaseDirectory;
 
-    let exe = std::env::current_exe().ok()?;
+    let Some(exe) = std::env::current_exe().ok() else {
+        return Ok(None);
+    };
     let binary_name = crate::daemon_setup::bundled_sidecar_name("nodespace-skill-installer");
-    let binary = crate::daemon_setup::sidecar_path_from_exe(&exe, &binary_name)?;
+    let Some(binary) = crate::daemon_setup::sidecar_path_from_exe(&exe, &binary_name) else {
+        return Ok(None);
+    };
     if !binary.exists() {
-        return None;
+        return Ok(None);
     }
 
-    let resource_root = app
+    ensure_installer_executable(&binary)?;
+
+    let Ok(resource_root) = app
         .path()
         .resolve("resources/skill", BaseDirectory::Resource)
-        .ok()?;
+    else {
+        return Ok(None);
+    };
     if !resource_root.exists() {
-        return None;
+        return Ok(None);
     }
 
-    Some((binary, resource_root))
+    Ok(Some((binary, resource_root)))
+}
+
+/// Ensure the bundled `nodespace-skill-installer` sidecar carries the
+/// executable bit before [`resolve_compiled_installer_path`] hands it to
+/// [`compiled_installer_command`], self-healing a lost `+x` the same way
+/// `daemon_setup::extract_sidecar_if_changed` self-heals `nodespaced`/
+/// `nodespace` — both guard the identical failure mode (a build-time chmod
+/// or artifact round-trip regression stripping the executable bit off a
+/// bundled binary), by re-asserting the mode bits at runtime.
+///
+/// The self-heal itself is simpler than `daemon_setup`'s: this binary is
+/// invoked directly from inside the app bundle rather than copied out to
+/// `~/.nodespace/bin/` as an independently-registered `launchd`/`systemd`
+/// service (see [`resolve_compiled_installer_path`]'s doc comment), so there
+/// is no separate installed copy to re-extract from the bundled source, no
+/// re-signing step, and no quarantine flag to clear — it never leaves the
+/// already-notarized bundle Gatekeeper trusted once, at launch (see
+/// `daemon_setup::clear_quarantine`'s doc comment for why that distinction
+/// matters for the daemon sidecars). The repair is just: `chmod` it in
+/// place, via the exact same [`crate::daemon_setup::set_executable`] helper
+/// `extract_sidecar_if_changed` itself uses.
+///
+/// Returns a clear, actionable error when the binary is missing `+x` and
+/// that repair itself fails — e.g. the bundle is on a read-only volume, or
+/// its files are owned by a different user than the one running the app.
+/// This is surfaced to the user as an `install_skill` failure (see module
+/// docs on failure surfacing), not silently swallowed the way the previous
+/// `.exists()`-only check would have let a non-executable binary reach
+/// `compiled_installer_command().output()` and fail with a bare OS "Permission
+/// denied" tied to no visible cause.
+#[cfg(unix)]
+fn ensure_installer_executable(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::metadata(path).map_err(|e| {
+        format!(
+            "Cannot stat the bundled skill installer at {}: {e}",
+            path.display()
+        )
+    })?;
+    if metadata.permissions().mode() & 0o111 != 0 {
+        return Ok(());
+    }
+
+    tracing::warn!(
+        "Bundled skill installer at {} lost its executable bit — repairing",
+        path.display()
+    );
+    crate::daemon_setup::set_executable(path).map_err(|e| repair_failed_message(path, &e))
+}
+
+/// The actionable error text for a self-heal that couldn't repair the
+/// executable bit — split out from [`ensure_installer_executable`] so the
+/// message itself is testable without needing to force a real OS-level
+/// permission failure (chmod-ing a file you own generally succeeds
+/// regardless of directory permissions, so a real filesystem fixture can't
+/// reliably exercise this branch without root).
+#[cfg(unix)]
+fn repair_failed_message(path: &Path, cause: &anyhow::Error) -> String {
+    format!(
+        "The bundled skill installer at {} is not executable and could not be repaired \
+         ({cause:#}). Try reinstalling NodeSpace.",
+        path.display()
+    )
+}
+
+#[cfg(not(unix))]
+fn ensure_installer_executable(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 /// Resolve the path to the built skill installer (`dist/install.js`) — the
@@ -1011,7 +1106,9 @@ mod tests {
         let handle = app.handle().clone();
 
         assert!(
-            resolve_compiled_installer_path(&handle).is_none(),
+            resolve_compiled_installer_path(&handle)
+                .expect("no compiled binary present is Ok(None), not an error")
+                .is_none(),
             "mock_app() has no bundled compiled installer sidecar"
         );
 
@@ -1020,6 +1117,106 @@ mod tests {
         assert!(
             matches!(installer, Installer::Script { .. }),
             "expected Installer::Script when no compiled binary is available"
+        );
+    }
+
+    /// The self-heal itself: a bundled binary that exists but lost its `+x`
+    /// bit (exactly the scenario a build-time chmod or artifact round-trip
+    /// regression would produce — see `ensure_installer_executable`'s doc
+    /// comment) must be repaired in place, not silently left broken for
+    /// `compiled_installer_command` to fail on later with an opaque OS
+    /// "Permission denied".
+    #[cfg(unix)]
+    #[test]
+    fn ensure_installer_executable_repairs_a_binary_missing_its_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = tempfile::tempdir().expect("create scratch dir");
+        let binary = scratch.path().join("nodespace-skill-installer");
+        std::fs::write(&binary, b"#!/bin/sh\necho hi\n").expect("write fake binary");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o644))
+            .expect("start with the executable bit missing");
+
+        ensure_installer_executable(&binary).expect("repairs the missing executable bit");
+
+        let mode = std::fs::metadata(&binary)
+            .expect("stat repaired binary")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o111,
+            0o111,
+            "expected all three executable bits set after repair, got mode {mode:o}"
+        );
+    }
+
+    /// An already-executable binary must be left alone (and reported healthy)
+    /// — this is the common, unbroken case on every normal launch, and must
+    /// stay cheap/no-op rather than unconditionally re-chmod-ing on every
+    /// single skill-install invocation.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_installer_executable_is_a_noop_when_already_executable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = tempfile::tempdir().expect("create scratch dir");
+        let binary = scratch.path().join("nodespace-skill-installer");
+        std::fs::write(&binary, b"#!/bin/sh\necho hi\n").expect("write fake binary");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+            .expect("start already executable");
+
+        ensure_installer_executable(&binary).expect("already-executable binary passes");
+    }
+
+    /// A binary that genuinely doesn't exist at the given path must produce a
+    /// clear, actionable error naming the path — not a panic, and not a
+    /// generic OS error with no NodeSpace-specific context.
+    #[cfg(unix)]
+    #[test]
+    fn ensure_installer_executable_errors_clearly_when_the_path_does_not_exist() {
+        let scratch = tempfile::tempdir().expect("create scratch dir");
+        let missing = scratch.path().join("does-not-exist");
+
+        let err = ensure_installer_executable(&missing)
+            .expect_err("a missing file must be a clear error, not a panic");
+        assert!(
+            err.contains("Cannot stat") && err.contains("does-not-exist"),
+            "expected a clear stat-failure message naming the path, got: {err}"
+        );
+    }
+
+    /// `resolve_compiled_installer_path`'s `Err` branch (distinct from
+    /// `Ok(None)` "not applicable") depends entirely on this message being
+    /// actionable — asserted directly on the pure formatter rather than by
+    /// forcing a real OS-level chmod failure: chmod-ing a file you own
+    /// generally succeeds regardless of the containing directory's
+    /// permissions (no root needed), so there's no reliable, portable way to
+    /// make `set_executable` itself fail without a real permission boundary
+    /// (a different file owner, or an actually read-only filesystem) that a
+    /// unit-test fixture can't set up on a normal CI runner.
+    #[cfg(unix)]
+    #[test]
+    fn repair_failed_message_is_actionable_and_names_the_path_and_cause() {
+        let path = Path::new("/opt/nodespace/nodespace-skill-installer");
+        let cause = anyhow::anyhow!("Permission denied (os error 13)");
+
+        let msg = repair_failed_message(path, &cause);
+
+        assert!(
+            msg.contains("/opt/nodespace/nodespace-skill-installer"),
+            "expected the binary path in the message, got: {msg}"
+        );
+        assert!(
+            msg.contains("could not be repaired"),
+            "expected the repair-failed framing, got: {msg}"
+        );
+        assert!(
+            msg.contains("reinstalling NodeSpace"),
+            "expected actionable guidance, got: {msg}"
+        );
+        assert!(
+            msg.contains("Permission denied"),
+            "expected the underlying cause preserved in the message, got: {msg}"
         );
     }
 
