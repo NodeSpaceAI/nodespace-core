@@ -230,6 +230,10 @@ export function parseTurnOutput(out: string, latencyMs: number): TurnRecord {
     emptyGeneration:
       out.match(/^\[empty-generation\]$/m) !== null || undefined,
     decisions: parseDecisions(out),
+    routingMs: (() => {
+      const m = out.match(/^\[routing ms\] (\d+)/m);
+      return m ? Number(m[1]) : undefined;
+    })(),
   };
 }
 

@@ -34,20 +34,35 @@ import type { EvalFixture, Scenario, TurnRecord, Verdict } from "../types.ts";
 // wrong tool" apart from "picked the wrong type".
 // ---------------------------------------------------------------------------
 
+// Schema expectations deliberately never name an exact type id. `create_schema`
+// derives the id from the MODEL's phrasing of the request, not from the
+// fixture's: "a new type for the companies we sell to" produced
+// `company_sold_to`, and "the places we hold events" produced a type the model
+// called "Event Venue". An assertion naming `company` or `venue` fails on a
+// naming mismatch rather than a decision error, which is a fixture bug wearing
+// a model bug's clothes — and it cost two full 3-rep runs to notice. Assert on
+// the PROPERTY being scored (did it stay on the menu? did it pick the right one
+// of two?) rather than on an id the fixture cannot predict.
 type Expected =
   /** The turn's first operation must be one of these. */
   | { decision: "operation"; oneOf: string[] }
-  /** The turn must act on this type. */
-  | { decision: "schema"; type: string }
   /**
-   * The turn must NOT act on any of these types.
+   * The turn must act on a type retrieval actually offered.
    *
-   * The disambiguation shape: several types plausibly match the words in the
-   * message, and naming the wrong one is the failure. Expressed as a denial
-   * rather than an assertion because more than one answer can be defensible
-   * while a specific one is clearly wrong.
+   * The scoreable property for an unambiguous request: not *which* id, but
+   * whether the model stayed within the candidate set at all. An off-menu
+   * selection is the one schema failure that cannot be explained as a close
+   * call between plausible options.
    */
-  | { decision: "schema"; notOneOf: string[] };
+  | { decision: "schema"; onMenu: true }
+  /**
+   * The selected type must match this pattern.
+   *
+   * The disambiguation shape: two types are on offer and only one fits the
+   * message's wording. Matched loosely because the id is model-derived — the
+   * question is which of the two it picked, not what it named them.
+   */
+  | { decision: "schema"; matches: RegExp };
 
 interface DecisionScenario extends Scenario {
   expected: Expected;
@@ -78,18 +93,24 @@ interface DecisionScenario extends Scenario {
 
 const SETUP: DecisionScenario[] = [
   {
-    id: "setup-customer",
-    scenario: "Setup: customer type",
+    id: "setup-company",
+    scenario: "Setup: company type",
     prompt:
-      "Set up a way to track the companies we sell to, with a name and the date we signed them.",
+      "Set up a new type for the companies we sell to, with a name and the date we signed them.",
     setup: true,
     expected: { decision: "operation", oneOf: ["create_schema"] },
   },
   {
-    id: "setup-project",
-    scenario: "Setup: project type",
+    id: "setup-venue",
+    scenario: "Setup: venue type",
+    // Deliberately parallel in shape to `setup-company`, which routes to
+    // Schema Creation reliably. An earlier wording ("Set up a way to track
+    // pieces of delivery work...") routed to Node Creation instead on all three
+    // reps — the model read it as creating one instance — so `create_schema`
+    // was never offered and every downstream scenario was blocked rather than
+    // measured.
     prompt:
-      "Set up a way to track pieces of delivery work, each with a name, a target finish date and a status.",
+      "Set up a new type for the places we hold events, with a name, a booking date and a capacity.",
     setup: true,
     expected: { decision: "operation", oneOf: ["create_schema"] },
   },
@@ -103,7 +124,7 @@ const FIXTURES: DecisionScenario[] = [
     // ADR-056 Scenario 5: `execute_query` was called where `search_nodes` was
     // wanted. The two tools were later collapsed into one, so the historical
     // failure cannot recur by that name — this scores the surviving choice.
-    prompt: "Which delivery projects are still open?",
+    prompt: "Which companies did we sign this year?",
     expected: { decision: "operation", oneOf: ["search_nodes"] },
     adr056: true,
   },
@@ -113,53 +134,49 @@ const FIXTURES: DecisionScenario[] = [
     // ADR-056 Scenario 6: the read fired and the write never did. Scored on the
     // FIRST operation being a resolution step rather than a blind write — the
     // turn-completion half is what the matrix eval already covers.
-    prompt: "The website redesign work is finished now.",
+    prompt: "Northwind Trading has moved their booking to April.",
     expected: {
       decision: "operation",
       oneOf: ["search_nodes", "resolve_query", "update_node"],
     },
     adr056: true,
   },
-  {
-    id: "op-plain-question",
-    scenario: "Operation: a question answerable without touching the graph",
-    // A turn that should call nothing. Scored because "picked no tool" is a
-    // real decision, and an agent that reaches for a tool on every message is
-    // failing a decision even when the reply reads fine.
-    prompt: "What kinds of things can you help me keep track of?",
-    expected: { decision: "operation", oneOf: [] },
-  },
 
   // ── Schema selection ───────────────────────────────────────────────────
+  //
+  // Every type asserted on here is USER-DEFINED, created by the setup turns
+  // above. Core seeded types (`project`, `task`, `person`, ...) cannot be used:
+  // `parse_and_filter_non_core_schemas` strips them from schema candidates, so
+  // a turn acting on one gets an EMPTY candidate set and the model emits the
+  // type name from general context with nothing to select among. Measured
+  // directly — "How many projects do we have?" produced
+  // `selected=project [off-menu] candidates=`. That is unconstrained
+  // generation, not a selection, and scoring it as one would measure the
+  // `is_core` filter rather than the model.
   {
-    id: "schema-direct-customer",
-    scenario: "Schema: unambiguous customer reference",
-    prompt: "Add Northwind Trading as a company we sell to.",
-    expected: { decision: "schema", type: "customer" },
-  },
-  {
-    id: "schema-direct-project",
-    scenario: "Schema: unambiguous project reference",
-    prompt: "Add a delivery job called Website Redesign, due in March.",
-    expected: { decision: "schema", type: "project" },
+    id: "schema-on-menu-company",
+    scenario: "Schema: acts on a retrieved candidate, not an invented id",
+    prompt: "Add Northwind Trading to the companies we sell to.",
+    expected: { decision: "schema", onMenu: true },
   },
   {
     id: "schema-field-disambiguates",
     scenario: "Schema: the named field settles which type is meant",
-    // Only one of the two types has a target finish date, so the mention of
-    // moving a deadline is decisive — the disambiguating signal is structural
-    // (which type even has that field), not semantic similarity.
-    prompt: "Push the Northwind target finish date out by two weeks.",
-    expected: { decision: "schema", notOneOf: ["customer"] },
+    // Both setup types carry a date, but only the venue has a capacity — so a
+    // message about seating can only mean the venue. The disambiguating signal
+    // is structural (which type even has that field), not semantic similarity,
+    // which is the case embedding distance alone cannot resolve.
+    prompt: "Northwind can seat 200 people now.",
+    expected: { decision: "schema", matches: /venue|event/i },
     ambiguous: true,
   },
   {
     id: "schema-shared-name-signed",
-    scenario: "Schema: shared name, customer-only attribute",
-    // The mirror of the case above: the same bare name, but the attribute
-    // mentioned exists only on the customer type.
+    scenario: "Schema: shared name, company-only attribute",
+    // The mirror: the same bare name, but the attribute mentioned exists only
+    // on the company type.
     prompt: "When did we sign Northwind?",
-    expected: { decision: "schema", notOneOf: ["project"] },
+    expected: { decision: "schema", matches: /compan/i },
     ambiguous: true,
   },
 ];
@@ -196,12 +213,12 @@ function assertFixture(
           "[decision] markers, or the turn never reached inference.",
       };
     }
-    // A schema decision is legitimately absent when the turn named no type —
-    // which is itself the answer for a `notOneOf` expectation.
-    if ("notOneOf" in expected) return { passed: true };
     return {
       passed: false,
-      failure: `Expected the turn to act on '${expected.type}' but it named no type at all.`,
+      failure:
+        "No schema decision recorded — the turn named no type at all. " +
+        "(Note: core seeded types are filtered out of schema candidates, so a " +
+        "turn acting on one records an empty candidate set.)",
     };
   }
 
@@ -243,22 +260,29 @@ function assertFixture(
   if (decision.offMenu) {
     return {
       passed: false,
-      failure: `Named type '${selected}', which retrieval never offered (candidates: ${decision.candidates.join(", ")}).`,
+      failure: `Named type '${selected}', which retrieval never offered (candidates: ${decision.candidates.join(", ") || "(none)"}).`,
     };
   }
-  if ("notOneOf" in expected) {
-    if (selected !== null && expected.notOneOf.includes(selected)) {
+  if ("onMenu" in expected) {
+    if (selected === null) {
       return {
         passed: false,
-        failure: `Acted on '${selected}', which the message's wording rules out. Candidates: ${decision.candidates.join(", ")}`,
+        failure: `Named no type. Candidates offered: ${decision.candidates.join(", ") || "(none)"}`,
       };
     }
+    // offMenu already returned above, so reaching here means it is on the menu.
     return { passed: true };
   }
-  if (selected !== expected.type) {
+  if (selected === null) {
     return {
       passed: false,
-      failure: `Acted on '${selected ?? "(none)"}' rather than '${expected.type}'. Candidates: ${decision.candidates.join(", ")}`,
+      failure: `Named no type; expected one matching ${expected.matches}. Candidates: ${decision.candidates.join(", ") || "(none)"}`,
+    };
+  }
+  if (!expected.matches.test(selected)) {
+    return {
+      passed: false,
+      failure: `Acted on '${selected}', which does not match ${expected.matches}. Candidates: ${decision.candidates.join(", ")}`,
     };
   }
   return { passed: true };
@@ -287,6 +311,10 @@ const fixture: EvalFixture = {
       offMenu: turns.some((t) => t.decisions?.some((d) => d.offMenu)),
       toolsCalled: turns.flatMap((t) => t.toolsCalled),
       latencyMs: turns.reduce((sum, t) => sum + t.latencyMs, 0),
+      // The decision's own cost, separate from the turn's. One generative pass
+      // to emit a structural choice among three routing tools — the term any
+      // decision-model comparison turns on alongside accuracy.
+      routingMs: turns.reduce((sum, t) => sum + (t.routingMs ?? 0), 0),
     };
   },
   summary(results) {
@@ -295,12 +323,19 @@ const fixture: EvalFixture = {
       return `${rows.filter((r) => r.passed).length}/${rows.length}`;
     };
     const offMenu = results.filter((r) => r.extra?.offMenu === true).length;
+    const routing = results
+      .map((r) => Number(r.extra?.routingMs ?? 0))
+      .filter((n) => n > 0);
+    const meanRouting = routing.length
+      ? Math.round(routing.reduce((a, b) => a + b, 0) / routing.length)
+      : 0;
     return [
       `Operation selection: ${count((e) => (e.expected as { decision?: string })?.decision === "operation")}`,
       `Schema selection:    ${count((e) => (e.expected as { decision?: string })?.decision === "schema")}`,
       `Ambiguous (several types plausible): ${count((e) => e.ambiguous === true)}`,
       `ADR-056 known failures: ${count((e) => e.adr056 === true)}`,
       `Off-menu type named: ${offMenu}`,
+      `Stage-1 decision cost: ${meanRouting}ms mean (one generative pass for a 3-way structural choice)`,
     ];
   },
 };

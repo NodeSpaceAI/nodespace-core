@@ -210,6 +210,15 @@ export function formatTurnLogLines(slice: string): string[] {
     // on the line for exactly that reason. A quoted-only pattern silently
     // matched nothing and put this marker right back in the state the dead
     // `scoped tool list` scrape was in.
+    // Wall-clock spent on Stage 1 alone: one generative pass whose entire
+    // output is a structural choice among three routing tools. Captured
+    // separately from the turn's total because it is the cost of *deciding*
+    // rather than of answering, and the two are the terms of any
+    // decision-model comparison — a replacement that is more accurate but no
+    // cheaper, or cheaper but less accurate, are different propositions and a
+    // single turn-level number cannot tell them apart.
+    const routingMs = routingLine.match(/routing_latency_ms=(\d+)/)?.[1];
+    if (routingMs) out.push(`[routing ms] ${routingMs}`);
     const skills = routingLine.match(/routed_skills="?(.*?)"?$/)?.[1]?.trim();
     if (skills) out.push(`[routed skills] ${skills}`);
   }

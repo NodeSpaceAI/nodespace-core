@@ -85,6 +85,19 @@ export interface TurnRecord {
   reply: string;
   latencyMs: number;
   /**
+   * Wall-clock of Stage-1 routing alone, in ms.
+   *
+   * The cost of *deciding* rather than of answering: one full generative pass
+   * whose entire output is a structural choice among three routing tools. Kept
+   * apart from `latencyMs` because a decision-model comparison turns on both
+   * terms independently — cheaper-but-worse and better-but-no-cheaper are
+   * different propositions, and a turn-level total cannot separate them.
+   *
+   * Undefined when the turn never routed (no embedding service, or a path that
+   * returns before retrieval).
+   */
+  routingMs?: number;
+  /**
    * The turn never reached the model — the send itself failed.
    *
    * Distinguished from a turn that ran and called no tools, because the two are
