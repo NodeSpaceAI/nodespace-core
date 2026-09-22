@@ -466,8 +466,22 @@ fn render_linear_recipe_block() -> String {
 ///
 /// Compact rather than pretty-printed: a `--params` payload is one shell word,
 /// and embedded newlines would break the surrounding quoting.
+///
+/// Single quotes inside the payload are escaped as `'\''` — close, escaped
+/// literal, reopen — which is the only way to get one into a single-quoted
+/// POSIX word. This is load-bearing rather than defensive: a Play's CEL
+/// conditions contain string literals (`node.status == 'done'`), and an
+/// unescaped quote there terminates the surrounding argument, leaving an
+/// agent copy-pasting the command with a mangled write rather than a parse
+/// error it could notice.
 fn compact_json(value: &serde_json::Value) -> String {
-    serde_json::to_string(value).expect("recipe JSON is serializable")
+    let json = serde_json::to_string(value).expect("recipe JSON is serializable");
+    shell_single_quote_body(&json)
+}
+
+/// Escape `s` for use inside a single-quoted shell word.
+fn shell_single_quote_body(s: &str) -> String {
+    s.replace('\'', r"'\''")
 }
 
 // ---------------------------------------------------------------------------
