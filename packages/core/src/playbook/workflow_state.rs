@@ -1220,6 +1220,73 @@ mod tests {
         }
     }
 
+    /// Regression: `resolve_relationships` must exclude the `extends`
+    /// type-system relationship from its merged output. A schema that
+    /// declares `extends` stores it as an ordinary row in the same
+    /// declaration table real relationships live in, so a subtype's own
+    /// `schema.relationships` genuinely contains an `extends` entry pointing
+    /// at its parent — but no real data node instance ever carries an
+    /// `extends` edge (only schema nodes do, in the schema graph). A
+    /// condition segment literally named `extends` must therefore still be
+    /// classified `Unresolvable` (a typo), not accepted as a real
+    /// relationship hop that will simply never resolve.
+    #[tokio::test]
+    async fn extends_relationship_itself_is_not_a_traversable_relationship() {
+        let (svc, _tmp) = test_service().await;
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_ext_base",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("base schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_ext_sub",
+                "extends": "wf_ext_base",
+                "fields": []
+            }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            let play = make_play_node(
+                "pb-extends-not-rel",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_ext_sub" },
+                    "conditions": ["node.extends.status == 'active'"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let task = make_test_node("wf_ext_sub", json!({}));
+        let state = get_workflow_state(&lifecycle, &svc, &task).await;
+        assert_eq!(state.rules.len(), 1);
+        match &state.rules[0].conditions[0] {
+            ConditionState::Unresolvable { reason, .. } => {
+                assert!(reason.contains("extends"), "reason was: {reason}");
+            }
+            other => panic!(
+                "expected Unresolvable — 'extends' is a type-system relationship, never a \
+                 real data-traversable one, got {:?}",
+                other
+            ),
+        }
+    }
+
     /// Regression for the scheduled/cron candidate gap: a scheduled Play
     /// registered on a base type must still be returned as a candidate for a
     /// subtype node, consistent with the ancestor fan-out graph-event

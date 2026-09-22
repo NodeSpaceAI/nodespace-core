@@ -585,6 +585,19 @@ impl NodeService {
     /// shadowing rule [`crate::schema::extends_chain::flatten_chain_fields`]
     /// applies to fields, kept here rather than reused directly since a
     /// relationship carries no `SchemaField`-shaped data to flatten.
+    ///
+    /// Excludes the `extends`/`extended_by` type-system relationship
+    /// (`is_type_system_relationship`). A schema that declares `extends` has
+    /// it stored as an ordinary row in the same declaration table other
+    /// relationships live in (see `TYPE_SYSTEM_RELATIONSHIPS`'s doc — it is
+    /// deliberately not excluded from *storage* reads, since
+    /// `declared_parent`/`declared_extends_parent` need to find it there).
+    /// But it is a statement about the schema graph, not a data relationship
+    /// any real node instance ever carries — surfacing it here would let a
+    /// condition segment literally named `extends`/`extended_by` pass this
+    /// function's "is this a real, traversable relationship" check and be
+    /// classified `NotYetMet` instead of the correct `Unresolvable`, since no
+    /// data node ever has such an edge to eventually satisfy it.
     pub async fn resolve_relationships(
         &self,
         node_type: &str,
@@ -599,6 +612,9 @@ impl NodeService {
                 continue;
             };
             for rel in schema.relationships {
+                if crate::models::schema::is_type_system_relationship(&rel.name) {
+                    continue;
+                }
                 if seen.insert(rel.name.clone()) {
                     out.push(rel);
                 }
