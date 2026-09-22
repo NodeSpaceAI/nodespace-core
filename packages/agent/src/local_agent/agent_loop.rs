@@ -2010,9 +2010,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 tracing::info!(
                     iteration,
                     decision = sk.kind.as_str(),
-                    decision_selected = sk.selected.as_deref().unwrap_or(""),
-                    decision_off_menu = sk.selected_off_menu(),
-                    decision_candidates = %sk.candidates_field(),
+                    decision_payload = %sk.payload_field(),
                     "Agent decision: skill selected"
                 );
             }
@@ -2034,15 +2032,12 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 tracing::info!(
                     iteration,
                     decision = op.kind.as_str(),
-                    decision_selected = op.selected.as_deref().unwrap_or(""),
-                    decision_off_menu = op.selected_off_menu(),
-                    // LAST on the line, deliberately. tracing leaves a string
-                    // field unquoted when it can, and this value is a
-                    // comma-separated list of names — so no delimiter short of
-                    // the line end is safe to scrape it with. `routed_skills`
-                    // is ordered last for the same reason, and a scrape that
-                    // assumed otherwise silently matched nothing.
-                    decision_candidates = %op.candidates_field(),
+                    // One JSON object rather than three delimited fields, so a
+                    // candidate or selection containing a comma, a quote or a
+                    // newline survives the scrape intact. Field order on this
+                    // line carries no meaning — see `payload_field`, which
+                    // records why the old shape needed the candidate list last.
+                    decision_payload = %op.payload_field(),
                     "Agent decision: operation selected"
                 );
 
@@ -2068,10 +2063,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                     tracing::info!(
                         iteration,
                         decision = sc.kind.as_str(),
-                        decision_selected = sc.selected.as_deref().unwrap_or(""),
-                        decision_off_menu = sc.selected_off_menu(),
-                        // Last on the line — see the operation record above.
-                        decision_candidates = %sc.candidates_field(),
+                        decision_payload = %sc.payload_field(),
                         "Agent decision: schema selected"
                     );
                 }

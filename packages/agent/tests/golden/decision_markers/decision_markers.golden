@@ -1,0 +1,9 @@
+2026-09-22T10:00:00.000000Z  INFO nodespace_agent: Agent decision: skill selected iteration=0 decision="skill" decision_payload={"candidates":["Schema Creation","Node Creation"],"off_menu":false,"selected":"Schema Creation"}
+2026-09-22T10:00:00.000000Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_payload={"candidates":["search_nodes","create_node"],"off_menu":false,"selected":"create_node"}
+2026-09-22T10:00:00.000000Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_payload={"candidates":["invoice","customer"],"off_menu":true,"selected":"album"}
+2026-09-22T10:00:00.000000Z  INFO nodespace_agent: Agent decision: schema selected iteration=1 decision="schema" decision_payload={"candidates":["Company, Sold To","invoice"],"off_menu":false,"selected":"Company, Sold To"}
+2026-09-22T10:00:00.000000Z  INFO nodespace_agent: Agent decision: skill selected iteration=1 decision="skill" decision_payload={"candidates":["a \" quote","plain"],"off_menu":false,"selected":"a \" quote"}
+2026-09-22T10:00:00.000000Z  INFO nodespace_agent: Agent decision: schema selected iteration=1 decision="schema" decision_payload={"candidates":["a \n newline","invoice"],"off_menu":false,"selected":"a \n newline"}
+2026-09-22T10:00:00.000000Z  INFO nodespace_agent: Agent decision: operation selected iteration=2 decision="operation" decision_payload={"candidates":["search_nodes"],"off_menu":false,"selected":null}
+2026-09-22T10:00:00.000000Z  INFO nodespace_agent: Agent decision: schema selected iteration=2 decision="schema" decision_payload={"candidates":["invoice"],"off_menu":true,"selected":""}
+2026-09-22T10:00:00.000000Z  INFO nodespace_agent: Agent decision: operation selected iteration=2 decision="operation" decision_payload={"candidates":[],"off_menu":false,"selected":null}

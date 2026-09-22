@@ -126,37 +126,85 @@ function runTurn(env: EvalEnv, chatId: string, message: string): TurnRecord {
  * genuinely made no decision — the same "absent is not false" rule
  * `stage2CandidatesInjected` follows.
  *
- * `candidates=` runs to end of line because the value is a comma-separated list
- * of names that tracing emits unquoted; `selected=` is matched as a
- * non-whitespace run for the same reason it can be, being a single identifier.
+ * The payload is one JSON object, parsed as one. The delimited form this
+ * replaces split the candidate list on `","`, so a name containing a comma
+ * silently became two candidates — a corrupted record indistinguishable from a
+ * valid one to any scorer counting `candidates.length` or testing membership.
+ * `selected` had the matching flaw on quotes. Both inputs are reachable:
+ * `create_schema` derives type ids from the model's own phrasing.
+ *
  * Anchored to line start like every other marker here: `out` carries arbitrary
  * raw model text via `[raw]` lines, and the model narrating a marker-shaped
- * string must not be read as the harness's own signal.
+ * string must not be read as the harness's own signal. A `[raw]` line is itself
+ * JSON-encoded, so a marker-shaped string inside one cannot reach column zero.
+ *
+ * The payload pattern is greedy, which is deliberate: `.` does not match a
+ * newline without the `s` flag, so a match cannot span lines and adjacent
+ * markers cannot interact. Greedy plus the `$` anchor then accepts only a line
+ * whose payload ends at the line end, rejecting one with trailing content —
+ * where a lazy `.*?` would match a leading object and silently ignore the rest.
  */
 function parseDecisions(out: string): DecisionRecord[] | undefined {
   const rows = [
-    ...out.matchAll(
-      // `selected` is matched up to the ` [off-menu]` flag or ` candidates=`,
-      // NOT as a non-whitespace run: skill names contain spaces ("Schema
-      // Creation"), so `\S*?` silently truncated them to the first word. Tool
-      // names and type ids never contain spaces, which is why this only
-      // surfaced once skill routing was recorded.
-      /^\[decision (skill|schema|operation)\] selected=(.*?)( \[off-menu\])? candidates=(.*)$/gm,
-    ),
+    ...out.matchAll(/^\[decision (skill|schema|operation)\] (\{.*\})$/gm),
   ];
   if (rows.length === 0) return undefined;
-  return rows.map((m) => ({
-    kind: m[1] as "skill" | "schema" | "operation",
-    // `none` is the marker's rendering of "offered options, picked nothing".
-    // It round-trips back to null rather than the literal string, so a scorer
-    // never has to know the wire spelling.
-    selected: m[2] === "none" ? null : m[2],
-    offMenu: m[3] !== undefined,
-    candidates: m[4]
-      .split(",")
-      .map((c) => c.trim())
-      .filter((c) => c.length > 0),
-  }));
+  const records: DecisionRecord[] = [];
+  for (const m of rows) {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(m[2]);
+    } catch {
+      // A malformed payload is dropped rather than recorded as a decision with
+      // empty fields, which would read downstream as "offered nothing, picked
+      // nothing" — a real and meaningfully different outcome.
+      continue;
+    }
+    const decision = decisionFromPayload(m[1] as DecisionRecord["kind"], payload);
+    // Same rule as the `catch` above, extended past the parse. A payload that
+    // is valid JSON but carries an unexpected shape is dropped rather than
+    // coerced into a record with empty fields: coercing would manufacture
+    // exactly the "offered nothing, picked nothing" reading the `catch` exists
+    // to avoid, and the eval scores that as a model failure with a confident,
+    // wrong diagnostic — the same silent corruption this format replaced.
+    if (decision) records.push(decision);
+  }
+  return records.length === 0 ? undefined : records;
+}
+
+/**
+ * Validate one decoded payload into a `DecisionRecord`, or `null` if its shape
+ * is not the one the emitter produces.
+ *
+ * Every field is checked rather than defaulted. The tempting alternative —
+ * `Array.isArray(x) ? x : []` and `typeof x === "string" ? x : null` — reads as
+ * defensive but is the opposite: it turns a shape mismatch into a plausible
+ * record no downstream consumer can tell from a real one. A `candidates` that
+ * arrived as a string would score as "retrieval offered nothing", and filtering
+ * non-strings out of the array would silently shorten the candidate list, which
+ * is the precise failure the JSON encoding was introduced to remove.
+ *
+ * Unreachable from the current emitter, which always writes all three keys with
+ * these types. It is the boundary check that keeps that guarantee honest rather
+ * than assumed — the assumption this format's own history argues against.
+ */
+function decisionFromPayload(
+  kind: DecisionRecord["kind"],
+  payload: unknown,
+): DecisionRecord | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { selected, off_menu: offMenu, candidates } = payload as Record<string, unknown>;
+
+  // `null` is "picked nothing" and `""` is a name that happens to be blank —
+  // different outcomes, so neither is folded into the other. Anything else is a
+  // shape this parser does not know how to read.
+  if (selected !== null && typeof selected !== "string") return null;
+  if (typeof offMenu !== "boolean") return null;
+  if (!Array.isArray(candidates) || !candidates.every((c) => typeof c === "string")) {
+    return null;
+  }
+
+  return { kind, selected, offMenu, candidates: candidates as string[] };
 }
 
 /**

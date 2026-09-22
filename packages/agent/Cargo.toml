@@ -73,6 +73,16 @@ similar = "2"
 # itself, reproducing assemble()'s exact render step rather than a
 # reimplementation of it.
 minijinja = "2"
+# Captures the agent loop's REAL emitted log lines for the decision-marker
+# golden (tests/decision_marker_golden.rs). The golden must hold lines the
+# production tracing layer actually produced — a hand-built string would pin
+# the fixture to itself rather than to the emitter, which is the drift this
+# test exists to catch. Configured to match the daemon's own `fmt()` default.
+#
+# Default features only: the golden writes through `fmt()` with a fixed
+# subscriber and never filters, so `env-filter` would pull in `matchers`,
+# `regex-automata` and `thread_local` for a dev-dependency that never uses them.
+tracing-subscriber = "0.3"
 
 [[test]]
 name = "search_skills_latency"
