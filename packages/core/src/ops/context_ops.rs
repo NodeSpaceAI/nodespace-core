@@ -497,10 +497,28 @@ async fn resolve_entities(
     }
 }
 
+/// `query` is the BLENDED retrieval query (prior turns plus the current
+/// message) — schema retrieval embeds it, and the blend is what lets a
+/// follow-up referring to its subject by pronoun still retrieve the right
+/// schema.
+///
+/// `entity_query` is the CURRENT MESSAGE ALONE, and the separation is
+/// load-bearing. Entity resolution is a lexical lookup over a bounded number of
+/// tokens, so prepending prior turns does not add recall — it consumes the
+/// budget. With even one prior turn, "Add Northwind Trading to the companies we
+/// sell to" tokenises to `set up new type places hold` (the prior turn's
+/// opening words) and the entity never reaches the index. The tier then reports
+/// `NoMatch`, which renders as a positive claim that the named thing does not
+/// exist — so a truncation would be laundered into an instruction to create a
+/// duplicate.
+///
+/// A caller with only one string may pass it for both; the blend helps
+/// embeddings and merely costs tokens here.
 pub async fn build_workspace_context(
     node_service: &Arc<NodeService>,
     embedding_service: Option<&Arc<NodeEmbeddingService>>,
     query: Option<&str>,
+    entity_query: Option<&str>,
 ) -> Result<WorkspaceContext, OpsError> {
     // Fetch collection names
     let collection_service = CollectionService::new(node_service.store(), node_service);
@@ -537,7 +555,7 @@ pub async fn build_workspace_context(
     //
     // Unlike the schema tier this needs no embedding service: it is an index
     // lookup, so it still runs when embeddings are unavailable.
-    let resolved_entities = resolve_entities(node_service, query).await;
+    let resolved_entities = resolve_entities(node_service, entity_query).await;
 
     // Semantic schema retrieval: find schemas relevant to the query.
     // Only runs when both an embedding service and a non-empty query are present.

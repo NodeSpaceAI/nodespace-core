@@ -190,7 +190,7 @@ mod entity_resolution_tests {
     /// recompute is corrected, this test fails and should be inverted to the
     /// assertion it wants to make.
     #[tokio::test]
-    async fn a_body_node_mentioning_the_name_is_not_an_entity() -> Result<()> {
+    async fn a_body_node_is_currently_resolved_as_an_entity_which_is_a_bug() -> Result<()> {
         let (store, service, _t) = create_test_store().await?;
         let parent = seed_entity(&service, "text", "Meeting Notes").await?;
         let child = Node::new(
@@ -227,6 +227,47 @@ mod entity_resolution_tests {
         assert!(
             hits[0].title.starts_with("we should call"),
             "and it resolves under its body text, not under a real name: {hits:?}"
+        );
+        Ok(())
+    }
+
+    /// A name late in a long message still resolves.
+    ///
+    /// The token budget is taken from the FRONT of the message, so anything
+    /// ahead of the name competes with it. This is the shape that made the
+    /// tier inert on every turn but the first: the daemon was passing the
+    /// BLENDED retrieval query — up to two prior conversational turns
+    /// prepended before the current message — and those turns consumed the
+    /// whole budget. "Add Northwind Trading to the companies we sell to"
+    /// tokenised to `set up new type places hold`, the prior turn's opening
+    /// words, and the entity never reached the index.
+    ///
+    /// Worse than failing silent: empty candidates render as "none found",
+    /// which asserts the named thing does not EXIST. A lookup that could not
+    /// see the name would have been laundered into an instruction to create a
+    /// duplicate.
+    ///
+    /// `build_workspace_context` now takes the current message separately for
+    /// this reason. This test pins the property that fix depends on — that a
+    /// name preceded by other words is still found — at the level where the
+    /// truncation actually happens.
+    #[tokio::test]
+    async fn a_name_late_in_a_long_message_still_resolves() -> Result<()> {
+        let (store, service, _t) = create_test_store().await?;
+        let id = seed_entity(&service, "text", "Northwind Trading").await?;
+
+        // Deliberately more leading non-stop-word tokens than the resolver's
+        // budget, so a front-truncating implementation cannot reach the name.
+        let message = "set up new type places hold events booking capacity \
+                       roster venue schedule then add Northwind Trading";
+
+        let hits = store.resolve_entities_by_title(message, 12).await?;
+
+        assert_eq!(
+            hits.first().map(|h| h.id.as_str()),
+            Some(id.as_str()),
+            "a name after many leading words must still resolve — if this fails, \
+             the token budget is being consumed before the entity: {hits:?}"
         );
         Ok(())
     }

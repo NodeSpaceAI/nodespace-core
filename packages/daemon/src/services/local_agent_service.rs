@@ -771,8 +771,17 @@ impl LocalAgentServiceImpl {
         // `schema_retrieval_query`.
         let emb = self.inner.embedding_service.read().await.clone();
         let retrieval_query = schema_retrieval_query(&prior_history, &user_message);
-        let ctx =
-            build_workspace_context(&self.inner.node_service, emb, Some(&retrieval_query)).await;
+        // The entity tier gets the CURRENT MESSAGE, not the blend. Blending
+        // helps an embedding resolve a pronoun to its antecedent; it only
+        // starves a lexical name lookup, whose token budget the prior turns
+        // would consume before reaching the name.
+        let ctx = build_workspace_context(
+            &self.inner.node_service,
+            emb,
+            Some(&retrieval_query),
+            Some(&user_message),
+        )
+        .await;
 
         // Create an ephemeral session seeded with prior history.
         let session_id = service.create_session(None, prior_history).await;
@@ -2763,11 +2772,13 @@ async fn build_workspace_context(
     node_service: &Arc<NodeService>,
     embedding_service: Option<Arc<NodeEmbeddingService>>,
     query: Option<&str>,
+    entity_query: Option<&str>,
 ) -> Result<String, ()> {
     let mut context = nodespace_core::ops::context_ops::build_workspace_context(
         node_service,
         embedding_service.as_ref(),
         query,
+        entity_query,
     )
     .await
     .map_err(|_| ())?;
@@ -3012,7 +3023,7 @@ mod tests {
 
         let query = "book the venue, log the customer, raise an invoice, add a \
                      release plan, and file an incident report";
-        let rendered = build_workspace_context(&node_service, None, Some(query))
+        let rendered = build_workspace_context(&node_service, None, Some(query), Some(query))
             .await
             .expect("workspace context");
 

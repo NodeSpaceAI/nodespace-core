@@ -149,13 +149,13 @@ const SETUP: DecisionScenario[] = [
 
 /// The company instance the entity scenarios act on.
 ///
-/// Seeded through `seedGroup` rather than as a scored setup TURN, for two
+/// Seeded through `seedRun` rather than as a scored setup TURN, for two
 /// reasons. First, a turn's writes are replayed into every later turn as terse
 /// facts carrying the id inline, so seeding by turn would put the answer in the
-/// prompt as literal history — `seedGroup` keeps instance data out of that
-/// channel entirely (see `EvalFixture.seedGroup`'s contract). Second, a turn
-/// lengthens the shared conversation, and this fixture is already long enough
-/// that the model stops emitting tool calls near the end.
+/// prompt as literal history — seeding out of band keeps instance data out of
+/// that channel entirely (see `EvalFixture.seedGroup`'s contract, which
+/// `seedRun` shares). Second, a turn lengthens the conversation, and length
+/// alone was enough to make the model stop emitting tool calls.
 const SEEDED_COMPANY_TITLE = "Northwind Trading";
 const SEEDED_COMPANY_SIGNED = "2025-03-14";
 
@@ -206,12 +206,13 @@ function runNs(env: EvalEnv, args: string[]): unknown {
 /**
  * Create the Northwind instance the entity scenarios resolve against.
  *
- * Idempotent, and that is load-bearing rather than defensive: `--runs` shares
- * one database across reps and calls `seedGroup` on every rep. Creating
- * unconditionally would leave rep 2 with two Northwinds and rep 3 with three,
- * so the name would stop resolving to a single node and the resulting failures
- * would read as model non-determinism — corrupting the very measurement
- * `--runs` exists to produce.
+ * Idempotent, and that is load-bearing rather than defensive. `seedRun` fires
+ * once per rep, and while `--between-runs` normally wipes the database first,
+ * the hook must not depend on that: a run without a between-runs command, or
+ * one whose reset failed, would otherwise leave rep 2 with two Northwinds and
+ * rep 3 with three. The name would stop resolving to a single node and the
+ * resulting failures would read as model non-determinism — corrupting the very
+ * measurement `--runs` exists to produce.
  *
  * Runs as `seedRun`, once per rep, BEFORE any group. That timing is the fix
  * for a defect that silently invalidated three separate measured runs:

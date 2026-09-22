@@ -3699,14 +3699,40 @@ impl SqliteStore {
         // stop-word list: the words that make a content search noisy ("the",
         // "what", "how") make a title search noisy for the same reason. The
         // token cap bounds a long message to a fixed query cost.
-        let tokens: Vec<String> = message
+        //
+        // Which tokens the cap KEEPS is the part that matters. Taking the
+        // first N is wrong: the budget is then spent on whatever the sentence
+        // opens with, and a name late in the message never reaches the index —
+        // the tier reports no match, which renders as a positive claim that
+        // the named thing does not exist. "Add Northwind Trading to the
+        // companies we sell to", preceded by any other clause, truncated to
+        // the leading words and lost the entity entirely.
+        //
+        // Capitalised tokens are kept in preference instead. An entity's name
+        // in an English message is nearly always capitalised, while the filler
+        // competing for the budget is not — so this is the proper-noun bias as
+        // a SELECTION input, not a pre-filter. A pre-filter would drop a
+        // lowercase name outright; this only deprioritises it, and a message
+        // with no capitalised tokens still falls back to the plain order.
+        //
+        // Order within each class is preserved, so a message whose tokens all
+        // share a class behaves exactly as before.
+        let all: Vec<String> = message
             .split_whitespace()
-            .map(|t| {
-                t.trim_matches(|c: char| !c.is_alphanumeric())
-                    .to_lowercase()
-            })
-            .filter(|t| !t.is_empty() && !BM25_STOP_WORDS.contains(&t.as_str()))
+            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()))
+            .filter(|t| !t.is_empty() && !BM25_STOP_WORDS.contains(&t.to_lowercase().as_str()))
+            .map(str::to_string)
+            .collect();
+
+        let (capitalised, rest): (Vec<String>, Vec<String>) = all
+            .into_iter()
+            .partition(|t| t.chars().next().is_some_and(char::is_uppercase));
+
+        let tokens: Vec<String> = capitalised
+            .into_iter()
+            .chain(rest)
             .take(ENTITY_RESOLUTION_MAX_TOKENS)
+            .map(|t| t.to_lowercase())
             .collect();
 
         if tokens.is_empty() {
