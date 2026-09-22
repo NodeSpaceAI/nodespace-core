@@ -110,7 +110,7 @@ nodespace node update <node-id> --property status=in_progress --property priorit
 
 At least one of `--content` or `--property` is required.
 
-**Find then update:** if you don't already have the node's ID, run `nodespace search` or `nodespace node query` first to locate it, then update by ID. If the search comes back with zero matches or several equally plausible matches, ask the user one specific clarifying question rather than retrying — e.g. "I found 3 tickets in review — which one did you mean: the auth one, the CI one, or the audit-log one?"
+**Find then update:** if you don't already have the node's ID, locate it first — by name with `nodespace node query --title-contains "<name>"` (a `nodespace search` query never returns tasks or typed records), or by meaning with `nodespace search` for notes and documents — then update by ID. If the lookup comes back with zero matches or several equally plausible matches, ask the user one specific clarifying question rather than retrying — e.g. "I found 3 tickets in review — which one did you mean: the auth one, the CI one, or the audit-log one?"
 
 **Do NOT use `node update --property status=...` for task status changes** — use `nodespace node set-status` instead (below); it validates against the allowed status values before writing.
 
@@ -132,7 +132,7 @@ Dedicated verb for task status transitions. Status must be one of: `open`, `in_p
 nodespace node delete <node-id>
 ```
 
-**Find then delete:** locate the node via `nodespace search` or `nodespace node query` if you don't have its ID, and confirm the title matches what the user described before deleting. Delete one node per call; confirm each deletion before moving to the next. Don't search again afterward to verify the deletion — the delete response confirms it.
+**Find then delete:** locate the node via `nodespace node query --title-contains` (or `nodespace search` for notes and documents) if you don't have its ID, and confirm the title matches what the user described before deleting. Delete one node per call; confirm each deletion before moving to the next. Don't search again afterward to verify the deletion — the delete response confirms it.
 
 **Output:** Confirmation JSON
 
@@ -313,7 +313,7 @@ A `reverseName` (or a built-in's fixed inverse, like `child_of`) names exactly o
 
 Reverse names are for *traversal*, not for `relationship create`: an edge is always created under its forward name, from the source node. They are also not usable in `node query --filters`, whose `relationship` filters cover only the structural graph (`parent`, `children`, `mentions`, `mentioned_by`) — use `relationship get` to traverse a schema-declared name.
 
-Both node IDs must already exist — search for missing IDs first (`nodespace search` / `nodespace node query`). Apart from the built-in names below, the relationship name must be defined on the source node's schema; define it there (`nodespace schema create`/`update`) if it isn't yet. `relationship create` on a node whose schema doesn't define that relationship name fails with an error naming the undefined relationship.
+Both node IDs must already exist — look up missing IDs first (`nodespace node query --title-contains` by name; `nodespace search` for notes and documents). Apart from the built-in names below, the relationship name must be defined on the source node's schema; define it there (`nodespace schema create`/`update`) if it isn't yet. `relationship create` on a node whose schema doesn't define that relationship name fails with an error naming the undefined relationship.
 
 ### Play automation rule-sets
 

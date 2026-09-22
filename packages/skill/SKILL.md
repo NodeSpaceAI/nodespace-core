@@ -126,7 +126,7 @@ Use this to pick the right command for the task at hand.
 
 **`nodespace query` is the command for structured property queries** — status, due_date, priority, or any comparison operator. Worked examples: `references/cli.md`, *Structured property query*.
 
-**A name is not an ID — resolve it before you act.** When the user names a record you haven't looked up ("mark the Northwind contract signed", "add Fabrikam"), run `nodespace node query --title-contains "<name>"` first. Not `nodespace search`: it only reaches prose, so tasks and typed records never appear in it. Judge the results by whether one *is* the named record — same name, same type — not by whether the list is empty, since the lookup also matches on a shared word. One match: act on its ID; if asked to *add* it, say it already exists and ask before creating a duplicate. Several: ask which one. None: it doesn't exist — create it if they're adding it, otherwise tell them. Don't keep searching.
+**A name is not an ID — resolve it before you act.** When the user names a record you haven't looked up ("mark the Northwind contract signed", "add Fabrikam"), run `nodespace node query --title-contains "<name>"` first. Not `nodespace search`: a name search only matches prose, never tasks or typed records. Judge the results by whether one *is* the named record — same name, same type — not by whether the list is empty, since the lookup also matches on a shared word. One match: act on its ID; if asked to *add* it, say it already exists and ask before creating a duplicate. Several: ask which one. None: it doesn't exist — create it if they're adding it, otherwise tell them. Don't keep searching.
 
 **`nodespace search` is semantic** (embedding-based similarity over prose nodes), ranked by relevance. Pass `--type` to narrow to one or more node types, `--limit` to cap results (default 20), `--include-content` to also read the top 5 hits (a bare result is just its heading). No graph-boost, cross-collection exclusion, or edge-inclusion — fall back to `nodespace query` plus `nodespace relationship get` for those.
 
@@ -246,7 +246,7 @@ Prefer a collection for any durable grouping: don't add a `tags`/`categories`/`t
 Deletion is permanent and takes the node's children with it. Resolve the node first and confirm with the user before deleting anything you did not just create — a wrong id here is not recoverable.
 
 ```bash
-nodespace node query --content-contains "draft spec"   # resolve the id first
+nodespace node query --title-contains "draft spec"     # resolve the id first
 nodespace node delete <node-id>
 ```
 
