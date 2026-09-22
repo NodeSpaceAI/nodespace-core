@@ -201,3 +201,115 @@ describe("GitHubClient project-board membership", () => {
     expect(update!.vars.itemId).toBe("PVTI_existing");
   });
 });
+
+// Covers NodeSpaceGitHubManager.findOrCreateTrackingIssue -- the shared
+// dedup helper scheduled monitoring workflows (verify-macos-installer.yml,
+// homebrew-drift-check.yml) call on failure instead of hand-rolled
+// bash/jq. Extracted specifically because the hand-rolled version needed
+// two rounds of manual review to catch a broken `gh issue list --jq --arg`
+// invocation and a search-index eventual-consistency race -- exactly the
+// class of bug a small, unit-tested function should catch before merge.
+describe("NodeSpaceGitHubManager.findOrCreateTrackingIssue", () => {
+  function makeStubClient(openIssues: Array<{ number: number; title: string }>) {
+    const listIssues = mock(async (_options: { state?: string }) =>
+      openIssues.map((issue) => ({
+        number: issue.number,
+        title: issue.title,
+        state: "open",
+        assignees: [],
+        labels: [],
+        body: "",
+      })),
+    );
+    const addPRComment = mock(async (issueNumber: number, _body: string) => ({
+      id: 999,
+      url: `https://example.test/issues/${issueNumber}#comment`,
+    }));
+    const createIssue = mock(async (_title: string, _body: string, _labels?: string[]) => ({
+      number: 4242,
+      url: `https://example.test/issues/4242`,
+      addedToProject: true,
+    }));
+
+    const client = { listIssues, addPRComment, createIssue } as unknown as GitHubClient;
+
+    return { client, listIssues, addPRComment, createIssue };
+  }
+
+  test("comments on an existing open issue with an exact title match instead of creating a new one", async () => {
+    const { client, listIssues, addPRComment, createIssue } = makeStubClient([
+      { number: 100, title: "Some unrelated issue" },
+      { number: 101, title: "macOS .pkg installer fails live Gatekeeper assessment" },
+    ]);
+    const manager = new NodeSpaceGitHubManager(client);
+
+    const result = await manager.findOrCreateTrackingIssue({
+      title: "macOS .pkg installer fails live Gatekeeper assessment",
+      body: "Run: https://example.test/run/1",
+    });
+
+    expect(listIssues).toHaveBeenCalledWith({ state: "open" });
+    expect(addPRComment).toHaveBeenCalledWith(101, "Run: https://example.test/run/1");
+    expect(createIssue).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      number: 101,
+      url: "https://example.test/issues/101#comment",
+      action: "commented",
+    });
+  });
+
+  test("creates a new issue when no open issue has this exact title", async () => {
+    const { client, addPRComment, createIssue } = makeStubClient([
+      { number: 100, title: "Some unrelated issue" },
+    ]);
+    const manager = new NodeSpaceGitHubManager(client);
+
+    const result = await manager.findOrCreateTrackingIssue({
+      title: "Homebrew tap drift check failed (cask)",
+      body: "Run: https://example.test/run/2",
+      labels: ["foundation"],
+    });
+
+    expect(addPRComment).not.toHaveBeenCalled();
+    expect(createIssue).toHaveBeenCalledWith(
+      "Homebrew tap drift check failed (cask)",
+      "Run: https://example.test/run/2",
+      ["foundation"],
+    );
+    expect(result).toEqual({ number: 4242, url: "https://example.test/issues/4242", action: "created" });
+  });
+
+  test("requires an exact title match -- a title that merely contains or starts with it does not count", async () => {
+    const { client, addPRComment, createIssue } = makeStubClient([
+      { number: 100, title: "Homebrew tap drift check failed (cask) -- follow-up" },
+      { number: 101, title: "Pre: Homebrew tap drift check failed (cask)" },
+    ]);
+    const manager = new NodeSpaceGitHubManager(client);
+
+    await manager.findOrCreateTrackingIssue({
+      title: "Homebrew tap drift check failed (cask)",
+      body: "Run: https://example.test/run/3",
+    });
+
+    expect(addPRComment).not.toHaveBeenCalled();
+    expect(createIssue).toHaveBeenCalledTimes(1);
+  });
+
+  test("picks the matching issue out of several open issues, not just the first one listed", async () => {
+    const { client, addPRComment, createIssue } = makeStubClient([
+      { number: 100, title: "Unrelated #1" },
+      { number: 101, title: "Unrelated #2" },
+      { number: 102, title: "Homebrew tap drift check failed (nodespace-cli formula)" },
+    ]);
+    const manager = new NodeSpaceGitHubManager(client);
+
+    const result = await manager.findOrCreateTrackingIssue({
+      title: "Homebrew tap drift check failed (nodespace-cli formula)",
+      body: "Run: https://example.test/run/4",
+    });
+
+    expect(result.number).toBe(102);
+    expect(addPRComment).toHaveBeenCalledWith(102, "Run: https://example.test/run/4");
+    expect(createIssue).not.toHaveBeenCalled();
+  });
+});

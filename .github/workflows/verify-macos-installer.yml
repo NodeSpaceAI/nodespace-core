@@ -70,24 +70,41 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install dependencies (needed for the tracking-issue dedup helper)
+        if: failure()
+        run: bun install --frozen-lockfile
+
       - name: Open (or update) an issue on failure (loud, with the actual message)
         if: failure()
-        # `shell: bash` (with pipefail) is required below: `gh issue list`'s
-        # own `--jq` takes exactly one value, so `--jq --arg t "$TITLE"
-        # '...'` (an earlier version of this step) fed it the literal
-        # string "--arg" as the filter and left `t`/"$TITLE"/the real
-        # filter as stray positional args `gh` doesn't accept -- it errored
-        # out before the dedup/create logic ever ran, silently skipping the
-        # exact failure this workflow exists to report. `gh`'s own `--jq`
-        # doesn't support `--arg` at all; piping into the real `jq` binary
-        # does. Without pipefail, a `gh issue list` failure upstream of the
-        # pipe would be masked by `jq`'s own exit code.
+        # Dedup (find an open issue with this exact title, comment on it
+        # instead of filing a duplicate) is handled by the shared
+        # `findOrCreateTrackingIssue` helper in scripts/gh-utils.ts (`bun run
+        # gh:tracking-issue`), not hand-rolled here. An earlier version of
+        # this step shelled out to `gh issue list --jq --arg ...` piped into
+        # `jq` -- `gh`'s own `--jq` doesn't support `--arg` at all, so that
+        # invocation errored out before the dedup/create logic ever ran,
+        # silently skipping the exact failure this workflow exists to
+        # report. The TypeScript helper goes through Octokit directly, so
+        # that whole class of shell/`gh`-CLI argument-parsing bug can't
+        # recur, and it has unit tests (scripts/gh-utils.test.ts) covering
+        # the title-matching/dedup logic the way this inline script never
+        # was.
+        #
+        # The helper matches via the regular strongly-consistent
+        # issues-list endpoint, never GitHub's `--search`/search-index
+        # endpoint -- that index is only eventually consistent, and an
+        # earlier version of this step's own dedup logic (before it used
+        # this helper) could still have raced it: a workflow_dispatch
+        # re-run shortly after filing the tracking issue (e.g. someone
+        # re-running to confirm a fix, or two runs landing close together
+        # around the cron boundary) could see no match and file a
+        # duplicate. See findOrCreateTrackingIssue's own doc comment for
+        # the full reasoning.
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          TITLE="macOS .pkg installer fails live Gatekeeper assessment"
           {
             echo "The scheduled macOS .pkg Gatekeeper check failed against the currently-published release. Run: ${RUN_URL}"
             echo
@@ -101,39 +118,7 @@ jobs:
             echo "Any other message means the check itself failed to run (network/gh/auth) -- not necessarily a rejection; check the run log."
           } > issue-body.txt
 
-          # Reuse an already-open issue from a prior failed run instead of
-          # filing a new one on every failure -- this check's starting
-          # state is a currently-rejected .pkg, so without this it would
-          # file a fresh duplicate on every single scheduled run until
-          # someone fixes it.
-          #
-          # Deliberately NOT `gh issue list --search ...`: --search goes
-          # through GitHub's search index, which is only eventually
-          # consistent. A workflow_dispatch re-run shortly after this
-          # workflow just filed the tracking issue (e.g. someone re-running
-          # to confirm a fix, or two runs landing close together around the
-          # cron boundary) could hit the index before it catches up, see no
-          # match, and file a duplicate anyway -- defeating the point of
-          # this check. `--state open` with no `--search` hits the regular
-          # issues list endpoint instead, which reflects a just-created
-          # issue immediately; --limit is generous since we're filtering by
-          # exact title client-side rather than relying on the API to
-          # narrow it, and gh's own default limit (30) could otherwise miss
-          # a match if there are more open issues than that.
-          # `$t` below is a jq variable (bound by --arg), not a shell
-          # variable; it must stay unexpanded.
-          # shellcheck disable=SC2016
-          EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open --limit 200 \
-            --json number,title | \
-            jq -r --arg t "${TITLE}" '[.[] | select(.title == $t)] | .[0].number // empty')
-
-          if [[ -n "${EXISTING}" ]]; then
-            echo "Existing open issue #${EXISTING} -- commenting instead of filing a duplicate."
-            gh issue comment "${EXISTING}" --repo "${{ github.repository }}" --body-file issue-body.txt
-          else
-            gh issue create \
-              --repo "${{ github.repository }}" \
-              --title "${TITLE}" \
-              --body-file issue-body.txt \
-              --label "bug,foundation"
-          fi
+          bun run gh:tracking-issue \
+            --title "macOS .pkg installer fails live Gatekeeper assessment" \
+            --body-file issue-body.txt \
+            --labels "bug,foundation"

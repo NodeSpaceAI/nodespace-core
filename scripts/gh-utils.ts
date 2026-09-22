@@ -318,6 +318,43 @@ class NodeSpaceGitHubManager {
       throw error;
     }
   }
+
+  // Find an open issue with this exact title and comment on it instead of
+  // filing a duplicate; create a new one only if no match exists.
+  //
+  // Built for scheduled monitoring workflows (e.g. a nightly Gatekeeper or
+  // Homebrew-tap-drift check) whose failure step would otherwise file a
+  // fresh tracking issue on every single failed run. Title matching is
+  // exact (`===`), never a substring/prefix match — a title that merely
+  // starts with or contains `title` must not be treated as the same
+  // tracking issue.
+  //
+  // Matches via `GitHubClient#listIssues` (REST `issues.listForRepo`), the
+  // regular strongly-consistent issues-list endpoint -- deliberately never
+  // GitHub's `--search`/search-index endpoint, which is only eventually
+  // consistent and could still report "no match" for an issue this same
+  // helper just created moments earlier (e.g. two closely-spaced runs
+  // around a schedule boundary), causing a duplicate anyway.
+  async findOrCreateTrackingIssue(options: {
+    title: string;
+    body: string;
+    labels?: string[];
+  }): Promise<{ number: number; url: string; action: "commented" | "created" }> {
+    const openIssues = await this.client.listIssues({ state: "open" });
+    const existing = openIssues.find((issue) => issue.title === options.title);
+
+    if (existing) {
+      const comment = await this.client.addPRComment(existing.number, options.body);
+      console.log(`Existing open issue #${existing.number} -- commenting instead of filing a duplicate.`);
+      console.log(`Comment URL: ${comment.url}`);
+      return { number: existing.number, url: comment.url, action: "commented" };
+    }
+
+    const issue = await this.client.createIssue(options.title, options.body, options.labels);
+    console.log(`No existing open issue found -- created #${issue.number}`);
+    console.log(`URL: ${issue.url}`);
+    return { number: issue.number, url: issue.url, action: "created" };
+  }
 }
 
 // CLI Interface
@@ -572,6 +609,42 @@ async function main() {
         break;
       }
 
+      case "tracking-issue:find-or-create": {
+        const titleIndex = args.indexOf("--title");
+        const bodyIndex = args.indexOf("--body");
+        const bodyFileIndex = args.indexOf("--body-file");
+        const labelsIndex = args.indexOf("--labels");
+
+        const title = titleIndex !== -1 ? args[titleIndex + 1] : undefined;
+
+        let body: string | undefined;
+        if (bodyIndex !== -1 && args[bodyIndex + 1]) {
+          body = args[bodyIndex + 1];
+        } else if (bodyFileIndex !== -1 && args[bodyFileIndex + 1]) {
+          try {
+            body = await Bun.file(args[bodyFileIndex + 1]).text();
+          } catch (error: unknown) {
+            console.error(`❌ Failed to read body file: ${error instanceof Error ? error.message : String(error)}`);
+            process.exit(1);
+          }
+        }
+
+        const labels =
+          labelsIndex !== -1 && args[labelsIndex + 1]
+            ? args[labelsIndex + 1].split(",").map((l) => l.trim())
+            : undefined;
+
+        if (!title || !body) {
+          console.error("Usage:");
+          console.error('  bun run gh:tracking-issue --title "Title" --body "Body" [--labels "label1,label2"]');
+          console.error('  bun run gh:tracking-issue --title "Title" --body-file /path/to/body.md [--labels "label1,label2"]');
+          process.exit(1);
+        }
+
+        await manager.findOrCreateTrackingIssue({ title, body, labels });
+        break;
+      }
+
       case "help":
       default:
         console.log(`
@@ -586,6 +659,10 @@ async function main() {
   bun run gh:edit 45 --state "closed"         # Close/reopen issue
   bun run gh:comment 45 --body "Comment text" # Add comment to issue
   bun run gh:comment 45 --body-file /path/to/comment.md  # Add comment from file
+  bun run gh:tracking-issue --title "Title" --body-file body.md --labels "bug,foundation"
+                                               # Find an open issue with this exact title and
+                                               # comment on it, or create one if none exists
+                                               # (dedup for scheduled monitoring workflows)
   bun run gh:status 57,58,59 "In Progress"    # Update status
   bun run gh:assign 60,61,62 "@me"            # Assign issues
   bun run gh:unassign 60,61,62 "@me"          # Unassign issues
