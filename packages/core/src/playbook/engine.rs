@@ -359,14 +359,32 @@ impl PlaybookEngine {
             if let Err(errors) =
                 crate::playbook::validation::validate_play(&parsed_rules, &self.node_service).await
             {
+                self.log_validation_errors(&node.id, &errors).await;
+                if crate::playbook::validation::has_genuine_failure(&errors) {
+                    warn!(
+                        "Play {} failed save-time validation with {} error(s) at load time, \
+                         skipping activation",
+                        node.id,
+                        errors.len()
+                    );
+                    continue;
+                }
+                // Every error is SchemaResolutionFailed — inconclusive (a
+                // transient DB error), not evidence this play is broken.
+                // Unlike the other three call sites gated the same way,
+                // this one has no later event to retry validation on: a
+                // play skipped here at startup stays un-activated for the
+                // rest of the process's life, which is a worse outcome for
+                // a play a user already set active in a previous session
+                // than optimistically activating it despite the unconfirmed
+                // verdict. Falls through to activate below.
                 warn!(
-                    "Play {} failed save-time validation with {} error(s) at load time, \
-                     skipping activation",
+                    "Play {} save-time validation was inconclusive ({} resolution failure(s)) \
+                     at load time — activating anyway rather than leaving it off for the \
+                     process lifetime on an unconfirmed verdict",
                     node.id,
                     errors.len()
                 );
-                self.log_validation_errors(&node.id, &errors).await;
-                continue;
             }
 
             let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
