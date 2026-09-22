@@ -162,35 +162,17 @@ mod entity_resolution_tests {
         Ok(())
     }
 
-    /// KNOWN LIMITATION, pinned deliberately rather than asserted away.
+    /// A body node that merely MENTIONS a name is not an entity. A node with a
+    /// parent carries no title (`compute_title` returns None for a non-root
+    /// node of a content-titled type), so it never enters `node_title_fts` and
+    /// a title search for the name it contains finds nothing.
     ///
-    /// A child node SHOULD be title-less and therefore invisible to this tier —
-    /// that is the whole reason it indexes `title` rather than `content`.
-    /// Today it is not. `prepare_create_node_with_parent` correctly computes
-    /// `title = None` for a node with a parent (crud.rs:558, passing
-    /// `is_root = parent_id.is_none()`), but `create_node_in_tx` then sees
-    /// `title.is_none()` and RECOMPUTES it with `is_root` unknown
-    /// (crud.rs:266-267). That recompute resolves rootness by looking up the
-    /// parent edge — which the same transaction has not created yet — so the
-    /// child reads as a root and is titled with its own body text.
-    ///
-    /// Consequence for this tier: body nodes enter the entity index under
-    /// their full sentence. They rank poorly (long titles are penalised by
-    /// bm25, and the relative cutoff drops them when a real entity is present),
-    /// so the tier degrades rather than breaks. But "every row in this index is
-    /// an entity" is not currently true.
-    ///
-    /// Fixing it means threading `is_root` into `create_node_in_tx` or moving
-    /// the recompute after the edge write — a change to the core create path
-    /// with its own blast radius (mention autocomplete, `search_nodes`'s title
-    /// matching, ADR-040's title boost all read this column), so it is tracked
-    /// separately rather than folded in here.
-    ///
-    /// This test pins CURRENT behaviour so the fix is detectable: when the
-    /// recompute is corrected, this test fails and should be inverted to the
-    /// assertion it wants to make.
+    /// The create path has to supply rootness to the title computation rather
+    /// than derive it: the node row is inserted before its parent edge, in the
+    /// same transaction, so a store lookup at insert time sees no parent and
+    /// would title the child with its own body text.
     #[tokio::test]
-    async fn a_body_node_is_currently_resolved_as_an_entity_which_is_a_bug() -> Result<()> {
+    async fn a_body_node_mentioning_the_name_is_not_an_entity() -> Result<()> {
         let (store, service, _t) = create_test_store().await?;
         let parent = seed_entity(&service, "text", "Meeting Notes").await?;
         let child = Node::new(
@@ -198,9 +180,6 @@ mod entity_resolution_tests {
             "we should call Northwind Trading about the renewal".to_string(),
             json!({}),
         );
-        // Through the service, with a parent: `compute_title` returns None for
-        // a non-root node, so it is genuinely NULL-titled rather than merely
-        // unindexed by an incomplete fixture.
         service
             .create_node_with_parent(nodespace_core::services::CreateNodeParams {
                 id: Some(child.id.clone()),
@@ -213,20 +192,15 @@ mod entity_resolution_tests {
             })
             .await?;
 
+        let stored = store.get_node(&child.id).await?.expect("child was created");
+        assert_eq!(stored.title, None, "a child node carries no title");
+
         let hits = store
             .resolve_entities_by_title("Northwind Trading", 12)
             .await?;
-
-        assert_eq!(
-            hits.len(),
-            1,
-            "pinning today's behaviour: the child is wrongly titled with its own \
-             body text, so it DOES resolve. See this test's doc comment — when \
-             the create-path recompute is fixed, invert this to is_empty()."
-        );
         assert!(
-            hits[0].title.starts_with("we should call"),
-            "and it resolves under its body text, not under a real name: {hits:?}"
+            hits.is_empty(),
+            "a body node must not resolve as an entity: {hits:?}"
         );
         Ok(())
     }

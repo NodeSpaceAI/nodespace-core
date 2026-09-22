@@ -4498,6 +4498,62 @@ mod tests {
         );
     }
 
+    /// A node created with a parent commits with a NULL title, and one created
+    /// without a parent is titled from its content — through both the
+    /// standalone and the `_in_tx` entry points. The node row is inserted
+    /// before its parent edge in the same transaction, so the create path must
+    /// be told rootness rather than look it up.
+    #[tokio::test]
+    async fn test_create_node_with_parent_titles_only_roots() {
+        let (service, _temp) = create_test_service().await;
+
+        let params = |content: &str, parent_id: Option<String>| CreateNodeParams {
+            id: None,
+            node_type: "text".to_string(),
+            content: content.to_string(),
+            parent_id,
+            position: crate::services::InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        };
+
+        let root_id = service
+            .create_node_with_parent(params("a root", None))
+            .await
+            .unwrap();
+        let child_id = service
+            .create_node_with_parent(params("a child", Some(root_id.clone())))
+            .await
+            .unwrap();
+
+        let service_for_tx = service.clone();
+        let child_params = params("a child in tx", Some(root_id.clone()));
+        let root_params = params("a root in tx", None);
+        let (tx_child_id, tx_root_id) = service
+            .with_transaction(move |tx| {
+                Box::pin(async move {
+                    let child = service_for_tx
+                        .create_node_with_parent_in_tx(tx, child_params)
+                        .await?;
+                    let root = service_for_tx
+                        .create_node_with_parent_in_tx(tx, root_params)
+                        .await?;
+                    Ok((child, root))
+                })
+            })
+            .await
+            .unwrap();
+
+        let title = |id: String| {
+            let service = service.clone();
+            async move { service.get_node(&id).await.unwrap().unwrap().title }
+        };
+        assert_eq!(title(root_id).await.as_deref(), Some("a root"));
+        assert_eq!(title(tx_root_id).await.as_deref(), Some("a root in tx"));
+        assert_eq!(title(child_id).await, None);
+        assert_eq!(title(tx_child_id).await, None);
+    }
+
     /// ADR-069 S2 regression test: an induced failure between the node
     /// insert and the parent-edge insert must leave NO node row and add NO
     /// `get_roots()` entry — the orphaned-root hazard `create_node_with_parent`
@@ -4531,7 +4587,7 @@ mod tests {
                 let service = service_for_tx.clone();
                 let node = node.clone();
                 Box::pin(async move {
-                    let created_id = service.create_node_in_tx(tx, node).await?;
+                    let created_id = service.create_node_in_tx(tx, node, false).await?;
                     // Simulate the edge write failing (constraint violation,
                     // I/O error, crash) — same failure class as F5 in the
                     // write-atomicity survey. Must roll back the insert above.
