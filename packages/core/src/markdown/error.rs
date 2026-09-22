@@ -23,12 +23,32 @@ pub enum MarkdownError {
     CreationFailed(String),
     /// An unexpected internal error occurred.
     Internal(String),
+    /// Something already exists at `id` (currently: a schema id requested by
+    /// `create_schema`).
+    ///
+    /// Structured so a caller that needs to distinguish "this id is taken"
+    /// from every other rejection — the methodology installer's collision
+    /// re-keying, for one — can match the variant instead of substring-testing
+    /// `Display`'s text, which breaks the moment some unrelated rejection
+    /// grows the same phrase. `message` carries the full, agent-facing
+    /// explanation (e.g. the existing schema's rendered definition); `id` is
+    /// the exact, structured signal.
+    AlreadyExists { id: String, message: String },
 }
 
 impl MarkdownError {
     /// Construct an `InvalidParams` error.
     pub fn invalid_params(message: impl Into<String>) -> Self {
         MarkdownError::InvalidParams(message.into())
+    }
+
+    /// Construct an `AlreadyExists` error for the id already taken, with the
+    /// full agent-facing explanation as `message`.
+    pub fn already_exists(id: impl Into<String>, message: impl Into<String>) -> Self {
+        MarkdownError::AlreadyExists {
+            id: id.into(),
+            message: message.into(),
+        }
     }
 
     /// Construct an `Internal` error.
@@ -53,6 +73,7 @@ impl MarkdownError {
             | MarkdownError::NotFound(m)
             | MarkdownError::CreationFailed(m)
             | MarkdownError::Internal(m) => m,
+            MarkdownError::AlreadyExists { message, .. } => message,
         }
     }
 }
@@ -64,6 +85,7 @@ impl fmt::Display for MarkdownError {
             MarkdownError::NotFound(m) => write!(f, "not found: {m}"),
             MarkdownError::CreationFailed(m) => write!(f, "node creation failed: {m}"),
             MarkdownError::Internal(m) => write!(f, "{m}"),
+            MarkdownError::AlreadyExists { message, .. } => write!(f, "{message}"),
         }
     }
 }

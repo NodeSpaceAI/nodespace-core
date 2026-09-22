@@ -726,10 +726,21 @@ async fn ensure_schema_cached(
 /// targeting `task`, so an issue reaches that reverse name through
 /// inheritance (ADR-078). Matching only the concrete type would refuse
 /// `node.blocked_by` on an issue while allowing it on a task.
+///
+/// Takes the same `schema_cache` as [`resolve_forward_segment`], but this
+/// function never reads it back: the inbound-relationship data below always
+/// comes from a fresh `get_inbound_relationships` call, which is not
+/// cache-backed. Warming the cache here still isn't wasted — it means a
+/// scope's schema, once fetched by whichever of the two checks runs first
+/// for a given segment, is a cache hit for the other (and for the next
+/// segment's [`ensure_schema_cached`] call at the top of the loop) — but the
+/// per-scope `get_inbound_relationships` cost this function actually incurs
+/// is untouched by it.
 async fn resolve_reverse_segment(
     node_type: &str,
     segment: &str,
     node_service: &NodeService,
+    schema_cache: &mut HashMap<String, Option<SchemaNode>>,
 ) -> Option<String> {
     let chain = node_service
         .resolve_type_chain(node_type)
@@ -737,6 +748,7 @@ async fn resolve_reverse_segment(
         .unwrap_or_else(|_| vec![node_type.to_string()]);
 
     for scope in chain {
+        ensure_schema_cached(&scope, node_service, schema_cache).await;
         let Ok(inbound) = node_service.get_inbound_relationships(&scope).await else {
             continue;
         };
@@ -890,30 +902,21 @@ async fn validate_schema_path(
             continue;
         }
 
-        // A segment may also spell the far end of a DECLARED relationship. The
-        // forward name is in the effective set below; a reverse name
-        // (`blocked_by` for `task.blocks`) lives on whichever schema declares
-        // the forward half and targets this type, so it appears in no forward
-        // set at all. `GraphResolver` resolves both — direction is decided per
-        // segment in `fetch_related_nodes` — so validating only the forward
-        // spelling would refuse Plays the engine runs fine.
+        // Forward first, and from the *effective* set — own declarations plus
+        // everything inherited across the `extends` chain
+        // (`resolve_relationships`), so a name declared on `task` resolves on
+        // an `issue` without a second chain walk here.
         //
-        // Matched against inbound declarations by schema alone, with no node
-        // in hand: this asks whether the name is *declarable* here, which is
-        // all save-time validation can know.
-        if let Some(target) = resolve_reverse_segment(&current_type, segment, node_service).await {
-            current_type = target;
-            continue;
-        }
-
-        // Forward names come from the effective set, which already spans the
-        // `extends` chain (`resolve_relationships`), so an inherited
-        // relationship resolves without a second chain walk here.
+        // Ordering mirrors `rel_ops::resolve_relationship_name`: a forward
+        // name always wins over a same-spelled reverse name on another schema.
+        // Checking reverse first would let validation route a path differently
+        // from the runtime resolver that actually walks it.
         let relationship = relationships.iter().find(|r| r.name == *segment);
         if let Some(rel) = relationship {
             if let Some(ref target_type) = rel.target_type {
                 // Follow the relationship to the target schema
                 current_type = target_type.clone();
+                continue;
             } else {
                 // Relationship has no target_type — can't traverse further
                 if i + 1 < segments.len() - 1 {
@@ -929,20 +932,39 @@ async fn validate_schema_path(
                 }
                 return;
             }
-        } else {
-            // Neither a field nor a relationship — broken path
-            // But only report if the schema actually exists (to avoid duplicate errors)
-            errors.push(PlayValidationError::BrokenPath {
-                path: full_path.clone(),
-                segment: segment.clone(),
-                message: format!(
-                    "'{}' is not a field or relationship on schema '{}'",
-                    segment, current_type
-                ),
-                location: location.to_string(),
-            });
-            return;
         }
+
+        // A segment may also spell the far end of a DECLARED relationship.
+        // The forward name lives on this schema; a reverse name (`blocked_by`
+        // for `task.blocks`) lives on whichever schema declares the forward
+        // half and targets this type. `GraphResolver` resolves both —
+        // direction is decided per segment in `fetch_related_nodes` — so
+        // validating only the forward spelling would refuse Plays the engine
+        // runs fine. Checked only once the forward check above comes back
+        // empty, for the same precedence reason.
+        //
+        // Matched against inbound declarations by schema alone, with no node
+        // in hand: this asks whether the name is *declarable* here, which is
+        // all save-time validation can know.
+        if let Some(target) =
+            resolve_reverse_segment(&current_type, segment, node_service, schema_cache).await
+        {
+            current_type = target;
+            continue;
+        }
+
+        // Neither a field nor a relationship — broken path
+        // But only report if the schema actually exists (to avoid duplicate errors)
+        errors.push(PlayValidationError::BrokenPath {
+            path: full_path.clone(),
+            segment: segment.clone(),
+            message: format!(
+                "'{}' is not a field or relationship on schema '{}'",
+                segment, current_type
+            ),
+            location: location.to_string(),
+        });
+        return;
     }
 }
 
@@ -2970,6 +2992,93 @@ mod tests {
                 )),
                 "should report broken path for rel without target_type: {:?}",
                 errors
+            );
+        }
+
+        #[tokio::test]
+        async fn test_forward_relationship_wins_over_colliding_reverse_name() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // "members" is deliberately declared on both ends of a collision:
+            // vp_trigger's own forward relationship, and a reverse name that
+            // vp_reverse_source's unrelated relationship happens to use for
+            // its far end, which also lands on vp_trigger. Mirrors the kind
+            // of namespace collision `tasks` has among `project`/`person`
+            // (and `cycle`, in the Linear recipe) — dense enough that two
+            // schemas reach the same relationship name from opposite
+            // directions.
+            create_schema(&svc, "vp_forward_target", 1, json!([])).await;
+
+            // Deliberately fieldless — unlike `create_schema`'s fixtures,
+            // which all carry a "status" field. If validation wrongly took
+            // the reverse spelling below, it would land here and "status"
+            // would not resolve, which is exactly the distinguishing signal
+            // this test needs: forward and reverse must lead somewhere
+            // observably different, or a precedence bug wouldn't show up.
+            let reverse_source = Node::new_with_id(
+                "vp_reverse_source".to_string(),
+                "schema".to_string(),
+                "vp_reverse_source".to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "vp_reverse_source schema",
+                    "fields": []
+                }),
+            );
+            svc.create_node(reverse_source)
+                .await
+                .expect("Failed to create vp_reverse_source schema");
+
+            create_schema(
+                &svc,
+                "vp_trigger",
+                1,
+                json!([{
+                    "name": "members",
+                    "targetType": "vp_forward_target",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "roster_of",
+                    "reverseCardinality": "one"
+                }]),
+            )
+            .await;
+
+            // vp_reverse_source declares an unrelated forward relationship
+            // targeting vp_trigger, whose REVERSE name is "members" — so
+            // from vp_trigger's perspective, "members" is declarable both as
+            // its own forward relationship and as this reverse spelling.
+            let reverse_declarations: Vec<crate::models::schema::SchemaRelationship> =
+                serde_json::from_value(json!([{
+                    "name": "owns_member",
+                    "targetType": "vp_trigger",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "members",
+                    "reverseCardinality": "many"
+                }]))
+                .expect("valid relationship fixture");
+            svc.set_schema_relationships("vp_reverse_source", &reverse_declarations)
+                .await
+                .expect("Failed to declare relationships on vp_reverse_source");
+
+            // "members.status": forward must win, resolving through
+            // vp_trigger's OWN "members" relationship to vp_forward_target,
+            // where "status" exists (added by `create_schema`). Reverse-first
+            // would instead land on vp_reverse_source, which has no "status"
+            // field, and report a broken path.
+            let rules = vec![make_rule(
+                "vp_trigger",
+                vec!["node.members.status == 'active'"],
+                vec![],
+            )];
+            let result = validate_play(&rules, &svc).await;
+            assert!(
+                result.is_ok(),
+                "a forward relationship must take precedence over a same-spelled \
+                 reverse name declared on another schema: {:?}",
+                result
             );
         }
 

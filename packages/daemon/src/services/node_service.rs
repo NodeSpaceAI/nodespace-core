@@ -1614,16 +1614,7 @@ impl GrpcNodeService for NodeServiceImpl {
         let result =
             nodespace_core::markdown::handle_get_markdown_from_node_id(&this.node_service, params)
                 .await
-                .map_err(|e| match e {
-                    nodespace_core::markdown::MarkdownError::NotFound(m) => Status::not_found(m),
-                    nodespace_core::markdown::MarkdownError::InvalidParams(m) => {
-                        Status::invalid_argument(m)
-                    }
-                    nodespace_core::markdown::MarkdownError::CreationFailed(m) => {
-                        Status::failed_precondition(format!("Node creation failed: {m}"))
-                    }
-                    nodespace_core::markdown::MarkdownError::Internal(m) => Status::internal(m),
-                })?;
+                .map_err(markdown_error_to_status)?;
 
         let markdown = result["markdown"]
             .as_str()
@@ -2772,6 +2763,7 @@ fn markdown_error_to_status(err: nodespace_core::markdown::MarkdownError) -> Sta
         MarkdownError::NotFound(msg) => Status::not_found(msg),
         MarkdownError::CreationFailed(msg) => Status::internal(msg),
         MarkdownError::Internal(msg) => Status::internal(msg),
+        MarkdownError::AlreadyExists { message, .. } => Status::already_exists(message),
     }
 }
 
