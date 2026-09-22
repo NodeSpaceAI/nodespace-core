@@ -697,3 +697,112 @@ async fn a_field_named_like_a_re_keyed_schema_is_not_rewritten() -> Result<()> {
 
     Ok(())
 }
+
+/// A vocabulary extension naming a field after a re-keyed schema must target
+/// the field the recipe wrote.
+///
+/// The sibling of `a_field_named_like_a_re_keyed_schema_is_not_rewritten`, one
+/// call site over. `UpdateSchemaParams` mixes ids and vocabulary in value
+/// position exactly as `CreateSchemaParams` does — `schema_id`, `extends` and
+/// `add_relationships[].targetType` are references, while
+/// `add_field_values[].field`, the enum `value`s, `add_fields[].name` and the
+/// template tokens are user vocabulary.
+///
+/// This is the loud half: `add_field_values` cross-checks the field name, so a
+/// rewritten one fails with "Field 'x_2' not found". The quiet half is
+/// `values[].value` — an enum value spelling a re-keyed id would be silently
+/// rewritten into the user's schema, which is the corruption re-keying exists
+/// to prevent.
+#[tokio::test]
+async fn a_vocabulary_extension_targets_the_field_the_recipe_wrote() -> Result<()> {
+    use nodespace_core::methodology::{FieldValueExtension, MethodologyRecipe, SchemaStep};
+
+    let (service, _tmp) = test_service().await?;
+
+    // Squat the first schema's id, forcing a re-key to `cycle_2`.
+    handle_create_schema(
+        &service,
+        serde_json::json!({
+            "name": "Cycle",
+            "description": "Someone else's cycle",
+            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+        }),
+    )
+    .await
+    .expect("squatter schema");
+
+    let recipe = MethodologyRecipe {
+        id: "vocab-ext-collision",
+        name: "Vocabulary extension collision",
+        description: "Extends a field whose name spells an earlier re-keyed id.",
+        schemas: vec![
+            SchemaStep {
+                schema_id: "cycle",
+                params: serde_json::json!({
+                    "name": "Cycle",
+                    "description": "The recipe's own cycle",
+                    "fields": [{ "name": "length", "type": "string", "protection": "user" }],
+                }),
+            },
+            SchemaStep {
+                schema_id: "report",
+                params: serde_json::json!({
+                    "name": "Report",
+                    "description": "Has an extensible enum field named `cycle`",
+                    "fields": [{
+                        "name": "cycle",
+                        "type": "enum",
+                        "protection": "user",
+                        "extensible": true,
+                        "coreValues": [{ "value": "weekly", "label": "Weekly" }],
+                        "userValues": [],
+                    }],
+                }),
+            },
+        ],
+        field_value_extensions: vec![FieldValueExtension {
+            schema_id: "report",
+            field: "cycle",
+            params: serde_json::json!({
+                "schema_id": "report",
+                "add_field_values": [{
+                    "field": "cycle",
+                    "values": [{ "value": "monthly", "label": "Monthly" }],
+                }],
+            }),
+        }],
+        plays: vec![],
+        skills: vec![],
+    };
+
+    let report = install_recipe(&service, &recipe).await;
+    assert!(
+        report.success,
+        "a field name that spells a re-keyed id must not be rewritten in an \
+         update payload: {:?}",
+        report.failure()
+    );
+
+    let schema = service
+        .get_schema_node("report")
+        .await?
+        .expect("report schema should exist");
+    let field = schema
+        .fields
+        .iter()
+        .find(|f| f.name == "cycle")
+        .expect("the `cycle` field must keep the name the recipe wrote");
+
+    let values: Vec<&str> = field
+        .user_values
+        .iter()
+        .flatten()
+        .map(|v| v.value.as_str())
+        .collect();
+    assert!(
+        values.contains(&"monthly"),
+        "the appended value must land on the recipe's own field, got {values:?}"
+    );
+
+    Ok(())
+}

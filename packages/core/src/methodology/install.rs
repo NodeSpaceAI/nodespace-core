@@ -75,7 +75,7 @@ pub async fn install_recipe(
             continue;
         }
 
-        let params = rewrite_schema_ids(&ext.params, &renames);
+        let params = rewrite_update_schema_step_ids(&ext.params, &renames);
         let outcome = match handle_update_schema(node_service, params).await {
             Ok(_) => StepOutcome::Created {
                 id: resolved_id(ext.schema_id, &renames),
@@ -95,7 +95,7 @@ pub async fn install_recipe(
             continue;
         }
 
-        let properties = rewrite_schema_ids(&play.properties(), &renames);
+        let properties = rewrite_play_step_ids(&play.properties(), &renames);
         let outcome = create_node_resolving_collisions(
             node_service,
             play.play_id,
@@ -293,42 +293,6 @@ async fn create_node_resolving_collisions(
     }
 }
 
-/// Rewrite schema ids in a payload to follow any collision re-keying.
-///
-/// Walks the JSON rather than matching known key names: a schema id appears as
-/// `schema_id`, as a trigger's `node_type`, as a relationship `targetType`, and
-/// inside a Play's nested rules. Missing one would leave a step pointing at the
-/// stranger's schema the re-key existed to avoid.
-///
-/// Only exact string matches are rewritten, so `"cycle"` becomes `"cycle__2"`
-/// while prose mentioning a cycle is untouched.
-fn rewrite_schema_ids(
-    value: &serde_json::Value,
-    renames: &HashMap<String, String>,
-) -> serde_json::Value {
-    if renames.is_empty() {
-        return value.clone();
-    }
-    match value {
-        serde_json::Value::String(s) => match renames.get(s) {
-            Some(replacement) => serde_json::json!(replacement),
-            None => value.clone(),
-        },
-        serde_json::Value::Array(items) => serde_json::Value::Array(
-            items
-                .iter()
-                .map(|v| rewrite_schema_ids(v, renames))
-                .collect(),
-        ),
-        serde_json::Value::Object(map) => serde_json::Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), rewrite_schema_ids(v, renames)))
-                .collect(),
-        ),
-        _ => value.clone(),
-    }
-}
-
 /// A markdown note naming every re-keyed id, appended to seeded guidance when
 /// an install had to move a schema aside.
 ///
@@ -360,10 +324,126 @@ fn rename_note(renames: &HashMap<String, String>) -> Option<String> {
     Some(note)
 }
 
+/// Follow a re-key through an `update_schema` payload's **id-bearing keys
+/// only** — `schema_id`, `extends`, and each added relationship's
+/// `targetType`.
+///
+/// The `create_schema` reasoning applies unchanged: `UpdateSchemaParams` mixes
+/// references and user vocabulary in value position. `add_field_values[].field`
+/// and its `values[].value`, `add_fields[].name`, `remove_fields`,
+/// `rename_fields`, and both template strings are vocabulary. Rewriting them
+/// retargets an extension at a field that does not exist (loud, since
+/// `add_field_values` checks the name) or writes an enum value the recipe
+/// never authored (silent).
+fn rewrite_update_schema_step_ids(
+    params: &serde_json::Value,
+    renames: &HashMap<String, String>,
+) -> serde_json::Value {
+    let mut out = params.clone();
+    if renames.is_empty() {
+        return out;
+    }
+
+    for key in ["schema_id", "extends"] {
+        if let Some(id) = out.get(key).and_then(|v| v.as_str()) {
+            if let Some(renamed) = renames.get(id) {
+                out[key] = serde_json::json!(renamed);
+            }
+        }
+    }
+
+    if let Some(relationships) = out
+        .get_mut("add_relationships")
+        .and_then(|v| v.as_array_mut())
+    {
+        for relationship in relationships {
+            let Some(target) = relationship.get("targetType").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if let Some(renamed) = renames.get(target) {
+                relationship["targetType"] = serde_json::json!(renamed);
+            }
+        }
+    }
+
+    out
+}
+
+/// Follow a re-key through a play node's properties — every rule's trigger
+/// `node_type`, and each action's `node_type` / `target_type` params.
+///
+/// A blanket walk over these happens to be safe for the shipped recipe, but
+/// only by luck: a rule `name` is free-form vocabulary, a CEL condition is a
+/// string, and either could spell a schema id. Twice in this PR a payload was
+/// judged safe by inspecting the recipe rather than the shape, and twice that
+/// was wrong — so all three payload kinds are key-targeted, and none depends
+/// on what the current content happens to contain.
+fn rewrite_play_step_ids(
+    properties: &serde_json::Value,
+    renames: &HashMap<String, String>,
+) -> serde_json::Value {
+    let mut out = properties.clone();
+    if renames.is_empty() {
+        return out;
+    }
+
+    // `rules` is mirrored under `_seed.default_rules`, and both must follow the
+    // rename or a reset would restore rules pointing at the stranger's schema.
+    if let Some(rules) = out.get_mut("rules").and_then(|v| v.as_array_mut()) {
+        for rule in rules {
+            rewrite_rule_ids(rule, renames);
+        }
+    }
+    if let Some(defaults) = out
+        .get_mut("_seed")
+        .and_then(|seed| seed.get_mut("default_rules"))
+        .and_then(|v| v.as_array_mut())
+    {
+        for rule in defaults {
+            rewrite_rule_ids(rule, renames);
+        }
+    }
+
+    out
+}
+
+/// Rewrite the id-bearing keys of one rule in place.
+fn rewrite_rule_ids(rule: &mut serde_json::Value, renames: &HashMap<String, String>) {
+    if let Some(node_type) = rule
+        .get("trigger")
+        .and_then(|t| t.get("node_type"))
+        .and_then(|v| v.as_str())
+    {
+        if let Some(renamed) = renames.get(node_type) {
+            rule["trigger"]["node_type"] = serde_json::json!(renamed);
+        }
+    }
+
+    let Some(actions) = rule.get_mut("actions").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    for action in actions {
+        let Some(params) = action.get_mut("params") else {
+            continue;
+        };
+        // `node_type` names a type to create; `target_type` names one to
+        // relate to. `relationship_type` is a relationship NAME, not an id,
+        // and is deliberately left alone.
+        for key in ["node_type", "target_type"] {
+            if let Some(id) = params.get(key).and_then(|v| v.as_str()) {
+                if let Some(renamed) = renames.get(id) {
+                    params[key] = serde_json::json!(renamed);
+                }
+            }
+        }
+    }
+}
+
 /// Follow a re-key through a `create_schema` payload's **id-bearing keys
 /// only** — `extends` and each relationship's `targetType`.
 ///
-/// Deliberately NOT [`rewrite_schema_ids`], which is a blanket value walk.
+/// Key-targeted rather than a blanket value walk over the payload, which is
+/// what an earlier version of this did.
 /// That is safe for the Play, vocabulary and skill payloads, whose ids all sit
 /// in value position. A `create_schema` payload is a different shape: it also
 /// carries user-authored vocabulary in value position — `fields[].name`,
@@ -432,34 +512,113 @@ impl StepReport {
 mod tests {
     use super::*;
 
+    /// A Play's rules follow a rename through both the live copy and the
+    /// `_seed.default_rules` mirror.
+    ///
+    /// The mirror matters: `reset_seeded_play_to_default` restores from it, so
+    /// a mirror left pointing at the stranger's schema would silently undo the
+    /// re-key the moment a user reset the Play.
     #[test]
-    fn rewrite_follows_a_rename_through_nested_payloads() {
+    fn a_plays_rules_and_seed_mirror_both_follow_a_rename() {
         let mut renames = HashMap::new();
-        renames.insert("cycle".to_string(), "cycle__2".to_string());
+        renames.insert("cycle".to_string(), "cycle_2".to_string());
 
-        let payload = serde_json::json!({
-            "rules": [{
-                "trigger": { "node_type": "cycle", "type": "scheduled" },
-                "actions": [{ "params": { "node_type": "cycle" } }],
+        let rules = serde_json::json!([{
+            "name": "a cycle of work",
+            "trigger": { "type": "scheduled", "node_type": "cycle" },
+            "actions": [{
+                "action_type": "create_node",
+                "params": { "node_type": "cycle", "relationship_type": "tasks" },
             }],
-            "unrelated": "a cycle of work",
+        }]);
+        let properties = serde_json::json!({
+            "rules": rules,
+            "_seed": { "default_rules": rules },
         });
 
-        let out = rewrite_schema_ids(&payload, &renames);
-        assert_eq!(out["rules"][0]["trigger"]["node_type"], "cycle__2");
+        let out = rewrite_play_step_ids(&properties, &renames);
+
+        for path in ["rules", "_seed"] {
+            let rule = if path == "rules" {
+                &out["rules"][0]
+            } else {
+                &out["_seed"]["default_rules"][0]
+            };
+            assert_eq!(rule["trigger"]["node_type"], "cycle_2", "in {path}");
+            assert_eq!(
+                rule["actions"][0]["params"]["node_type"], "cycle_2",
+                "in {path}"
+            );
+            assert_eq!(
+                rule["name"], "a cycle of work",
+                "a rule name is vocabulary, not a reference ({path})"
+            );
+            assert_eq!(
+                rule["actions"][0]["params"]["relationship_type"], "tasks",
+                "a relationship_type is a name, not a schema id ({path})"
+            );
+        }
+    }
+
+    /// An update payload follows ids and leaves field vocabulary alone.
+    #[test]
+    fn an_update_payload_rewrites_ids_but_not_field_names() {
+        let mut renames = HashMap::new();
+        renames.insert("cycle".to_string(), "cycle_2".to_string());
+
+        let params = serde_json::json!({
+            "schema_id": "cycle",
+            "add_field_values": [{
+                "field": "cycle",
+                "values": [{ "value": "cycle", "label": "Cycle" }],
+            }],
+            "add_relationships": [{
+                "name": "cycle",
+                "targetType": "cycle",
+                "reverseName": "cycle",
+            }],
+        });
+
+        let out = rewrite_update_schema_step_ids(&params, &renames);
+
         assert_eq!(
-            out["rules"][0]["actions"][0]["params"]["node_type"],
-            "cycle__2"
+            out["schema_id"], "cycle_2",
+            "the target schema is a reference"
         );
         assert_eq!(
-            out["unrelated"], "a cycle of work",
-            "only exact id matches are rewritten, never prose"
+            out["add_relationships"][0]["targetType"], "cycle_2",
+            "a relationship target is a reference"
+        );
+
+        assert_eq!(
+            out["add_field_values"][0]["field"], "cycle",
+            "a field name is vocabulary — rewriting it retargets the extension \
+             at a field that does not exist"
+        );
+        assert_eq!(
+            out["add_field_values"][0]["values"][0]["value"], "cycle",
+            "an enum value is vocabulary — rewriting it writes a value the \
+             recipe never authored"
+        );
+        assert_eq!(
+            out["add_relationships"][0]["name"], "cycle",
+            "a relationship name is vocabulary"
+        );
+        assert_eq!(
+            out["add_relationships"][0]["reverseName"], "cycle",
+            "a reverse name is vocabulary"
         );
     }
 
     #[test]
-    fn rewrite_is_identity_without_renames() {
-        let payload = serde_json::json!({ "node_type": "cycle" });
-        assert_eq!(rewrite_schema_ids(&payload, &HashMap::new()), payload);
+    fn rewrites_are_identity_without_renames() {
+        let empty = HashMap::new();
+        let schema = serde_json::json!({ "extends": "cycle" });
+        let update = serde_json::json!({ "schema_id": "cycle" });
+        let play = serde_json::json!({ "rules": [] });
+
+        assert_eq!(rewrite_schema_step_ids(&schema, &empty), schema);
+        assert_eq!(rewrite_update_schema_step_ids(&update, &empty), update);
+        assert_eq!(rewrite_play_step_ids(&play, &empty), play);
     }
 }
