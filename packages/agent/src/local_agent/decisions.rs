@@ -65,9 +65,18 @@ pub struct DecisionRecord {
     pub selected: Option<String>,
 }
 
-/// Which of the two selections a [`DecisionRecord`] describes.
+/// Which of the three selections a [`DecisionRecord`] describes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionKind {
+    /// Which skill retrieval matched, which scopes everything downstream.
+    ///
+    /// Recorded because it is the layer the observed failures actually occur
+    /// at. A type-definition request that retrieves Node Creation instead of
+    /// Schema Creation never sees `create_schema` — `stage2_tools` scopes it
+    /// out — so the turn reads as an operation failure when it is a retrieval
+    /// failure. Without this record the two are indistinguishable, and the fix
+    /// for one does nothing for the other.
+    Skill,
     /// Which schema/entity type the turn is acting on.
     Schema,
     /// Which tool the turn calls.
@@ -81,6 +90,7 @@ impl DecisionKind {
     /// and a rename would silently break every recorded baseline.
     pub fn as_str(self) -> &'static str {
         match self {
+            DecisionKind::Skill => "skill",
             DecisionKind::Schema => "schema",
             DecisionKind::Operation => "operation",
         }
@@ -149,6 +159,33 @@ pub fn record_schema(candidates: &[String], selected: Option<String>) -> Decisio
         kind: DecisionKind::Schema,
         candidates: candidates.to_vec(),
         selected,
+    }
+}
+
+/// Record the skill decision for a turn.
+///
+/// Candidates are every skill retrieval returned, in score order — including
+/// ones that did not clear their own bar, because "the right skill was
+/// retrieved but scored below its blast-radius bar" and "the right skill was
+/// never retrieved" are different failures with different fixes, and a
+/// candidate list filtered to gate-clearers cannot tell them apart.
+///
+/// The selection is the top gate-clearing candidate: the one whose whitelist
+/// leads `stage2_tools`. `None` when nothing cleared, which is the fail-open
+/// case — the turn runs on the full tool surface, and no skill was chosen.
+///
+/// Unlike the other two decisions this is not made by the model at all; it is
+/// deterministic retrieval plus a score bar. It is recorded anyway because it
+/// is upstream of both of the model's own decisions and constrains them: an
+/// operation the whitelist excluded was never a choice the model could make.
+pub fn record_skill(candidates: &[SkillCandidate]) -> DecisionRecord {
+    DecisionRecord {
+        kind: DecisionKind::Skill,
+        candidates: candidates.iter().map(|c| c.name.clone()).collect(),
+        selected: candidates
+            .iter()
+            .find(|c| super::routing::clears_score_gate(c))
+            .map(|c| c.name.clone()),
     }
 }
 
@@ -254,6 +291,56 @@ mod tests {
             instructions: String::new(),
             schema_metadata,
         }
+    }
+
+    fn skill(name: &str, score: f32, tools: &[&str]) -> SkillCandidate {
+        SkillCandidate {
+            id: name.to_lowercase().replace(' ', "-"),
+            name: name.into(),
+            description: "desc".into(),
+            score,
+            tools: tools.iter().map(|t| t.to_string()).collect(),
+            instructions: String::new(),
+            schema_metadata: json!(null),
+        }
+    }
+
+    #[test]
+    fn skill_records_every_candidate_and_the_top_gate_clearer() {
+        // Score order as retrieval returns it. `search_nodes` is read-only, so
+        // the read bar (0.15) applies and 0.80 clears it comfortably.
+        let cands = [
+            skill("Node Creation", 0.80, &["search_nodes"]),
+            skill("Schema Creation", 0.72, &["search_nodes"]),
+        ];
+        let rec = record_skill(&cands);
+        assert_eq!(rec.kind, DecisionKind::Skill);
+        assert_eq!(rec.candidates, vec!["Node Creation", "Schema Creation"]);
+        assert_eq!(rec.selected.as_deref(), Some("Node Creation"));
+    }
+
+    /// "Retrieved but below its bar" and "never retrieved" are different
+    /// failures with different fixes, so a below-bar candidate must still
+    /// appear in the candidate list rather than being filtered out of it.
+    #[test]
+    fn skill_keeps_below_bar_candidates_visible_as_candidates() {
+        // 0.05 clears no bar; `create_schema` earns the mutating bar (0.30).
+        let cands = [skill("Schema Creation", 0.05, &["create_schema"])];
+        let rec = record_skill(&cands);
+        assert_eq!(rec.candidates, vec!["Schema Creation"]);
+        assert_eq!(
+            rec.selected, None,
+            "nothing cleared its bar, so no skill led the turn"
+        );
+    }
+
+    /// The fail-open case: retrieval returned nothing, the turn runs on the
+    /// full tool surface, and no skill was chosen.
+    #[test]
+    fn skill_with_no_candidates_records_none() {
+        let rec = record_skill(&[]);
+        assert!(rec.candidates.is_empty());
+        assert_eq!(rec.selected, None);
     }
 
     #[test]

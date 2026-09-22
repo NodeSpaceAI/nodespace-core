@@ -172,8 +172,16 @@ export interface TurnRecord {
  * Rust side; the two are joined by the `[decision ...]` log marker.
  */
 export interface DecisionRecord {
-  /** Which selection this describes. */
-  kind: "schema" | "operation";
+  /**
+   * Which selection this describes.
+   *
+   * `skill` is upstream of the other two and is not a model decision at all —
+   * it is deterministic retrieval plus a score bar. It is recorded because it
+   * constrains what the model could then choose: a type-definition request
+   * that retrieves Node Creation never sees `create_schema`, so the turn reads
+   * as an operation failure when it is a retrieval failure.
+   */
+  kind: "skill" | "schema" | "operation";
   /** Everything on offer, in presentation order. */
   candidates: string[];
   /**

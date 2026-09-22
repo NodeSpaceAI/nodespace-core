@@ -62,7 +62,17 @@ type Expected =
    * message's wording. Matched loosely because the id is model-derived — the
    * question is which of the two it picked, not what it named them.
    */
-  | { decision: "schema"; matches: RegExp };
+  | { decision: "schema"; matches: RegExp }
+  /**
+   * Retrieval must lead with a skill matching this pattern.
+   *
+   * Scored separately from the operation because this is the layer the
+   * observed failures occur at, and the two are otherwise indistinguishable: a
+   * type-definition request routed to Node Creation never sees `create_schema`
+   * at all (`stage2_tools` scopes it out), so it reads as a wrong-tool failure
+   * when retrieval was what went wrong.
+   */
+  | { decision: "skill"; matches: RegExp };
 
 interface DecisionScenario extends Scenario {
   expected: Expected;
@@ -76,6 +86,15 @@ interface DecisionScenario extends Scenario {
    * case the agent has no principled mechanism for today.
    */
   ambiguous?: boolean;
+  /**
+   * Turns on the instance-vs-type boundary: is this one record, or a new kind
+   * of record? A schema IS a node, so the distinction is abstraction level
+   * rather than kind of thing — and it carries the larger blast radius, since a
+   * spurious type definition is worse than a spurious record.
+   */
+  instanceVsType?: boolean;
+  /** Covers a thin-evidence area an ADR calls out explicitly. */
+  loadBearing?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,6 +161,51 @@ const FIXTURES: DecisionScenario[] = [
     adr056: true,
   },
 
+  // ── Skill routing (instance vs type) ───────────────────────────────────
+  //
+  // The layer the observed failures actually occur at. Stage 1 matches an
+  // embedding of the message against skill `description` properties (ADR-064
+  // rule 3: those are retrieval index keys, not documentation) — tool
+  // descriptions are not consulted, and by the time they are, the whitelist is
+  // already scoped.
+  //
+  // Both skill descriptions do encode the instance-vs-type distinction
+  // ("example of an existing type" vs "a kind of thing the user hasn't stored
+  // before"), and retrieval still led with Node Creation for the second
+  // scenario below during development. So these score embedding similarity,
+  // not instruction quality — the same class as ADR-038 Finding 4 and #1980.
+  {
+    id: "skill-type-request-direct",
+    scenario: "Skill: an explicit type request routes to Schema Creation",
+    // Worded to avoid reusing `create_schema`'s own description verbatim — the
+    // contamination guard rejected "Define a new entity type called Sponsor…"
+    // for sharing five consecutive words with it, which would have let this
+    // scenario pass by keyword recall rather than by generalizing.
+    prompt: "Sponsors aren't something we can record yet — set that up, with a tier and a renewal date.",
+    expected: { decision: "skill", matches: /schema/i },
+    instanceVsType: true,
+  },
+  {
+    id: "skill-type-request-indirect",
+    scenario: "Skill: an indirectly-phrased type request",
+    // The exact shape that misrouted during development: phrased as "a way to
+    // track <plural things>", which embeds near Node Creation's vocabulary
+    // (create, record, item, entry) despite being a type-definition request.
+    prompt: "I need a way to keep track of sponsorship deals, each with a tier and a renewal date.",
+    expected: { decision: "skill", matches: /schema/i },
+    instanceVsType: true,
+    loadBearing: true,
+  },
+  {
+    id: "skill-instance-request",
+    scenario: "Skill: a single-instance request must NOT route to Schema Creation",
+    // The mirror, and the direction Laya failed on: an explicitly single named
+    // entity of a type that already exists.
+    prompt: "Add Contoso Ltd to the companies we sell to.",
+    expected: { decision: "skill", matches: /node creation|graph editing|organization/i },
+    instanceVsType: true,
+  },
+
   // ── Schema selection ───────────────────────────────────────────────────
   //
   // Every type asserted on here is USER-DEFINED, created by the setup turns
@@ -186,7 +250,7 @@ const FIXTURES: DecisionScenario[] = [
 // ---------------------------------------------------------------------------
 
 /** The first decision of the given kind across the turn's rounds. */
-function firstDecision(turns: TurnRecord[], kind: "schema" | "operation") {
+function firstDecision(turns: TurnRecord[], kind: "skill" | "schema" | "operation") {
   for (const t of turns) {
     const hit = t.decisions?.find((d) => d.kind === kind);
     if (hit) return hit;
@@ -205,6 +269,14 @@ function assertFixture(
   // a model failure would blame the model for a harness gap, so it fails loudly
   // as an environment problem instead.
   if (!decision) {
+    if (expected.decision === "skill") {
+      return {
+        passed: false,
+        failure:
+          "No skill decision recorded — either the daemon predates the " +
+          "[decision skill] marker, or the turn never reached retrieval.",
+      };
+    }
     if (expected.decision === "operation") {
       return {
         passed: false,
@@ -220,6 +292,30 @@ function assertFixture(
         "(Note: core seeded types are filtered out of schema candidates, so a " +
         "turn acting on one records an empty candidate set.)",
     };
+  }
+
+  if (expected.decision === "skill") {
+    if (decision.selected === null) {
+      return {
+        passed: false,
+        failure:
+          `Nothing cleared its score bar, so the turn fell open to the full ` +
+          `tool surface. Retrieved: ${decision.candidates.join(", ") || "(nothing)"}`,
+      };
+    }
+    if (!expected.matches.test(decision.selected)) {
+      // Whether the right skill was even retrieved separates "retrieval missed
+      // it" from "retrieval found it and ranked it below" — different failures
+      // with different fixes.
+      const retrieved = decision.candidates.some((c) => expected.matches.test(c));
+      return {
+        passed: false,
+        failure: retrieved
+          ? `Led with '${decision.selected}' over a retrieved candidate matching ${expected.matches}. Retrieved: ${decision.candidates.join(", ")}`
+          : `Led with '${decision.selected}'; nothing matching ${expected.matches} was retrieved at all. Retrieved: ${decision.candidates.join(", ")}`,
+      };
+    }
+    return { passed: true };
   }
 
   if (expected.decision === "operation") {
@@ -303,6 +399,9 @@ const fixture: EvalFixture = {
       expected: s.expected,
       adr056: s.adr056 ?? false,
       ambiguous: s.ambiguous ?? false,
+      instanceVsType: s.instanceVsType ?? false,
+      loadBearing: s.loadBearing ?? false,
+      skillDecision: firstDecision(turns, "skill") ?? null,
       operationDecision: firstDecision(turns, "operation") ?? null,
       schemaDecision: firstDecision(turns, "schema") ?? null,
       // Recorded for every scenario, not just failing ones: a type named that
@@ -330,8 +429,10 @@ const fixture: EvalFixture = {
       ? Math.round(routing.reduce((a, b) => a + b, 0) / routing.length)
       : 0;
     return [
+      `Skill routing:       ${count((e) => (e.expected as { decision?: string })?.decision === "skill")}`,
       `Operation selection: ${count((e) => (e.expected as { decision?: string })?.decision === "operation")}`,
       `Schema selection:    ${count((e) => (e.expected as { decision?: string })?.decision === "schema")}`,
+      `Instance-vs-type boundary: ${count((e) => e.instanceVsType === true)}`,
       `Ambiguous (several types plausible): ${count((e) => e.ambiguous === true)}`,
       `ADR-056 known failures: ${count((e) => e.adr056 === true)}`,
       `Off-menu type named: ${offMenu}`,

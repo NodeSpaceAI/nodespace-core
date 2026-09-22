@@ -263,7 +263,7 @@ export function formatTurnLogLines(slice: string): string[] {
   // the line end. agent_loop.rs emits it last on the line for that reason, so
   // the two fields read before it are safe to match normally.
   for (const l of lines.filter((l) => l.includes("Agent decision:"))) {
-    const kind = l.match(/decision="?(schema|operation)"?/)?.[1];
+    const kind = l.match(/decision="?(skill|schema|operation)"?/)?.[1];
     if (!kind) continue;
     const selected = l.match(/decision_selected="?([^"\s]*)"?/)?.[1] ?? "";
     const offMenu = /decision_off_menu=true/.test(l) ? " [off-menu]" : "";

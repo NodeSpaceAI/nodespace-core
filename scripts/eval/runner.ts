@@ -136,12 +136,12 @@ function runTurn(env: EvalEnv, chatId: string, message: string): TurnRecord {
 function parseDecisions(out: string): DecisionRecord[] | undefined {
   const rows = [
     ...out.matchAll(
-      /^\[decision (schema|operation)\] selected=(\S*?)( \[off-menu\])? candidates=(.*)$/gm,
+      /^\[decision (skill|schema|operation)\] selected=(\S*?)( \[off-menu\])? candidates=(.*)$/gm,
     ),
   ];
   if (rows.length === 0) return undefined;
   return rows.map((m) => ({
-    kind: m[1] as "schema" | "operation",
+    kind: m[1] as "skill" | "schema" | "operation",
     // `none` is the marker's rendering of "offered options, picked nothing".
     // It round-trips back to null rather than the literal string, so a scorer
     // never has to know the wire spelling.

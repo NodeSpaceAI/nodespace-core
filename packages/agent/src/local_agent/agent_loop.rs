@@ -1999,6 +1999,24 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                 "Agent loop: inference round completed"
             );
 
+            // Retrieval's own decision, recorded once per turn rather than per
+            // round: it runs before the ReAct loop and constrains every round
+            // inside it. Emitted here, alongside the other two, so one log
+            // scrape reads all three and an eval can attribute a failure to the
+            // layer it happened at — an operation the whitelist excluded was
+            // never a choice the model could make.
+            if iteration == 0 {
+                let sk = decisions::record_skill(&routed.candidates);
+                tracing::info!(
+                    iteration,
+                    decision = sk.kind.as_str(),
+                    decision_selected = sk.selected.as_deref().unwrap_or(""),
+                    decision_off_menu = sk.selected_off_menu(),
+                    decision_candidates = %sk.candidates_field(),
+                    "Agent decision: skill selected"
+                );
+            }
+
             // The two selections this round made, recorded as named decisions
             // rather than left implicit in the tool call. Neither line gates or
             // changes anything — they exist so the decisions can be scored on
