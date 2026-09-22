@@ -150,13 +150,42 @@ jobs:
           if-no-files-found: warn
           # Inspection-only (workflow_dispatch): a short window to download a build
           # for manual checking, not a deliverable.
+          #
+          # This is the SAME upload-artifact bare-directory round-trip that can
+          # silently drop the Unix executable bit on Contents/MacOS/* binaries
+          # (hardened below for the app-bundle-aarch64-apple-darwin handoff via
+          # tar/untar). Deliberately left as a bare directory here and NOT given
+          # the same tar/untar treatment: nothing in this workflow ever
+          # download-artifacts + executes this one — it never reaches
+          # build-pkg.sh, and a human who downloads it via the Actions UI is
+          # inspecting file contents, not running the binaries, so a lost
+          # executable bit here is a non-issue in practice. If that ever changes
+          # (e.g. a future CI step starts executing binaries out of this
+          # artifact), apply the same tar-before-upload/untar-after-download
+          # pattern used for app-bundle-aarch64-apple-darwin below.
           retention-days: 7
+
+      # Tar the bundle before handing it to upload-artifact: uploading/
+      # downloading a bare directory through actions/upload-artifact is a
+      # well-documented way to silently lose the Unix executable bit on files
+      # inside it (this previously cost all four Contents/MacOS/* binaries
+      # their +x bit on the round-trip into the build-pkg-macos job below,
+      # breaking the installed app's ability to launch). A single tar file's
+      # bytes round-trip through upload/download-artifact unchanged, since
+      # there's no directory tree for that step to re-walk and re-zip
+      # entry-by-entry — tar's own format already embeds the Unix permission
+      # bits, so untarring after download restores them exactly. This fixes
+      # the handoff at its source, for whatever downloads this artifact next,
+      # not just build-pkg.sh's current one consumer.
+      - name: Tar .app bundle (preserves executable bit through artifact round-trip)
+        run: |
+          tar -cf app-bundle.tar -C target/aarch64-apple-darwin/release/bundle/macos .
 
       - name: Upload .app bundle for pkg job
         uses: actions/upload-artifact@v7
         with:
           name: app-bundle-aarch64-apple-darwin
-          path: target/aarch64-apple-darwin/release/bundle/macos/
+          path: app-bundle.tar
           if-no-files-found: error
           # Job-to-job handoff only — consumed by the pkg job (download-artifact)
           # within minutes of this run. Never a deliverable, so the minimum: 1 day.
@@ -369,6 +398,17 @@ jobs:
           name: app-bundle-aarch64-apple-darwin
           path: target/aarch64-apple-darwin/release/bundle/macos/
 
+      # Untar the bundle back into place — the mirror of "Tar .app bundle" in
+      # the upstream Tauri job. Restores the Unix executable bit exactly as
+      # it was before the artifact round-trip, since it was preserved inside
+      # the tar file's own format rather than relying on upload/
+      # download-artifact to carry it.
+      - name: Untar .app bundle (restores executable bit)
+        run: |
+          cd target/aarch64-apple-darwin/release/bundle/macos/
+          tar -xf app-bundle.tar
+          rm app-bundle.tar
+
       - name: Build nodespaced and nodespace binaries
         run: |
           # Build the headless binaries that go into /usr/local/bin/ in the .pkg.
@@ -394,7 +434,28 @@ jobs:
             test -d /Applications/NodeSpace.app || { echo "::error::/Applications/NodeSpace.app is missing after install"; exit 1; }
             test -x /usr/local/bin/nodespace || { echo "::error::/usr/local/bin/nodespace is missing or not executable"; exit 1; }
             test -x /usr/local/bin/nodespaced || { echo "::error::/usr/local/bin/nodespaced is missing or not executable"; exit 1; }
-            echo "    /Applications/NodeSpace.app, nodespace, nodespaced all present"
+
+            # The app bundle's own executables need the same check: a lost
+            # Unix executable bit anywhere in the artifact handoff between
+            # the build jobs (or a regression in build-pkg.sh's payload
+            # assembly) previously produced an installed .app that passed
+            # every check above yet still could not launch, with nothing in
+            # this step to catch it. shopt/nullglob first so an empty
+            # Contents/MacOS (unexpected, but not otherwise diagnosed) fails
+            # with a clear message instead of a confusing literal-asterisk
+            # path from an unmatched glob.
+            shopt -s nullglob
+            local macos_bins=(/Applications/NodeSpace.app/Contents/MacOS/*)
+            shopt -u nullglob
+            if [[ ${#macos_bins[@]} -eq 0 ]]; then
+              echo "::error::/Applications/NodeSpace.app/Contents/MacOS has no files"
+              exit 1
+            fi
+            for bin in "${macos_bins[@]}"; do
+              test -x "${bin}" || { echo "::error::${bin} is missing or not executable"; exit 1; }
+            done
+
+            echo "    /Applications/NodeSpace.app (incl. all Contents/MacOS/* executables), nodespace, nodespaced all present"
           }
 
           # Install once against a clean runner (the common case), then install
