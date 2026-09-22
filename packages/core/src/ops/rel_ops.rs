@@ -9,6 +9,7 @@ use crate::ops::OpsError;
 use crate::services::NodeService;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 // ============================================================================
@@ -636,6 +637,19 @@ pub async fn get_node_relationships(
             OpsError::Internal(format!("Failed to resolve inbound relationships: {}", e))
         })?;
 
+    // Whether a given node type satisfies a given declarer, cached across every
+    // inbound group. `resolve_type_chain` is resolved live and issues a full
+    // parent-map query per call, so without this the panel costs one round trip
+    // per inbound edge per group; the previous exact-match `retain` cost none.
+    //
+    // Keyed on both halves because `source_type` varies per group. In practice
+    // `collect_related` already scopes each group's candidates by relationship
+    // name, so the same node rarely appears under two declarers and the node
+    // type alone would usually suffice — but "usually" is not a property worth
+    // depending on in a cache, and the extra `String` is free next to the query
+    // it avoids.
+    let mut satisfies: HashMap<(String, String), bool> = HashMap::new();
+
     for (source_type, rel) in inbound {
         if BUILTIN_RELATIONSHIP_NAMES.contains(&rel.name.as_str()) {
             continue;
@@ -658,11 +672,24 @@ pub async fn get_node_relationships(
         // the node's own chain, not the declarer's descendants.
         let mut kept = Vec::with_capacity(related.len());
         for r in related {
-            let chain = node_service
-                .resolve_type_chain(&r.node_type)
-                .await
-                .map_err(|e| OpsError::Internal(format!("Failed to resolve type chain: {e}")))?;
-            if chain.contains(&source_type) {
+            let key = (r.node_type.clone(), source_type.clone());
+            let answer = match satisfies.get(&key) {
+                Some(known) => *known,
+                None => {
+                    let chain = node_service
+                        .resolve_type_chain(&r.node_type)
+                        .await
+                        .map_err(|e| {
+                            OpsError::Internal(format!("Failed to resolve type chain: {e}"))
+                        })?;
+                    // Inserted only after a successful resolve, so an error
+                    // short-circuits without caching a wrong default.
+                    let answer = chain.contains(&source_type);
+                    satisfies.insert(key, answer);
+                    answer
+                }
+            };
+            if answer {
                 kept.push(r);
             }
         }
