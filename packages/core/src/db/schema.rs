@@ -251,8 +251,30 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
     // `title` is the system's own maintained answer to "is this a nameable
     // thing": `NodeService::compute_title()` sets it for title-templated schema
     // instances, tasks, collections and root nodes, and leaves it NULL for
-    // child/body nodes. Indexing only non-NULL titles therefore makes every row
-    // in this index an entity.
+    // child/body nodes. Indexing only titled rows therefore makes every row in
+    // this index an entity.
+    //
+    // "Titled" means `nullif(title, '') IS NOT NULL` — empty string as well as
+    // NULL. `compute_title()` can return `Some("")` by two routes: a
+    // `titleTemplate` whose referenced fields are all absent (unresolved tokens
+    // are skipped, so the interpolation yields ""), and `strip_markdown("")` on
+    // an empty-content task or collection. An empty string is not NULL, so
+    // without `nullif` those rows would be indexed as term-less rows: matched by
+    // nothing, but still occupying the index and falsifying "every row is an
+    // entity".
+    //
+    // The tokenizer is FTS5's default `unicode61`, which folds diacritics
+    // ("Ståhl" matches "stahl") and splits on non-alphanumerics, but does NOT
+    // segment CJK — a Chinese or Japanese entity name indexes as one token and
+    // matches only on the whole run. Recorded here because it bounds what
+    // entity resolution can match, and changing it later re-tokenizes the index.
+    //
+    // All writes to `node` are plain INSERT/UPDATE/DELETE, so the triggers below
+    // see every one. `REPLACE INTO node` (or `INSERT OR REPLACE`) would NOT be
+    // safe: REPLACE fires neither AFTER UPDATE nor — with the default
+    // `recursive_triggers=OFF` — AFTER DELETE, so it would strand a stale row at
+    // the old rowid. None exists in the codebase today; adding one means
+    // maintaining this index explicitly.
     //
     // NOT an external-content table (no `content='node'`), unlike `node_fts`.
     // That is deliberate and load-bearing: FTS5 has no partial-index syntax, so
@@ -270,12 +292,12 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
     .await
     .context("Failed to create title FTS5 table")?;
 
-    // The `WHERE new.title IS NOT NULL` guard rides on `INSERT ... SELECT`
-    // because a plain `VALUES` clause cannot carry a WHERE.
+    // The `WHERE` guard rides on `INSERT ... SELECT` because a plain `VALUES`
+    // clause cannot carry one.
     conn.execute(
         r#"CREATE TRIGGER IF NOT EXISTS node_title_fts_insert AFTER INSERT ON node BEGIN
             INSERT INTO node_title_fts(rowid, id, title)
-            SELECT new.rowid, new.id, new.title WHERE new.title IS NOT NULL;
+            SELECT new.rowid, new.id, new.title WHERE nullif(new.title, '') IS NOT NULL;
         END"#,
         (),
     )
@@ -290,7 +312,7 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
         r#"CREATE TRIGGER IF NOT EXISTS node_title_fts_update AFTER UPDATE ON node BEGIN
             DELETE FROM node_title_fts WHERE rowid = old.rowid;
             INSERT INTO node_title_fts(rowid, id, title)
-            SELECT new.rowid, new.id, new.title WHERE new.title IS NOT NULL;
+            SELECT new.rowid, new.id, new.title WHERE nullif(new.title, '') IS NOT NULL;
         END"#,
         (),
     )
