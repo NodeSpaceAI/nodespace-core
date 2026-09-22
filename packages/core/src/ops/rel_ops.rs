@@ -642,12 +642,16 @@ pub async fn get_node_relationships(
     // parent-map query per call, so without this the panel costs one round trip
     // per inbound edge per group; the previous exact-match `retain` cost none.
     //
-    // Keyed on both halves because `source_type` varies per group. In practice
-    // `collect_related` already scopes each group's candidates by relationship
-    // name, so the same node rarely appears under two declarers and the node
-    // type alone would usually suffice — but "usually" is not a property worth
-    // depending on in a cache, and the extra `String` is free next to the query
-    // it avoids.
+    // Keyed on BOTH halves, and the `source_type` half is load-bearing — do not
+    // "simplify" it away. Two schemas may declare the same forward name toward
+    // the same target (`tasks` is declared on both `project` and `person`,
+    // which `graph_resolver` documents as live rather than hypothetical), so
+    // one node type can legitimately satisfy one declarer and not another.
+    // `collect_related` scopes candidates by relationship NAME, not by
+    // declarer, so both groups see both declarers' nodes and a node-type-only
+    // key answers the second group with the first group's verdict — a wrong
+    // node under the wrong group, which is the exact bug this narrowing
+    // exists to prevent.
     let mut satisfies: HashMap<(String, String), bool> = HashMap::new();
 
     for (source_type, rel) in inbound {

@@ -271,7 +271,10 @@ async fn rollover_moves_a_task_rather_than_leaving_it_in_both_cycles() -> Result
             "Ending cycle".to_string(),
             serde_json::json!({
                 "start_date": "2026-01-01",
-                "end_date": chrono::Utc::now().format("%Y-%m-%d").to_string(),
+                // Local, matching CEL's `today()` (`cel.rs`, `Local::now()`).
+                // Utc here passes under the host TZ and fails east of it —
+                // inert until the condition gate started evaluating it.
+                "end_date": chrono::Local::now().format("%Y-%m-%d").to_string(),
                 "duration_days": 14,
             }),
         ))
@@ -517,84 +520,105 @@ async fn rollover_leaves_a_cycle_that_is_not_ending_today_alone() -> Result<()> 
     shutdown(tx, task).await
 }
 
-/// Two inbound groups on one node are each narrowed against their own
-/// declarer.
+/// Two declarers of the SAME relationship name must be narrowed separately.
 ///
-/// `cycle.tasks` is declared on `cycle` and `task.blocks` on `task`, so a node
-/// sitting in both groups must see the cycle under one and the blocking issue
-/// under the other — never the same set twice.
+/// This is what pins the verdict cache's key. `project.tasks` (reverse
+/// `project`) and `person.tasks` (reverse `assignee`) both declare `tasks`
+/// toward `task`, and `collect_related` scopes candidates by relationship
+/// NAME rather than by declarer — so both groups receive both declarers'
+/// nodes, and only the per-group narrowing tells them apart.
 ///
-/// Honest scope note: this does NOT pin the verdict cache's key. I tried,
-/// by replacing `source_type` in the key with a constant, and both this test
-/// and the single-group one stayed green. `collect_related` scopes each
-/// group's candidates by relationship name before narrowing, so a `tasks` edge
-/// never reaches the `blocks` group and there is nothing for a wrong key to
-/// confuse. The `source_type` component is defensive rather than load-bearing,
-/// and is documented as such at the cache. What this test does pin is that
-/// sharing one cache across groups did not start mixing them up.
+/// A node-type-only cache key answers the second group with the first group's
+/// verdict, surfacing a wrong node under the wrong group. Verified: replacing
+/// `source_type` in the key with a constant makes this test fail.
+///
+/// An earlier version of this test used two DIFFERENTLY-named groups
+/// (`tasks`/`blocks`), whose candidate sets are disjoint, so the key could
+/// never collide and the test passed even with the key deliberately broken.
+/// Same-named declarers are the whole point.
 #[tokio::test]
-async fn two_inbound_groups_are_narrowed_against_their_own_declarers() -> Result<()> {
+async fn two_declarers_of_one_relationship_name_are_narrowed_separately() -> Result<()> {
     let (service, _tmp, tx, task) = service_with_recipe().await?;
 
-    // `cycle.tasks` targets `task`, so an issue in a cycle is one inbound
-    // group; `task.blocks` gives a second, with a different declarer.
-    let cycle = service
+    let project = service
         .create_node(Node::new(
-            "cycle".to_string(),
-            "A cycle".to_string(),
-            serde_json::json!({
-                "start_date": "2026-01-01",
-                "end_date": "2099-12-31",
-                "duration_days": 14,
-            }),
+            "project".to_string(),
+            "A project".to_string(),
+            serde_json::json!({ "status": "active" }),
         ))
         .await?;
-    let blocker = service
+    let person = service
         .create_node(Node::new(
-            "issue".to_string(),
-            "The blocker".to_string(),
-            serde_json::json!({ "status": "open" }),
+            "person".to_string(),
+            "An assignee".to_string(),
+            serde_json::json!({}),
         ))
         .await?;
     let subject = service
         .create_node(Node::new(
             "issue".to_string(),
-            "In a cycle and blocked".to_string(),
+            "In a project, assigned to a person".to_string(),
             serde_json::json!({ "status": "open" }),
         ))
         .await?;
 
+    // Both edges are `tasks`, from different declarers, onto the same node.
     service
-        .create_relationship(&cycle, "tasks", &subject, serde_json::json!({}))
+        .create_relationship(&project, "tasks", &subject, serde_json::json!({}))
         .await?;
     service
-        .create_relationship(&blocker, "blocks", &subject, serde_json::json!({}))
+        .create_relationship(&person, "tasks", &subject, serde_json::json!({}))
         .await?;
 
     let out = nodespace_core::ops::rel_ops::get_node_relationships(&service, &subject)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let group = |name: &str| {
-        out.groups
+    let inbound_tasks: Vec<_> = out
+        .groups
+        .iter()
+        .filter(|g| g.relationship_name == "tasks" && g.direction == "in")
+        .collect();
+    // Three declarers, not two: `project`, `person`, and this recipe's own
+    // `cycle` all declare `tasks` toward `task`. That the recipe ADDS a third
+    // is exactly why the key matters more after this PR than before it.
+    assert_eq!(
+        inbound_tasks.len(),
+        3,
+        "project, person and cycle each declare `tasks` toward task, so a \
+         task-like node has three inbound groups under that one name"
+    );
+
+    let by_declarer = |declarer: &str| {
+        inbound_tasks
             .iter()
-            .find(|g| g.relationship_name == name && g.direction == "in")
-            .unwrap_or_else(|| panic!("expected an inbound `{name}` group"))
+            .find(|g| g.source_type == declarer)
+            .unwrap_or_else(|| panic!("expected a `tasks` group declared by {declarer}"))
     };
 
-    // Declared on `cycle`, so the cycle is the member — an issue is not.
-    let tasks = group("tasks");
-    assert_eq!(tasks.count, 1, "the cycle belongs to the `tasks` group");
-    assert_eq!(tasks.related[0].id, cycle);
-
-    // Declared on `task`, so the blocking issue is the member — the cycle is
-    // not, even though both groups were narrowed by the same shared cache.
-    let blocks = group("blocks");
+    let from_project = by_declarer("project");
+    assert_eq!(from_project.count, 1, "the project group holds the project");
     assert_eq!(
-        blocks.count, 1,
-        "the blocking issue belongs to the `blocks` group"
+        from_project.related[0].id, project,
+        "a node-type-only cache key leaks the other declarer's node in here"
     );
-    assert_eq!(blocks.related[0].id, blocker);
+
+    let from_person = by_declarer("person");
+    assert_eq!(from_person.count, 1, "the person group holds the person");
+    assert_eq!(
+        from_person.related[0].id, person,
+        "a node-type-only cache key leaks the other declarer's node in here"
+    );
+
+    // The subject is in no cycle, so this group must be empty — the case a
+    // leaking key would most visibly corrupt, by reporting a project or a
+    // person as one of the node's cycles.
+    assert_eq!(
+        by_declarer("cycle").count,
+        0,
+        "the cycle group must stay empty rather than inheriting another \
+         declarer's verdict"
+    );
 
     shutdown(tx, task).await
 }
