@@ -64,8 +64,16 @@ jobs:
       # it here instead means a broken install shows up as an ordinary red
       # step on every run, not just a meta-failure hidden inside the one
       # case this workflow exists to catch.
+      #
+      # Retried once: a genuinely persistent install failure still leaves
+      # the failure step unable to file a tracking issue (an accepted
+      # residual gap -- routing around it with a `gh`-CLI fallback here
+      # would reintroduce the class of hand-rolled dedup logic this whole
+      # change exists to eliminate), but a transient one (the likelier
+      # real-world trigger: a registry blip, not an outage) gets a second
+      # attempt instead of taking down issue reporting over a flake.
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile || bun install --frozen-lockfile
 
       - name: Re-assess the published .pkg against live Gatekeeper
         id: verify

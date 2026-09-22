@@ -346,17 +346,36 @@ describe("NodeSpaceGitHubManager.findOrCreateTrackingIssue", () => {
 // PR's title instead of a real issue's.
 describe("GitHubClient.listIssues", () => {
   function makeClientWithStubbedOctokit(pages: Array<Array<Record<string, unknown>>>) {
-    let call = 0;
-    const listForRepo = mock(async () => {
-      const data = pages[call] ?? [];
-      call += 1;
-      return { data };
-    });
-    // octokit.paginate walks listForRepo's pages itself in production; the
-    // stub here just concatenates every configured page, which is the
-    // observable contract this test cares about (paginate calling the
-    // route repeatedly and flattening the results).
-    const paginate = mock(async () => pages.flat());
+    // `page` param, 1-indexed, matching REST convention.
+    const listForRepo = mock(async (params: { page?: number }) => ({
+      data: pages[(params.page ?? 1) - 1] ?? [],
+    }));
+
+    // A faithful-enough stand-in for octokit's real paginate: calls the
+    // given route with the given params plus an incrementing `page`,
+    // concatenating every page's `data`, stopping once a page comes back
+    // shorter than `per_page` (or empty). Calling the real `listForRepo`
+    // mock through this (rather than just returning a canned flattened
+    // array) exercises the actual route reference and params listIssues
+    // passes, the way real pagination would -- a wrong route or dropped
+    // param would be caught here, not silently invisible to the test.
+    const paginate = mock(
+      async (
+        route: (params: Record<string, unknown>) => Promise<{ data: unknown[] }>,
+        params: Record<string, unknown>,
+      ) => {
+        const perPage = (params.per_page as number | undefined) ?? 100;
+        const results: unknown[] = [];
+        let page = 1;
+        for (;;) {
+          const { data } = await route({ ...params, page });
+          results.push(...data);
+          if (data.length < perPage) break;
+          page += 1;
+        }
+        return results;
+      },
+    );
 
     const client = new GitHubClient("stub-token");
     (client as unknown as { octokit: unknown }).octokit = {
@@ -370,11 +389,17 @@ describe("GitHubClient.listIssues", () => {
   test("returns issues spanning more than one page", async () => {
     const page1 = Array.from({ length: 100 }, (_, i) => ({ number: i + 1, title: `Issue ${i + 1}`, state: "open" }));
     const page2 = [{ number: 101, title: "Issue 101 (past the first page)", state: "open" }];
-    const { client, paginate } = makeClientWithStubbedOctokit([page1, page2]);
+    const { client, paginate, listForRepo } = makeClientWithStubbedOctokit([page1, page2]);
 
     const issues = await client.listIssues({ state: "open" });
 
     expect(paginate).toHaveBeenCalledTimes(1);
+    // paginate must be given the real listForRepo route (not some other
+    // function) and the caller's state filter, or dedup could silently
+    // end up listing the wrong thing entirely.
+    expect(paginate.mock.calls[0][0]).toBe(listForRepo);
+    expect(paginate.mock.calls[0][1]).toMatchObject({ state: "open" });
+    expect(listForRepo).toHaveBeenCalledTimes(2);
     expect(issues).toHaveLength(101);
     expect(issues.map((i) => i.number)).toContain(101);
   });

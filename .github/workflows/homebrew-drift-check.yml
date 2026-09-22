@@ -68,8 +68,11 @@ jobs:
       # also `if: failure()`, a broken install would fail silently right
       # when the workflow most needs to report loud. Running it here means
       # a broken install shows up as an ordinary red step on every run.
+      # Retried once (see verify-macos-installer.yml's equivalent step for
+      # the full reasoning): guards against a transient install blip taking
+      # down issue reporting along with it.
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile || bun install --frozen-lockfile
 
       - name: Check tap cask version against latest release
         id: drift
@@ -140,9 +143,10 @@ jobs:
         with:
           bun-version: "1.3.11"
 
-      # Same unconditional install as the cask job above -- see its comment.
+      # Same unconditional, retried install as the cask job above -- see
+      # its comment.
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: bun install --frozen-lockfile || bun install --frozen-lockfile
 
       - name: Check tap nodespace-cli formula version against latest release
         id: drift

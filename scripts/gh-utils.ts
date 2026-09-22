@@ -634,7 +634,12 @@ async function main() {
             ? args[labelsIndex + 1].split(",").map((l) => l.trim())
             : undefined;
 
-        if (!title || !body) {
+        // `body === undefined` (not `!body`): parseBodyArg's contract is
+        // that an explicit `--body ""` comes back as `""`, distinct from
+        // neither flag being given at all -- checking truthiness here
+        // would silently reintroduce the exact "empty is treated as
+        // absent" ambiguity that helper exists to eliminate.
+        if (!title || body === undefined) {
           console.error("Usage:");
           console.error('  bun run gh:tracking-issue --title "Title" --body "Body" [--labels "label1,label2"]');
           console.error('  bun run gh:tracking-issue --title "Title" --body-file /path/to/body.md [--labels "label1,label2"]');
