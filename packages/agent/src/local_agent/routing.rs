@@ -390,6 +390,33 @@ fn top_tool_bearing_score<'a>(candidates: impl Iterator<Item = &'a SkillCandidat
         .fold(f32::NEG_INFINITY, f32::max)
 }
 
+/// The candidate whose whitelist leads the turn — the highest-scoring one that
+/// both clears its own bar and actually carries tools.
+///
+/// The same invariant [`top_tool_bearing_score`] holds, in the shape a caller
+/// wants when it needs the candidate itself rather than its score. Both exist
+/// because a tool-less candidate has no stake in which tool-bearing candidate
+/// wins: a schema-typed retrieval hit carries `tools: []` by construction, and
+/// the lexical backstop pins it at a fixed confidence above any cosine-derived
+/// score a real skill can reach, so on any turn naming a schema outright it
+/// sorts first while contributing nothing to the offered surface.
+///
+/// Exposed rather than re-derived at each call site: three consumers have now
+/// been written against this predicate, and the two that re-derived it were
+/// both wrong in the same way before being corrected. A `.find(clears_score_gate)`
+/// looks equivalent and is not.
+///
+/// Takes the max explicitly rather than the first match for the reason
+/// [`top_tool_bearing_score`] gives — callers do sort by score descending, but
+/// a rule about which candidate leads should not depend on another function's
+/// ordering staying that way.
+pub fn leading_tool_bearing_candidate(candidates: &[SkillCandidate]) -> Option<&SkillCandidate> {
+    candidates
+        .iter()
+        .filter(|c| clears_score_gate(c) && !c.tools.is_empty())
+        .max_by(|a, b| a.score.total_cmp(&b.score))
+}
+
 /// Names of the candidates that clear the score gate, comma-separated, for the
 /// `routed_skills` log field.
 ///

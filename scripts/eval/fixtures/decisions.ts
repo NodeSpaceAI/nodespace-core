@@ -1,7 +1,8 @@
 /**
- * Decision eval — scores the two selections the agent makes per round directly,
+ * Decision eval — scores the three selections an agent turn makes directly,
  * rather than inferring them from whether the scenario as a whole passed.
  *
+ *   skill      — which skill retrieval matched (upstream; scopes the other two)
  *   schema     — which entity type the turn acts on
  *   operation  — which tool the turn calls
  *
@@ -320,6 +321,13 @@ function assertFixture(
 
   if (expected.decision === "operation") {
     const selected = decision.selected;
+    // An empty `oneOf` asserts the turn should call NOTHING. No scenario uses
+    // it today — the one that did ("What kinds of things can you help me keep
+    // track of?") never reached inference and was removed rather than left
+    // failing for a harness reason. Kept because "picked no tool" is a real
+    // decision the record already distinguishes from "picked wrongly", and an
+    // agent that reaches for a tool on every message is failing a decision even
+    // when its reply reads fine.
     if (expected.oneOf.length === 0) {
       return selected === null
         ? { passed: true }

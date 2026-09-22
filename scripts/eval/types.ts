@@ -153,7 +153,7 @@ export interface TurnRecord {
    */
   emptyGeneration?: boolean;
   /**
-   * The named schema/operation decisions this turn made, in round order.
+   * The named skill/schema/operation decisions this turn made, in round order.
    *
    * Recorded per ReAct round rather than per turn: a turn that searched and
    * then wrote made two operation decisions, and both are scoreable. Optional

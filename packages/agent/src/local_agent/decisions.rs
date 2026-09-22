@@ -1,6 +1,8 @@
-//! Named, recorded decision points for the two selections the model makes
-//! implicitly inside generation: which schema applies, and which operation to
-//! call.
+//! Named, recorded decision points for the three selections an agent turn
+//! makes: which skill retrieval matched, which schema applies, and which
+//! operation to call. The latter two are the model's, made implicitly inside
+//! generation; the first is deterministic retrieval, recorded because it is
+//! upstream of both and constrains them.
 //!
 //! Both decisions exist today only as emergent properties of whatever tool call
 //! the model happens to emit. Nothing names them, so nothing can score them:
@@ -168,9 +170,24 @@ pub fn record_schema(candidates: &[String], selected: Option<String>) -> Decisio
 /// never retrieved" are different failures with different fixes, and a
 /// candidate list filtered to gate-clearers cannot tell them apart.
 ///
-/// The selection is the top gate-clearing candidate: the one whose whitelist
-/// leads `stage2_tools`. `None` when nothing cleared, which is the fail-open
-/// case — the turn runs on the full tool surface, and no skill was chosen.
+/// The selection is [`routing::leading_tool_bearing_candidate`]: the one whose
+/// whitelist actually leads `stage2_tools`. `None` when nothing qualifies,
+/// which is the fail-open case — the turn runs on the full tool surface, and no
+/// skill was chosen.
+///
+/// **Clearing the score gate is not sufficient**, and an earlier version of
+/// this function took the first gate-clearer, which was wrong. A schema-typed
+/// retrieval hit carries `tools: []` and is pinned by the lexical backstop at a
+/// confidence above any cosine-derived score a real skill can reach, so on
+/// every turn that names a schema outright — which is most of the schema
+/// scenarios in the decision eval, by construction — it sorts first and would
+/// have been recorded as the skill that led the turn. It leads nothing: it
+/// contributes no tool to the offered surface. `routing` owns that predicate
+/// because two consumers already re-derived it and were both wrong the same
+/// way.
+///
+/// The tool-less candidate still appears in `candidates`: it was genuinely
+/// retrieved, and "retrieved but contributed nothing" is worth seeing.
 ///
 /// Unlike the other two decisions this is not made by the model at all; it is
 /// deterministic retrieval plus a score bar. It is recorded anyway because it
@@ -180,9 +197,7 @@ pub fn record_skill(candidates: &[SkillCandidate]) -> DecisionRecord {
     DecisionRecord {
         kind: DecisionKind::Skill,
         candidates: candidates.iter().map(|c| c.name.clone()).collect(),
-        selected: candidates
-            .iter()
-            .find(|c| super::routing::clears_score_gate(c))
+        selected: super::routing::leading_tool_bearing_candidate(candidates)
             .map(|c| c.name.clone()),
     }
 }
@@ -341,6 +356,44 @@ mod tests {
         assert_eq!(rec.selected, None);
     }
 
+    /// The regression this function was corrected for. A schema-typed retrieval
+    /// hit carries `tools: []` and the lexical backstop pins it at confidence
+    /// 1.0 — above any cosine-derived score a real skill can reach — so it
+    /// sorts first on every turn that names a schema outright. It leads
+    /// nothing: it contributes no tool to the offered surface. Taking the first
+    /// gate-clearing candidate recorded it as the winner and mislabelled
+    /// precisely the scenarios the decision eval was built to score.
+    #[test]
+    fn a_tool_less_schema_hit_does_not_lead_the_turn() {
+        let schema_hit = skill("Company Sold To", 1.0, &[]);
+        let real_skill = skill("Node Creation", 0.62, &["create_node"]);
+        let rec = record_skill(&[schema_hit, real_skill]);
+
+        assert_eq!(
+            rec.selected.as_deref(),
+            Some("Node Creation"),
+            "a candidate whitelisting no tool contributes nothing to the offered surface, \
+             so it cannot be the skill that led the turn"
+        );
+        assert_eq!(
+            rec.candidates,
+            vec!["Company Sold To", "Node Creation"],
+            "it was genuinely retrieved, so it stays visible as a candidate — \
+             'retrieved but contributed nothing' is worth seeing"
+        );
+    }
+
+    /// Selection does not depend on the caller's ordering. `route` sorts by
+    /// score descending today, but the rule about which candidate leads is an
+    /// explicit max rather than a positional assumption.
+    #[test]
+    fn leading_candidate_is_the_highest_scorer_not_the_first() {
+        let weak = skill("Research", 0.20, &["search_nodes"]);
+        let strong = skill("Node Creation", 0.80, &["create_node"]);
+        let rec = record_skill(&[weak, strong]);
+        assert_eq!(rec.selected.as_deref(), Some("Node Creation"));
+    }
+
     #[test]
     fn operation_records_the_offered_surface_and_the_first_call() {
         let offered = vec!["search_nodes".to_string(), "create_node".to_string()];
@@ -472,6 +525,7 @@ mod tests {
 
     #[test]
     fn kind_wire_names_are_stable() {
+        assert_eq!(DecisionKind::Skill.as_str(), "skill");
         assert_eq!(DecisionKind::Schema.as_str(), "schema");
         assert_eq!(DecisionKind::Operation.as_str(), "operation");
     }
