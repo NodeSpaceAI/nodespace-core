@@ -29,7 +29,7 @@ use crate::playbook::cel::{self, ConditionResult};
 use crate::playbook::graph_resolver::GraphResolver;
 use crate::playbook::lifecycle::PlaybookLifecycleManager;
 use crate::playbook::path_extractor;
-use crate::playbook::types::{NodeEventType, TriggerKey};
+use crate::playbook::types::{namespaced_property_key, NodeEventType, TriggerKey};
 use crate::services::NodeService;
 use serde::Serialize;
 use std::sync::{Arc, RwLock};
@@ -77,7 +77,43 @@ pub struct WorkflowState {
     /// Explicit note that "fired" history is not tracked anywhere and this
     /// response reports live condition state only, not execution history.
     pub fired_state_note: String,
+    /// Non-empty when a schema/extends-chain resolution call
+    /// (`resolve_field_owners`/`resolve_relationships`/a schema fetch)
+    /// failed while building this response and was degraded to a narrower,
+    /// less complete field or relationship set rather than aborting the
+    /// whole query. Each entry names what failed and where.
+    ///
+    /// Consistent with this module's "never silently given a made-up value"
+    /// policy (see the module doc): a transient DB error during this merge
+    /// must not be able to silently reintroduce the exact under-reporting /
+    /// typo-misclassification bug this diagnostic exists to avoid. An empty
+    /// vec means every lookup that fed this response succeeded; a non-empty
+    /// one means this response may under-report candidates or misclassify a
+    /// condition as `Unresolvable` that a successful lookup would have
+    /// correctly classified as `NotYetMet` or `Satisfied` — a caller should
+    /// treat the response as incomplete, not authoritative, until a retry
+    /// comes back with an empty `degraded_reasons`.
+    pub degraded_reasons: Vec<String>,
     pub rules: Vec<RuleWorkflowState>,
+}
+
+/// Log a schema/extends-chain resolution failure and record it in
+/// `degraded` (see `WorkflowState::degraded_reasons`) together, in one call.
+///
+/// Every degrade site in this module goes through this rather than calling
+/// `tracing::warn!`/`degraded.push` separately — a future site copying only
+/// one half of that pair (e.g. logging but forgetting to record, or vice
+/// versa) would silently reintroduce the exact "invisible degradation" bug
+/// class `degraded_reasons` exists to close.
+fn record_degradation(
+    degraded: &mut Vec<String>,
+    node_type: &str,
+    error: impl std::fmt::Display,
+    site: &str,
+    msg: String,
+) {
+    tracing::warn!(node_type = %node_type, error = %error, "{site}: {msg}");
+    degraded.push(msg);
 }
 
 /// Evaluate every active Play rule whose trigger matches `node`'s type against
@@ -94,23 +130,75 @@ pub async fn get_workflow_state(
     node_service: &Arc<NodeService>,
     node: &Node,
 ) -> WorkflowState {
+    // Collects a human-readable entry every time a schema/extends-chain
+    // lookup fails and this function degrades to a narrower field or
+    // relationship set instead of aborting — see `WorkflowState::degraded_reasons`.
+    // Threaded through `evaluate_one_condition`/`classify_failure`/
+    // `walk_path_against_schema` too, so a per-hop failure during condition
+    // classification is visible on the final response the same way a
+    // top-level failure here is.
+    let mut degraded: Vec<String> = Vec::new();
+
     let schema = match node_service
         .get_schema_with_relationships(&node.node_type)
         .await
     {
         Ok(schema) => schema,
         Err(e) => {
-            // A real lookup failure (not "no schema for this type") — the
-            // typo-vs-unmet distinction degrades to the conservative
-            // NotYetMet classification for this node, but that degradation
-            // should be visible rather than indistinguishable from a genuine
-            // schemaless type.
-            tracing::warn!(
-                node_type = %node.node_type,
-                error = %e,
-                "get_workflow_state: schema lookup failed; typo detection degraded to NotYetMet for this node"
+            // A real lookup failure (not "no schema for this type"). `schema`
+            // is only ever consulted here as a *fallback* source — every
+            // real classification below comes from `resolve_field_owners`/
+            // `resolve_relationships`, independent async calls that can
+            // still succeed even though this one didn't. So this does NOT
+            // definitely degrade the final classification (an overclaiming
+            // message here previously asserted it always would); it only
+            // means the fallback this node would otherwise have, if one of
+            // those independent calls also fails, is unavailable.
+            let msg = format!(
+                "schema lookup for '{}' failed ({e}); this node's fallback schema \
+                 snapshot is unavailable for the rest of this response — later, \
+                 independent field/relationship resolution calls are unaffected by \
+                 this and may still succeed",
+                node.node_type
+            );
+            record_degradation(
+                &mut degraded,
+                &node.node_type,
+                &e,
+                "get_workflow_state",
+                msg,
             );
             None
+        }
+    };
+
+    // The candidate-key enumeration needs the *effective* field set across
+    // `node.node_type`'s extends chain (ADR-078) — not just `schema`'s own
+    // directly-declared fields. A subtype node whose triggering field is
+    // only declared on an ancestor schema (the normal, intended `extends`
+    // usage — not redeclaring inherited fields) must still get a candidate
+    // key built for it, or a genuinely active, satisfied rule silently never
+    // shows up here. `resolve_field_owners` already walks that chain and
+    // merges it; reuse it rather than re-deriving the merge from `schema`.
+    let effective_fields = match node_service.resolve_field_owners(&node.node_type).await {
+        Ok((fields, _owners, _chain)) => fields,
+        Err(e) => {
+            let msg = format!(
+                "effective-field resolution for '{}' failed ({e}); property_changed \
+                 candidates degraded to this node's own directly-declared schema fields",
+                node.node_type
+            );
+            record_degradation(
+                &mut degraded,
+                &node.node_type,
+                &e,
+                "get_workflow_state",
+                msg,
+            );
+            schema
+                .as_ref()
+                .map(|s| s.fields.clone())
+                .unwrap_or_default()
         }
     };
 
@@ -135,24 +223,23 @@ pub async fn get_workflow_state(
         // that exact key (see lifecycle::trigger_keys_for_graph_event), not
         // the wildcard — and there is no real changed-property list here to
         // derive that key from (this is an out-of-band query, not a live
-        // mutation). The schema's declared field names are the bounded,
-        // known-in-advance set of property keys a rule on this node_type
-        // could plausibly be registered under, so one exact-key lookup per
-        // declared field covers every such rule without linearly scanning
-        // every active play. The trigger key itself is always type-namespaced
+        // mutation). The effective field set (own schema + everything
+        // inherited across the extends chain) is the bounded, known-in-
+        // advance set of property keys a rule on this node_type could
+        // plausibly be registered under, so one exact-key lookup per field
+        // covers every such rule without linearly scanning every active
+        // play. The trigger key itself is always type-namespaced
         // (`<node_type>.<field>`, e.g. "task.status" — see
         // `validate_play`'s `UnnamespacedPropertyChangedKey` check and
         // `trigger_keys_for_graph_event`, which indexes verbatim under
         // whatever `property_key` a rule declared), so the lookup key built
         // here must match that same namespaced shape or it can never hit.
-        if let Some(s) = &schema {
-            for field in &s.fields {
-                keys.push(TriggerKey::NodeEvent {
-                    event: NodeEventType::PropertyChanged,
-                    node_type: node.node_type.clone(),
-                    property_key: Some(format!("{}.{}", node.node_type, field.name)),
-                });
-            }
+        for field in &effective_fields {
+            keys.push(TriggerKey::NodeEvent {
+                event: NodeEventType::PropertyChanged,
+                node_type: node.node_type.clone(),
+                property_key: Some(namespaced_property_key(&node.node_type, &field.name)),
+            });
         }
 
         let mut refs = lm.lookup_rules(&keys);
@@ -162,8 +249,19 @@ pub async fn get_workflow_state(
         // here too: "what would fire for this node" should cover a
         // scheduled rule the same way it covers a graph-event one, since
         // both are just "conditions evaluated against this node's state."
+        //
+        // `lookup_rules` above fans a graph-event candidate out across
+        // `node.node_type`'s full ADR-078 ancestry for free (via
+        // `PlaybookLifecycleManager::ancestor_keys`) — an exact-string
+        // `node_type` match here would be inconsistent with that and would
+        // silently drop a scheduled Play registered on a base type from
+        // this response for every subtype node. `ancestors_of` returns the
+        // same ancestry `lookup_rules` uses internally (nearest first,
+        // including the type itself), so membership in it is the matching
+        // eligibility test for a scheduled trigger too.
+        let ancestry = lm.ancestors_of(&node.node_type);
         for entry in lm.cron_registry() {
-            if entry.node_type == node.node_type {
+            if ancestry.iter().any(|t| t == &entry.node_type) {
                 for r in &entry.rules {
                     if !refs.iter().any(|existing| existing == r) {
                         refs.push(r.clone());
@@ -201,6 +299,7 @@ pub async fn get_workflow_state(
                 &mut resolver,
                 node_service,
                 schema.as_ref(),
+                &mut degraded,
             )
             .await;
             condition_states.push(state);
@@ -228,6 +327,7 @@ pub async fn get_workflow_state(
              (per ADR-073, there is no cross-device fired-state yet) — this is not an execution \
              history."
             .to_string(),
+        degraded_reasons: degraded,
         rules,
     }
 }
@@ -246,6 +346,7 @@ async fn evaluate_one_condition(
     resolver: &mut GraphResolver,
     node_service: &Arc<NodeService>,
     schema: Option<&crate::models::SchemaNode>,
+    degraded: &mut Vec<String>,
 ) -> ConditionState {
     let result =
         cel::evaluate_conditions(std::slice::from_ref(condition), node, event, Some(resolver))
@@ -254,7 +355,7 @@ async fn evaluate_one_condition(
     match result {
         ConditionResult::Pass => ConditionState::Satisfied,
         ConditionResult::Fail { .. } => {
-            match classify_failure(condition, node, node_service, schema).await {
+            match classify_failure(condition, node, node_service, schema, degraded).await {
                 Some(state) => state,
                 None => ConditionState::NotYetMet {
                     condition: condition.source.clone(),
@@ -288,6 +389,7 @@ async fn classify_failure(
     node: &Node,
     node_service: &Arc<NodeService>,
     schema: Option<&crate::models::SchemaNode>,
+    degraded: &mut Vec<String>,
 ) -> Option<ConditionState> {
     let extraction = path_extractor::extract_paths(&condition.source).ok()?;
 
@@ -312,9 +414,15 @@ async fn classify_failure(
             continue;
         }
 
-        if let Some(state) =
-            walk_path_against_schema(condition, node, node_service, schema, &path.segments[1..])
-                .await
+        if let Some(state) = walk_path_against_schema(
+            condition,
+            node,
+            node_service,
+            schema,
+            &path.segments[1..],
+            degraded,
+        )
+        .await
         {
             return Some(state);
         }
@@ -337,20 +445,76 @@ async fn walk_path_against_schema(
     node_service: &Arc<NodeService>,
     first_schema: Option<&crate::models::SchemaNode>,
     segments: &[String],
+    degraded: &mut Vec<String>,
 ) -> Option<ConditionState> {
     let mut current_schema_owned: Option<crate::models::SchemaNode> = first_schema.cloned();
     let mut current_type = node.node_type.clone();
 
     for (i, segment) in segments.iter().enumerate() {
         let current_schema = current_schema_owned.as_ref();
-        let known_fields: Vec<&str> = current_schema
-            .map(|s| s.fields.iter().map(|f| f.name.as_str()).collect())
-            .unwrap_or_default();
-        let relationship =
-            current_schema.and_then(|s| s.relationships.iter().find(|r| r.name == *segment));
+
+        // The effective/merged field set across `current_type`'s extends
+        // chain (ADR-078) — not just `current_schema`'s own directly-
+        // declared fields. A subtype schema that inherits a field from an
+        // ancestor without redeclaring it (the normal, intended usage) must
+        // still count as a real field here, or a condition referencing it
+        // is misclassified as Unresolvable ("likely a typo") instead of the
+        // correct NotYetMet.
+        let known_fields: Vec<String> = match node_service.resolve_field_owners(&current_type).await
+        {
+            Ok((fields, _owners, _chain)) => fields.into_iter().map(|f| f.name).collect(),
+            Err(e) => {
+                // Degrade to `current_schema`'s own directly-declared fields
+                // (the pre-fix behavior), not an empty set: before this
+                // change, `known_fields` was a free in-memory read off
+                // `current_schema` that could never independently fail. An
+                // empty fallback here would make a real DB error (lock
+                // contention, etc.) misreport a field that unambiguously
+                // exists on the node's own schema as `Unresolvable` — worse
+                // than pre-fix behavior, and inconsistent with
+                // `get_workflow_state`'s matching fallback above. Recorded in
+                // `degraded` (not just logged) so this can never silently
+                // reproduce, under a transient DB error, the exact
+                // under-reporting/misclassification bug this fix closes.
+                let msg = format!(
+                    "effective-field resolution for '{current_type}' failed ({e}) while walking \
+                     '{}'; typo detection degraded to this schema's own directly-declared \
+                     fields at this hop",
+                    condition.source
+                );
+                record_degradation(degraded, &current_type, &e, "walk_path_against_schema", msg);
+                current_schema
+                    .map(|s| s.fields.iter().map(|f| f.name.clone()).collect())
+                    .unwrap_or_default()
+            }
+        };
+
+        // Same extends-chain merge as `known_fields` above, but for declared
+        // relationships: a subtype schema that inherits (doesn't redeclare) a
+        // relationship from an ancestor must still be recognized here, or a
+        // condition traversing it is misclassified as a typo the same way an
+        // inherited field was before this fix.
+        let relationship: Option<crate::models::schema::SchemaRelationship> = match node_service
+            .resolve_relationships(&current_type)
+            .await
+        {
+            Ok((rels, _owners)) => rels.into_iter().find(|r| r.name == *segment),
+            Err(e) => {
+                let msg = format!(
+                    "effective-relationship resolution for '{current_type}' failed ({e}) \
+                         while walking '{}'; typo detection degraded to this schema's own \
+                         directly-declared relationships at this hop",
+                    condition.source
+                );
+                record_degradation(degraded, &current_type, &e, "walk_path_against_schema", msg);
+                current_schema
+                    .and_then(|s| s.relationships.iter().find(|r| r.name == *segment))
+                    .cloned()
+            }
+        };
 
         let is_field =
-            CORE_FIELDS.contains(&segment.as_str()) || known_fields.contains(&segment.as_str());
+            CORE_FIELDS.contains(&segment.as_str()) || known_fields.iter().any(|f| f == segment);
 
         if let Some(rel) = relationship {
             // A declared relationship. If more segments follow, keep walking
@@ -367,11 +531,34 @@ async fn walk_path_against_schema(
                 // conclusive to say, so stop here rather than guess.
                 return None;
             };
-            current_schema_owned = node_service
+            current_schema_owned = match node_service
                 .get_schema_with_relationships(&target_type)
                 .await
-                .ok()
-                .flatten();
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    // A genuine lookup failure, not "no schema for this
+                    // type" (that's `Ok(None)`, left as-is below). Recorded
+                    // rather than silently swallowed: this schema is only
+                    // ever consulted as a *fallback* at the next hop — its
+                    // own `known_fields`/`relationship` come from
+                    // independent `resolve_field_owners`/
+                    // `resolve_relationships` calls that can still succeed
+                    // even though this one didn't, so losing it here does
+                    // not definitely degrade the next hop's typo detection;
+                    // it only removes the fallback that hop would otherwise
+                    // have if one of those calls also fails.
+                    let msg = format!(
+                        "schema lookup for '{target_type}' failed ({e}) while walking '{}'; \
+                         the fallback schema snapshot for the next hop is unavailable — \
+                         that hop's own field/relationship resolution is unaffected by \
+                         this and may still succeed",
+                        condition.source
+                    );
+                    record_degradation(degraded, &target_type, &e, "walk_path_against_schema", msg);
+                    None
+                }
+            };
             current_type = target_type;
             continue;
         }
@@ -469,6 +656,11 @@ mod tests {
         assert_eq!(state.rules.len(), 1);
         assert!(state.rules[0].all_conditions_satisfied);
         assert_eq!(state.rules[0].conditions[0], ConditionState::Satisfied);
+        assert!(
+            state.degraded_reasons.is_empty(),
+            "no schema/extends-chain lookup should fail on this happy path: {:?}",
+            state.degraded_reasons
+        );
     }
 
     #[tokio::test]
@@ -779,7 +971,15 @@ mod tests {
             lm.activate_play(&play).unwrap();
         }
 
-        let task = make_test_node("wf_task4", json!({"status": "done"}));
+        // Realistic on-disk storage shape: `NodeService::create_node` (via
+        // `normalize_flat_properties_to_namespace`) always wraps a flat
+        // property map in its owning type's namespace before persisting, so
+        // a bare `{"status": "done"}` is not what a node created through the
+        // real write path ever looks like on disk. Using the nested shape
+        // here means this test would actually catch a future narrowing of
+        // `GraphResolver`/`node_to_cel_value_at_scope`'s flat-shape fallback,
+        // which is the only reason the flat shape passed before.
+        let task = make_test_node("wf_task4", json!({"wf_task4": {"status": "done"}}));
         let state = get_workflow_state(&lifecycle, &svc, &task).await;
         assert_eq!(
             state.rules.len(),
@@ -788,5 +988,345 @@ mod tests {
         );
         assert!(state.rules[0].all_conditions_satisfied);
         assert_eq!(state.rules[0].conditions[0], ConditionState::Satisfied);
+    }
+
+    /// Regression for the ADR-078 extends-chain gap: a subtype node whose
+    /// triggering field is declared only on an ancestor schema (inherited,
+    /// not redeclared — the normal, intended `extends` usage) must still get
+    /// a `property_changed` candidate key built for it. Before the fix,
+    /// `get_workflow_state` enumerated candidate keys from `schema.fields`
+    /// alone — the subtype's own directly-declared fields, empty here — and
+    /// never built the `wf_sub_pc.status` key at all, so this rule was
+    /// silently absent from the response (`state.rules.len() == 0`) with no
+    /// indication anything was skipped, even though it is genuinely active
+    /// and satisfied.
+    ///
+    /// The condition deliberately reads a core field (`node.id`), not
+    /// `status` itself: this isolates the candidate-key-enumeration fix
+    /// under test from `get_workflow_state`'s separate, pre-existing,
+    /// out-of-scope behavior of evaluating its synthetic event only against
+    /// the node's own type-namespace bucket (see the module doc's "Synthetic
+    /// trigger event" point) — a real inherited field's stored value lives in
+    /// its owning ancestor's bucket, not the subtype's.
+    #[tokio::test]
+    async fn inherited_property_changed_trigger_is_returned_as_candidate() {
+        let (svc, _tmp) = test_service().await;
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_base_pc",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("base schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_sub_pc",
+                "extends": "wf_base_pc",
+                "fields": []
+            }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            let play = make_play_node(
+                "pb-inherit-pc",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "property_changed", "node_type": "wf_sub_pc", "property_key": "wf_sub_pc.status" },
+                    "conditions": ["node.id != ''"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let task = make_test_node("wf_sub_pc", json!({}));
+        let state = get_workflow_state(&lifecycle, &svc, &task).await;
+        assert_eq!(
+            state.rules.len(),
+            1,
+            "expected the inherited-field property-key-scoped rule to be returned as a \
+             candidate — before the fix this was silently 0"
+        );
+        assert!(state.rules[0].all_conditions_satisfied);
+        assert_eq!(state.rules[0].conditions[0], ConditionState::Satisfied);
+        assert!(
+            state.degraded_reasons.is_empty(),
+            "the extends-chain merge succeeded here — no lookup failed, so nothing should be \
+             reported as degraded: {:?}",
+            state.degraded_reasons
+        );
+    }
+
+    /// Regression for `classify_failure`'s companion gap: a condition
+    /// referencing a genuinely-inherited field (declared only on an ancestor
+    /// schema, not redeclared) must be classified `NotYetMet`, not
+    /// misclassified as `Unresolvable` ("likely a typo"). Before the fix,
+    /// `walk_path_against_schema` built `known_fields` from the subtype's own
+    /// directly-declared fields alone (empty here), so `status` looked like
+    /// neither a field nor a relationship and was reported as a typo.
+    ///
+    /// Uses a `node_created` trigger — candidate lookup already finds this
+    /// rule correctly on an exact `node_type` match — isolating this
+    /// assertion from the separate `property_changed` candidate-enumeration
+    /// gap covered above.
+    #[tokio::test]
+    async fn inherited_field_condition_reports_not_yet_met_not_unresolvable() {
+        let (svc, _tmp) = test_service().await;
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_base_cf",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("base schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_sub_cf",
+                "extends": "wf_base_cf",
+                "fields": []
+            }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            let play = make_play_node(
+                "pb-inherit-cf",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_sub_cf" },
+                    "conditions": ["node.status == 'active'"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let task = make_test_node("wf_sub_cf", json!({}));
+        let state = get_workflow_state(&lifecycle, &svc, &task).await;
+        assert_eq!(state.rules.len(), 1);
+        match &state.rules[0].conditions[0] {
+            ConditionState::NotYetMet { condition } => {
+                assert_eq!(condition, "node.status == 'active'");
+            }
+            other => panic!(
+                "expected NotYetMet for a genuinely inherited field, got {:?} — inherited \
+                 fields must not be misclassified as a typo",
+                other
+            ),
+        }
+    }
+
+    /// Regression for the same classify_failure gap as above, but for a
+    /// declared *relationship* rather than a field: a condition traversing a
+    /// relationship declared only on an ancestor schema (inherited, not
+    /// redeclared) must be classified `NotYetMet`, not misclassified as
+    /// `Unresolvable`. Before the fix, `walk_path_against_schema`'s
+    /// relationship lookup checked only the subtype's own directly-declared
+    /// relationships (none here), so `story` looked like neither a field nor
+    /// a relationship and was reported as a typo.
+    #[tokio::test]
+    async fn inherited_relationship_condition_reports_not_yet_met_not_unresolvable() {
+        let (svc, _tmp) = test_service().await;
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_rel_target",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("relationship target schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_rel_base",
+                "fields": [],
+                "relationships": [{
+                    "name": "story",
+                    "targetType": "wf_rel_target",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "tasks",
+                    "reverseCardinality": "many"
+                }]
+            }),
+        )
+        .await
+        .expect("base schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_rel_sub",
+                "extends": "wf_rel_base",
+                "fields": []
+            }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            let play = make_play_node(
+                "pb-inherit-rel",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_rel_sub" },
+                    "conditions": ["node.story.status == 'active'"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let task = make_test_node("wf_rel_sub", json!({}));
+        let state = get_workflow_state(&lifecycle, &svc, &task).await;
+        assert_eq!(state.rules.len(), 1);
+        match &state.rules[0].conditions[0] {
+            ConditionState::NotYetMet { condition } => {
+                assert_eq!(condition, "node.story.status == 'active'");
+            }
+            other => panic!(
+                "expected NotYetMet for a genuinely inherited relationship, got {:?} — \
+                 inherited relationships must not be misclassified as a typo",
+                other
+            ),
+        }
+    }
+
+    /// Regression: `resolve_relationships` must exclude the `extends`
+    /// type-system relationship from its merged output. A schema that
+    /// declares `extends` stores it as an ordinary row in the same
+    /// declaration table real relationships live in, so a subtype's own
+    /// `schema.relationships` genuinely contains an `extends` entry pointing
+    /// at its parent — but no real data node instance ever carries an
+    /// `extends` edge (only schema nodes do, in the schema graph). A
+    /// condition segment literally named `extends` must therefore still be
+    /// classified `Unresolvable` (a typo), not accepted as a real
+    /// relationship hop that will simply never resolve.
+    #[tokio::test]
+    async fn extends_relationship_itself_is_not_a_traversable_relationship() {
+        let (svc, _tmp) = test_service().await;
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_ext_base",
+                "fields": [
+                    { "name": "status", "type": "string", "protection": "user", "indexed": false }
+                ]
+            }),
+        )
+        .await
+        .expect("base schema creation failed");
+
+        crate::schema::handle_create_schema(
+            &svc,
+            json!({
+                "name": "wf_ext_sub",
+                "extends": "wf_ext_base",
+                "fields": []
+            }),
+        )
+        .await
+        .expect("subtype schema creation failed");
+
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            let play = make_play_node(
+                "pb-extends-not-rel",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "graph_event", "on": "node_created", "node_type": "wf_ext_sub" },
+                    "conditions": ["node.extends.status == 'active'"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let task = make_test_node("wf_ext_sub", json!({}));
+        let state = get_workflow_state(&lifecycle, &svc, &task).await;
+        assert_eq!(state.rules.len(), 1);
+        match &state.rules[0].conditions[0] {
+            ConditionState::Unresolvable { reason, .. } => {
+                assert!(reason.contains("extends"), "reason was: {reason}");
+            }
+            other => panic!(
+                "expected Unresolvable — 'extends' is a type-system relationship, never a \
+                 real data-traversable one, got {:?}",
+                other
+            ),
+        }
+    }
+
+    /// Regression for the scheduled/cron candidate gap: a scheduled Play
+    /// registered on a base type must still be returned as a candidate for a
+    /// subtype node, consistent with the ancestor fan-out graph-event
+    /// candidates already get for free via `lookup_rules`. Before the fix,
+    /// the cron loop used an exact-string `node_type` match and silently
+    /// excluded this rule for every subtype node.
+    #[tokio::test]
+    async fn scheduled_trigger_on_ancestor_type_is_returned_for_subtype_node() {
+        let (svc, _tmp) = test_service().await;
+        let lifecycle = Arc::new(RwLock::new(PlaybookLifecycleManager::new()));
+        {
+            let mut lm = lifecycle.write().unwrap();
+            // These tests build the lifecycle manager directly rather than
+            // through `PlaybookEngine`, so the ancestor cache — normally kept
+            // fresh by `PlaybookEngine::refresh_ancestor_cache` — must be
+            // seeded by hand to exercise the fan-out path at all.
+            lm.set_ancestor_cache(std::collections::HashMap::from([(
+                "wf_sub_cron".to_string(),
+                vec!["wf_sub_cron".to_string(), "wf_base_cron".to_string()],
+            )]));
+            let play = make_play_node(
+                "pb-cron-ancestor",
+                json!([{
+                    "name": "r1",
+                    "trigger": { "type": "scheduled", "cron": "0 9 * * *", "node_type": "wf_base_cron" },
+                    "conditions": ["node.id != ''"],
+                    "actions": []
+                }]),
+            );
+            lm.activate_play(&play).unwrap();
+        }
+
+        let node = make_test_node("wf_sub_cron", json!({}));
+        let state = get_workflow_state(&lifecycle, &svc, &node).await;
+        assert_eq!(
+            state.rules.len(),
+            1,
+            "expected the base-type scheduled rule to be returned as a candidate for the \
+             subtype node — before the fix this was silently 0"
+        );
+        assert!(state.rules[0].all_conditions_satisfied);
     }
 }

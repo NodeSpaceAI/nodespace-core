@@ -586,6 +586,19 @@ impl NodeService {
     /// applies to fields, kept here rather than reused directly since a
     /// relationship carries no `SchemaField`-shaped data to flatten.
     ///
+    /// Excludes the `extends`/`extended_by` type-system relationship
+    /// (`is_type_system_relationship`). A schema that declares `extends` has
+    /// it stored as an ordinary row in the same declaration table other
+    /// relationships live in (see `TYPE_SYSTEM_RELATIONSHIPS`'s doc — it is
+    /// deliberately not excluded from *storage* reads, since
+    /// `declared_parent`/`declared_extends_parent` need to find it there).
+    /// But it is a statement about the schema graph, not a data relationship
+    /// any real node instance ever carries — surfacing it here would let a
+    /// condition segment literally named `extends`/`extended_by` pass this
+    /// function's "is this a real, traversable relationship" check and be
+    /// classified `NotYetMet` instead of the correct `Unresolvable`, since no
+    /// data node ever has such an edge to eventually satisfy it.
+    ///
     /// Returns `(relationships, relationship_name -> owning_schema_id)`,
     /// mirroring [`Self::resolve_field_owners`]'s shape: a caller that needs
     /// to decide whether a given name resolves as a field or a relationship
@@ -617,6 +630,9 @@ impl NodeService {
                 continue;
             };
             for rel in schema.relationships {
+                if crate::models::schema::is_type_system_relationship(&rel.name) {
+                    continue;
+                }
                 if !owners.contains_key(&rel.name) {
                     owners.insert(rel.name.clone(), schema_id.clone());
                     out.push(rel);
@@ -1131,6 +1147,17 @@ impl NodeService {
     ///
     /// Convenience method that returns a SchemaNode with its relationships.
     /// Use this when you need the complete schema definition including relationships.
+    ///
+    /// **Returns `schema_id`'s own directly-declared fields and relationships
+    /// only — not merged across the ADR-078 `extends` chain.** A schema that
+    /// `extends` a parent will not have the parent's fields/relationships
+    /// folded in here; reading `.fields`/`.relationships` straight off this
+    /// return value silently drops anything inherited. Callers that need the
+    /// effective set across the whole chain (as most schema-aware reads
+    /// should) want [`Self::resolve_field_owners`] and
+    /// [`Self::resolve_relationships`] instead — both already do this
+    /// resolution and are the established way this codebase avoids that
+    /// exact bug class.
     ///
     /// # Arguments
     ///

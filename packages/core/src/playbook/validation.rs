@@ -26,7 +26,8 @@ use crate::playbook::actions::{
 };
 use crate::playbook::path_extractor;
 use crate::playbook::types::{
-    ActionType, GraphEventType, ParsedAction, ParsedRule, ParsedTrigger, RuleClass,
+    namespaced_property_key, ActionType, GraphEventType, ParsedAction, ParsedRule, ParsedTrigger,
+    RuleClass,
 };
 use crate::services::NodeService;
 use std::collections::HashMap;
@@ -503,7 +504,7 @@ pub async fn validate_play(
                 errors.push(PlayValidationError::UnnamespacedPropertyChangedKey {
                     node_type: node_type.clone(),
                     property_key: key.clone(),
-                    expected: format!("{}.{}", node_type, field),
+                    expected: namespaced_property_key(node_type, field),
                     location: format!("rule[{}].trigger", rule_idx),
                 });
             }

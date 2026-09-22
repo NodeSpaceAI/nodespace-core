@@ -53,6 +53,7 @@
     "gh:create": "bun run scripts/gh-utils.ts issues:create",
     "gh:edit": "bun run scripts/gh-utils.ts issues:edit",
     "gh:comment": "bun run scripts/gh-utils.ts issues:comment",
+    "gh:tracking-issue": "bun run scripts/gh-utils.ts tracking-issue:find-or-create",
     "gh:list": "bun run scripts/gh-utils.ts issues:list",
     "gh:startup": "bun run scripts/gh-utils.ts issues:startup",
     "gh:view": "bun run scripts/gh-utils.ts issues:view",

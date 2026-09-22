@@ -391,7 +391,9 @@ fn trigger_keys_for_graph_event(
 /// leading segment is replaced, so a field name containing a dot keeps its tail.
 fn renamespace_property_key(key: &str, from_type: &str, to_type: &str) -> String {
     match key.split_once('.') {
-        Some((namespace, field)) if namespace == from_type => format!("{to_type}.{field}"),
+        Some((namespace, field)) if namespace == from_type => {
+            namespaced_property_key(to_type, field)
+        }
         _ => key.to_string(),
     }
 }
