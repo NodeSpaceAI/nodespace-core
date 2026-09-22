@@ -21,7 +21,8 @@ name: Homebrew tap drift check
 # Runs on a schedule unrelated to release cadence, plus workflow_dispatch for
 # an on-demand check.
 
-# Needs issues:write for the failure step's `gh issue create` -- the default
+# Needs issues:write for the failure step's tracking-issue dedup helper
+# (bun run gh:tracking-issue, backed by scripts/gh-utils.ts) -- the default
 # GITHUB_TOKEN does not grant that without this block (see release.yml's
 # equivalent notify-failure job, which declares the same for the same reason).
 permissions:
@@ -37,6 +38,21 @@ jobs:
   drift-check:
     name: bun run homebrew:drift-check (cask)
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    # Serializes overlapping runs of this job (the daily schedule landing
+    # near a manual workflow_dispatch, or two dispatches close together) so
+    # the tracking-issue dedup lookup in the failure step never races two
+    # runs into both seeing "no existing issue" and both filing a
+    # duplicate -- same reasoning as verify-macos-installer.yml. Scoped to
+    # this job only (not shared with formula-drift-check below): the two
+    # checks are deliberately independent, and one's transient failure must
+    # not block the other's run. `timeout-minutes` bounds how long a hung
+    # run can occupy this concurrency slot -- without it, cancel-in-progress:
+    # false means a wedged run (network stall, hung `bun install`) would
+    # otherwise queue every later scheduled run behind it indefinitely.
+    concurrency:
+      group: homebrew-drift-check-cask
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -45,6 +61,18 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.11"
+
+      # Unconditional (not gated on failure): the tracking-issue dedup
+      # helper (bun run gh:tracking-issue, below) needs node_modules
+      # (@octokit/rest) and only runs in the failure path -- if this were
+      # also `if: failure()`, a broken install would fail silently right
+      # when the workflow most needs to report loud. Running it here means
+      # a broken install shows up as an ordinary red step on every run.
+      # Retried once (see verify-macos-installer.yml's equivalent step for
+      # the full reasoning): guards against a transient install blip taking
+      # down issue reporting along with it.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile || bun install --frozen-lockfile
 
       - name: Check tap cask version against latest release
         id: drift
@@ -61,10 +89,29 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Open an issue on failure (loud, with the actual message)
+      - name: Open (or update) an issue on failure (loud, with the actual message)
         if: failure()
+        # Dedup (find an open issue with this exact title, comment on it
+        # instead of filing a duplicate) goes through the shared
+        # `findOrCreateTrackingIssue` helper in scripts/gh-utils.ts (`bun run
+        # gh:tracking-issue`). Previously this step had no dedup at all --
+        # `gh issue create` ran unconditionally on every failed run, filing
+        # a fresh duplicate issue every single time the tap stayed stale.
+        # See findOrCreateTrackingIssue's own doc comment (and
+        # verify-macos-installer.yml, the workflow this helper was
+        # extracted from) for why matching goes through the regular
+        # strongly-consistent issues-list endpoint rather than
+        # `--search`/the search index.
+        #
+        # `shell: bash` kept explicit even though this step has no pipe of
+        # its own (unlike the check step above) -- matches
+        # verify-macos-installer.yml's equivalent step, and pins the shell
+        # so a future edit that reintroduces a pipe here doesn't silently
+        # lose pipefail by inheriting whatever the runner's default happens
+        # to be.
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           {
@@ -79,15 +126,22 @@ jobs:
             echo "bun run scripts/update-homebrew-cask.ts <latest-version> --push (requires HOMEBREW_TAP_TOKEN)."
             echo "Any other message means the check itself failed to run (network/gh/auth) -- not necessarily drift; check the run log."
           } > issue-body.txt
-          gh issue create \
-            --repo "${{ github.repository }}" \
+
+          bun run gh:tracking-issue \
             --title "Homebrew tap drift check failed (cask)" \
             --body-file issue-body.txt \
-            --label "foundation"
+            --labels "foundation"
 
   formula-drift-check:
     name: bun run homebrew:formula-drift-check (nodespace-cli)
     runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    # Same per-job serialization (and timeout-minutes, for the same
+    # hung-run-blocks-every-later-run reason) as drift-check above, scoped
+    # separately so the two independent checks never block each other.
+    concurrency:
+      group: homebrew-drift-check-formula
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -96,6 +150,11 @@ jobs:
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.11"
+
+      # Same unconditional, retried install as the cask job above -- see
+      # its comment.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile || bun install --frozen-lockfile
 
       - name: Check tap nodespace-cli formula version against latest release
         id: drift
@@ -107,10 +166,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Open an issue on failure (loud, with the actual message)
+      - name: Open (or update) an issue on failure (loud, with the actual message)
         if: failure()
+        # Same dedup helper as the cask job's failure step above -- see its
+        # comment for the full reasoning. `shell: bash` kept explicit for
+        # the same future-proofing reason given there too.
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           {
@@ -125,8 +188,8 @@ jobs:
             echo "bun run scripts/update-homebrew-formula.ts <latest-version> --push (requires HOMEBREW_TAP_TOKEN)."
             echo "Any other message means the check itself failed to run (network/gh/auth) -- not necessarily drift; check the run log."
           } > issue-body.txt
-          gh issue create \
-            --repo "${{ github.repository }}" \
+
+          bun run gh:tracking-issue \
             --title "Homebrew tap drift check failed (nodespace-cli formula)" \
             --body-file issue-body.txt \
-            --label "foundation"
+            --labels "foundation"
