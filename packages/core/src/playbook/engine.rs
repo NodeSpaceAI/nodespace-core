@@ -744,15 +744,35 @@ impl PlaybookEngine {
                     crate::playbook::validation::validate_play(&parsed_rules, &self.node_service)
                         .await
                 {
-                    warn!(
-                        "Play {} failed save-time validation with {} error(s)",
-                        node_id,
-                        errors.len()
-                    );
                     self.log_validation_errors(node_id, &errors).await;
-                    // Disable the play — do not activate
-                    let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-                    lifecycle.disable_play(node_id);
+                    if crate::playbook::validation::has_genuine_failure(&errors) {
+                        warn!(
+                            "Play {} failed save-time validation with {} error(s)",
+                            node_id,
+                            errors.len()
+                        );
+                        // Disable the play — do not activate
+                        let mut lifecycle =
+                            self.lifecycle.write().expect("lifecycle lock poisoned");
+                        lifecycle.disable_play(node_id);
+                    } else {
+                        // Every error is SchemaResolutionFailed — validation
+                        // could not reach a definitive verdict (a transient
+                        // DB error), not evidence this play is broken.
+                        // Disabling it here would silently take a possibly-
+                        // fine automation offline over nothing more than a
+                        // hiccup. Leave it un-activated rather than guess
+                        // either way; a later event (the next relevant
+                        // schema/play write) gives validation another
+                        // chance to reach a real verdict.
+                        warn!(
+                            "Play {} save-time validation was inconclusive ({} resolution \
+                             failure(s)) — leaving unactivated rather than disabling on an \
+                             unconfirmed verdict",
+                            node_id,
+                            errors.len()
+                        );
+                    }
                     return;
                 }
 
@@ -875,14 +895,30 @@ impl PlaybookEngine {
                     crate::playbook::validation::validate_play(&parsed_rules, &self.node_service)
                         .await
                 {
-                    warn!(
-                        "Play {} failed validation on update with {} error(s)",
-                        node_id,
-                        errors.len()
-                    );
                     self.log_validation_errors(node_id, &errors).await;
-                    let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
-                    lifecycle.disable_play(node_id);
+                    if crate::playbook::validation::has_genuine_failure(&errors) {
+                        warn!(
+                            "Play {} failed validation on update with {} error(s)",
+                            node_id,
+                            errors.len()
+                        );
+                        let mut lifecycle =
+                            self.lifecycle.write().expect("lifecycle lock poisoned");
+                        lifecycle.disable_play(node_id);
+                    } else {
+                        // Every error is SchemaResolutionFailed — inconclusive,
+                        // not evidence of a real break (see handle_play_created's
+                        // matching comment). Leave the play's current status
+                        // untouched rather than disable it on an unconfirmed
+                        // verdict.
+                        warn!(
+                            "Play {} validation on update was inconclusive ({} resolution \
+                             failure(s)) — leaving its current status unchanged rather than \
+                             disabling on an unconfirmed verdict",
+                            node_id,
+                            errors.len()
+                        );
+                    }
                     return;
                 }
             }
@@ -957,7 +993,30 @@ impl PlaybookEngine {
                     if let Err(errors) =
                         crate::playbook::validation::validate_play(&rules, &self.node_service).await
                     {
-                        broken.push((play_id, errors));
+                        if crate::playbook::validation::has_genuine_failure(&errors) {
+                            broken.push((play_id, errors));
+                        } else {
+                            // Every error is SchemaResolutionFailed —
+                            // validation could not reach a definitive
+                            // verdict (a transient DB error while
+                            // re-resolving the extends chain), not evidence
+                            // this play is actually broken by the schema
+                            // change. Disabling it here would silently take
+                            // a working, unrelated automation offline over
+                            // nothing more than a hiccup — precisely the
+                            // failure mode `SchemaResolutionFailed` exists
+                            // to surface instead of hide. Left running; a
+                            // later schema/play write gives re-validation
+                            // another chance to reach a real verdict.
+                            warn!(
+                                "Play {} re-validation after schema '{}' update was \
+                                 inconclusive ({} resolution failure(s)) — leaving it active \
+                                 rather than disabling on an unconfirmed verdict",
+                                play_id,
+                                schema_node_type,
+                                errors.len()
+                            );
+                        }
                     }
                 }
 

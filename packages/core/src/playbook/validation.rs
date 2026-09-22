@@ -425,6 +425,29 @@ impl PlayValidationError {
             Self::SchemaResolutionFailed { .. } => "schema_resolution_failed",
         }
     }
+
+    /// Whether this is a genuine validation failure — a real problem with
+    /// the play's own definition — rather than [`Self::SchemaResolutionFailed`],
+    /// which means validation could not reach a definitive verdict at all (a
+    /// transient DB error mid-resolution, not evidence the play is broken).
+    ///
+    /// A caller that reacts to `validate_play`'s `Err` by disabling an
+    /// already-active play (the engine's schema-drift and play-update
+    /// handlers) must not treat these two cases the same way: doing so would
+    /// let an ordinary transient error silently take a working automation
+    /// offline, which is exactly the failure mode `SchemaResolutionFailed`
+    /// exists to make visible instead of hiding behind a wrong verdict.
+    pub fn is_genuine_failure(&self) -> bool {
+        !matches!(self, Self::SchemaResolutionFailed { .. })
+    }
+}
+
+/// Whether `errors` contains at least one [`PlayValidationError::is_genuine_failure`]
+/// entry — i.e., a real problem with the play, not just an inconclusive
+/// resolution. See that method's doc for why this distinction matters to
+/// any caller deciding whether to disable a play.
+pub fn has_genuine_failure(errors: &[PlayValidationError]) -> bool {
+    errors.iter().any(PlayValidationError::is_genuine_failure)
 }
 
 /// Result of play validation: either Ok or a non-empty list of errors.
@@ -784,10 +807,16 @@ async fn validate_schema_path(
             (None, _) => false,
             // Both a field and a relationship somewhere in the chain
             // declare this name: the nearer (lower chain index) one wins.
-            // Schema creation guards against the SAME schema declaring
-            // both under one name, so equal positions only mean the tie
-            // is moot — the field arm is picked arbitrarily but
-            // harmlessly.
+            // Equal positions mean the SAME schema declares a field and a
+            // relationship under one name — schema creation does not
+            // currently guard against this (only field-vs-field
+            // redeclaration across the chain is checked), so it is a real,
+            // reachable case, not just a theoretical tie. This picks the
+            // field arm deterministically rather than erroring, consistent
+            // with `is_field` being checked first pre-fix too; a create/
+            // update-time guard rejecting the collision outright would be
+            // the more complete fix, but is a schema-authoring concern
+            // orthogonal to this extends-chain resolution fix.
             (Some(f), Some(r)) => f <= r,
         };
 
