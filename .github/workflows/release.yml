@@ -202,20 +202,33 @@ jobs:
           # imported Apple certs into a keychain. Check for real content
           # explicitly, before tarring, to catch it at the original, cheap
           # point instead.
-          if [[ -z "$(ls -A target/aarch64-apple-darwin/release/bundle/macos 2>/dev/null)" ]]; then
-            echo "::error::target/aarch64-apple-darwin/release/bundle/macos is empty — Tauri build did not produce bundle content"
+          #
+          # `find -type f -print -quit` rather than `ls -A` on the top-level
+          # directory: `ls -A` only sees whether bundle/macos/ has ANY entry,
+          # so it would report "non-empty" and let a malformed
+          # NodeSpace.app/ — present but containing zero actual files
+          # anywhere inside it — through to the tar step undetected. Walking
+          # the tree for a real file (and stopping at the first match, so
+          # this stays cheap even though the bundle also carries the ~146MB
+          # embedded model) is what the original bare-directory
+          # `if-no-files-found: error` actually verified.
+          if [[ -z "$(find target/aarch64-apple-darwin/release/bundle/macos -type f -print -quit 2>/dev/null)" ]]; then
+            echo "::error::target/aarch64-apple-darwin/release/bundle/macos has no files — Tauri build did not produce bundle content"
             exit 1
           fi
           # COPYFILE_DISABLE=1 (the standard macOS/bsdtar idiom) stops tar
           # from writing a separate `._<filename>` AppleDouble sidecar entry
           # for any file that carries an extended attribute (a quarantine
           # flag, ACL, etc.) at archive time. Without it, such a file would
-          # round-trip as two tar entries instead of one; the untar step's
-          # nullglob-guarded Contents/MacOS/* checks would iterate over the
-          # stray `._*` file too, and — more importantly — build-pkg.sh's
-          # unconditional `codesign` on the untarred bundle is documented to
-          # hard-reject a bundle containing `._*` files outright, which would
-          # break the real signed release build, not just this CI check.
+          # round-trip as two tar entries instead of one. A stray `._*` file
+          # would NOT be caught by the Contents/MacOS/* executable-bit checks
+          # elsewhere in this workflow — bash's bare `*` glob never matches
+          # dot-prefixed names regardless of nullglob, with or without
+          # dotglob set (which nothing here sets) — so build-pkg.sh's
+          # unconditional `codesign` on the untarred bundle is the only
+          # thing that would catch it, and it is documented to hard-reject a
+          # bundle containing `._*` files outright, breaking the real signed
+          # release build rather than giving a clear CI error.
           COPYFILE_DISABLE=1 tar -cf app-bundle.tar -C target/aarch64-apple-darwin/release/bundle/macos .
 
       - name: Upload .app bundle for pkg job
@@ -448,7 +461,19 @@ jobs:
           # AppleDouble entry that made it into an archive some other way
           # (this same idiom is applied symmetrically on both sides of every
           # macOS tar round-trip, not just the write side).
-          COPYFILE_DISABLE=1 tar -xf app-bundle.tar
+          #
+          # -p (--preserve-permissions): without it, bsdtar's default
+          # extraction behavior for a non-root user applies the process
+          # umask to the archived mode bits rather than restoring them
+          # exactly (confirmed empirically: extracting a 755 file under
+          # umask 027 without -p produces 750, silently dropping the
+          # world-execute bit; -p reproduces 755 regardless of umask). The
+          # runner's actual default umask (022) happens not to strip
+          # rwxr-xr-x today, which is exactly the kind of unstated
+          # assumption this whole PR exists to stop relying on for
+          # executable-bit correctness. -p makes the "restores them exactly"
+          # claim in this job's other comments true unconditionally.
+          COPYFILE_DISABLE=1 tar -xpf app-bundle.tar
           rm app-bundle.tar
 
       # Checks the tar/untar round-trip in isolation, before build-pkg.sh
@@ -471,6 +496,14 @@ jobs:
             exit 1
           fi
           for bin in "${macos_bins[@]}"; do
+            # -f guard before -x: `test -x` alone is true for a directory the
+            # owner can traverse (execute = search permission for
+            # directories), not just an executable regular file. Not
+            # reachable with today's flat Contents/MacOS/ binary layout, but
+            # without this guard a future subdirectory placed there would
+            # silently pass this check without ever containing a verified
+            # executable.
+            test -f "${bin}" || { echo "::error::${bin} is not a regular file"; exit 1; }
             test -x "${bin}" || { echo "::error::${bin} lost its executable bit across the tar/untar artifact round-trip"; exit 1; }
           done
           echo "    All Contents/MacOS/* binaries are executable after the tar/untar round-trip"
@@ -518,6 +551,11 @@ jobs:
               exit 1
             fi
             for bin in "${macos_bins[@]}"; do
+              # -f guard before -x, matching the "Verify tar/untar preserved
+              # the executable bit" step's reasoning: `test -x` alone is
+              # true for a traversable directory too, not just an
+              # executable regular file.
+              test -f "${bin}" || { echo "::error::${bin} is not a regular file"; exit 1; }
               test -x "${bin}" || { echo "::error::${bin} is missing or not executable"; exit 1; }
             done
 
