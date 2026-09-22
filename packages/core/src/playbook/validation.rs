@@ -1052,6 +1052,18 @@ async fn validate_relationship_action(
         return;
     }
 
+    // A built-in structural relationship (`has_child`/`child_of`,
+    // `mentions`/`mentioned_by`, ...) has no `SchemaRelationship` behind it
+    // on any schema — see `validate_schema_path`'s matching check. An
+    // invariant rule's `add_relationship`/`remove_relationship` action can
+    // legitimately target one directly (e.g. `member_of`/`has_child`, which
+    // this same file's invariant-order check specifically handles), so it
+    // must not be rejected as unknown just because `resolve_relationships`
+    // never returns it.
+    if crate::models::schema::is_reserved_relationship_name(rel_type) {
+        return;
+    }
+
     // We need the trigger's schema to check if the relationship exists.
     // If the trigger node_type is unknown (already flagged), skip this check.
     let Some(nt) = trigger_node_type else {
@@ -1679,6 +1691,53 @@ mod tests {
         assert_ne!(broken_path.kind(), reject_on_reactive.kind());
     }
 
+    #[test]
+    fn has_genuine_failure_distinguishes_schema_resolution_failed_from_real_errors() {
+        // Any caller reacting to `validate_play`'s `Err` by disabling/
+        // skipping a play (the engine's schema-drift, play-created,
+        // play-updated, and load-active-plays handlers) must not treat an
+        // inconclusive `SchemaResolutionFailed`-only result the same as a
+        // genuine failure. Locks in `is_genuine_failure`/`has_genuine_failure`
+        // directly, independent of any DB-level fault injection those
+        // handlers would otherwise need to exercise this branch.
+        let resolution_failed = PlayValidationError::SchemaResolutionFailed {
+            node_type: "task".to_string(),
+            error: "transient DB error".to_string(),
+            location: "rule[0].condition[0]".to_string(),
+        };
+        assert!(!resolution_failed.is_genuine_failure());
+        assert!(!has_genuine_failure(std::slice::from_ref(
+            &resolution_failed
+        )));
+
+        let broken_path = PlayValidationError::BrokenPath {
+            path: "node.status".to_string(),
+            segment: "status".to_string(),
+            message: "no such field".to_string(),
+            location: "rule[0].condition[0]".to_string(),
+        };
+        assert!(broken_path.is_genuine_failure());
+        assert!(has_genuine_failure(std::slice::from_ref(&broken_path)));
+
+        // A mix of the two is still genuine — one real error is enough to
+        // treat the whole result as a confirmed break, not inconclusive.
+        assert!(has_genuine_failure(&[
+            resolution_failed.clone(),
+            broken_path.clone()
+        ]));
+
+        // Multiple SchemaResolutionFailed entries with nothing else are
+        // still purely inconclusive.
+        assert!(!has_genuine_failure(&[
+            resolution_failed.clone(),
+            resolution_failed
+        ]));
+
+        // An empty slice (the `Ok(())` case never reaches these callers,
+        // but the helper itself should still report "nothing genuine").
+        assert!(!has_genuine_failure(&[]));
+    }
+
     // -- CEL condition validation tests (no NodeService needed) --
 
     fn compile_conditions(conditions: Vec<&str>) -> Vec<crate::playbook::cel::CompiledCondition> {
@@ -2297,6 +2356,34 @@ mod tests {
             assert!(
                 result.is_ok(),
                 "an action's relationship_type genuinely inherited (extends-chain) must \
+                 validate successfully, not be rejected as UnknownRelationshipType: {:?}",
+                result
+            );
+        }
+
+        /// A built-in structural relationship (`has_child`, `member_of`, ...)
+        /// has no `SchemaRelationship` behind it on any schema —
+        /// `resolve_relationships` never returns it, the same as
+        /// `schema.relationships` never did pre-fix. An `add_relationship`
+        /// action naming one directly must not be rejected as
+        /// `UnknownRelationshipType`: `validate_schema_path` already skips
+        /// reserved names via `is_reserved_relationship_name`, and
+        /// `validate_relationship_action` — the sibling this PR also
+        /// rewrote to be extends-chain-aware — must do the same.
+        #[tokio::test]
+        async fn test_builtin_relationship_type_in_action_passes_validation() {
+            let (svc, _tmp) = create_test_service().await;
+            create_schema(&svc, "vt_builtin_rel", 1, json!([])).await;
+
+            let rules = vec![make_rule(
+                "vt_builtin_rel",
+                vec![],
+                vec![make_relationship_action("has_child")],
+            )];
+            let result = validate_play(&rules, &svc).await;
+            assert!(
+                result.is_ok(),
+                "an action's relationship_type naming a built-in structural relationship must \
                  validate successfully, not be rejected as UnknownRelationshipType: {:?}",
                 result
             );

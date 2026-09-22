@@ -773,25 +773,26 @@ impl PlaybookEngine {
                         let mut lifecycle =
                             self.lifecycle.write().expect("lifecycle lock poisoned");
                         lifecycle.disable_play(node_id);
-                    } else {
-                        // Every error is SchemaResolutionFailed — validation
-                        // could not reach a definitive verdict (a transient
-                        // DB error), not evidence this play is broken.
-                        // Disabling it here would silently take a possibly-
-                        // fine automation offline over nothing more than a
-                        // hiccup. Leave it un-activated rather than guess
-                        // either way; a later event (the next relevant
-                        // schema/play write) gives validation another
-                        // chance to reach a real verdict.
-                        warn!(
-                            "Play {} save-time validation was inconclusive ({} resolution \
-                             failure(s)) — leaving unactivated rather than disabling on an \
-                             unconfirmed verdict",
-                            node_id,
-                            errors.len()
-                        );
+                        return;
                     }
-                    return;
+                    // Every error is SchemaResolutionFailed — validation
+                    // could not reach a definitive verdict (a transient DB
+                    // error), not evidence this play is broken. Returning
+                    // here without activating would NOT "leave state
+                    // unchanged": this play has never been in the lifecycle
+                    // manager at all, so skipping activation makes it
+                    // invisible to `plays_referencing_schema` and therefore
+                    // to every future schema-drift re-validation too — a
+                    // permanent ghost, worse than disabling it. Fall
+                    // through and activate anyway, same as
+                    // `load_active_plays`'s identical reasoning.
+                    warn!(
+                        "Play {} save-time validation was inconclusive ({} resolution \
+                         failure(s)) — activating anyway rather than leaving it invisible to \
+                         future re-validation on an unconfirmed verdict",
+                        node_id,
+                        errors.len()
+                    );
                 }
 
                 let mut lifecycle = self.lifecycle.write().expect("lifecycle lock poisoned");
@@ -923,21 +924,36 @@ impl PlaybookEngine {
                         let mut lifecycle =
                             self.lifecycle.write().expect("lifecycle lock poisoned");
                         lifecycle.disable_play(node_id);
-                    } else {
-                        // Every error is SchemaResolutionFailed — inconclusive,
-                        // not evidence of a real break (see handle_play_created's
-                        // matching comment). Leave the play's current status
-                        // untouched rather than disable it on an unconfirmed
-                        // verdict.
-                        warn!(
-                            "Play {} validation on update was inconclusive ({} resolution \
-                             failure(s)) — leaving its current status unchanged rather than \
-                             disabling on an unconfirmed verdict",
-                            node_id,
-                            errors.len()
-                        );
+                        return;
                     }
-                    return;
+                    // Every error is SchemaResolutionFailed — inconclusive,
+                    // not evidence of a real break. Returning here without
+                    // (re-)activating would NOT "leave state unchanged" in
+                    // any of the three cases `needs_activation` covers:
+                    // - `None -> active` (first-ever activation): the play
+                    //   was never in the lifecycle manager, so skipping
+                    //   leaves it permanently invisible to future
+                    //   schema-drift re-validation — a ghost, same failure
+                    //   mode `load_active_plays` guards against.
+                    // - `Disabled -> active` (re-enable): same — it stays
+                    //   disabled with no future retry, silently ignoring
+                    //   the user's re-enable.
+                    // - `Active -> active` (edit while running): the OLD,
+                    //   pre-edit rules would keep executing under the
+                    //   `lifecycle_status: active` node the user just
+                    //   edited, silently discarding their change with
+                    //   nothing but a log line to show for it.
+                    // All three are worse than proceeding on an unconfirmed
+                    // verdict, so fall through and (re-)activate with the
+                    // new rules anyway, same reasoning as
+                    // `handle_play_created`/`load_active_plays`.
+                    warn!(
+                        "Play {} validation on update was inconclusive ({} resolution \
+                         failure(s)) — (re-)activating anyway rather than silently dropping \
+                         this update on an unconfirmed verdict",
+                        node_id,
+                        errors.len()
+                    );
                 }
             }
 
