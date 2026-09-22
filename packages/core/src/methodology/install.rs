@@ -16,7 +16,7 @@
 //! — a Play targeting `cycle` follows the rename, so the installed set stays
 //! internally consistent rather than half-pointing at a stranger's schema.
 
-use crate::markdown::prepare_nodes_from_template;
+use crate::markdown::{prepare_nodes_from_template, MarkdownError};
 use crate::methodology::{InstallReport, MethodologyRecipe, StepOutcome, StepReport};
 use crate::models::Node;
 use crate::schema::{handle_create_schema, handle_update_schema};
@@ -169,12 +169,12 @@ async fn create_schema_resolving_collisions(
                 id: step.schema_id.to_string(),
             }
         }
-        Err(e) if !is_already_exists(&e.to_string()) => {
+        Err(MarkdownError::AlreadyExists { .. }) => {}
+        Err(e) => {
             return StepOutcome::Failed {
                 message: e.to_string(),
             }
         }
-        Err(_) => {}
     }
 
     // Taken. `name` drives the derived id, so suffixing the name is what
@@ -195,7 +195,7 @@ async fn create_schema_resolving_collisions(
                     created,
                 };
             }
-            Err(e) if is_already_exists(&e.to_string()) => continue,
+            Err(MarkdownError::AlreadyExists { .. }) => continue,
             Err(e) => {
                 return StepOutcome::Failed {
                     message: e.to_string(),
@@ -215,6 +215,17 @@ async fn create_schema_resolving_collisions(
 }
 
 /// Create a node under `preferred_id`, re-keying if that id is taken.
+///
+/// Mirrors `create_schema_resolving_collisions` above: the create is
+/// attempted directly, with no prior existence check — checking first would
+/// race, exactly as it would for schemas, since two installs could both see
+/// an id as free and both proceed. When the create fails, a follow-up read
+/// at the same id is what interprets the rejection, not what gates the
+/// attempt: something now occupying `id` means the create lost a genuine
+/// collision (try the next suffix); `id` still being free means the
+/// rejection was a real fault (report it, rather than burning through every
+/// suffix on the same underlying error). A failure of that follow-up read
+/// itself is reported too, never treated as "no collision".
 async fn create_node_resolving_collisions(
     node_service: &Arc<NodeService>,
     preferred_id: &str,
@@ -229,26 +240,41 @@ async fn create_node_resolving_collisions(
             format!("{preferred_id}__{}", n + 1)
         };
 
-        if node_service.get_node(&id).await.ok().flatten().is_some() {
-            continue;
-        }
-
         let node = Node::new_with_id(
             id.clone(),
             node_type.to_string(),
             content.to_string(),
             properties.clone(),
         );
-        return match node_service.create_node(node).await {
-            Ok(_) if n == 0 => StepOutcome::Created { id },
-            Ok(_) => StepOutcome::Suffixed {
-                requested: preferred_id.to_string(),
-                created: id,
+        match node_service.create_node(node).await {
+            Ok(_) if n == 0 => return StepOutcome::Created { id },
+            Ok(_) => {
+                return StepOutcome::Suffixed {
+                    requested: preferred_id.to_string(),
+                    created: id,
+                }
+            }
+            Err(create_err) => match node_service.get_node(&id).await {
+                // `id` is now occupied — the create lost a real collision.
+                // Try the next suffix.
+                Ok(Some(_)) => continue,
+                // `id` is free; the create failed for a real reason.
+                Ok(None) => {
+                    return StepOutcome::Failed {
+                        message: create_err.to_string(),
+                    }
+                }
+                // Couldn't even confirm why — report both rather than
+                // guessing which one it was.
+                Err(read_err) => {
+                    return StepOutcome::Failed {
+                        message: format!(
+                        "create failed ({create_err}), and confirming why also failed: {read_err}"
+                    ),
+                    }
+                }
             },
-            Err(e) => StepOutcome::Failed {
-                message: e.to_string(),
-            },
-        };
+        }
     }
 
     StepOutcome::Failed {
@@ -327,16 +353,6 @@ fn resolved_id(id: &str, renames: &HashMap<String, String>) -> String {
     renames.get(id).cloned().unwrap_or_else(|| id.to_string())
 }
 
-/// Whether a rejection means "that id is taken" rather than a real fault.
-///
-/// Matched on the message because the schema layer reports both through the
-/// same error type; a structured variant would be better and is worth having
-/// if this ever needs to distinguish more cases.
-fn is_already_exists(message: &str) -> bool {
-    let m = message.to_ascii_lowercase();
-    m.contains("already exists")
-}
-
 impl StepReport {
     fn skipped(label: String) -> Self {
         Self {
@@ -379,12 +395,5 @@ mod tests {
     fn rewrite_is_identity_without_renames() {
         let payload = serde_json::json!({ "node_type": "cycle" });
         assert_eq!(rewrite_schema_ids(&payload, &HashMap::new()), payload);
-    }
-
-    #[test]
-    fn already_exists_is_recognized_case_insensitively() {
-        assert!(is_already_exists("Schema 'cycle' already exists"));
-        assert!(is_already_exists("ALREADY EXISTS"));
-        assert!(!is_already_exists("invalid field type 'wat'"));
     }
 }

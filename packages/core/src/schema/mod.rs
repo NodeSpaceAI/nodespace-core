@@ -1181,13 +1181,16 @@ pub async fn handle_create_schema(
         let existing_definition =
             crate::ops::entity_types_block::EntityTypeDescriptor::from_schema(&existing_schema)
                 .render_line();
-        return Err(MarkdownError::invalid_params(format!(
-            "Schema '{}' already exists — it was NOT modified, and the fields in this call \
-             were NOT applied. Its actual definition is: {}. Use create_node with \
-             node_type='{}' to create instances. Describe the type using only the definition \
-             above.",
-            params.name, existing_definition, schema_id
-        )));
+        return Err(MarkdownError::already_exists(
+            schema_id.clone(),
+            format!(
+                "Schema '{}' already exists — it was NOT modified, and the fields in this call \
+                 were NOT applied. Its actual definition is: {}. Use create_node with \
+                 node_type='{}' to create instances. Describe the type using only the definition \
+                 above.",
+                params.name, existing_definition, schema_id
+            ),
+        ));
     }
 
     // Schema properties (description is stored as a child node subtree, and

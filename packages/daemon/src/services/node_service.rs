@@ -1623,6 +1623,9 @@ impl GrpcNodeService for NodeServiceImpl {
                         Status::failed_precondition(format!("Node creation failed: {m}"))
                     }
                     nodespace_core::markdown::MarkdownError::Internal(m) => Status::internal(m),
+                    nodespace_core::markdown::MarkdownError::AlreadyExists { message, .. } => {
+                        Status::already_exists(message)
+                    }
                 })?;
 
         let markdown = result["markdown"]
@@ -2772,6 +2775,7 @@ fn markdown_error_to_status(err: nodespace_core::markdown::MarkdownError) -> Sta
         MarkdownError::NotFound(msg) => Status::not_found(msg),
         MarkdownError::CreationFailed(msg) => Status::internal(msg),
         MarkdownError::Internal(msg) => Status::internal(msg),
+        MarkdownError::AlreadyExists { message, .. } => Status::already_exists(message),
     }
 }
 
