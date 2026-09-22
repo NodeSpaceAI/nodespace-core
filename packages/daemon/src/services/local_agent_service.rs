@@ -2729,6 +2729,13 @@ fn terse_assistant_facts(writes: &[AiChatCompletedWrite]) -> Option<String> {
 /// touched: they are the user's own words, not the model's narration, and the
 /// dilution effect this guards against was only ever measured against
 /// assistant-authored prose.
+///
+/// A clarifying question is kept verbatim even when its turn also completed
+/// writes. The question is not narration: it is what the user's next message
+/// answers, and the agent recognises a confirmation turn by finding it in
+/// history. Replacing it with write facts would re-ask the same question on
+/// the answer — the writes themselves still follow as the completed-writes
+/// record below.
 pub fn node_history_from_messages(messages: Vec<AiChatMessage>) -> Vec<ChatMessage> {
     messages
         .into_iter()
@@ -2738,7 +2745,7 @@ pub fn node_history_from_messages(messages: Vec<AiChatMessage>) -> Vec<ChatMessa
                 "assistant" => Role::Assistant,
                 _ => return Vec::new(),
             };
-            let content = if role == Role::Assistant {
+            let content = if role == Role::Assistant && m.question.is_none() {
                 terse_assistant_facts(&m.completed_writes).unwrap_or(m.content)
             } else {
                 m.content
@@ -5100,6 +5107,37 @@ model = "model-b"
              instead of silently omitting it the way it would if this still \
              read the old 'properties' key: {:?}",
             assistant.content
+        );
+    }
+
+    /// A clarifying question survives reload even when its turn also wrote
+    /// something: the next turn's answer is recognised as a confirmation only
+    /// by finding the question in history, so rendering it as write facts
+    /// would re-ask the question on the answer.
+    #[test]
+    fn a_clarification_that_also_wrote_keeps_its_question_on_reload() {
+        let question = "I can take that a couple of ways. \"Northwind Trading\" already exists.";
+        let mut turn = assistant_turn(
+            question,
+            AiChatCompletedWrite {
+                tool: "create_node".to_string(),
+                node_id: Some("nodespace://t1".to_string()),
+                summary: Some("Tailspin Toys".to_string()),
+                canonical_args: r#"{"content":"Tailspin Toys"}"#.to_string(),
+            },
+        );
+        turn.question = Some("\"Northwind Trading\" already exists.".to_string());
+
+        let history = node_history_from_messages(vec![turn]);
+
+        let assistant = history
+            .iter()
+            .find(|m| matches!(m.role, Role::Assistant))
+            .expect("assistant message present");
+        assert_eq!(assistant.content, question);
+        assert!(
+            history.iter().any(|m| m.content.contains("Tailspin Toys")),
+            "the write still reaches the next turn through its own record: {history:?}"
         );
     }
 

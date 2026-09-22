@@ -536,6 +536,17 @@ const CLARIFICATION_OPENER = "I can take that a couple of ways";
  * on it with an update.
  */
 function assertNoDuplicate(title: string, turns: TurnRecord[]): Verdict {
+  // `toolCalls` is what tells a refused create (isError) from one that landed.
+  // A turn that called tools but recorded no outcomes cannot be scored here —
+  // treating it as "no create succeeded" would pass a real duplicate.
+  if (turns.some((t) => t.toolsCalled.length > 0 && t.toolCalls === undefined)) {
+    return {
+      passed: false,
+      failure:
+        "Tools were called but no per-call outcomes were recorded, so a refused " +
+        "create cannot be told from one that succeeded.",
+    };
+  }
   const calls = turns.flatMap((t) => t.toolCalls ?? []);
   if (calls.some((c) => c.name === "create_node" && !c.isError)) {
     return {

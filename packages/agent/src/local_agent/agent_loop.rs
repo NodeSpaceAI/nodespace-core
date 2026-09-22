@@ -662,18 +662,29 @@ fn comparable_title(s: &str) -> String {
 /// against this turn's message — not the whole graph, so a create naming
 /// something the user did not refer to is never touched.
 ///
-/// Disarmed when `answering_clarification` — the user's message answers a
-/// clarification within the current intent (`session_already_clarified`, taken
-/// at turn start). That is the confirmation turn, where a user who asked for a
-/// second, separate record must be able to get one; asking again there would
-/// make the duplicate unreachable.
+/// Compared against the create's `content`, so a type whose stored title comes
+/// from a `title_template` rather than the content never matches. That is the
+/// safe direction — no false refusal — and deliberately not widened into a
+/// fuzzy match to catch it.
+///
+/// Disarmed for an entity that a clarification the user has answered in the
+/// current intent (`answered_clarifications`, taken at turn start) asked
+/// about — named by title or id. That is the confirmation turn, where a user
+/// who asked for a second, separate record must be able to get one; asking
+/// again there would make the duplicate unreachable. Scoped to that entity so
+/// an unrelated clarification answered earlier in the intent (a routing
+/// question, say) does not wave a duplicate through.
+///
+/// This cannot tell "create a second one" from "use the existing one" in the
+/// user's answer: both disarm it, and acting on the answer is the model's
+/// call. The guard's job ends once the user has been asked.
 fn mentioned_entity_duplicated_by<'a>(
     mentioned_entities: &'a [crate::agent_types::MentionedEntity],
-    answering_clarification: bool,
+    answered_clarifications: &[String],
     tool: &str,
     args: &serde_json::Value,
 ) -> Option<&'a crate::agent_types::MentionedEntity> {
-    if tool != "create_node" || answering_clarification || mentioned_entities.is_empty() {
+    if tool != "create_node" || mentioned_entities.is_empty() {
         return None;
     }
     let node_type = args.get("node_type")?.as_str()?;
@@ -684,6 +695,11 @@ fn mentioned_entity_duplicated_by<'a>(
     mentioned_entities
         .iter()
         .find(|e| e.node_type == node_type && comparable_title(&e.title) == title)
+        .filter(|e| {
+            !answered_clarifications.iter().any(|asked| {
+                comparable_title(asked).contains(&title) || asked.contains(e.id.as_str())
+            })
+        })
 }
 
 /// Build the tool result returned in place of a `create_node` that would
@@ -750,15 +766,24 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
     else {
         return;
     };
-    let wrote_after = result.tool_calls_made[refused_at + 1..]
-        .iter()
-        .any(|r| !r.is_error && super::tools::is_write_tool(&r.name));
-    if wrote_after {
-        return;
-    }
     let existing = &result.tool_calls_made[refused_at].result["existing"];
     let field = |k: &str| existing.get(k).and_then(|v| v.as_str()).unwrap_or_default();
     let (id, title, node_type) = (field("id"), field("title"), field("node_type"));
+
+    // Only a write aimed at the EXISTING record counts as the model resolving
+    // the collision. Any write would be too broad: in "add Northwind and
+    // Tailspin", the Tailspin create succeeding says nothing about Northwind,
+    // and releasing on it would let "Added both." through unchallenged.
+    let bare_id = id.strip_prefix("nodespace://").unwrap_or(id);
+    let resolved_after = !bare_id.is_empty()
+        && result.tool_calls_made[refused_at + 1..].iter().any(|r| {
+            !r.is_error
+                && super::tools::is_write_tool(&r.name)
+                && r.args.to_string().contains(bare_id)
+        });
+    if resolved_after {
+        return;
+    }
 
     let question = format!(
         "\"{title}\" already exists as a {node_type} ({id}). Did you mean that record, or \
@@ -768,7 +793,21 @@ fn duplicate_entity_backstop(session: &mut AgentSession, result: &mut AgentTurnR
         format!("Use the existing \"{title}\" ({id})"),
         format!("Create a second \"{title}\""),
     ];
-    let clarification = format_clarification(&question, &options);
+    let mut clarification = format_clarification(&question, &options);
+    // The reply being replaced may have been the only report of other writes
+    // this turn did complete; keep them visible rather than asking as though
+    // nothing happened. Appended, so the text still opens with the
+    // clarification opener the confirmation turn recognises.
+    let completed: Vec<ToolExecutionRecord> = result
+        .tool_calls_made
+        .iter()
+        .filter(|r| !r.is_error && super::tools::is_write_tool(&r.name))
+        .cloned()
+        .collect();
+    if !completed.is_empty() {
+        clarification.push_str("\n\nAlready done:\n");
+        clarification.push_str(&summarize_executions(&completed));
+    }
     tracing::warn!(
         session_id = %session.id,
         existing_id = %id,
@@ -1069,6 +1108,14 @@ pub fn stage1_query_from_turns(prior_turns: &[&str], user_message: &str) -> Stri
 /// once the agent has resolved something and replied normally, whatever the
 /// user says next starts a fresh intent and the mechanism re-arms.
 fn session_already_clarified(session: &AgentSession) -> bool {
+    !answered_clarifications(session).is_empty()
+}
+
+/// The text of every clarification in the current intent that the user has
+/// since replied to — the intent scoping of [`session_already_clarified`],
+/// exposed for callers that need to know WHAT was asked, not only that
+/// something was.
+fn answered_clarifications(session: &AgentSession) -> Vec<&str> {
     // Everything from the last resolved turn onward is the current intent.
     // A clarification is not a resolution, so it does not close an intent —
     // that is what lets the "already clarified" state survive the user's reply
@@ -1088,14 +1135,16 @@ fn session_already_clarified(session: &AgentSession) -> bool {
     // are still waiting on, not a second attempt.
     current_intent
         .iter()
-        .position(|m| {
-            matches!(m.role, Role::Assistant) && m.content.starts_with(CLARIFICATION_OPENER)
+        .enumerate()
+        .filter(|(idx, m)| {
+            matches!(m.role, Role::Assistant)
+                && m.content.starts_with(CLARIFICATION_OPENER)
+                && current_intent[idx + 1..]
+                    .iter()
+                    .any(|m| matches!(m.role, Role::User))
         })
-        .is_some_and(|idx| {
-            current_intent[idx + 1..]
-                .iter()
-                .any(|m| matches!(m.role, Role::User))
-        })
+        .map(|(_, m)| m.content.as_str())
+        .collect()
 }
 
 /// Compose a clarification from Stage 1's question and options.
@@ -1747,8 +1796,11 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
 
         // Taken now, while the history ends at the user's message: every tool
         // call this turn appends an assistant message, which
-        // `session_already_clarified` reads as the intent being resolved.
-        let answering_clarification = session_already_clarified(session);
+        // `answered_clarifications` reads as the intent being resolved.
+        let answered_clarifications: Vec<String> = answered_clarifications(session)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
 
         // The model-facing tool surface. `search_skills` is deliberately absent:
         // ADR-038 makes retrieval a deterministic system step (see `route`
@@ -2793,7 +2845,7 @@ impl<E: ChatInferenceEngine + ?Sized, T: AgentToolExecutor + ?Sized> LocalAgentL
                                 )
                             } else if let Some(entity) = mentioned_entity_duplicated_by(
                                 &session.mentioned_entities,
-                                answering_clarification,
+                                &answered_clarifications,
                                 &tc.function_name,
                                 &args,
                             ) {
@@ -3927,7 +3979,9 @@ impl<E: ChatInferenceEngine + ?Sized + 'static, T: AgentToolExecutor + ?Sized + 
     /// turn's message.
     ///
     /// The tool-execution path uses these to refuse a `create_node` that would
-    /// duplicate one of them. Callers that build no workspace context simply
+    /// duplicate one of them. The set is this turn's resolution only — it is
+    /// computed from the current message, so it must be re-seeded every turn
+    /// rather than carried over. Callers that build no workspace context simply
     /// never call this.
     pub async fn set_session_mentioned_entities(
         &self,
@@ -8895,13 +8949,98 @@ mod tests {
         assert!(result.clarify.is_none(), "asking again would loop");
     }
 
+    /// A write to a DIFFERENT record does not resolve the collision. In "add
+    /// Northwind and Tailspin", Tailspin landing says nothing about Northwind,
+    /// so "Added both." must still be replaced — and the Tailspin write must
+    /// stay visible in what replaces it.
+    #[tokio::test]
+    async fn a_write_to_another_record_does_not_release_the_backstop() {
+        let mut session = session_mentioning_northwind();
+        let (result, _) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                tool_round(
+                    "tc_2",
+                    "create_node",
+                    r#"{"node_type":"company_sold_to","content":"Tailspin Toys"}"#,
+                ),
+                text_round("Added both."),
+            ],
+        )
+        .await;
+
+        assert!(
+            result.clarify.is_some(),
+            "an unrelated write must not stand in for resolving Northwind, got {:?}",
+            result.response
+        );
+        assert!(
+            result.response.contains("Already done"),
+            "the Tailspin write must not vanish from the reply, got {:?}",
+            result.response
+        );
+    }
+
+    /// The escape hatch is scoped to the entity asked about: an earlier,
+    /// unrelated clarification in the same intent must not wave a duplicate
+    /// through.
+    #[tokio::test]
+    async fn an_unrelated_answered_clarification_does_not_disarm_the_guard() {
+        let mut session = session_mentioning_northwind();
+        session.messages = vec![
+            ChatMessage::text(Role::User, "Help me track who we sell to."),
+            ChatMessage::text(
+                Role::Assistant,
+                format_clarification(
+                    "Do you want a new type, or to add a record to one you have?",
+                    &["A new type".to_string(), "A record".to_string()],
+                ),
+            ),
+        ];
+        let (result, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                text_round("Added Northwind Trading."),
+            ],
+        )
+        .await;
+
+        assert!(
+            !calls.iter().any(|c| c == "create_node"),
+            "a clarification about something else is not a confirmation, got {calls:?}"
+        );
+        assert!(result.clarify.is_some());
+    }
+
+    /// The backstop covers the loop's other exits, not only a plain final
+    /// reply: here the model repeats the refused create, the loop breaker ends
+    /// the tool rounds, and the user must still be asked.
+    #[tokio::test]
+    async fn backstop_applies_when_the_loop_breaker_ends_the_turn() {
+        let mut session = session_mentioning_northwind();
+        let (result, calls) = run_entity_turn(
+            &mut session,
+            vec![
+                tool_round("tc_1", "create_node", NORTHWIND_CREATE),
+                tool_round("tc_2", "create_node", NORTHWIND_CREATE),
+                text_round("Done."),
+            ],
+        )
+        .await;
+
+        assert!(!calls.iter().any(|c| c == "create_node"));
+        assert!(result.clarify.is_some(), "got {:?}", result.response);
+    }
+
     #[test]
     fn duplicate_entity_match_ignores_case_whitespace_and_markdown() {
         let session = session_mentioning_northwind();
         let args = json!({"node_type": "company_sold_to", "content": "  **northwind   TRADING** "});
         assert!(mentioned_entity_duplicated_by(
             &session.mentioned_entities,
-            false,
+            &[],
             "create_node",
             &args
         )
@@ -8913,13 +9052,8 @@ mod tests {
         let session = session_mentioning_northwind();
         let args = json!({"node_type": "company_sold_to", "content": "Northwind Traders"});
         assert!(
-            mentioned_entity_duplicated_by(
-                &session.mentioned_entities,
-                false,
-                "create_node",
-                &args
-            )
-            .is_none(),
+            mentioned_entity_duplicated_by(&session.mentioned_entities, &[], "create_node", &args)
+                .is_none(),
             "a near-miss may be a distinct record and must not be refused"
         );
     }
