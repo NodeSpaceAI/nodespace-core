@@ -1349,7 +1349,7 @@ fn def_create_schema() -> ToolDefinition {
                             "indexed": { "type": "boolean", "description": "Whether to index for search/filter" },
                             "description": { "type": "string", "description": "What this field means and how it's used — real semantic content (purpose, expected values, an example), not a short label (that's 'friendlyName'). Prefer more detail over less." },
                             "unique": { "type": "boolean", "description": "Set true when each instance should have a distinct value for this field (e.g. an email or a ticket key). ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides." },
-                            "unique_case_insensitive": { "type": "boolean", "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'unique_case_insensitive' on the same field." },
+                            "uniqueCaseInsensitive": { "type": "boolean", "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'uniqueCaseInsensitive' on the same field." },
                             "coreValues": {
                                 "type": "array",
                                 "description": "REQUIRED and must be non-empty when type=\"enum\" — an enum field with no values always fails validation. Array of {value, label} pairs. Use lowercase values (e.g., 'active' not 'Active'). If predefined values aren't known yet, use type=\"text\" instead; values can be added later with update_schema.",
@@ -1440,7 +1440,7 @@ fn def_update_schema() -> ToolDefinition {
                             "type": { "type": "string", "description": "text, number, date, enum, boolean" },
                             "description": { "type": "string", "description": "What this field means and how it's used — real semantic content (purpose, expected values, an example), not a short label (that's 'friendlyName'). Prefer more detail over less." },
                             "unique": { "type": "boolean", "description": "Set true when each instance should have a distinct value for this field (e.g. an email or SKU). ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides." },
-                            "unique_case_insensitive": { "type": "boolean", "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'unique_case_insensitive' on the same field." },
+                            "uniqueCaseInsensitive": { "type": "boolean", "description": "Like 'unique', but case-insensitive — use for fields like email or username where case shouldn't matter. ADVISORY ONLY — does not block or reject duplicate writes; it only lets the system suggest an existing likely-duplicate node when a new value collides. Do not set both 'unique' and 'uniqueCaseInsensitive' on the same field." },
                             "coreValues": {
                                 "type": "array",
                                 "description": "REQUIRED and must be non-empty when type=\"enum\" — an enum field with no values always fails validation. Array of {value, label} pairs.",
@@ -4392,7 +4392,7 @@ mod tests {
             };
             let items = &schema["properties"][fields_key]["items"]["properties"];
 
-            for flag in ["unique", "unique_case_insensitive"] {
+            for flag in ["unique", "uniqueCaseInsensitive"] {
                 let desc = items[flag]["description"]
                     .as_str()
                     .unwrap_or_else(|| panic!("{tool:?} is missing a '{flag}' description"));
@@ -4414,6 +4414,73 @@ mod tests {
             .to_lowercase();
         assert!(imperative.contains("advisory only"));
         assert!(imperative.contains("does not") && imperative.contains("prevent duplicates"));
+    }
+
+    /// Every field-property key `create_schema`/`update_schema` declare must
+    /// be a real `SchemaField` wire key.
+    ///
+    /// These JSON Schemas are the literal contract handed to the tool-calling
+    /// model, and `exec_create_schema`/`exec_update_schema` pass the model's
+    /// raw arguments straight through to `handle_create_schema`/
+    /// `handle_update_schema`, which `serde_json::from_value` them into
+    /// `CreateSchemaParams`/`UpdateSchemaParams` — no key normalization
+    /// anywhere in between. Since `SchemaField` is `rename_all = "camelCase"`
+    /// plus `deny_unknown_fields`, a declared key in the wrong case is not
+    /// ignored: the whole call is rejected as an unknown field. A model that
+    /// faithfully follows the schema is the thing that breaks.
+    ///
+    /// `unique_field_tool_descriptions_state_advisory_only_semantics` above
+    /// checks the *wording* of these descriptions but never the keys, which
+    /// is why `unique_case_insensitive` sat here undetected while the
+    /// identical mistake was fixed in the skill text: single-word keys like
+    /// `unique` are spelled the same in both conventions, so only a
+    /// multi-word key exposes the drift.
+    #[test]
+    fn schema_tool_field_keys_are_accepted_schema_field_wire_keys() {
+        for tool in [Tool::CreateSchema, Tool::UpdateSchema] {
+            let schema = tool.definition().parameters_schema;
+            let fields_key = if tool == Tool::CreateSchema {
+                "fields"
+            } else {
+                "add_fields"
+            };
+            let declared = schema["properties"][fields_key]["items"]["properties"]
+                .as_object()
+                .unwrap_or_else(|| panic!("{tool:?} declares no {fields_key} item properties"));
+
+            // A minimal field that is valid on its own, so any failure below
+            // is attributable to the one key under test.
+            let base = serde_json::json!({ "name": "probe", "type": "text" });
+
+            for key in declared.keys() {
+                let mut field = base.clone();
+                field[key] = sample_value_for_declared_key(&declared[key]);
+
+                serde_json::from_value::<nodespace_core::models::SchemaField>(field.clone())
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "{tool:?} declares field key {key:?} in its {fields_key} JSON Schema, \
+                             but SchemaField rejects it: {e}. The tool schema is what the model \
+                             copies verbatim, so this key breaks every call that sets it. Fix the \
+                             declared key to match SchemaField's camelCase wire form."
+                        )
+                    });
+            }
+        }
+    }
+
+    /// Builds a type-appropriate placeholder for a declared JSON Schema
+    /// property, so the round-trip above tests the *key*, not the value.
+    fn sample_value_for_declared_key(declared: &serde_json::Value) -> serde_json::Value {
+        match declared["type"].as_str() {
+            Some("boolean") => serde_json::json!(true),
+            Some("number") | Some("integer") => serde_json::json!(1),
+            Some("array") => serde_json::json!([]),
+            Some("object") => serde_json::json!({}),
+            // `name`/`type` are overwritten with their own valid values by the
+            // caller's base object; any other string key takes a plain string.
+            _ => serde_json::json!("text"),
+        }
     }
 
     // -- Tool::requires_routed_guidance --
