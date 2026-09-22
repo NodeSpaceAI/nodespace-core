@@ -414,11 +414,14 @@ async fn validate_relationship_targets_exist(
         if !exists {
             return Err(MarkdownError::invalid_params(format!(
                 "Relationship '{}' targets '{}', which is not an existing schema. \
-                 targetType must name a schema that already exists — omit the relationship \
-                 entirely if the target type doesn't exist yet, rather than inventing one. \
-                 (A relationship pointing back at the schema being created is allowed: \
-                 give its schema ID, the snake_case form of the name.)",
-                rel.name, target_type
+                 targetType must name a schema that already exists. If the user asked for \
+                 both types, create '{}' first, then retry this call — declaring the \
+                 relationship on this side gives the other end its accessor via the \
+                 required reverseName. Omit the relationship only if '{}' is a type the \
+                 user never asked for, rather than inventing one. (A relationship pointing \
+                 back at the schema being created is allowed: give its schema ID, the \
+                 snake_case form of the name.)",
+                rel.name, target_type, target_type, target_type
             )));
         }
     }
