@@ -265,7 +265,14 @@ export function formatTurnLogLines(slice: string): string[] {
   for (const l of lines.filter((l) => l.includes("Agent decision:"))) {
     const kind = l.match(/decision="?(skill|schema|operation)"?/)?.[1];
     if (!kind) continue;
-    const selected = l.match(/decision_selected="?([^"\s]*)"?/)?.[1] ?? "";
+    // Quoted form first: tracing quotes a string field when it contains a
+    // space, and skill names do ("Schema Creation"). An unquoted-only pattern
+    // truncated `selected` to its first word — invisible for tool names and
+    // type ids, which never contain spaces, and wrong for every skill.
+    const selected =
+      l.match(/decision_selected="([^"]*)"/)?.[1] ??
+      l.match(/decision_selected=(\S*)/)?.[1] ??
+      "";
     const offMenu = /decision_off_menu=true/.test(l) ? " [off-menu]" : "";
     const candidates = l.match(/decision_candidates="?(.*?)"?$/)?.[1]?.trim() ?? "";
     // An empty `selected` is a real outcome (the model was offered tools and

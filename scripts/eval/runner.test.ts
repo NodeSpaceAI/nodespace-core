@@ -764,6 +764,20 @@ describe("parseTurnOutput", () => {
     ]);
   });
 
+  test("parses a multi-word skill selection intact (regression)", () => {
+    const out = [
+      "[decision skill] selected=Schema Creation candidates=Schema Creation, Node Creation",
+      "assistant> done",
+    ].join("\n");
+    const turn = parseTurnOutput(out, 100);
+    expect(turn.decisions?.[0].kind).toBe("skill");
+    expect(turn.decisions?.[0].selected).toBe("Schema Creation");
+    expect(turn.decisions?.[0].candidates).toEqual([
+      "Schema Creation",
+      "Node Creation",
+    ]);
+  });
+
   test("carries the off-menu flag without it leaking into the selection", () => {
     const out = [
       "[decision schema] selected=album [off-menu] candidates=invoice, customer",

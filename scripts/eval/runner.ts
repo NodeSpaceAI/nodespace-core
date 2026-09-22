@@ -136,7 +136,12 @@ function runTurn(env: EvalEnv, chatId: string, message: string): TurnRecord {
 function parseDecisions(out: string): DecisionRecord[] | undefined {
   const rows = [
     ...out.matchAll(
-      /^\[decision (skill|schema|operation)\] selected=(\S*?)( \[off-menu\])? candidates=(.*)$/gm,
+      // `selected` is matched up to the ` [off-menu]` flag or ` candidates=`,
+      // NOT as a non-whitespace run: skill names contain spaces ("Schema
+      // Creation"), so `\S*?` silently truncated them to the first word. Tool
+      // names and type ids never contain spaces, which is why this only
+      // surfaced once skill routing was recorded.
+      /^\[decision (skill|schema|operation)\] selected=(.*?)( \[off-menu\])? candidates=(.*)$/gm,
     ),
   ];
   if (rows.length === 0) return undefined;

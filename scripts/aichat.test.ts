@@ -156,6 +156,18 @@ describe("formatTurnLogLines", () => {
     );
   });
 
+  test("keeps a multi-word skill name intact (regression)", () => {
+    // Verbatim from a live daemon: tracing quotes the value because it
+    // contains a space. An unquoted-only pattern truncated this to "Schema",
+    // which was invisible for tool names and type ids (never spaced) and wrong
+    // for every skill.
+    const slice = `2026-09-22T13:45:00Z  INFO nodespace_agent: Agent decision: skill selected iteration=0 decision="skill" decision_selected="Schema Creation" decision_off_menu=false decision_candidates=Schema Creation, Conflict Resolution, Relationship Management`;
+    const lines = formatTurnLogLines(slice);
+    expect(lines).toContain(
+      "[decision skill] selected=Schema Creation candidates=Schema Creation, Conflict Resolution, Relationship Management",
+    );
+  });
+
   test("marks a selection the candidate set never offered", () => {
     // The most diagnostic signal the record carries: unlike a close call
     // between plausible candidates, naming a type that was never on offer
