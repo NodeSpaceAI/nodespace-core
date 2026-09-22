@@ -1,6 +1,35 @@
 //! `SqliteStore` methods — nodes concern (split from the god-object per ADR-053 prep).
 use super::*;
 
+/// Token cap on an entity-resolution query. Matches `BM25_MAX_TOKENS`'s intent
+/// — bound a long message to a fixed query cost — but is its own constant
+/// because the two searches answer different questions.
+///
+/// 6 rather than `BM25_MAX_TOKENS`' 4: an entity name is frequently two or
+/// three tokens ("Northwind Trading", "Acme Holdings International"), and a
+/// cap that tight would spend the whole budget on one name and leave nothing
+/// for a second entity in the same message.
+///
+/// WHICH tokens the cap keeps matters more than the number, and that is the
+/// part with a measured failure behind it — see the selection logic in
+/// `resolve_entities_by_title`. Raising this alone would not have fixed it:
+/// the budget was being spent front-first on whatever the sentence opened
+/// with, so a longer prefix simply moved the cliff.
+const ENTITY_RESOLUTION_MAX_TOKENS: usize = 6;
+
+/// One node whose `title` matched an entity-resolution query.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedEntity {
+    pub id: String,
+    /// The matched title. Non-empty by construction: `node_title_fts` indexes
+    /// only rows where `nullif(title, '') IS NOT NULL`.
+    pub title: String,
+    pub node_type: String,
+    /// FTS5 bm25 score. NEGATIVE, and more negative is a better match — the
+    /// sign is FTS5's, preserved so this agrees with `ORDER BY rank`.
+    pub score: f64,
+}
+
 impl SqliteStore {
     pub async fn create_node(
         &self,
@@ -3652,6 +3681,138 @@ impl SqliteStore {
         } else {
             Ok(None)
         }
+    }
+
+    /// Resolve entity names in `message` to nodes, via the `node_title_fts`
+    /// index over `node.title`.
+    ///
+    /// This answers "which node IS X?", not "which nodes mention X?" — every
+    /// row in that index is a nameable thing and its indexed text is that
+    /// thing's own name. `bm25_search_roots` answers the other question over
+    /// `node.content` and resolves hits up to an embedding root; this one
+    /// deliberately does neither, because the node that bears the name is the
+    /// answer, not its ancestor.
+    ///
+    /// Ranked by FTS5 `rank` (bm25), best first, capped at `limit`. Returns
+    /// every match rather than only unambiguous ones: a name resolving to two
+    /// nodes of different types is the case the caller most needs to see, so
+    /// discarding it would make the mechanism silent exactly when it matters.
+    /// Ambiguity is the caller's to render, not this layer's to suppress.
+    ///
+    /// Archived nodes are excluded — resolving a name to a node the user has
+    /// archived would reintroduce it into the turn as if it were live.
+    pub async fn resolve_entities_by_title(
+        &self,
+        message: &str,
+        limit: i64,
+    ) -> Result<Vec<ResolvedEntity>> {
+        // Same tokenization as `bm25_search_roots`, and deliberately the same
+        // stop-word list: the words that make a content search noisy ("the",
+        // "what", "how") make a title search noisy for the same reason. The
+        // token cap bounds a long message to a fixed query cost.
+        //
+        // Which tokens the cap KEEPS is the part that matters. Taking the
+        // first N is wrong: the budget is then spent on whatever the sentence
+        // opens with, and a name late in the message never reaches the index —
+        // the tier reports no match, which renders as a positive claim that
+        // the named thing does not exist. "Add Northwind Trading to the
+        // companies we sell to", preceded by any other clause, truncated to
+        // the leading words and lost the entity entirely.
+        //
+        // Capitalised tokens are kept in preference instead. An entity's name
+        // in an English message is nearly always capitalised, while the filler
+        // competing for the budget is not — so this is the proper-noun bias as
+        // a SELECTION input, not a pre-filter. A pre-filter would drop a
+        // lowercase name outright; this only deprioritises it, and a message
+        // with no capitalised tokens still falls back to the plain order.
+        //
+        // Order within each class is preserved, so a message whose tokens all
+        // share a class behaves exactly as before.
+        //
+        // RESIDUAL, stated because the argument above does not cover it. The
+        // bias helps when the filler competing for the budget is lowercase. It
+        // does nothing when the competing tokens are capitalised too, because
+        // front-first truncation then applies WITHIN the capitalised class —
+        // the same defect this selection replaced, one level down:
+        //
+        //   "Could You Kindly Update The Customer Record And Billing Address
+        //    For Northwind Trading"
+        //     -> kindly update customer record and billing   (entity dropped)
+        //
+        // Materially less severe than the bug it replaced: it needs an unusual
+        // register rather than merely a second conversational turn, and it
+        // degrades to a weak one-token match rather than to `NoMatch`, so it
+        // does not produce a false "does not exist" claim. Left unfixed rather
+        // than patched with a further heuristic — "prefer the longest run of
+        // adjacent capitalised tokens" was tried and gives no discrimination
+        // here, since a Title Case sentence is one long run.
+        //
+        // Note also that the cap's own justification reasons about the IDEAL
+        // token set (an entity name is two or three tokens), while the cap
+        // actually applies to the SELECTED set. Those coincide only when
+        // selection puts the name first.
+        let all: Vec<String> = message
+            .split_whitespace()
+            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()))
+            .filter(|t| !t.is_empty() && !BM25_STOP_WORDS.contains(&t.to_lowercase().as_str()))
+            .map(str::to_string)
+            .collect();
+
+        let (capitalised, rest): (Vec<String>, Vec<String>) = all
+            .into_iter()
+            .partition(|t| t.chars().next().is_some_and(char::is_uppercase));
+
+        let tokens: Vec<String> = capitalised
+            .into_iter()
+            .chain(rest)
+            .take(ENTITY_RESOLUTION_MAX_TOKENS)
+            .map(|t| t.to_lowercase())
+            .collect();
+
+        if tokens.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // `OR` rather than `AND`: "the Northwind deal" should still reach a
+        // node titled "Northwind Trading" on the one token they share. bm25
+        // ranking is what separates a two-token match from a one-token one,
+        // so recall here is traded for ranking rather than for noise.
+        let fts_query = tokens
+            .iter()
+            .map(|t| format!("\"{}\"", t.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+
+        let sql = format!(
+            "SELECT n.id, n.title, n.node_type, bm25(node_title_fts) AS score \
+             FROM node_title_fts f \
+             JOIN node n ON n.id = f.id \
+             WHERE node_title_fts MATCH ?1 AND n.lifecycle_status != 'archived' \
+             ORDER BY rank LIMIT {}",
+            limit
+        );
+
+        let mut rows = self
+            .read()
+            .await?
+            .query(&sql, libsql::params![fts_query])
+            .await
+            .context("Failed to execute entity title search")?;
+
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().await? {
+            out.push(ResolvedEntity {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                node_type: row.get(2)?,
+                // FTS5 bm25() returns a NEGATIVE score, more negative = better.
+                // Kept as-is rather than negated so `ORDER BY rank` and this
+                // number agree about direction; the cutoff that reads it is
+                // expressed in the same sign.
+                score: row.get(3)?,
+            });
+        }
+        Ok(out)
     }
 }
 

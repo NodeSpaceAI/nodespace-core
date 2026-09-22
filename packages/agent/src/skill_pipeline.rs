@@ -452,7 +452,16 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
                 // destructive rung is untouched either way —
                 // `stage2_permitted_names` admits destructive tools only from
                 // the retrieval winner, and neither added tool is destructive.
-                "tool_whitelist": ["create_node", "update_node", "update_task_status", "search_semantic", "search_nodes", "get_node"],
+                // `route_clarify` is here so this skill can hand an
+                // already-exists collision back to the user rather than
+                // resolving it by guessing. Without it, the guidance below
+                // ("ask which they meant") would name a tool the turn cannot
+                // reach, and the model's only options are to create a
+                // duplicate or to refuse in prose — measured: "Add Northwind
+                // Trading to the companies we sell to", with Northwind already
+                // in the graph and rendered in MENTIONED ENTITIES, produced
+                // `create_node` and a silent duplicate on 3 of 3 reps.
+                "tool_whitelist": ["create_node", "update_node", "update_task_status", "search_semantic", "search_nodes", "get_node", "route_clarify"],
                 "max_iterations": 3,
             }),
             child_node_type: None,
@@ -461,6 +470,8 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             markdown_content: r#"# Node Creation Guidance
 
 NEW RECORD OR EXISTING ONE? If the user is changing something that already exists — marking it done or signed off, correcting a value, setting a field on a record already in this conversation — call update_node with that record's id, NOT create_node. Creating a second copy leaves the original unchanged and silently duplicates the user's data. If they are adding something that does not exist yet, create_node is right and the rest of this guidance applies.
+
+ALREADY IN THE GRAPH? Before creating, check MENTIONED ENTITIES in your context. If a record listed there is the same thing the user is asking you to add — same name, same type — do NOT call create_node. "Add X" when X already exists is ambiguous: it can mean they want a second, genuinely distinct record, or it can mean they did not know X was already there. You cannot tell which from the message, and guessing wrong either duplicates their data or refuses work they wanted done. Call route_clarify instead, naming the existing record as an option with its id from MENTIONED ENTITIES, and say plainly that it already exists. Let them choose. If MENTIONED ENTITIES says "none found", nothing by that name exists and create_node is right.
 
 CHANGING A TASK'S STATUS: use update_task_status with the task id and the new status string, not update_node — status is not a field_values key on a task. Pick the value from the list on update_task_status's own status parameter: that is the task type's current vocabulary, and it can hold more than the four built-in values.
 

@@ -2415,4 +2415,40 @@ mod tests {
             ]
         );
     }
+
+    /// A filter with no value is rejected, and the error says why rather than
+    /// surfacing as an opaque internal failure.
+    ///
+    /// This is the shape a model produces when it confuses filtering with
+    /// projection: asked "when did we sign Northwind?" it emitted
+    /// `{"operator": "equals", "property": "signed_date", "value": null}` to
+    /// mean "return that field". The turn failed with
+    /// `Internal error: execute_query failed: Missing value`, which told the
+    /// model nothing it could act on, so it apologised instead of retrying.
+    ///
+    /// Note a JSON `null` and an absent key are indistinguishable here:
+    /// `QueryFilter::value` is an `Option`, so serde folds both to `None`.
+    #[test]
+    fn a_filter_without_a_value_is_rejected_with_an_actionable_message() {
+        let mut built = BoundSql {
+            sql: String::new(),
+            params: Vec::new(),
+        };
+        let err = QueryService::bind_json_value(None, &mut built)
+            .expect_err("a valueless filter must not bind");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("exists"),
+            "the error must name the operator that does work, got: {msg}"
+        );
+        assert!(
+            msg.contains("all of its properties"),
+            "the error must say a filter does not select fields, got: {msg}"
+        );
+    }
+
+    // The `exists` alternative that error points at is already covered by
+    // `test_property_filter_exists_status` above — it is the operator that
+    // needs no value, and it compiles to IS NOT NULL.
 }

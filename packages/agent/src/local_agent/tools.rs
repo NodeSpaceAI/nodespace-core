@@ -684,9 +684,24 @@ fn def_search_nodes() -> ToolDefinition {
                             // contract is strict (`QueryService` rejects a
                             // non-array `in` value outright rather than
                             // matching nothing).
+                            // No `null` in this union, deliberately. A filter
+                            // NARROWS which nodes come back; it never selects
+                            // which fields are returned — every property of a
+                            // matching node is returned anyway. Asked "when did
+                            // we sign Northwind?", the model expressed "give me
+                            // signed_date" as `{"operator": "equals",
+                            // "property": "signed_date", "value": null}`, which
+                            // `QueryService` rejects outright ("Missing value":
+                            // `filter.value` is `Option<Value>`, so a JSON null
+                            // deserializes to `None` and never reaches the
+                            // `Some(Value::Null)` arm). The turn then failed
+                            // with an internal error rather than an answer.
+                            // Saying plainly what a filter is for is what stops
+                            // that shape being invented; `exists` is the
+                            // operator for "has a value at all".
                             "value": {
                                 "type": ["string", "number", "boolean", "array"],
-                                "description": "Value to compare against. Use string for dates (YYYY-MM-DD), string/number for others. Use array for 'in' operator."
+                                "description": "Value to compare against — NOT a way to request a field. Filters only narrow WHICH nodes are returned; every matching node comes back with all of its properties, so never filter just to read a property. Use string for dates (YYYY-MM-DD), string/number for others, array for 'in'. Never null: to ask whether a property is set at all, use the 'exists' operator and omit this."
                             },
                             "case_sensitive": {
                                 "type": "boolean",
@@ -883,7 +898,11 @@ fn def_create_node() -> ToolDefinition {
     ToolDefinition {
         name: "create_node".into(),
         description: "Create one new record of a type that already exists. Use for a single instance, \
-            never to define a new kind of record. Always pass 'content' as the record's title and \
+            never to define a new kind of record. STOP if the record is already listed in MENTIONED \
+            ENTITIES with the same name and type — it exists, and creating it again silently \
+            duplicates the user's data. Call route_clarify instead, offering that record's id as an \
+            option, and say it already exists. Only 'MENTIONED ENTITIES: none found' or a different \
+            name means this tool is right. Always pass 'content' as the record's title and \
             nothing else — facts about it belong in 'field_values', never appended to the title. Always \
             pass 'field_values' with every particular the user supplied, checked against the type's own \
             field list — it is the only way those values are stored, and a call without them creates an \

@@ -67,6 +67,30 @@ pub struct WorkspaceContext {
     /// (fewer slots believed available than truly are), never reproduce the
     /// starvation this field exists to prevent.
     pub semantic_schema_count: usize,
+    /// Entities named in the query and resolved to nodes.
+    ///
+    /// Three-state rather than a bare `Vec` because an empty list and a
+    /// resolver that never ran mean opposite things to the model — see
+    /// [`EntityResolution`].
+    pub resolved_entities: EntityResolution,
+}
+
+/// Outcome of the entity-resolution tier.
+///
+/// The distinction between "ran, found nothing" and "did not run" is the
+/// point. A no-match is a positive fact — the named thing does not exist, so
+/// the turn is a create — while a resolver that never ran says nothing at all.
+/// Rendering both as an absent block would tell the model the same thing in
+/// two situations that call for opposite behaviour.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum EntityResolution {
+    /// Resolution did not run: no query, or no store access. Renders nothing.
+    #[default]
+    NotRun,
+    /// Resolution ran and matched no node. Renders an explicit "none found".
+    NoMatch,
+    /// Resolution ran and matched. Never empty — an empty match is `NoMatch`.
+    Resolved(Vec<crate::db::ResolvedEntity>),
 }
 
 /// An active playbook.
@@ -142,6 +166,80 @@ const BLENDED_HISTORY_TURNS: usize = 2;
 /// synthetic rate alone, which is already known and already priced in.
 pub const EXISTING_SCHEMAS_HEADER: &str =
     "EXISTING SCHEMAS (do not recreate these; do not copy their fields onto a new type):";
+
+/// Header for the resolved-entity tier.
+///
+/// Names the ids as usable so the model does not ask for one it has already
+/// been given — the failure this tier exists to remove was a turn stalling on
+/// "I need a Node ID to update the capacity for Northwind Trading" while the
+/// node existed.
+pub const RESOLVED_ENTITIES_HEADER: &str =
+    "MENTIONED ENTITIES (already resolved — use these ids directly, do not ask for one):";
+
+/// Rendered when resolution ran and matched nothing.
+///
+/// A no-match is informative, not a failure: it means the named thing does not
+/// exist yet, so the turn is a CREATE. That is a different fact from "the
+/// resolver did not run", which is what an absent block means, and collapsing
+/// the two would reintroduce the ambiguity this tier removes.
+pub const NO_ENTITIES_LINE: &str =
+    "MENTIONED ENTITIES: none found — anything named in this message does not exist yet.";
+
+/// Most entities rendered into one turn's context.
+///
+/// The other two context tiers are naturally small (skills ~11, schemas capped
+/// at `MAX_SEMANTIC_SCHEMAS`); instances are unbounded, so this tier needs its
+/// own cap or a common word could flood a block the others keep deliberately
+/// short. Small on purpose: past a handful, a list of names stops being a
+/// constraint and becomes noise the model has to filter.
+pub const MAX_RESOLVED_ENTITIES: usize = 5;
+
+/// How many candidates to pull from FTS5 before applying the relative cutoff.
+///
+/// Wider than `MAX_RESOLVED_ENTITIES` so the cutoff has a populated field to
+/// judge against: the decision "is the second match comparable to the first"
+/// needs the second match to have been fetched.
+const ENTITY_CANDIDATE_LIMIT: i64 = 12;
+
+/// Relative bm25 cutoff: keep a candidate whose score is within this factor of
+/// the best one.
+///
+/// Relative rather than absolute because bm25 scores are corpus-dependent —
+/// they shift with index size and term frequency, so a fixed threshold that
+/// works on a small workspace silently excludes everything on a large one.
+/// What actually matters is whether a candidate is *comparable to the best
+/// match*, which is scale-free.
+///
+/// bm25 is negative and more negative is better, so "within the factor" means
+/// `score <= best * FACTOR` — a candidate at this fraction of the best score
+/// survives, one far weaker does not. Set loose rather than tight
+/// deliberately: the motivating case ("is Acme a customer or a project?") is
+/// two genuinely comparable matches, and a tight cutoff would drop the
+/// ambiguity the turn most needs to see.
+///
+/// Calibrated against a measured probe of the landed index (a seeded workspace
+/// of 8 entities plus 5 decoys whose titles carry a real message's noise
+/// words). For "Northwind Trading" the scores were:
+///
+/// ```text
+///   -6.53  Northwind Trading              (the intended entity)
+///   -3.27  Northwind Logistics            (a real sibling entity)
+///   -2.13  Trading terms for new customers (a noise-word decoy)
+/// ```
+///
+/// 0.45 puts the bar at -2.94 there: the sibling entity survives and the decoy
+/// does not, which is the discrimination that matters — a bare or partial name
+/// legitimately matching two entities is the case this tier exists to surface,
+/// while a decoy sharing one common word is not. An earlier 0.55 put the bar
+/// at -3.59 and dropped the sibling, collapsing exactly the ambiguity the
+/// "render all candidates" policy was chosen to preserve.
+///
+/// Relative rather than absolute, despite that probe suggesting an absolute
+/// band around -2.5 to -3.0: bm25 is corpus-dependent, so a fixed threshold
+/// calibrated on 51 indexed rows would drift as the workspace grows. The
+/// relative form asks "is this candidate comparable to the best match", which
+/// is scale-free; the probe calibrates the factor, not a raw score.
+const ENTITY_SCORE_CUTOFF_FACTOR: f64 = 0.45;
 
 /// Character budget applied to each blended prior turn.
 ///
@@ -339,10 +437,100 @@ pub fn build_retrieval_query(prior_turns: &[&str], current_message: &str) -> Str
 /// semantically similar to the query are retrieved and injected into the
 /// context. Falls back to schema-free context when the embedding service is
 /// unavailable or the query is empty.
+/// Resolve entity names in `query` to nodes, keeping those comparable to the
+/// best match.
+///
+/// Deterministic and index-backed: no model call, no generative pass. That is
+/// what lets this run as a system step ahead of routing without spending a
+/// turn, per ADR-038's separation of retrieval from the model's judgment.
+///
+/// Ambiguity is preserved rather than resolved. Two comparable matches of
+/// different types ("is Acme a customer or a project?") is the case the turn
+/// most needs to see; narrowing to one here would silently pick an answer this
+/// layer has no basis to pick.
+async fn resolve_entities(
+    node_service: &Arc<NodeService>,
+    query: Option<&str>,
+) -> EntityResolution {
+    let Some(q) = query.filter(|q| !q.trim().is_empty()) else {
+        return EntityResolution::NotRun;
+    };
+
+    let candidates = match node_service
+        .store()
+        .resolve_entities_by_title(q, ENTITY_CANDIDATE_LIMIT)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            // A failed lookup is NOT a no-match: reporting "nothing exists"
+            // because the index errored would tell the model to create a
+            // duplicate of something already there.
+            tracing::warn!(error = %e, "workspace_context: entity resolution failed, omitting tier");
+            return EntityResolution::NotRun;
+        }
+    };
+
+    let Some(best) = candidates.first().map(|c| c.score) else {
+        // Logged, not silent. The type distinguishes "ran and found nothing"
+        // from "never ran"; the logs did not, so a resolver that was failing
+        // to see the entity at all looked exactly like one correctly
+        // reporting absence. That is how a truncation bug went unnoticed
+        // through three measured runs.
+        tracing::debug!(query = q, "workspace_context: entity resolution — no match");
+        return EntityResolution::NoMatch;
+    };
+
+    // bm25 is negative, more negative is better, so the bar is `best * FACTOR`
+    // and survivors are at or below it. `best` is the most negative score, so
+    // multiplying by a factor < 1 moves the bar toward zero — i.e. loosens it.
+    let bar = best * ENTITY_SCORE_CUTOFF_FACTOR;
+    let candidates_len = candidates.len();
+    let kept: Vec<_> = candidates
+        .into_iter()
+        .filter(|c| c.score <= bar)
+        .take(MAX_RESOLVED_ENTITIES)
+        .collect();
+
+    if kept.is_empty() {
+        tracing::debug!(
+            query = q,
+            candidates = candidates_len,
+            "workspace_context: entity resolution — all candidates below cutoff"
+        );
+        EntityResolution::NoMatch
+    } else {
+        tracing::debug!(
+            count = kept.len(),
+            query = q,
+            "workspace_context: entity resolution"
+        );
+        EntityResolution::Resolved(kept)
+    }
+}
+
+/// `query` is the BLENDED retrieval query (prior turns plus the current
+/// message) — schema retrieval embeds it, and the blend is what lets a
+/// follow-up referring to its subject by pronoun still retrieve the right
+/// schema.
+///
+/// `entity_query` is the CURRENT MESSAGE ALONE, and the separation is
+/// load-bearing. Entity resolution is a lexical lookup over a bounded number of
+/// tokens, so prepending prior turns does not add recall — it consumes the
+/// budget. With even one prior turn, "Add Northwind Trading to the companies we
+/// sell to" tokenises to `set up new type places hold` (the prior turn's
+/// opening words) and the entity never reaches the index. The tier then reports
+/// `NoMatch`, which renders as a positive claim that the named thing does not
+/// exist — so a truncation would be laundered into an instruction to create a
+/// duplicate.
+///
+/// A caller with only one string may pass it for both; the blend helps
+/// embeddings and merely costs tokens here.
 pub async fn build_workspace_context(
     node_service: &Arc<NodeService>,
     embedding_service: Option<&Arc<NodeEmbeddingService>>,
     query: Option<&str>,
+    entity_query: Option<&str>,
 ) -> Result<WorkspaceContext, OpsError> {
     // Fetch collection names
     let collection_service = CollectionService::new(node_service.store(), node_service);
@@ -370,6 +558,16 @@ pub async fn build_workspace_context(
                 .to_string(),
         })
         .collect();
+
+    // Entity resolution: the top tier of the three the prompt carries
+    // (entities / schemas+relationships / skills). Runs here, alongside schema
+    // retrieval, because this whole function is already upstream of routing —
+    // the daemon assembles context before the session reaches Stage 1 — so a
+    // resolved entity is available to constrain the decisions downstream.
+    //
+    // Unlike the schema tier this needs no embedding service: it is an index
+    // lookup, so it still runs when embeddings are unavailable.
+    let resolved_entities = resolve_entities(node_service, entity_query).await;
 
     // Semantic schema retrieval: find schemas relevant to the query.
     // Only runs when both an embedding service and a non-empty query are present.
@@ -490,6 +688,7 @@ pub async fn build_workspace_context(
         relevant_schemas,
         related_schemas,
         semantic_schema_count,
+        resolved_entities,
     })
 }
 
@@ -514,6 +713,50 @@ impl WorkspaceContext {
             let section = format!("COLLECTIONS: {}\n", self.collections.join(", "));
             if out.len() + section.len() <= max_chars {
                 out.push_str(&section);
+            }
+        }
+
+        // Resolved entities section.
+        //
+        // First of the three tiers, because it constrains the other two: a
+        // message naming a node of a known type has already answered "which
+        // schema" and "instance or type", which the schemas below and the
+        // skill routing upstream would otherwise each decide independently.
+        //
+        // `NotRun` renders nothing at all, which is the third state — see
+        // `EntityResolution`.
+        match &self.resolved_entities {
+            EntityResolution::NotRun => {}
+            EntityResolution::NoMatch => {
+                let line = format!("\n{NO_ENTITIES_LINE}\n");
+                if out.len() + line.len() <= max_chars {
+                    out.push_str(&line);
+                }
+            }
+            EntityResolution::Resolved(entities) => {
+                // Lines are built BEFORE the header is emitted, so the header
+                // never appears alone. Writing it first and then discovering
+                // the first line does not fit would leave a heading that
+                // promises resolved ids above an empty list — which reads as a
+                // fourth state this design does not have, and is worse than
+                // rendering nothing: the model is told entities were resolved
+                // and then shown none.
+                let header = format!("\n{RESOLVED_ENTITIES_HEADER}\n");
+                let mut lines = String::new();
+                for e in entities {
+                    // id last and unquoted so it is copyable verbatim; the
+                    // type is what lets the model tell two same-named
+                    // entities apart.
+                    let line = format!("- \"{}\" ({}) id={}\n", e.title, e.node_type, e.id);
+                    if out.len() + header.len() + lines.len() + line.len() > max_chars {
+                        break;
+                    }
+                    lines.push_str(&line);
+                }
+                if !lines.is_empty() {
+                    out.push_str(&header);
+                    out.push_str(&lines);
+                }
             }
         }
 
@@ -597,6 +840,7 @@ mod tests {
             relevant_schemas: vec![],
             related_schemas: vec![],
             semantic_schema_count: 0,
+            resolved_entities: EntityResolution::NotRun,
         }
     }
 
@@ -661,6 +905,7 @@ mod tests {
             )],
             related_schemas: vec![],
             semantic_schema_count: 0,
+            resolved_entities: EntityResolution::NotRun,
         };
 
         let rendered = ctx.format_for_prompt(4000);
@@ -1031,6 +1276,7 @@ mod tests {
             relevant_schemas: vec![sample_schema("invoice", "Invoice", &[])],
             related_schemas: vec![],
             semantic_schema_count: 0,
+            resolved_entities: EntityResolution::NotRun,
         };
         let output = ctx.format_for_prompt(4000);
         assert!(output.contains("invoice \"Invoice\"\n"));
@@ -1054,6 +1300,7 @@ mod tests {
             relevant_schemas: vec![],
             related_schemas: vec![],
             semantic_schema_count: 0,
+            resolved_entities: EntityResolution::NotRun,
         };
         let output = ctx.format_for_prompt(4000);
         assert!(output.is_empty());
@@ -1067,6 +1314,7 @@ mod tests {
             relevant_schemas: vec![],
             related_schemas: vec![],
             semantic_schema_count: 0,
+            resolved_entities: EntityResolution::NotRun,
         };
         let output = ctx.format_for_prompt(4000);
         assert!(output.contains("COLLECTIONS:"));
@@ -1428,5 +1676,190 @@ mod tests {
         );
         assert_eq!(build_retrieval_query(&["prior turn"], "   "), "prior turn");
         assert_eq!(build_retrieval_query(&[], "   "), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // Entity tier
+    // -----------------------------------------------------------------------
+
+    fn entity(title: &str, node_type: &str, id: &str, score: f64) -> crate::db::ResolvedEntity {
+        crate::db::ResolvedEntity {
+            id: id.into(),
+            title: title.into(),
+            node_type: node_type.into(),
+            score,
+        }
+    }
+
+    fn ctx_with(resolution: EntityResolution) -> WorkspaceContext {
+        WorkspaceContext {
+            resolved_entities: resolution,
+            ..Default::default()
+        }
+    }
+
+    /// A resolved entity renders with its id, because the failure this tier
+    /// removes was a turn stalling to ask for one it could have been handed.
+    #[test]
+    fn a_resolved_entity_renders_with_its_id_and_type() {
+        let out = ctx_with(EntityResolution::Resolved(vec![entity(
+            "Northwind Trading",
+            "company_sold_to",
+            "abc123",
+            -2.5,
+        )]))
+        .format_for_prompt(4000);
+
+        assert!(out.contains(RESOLVED_ENTITIES_HEADER));
+        assert!(
+            out.contains("\"Northwind Trading\" (company_sold_to) id=abc123"),
+            "the id must reach the prompt verbatim, or the model asks for it: {out}"
+        );
+    }
+
+    /// The three states must be distinguishable in the rendered prompt. A
+    /// no-match means CREATE; an absent block means the resolver never ran.
+    /// Collapsing them reintroduces the ambiguity the tier exists to remove.
+    #[test]
+    fn no_match_and_not_run_render_differently() {
+        let no_match = ctx_with(EntityResolution::NoMatch).format_for_prompt(4000);
+        let not_run = ctx_with(EntityResolution::NotRun).format_for_prompt(4000);
+
+        assert!(
+            no_match.contains(NO_ENTITIES_LINE),
+            "a no-match must say so explicitly: {no_match}"
+        );
+        assert!(
+            !not_run.contains("MENTIONED ENTITIES"),
+            "a resolver that did not run must render nothing at all: {not_run}"
+        );
+        assert_ne!(
+            no_match, not_run,
+            "the two states must be distinguishable in the prompt"
+        );
+    }
+
+    /// Ambiguity is rendered, not suppressed: "is Acme a customer or a
+    /// project?" is the case the turn most needs to see.
+    #[test]
+    fn ambiguous_entities_all_render() {
+        let out = ctx_with(EntityResolution::Resolved(vec![
+            entity("Acme", "customer", "c1", -2.0),
+            entity("Acme", "project", "p1", -1.9),
+        ]))
+        .format_for_prompt(4000);
+
+        assert!(out.contains("(customer) id=c1"));
+        assert!(
+            out.contains("(project) id=p1"),
+            "both candidates must render — dropping one picks an answer this layer cannot pick: {out}"
+        );
+    }
+
+    /// The entity tier precedes the schema tier, because a resolved entity
+    /// constrains which schema applies rather than the other way round.
+    #[test]
+    fn entities_render_before_schemas() {
+        let mut ctx = ctx_with(EntityResolution::Resolved(vec![entity(
+            "Northwind Trading",
+            "company_sold_to",
+            "abc123",
+            -2.5,
+        )]));
+        ctx.relevant_schemas = vec![sample_schema("customer", "Customer", &["name"])];
+        let out = ctx.format_for_prompt(4000);
+
+        let entity_at = out.find(RESOLVED_ENTITIES_HEADER).expect("entity header");
+        let schema_at = out.find(EXISTING_SCHEMAS_HEADER).expect("schema header");
+        assert!(
+            entity_at < schema_at,
+            "entities must precede schemas — the top tier constrains the one below: {out}"
+        );
+    }
+
+    /// The cutoff must keep a real sibling entity and drop a noise-word decoy.
+    ///
+    /// Scores are from a measured probe of the landed index: querying
+    /// "Northwind Trading" against a seeded workspace returned the intended
+    /// entity at -6.53, a sibling entity (`Northwind Logistics`) at -3.27, and
+    /// a decoy titled "Trading terms for new customers" at -2.13.
+    ///
+    /// Both directions matter. A factor tight enough to drop the sibling
+    /// destroys the ambiguity this tier exists to surface — a bare or partial
+    /// name matching two entities is the case that needs disambiguating, not a
+    /// case to silently resolve. A factor loose enough to admit the decoy
+    /// floods the block with nodes that merely share a common word.
+    #[test]
+    fn the_score_cutoff_keeps_siblings_and_drops_noise_words() {
+        let best = -6.53_f64;
+        let sibling = -3.27_f64;
+        let decoy = -2.13_f64;
+        let bar = best * ENTITY_SCORE_CUTOFF_FACTOR;
+
+        assert!(
+            sibling <= bar,
+            "a real sibling entity ({sibling}) must survive the bar ({bar}) — \
+             dropping it collapses the ambiguity the tier exists to surface"
+        );
+        assert!(
+            decoy > bar,
+            "a noise-word decoy ({decoy}) must not survive the bar ({bar})"
+        );
+    }
+
+    /// The tier honours the character budget like every other section, so a
+    /// long entity list cannot crowd out the rest of the context block — and
+    /// a budget that admits only SOME entities renders those, not none.
+    #[test]
+    fn entity_tier_respects_the_char_budget() {
+        let two = vec![
+            entity("Northwind Trading", "company_sold_to", "abc123", -2.5),
+            entity("Contoso Ltd", "customer", "def456", -2.4),
+        ];
+        let full = ctx_with(EntityResolution::Resolved(two.clone())).format_for_prompt(4000);
+
+        // A budget one line short of the full rendering: the first entity must
+        // survive and the second must be dropped. Exercises the partial-
+        // truncation path rather than the all-or-nothing ends.
+        //
+        // Derived from the dropped line's own length rather than a fixed
+        // offset, so the boundary stays correct if the rendered line format
+        // changes.
+        let second_line = format!("- \"{}\" ({}) id={}\n", "Contoso Ltd", "customer", "def456");
+        let one_line_short = full.len() - second_line.len();
+        let out = ctx_with(EntityResolution::Resolved(two)).format_for_prompt(one_line_short);
+
+        assert!(out.len() <= one_line_short, "budget exceeded: {out}");
+        assert!(
+            out.contains("abc123"),
+            "the first entity must still render when the budget admits it: {out}"
+        );
+        assert!(
+            !out.contains("def456"),
+            "the second entity must be dropped by the budget: {out}"
+        );
+    }
+
+    /// A budget too small for even one entity line renders NOTHING — not a
+    /// header with an empty list.
+    ///
+    /// The header promises resolved ids. Emitting it above nothing tells the
+    /// model entities were found and then shows none, which is a fourth state
+    /// `EntityResolution` deliberately does not have. Rendering the lines
+    /// before committing to the header is what prevents it.
+    #[test]
+    fn a_budget_too_small_for_any_entity_renders_no_header() {
+        let out = ctx_with(EntityResolution::Resolved(vec![entity(
+            "Northwind Trading",
+            "company_sold_to",
+            "abc123",
+            -2.5,
+        )]))
+        .format_for_prompt(RESOLVED_ENTITIES_HEADER.len() + 5);
+
+        assert!(
+            !out.contains(RESOLVED_ENTITIES_HEADER),
+            "a header with no entities under it is worse than no header: {out}"
+        );
     }
 }
