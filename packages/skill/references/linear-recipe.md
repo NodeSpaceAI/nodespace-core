@@ -1,8 +1,9 @@
 # Linear-style methodology recipe
 
 A canned setup for Linear-style work tracking: Issues with point estimates and a
-richer status vocabulary, time-boxed Cycles that roll unfinished work forward,
-and two validation gates that refuse a status change the workflow does not allow.
+richer status vocabulary, time-boxed Cycles that roll their work into a
+successor when they end, and two validation gates that refuse a status change
+the workflow does not allow.
 
 NodeSpace ships this as first-party content, installable from the desktop app's
 onboarding or Settings. This document is for the other case: an agent setting up
