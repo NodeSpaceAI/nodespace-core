@@ -56,6 +56,13 @@ pub struct CreateArgs {
     /// Parent node ID (omit to create a root node).
     #[arg(long)]
     pub parent: Option<String>,
+    /// Set one or more properties: `--property key=value` (repeatable). Values
+    /// are parsed as JSON when possible (numbers, booleans, `null`, arrays,
+    /// objects), otherwise treated as a plain string. Required this way for
+    /// any schema field that is `required` with no default — validation runs
+    /// at create time, so there is no way to supply it afterward via `update`.
+    #[arg(long = "property", value_parser = parse_property)]
+    pub properties: Vec<(String, serde_json::Value)>,
     /// Collection path to file the node under, `:`-delimited for hierarchy
     /// (e.g. `docs:rust`) — the same syntax `import` and `search` take.
     /// Missing segments are created. Repeatable to join several collections
@@ -223,12 +230,19 @@ async fn get(client: &mut NodeClient, args: GetArgs, json: bool) -> Result<()> {
 }
 
 async fn create(client: &mut NodeClient, args: CreateArgs, json: bool) -> Result<()> {
+    let properties = if args.properties.is_empty() {
+        String::new()
+    } else {
+        let map: serde_json::Map<String, serde_json::Value> = args.properties.into_iter().collect();
+        serde_json::Value::Object(map).to_string()
+    };
+
     let response = client
         .create_node(CreateNodeRequest {
             node_type: args.node_type,
             content: args.content,
             parent_id: args.parent,
-            properties: String::new(),
+            properties,
             collections: args.collections,
             collection_ids: args.collection_ids,
             lifecycle_status: None,

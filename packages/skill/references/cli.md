@@ -543,6 +543,7 @@ Operate on individual nodes (get, create, update, delete, children, query, expor
 - `--type <NODE_TYPE>` — Node type, e.g. `text`, `task`, `date` (required)
 - `--content <CONTENT>` — Content (plain text or markdown) (required)
 - `--parent <PARENT>` — Parent node ID (omit to create a root node)
+- `--property <PROPERTIES>` — Set one or more properties: `--property key=value` (repeatable). Values are parsed as JSON when possible (numbers, booleans, `null`, arrays, objects), otherwise treated as a plain string. Required this way for any schema field that is `required` with no default — validation runs at create time, so there is no way to supply it afterward via `update`
 - `--collection <PATH>` — Collection path to file the node under, `:`-delimited for hierarchy (e.g. `docs:rust`) — the same syntax `import` and `search` take. Missing segments are created. Repeatable to join several collections in one call. Mutually exclusive with --collection-id
 - `--collection-id <ID>` — Collection ID to file the node under (repeatable). Prefer --collection, which takes a readable path and needs no lookup
 
