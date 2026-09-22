@@ -1618,6 +1618,51 @@ mod tests {
         );
     }
 
+    /// `TITLE_TEMPLATE_PLACEHOLDERS` is interpolated through a format-string
+    /// placeholder, exactly like the rules pinned above — a future edit can
+    /// drop the `{title_template_placeholders}` slot with no compiler error.
+    ///
+    /// The premise is what's load-bearing here, not the mention: a real
+    /// session misread the original wording ("identity comes from its fields
+    /// rather than free-form content") as a structured-data-vs-prose
+    /// contrast, so it set a `title_template` on a single-field identity
+    /// (producing a redundant duplicate field) and hand-assembled a title for
+    /// a genuinely composed identity instead of templating it. This pins
+    /// that the guidance states `content` IS the name for entity types
+    /// (the missing premise), that `title_template` is for assembling from
+    /// two or more fields (not any field-derived identity), and that a
+    /// single-field identity goes directly into `content` with no template
+    /// and no duplicate field — the three-way discrimination a model needs
+    /// to avoid both failure directions.
+    #[test]
+    fn schema_creation_guidance_covers_title_template_discrimination() {
+        let seeds = seed_skill_nodes();
+        let schema_skill = seeds
+            .iter()
+            .find(|s| s.title == "Schema Creation")
+            .expect("Schema Creation skill must exist");
+        let md = &schema_skill.markdown_content;
+
+        assert!(
+            md.contains("content is a node's name for entity types"),
+            "Schema Creation guidance must state the premise that content is the \
+             node's name for entity types — without it, the field-vs-content \
+             distinction reads as structured-data-vs-prose instead of \
+             one-field-vs-several"
+        );
+        assert!(
+            md.contains("ASSEMBLE a title from two or more fields"),
+            "Schema Creation guidance must state that title_template exists to \
+             assemble a title from 2+ fields, not merely that identity \
+             'comes from fields'"
+        );
+        assert!(
+            md.contains("do NOT set title_template") && md.contains("do NOT add a separate field"),
+            "Schema Creation guidance must state that a single-field identity \
+             goes directly into content, with no template and no duplicate field"
+        );
+    }
+
     /// `GROUPING_IS_COLLECTIONS` and `COLLECTION_AT_CREATE_TIME` are
     /// interpolated through format-string placeholders, which a future edit
     /// can drop without any compiler error — the value is a valid `String`
