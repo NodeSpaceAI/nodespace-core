@@ -442,6 +442,11 @@ fn rewrite_rule_ids(rule: &mut serde_json::Value, renames: &HashMap<String, Stri
         .and_then(|v| v.as_str())
         .map(str::to_string);
 
+    // A trigger carrying a `property_key` but no `node_type` never reaches the
+    // rewrite below. That is unreachable by construction rather than handled:
+    // the namespace guard compares against the authored `node_type`, so with
+    // none there is nothing to match, and a `property_changed` trigger without
+    // a `node_type` has no type to namespace its key to in the first place.
     if let Some(node_type) = authored_node_type.as_deref() {
         let Some(renamed) = renames.get(node_type) else {
             return rewrite_action_ids(rule, renames);
