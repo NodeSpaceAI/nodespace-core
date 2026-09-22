@@ -423,8 +423,12 @@ impl SqliteStore {
                 .await
                 .context("Failed to clear title FTS5 index")?;
             conn.execute(
+                // Same `nullif` predicate as the triggers and the staleness
+                // count. All three must agree: if the refill indexes rows the
+                // count does not expect, the repair never converges and every
+                // open rebuilds the whole index under a write lock.
                 "INSERT INTO node_title_fts(rowid, id, title) \
-                 SELECT rowid, id, title FROM node WHERE title IS NOT NULL",
+                 SELECT rowid, id, title FROM node WHERE nullif(title, '') IS NOT NULL",
                 (),
             )
             .await
@@ -1089,6 +1093,22 @@ mod tests {
                     (),
                 )
                 .await?;
+            // An empty-title row, present while the index is REPAIRED rather
+            // than only while it is maintained by triggers. This is what makes
+            // the refill's predicate observable: the healthy-path test seeds
+            // '' but never desyncs, and the desync test used to seed only a
+            // real title and NULL, so a refill that indexed '' rows satisfied
+            // both while still disagreeing with the staleness count forever.
+            store
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO node (id, node_type, content, title, created_at, modified_at) \
+                     VALUES ('c', 'text', 'blank title', '', \
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    (),
+                )
+                .await?;
             // Desync the index behind the triggers' back, standing in for a
             // restore or interrupted write.
             store
@@ -1098,7 +1118,7 @@ mod tests {
                 .await?;
         }
 
-        let store = Arc::new(SqliteStore::new(db_path).await?);
+        let store = Arc::new(SqliteStore::new(db_path.clone()).await?);
         assert_eq!(
             title_fts_ids(&store, "northwind").await?,
             vec!["a".to_string()],
@@ -1107,7 +1127,21 @@ mod tests {
         assert_eq!(
             title_fts_row_count(&store).await?,
             1,
-            "the refill must reinstate only titled rows, not every node"
+            "the refill must reinstate only titled rows — not every node, and not \
+             the empty-title one either"
+        );
+
+        // Convergence: the refill's predicate must agree with the staleness
+        // count's, or the repair re-runs on every open forever. Reopening a
+        // just-repaired database must therefore be a no-op, which is only
+        // observable with an empty-title row present.
+        drop(store);
+        let reopened = Arc::new(SqliteStore::new(db_path).await?);
+        assert_eq!(
+            title_fts_row_count(&reopened).await?,
+            1,
+            "reopening a repaired database must leave the index alone; a differing \
+             count here means the repair never converges and rebuilds every open"
         );
         Ok(())
     }
