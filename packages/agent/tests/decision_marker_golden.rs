@@ -240,6 +240,13 @@ fn emitted_decision_lines_match_golden() {
         (2, rec(DecisionKind::Operation, &["search_nodes"], None)),
         // An EMPTY selection, which is not the same outcome as no selection
         // and must not decode back to null.
+        //
+        // This line carries `off_menu: true`, which is not an accident of the
+        // fixture: `""` is a selection, and it is not among the candidates, so
+        // `selected_off_menu` reports it as off-menu exactly as it would any
+        // other unoffered name. Worth knowing when reading a regenerated
+        // golden, because the eval counts `offMenu` into a reported "off-menu
+        // type named" figure — a blank type name lands in that count.
         (2, rec(DecisionKind::Schema, &["invoice"], Some(""))),
         // Nothing on offer at all.
         (2, rec(DecisionKind::Operation, &[], None)),

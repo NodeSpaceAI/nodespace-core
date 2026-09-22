@@ -119,6 +119,17 @@ describe("decision marker round trip (Rust emit → scrape → parse)", () => {
     expect(decisions?.[6].selected).toBeNull();
     expect(decisions?.[7].selected).toBe("");
     expect(decisions?.[7].selected).not.toBeNull();
+
+    // The blank selection is also off-menu, and deliberately so rather than
+    // incidentally: `""` is a selection that the candidate set does not offer,
+    // so it is reported like any other unoffered name. Asserted because the
+    // eval both fails a scenario on this flag and counts it into a reported
+    // "off-menu type named" figure, so a change here is a change to a score.
+    expect(decisions?.[7].offMenu).toBe(true);
+    // The genuine no-selection record is NOT off-menu — declining to pick is
+    // not naming something unoffered, and conflating them would put a null in
+    // the numerator of that same figure.
+    expect(decisions?.[6].offMenu).toBe(false);
   });
 
   test("an off-menu selection round-trips its flag", () => {

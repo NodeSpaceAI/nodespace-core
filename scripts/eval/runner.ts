@@ -137,6 +137,12 @@ function runTurn(env: EvalEnv, chatId: string, message: string): TurnRecord {
  * raw model text via `[raw]` lines, and the model narrating a marker-shaped
  * string must not be read as the harness's own signal. A `[raw]` line is itself
  * JSON-encoded, so a marker-shaped string inside one cannot reach column zero.
+ *
+ * The payload pattern is greedy, which is deliberate: `.` does not match a
+ * newline without the `s` flag, so a match cannot span lines and adjacent
+ * markers cannot interact. Greedy plus the `$` anchor then accepts only a line
+ * whose payload ends at the line end, rejecting one with trailing content —
+ * where a lazy `.*?` would match a leading object and silently ignore the rest.
  */
 function parseDecisions(out: string): DecisionRecord[] | undefined {
   const rows = [
@@ -145,7 +151,7 @@ function parseDecisions(out: string): DecisionRecord[] | undefined {
   if (rows.length === 0) return undefined;
   const records: DecisionRecord[] = [];
   for (const m of rows) {
-    let payload: { selected?: unknown; off_menu?: unknown; candidates?: unknown };
+    let payload: unknown;
     try {
       payload = JSON.parse(m[2]);
     } catch {
@@ -154,20 +160,51 @@ function parseDecisions(out: string): DecisionRecord[] | undefined {
       // nothing" — a real and meaningfully different outcome.
       continue;
     }
-    records.push({
-      kind: m[1] as "skill" | "schema" | "operation",
-      // JSON `null` carries "picked nothing" directly, so unlike the delimited
-      // form there is no sentinel spelling for a scorer to know. An empty
-      // string stays an empty string and is NOT folded into null: the two are
-      // different outcomes.
-      selected: typeof payload.selected === "string" ? payload.selected : null,
-      offMenu: payload.off_menu === true,
-      candidates: Array.isArray(payload.candidates)
-        ? payload.candidates.filter((c): c is string => typeof c === "string")
-        : [],
-    });
+    const decision = decisionFromPayload(m[1] as DecisionRecord["kind"], payload);
+    // Same rule as the `catch` above, extended past the parse. A payload that
+    // is valid JSON but carries an unexpected shape is dropped rather than
+    // coerced into a record with empty fields: coercing would manufacture
+    // exactly the "offered nothing, picked nothing" reading the `catch` exists
+    // to avoid, and the eval scores that as a model failure with a confident,
+    // wrong diagnostic — the same silent corruption this format replaced.
+    if (decision) records.push(decision);
   }
   return records.length === 0 ? undefined : records;
+}
+
+/**
+ * Validate one decoded payload into a `DecisionRecord`, or `null` if its shape
+ * is not the one the emitter produces.
+ *
+ * Every field is checked rather than defaulted. The tempting alternative —
+ * `Array.isArray(x) ? x : []` and `typeof x === "string" ? x : null` — reads as
+ * defensive but is the opposite: it turns a shape mismatch into a plausible
+ * record no downstream consumer can tell from a real one. A `candidates` that
+ * arrived as a string would score as "retrieval offered nothing", and filtering
+ * non-strings out of the array would silently shorten the candidate list, which
+ * is the precise failure the JSON encoding was introduced to remove.
+ *
+ * Unreachable from the current emitter, which always writes all three keys with
+ * these types. It is the boundary check that keeps that guarantee honest rather
+ * than assumed — the assumption this format's own history argues against.
+ */
+function decisionFromPayload(
+  kind: DecisionRecord["kind"],
+  payload: unknown,
+): DecisionRecord | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const { selected, off_menu: offMenu, candidates } = payload as Record<string, unknown>;
+
+  // `null` is "picked nothing" and `""` is a name that happens to be blank —
+  // different outcomes, so neither is folded into the other. Anything else is a
+  // shape this parser does not know how to read.
+  if (selected !== null && typeof selected !== "string") return null;
+  if (typeof offMenu !== "boolean") return null;
+  if (!Array.isArray(candidates) || !candidates.every((c) => typeof c === "string")) {
+    return null;
+  }
+
+  return { kind, selected, offMenu, candidates: candidates as string[] };
 }
 
 /**

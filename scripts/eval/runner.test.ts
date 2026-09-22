@@ -828,6 +828,61 @@ describe("parseTurnOutput", () => {
     expect(parseTurnOutput(out, 100).decisions).toBeUndefined();
   });
 
+  // Valid JSON carrying an unexpected shape is dropped for the same reason a
+  // parse failure is. Coercing it — defaulting a missing array to [], filtering
+  // non-strings out of one — manufactures a plausible record no consumer can
+  // tell from a real one: the eval reads `selected === null` as "nothing
+  // cleared its bar" and reports `candidates` as what retrieval offered, so it
+  // would score a shape mismatch as a model failure with a wrong diagnostic.
+  // Unreachable from the current emitter; these pin the boundary check that
+  // keeps that guarantee honest rather than assumed.
+  test("drops a payload whose candidates are not an array", () => {
+    const out = [
+      '[decision operation] {"candidates":"search_nodes","off_menu":false,"selected":"search_nodes"}',
+      "assistant> hi",
+    ].join("\n");
+    expect(parseTurnOutput(out, 100).decisions).toBeUndefined();
+  });
+
+  test("drops an empty payload rather than reading it as a phantom decision", () => {
+    // `{}` would otherwise coerce to "offered nothing, picked nothing" —
+    // indistinguishable from the real turn that made exactly that decision.
+    const out = ["[decision operation] {}", "assistant> hi"].join("\n");
+    expect(parseTurnOutput(out, 100).decisions).toBeUndefined();
+  });
+
+  test("drops a payload with a non-string candidate rather than shortening the list", () => {
+    // Filtering the stray entry out would silently shorten the candidate list,
+    // which is the precise corruption the JSON encoding replaced.
+    const out = [
+      '[decision schema] {"candidates":["invoice",42],"off_menu":false,"selected":"invoice"}',
+      "assistant> hi",
+    ].join("\n");
+    expect(parseTurnOutput(out, 100).decisions).toBeUndefined();
+  });
+
+  test("drops a payload whose off_menu is missing", () => {
+    const out = [
+      '[decision schema] {"candidates":["invoice"],"selected":"invoice"}',
+      "assistant> hi",
+    ].join("\n");
+    expect(parseTurnOutput(out, 100).decisions).toBeUndefined();
+  });
+
+  test("keeps the valid decisions on a turn where one payload is malformed", () => {
+    // A single bad line must not discard the turn's other records, which are
+    // independently scoreable.
+    const out = [
+      '[decision skill] {"candidates":["Node Creation"],"off_menu":false,"selected":"Node Creation"}',
+      "[decision schema] {}",
+      '[decision operation] {"candidates":["create_node"],"off_menu":false,"selected":"create_node"}',
+      "assistant> done",
+    ].join("\n");
+    const decisions = parseTurnOutput(out, 100).decisions;
+    expect(decisions).toHaveLength(2);
+    expect(decisions?.map((d) => d.kind)).toEqual(["skill", "operation"]);
+  });
+
   test("decisions is undefined (not empty) when no marker is present", () => {
     // Absence means "this build did not record them", which a stale baseline
     // must not be scored against as though the model decided nothing.

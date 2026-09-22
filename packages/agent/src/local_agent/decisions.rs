@@ -146,8 +146,14 @@ impl DecisionRecord {
         // Infallible in practice — the value is built here from a String, a
         // bool and a Vec<String>, none of which can fail to serialise. A
         // fallback rather than an unwrap so a logging call can never panic the
-        // agent loop, and a shape the parser rejects loudly rather than one it
-        // might mistake for a real record.
+        // agent loop.
+        //
+        // `null` is not a payload the scrape can read: it skips the line, so
+        // the decision is dropped rather than recorded wrongly. That is the
+        // right trade for an unreachable branch — a record with empty fields
+        // would be scored as "offered nothing, picked nothing", a real outcome
+        // — but it is a silent drop, not a loud rejection, so this branch
+        // firing would show up as a missing decision rather than an error.
         serde_json::to_string(&serde_json::json!({
             "selected": self.selected,
             "off_menu": self.selected_off_menu(),
