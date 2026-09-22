@@ -385,26 +385,50 @@ pub async fn connect_database(sock: &std::path::Path) -> Result<DatabaseServiceC
 }
 
 /// Resolve the `--database` selection into a routing interceptor plus the
-/// resolved database id (if any).
+/// resolved database id.
 ///
 /// The daemon resolves the `x-ns-database-id` header as an id (ULID) only, so a
 /// selection given as a name is resolved to its id here, against the registry,
-/// before any data-plane request is made. `None` selection routes to the
-/// daemon's default database. The returned id is `None` for the default and
-/// `Some(id)` for an explicit selection — diagnostics needs it to identify which
-/// registry entry it targeted.
-async fn resolve_routing(
+/// before any data-plane request is made.
+///
+/// **No selection resolves the daemon's default to a concrete id and stamps it,
+/// rather than sending no header at all.** Both reach the same database, but
+/// only one of them can say which. An unstamped request is routed by the daemon
+/// against whatever `registry.default_database` holds at the moment it arrives,
+/// so the CLI never learns the answer and cannot report it — and a write that
+/// went somewhere else (an agent turn runs against its own event watcher's
+/// database, not the default) reads back as a well-formed empty result,
+/// indistinguishable from a write that never happened. Pinning the id here
+/// makes the target knowable to every caller and stable for the whole
+/// invocation.
+///
+/// The returned id is `None` only when the daemon reports no default database,
+/// which is also the one case where an unstamped request would have failed
+/// downstream anyway — left to the command to surface, rather than turned into
+/// a routing error here.
+pub async fn resolve_routing(
     sock: &std::path::Path,
     selection: Option<&str>,
 ) -> Result<(DatabaseIdInterceptor, Option<String>)> {
-    match selection {
-        None => Ok((DatabaseIdInterceptor::none(), None)),
+    let mut db = connect_database(sock).await?;
+    let id = match selection {
         Some(sel) => {
-            let mut db = connect_database(sock).await?;
-            let id = commands::database::resolve_database_id_by_selection(&mut db, sel).await?;
+            Some(commands::database::resolve_database_id_by_selection(&mut db, sel).await?)
+        }
+        // Every data-plane command reaches this, including ones that never
+        // mention the registry. Re-frame a registry-side failure in the
+        // caller's terms rather than surfacing a bare "List RPC failed" from
+        // `nodespace search`.
+        None => commands::database::resolve_default_database_id(&mut db)
+            .await
+            .context("could not determine which database to use")?,
+    };
+    match id {
+        Some(id) => {
             let interceptor = DatabaseIdInterceptor::for_id(&id)?;
             Ok((interceptor, Some(id)))
         }
+        None => Ok((DatabaseIdInterceptor::none(), None)),
     }
 }
 

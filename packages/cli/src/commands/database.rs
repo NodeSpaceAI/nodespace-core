@@ -130,6 +130,38 @@ pub async fn resolve_database_id_by_selection(
     }
 }
 
+/// The registry id of the daemon's default database, if one is set.
+///
+/// Lets the CLI stamp an explicit routing header even when the caller passed no
+/// `--database`, so the target of an invocation is a fact the CLI knows rather
+/// than one the daemon resolves silently per request. See `resolve_routing`.
+///
+/// `Ok(None)` means the daemon reports no default. That is left for the command
+/// to surface: an unstamped request would fail downstream on the same
+/// condition, and turning it into a routing error here would report it in the
+/// wrong vocabulary.
+///
+/// Reads `default_database_id` rather than scanning the entries for
+/// `is_default`. The response carries the same fact twice — the scalar is the
+/// registry's own answer, the per-entry flag is derived from it — and today
+/// they cannot disagree, since both are built from one snapshot under one lock.
+/// The scalar is still the right one to trust: were that invariant ever to slip
+/// (a default id naming an entry the listing omits), a scan would match nothing
+/// and this would return `None`, quietly restoring the unstamped routing this
+/// function exists to replace. An empty string is the daemon's "unset", not an
+/// id.
+pub async fn resolve_default_database_id(
+    client: &mut DatabaseServiceClient<Channel>,
+) -> Result<Option<String>> {
+    let listed = client
+        .list(ListDatabasesRequest {})
+        .await
+        .context("List RPC failed")?
+        .into_inner();
+
+    Ok(Some(listed.default_database_id).filter(|id| !id.is_empty()))
+}
+
 async fn list(client: &mut DatabaseServiceClient<Channel>, json: bool) -> Result<()> {
     let listed = client
         .list(ListDatabasesRequest {})

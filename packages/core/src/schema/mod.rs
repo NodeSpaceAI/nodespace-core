@@ -1177,7 +1177,24 @@ pub async fn handle_create_schema(
     // carries the existing type's real, rendered definition: without it the
     // agent has no fact to report and fills the gap by describing the fields
     // from the (rejected) call it just made, presenting them as confirmed.
-    if let Ok(Some(existing_schema)) = node_service.get_schema_node(&schema_id).await {
+    //
+    // A read failure here is propagated rather than swallowed. Treating `Err`
+    // as "does not exist" (what `if let Ok(Some(..))` did) sent the call on
+    // into a write whose outcome depends on state we just failed to read: it
+    // lands on the primary-key violation and surfaces as an opaque internal
+    // error naming neither the real problem nor the repair. An unreadable
+    // schema table is not evidence of an absent schema.
+    let existing_schema = node_service
+        .get_schema_node(&schema_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Could not determine whether schema '{}' already exists: {}. \
+                 No schema was created.",
+                schema_id, e
+            ))
+        })?;
+    if let Some(existing_schema) = existing_schema {
         let existing_definition =
             crate::ops::entity_types_block::EntityTypeDescriptor::from_schema(&existing_schema)
                 .render_line();
@@ -1239,10 +1256,13 @@ pub async fn handle_create_schema(
     let relationships_for_tx = relationships.clone();
     let description_text_for_tx = description_text.clone();
     let node_service_for_tx = Arc::clone(node_service);
-    // Same id `schema_id` above already computed (schema nodes derive their id
-    // from content) — kept as its own binding because it's the value the
-    // transaction closure actually produced, not merely asserted in advance.
-    let _created_schema_id: String = node_service
+    // The same id as `schema_id` above (schema nodes derive their id from
+    // content), but this is the one the transaction actually produced rather
+    // than the one predicted before the write — so it, not `schema_id`, is
+    // what the verification read below looks up. Should the two ever diverge,
+    // that read fails loudly against the id nothing was written under, rather
+    // than returning a payload whose `schemaId` names a row that isn't there.
+    let created_schema_id: String = node_service
         .with_transaction(move |tx| {
             let node_service = Arc::clone(&node_service_for_tx);
             let relationships = relationships_for_tx.clone();
@@ -1289,13 +1309,85 @@ pub async fn handle_create_schema(
             )),
         })?;
 
+    // Build the result from the COMMITTED row, not from the request.
+    //
+    // Everything above this point describes what the caller asked for. Echoing
+    // that back as the result makes the payload indistinguishable between a
+    // write that landed and one that did not: it reports the requested fields
+    // either way, with `is_error=false`, and the agent — correctly trusting its
+    // own tool result — tells the user the type exists. That also defeats the
+    // caller-side no-op guard, which counts `fields` in the result precisely
+    // because a result is supposed to be the executor's report of what it
+    // persisted rather than the model's report of what it asked for.
+    //
+    // A read-back closes that gap by construction: if the schema is not there,
+    // this is an error, not a success carrying a fabricated field list.
+    let persisted = node_service
+        .get_schema_node_verifying(&created_schema_id)
+        .await
+        .map_err(|e| {
+            MarkdownError::internal_error(format!(
+                "Schema '{}' was written but could not be read back to confirm: {}. \
+                 Do not report it as created — verify with get_node before relying on it.",
+                created_schema_id, e
+            ))
+        })?;
+
+    // `get_schema_node` returns `Ok(None)` for two different facts: the row is
+    // absent, or it is present but `SchemaNode::from_node` could not parse it
+    // (see the store's warn-and-return-None arm). Asserting the first without
+    // checking would repeat this PR's own bug in miniature — claiming more than
+    // the read established — and in the damaging direction: told a schema it
+    // did commit was "NOT created", an agent retries, the exists-check reads
+    // `Ok(None)` too, and the retry runs into the primary-key violation that
+    // the exists-check exists to prevent. One raw row read tells them apart.
+    let persisted = match persisted {
+        Some(schema) => schema,
+        None => {
+            let raw_row_exists = node_service
+                .get_node_verifying(&created_schema_id)
+                .await
+                .map_err(|e| {
+                    MarkdownError::internal_error(format!(
+                        "Schema '{}' could not be verified after writing: {}. \
+                         Do not report it as created.",
+                        created_schema_id, e
+                    ))
+                })?
+                .is_some();
+
+            return Err(MarkdownError::internal_error(if raw_row_exists {
+                format!(
+                    "Schema '{}' was written but cannot be read back as a valid schema — \
+                     the stored row is present but unreadable. Do not report it as created, \
+                     and do not retry: creating it again will collide with the existing row.",
+                    created_schema_id
+                )
+            } else {
+                format!(
+                    "Schema '{}' reported a successful write but is not present in the \
+                     database afterwards. It was NOT created.",
+                    created_schema_id
+                )
+            }));
+        }
+    };
+
     let output = CreateSchemaOutput {
-        schema_id: schema_id.clone(),
-        is_core: false,
-        version: 1,
+        schema_id: persisted.id,
+        is_core: persisted.is_core,
+        version: persisted.schema_version,
+        // The one field still taken from the request, deliberately. A
+        // description is not stored on the schema node: it is parsed into a
+        // markdown child subtree, so "reading it back" would mean reassembling
+        // prose from nodes, which does not round-trip to the input string. The
+        // value here is the exact text handed to the subtree write that just
+        // committed. Nothing downstream counts or validates it — the no-op
+        // guard reads `fields` — so it carries none of the weight that made
+        // echoing the field list a defect.
         description: description_text,
-        fields: stored_fields,
-        relationships,
+        fields: persisted.fields,
+        relationships: persisted.relationships,
         warnings: if warnings.is_empty() {
             None
         } else {
