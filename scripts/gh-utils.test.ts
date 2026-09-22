@@ -10,7 +10,7 @@
 // on which account actually runs this suite -- the stub's resolved login is
 // deliberately something no real account will ever be, so a regression back
 // to a hardcoded literal fails loudly no matter who's authenticated.
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, spyOn, test } from "bun:test";
 import { NodeSpaceGitHubManager } from "./gh-utils.ts";
 import { GitHubClient } from "./github-client.ts";
 
@@ -334,6 +334,46 @@ describe("NodeSpaceGitHubManager.findOrCreateTrackingIssue", () => {
     expect(addPRComment).not.toHaveBeenCalled();
     expect(createIssue).toHaveBeenCalledTimes(1);
     expect(result.action).toBe("created");
+  });
+
+  // Matches the wrap-and-log-then-rethrow pattern every other
+  // NodeSpaceGitHubManager method uses (createIssue, editIssue, addComment,
+  // ...): a failure mid-way through -- e.g. an existing issue was found but
+  // commenting on it then fails -- must not vanish into main()'s generic
+  // top-level catch with no indication of which tracking issue it was
+  // trying to update.
+  test("logs which tracking issue it was updating and rethrows if the API call fails", async () => {
+    const listIssues = mock(async () => [
+      {
+        number: 101,
+        title: "macOS .pkg installer fails live Gatekeeper assessment",
+        state: "open",
+        assignees: [],
+        labels: [],
+        body: "",
+      },
+    ]);
+    const addPRComment = mock(async () => {
+      throw new Error("API rate limited");
+    });
+    const client = { listIssues, addPRComment } as unknown as GitHubClient;
+    const manager = new NodeSpaceGitHubManager(client);
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      await expect(
+        manager.findOrCreateTrackingIssue({
+          title: "macOS .pkg installer fails live Gatekeeper assessment",
+          body: "Run: https://example.test/run/6",
+        }),
+      ).rejects.toThrow("API rate limited");
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining("macOS .pkg installer fails live Gatekeeper assessment"),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });
 

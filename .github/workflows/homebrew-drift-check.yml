@@ -102,6 +102,14 @@ jobs:
         # extracted from) for why matching goes through the regular
         # strongly-consistent issues-list endpoint rather than
         # `--search`/the search index.
+        #
+        # `shell: bash` kept explicit even though this step has no pipe of
+        # its own (unlike the check step above) -- matches
+        # verify-macos-installer.yml's equivalent step, and pins the shell
+        # so a future edit that reintroduces a pipe here doesn't silently
+        # lose pipefail by inheriting whatever the runner's default happens
+        # to be.
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -161,7 +169,9 @@ jobs:
       - name: Open (or update) an issue on failure (loud, with the actual message)
         if: failure()
         # Same dedup helper as the cask job's failure step above -- see its
-        # comment for the full reasoning.
+        # comment for the full reasoning. `shell: bash` kept explicit for
+        # the same future-proofing reason given there too.
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

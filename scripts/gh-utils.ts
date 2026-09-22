@@ -340,26 +340,33 @@ class NodeSpaceGitHubManager {
     body: string;
     labels?: string[];
   }): Promise<{ number: number; url: string; action: "commented" | "created" }> {
-    const openIssues = await this.client.listIssues({ state: "open" });
-    // `issue.state === "open"` is checked again here, redundantly with the
-    // `{ state: "open" }` request above -- defense in depth against ever
-    // matching a closed issue (and silently absorbing a comment into it
-    // instead of filing a fresh one) if that server-side filter is ever
-    // loosened, mocked incorrectly in a future test, or an API contract
-    // changes out from under this call.
-    const existing = openIssues.find((issue) => issue.state === "open" && issue.title === options.title);
+    try {
+      const openIssues = await this.client.listIssues({ state: "open" });
+      // `issue.state === "open"` is checked again here, redundantly with the
+      // `{ state: "open" }` request above -- defense in depth against ever
+      // matching a closed issue (and silently absorbing a comment into it
+      // instead of filing a fresh one) if that server-side filter is ever
+      // loosened, mocked incorrectly in a future test, or an API contract
+      // changes out from under this call.
+      const existing = openIssues.find((issue) => issue.state === "open" && issue.title === options.title);
 
-    if (existing) {
-      const comment = await this.client.addPRComment(existing.number, options.body);
-      console.log(`Existing open issue #${existing.number} -- commenting instead of filing a duplicate.`);
-      console.log(`Comment URL: ${comment.url}`);
-      return { number: existing.number, url: comment.url, action: "commented" };
+      if (existing) {
+        const comment = await this.client.addPRComment(existing.number, options.body);
+        console.log(`Existing open issue #${existing.number} -- commenting instead of filing a duplicate.`);
+        console.log(`Comment URL: ${comment.url}`);
+        return { number: existing.number, url: comment.url, action: "commented" };
+      }
+
+      const issue = await this.client.createIssue(options.title, options.body, options.labels);
+      console.log(`No existing open issue found -- created #${issue.number}`);
+      console.log(`URL: ${issue.url}`);
+      return { number: issue.number, url: issue.url, action: "created" };
+    } catch (error: unknown) {
+      console.error(
+        `❌ Failed to find-or-create tracking issue "${options.title}": ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
     }
-
-    const issue = await this.client.createIssue(options.title, options.body, options.labels);
-    console.log(`No existing open issue found -- created #${issue.number}`);
-    console.log(`URL: ${issue.url}`);
-    return { number: issue.number, url: issue.url, action: "created" };
   }
 }
 
@@ -629,9 +636,16 @@ async function main() {
         const title = titleIndex !== -1 ? args[titleIndex + 1] : undefined;
         const body = await parseBodyArg(args);
 
+        // `.filter(Boolean)` drops empty segments from something like
+        // "bug,,foundation" (a stray comma) -- GitHub's API 422s on an
+        // empty-string label, which a malformed `--labels` value would
+        // otherwise only surface as an opaque API error at request time.
         const labels =
           labelsIndex !== -1 && args[labelsIndex + 1]
-            ? args[labelsIndex + 1].split(",").map((l) => l.trim())
+            ? args[labelsIndex + 1]
+                .split(",")
+                .map((l) => l.trim())
+                .filter(Boolean)
             : undefined;
 
         // `body === undefined` (not `!body`): parseBodyArg's contract is
