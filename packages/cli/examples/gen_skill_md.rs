@@ -37,11 +37,11 @@
 
 use clap::{ArgAction, Command as ClapCommand, CommandFactory};
 use nodespace_agent::skill_rules::{
-    ADD_ENUM_VALUES, DELETE_A_SCHEMA, EDIT_DONT_RECREATE, ENUM_EDGE_FIELDS, ENUM_FORMAT,
-    FIELDS_FROM_REQUEST_ONLY, GROUPING_IS_COLLECTIONS, NAME_PLACEHOLDER_EXCEPTION,
-    NO_NAME_TITLE_FIELD, ONE_SCHEMA_PER_REQUEST, RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL,
-    SCHEMA_ALREADY_EXISTS, SCHEMA_VALIDATION_ERROR_RETRY, TARGET_TYPE_MUST_EXIST,
-    TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
+    ADD_ENUM_VALUES, CREATING_TWO_LINKED_TYPES, DELETE_A_SCHEMA, EDIT_DONT_RECREATE,
+    ENUM_EDGE_FIELDS, ENUM_FORMAT, FIELDS_FROM_REQUEST_ONLY, GROUPING_IS_COLLECTIONS,
+    NAME_PLACEHOLDER_EXCEPTION, NO_NAME_TITLE_FIELD, ONE_SCHEMA_PER_REQUEST, RELATIONSHIP_VS_FIELD,
+    RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS, SCHEMA_VALIDATION_ERROR_RETRY,
+    TARGET_TYPE_MUST_EXIST, TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
 };
 use nodespace_cli::Cli;
 use std::env;
@@ -113,13 +113,14 @@ fn end_marker(r: &GeneratedRegion) -> String {
 /// Renders the schema-rules block content (the text between the markers,
 /// exclusive), joining rules that share a single SKILL.md paragraph.
 fn render_schema_rules_block() -> String {
-    // ONE_SCHEMA_PER_REQUEST, SCHEMA_ALREADY_EXISTS, and
-    // SCHEMA_VALIDATION_ERROR_RETRY render as three paragraphs (SKILL.md
+    // ONE_SCHEMA_PER_REQUEST, CREATING_TWO_LINKED_TYPES, SCHEMA_ALREADY_EXISTS,
+    // and SCHEMA_VALIDATION_ERROR_RETRY render as four paragraphs (SKILL.md
     // separates them with a blank line), everything else is one rule per
     // paragraph. NO_NAME_TITLE_FIELD and NAME_PLACEHOLDER_EXCEPTION share the
     // "**Schema fields:**" paragraph.
     format!(
-        "{one_schema_per_request}\n\n{schema_already_exists}\n\n{schema_validation_error_retry}\n\n\
+        "{one_schema_per_request}\n\n{creating_two_linked_types}\n\n\
+         {schema_already_exists}\n\n{schema_validation_error_retry}\n\n\
          {edit_dont_recreate}\n\n\
          {add_enum_values}\n\n\
          {rename_vs_relabel}\n\n\
@@ -133,6 +134,7 @@ fn render_schema_rules_block() -> String {
          {title_template_placeholders}\n\n\
          {unique_field_flags}",
         one_schema_per_request = ONE_SCHEMA_PER_REQUEST.prose,
+        creating_two_linked_types = CREATING_TWO_LINKED_TYPES.prose,
         schema_already_exists = SCHEMA_ALREADY_EXISTS.prose,
         schema_validation_error_retry = SCHEMA_VALIDATION_ERROR_RETRY.prose,
         edit_dont_recreate = EDIT_DONT_RECREATE.prose,
