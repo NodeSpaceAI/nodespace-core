@@ -132,8 +132,14 @@ const BLENDED_HISTORY_TURNS: usize = 2;
 /// deterministic fix needs context assembly to depend on the routing
 /// decision (e.g. omitting other custom-type schemas' fields when the turn is
 /// routed toward `create_schema`), which is a larger change since today's
-/// context block is assembled before ADR-038's Stage 2 routing runs — tracked
-/// as a follow-up rather than blocking this measured improvement on it.
+/// context block is assembled before ADR-038's Stage 2 routing runs.
+///
+/// That reorder was scoped, costed, and **consciously declined**: spending an
+/// architectural change on the last 20% of a probabilistic model-behavior
+/// problem was judged not worth it, and the residual is an accepted shipped
+/// state rather than pending work. Revisit only on evidence from real usage
+/// (repeated contamination in practice, not synthetic trials) — not on the
+/// synthetic rate alone, which is already known and already priced in.
 pub const EXISTING_SCHEMAS_HEADER: &str =
     "EXISTING SCHEMAS (do not recreate these; do not copy their fields onto a new type):";
 
