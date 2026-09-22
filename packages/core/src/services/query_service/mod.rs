@@ -835,9 +835,27 @@ impl QueryService {
             // SQLite has no boolean type; it stores them as 0/1 integers, which
             // is also how this codebase writes them into the properties JSON.
             Some(serde_json::Value::Bool(b)) => libsql::Value::Integer(i64::from(*b)),
-            Some(serde_json::Value::Null) => libsql::Value::Null,
             Some(v) => anyhow::bail!("Unsupported value type: {:?}", v),
-            None => anyhow::bail!("Missing value"),
+            // A JSON `null` arrives here as `None`, not `Some(Value::Null)`:
+            // `QueryFilter::value` is an `Option`, so serde folds an explicit
+            // null and an absent key into the same thing. An earlier
+            // `Some(Value::Null) => libsql::Value::Null` arm was therefore
+            // unreachable from the wire, and binding NULL would have been wrong
+            // even if reached — `json_extract(...) = NULL` is never true in SQL,
+            // so it matches nothing rather than finding unset fields.
+            //
+            // The message names the two real intents because the model reaching
+            // this point has usually confused filtering with projection: asked
+            // "when did we sign Northwind?", it emitted `{"operator": "equals",
+            // "property": "signed_date", "value": null}` to mean "return that
+            // field". Filters only narrow which NODES match; every matching node
+            // already carries all of its properties.
+            None => anyhow::bail!(
+                "Filter has no value. A filter selects which nodes match, not \
+                 which fields are returned — every matching node already includes \
+                 all of its properties, so drop the filter to read one. To match \
+                 only nodes where a property is set, use the 'exists' operator."
+            ),
         };
         Ok(built.bind(bound))
     }

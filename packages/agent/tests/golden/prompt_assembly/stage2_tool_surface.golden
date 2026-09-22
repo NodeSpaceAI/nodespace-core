@@ -54,7 +54,7 @@ parameters_schema:
             "type": "string"
           },
           "value": {
-            "description": "Value to compare against. Use string for dates (YYYY-MM-DD), string/number for others. Use array for 'in' operator.",
+            "description": "Value to compare against — NOT a way to request a field. Filters only narrow WHICH nodes are returned; every matching node comes back with all of its properties, so never filter just to read a property. Use string for dates (YYYY-MM-DD), string/number for others, array for 'in'. Never null: to ask whether a property is set at all, use the 'exists' operator and omit this.",
             "type": [
               "string",
               "number",
