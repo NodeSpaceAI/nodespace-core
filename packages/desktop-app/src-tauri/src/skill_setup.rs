@@ -658,10 +658,11 @@ fn resolve_compiled_installer_path<R: tauri::Runtime>(
 /// is no separate installed copy to re-extract from the bundled source, no
 /// re-signing step, and no quarantine flag to clear — it never leaves the
 /// already-notarized bundle Gatekeeper trusted once, at launch (see
-/// `daemon_setup::clear_quarantine`'s doc comment for why that distinction
-/// matters for the daemon sidecars). The repair is just: `chmod` it in
-/// place, via the exact same [`crate::daemon_setup::set_executable`] helper
-/// `extract_sidecar_if_changed` itself uses.
+/// `daemon_setup::has_quarantine_attribute`'s doc comment for why that
+/// distinction matters for the daemon sidecars). The repair is just:
+/// `chmod` it in place, via the exact same
+/// [`crate::daemon_setup::set_executable`] helper `extract_sidecar_if_changed`
+/// itself uses.
 ///
 /// Returns a clear, actionable error when the binary is missing `+x` and
 /// that repair itself fails — e.g. the bundle is on a read-only volume, or
@@ -681,6 +682,18 @@ fn ensure_installer_executable(path: &Path) -> Result<(), String> {
             path.display()
         )
     })?;
+    // `& 0o111` treats ANY executable bit (owner, group, or other) as
+    // healthy, not specifically the one the runtime user actually needs
+    // (the app is installed as root via the .pkg, then run by a non-root
+    // user, so it's really the other-execute bit that matters). A binary
+    // with only the owner bit set would pass this check yet still fail to
+    // exec for that user. A deliberate pragmatic proxy, not an oversight:
+    // the real-world failure mode this guards (a CI artifact round-trip
+    // stripping +x) empirically strips the mode uniformly, and the repair
+    // path below always normalizes to 0o755 regardless of which bits were
+    // actually missing — so this check only needs to distinguish "some
+    // sane mode is already set" from "definitely broken," not diagnose
+    // exactly which bit is missing.
     if metadata.permissions().mode() & 0o111 != 0 {
         return Ok(());
     }
