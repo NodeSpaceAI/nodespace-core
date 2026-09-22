@@ -96,6 +96,16 @@ interface DecisionScenario extends Scenario {
   instanceVsType?: boolean;
   /** Covers a thin-evidence area an ADR calls out explicitly. */
   loadBearing?: boolean;
+  /**
+   * Turns on resolving a NAME to a node, not on choosing among types.
+   *
+   * These were previously scored as schema-selection failures, which measured
+   * the wrong layer: the model never reached a choice among the candidates on
+   * offer — it could not get from "Northwind" to a node id, so it deferred and
+   * asked the user for one. Scoring that as a bad schema pick attributes a
+   * lookup failure to a judgment the model never made.
+   */
+  entityResolution?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +143,23 @@ const SETUP: DecisionScenario[] = [
       "Set up a new type for the places we hold events, with a name, a booking date and a capacity.",
     setup: true,
     expected: { decision: "operation", oneOf: ["create_schema"] },
+  },
+  {
+    id: "setup-northwind-instance",
+    scenario: "Setup: a Northwind INSTANCE, not just its type",
+    // Both setup turns above create types and nothing else, so for most of
+    // this fixture's life the scenarios below asked the agent to update and
+    // read a company that had never been created. "When did we sign
+    // Northwind?" is only a sensible question if Northwind exists, and the
+    // failure those scenarios recorded — "I need a Node ID to update the
+    // capacity for Northwind Trading" — is exactly what a model does when
+    // asked to act on something it cannot find.
+    //
+    // Seeding the instance is what makes the entity tier scoreable at all:
+    // resolution has nothing to resolve against a workspace of bare types.
+    prompt: "Add Northwind Trading to the companies we sell to, signed on 2025-03-14.",
+    setup: true,
+    expected: { decision: "operation", oneOf: ["create_node"] },
   },
 ];
 
@@ -220,13 +247,27 @@ const FIXTURES: DecisionScenario[] = [
   // `is_core` filter rather than the model.
   {
     id: "schema-on-menu-company",
-    scenario: "Schema: acts on a retrieved candidate, not an invented id",
+    scenario: "Schema: a name that already exists is an update, not a create",
+    // Ambiguous BY DESIGN now that `setup-northwind-instance` seeds the
+    // company. "Add X to the companies we sell to" could mean create this or
+    // you already have this — and with the instance present, the right answer
+    // is the latter. That ambiguity is the point: it is the disambiguation
+    // case the entity tier exists to settle, and it is only a real test while
+    // both readings are available.
+    //
+    // Scored on the OPERATION rather than the schema: what changed with the
+    // tier is not which type gets picked but whether the model acts on the
+    // existing node instead of creating a duplicate.
     prompt: "Add Northwind Trading to the companies we sell to.",
-    expected: { decision: "schema", onMenu: true },
+    expected: {
+      decision: "operation",
+      oneOf: ["update_node", "search_nodes", "resolve_query"],
+    },
+    entityResolution: true,
   },
   {
     id: "schema-field-disambiguates",
-    scenario: "Schema: the named field settles which type is meant",
+    scenario: "Entity: the named field settles which type is meant",
     // Both setup types carry a date, but only the venue has a capacity — so a
     // message about seating can only mean the venue. The disambiguating signal
     // is structural (which type even has that field), not semantic similarity,
@@ -234,15 +275,31 @@ const FIXTURES: DecisionScenario[] = [
     prompt: "Northwind can seat 200 people now.",
     expected: { decision: "schema", matches: /venue|event/i },
     ambiguous: true,
+    entityResolution: true,
   },
   {
     id: "schema-shared-name-signed",
-    scenario: "Schema: shared name, company-only attribute",
+    scenario: "Entity: shared name, company-only attribute",
     // The mirror: the same bare name, but the attribute mentioned exists only
-    // on the company type.
+    // on the company type. With the instance seeded this is a READ of an
+    // existing node, which is what makes it an entity-resolution case — the
+    // recorded failure was "I do not have a specific node ID for Northwind
+    // Trading, so I cannot tell you the signing date."
     prompt: "When did we sign Northwind?",
     expected: { decision: "schema", matches: /compan/i },
     ambiguous: true,
+    entityResolution: true,
+  },
+  {
+    id: "entity-no-match-is-a-create",
+    scenario: "Entity: a name that resolves to nothing means CREATE",
+    // The other half of the tier, and the reason its output is three-state.
+    // "Resolved to nothing" is a positive fact — this thing does not exist, so
+    // make it — and it must not read the same as "the resolver did not run".
+    // Tailspin is deliberately absent from the seeded workspace.
+    prompt: "Add Tailspin Toys to the companies we sell to.",
+    expected: { decision: "operation", oneOf: ["create_node"] },
+    entityResolution: true,
   },
 ];
 
@@ -409,6 +466,7 @@ const fixture: EvalFixture = {
       ambiguous: s.ambiguous ?? false,
       instanceVsType: s.instanceVsType ?? false,
       loadBearing: s.loadBearing ?? false,
+      entityResolution: s.entityResolution ?? false,
       skillDecision: firstDecision(turns, "skill") ?? null,
       operationDecision: firstDecision(turns, "operation") ?? null,
       schemaDecision: firstDecision(turns, "schema") ?? null,
@@ -442,6 +500,7 @@ const fixture: EvalFixture = {
       `Schema selection:    ${count((e) => (e.expected as { decision?: string })?.decision === "schema")}`,
       `Instance-vs-type boundary: ${count((e) => e.instanceVsType === true)}`,
       `Ambiguous (several types plausible): ${count((e) => e.ambiguous === true)}`,
+      `Entity resolution: ${count((e) => e.entityResolution === true)}`,
       `ADR-056 known failures: ${count((e) => e.adr056 === true)}`,
       `Off-menu type named: ${offMenu}`,
       `Stage-1 decision cost: ${meanRouting}ms mean (one generative pass for a 3-way structural choice)`,

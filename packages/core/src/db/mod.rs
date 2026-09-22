@@ -14,5 +14,6 @@ pub use fractional_ordering::FractionalOrderCalculator;
 pub use index_manager::IndexManager;
 pub(crate) use sqlite_store::tx::Tx;
 pub use sqlite_store::{
-    ensure_sqlite_vec_registered, RelationshipRecord, SqliteStore, StoreChange, StoreOperation,
+    ensure_sqlite_vec_registered, RelationshipRecord, ResolvedEntity, SqliteStore, StoreChange,
+    StoreOperation,
 };

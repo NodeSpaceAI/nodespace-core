@@ -6,6 +6,9 @@ Active model: gemma-4-E4B-it-Q4_K_M
 
 COLLECTIONS: Engineering, Q3 Planning
 
+MENTIONED ENTITIES (already resolved — use these ids directly, do not ask for one):
+- "Northwind Trading" (company_sold_to) id=01J8ZQ3K7X2N4P6R8T0V2W4Y6A
+
 EXISTING SCHEMAS (do not recreate these; do not copy their fields onto a new type):
 - ticket "Ticket" -> title: text, required; status: enum {ready_for_dev, in_dev, ready_for_review, in_review, done}, required; assignee: text; sprint: text [title_template: {title}]
 - adr "ADR" -> title: text, required; status: enum {proposed, accepted, superseded}, required; supersedes: text

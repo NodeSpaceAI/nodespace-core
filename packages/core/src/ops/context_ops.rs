@@ -67,6 +67,30 @@ pub struct WorkspaceContext {
     /// (fewer slots believed available than truly are), never reproduce the
     /// starvation this field exists to prevent.
     pub semantic_schema_count: usize,
+    /// Entities named in the query and resolved to nodes.
+    ///
+    /// Three-state rather than a bare `Vec` because an empty list and a
+    /// resolver that never ran mean opposite things to the model — see
+    /// [`EntityResolution`].
+    pub resolved_entities: EntityResolution,
+}
+
+/// Outcome of the entity-resolution tier.
+///
+/// The distinction between "ran, found nothing" and "did not run" is the
+/// point. A no-match is a positive fact — the named thing does not exist, so
+/// the turn is a create — while a resolver that never ran says nothing at all.
+/// Rendering both as an absent block would tell the model the same thing in
+/// two situations that call for opposite behaviour.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum EntityResolution {
+    /// Resolution did not run: no query, or no store access. Renders nothing.
+    #[default]
+    NotRun,
+    /// Resolution ran and matched no node. Renders an explicit "none found".
+    NoMatch,
+    /// Resolution ran and matched. Never empty — an empty match is `NoMatch`.
+    Resolved(Vec<crate::db::ResolvedEntity>),
 }
 
 /// An active playbook.
@@ -142,6 +166,57 @@ const BLENDED_HISTORY_TURNS: usize = 2;
 /// synthetic rate alone, which is already known and already priced in.
 pub const EXISTING_SCHEMAS_HEADER: &str =
     "EXISTING SCHEMAS (do not recreate these; do not copy their fields onto a new type):";
+
+/// Header for the resolved-entity tier.
+///
+/// Names the ids as usable so the model does not ask for one it has already
+/// been given — the failure this tier exists to remove was a turn stalling on
+/// "I need a Node ID to update the capacity for Northwind Trading" while the
+/// node existed.
+pub const RESOLVED_ENTITIES_HEADER: &str =
+    "MENTIONED ENTITIES (already resolved — use these ids directly, do not ask for one):";
+
+/// Rendered when resolution ran and matched nothing.
+///
+/// A no-match is informative, not a failure: it means the named thing does not
+/// exist yet, so the turn is a CREATE. That is a different fact from "the
+/// resolver did not run", which is what an absent block means, and collapsing
+/// the two would reintroduce the ambiguity this tier removes.
+pub const NO_ENTITIES_LINE: &str =
+    "MENTIONED ENTITIES: none found — anything named in this message does not exist yet.";
+
+/// Most entities rendered into one turn's context.
+///
+/// The other two context tiers are naturally small (skills ~11, schemas capped
+/// at `MAX_SEMANTIC_SCHEMAS`); instances are unbounded, so this tier needs its
+/// own cap or a common word could flood a block the others keep deliberately
+/// short. Small on purpose: past a handful, a list of names stops being a
+/// constraint and becomes noise the model has to filter.
+pub const MAX_RESOLVED_ENTITIES: usize = 5;
+
+/// How many candidates to pull from FTS5 before applying the relative cutoff.
+///
+/// Wider than `MAX_RESOLVED_ENTITIES` so the cutoff has a populated field to
+/// judge against: the decision "is the second match comparable to the first"
+/// needs the second match to have been fetched.
+const ENTITY_CANDIDATE_LIMIT: i64 = 12;
+
+/// Relative bm25 cutoff: keep a candidate whose score is within this factor of
+/// the best one.
+///
+/// Relative rather than absolute because bm25 scores are corpus-dependent —
+/// they shift with index size and term frequency, so a fixed threshold that
+/// works on a small workspace silently excludes everything on a large one.
+/// What actually matters is whether a candidate is *comparable to the best
+/// match*, which is scale-free.
+///
+/// bm25 is negative and more negative is better, so "within the factor" means
+/// `score <= best * FACTOR` — a candidate at 60% of the best score survives,
+/// one far weaker does not. Set loose rather than tight deliberately: the
+/// motivating case ("is Acme a customer or a project?") is two genuinely
+/// comparable matches, and a tight cutoff would drop the ambiguity that the
+/// turn most needs to see.
+const ENTITY_SCORE_CUTOFF_FACTOR: f64 = 0.55;
 
 /// Character budget applied to each blended prior turn.
 ///
@@ -339,6 +414,66 @@ pub fn build_retrieval_query(prior_turns: &[&str], current_message: &str) -> Str
 /// semantically similar to the query are retrieved and injected into the
 /// context. Falls back to schema-free context when the embedding service is
 /// unavailable or the query is empty.
+/// Resolve entity names in `query` to nodes, keeping those comparable to the
+/// best match.
+///
+/// Deterministic and index-backed: no model call, no generative pass. That is
+/// what lets this run as a system step ahead of routing without spending a
+/// turn, per ADR-038's separation of retrieval from the model's judgment.
+///
+/// Ambiguity is preserved rather than resolved. Two comparable matches of
+/// different types ("is Acme a customer or a project?") is the case the turn
+/// most needs to see; narrowing to one here would silently pick an answer this
+/// layer has no basis to pick.
+async fn resolve_entities(
+    node_service: &Arc<NodeService>,
+    query: Option<&str>,
+) -> EntityResolution {
+    let Some(q) = query.filter(|q| !q.trim().is_empty()) else {
+        return EntityResolution::NotRun;
+    };
+
+    let candidates = match node_service
+        .store()
+        .resolve_entities_by_title(q, ENTITY_CANDIDATE_LIMIT)
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            // A failed lookup is NOT a no-match: reporting "nothing exists"
+            // because the index errored would tell the model to create a
+            // duplicate of something already there.
+            tracing::warn!(error = %e, "workspace_context: entity resolution failed, omitting tier");
+            return EntityResolution::NotRun;
+        }
+    };
+
+    let Some(best) = candidates.first().map(|c| c.score) else {
+        return EntityResolution::NoMatch;
+    };
+
+    // bm25 is negative, more negative is better, so the bar is `best * FACTOR`
+    // and survivors are at or below it. `best` is the most negative score, so
+    // multiplying by a factor < 1 moves the bar toward zero — i.e. loosens it.
+    let bar = best * ENTITY_SCORE_CUTOFF_FACTOR;
+    let kept: Vec<_> = candidates
+        .into_iter()
+        .filter(|c| c.score <= bar)
+        .take(MAX_RESOLVED_ENTITIES)
+        .collect();
+
+    if kept.is_empty() {
+        EntityResolution::NoMatch
+    } else {
+        tracing::debug!(
+            count = kept.len(),
+            query = q,
+            "workspace_context: entity resolution"
+        );
+        EntityResolution::Resolved(kept)
+    }
+}
+
 pub async fn build_workspace_context(
     node_service: &Arc<NodeService>,
     embedding_service: Option<&Arc<NodeEmbeddingService>>,
@@ -370,6 +505,16 @@ pub async fn build_workspace_context(
                 .to_string(),
         })
         .collect();
+
+    // Entity resolution: the top tier of the three the prompt carries
+    // (entities / schemas+relationships / skills). Runs here, alongside schema
+    // retrieval, because this whole function is already upstream of routing —
+    // the daemon assembles context before the session reaches Stage 1 — so a
+    // resolved entity is available to constrain the decisions downstream.
+    //
+    // Unlike the schema tier this needs no embedding service: it is an index
+    // lookup, so it still runs when embeddings are unavailable.
+    let resolved_entities = resolve_entities(node_service, query).await;
 
     // Semantic schema retrieval: find schemas relevant to the query.
     // Only runs when both an embedding service and a non-empty query are present.
@@ -490,6 +635,7 @@ pub async fn build_workspace_context(
         relevant_schemas,
         related_schemas,
         semantic_schema_count,
+        resolved_entities,
     })
 }
 
@@ -514,6 +660,41 @@ impl WorkspaceContext {
             let section = format!("COLLECTIONS: {}\n", self.collections.join(", "));
             if out.len() + section.len() <= max_chars {
                 out.push_str(&section);
+            }
+        }
+
+        // Resolved entities section.
+        //
+        // First of the three tiers, because it constrains the other two: a
+        // message naming a node of a known type has already answered "which
+        // schema" and "instance or type", which the schemas below and the
+        // skill routing upstream would otherwise each decide independently.
+        //
+        // `NotRun` renders nothing at all, which is the third state — see
+        // `EntityResolution`.
+        match &self.resolved_entities {
+            EntityResolution::NotRun => {}
+            EntityResolution::NoMatch => {
+                let line = format!("\n{NO_ENTITIES_LINE}\n");
+                if out.len() + line.len() <= max_chars {
+                    out.push_str(&line);
+                }
+            }
+            EntityResolution::Resolved(entities) => {
+                let header = format!("\n{RESOLVED_ENTITIES_HEADER}\n");
+                if out.len() + header.len() <= max_chars {
+                    out.push_str(&header);
+                    for e in entities {
+                        // id last and unquoted so it is copyable verbatim; the
+                        // type is what lets the model tell two same-named
+                        // entities apart.
+                        let line = format!("- \"{}\" ({}) id={}\n", e.title, e.node_type, e.id);
+                        if out.len() + line.len() > max_chars {
+                            break;
+                        }
+                        out.push_str(&line);
+                    }
+                }
             }
         }
 
@@ -597,6 +778,7 @@ mod tests {
             relevant_schemas: vec![],
             related_schemas: vec![],
             semantic_schema_count: 0,
+            resolved_entities: EntityResolution::NotRun,
         }
     }
 
@@ -661,6 +843,7 @@ mod tests {
             )],
             related_schemas: vec![],
             semantic_schema_count: 0,
+            resolved_entities: EntityResolution::NotRun,
         };
 
         let rendered = ctx.format_for_prompt(4000);
@@ -1031,6 +1214,7 @@ mod tests {
             relevant_schemas: vec![sample_schema("invoice", "Invoice", &[])],
             related_schemas: vec![],
             semantic_schema_count: 0,
+            resolved_entities: EntityResolution::NotRun,
         };
         let output = ctx.format_for_prompt(4000);
         assert!(output.contains("invoice \"Invoice\"\n"));
@@ -1054,6 +1238,7 @@ mod tests {
             relevant_schemas: vec![],
             related_schemas: vec![],
             semantic_schema_count: 0,
+            resolved_entities: EntityResolution::NotRun,
         };
         let output = ctx.format_for_prompt(4000);
         assert!(output.is_empty());
@@ -1067,6 +1252,7 @@ mod tests {
             relevant_schemas: vec![],
             related_schemas: vec![],
             semantic_schema_count: 0,
+            resolved_entities: EntityResolution::NotRun,
         };
         let output = ctx.format_for_prompt(4000);
         assert!(output.contains("COLLECTIONS:"));
@@ -1428,5 +1614,120 @@ mod tests {
         );
         assert_eq!(build_retrieval_query(&["prior turn"], "   "), "prior turn");
         assert_eq!(build_retrieval_query(&[], "   "), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // Entity tier
+    // -----------------------------------------------------------------------
+
+    fn entity(title: &str, node_type: &str, id: &str, score: f64) -> crate::db::ResolvedEntity {
+        crate::db::ResolvedEntity {
+            id: id.into(),
+            title: title.into(),
+            node_type: node_type.into(),
+            score,
+        }
+    }
+
+    fn ctx_with(resolution: EntityResolution) -> WorkspaceContext {
+        WorkspaceContext {
+            resolved_entities: resolution,
+            ..Default::default()
+        }
+    }
+
+    /// A resolved entity renders with its id, because the failure this tier
+    /// removes was a turn stalling to ask for one it could have been handed.
+    #[test]
+    fn a_resolved_entity_renders_with_its_id_and_type() {
+        let out = ctx_with(EntityResolution::Resolved(vec![entity(
+            "Northwind Trading",
+            "company_sold_to",
+            "abc123",
+            -2.5,
+        )]))
+        .format_for_prompt(4000);
+
+        assert!(out.contains(RESOLVED_ENTITIES_HEADER));
+        assert!(
+            out.contains("\"Northwind Trading\" (company_sold_to) id=abc123"),
+            "the id must reach the prompt verbatim, or the model asks for it: {out}"
+        );
+    }
+
+    /// The three states must be distinguishable in the rendered prompt. A
+    /// no-match means CREATE; an absent block means the resolver never ran.
+    /// Collapsing them reintroduces the ambiguity the tier exists to remove.
+    #[test]
+    fn no_match_and_not_run_render_differently() {
+        let no_match = ctx_with(EntityResolution::NoMatch).format_for_prompt(4000);
+        let not_run = ctx_with(EntityResolution::NotRun).format_for_prompt(4000);
+
+        assert!(
+            no_match.contains(NO_ENTITIES_LINE),
+            "a no-match must say so explicitly: {no_match}"
+        );
+        assert!(
+            !not_run.contains("MENTIONED ENTITIES"),
+            "a resolver that did not run must render nothing at all: {not_run}"
+        );
+        assert_ne!(
+            no_match, not_run,
+            "the two states must be distinguishable in the prompt"
+        );
+    }
+
+    /// Ambiguity is rendered, not suppressed: "is Acme a customer or a
+    /// project?" is the case the turn most needs to see.
+    #[test]
+    fn ambiguous_entities_all_render() {
+        let out = ctx_with(EntityResolution::Resolved(vec![
+            entity("Acme", "customer", "c1", -2.0),
+            entity("Acme", "project", "p1", -1.9),
+        ]))
+        .format_for_prompt(4000);
+
+        assert!(out.contains("(customer) id=c1"));
+        assert!(
+            out.contains("(project) id=p1"),
+            "both candidates must render — dropping one picks an answer this layer cannot pick: {out}"
+        );
+    }
+
+    /// The entity tier precedes the schema tier, because a resolved entity
+    /// constrains which schema applies rather than the other way round.
+    #[test]
+    fn entities_render_before_schemas() {
+        let mut ctx = ctx_with(EntityResolution::Resolved(vec![entity(
+            "Northwind Trading",
+            "company_sold_to",
+            "abc123",
+            -2.5,
+        )]));
+        ctx.relevant_schemas = vec![sample_schema("customer", "Customer", &["name"])];
+        let out = ctx.format_for_prompt(4000);
+
+        let entity_at = out.find(RESOLVED_ENTITIES_HEADER).expect("entity header");
+        let schema_at = out.find(EXISTING_SCHEMAS_HEADER).expect("schema header");
+        assert!(
+            entity_at < schema_at,
+            "entities must precede schemas — the top tier constrains the one below: {out}"
+        );
+    }
+
+    /// The tier honours the character budget like every other section, so a
+    /// long entity list cannot crowd out the rest of the context block.
+    #[test]
+    fn entity_tier_respects_the_char_budget() {
+        let out = ctx_with(EntityResolution::Resolved(vec![
+            entity("Northwind Trading", "company_sold_to", "abc123", -2.5),
+            entity("Contoso Ltd", "customer", "def456", -2.4),
+        ]))
+        .format_for_prompt(RESOLVED_ENTITIES_HEADER.len() + 40);
+
+        assert!(
+            out.len() <= RESOLVED_ENTITIES_HEADER.len() + 40,
+            "budget exceeded: {out}"
+        );
     }
 }

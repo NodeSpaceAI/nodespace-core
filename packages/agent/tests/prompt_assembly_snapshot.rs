@@ -116,10 +116,11 @@ use nodespace_agent::local_agent::tools::model_facing_tool_definitions;
 use nodespace_agent::prompt_assembler::PromptAssembler;
 use nodespace_agent::skill_pipeline::seed_skill_nodes;
 
+use nodespace_core::db::ResolvedEntity;
 use nodespace_core::markdown::{prepare_nodes_from_template, NodeTemplate, PreparedNode};
 use nodespace_core::models::schema::EnumValue;
 use nodespace_core::models::{Node, SchemaField, SchemaProtectionLevel};
-use nodespace_core::ops::context_ops::{PlaybookInfo, WorkspaceContext};
+use nodespace_core::ops::context_ops::{EntityResolution, PlaybookInfo, WorkspaceContext};
 use nodespace_core::ops::entity_types_block::EntityTypeDescriptor;
 use nodespace_core::services::flatten_subtree_content;
 
@@ -289,6 +290,16 @@ fn fixture_workspace_context() -> WorkspaceContext {
         relevant_schemas: vec![fixture_schema_ticket(), fixture_schema_adr()],
         related_schemas: vec![fixture_schema_release()],
         semantic_schema_count: 2,
+        // Populated rather than left `NotRun`, so the assembled prompt this
+        // snapshot pins actually contains the entity tier. A `NotRun` fixture
+        // renders nothing, which would let the tier's wording and its position
+        // relative to EXISTING SCHEMAS drift without the golden file noticing.
+        resolved_entities: EntityResolution::Resolved(vec![ResolvedEntity {
+            id: "01J8ZQ3K7X2N4P6R8T0V2W4Y6A".to_string(),
+            title: "Northwind Trading".to_string(),
+            node_type: "company_sold_to".to_string(),
+            score: -2.31,
+        }]),
     }
 }
 
