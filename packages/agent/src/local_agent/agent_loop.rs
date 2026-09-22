@@ -651,11 +651,15 @@ fn schema_already_created_this_turn(executions: &[ToolExecutionRecord]) -> bool 
 /// "feature writeups") — so it lowercases both sides, and for a multi-word
 /// name requires every word to appear rather than the exact phrase.
 ///
-/// Loose in this direction is the safe way round. A false *positive* only
-/// permits a second type the user probably did ask for; a false *negative*
-/// refuses a legitimate call, which is the failure this guard's relaxation
-/// exists to remove. Single characters are ignored so a stray "a" or "I"
-/// cannot match everything.
+/// Loose in this direction is the safe way round, on *severity* rather than
+/// likelihood. Matching is substring-based, so it does say yes to some things
+/// the user did not ask for — a type named "Note" against "make a note of
+/// this", or a negated mention ("don't create a Sprint, just an ADR"). The
+/// asymmetry that justifies it anyway: a false positive creates a visible,
+/// deletable extra type, while a false negative silently delivers half of
+/// what was asked for, which is the failure this relaxation exists to remove.
+/// Single characters are ignored so a stray "a" or "I" cannot match
+/// everything.
 fn user_message_names_type(user_message: &str, schema_name: &str) -> bool {
     let haystack = user_message.to_lowercase();
     let name = schema_name.to_lowercase();
