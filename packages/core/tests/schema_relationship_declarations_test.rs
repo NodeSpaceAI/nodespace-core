@@ -711,3 +711,91 @@ async fn update_relationship_properties_refuses_to_corrupt_a_declaration_edge() 
     assert_eq!(schema.relationships[0].name, "widgets");
     Ok(())
 }
+
+/// An unknown or misspelled key inside a relationship entry must be rejected
+/// at schema-save time, exactly like the same mistake in `fields[]` or at the
+/// top level — not silently dropped, leaving the relationship created as
+/// though it had been written correctly.
+///
+/// `target_type`/`reverse_name` are the realistic failure: the struct's own
+/// fields genuinely are snake_case, so a caller who forgets the wire form is
+/// camelCase types exactly this. `reverse_name` is the worst case of all —
+/// `reverseName` is required, so a caller who typos it must get a hard error,
+/// not a `success: true` response with the reverse half silently unset.
+#[tokio::test]
+async fn misspelled_relationship_key_is_rejected_not_silently_dropped() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+
+    // An entirely bogus key, at create_schema time.
+    let err = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Invoice",
+            "fields": [],
+            "relationships": [{
+                "name": "billed_to",
+                "targetType": "customer",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "invoices",
+                "reverseCardinality": "many",
+                "bogusRel": 1
+            }]
+        }),
+    )
+    .await
+    .expect_err("an unknown key in a relationship entry must be rejected");
+    assert!(
+        err.to_string().contains("bogusRel"),
+        "error should name the offending key: {err}"
+    );
+    // The rejection must not leave a half-created schema behind.
+    assert!(svc.get_schema_node("invoice").await?.is_none());
+
+    // The realistic case: a snake_case typo of `reverseName`, via
+    // update_schema's `add_relationships`. Silently dropping this would leave
+    // the required reverse half unset while reporting success.
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Customer",
+            "fields": []
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Invoice",
+            "fields": []
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let err = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "invoice",
+            "add_relationships": [{
+                "name": "billed_to",
+                "targetType": "customer",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "invoices",
+                "reverseCardinality": "many",
+                "reverse_name": "invoices"
+            }]
+        }),
+    )
+    .await
+    .expect_err("a snake_case typo of reverseName must be rejected, not dropped");
+    assert!(
+        err.to_string().contains("reverse_name"),
+        "error should name the offending key: {err}"
+    );
+    // No relationship was silently created off the bad entry.
+    let schema = svc.get_schema_node("invoice").await?.expect("invoice");
+    assert!(schema.relationships.is_empty());
+    Ok(())
+}

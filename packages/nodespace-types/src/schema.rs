@@ -265,7 +265,7 @@ pub enum RelationshipCardinality {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaRelationship {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -1152,6 +1152,50 @@ mod tests {
         assert!(
             err.to_string().contains("reverseCardinality"),
             "error should name the missing field, got: {err}"
+        );
+    }
+
+    /// A misspelled key — the snake_case typo of a real field, exactly what a
+    /// caller writes given the struct's fields genuinely are snake_case and
+    /// only the wire form is camelCase — must be rejected, not silently
+    /// dropped. Mirrors [`SchemaField`]'s existing `deny_unknown_fields`
+    /// coverage, and is the reverse case of
+    /// [`test_schema_relationship_requires_both_reverse_fields`] above: there
+    /// a *required* key is absent; here a *misspelled* key means the field the
+    /// caller intended to set (`reverseName`) is ALSO absent, so both failures
+    /// must surface — silently accepting the typo would report success while
+    /// leaving `reverseName` unset in every way that matters.
+    #[test]
+    fn test_schema_relationship_rejects_unknown_field() {
+        let snake_case_typo = json!({
+            "name": "assigned_to",
+            "targetType": "person",
+            "direction": "out",
+            "cardinality": "one",
+            "reverse_name": "tasks",
+            "reverseCardinality": "many"
+        });
+        let err = serde_json::from_value::<SchemaRelationship>(snake_case_typo)
+            .expect_err("a snake_case typo of a real key must be rejected, not dropped");
+        assert!(
+            err.to_string().contains("reverse_name"),
+            "error should name the offending key, got: {err}"
+        );
+
+        let bogus_key = json!({
+            "name": "assigned_to",
+            "targetType": "person",
+            "direction": "out",
+            "cardinality": "one",
+            "reverseName": "tasks",
+            "reverseCardinality": "many",
+            "bogusRel": 1
+        });
+        let err = serde_json::from_value::<SchemaRelationship>(bogus_key)
+            .expect_err("an entirely unknown key must be rejected, not dropped");
+        assert!(
+            err.to_string().contains("bogusRel"),
+            "error should name the offending key, got: {err}"
         );
     }
 
