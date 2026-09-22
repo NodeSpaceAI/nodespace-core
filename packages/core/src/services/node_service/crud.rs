@@ -132,7 +132,11 @@ impl NodeService {
         let db_start = std::time::Instant::now();
         let created_id = service
             .with_transaction(move |tx| {
-                Box::pin(async move { service_for_tx.create_node_in_tx(tx, node_for_tx).await })
+                Box::pin(async move {
+                    service_for_tx
+                        .create_node_in_tx(tx, node_for_tx, true)
+                        .await
+                })
             })
             .await?;
         tracing::debug!(
@@ -187,10 +191,16 @@ impl NodeService {
     /// composed caller (`create_node_with_parent`) creates either of those
     /// node shapes through this path today; if one ever does, add the
     /// missing behavior here rather than silently diverging.
+    ///
+    /// `is_root` is whether the node will have no parent once the caller's
+    /// transaction commits — see
+    /// [`Self::insert_node_in_tx_no_invariant_dispatch`] for why it cannot be
+    /// derived here.
     pub(crate) async fn create_node_in_tx(
         &self,
         tx: &NodeServiceTx<'_>,
         node: Node,
+        is_root: bool,
     ) -> Result<String, NodeServiceError> {
         // Validation/normalization/title/play-rule-gate pipeline and the
         // actual insert all live in `insert_node_in_tx_no_invariant_dispatch`
@@ -198,7 +208,7 @@ impl NodeService {
         // this method and the invariant action executor
         // (`playbook::actions::execute_create_node_in_tx`) both need it.
         let node = self
-            .insert_node_in_tx_no_invariant_dispatch(tx, node)
+            .insert_node_in_tx_no_invariant_dispatch(tx, node, is_root)
             .await?;
 
         // ADR-060 §1: invariant-rule dispatch runs HERE — pre-commit, inside
@@ -235,10 +245,16 @@ impl NodeService {
     /// (`playbook::actions::execute_create_node_in_tx`) — see
     /// `create_node_in_tx`'s doc for why an invariant action's own
     /// `create_node` must not recurse into dispatch.
+    ///
+    /// `is_root` must come from the caller: a node being inserted has no
+    /// parent edge yet — a composed parent-edge write runs after this, in
+    /// the same transaction — so deriving rootness from the store would
+    /// classify every child as a root and title it with its own body text.
     pub(crate) async fn insert_node_in_tx_no_invariant_dispatch(
         &self,
         tx: &NodeServiceTx<'_>,
         mut node: Node,
+        is_root: bool,
     ) -> Result<Node, NodeServiceError> {
         if is_date_node_id(&node.id) {
             node.node_type = "date".to_string();
@@ -264,7 +280,7 @@ impl NodeService {
         }
 
         if node.title.is_none() {
-            node.title = self.compute_title(&node, None).await?;
+            node.title = self.compute_title(&node, Some(is_root)).await?;
         }
 
         if node.node_type == "play" {
@@ -348,7 +364,7 @@ impl NodeService {
             service
                 .with_transaction(move |tx| {
                     Box::pin(async move {
-                        let created_id = service_for_tx.create_node_in_tx(tx, node).await?;
+                        let created_id = service_for_tx.create_node_in_tx(tx, node, false).await?;
                         service_for_tx
                             .create_parent_edge_in_tx(
                                 tx,
@@ -388,7 +404,7 @@ impl NodeService {
     ) -> Result<String, NodeServiceError> {
         let (node, parent, _node_type) = self.prepare_create_node_with_parent(params).await?;
 
-        let created_id = self.create_node_in_tx(tx, node).await?;
+        let created_id = self.create_node_in_tx(tx, node, parent.is_none()).await?;
         if let Some((parent_id, position)) = parent {
             self.create_parent_edge_in_tx(tx, &created_id, &parent_id, position.as_ref())
                 .await?;
