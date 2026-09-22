@@ -114,7 +114,8 @@ Use this to pick the right command for the task at hand.
 
 | Goal | Command |
 |------|---------|
-| Find nodes by keywords or meaning | `nodespace search "<query>"` |
+| Find a specific record you know by name (a task, a company, any typed record) | `nodespace node query --title-contains "<name>"` |
+| Find notes and documents by meaning | `nodespace search "<query>"` |
 | List all nodes of a type | `nodespace search "" --type <type>` |
 | Filter by property values (status, due_date, priority, etc.) | `nodespace query --type <type> --filters '<json>'` |
 | Filter with comparison operators (gt, lt, gte, lte, in) | `nodespace query --type <type> --filters '<json>'` |
@@ -131,7 +132,9 @@ Use this to pick the right command for the task at hand.
 
 Date format for all date properties: **YYYY-MM-DD**. Available operators: `equals`, `contains`, `gt`, `lt`, `gte`, `lte`, `in`, `exists`. Filter types: `property`, `content`, `relationship`, `metadata`.
 
-**`nodespace search` is semantic** (embedding-based similarity), ranked by relevance. Pass `--type` to narrow to one or more node types, `--limit` to cap results (default 20), `--include-content` to also read the top 5 hits (a bare result is just its heading). No graph-boost, cross-collection exclusion, or edge-inclusion — fall back to `nodespace query` plus `nodespace relationship get` for those.
+**A name is not an ID — resolve it before you act.** When the user names a record you haven't looked up yet ("mark the Northwind contract signed", "what's Contoso's renewal date", "add Fabrikam"), look the name up with `nodespace node query --title-contains "<name>"` before you update, read, or create anything. `nodespace search` can't answer this: it only reaches prose (notes, documents, headings, code), so a task, a company, or any other typed record never appears in its results, however exact the name. Judge the results by whether one of them *is* the record the user named — same name, same type — not by whether the list is empty, because the lookup also returns records that merely share a word. One match: act on its ID. If the user asked to *add* it, say it already exists and ask whether they want a second one, rather than silently creating a duplicate. Several matches (two companies called Northwind something): ask which one. No match: it doesn't exist yet. Create it if they're adding it, or tell them nothing by that name exists if they asked to read or change it. Don't keep searching.
+
+**`nodespace search` is semantic** (embedding-based similarity over prose nodes), ranked by relevance. Pass `--type` to narrow to one or more node types, `--limit` to cap results (default 20), `--include-content` to also read the top 5 hits (a bare result is just its heading). No graph-boost, cross-collection exclusion, or edge-inclusion — fall back to `nodespace query` plus `nodespace relationship get` for those.
 
 **Multiple topics:** run `nodespace search` once per topic rather than one broad search plus per-result fetches.
 

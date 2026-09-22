@@ -20,9 +20,9 @@
 use crate::skill_rules::{
     ADD_ENUM_VALUES, AMBIGUITY_CLARIFY, BULK_IMPORT_NO_FOLLOWUP_SEARCH, COLLECTION_AT_CREATE_TIME,
     CREATING_TWO_LINKED_TYPES, DELETE_A_SCHEMA, EDIT_DONT_RECREATE, FIND_THEN_ACT,
-    GROUPING_IS_COLLECTIONS, ONE_SCHEMA_PER_REQUEST, RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL,
-    SCHEMA_ALREADY_EXISTS, SCHEMA_VALIDATION_ERROR_RETRY, SINGLE_ITEM_PER_CALL,
-    SUCCESS_NO_REVERIFY, TARGET_TYPE_MUST_EXIST, TASK_STATUS_DEDICATED_VERB,
+    GROUPING_IS_COLLECTIONS, NAMED_RECORD_RESOLUTION, ONE_SCHEMA_PER_REQUEST,
+    RELATIONSHIP_VS_FIELD, RENAME_VS_RELABEL, SCHEMA_ALREADY_EXISTS, SCHEMA_VALIDATION_ERROR_RETRY,
+    SINGLE_ITEM_PER_CALL, SUCCESS_NO_REVERIFY, TARGET_TYPE_MUST_EXIST, TASK_STATUS_DEDICATED_VERB,
     TITLE_TEMPLATE_PLACEHOLDERS, UNIQUE_FIELD_FLAGS,
 };
 use nodespace_core::markdown::{NodeTemplate, SeedTier};
@@ -149,6 +149,32 @@ const SCHEMA_RULES_NOT_IN_PROMPT: &[&str] = &[
     // (packages/agent/src/local_agent/tools.rs).
     "enum-edge-fields",
 ];
+
+/// Builds the Node Creation skill's markdown_content, interpolating the
+/// shared named-record rule so the external skill's copy of it
+/// (`packages/skill/SKILL.md`) cannot drift from this one on substance.
+fn node_creation_guidance() -> String {
+    format!(
+        r#"# Node Creation Guidance
+
+NEW RECORD OR EXISTING ONE? If the user is changing something that already exists — marking it done or signed off, correcting a value, setting a field on a record already in this conversation — call update_node with that record's id, NOT create_node. Creating a second copy leaves the original unchanged and silently duplicates the user's data. If they are adding something that does not exist yet, create_node is right and the rest of this guidance applies.
+
+{named_record_resolution}
+
+CHANGING A TASK'S STATUS: use update_task_status with the task id and the new status string, not update_node — status is not a field_values key on a task. Pick the value from the list on update_task_status's own status parameter: that is the task type's current vocabulary, and it can hold more than the four built-in values.
+
+CALL create_node NOW: your next action is the tool call, not planning text.
+
+THE TYPE: set node_type to the id shown in EXISTING SCHEMAS, copied exactly.
+
+THE VALUES: put every particular the user supplied into field_values. Work through their message value by value and check each against the type's field list before calling. field_values is the ONLY way any value is stored — a value left out is lost silently while the record still reports as saved.
+
+VALUES WITH NO MATCHING FIELD: If the user supplies a particular the listed fields do not cover, still put it in field_values under a key of your own — lowercase, singular, snake_case, named after the user's own noun for it. NEVER drop a value because the type has no field for it: a dropped value is gone silently and the user was told the record was saved. Bare on a type from EXISTING SCHEMAS; `custom:`-prefixed on a built-in type — text, task, date — where unprefixed names are reserved for built-in fields. Do NOT call create_schema or update_schema to add the field first; put the value in this create_node call.
+
+SUCCESS: After create_node returns a node ID, confirm to the user what was created and STOP. Do NOT call get_node or any other tool — the create response is sufficient. The task is complete."#,
+        named_record_resolution = NAMED_RECORD_RESOLUTION.imperative,
+    )
+}
 
 /// Builds the Graph Editing skill's markdown_content, interpolating shared
 /// interaction rules from [`crate::skill_rules`] (find-then-act, ambiguity
@@ -467,23 +493,7 @@ STRUCTURED PROPERTY QUERIES: To filter by property values (status, due_date, etc
             child_node_type: None,
             child_properties: None,
             tier: SeedTier::System,
-            markdown_content: r#"# Node Creation Guidance
-
-NEW RECORD OR EXISTING ONE? If the user is changing something that already exists — marking it done or signed off, correcting a value, setting a field on a record already in this conversation — call update_node with that record's id, NOT create_node. Creating a second copy leaves the original unchanged and silently duplicates the user's data. If they are adding something that does not exist yet, create_node is right and the rest of this guidance applies.
-
-ALREADY IN THE GRAPH? Before creating, check MENTIONED ENTITIES in your context. If a record listed there is the same thing the user is asking you to add — same name, same type — do NOT call create_node. "Add X" when X already exists is ambiguous: it can mean they want a second, genuinely distinct record, or it can mean they did not know X was already there. You cannot tell which from the message, and guessing wrong either duplicates their data or refuses work they wanted done. Call route_clarify instead, naming the existing record as an option with its id from MENTIONED ENTITIES, and say plainly that it already exists. Let them choose. If MENTIONED ENTITIES says "none found", nothing by that name exists and create_node is right.
-
-CHANGING A TASK'S STATUS: use update_task_status with the task id and the new status string, not update_node — status is not a field_values key on a task. Pick the value from the list on update_task_status's own status parameter: that is the task type's current vocabulary, and it can hold more than the four built-in values.
-
-CALL create_node NOW: your next action is the tool call, not planning text.
-
-THE TYPE: set node_type to the id shown in EXISTING SCHEMAS, copied exactly.
-
-THE VALUES: put every particular the user supplied into field_values. Work through their message value by value and check each against the type's field list before calling. field_values is the ONLY way any value is stored — a value left out is lost silently while the record still reports as saved.
-
-VALUES WITH NO MATCHING FIELD: If the user supplies a particular the listed fields do not cover, still put it in field_values under a key of your own — lowercase, singular, snake_case, named after the user's own noun for it. NEVER drop a value because the type has no field for it: a dropped value is gone silently and the user was told the record was saved. Bare on a type from EXISTING SCHEMAS; `custom:`-prefixed on a built-in type — text, task, date — where unprefixed names are reserved for built-in fields. Do NOT call create_schema or update_schema to add the field first; put the value in this create_node call.
-
-SUCCESS: After create_node returns a node ID, confirm to the user what was created and STOP. Do NOT call get_node or any other tool — the create response is sufficient. The task is complete."#.to_string(),
+            markdown_content: node_creation_guidance(),
         },
         NodeTemplate {
             title: "Schema Creation".to_string(),
