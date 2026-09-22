@@ -4,8 +4,7 @@
 //!
 //! Both decisions exist today only as emergent properties of whatever tool call
 //! the model happens to emit. Nothing names them, so nothing can score them:
-//! the only available signal is end-to-end scenario pass/fail, which
-//! [ADR-056](../../../../nodespace-docs/decisions/056-gemma-4-e4b-locked-native-model.md)
+//! the only available signal is end-to-end scenario pass/fail, which ADR-056
 //! states "describe[s] the harness as much as the model" while guidance and
 //! eval prompts share wording. Both of ADR-056's own E4B matrix failures are
 //! decision failures rather than generation failures — a wrong operation
@@ -20,8 +19,7 @@
 //!
 //! ## Why this is not a third gate
 //!
-//! [ADR-038](../../../../nodespace-docs/decisions/038-skill-mediated-tool-routing.md)
-//! establishes two independently-sourced gates — Stage 1's structural choice and
+//! ADR-038 establishes two independently-sourced gates — Stage 1's structural choice and
 //! Stage 2's retrieval score plus the model's judgment — and closes with an
 //! explicit warning: *"Avoid inventing a third number."* Nothing here gates,
 //! filters, scores, or rejects. The candidate sets recorded are the ones the
