@@ -206,7 +206,17 @@ jobs:
             echo "::error::target/aarch64-apple-darwin/release/bundle/macos is empty — Tauri build did not produce bundle content"
             exit 1
           fi
-          tar -cf app-bundle.tar -C target/aarch64-apple-darwin/release/bundle/macos .
+          # COPYFILE_DISABLE=1 (the standard macOS/bsdtar idiom) stops tar
+          # from writing a separate `._<filename>` AppleDouble sidecar entry
+          # for any file that carries an extended attribute (a quarantine
+          # flag, ACL, etc.) at archive time. Without it, such a file would
+          # round-trip as two tar entries instead of one; the untar step's
+          # nullglob-guarded Contents/MacOS/* checks would iterate over the
+          # stray `._*` file too, and — more importantly — build-pkg.sh's
+          # unconditional `codesign` on the untarred bundle is documented to
+          # hard-reject a bundle containing `._*` files outright, which would
+          # break the real signed release build, not just this CI check.
+          COPYFILE_DISABLE=1 tar -cf app-bundle.tar -C target/aarch64-apple-darwin/release/bundle/macos .
 
       - name: Upload .app bundle for pkg job
         uses: actions/upload-artifact@v7
@@ -433,7 +443,12 @@ jobs:
       - name: Untar .app bundle (restores executable bit)
         run: |
           cd target/aarch64-apple-darwin/release/bundle/macos/
-          tar -xf app-bundle.tar
+          # COPYFILE_DISABLE=1 matches the "Tar .app bundle" step's flag —
+          # see its comment. Setting it here too covers extraction of an
+          # AppleDouble entry that made it into an archive some other way
+          # (this same idiom is applied symmetrically on both sides of every
+          # macOS tar round-trip, not just the write side).
+          COPYFILE_DISABLE=1 tar -xf app-bundle.tar
           rm app-bundle.tar
 
       # Checks the tar/untar round-trip in isolation, before build-pkg.sh
