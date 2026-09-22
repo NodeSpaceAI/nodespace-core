@@ -1031,18 +1031,41 @@ async fn validate_relationship_action(
 
     ensure_schema_cached(nt, node_service, schema_cache).await;
 
-    if let Some(Some(schema)) = schema_cache.get(nt) {
-        let rel_exists = schema.relationships.iter().any(|r| r.name == rel_type);
+    if schema_cache.get(nt).and_then(|s| s.as_ref()).is_none() {
+        // Schema is None — we already flagged the missing node_type
+        return;
+    }
 
-        if !rel_exists {
-            errors.push(PlayValidationError::UnknownRelationshipType {
-                relationship_type: rel_type.to_string(),
+    // Check against the *effective* relationship set — own directly-declared
+    // relationships plus everything inherited across the ADR-078 `extends`
+    // chain, not just this schema's own declarations. A relationship_type
+    // genuinely inherited from an ancestor schema (not redeclared) must not
+    // be rejected as unknown — the same extends-chain gap
+    // `validate_schema_path` fixes for condition paths, applying here to an
+    // `add_relationship`/`remove_relationship` action's own
+    // `relationship_type` param. On a resolution failure, surfaced as a
+    // validation error rather than silently degrading to this schema's own
+    // declarations (see `SchemaResolutionFailed`).
+    let relationships = match node_service.resolve_relationships(nt).await {
+        Ok((rels, _owners)) => rels,
+        Err(e) => {
+            errors.push(PlayValidationError::SchemaResolutionFailed {
                 node_type: nt.to_string(),
+                error: e.to_string(),
                 location: location.to_string(),
             });
+            return;
         }
+    };
+    let rel_exists = relationships.iter().any(|r| r.name == rel_type);
+
+    if !rel_exists {
+        errors.push(PlayValidationError::UnknownRelationshipType {
+            relationship_type: rel_type.to_string(),
+            node_type: nt.to_string(),
+            location: location.to_string(),
+        });
     }
-    // If schema is None, we already flagged the missing node_type
 }
 
 // ---------------------------------------------------------------------------
@@ -2192,6 +2215,62 @@ mod tests {
             )];
             let result = validate_play(&rules, &svc).await;
             assert!(result.is_ok());
+        }
+
+        /// Regression for the same extends-chain gap `validate_schema_path`
+        /// fixes for condition paths, in the sibling
+        /// `validate_relationship_action` (an `add_relationship`/
+        /// `remove_relationship` action's own `relationship_type` param):
+        /// `vt_ticket_base` declares relationship `linked_to`; `vt_ticket_sub`
+        /// `extends` `vt_ticket_base` with no relationships of its own
+        /// (inheriting, not redeclaring). An action on `vt_ticket_sub` using
+        /// `relationship_type: "linked_to"` must validate successfully — the
+        /// relationship genuinely resolves via the extends chain — not be
+        /// rejected as `UnknownRelationshipType`.
+        #[tokio::test]
+        async fn test_inherited_relationship_type_in_action_passes_validation() {
+            let (svc, _tmp) = create_test_service().await;
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vt_ticket_base",
+                    "fields": [],
+                    "relationships": [{
+                        "name": "linked_to",
+                        "direction": "out",
+                        "cardinality": "many",
+                        "reverseName": "linked_from",
+                        "reverseCardinality": "many"
+                    }]
+                }),
+            )
+            .await
+            .expect("base schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vt_ticket_sub",
+                    "extends": "vt_ticket_base",
+                    "fields": []
+                }),
+            )
+            .await
+            .expect("subtype schema creation failed");
+
+            let rules = vec![make_rule(
+                "vt_ticket_sub",
+                vec![],
+                vec![make_relationship_action("linked_to")],
+            )];
+            let result = validate_play(&rules, &svc).await;
+            assert!(
+                result.is_ok(),
+                "an action's relationship_type genuinely inherited (extends-chain) must \
+                 validate successfully, not be rejected as UnknownRelationshipType: {:?}",
+                result
+            );
         }
 
         #[tokio::test]
