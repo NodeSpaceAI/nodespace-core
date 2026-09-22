@@ -264,7 +264,7 @@ fn emitted_decision_lines_match_golden() {
          candidate name contains a newline:\n{lines}"
     );
 
-    golden::assert_matches("decision_markers.golden", &lines);
+    golden::assert_matches("decision-wire-format.golden", &lines);
 }
 
 // ---------------------------------------------------------------------------
@@ -278,8 +278,16 @@ fn emitted_decision_lines_match_golden() {
 mod golden {
     use std::path::{Path, PathBuf};
 
+    /// The fixture lives beside the TypeScript test that consumes it, not in
+    /// this crate's tree.
+    ///
+    /// This test writes it, but `scripts/eval/decision-roundtrip.test.ts` is
+    /// what it exists for, and a generated file inside a Rust crate reads as
+    /// Rust build output. `CARGO_MANIFEST_DIR` is `packages/agent`, so two
+    /// levels up is the repo root. See that directory's README for the whole
+    /// arrangement.
     fn dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/decision_markers")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/eval/golden")
     }
 
     /// Gated on an env var read at the write site — never inferred from "the
@@ -292,7 +300,7 @@ mod golden {
         let file = dir().join(name);
 
         if update_requested() {
-            std::fs::create_dir_all(dir()).expect("create tests/golden/decision_markers");
+            std::fs::create_dir_all(dir()).expect("create scripts/eval/golden");
             std::fs::write(&file, actual)
                 .unwrap_or_else(|e| panic!("failed to write golden {}: {e}", file.display()));
             eprintln!(

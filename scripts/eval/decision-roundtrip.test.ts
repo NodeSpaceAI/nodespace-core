@@ -37,11 +37,8 @@ import { join } from "node:path";
 import { formatTurnLogLines } from "../aichat";
 import { parseTurnOutput } from "./runner";
 
-/** The golden emitted by the Rust side. */
-const GOLDEN = join(
-  import.meta.dir,
-  "../../packages/agent/tests/golden/decision_markers/decision_markers.golden",
-);
+/** The golden emitted by the Rust side. See `golden/README.md`. */
+const GOLDEN = join(import.meta.dir, "golden/decision-wire-format.golden");
 
 /**
  * Drive the golden through the real production path: scrape, then parse.
