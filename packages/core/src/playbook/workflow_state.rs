@@ -77,6 +77,23 @@ pub struct WorkflowState {
     /// Explicit note that "fired" history is not tracked anywhere and this
     /// response reports live condition state only, not execution history.
     pub fired_state_note: String,
+    /// Non-empty when a schema/extends-chain resolution call
+    /// (`resolve_field_owners`/`resolve_relationships`/a schema fetch)
+    /// failed while building this response and was degraded to a narrower,
+    /// less complete field or relationship set rather than aborting the
+    /// whole query. Each entry names what failed and where.
+    ///
+    /// Consistent with this module's "never silently given a made-up value"
+    /// policy (see the module doc): a transient DB error during this merge
+    /// must not be able to silently reintroduce the exact under-reporting /
+    /// typo-misclassification bug this diagnostic exists to avoid. An empty
+    /// vec means every lookup that fed this response succeeded; a non-empty
+    /// one means this response may under-report candidates or misclassify a
+    /// condition as `Unresolvable` that a successful lookup would have
+    /// correctly classified as `NotYetMet` or `Satisfied` — a caller should
+    /// treat the response as incomplete, not authoritative, until a retry
+    /// comes back with an empty `degraded_reasons`.
+    pub degraded_reasons: Vec<String>,
     pub rules: Vec<RuleWorkflowState>,
 }
 
@@ -94,6 +111,15 @@ pub async fn get_workflow_state(
     node_service: &Arc<NodeService>,
     node: &Node,
 ) -> WorkflowState {
+    // Collects a human-readable entry every time a schema/extends-chain
+    // lookup fails and this function degrades to a narrower field or
+    // relationship set instead of aborting — see `WorkflowState::degraded_reasons`.
+    // Threaded through `evaluate_one_condition`/`classify_failure`/
+    // `walk_path_against_schema` too, so a per-hop failure during condition
+    // classification is visible on the final response the same way a
+    // top-level failure here is.
+    let mut degraded: Vec<String> = Vec::new();
+
     let schema = match node_service
         .get_schema_with_relationships(&node.node_type)
         .await
@@ -105,11 +131,12 @@ pub async fn get_workflow_state(
             // NotYetMet classification for this node, but that degradation
             // should be visible rather than indistinguishable from a genuine
             // schemaless type.
-            tracing::warn!(
-                node_type = %node.node_type,
-                error = %e,
-                "get_workflow_state: schema lookup failed; typo detection degraded to NotYetMet for this node"
+            let msg = format!(
+                "schema lookup for '{}' failed ({e}); typo detection degraded to NotYetMet for this node",
+                node.node_type
             );
+            tracing::warn!(node_type = %node.node_type, error = %e, "get_workflow_state: {msg}");
+            degraded.push(msg);
             None
         }
     };
@@ -125,12 +152,13 @@ pub async fn get_workflow_state(
     let effective_fields = match node_service.resolve_field_owners(&node.node_type).await {
         Ok((fields, _owners, _chain)) => fields,
         Err(e) => {
-            tracing::warn!(
-                node_type = %node.node_type,
-                error = %e,
-                "get_workflow_state: effective-field resolution failed; property_changed \
-                 candidates degraded to this node's own directly-declared schema fields"
+            let msg = format!(
+                "effective-field resolution for '{}' failed ({e}); property_changed \
+                 candidates degraded to this node's own directly-declared schema fields",
+                node.node_type
             );
+            tracing::warn!(node_type = %node.node_type, error = %e, "get_workflow_state: {msg}");
+            degraded.push(msg);
             schema
                 .as_ref()
                 .map(|s| s.fields.clone())
@@ -235,6 +263,7 @@ pub async fn get_workflow_state(
                 &mut resolver,
                 node_service,
                 schema.as_ref(),
+                &mut degraded,
             )
             .await;
             condition_states.push(state);
@@ -262,6 +291,7 @@ pub async fn get_workflow_state(
              (per ADR-073, there is no cross-device fired-state yet) — this is not an execution \
              history."
             .to_string(),
+        degraded_reasons: degraded,
         rules,
     }
 }
@@ -280,6 +310,7 @@ async fn evaluate_one_condition(
     resolver: &mut GraphResolver,
     node_service: &Arc<NodeService>,
     schema: Option<&crate::models::SchemaNode>,
+    degraded: &mut Vec<String>,
 ) -> ConditionState {
     let result =
         cel::evaluate_conditions(std::slice::from_ref(condition), node, event, Some(resolver))
@@ -288,7 +319,7 @@ async fn evaluate_one_condition(
     match result {
         ConditionResult::Pass => ConditionState::Satisfied,
         ConditionResult::Fail { .. } => {
-            match classify_failure(condition, node, node_service, schema).await {
+            match classify_failure(condition, node, node_service, schema, degraded).await {
                 Some(state) => state,
                 None => ConditionState::NotYetMet {
                     condition: condition.source.clone(),
@@ -322,6 +353,7 @@ async fn classify_failure(
     node: &Node,
     node_service: &Arc<NodeService>,
     schema: Option<&crate::models::SchemaNode>,
+    degraded: &mut Vec<String>,
 ) -> Option<ConditionState> {
     let extraction = path_extractor::extract_paths(&condition.source).ok()?;
 
@@ -346,9 +378,15 @@ async fn classify_failure(
             continue;
         }
 
-        if let Some(state) =
-            walk_path_against_schema(condition, node, node_service, schema, &path.segments[1..])
-                .await
+        if let Some(state) = walk_path_against_schema(
+            condition,
+            node,
+            node_service,
+            schema,
+            &path.segments[1..],
+            degraded,
+        )
+        .await
         {
             return Some(state);
         }
@@ -371,6 +409,7 @@ async fn walk_path_against_schema(
     node_service: &Arc<NodeService>,
     first_schema: Option<&crate::models::SchemaNode>,
     segments: &[String],
+    degraded: &mut Vec<String>,
 ) -> Option<ConditionState> {
     let mut current_schema_owned: Option<crate::models::SchemaNode> = first_schema.cloned();
     let mut current_type = node.node_type.clone();
@@ -397,13 +436,18 @@ async fn walk_path_against_schema(
                 // contention, etc.) misreport a field that unambiguously
                 // exists on the node's own schema as `Unresolvable` — worse
                 // than pre-fix behavior, and inconsistent with
-                // `get_workflow_state`'s matching fallback above.
-                tracing::warn!(
-                    node_type = %current_type,
-                    error = %e,
-                    "walk_path_against_schema: effective-field resolution failed; typo \
-                     detection degraded to this schema's own directly-declared fields at this hop"
+                // `get_workflow_state`'s matching fallback above. Recorded in
+                // `degraded` (not just logged) so this can never silently
+                // reproduce, under a transient DB error, the exact
+                // under-reporting/misclassification bug this fix closes.
+                let msg = format!(
+                    "effective-field resolution for '{current_type}' failed ({e}) while walking \
+                     '{}'; typo detection degraded to this schema's own directly-declared \
+                     fields at this hop",
+                    condition.source
                 );
+                tracing::warn!(node_type = %current_type, error = %e, "walk_path_against_schema: {msg}");
+                degraded.push(msg);
                 current_schema
                     .map(|s| s.fields.iter().map(|f| f.name.clone()).collect())
                     .unwrap_or_default()
@@ -415,22 +459,25 @@ async fn walk_path_against_schema(
         // relationship from an ancestor must still be recognized here, or a
         // condition traversing it is misclassified as a typo the same way an
         // inherited field was before this fix.
-        let relationship: Option<crate::models::schema::SchemaRelationship> =
-            match node_service.resolve_relationships(&current_type).await {
-                Ok(rels) => rels.into_iter().find(|r| r.name == *segment),
-                Err(e) => {
-                    tracing::warn!(
-                        node_type = %current_type,
-                        error = %e,
-                        "walk_path_against_schema: effective-relationship resolution failed; \
-                         typo detection degraded to this schema's own directly-declared \
-                         relationships at this hop"
-                    );
-                    current_schema
-                        .and_then(|s| s.relationships.iter().find(|r| r.name == *segment))
-                        .cloned()
-                }
-            };
+        let relationship: Option<crate::models::schema::SchemaRelationship> = match node_service
+            .resolve_relationships(&current_type)
+            .await
+        {
+            Ok(rels) => rels.into_iter().find(|r| r.name == *segment),
+            Err(e) => {
+                let msg = format!(
+                    "effective-relationship resolution for '{current_type}' failed ({e}) \
+                         while walking '{}'; typo detection degraded to this schema's own \
+                         directly-declared relationships at this hop",
+                    condition.source
+                );
+                tracing::warn!(node_type = %current_type, error = %e, "walk_path_against_schema: {msg}");
+                degraded.push(msg);
+                current_schema
+                    .and_then(|s| s.relationships.iter().find(|r| r.name == *segment))
+                    .cloned()
+            }
+        };
 
         let is_field =
             CORE_FIELDS.contains(&segment.as_str()) || known_fields.iter().any(|f| f == segment);
@@ -450,11 +497,29 @@ async fn walk_path_against_schema(
                 // conclusive to say, so stop here rather than guess.
                 return None;
             };
-            current_schema_owned = node_service
+            current_schema_owned = match node_service
                 .get_schema_with_relationships(&target_type)
                 .await
-                .ok()
-                .flatten();
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    // A genuine lookup failure, not "no schema for this
+                    // type" (that's `Ok(None)`, left as-is below). Recorded
+                    // rather than silently swallowed: `known_fields`/
+                    // `relationship` at the *next* hop fall back to this
+                    // schema's own fields/relationships, so losing it here
+                    // to a transient error degrades the next hop's typo
+                    // detection the same way the two fallbacks above do.
+                    let msg = format!(
+                        "schema lookup for '{target_type}' failed ({e}) while walking '{}'; \
+                         typo detection for the remaining hops degraded to no known schema",
+                        condition.source
+                    );
+                    tracing::warn!(node_type = %target_type, error = %e, "walk_path_against_schema: {msg}");
+                    degraded.push(msg);
+                    None
+                }
+            };
             current_type = target_type;
             continue;
         }
@@ -552,6 +617,11 @@ mod tests {
         assert_eq!(state.rules.len(), 1);
         assert!(state.rules[0].all_conditions_satisfied);
         assert_eq!(state.rules[0].conditions[0], ConditionState::Satisfied);
+        assert!(
+            state.degraded_reasons.is_empty(),
+            "no schema/extends-chain lookup should fail on this happy path: {:?}",
+            state.degraded_reasons
+        );
     }
 
     #[tokio::test]
@@ -951,6 +1021,12 @@ mod tests {
         );
         assert!(state.rules[0].all_conditions_satisfied);
         assert_eq!(state.rules[0].conditions[0], ConditionState::Satisfied);
+        assert!(
+            state.degraded_reasons.is_empty(),
+            "the extends-chain merge succeeded here — no lookup failed, so nothing should be \
+             reported as degraded: {:?}",
+            state.degraded_reasons
+        );
     }
 
     /// Regression for `classify_failure`'s companion gap: a condition
