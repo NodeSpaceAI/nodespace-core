@@ -177,6 +177,16 @@ jobs:
       # bits, so untarring after download restores them exactly. This fixes
       # the handoff at its source, for whatever downloads this artifact next,
       # not just build-pkg.sh's current one consumer.
+      #
+      # scripts/build-pkg.sh ALSO chmods these same binaries right before
+      # packaging them, as an independent second line of defense — that line
+      # is deliberate, not made redundant by this fix (see its own comment
+      # for why both are kept). Because that chmod runs unconditionally after
+      # this tar/untar handoff, on its own it would mask a regression here:
+      # the "Verify tar/untar preserved the executable bit" step in the
+      # downstream build-pkg-macos job below checks the untarred bundle
+      # BEFORE build-pkg.sh runs, specifically to give CI a signal for a
+      # regression in this mechanism rather than build-pkg.sh's.
       - name: Tar .app bundle (preserves executable bit through artifact round-trip)
         run: |
           tar -cf app-bundle.tar -C target/aarch64-apple-darwin/release/bundle/macos .
@@ -408,6 +418,30 @@ jobs:
           cd target/aarch64-apple-darwin/release/bundle/macos/
           tar -xf app-bundle.tar
           rm app-bundle.tar
+
+      # Checks the tar/untar round-trip in isolation, before build-pkg.sh
+      # runs. build-pkg.sh has its own unconditional chmod on these same
+      # files as a second line of defense (see its comment) — valuable for
+      # the final installed package, but it means a check placed AFTER
+      # build-pkg.sh (the "Install .pkg and verify it actually lands
+      # correctly" step's verify_layout below) would stay green even if the
+      # tar/untar handoff above silently regressed back to losing the
+      # executable bit; build-pkg.sh's chmod would quietly paper over it.
+      # This step is what actually isolates a regression in the tar/untar
+      # mechanism specifically, by checking before that chmod has run.
+      - name: Verify tar/untar preserved the executable bit
+        run: |
+          shopt -s nullglob
+          macos_bins=(target/aarch64-apple-darwin/release/bundle/macos/NodeSpace.app/Contents/MacOS/*)
+          shopt -u nullglob
+          if [[ ${#macos_bins[@]} -eq 0 ]]; then
+            echo "::error::NodeSpace.app/Contents/MacOS has no files after untar"
+            exit 1
+          fi
+          for bin in "${macos_bins[@]}"; do
+            test -x "${bin}" || { echo "::error::${bin} lost its executable bit across the tar/untar artifact round-trip"; exit 1; }
+          done
+          echo "    All Contents/MacOS/* binaries are executable after the tar/untar round-trip"
 
       - name: Build nodespaced and nodespace binaries
         run: |

@@ -133,11 +133,20 @@ chmod 755 "${PAYLOAD_ROOT}/usr/local/bin/nodespace"
 chmod 755 "${PAYLOAD_ROOT}/usr/local/bin/nodespaced"
 
 # The upload-artifact/download-artifact round-trip that hands TAURI_APP_PATH
-# between CI jobs (a bare directory, zipped and unzipped) does not reliably
-# preserve the Unix executable bit, so the binaries inside the copied .app
-# bundle can silently lose +x before they ever reach this script. Restore it
-# explicitly on just the executables — never recursively on the whole bundle,
-# which would also touch Info.plist/resources/etc.
+# between CI jobs does not reliably preserve the Unix executable bit, so the
+# binaries inside the copied .app bundle can silently lose +x before they
+# ever reach this script. The release workflow (.github/workflows/release.yml)
+# already fixes this at the source by tarring the bundle before upload and
+# untarring it after download — tar's own format embeds Unix permission bits,
+# so that round-trip is lossless regardless of what upload/download-artifact
+# does to a bare directory. This chmod is a second, independent line of
+# defense kept deliberately in place alongside that fix, not leftover/dead
+# code superseded by it: if the tar/untar step is ever reverted or bypassed
+# (e.g. a caller other than the release workflow invokes this script against
+# a bundle that went through some other handoff), this still guarantees the
+# binaries are executable before packaging. Restore it explicitly on just the
+# executables — never recursively on the whole bundle, which would also touch
+# Info.plist/resources/etc.
 chmod 755 "${PAYLOAD_ROOT}/Applications/NodeSpace.app/Contents/MacOS/"*
 
 # ---------------------------------------------------------------------------
