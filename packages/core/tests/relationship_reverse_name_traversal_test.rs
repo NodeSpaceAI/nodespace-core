@@ -155,6 +155,48 @@ async fn reverse_name_ignores_the_requested_direction() -> Result<()> {
     Ok(())
 }
 
+/// A malformed `direction` must error uniformly, regardless of what the
+/// supplied name resolves to. Before this validation existed, a Forward name
+/// eventually surfaced an "Invalid direction" error downstream in
+/// `NodeService::get_related_nodes`, but a Reverse-resolved name never
+/// reached that check at all — its direction is now computed internally
+/// (always `"in"`) rather than forwarded, so a caller's typo (`"In"`, `""`,
+/// `"both"`) would have silently succeeded instead of erroring the way the
+/// identical typo does on a plain forward name. Both branches must reject it
+/// the same way, up front.
+#[tokio::test]
+async fn malformed_direction_errors_for_both_forward_and_reverse_names() -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+    create_adr_pair(&svc).await?;
+    make_node(&svc, "p1", "reviewer").await?;
+    make_node(&svc, "adr1", "adr").await?;
+    svc.create_relationship("adr1", "decided_by", "p1", json!({}))
+        .await?;
+
+    for direction in ["In", "", "both", "sideways"] {
+        let forward_err = rel_ops::get_related_nodes(&svc, get("adr1", "decided_by", direction))
+            .await
+            .expect_err(&format!(
+                "direction '{direction}' must be rejected for a forward name"
+            ));
+        assert!(
+            matches!(forward_err, OpsError::InvalidParams(_)),
+            "expected InvalidParams for direction '{direction}' on a forward name, got {forward_err:?}"
+        );
+
+        let reverse_err = rel_ops::get_related_nodes(&svc, get("p1", "decisions", direction))
+            .await
+            .expect_err(&format!(
+                "direction '{direction}' must be rejected for a reverse name"
+            ));
+        assert!(
+            matches!(reverse_err, OpsError::InvalidParams(_)),
+            "expected InvalidParams for direction '{direction}' on a reverse name, got {reverse_err:?}"
+        );
+    }
+    Ok(())
+}
+
 /// Resolution must never redirect a traversal that already worked: the forward
 /// name is matched on the node's own schema first and passes through verbatim.
 #[tokio::test]

@@ -360,6 +360,23 @@ pub async fn get_related_nodes(
     node_service: &Arc<NodeService>,
     input: GetRelatedInput,
 ) -> Result<GetRelatedOutput, OpsError> {
+    // Validated up front, uniformly, rather than left to whichever branch
+    // below happens to still forward `input.direction` downstream. Before
+    // this fix, a Reverse resolution was the one path that both dropped the
+    // caller's direction AND never re-validated it (the old flip collapsed
+    // any non-"in" value, garbage included, into a valid "out"/"in" pair) —
+    // a malformed value would silently succeed instead of erroring the way
+    // the same typo does today on a Forward/Builtin/InboundForward name
+    // (caught downstream in `NodeService::get_related_nodes`). Checking here
+    // closes that gap for every branch, not just Reverse, and fails before
+    // any DB work rather than after resolving the name.
+    if input.direction != "out" && input.direction != "in" {
+        return Err(OpsError::InvalidParams(format!(
+            "direction must be 'in' or 'out', got '{}'",
+            input.direction
+        )));
+    }
+
     let node = node_service
         .get_node(&input.node_id)
         .await
