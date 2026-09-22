@@ -1339,6 +1339,27 @@ export async function runEval(fixture: EvalFixture): Promise<never> {
       }
       if (runs > 1) console.error(`[${fixture.name}] ── rep ${rep}/${runs} ──`);
 
+      // Per-rep seeding, AFTER the between-runs wipe and the gate above.
+      // A fixture whose scenarios act on named instances needs them
+      // re-established every rep: `seedGroup` cannot do it, because it runs
+      // inside the group loop where the first group of a cold rep has no
+      // types yet. See `EvalFixture.seedRun`.
+      if (fixture.seedRun) {
+        try {
+          fixture.seedRun(env);
+        } catch (e) {
+          abortOnEnvironment(
+            fixture.name,
+            new EnvironmentError(
+              `Run seeding failed before rep ${rep}\n  ` +
+                `${e instanceof Error ? e.message : String(e)}`,
+              `The scenarios in this rep depend on state the seed establishes, so ` +
+                `scoring them would describe a workspace that was never set up.`,
+            ),
+          );
+        }
+      }
+
       const results = runRep(fixture, env);
       const {
         scored,

@@ -380,6 +380,32 @@ export interface EvalFixture {
    */
   seedGroup?(env: EvalEnv, group: ScenarioGroup): void;
   /**
+   * Establish graph state ONCE PER REP, before the rep's first group runs.
+   *
+   * The distinction from [`seedGroup`] is the database lifecycle, and it is
+   * the whole reason this exists. `--between-runs` wipes the database between
+   * reps, so every rep begins cold. `seedGroup` fires inside the group loop,
+   * which means the first group of every rep sees a database that the rep's
+   * own setup turns have not populated yet — a seed that depends on a type
+   * those turns create finds nothing and silently no-ops.
+   *
+   * That failure is invisible: the fixture runs, every scenario scores, and
+   * the numbers describe a workspace missing the state the scenarios were
+   * written against. It cost several full 3-rep runs to diagnose, each of
+   * which looked like a model result rather than a harness one.
+   *
+   * Use `seedGroup` for state scoped to particular groups; use this for state
+   * an entire rep depends on. A fixture whose scenarios act on named INSTANCES
+   * wants this one: instances must exist before any scenario asks the agent to
+   * resolve a name to them, and they must be re-established after each wipe.
+   *
+   * Runs after the between-runs hook and after the preflight gate, so the
+   * daemon is up and the model is loaded. Throwing aborts the run as an
+   * environment failure rather than scoring scenarios against a workspace that
+   * was never established.
+   */
+  seedRun?(env: EvalEnv): void;
+  /**
    * Score one scenario from its turns. `turns` excludes prior-context turns,
    * which the runner strips before calling this.
    *
