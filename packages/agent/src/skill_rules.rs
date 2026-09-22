@@ -182,10 +182,33 @@ pub const ENUM_EDGE_FIELDS: SchemaRule = SchemaRule {
     prose: "**Edge fields.** A relationship can carry attributes on the edge itself via `edgeFields` — facts about the *connection*, not about either node (an access level on a membership, a billing date on an invoice link). Give an edge field a fixed vocabulary by declaring it as an enum with `coreValues`, the same shape a node field uses:\n\n```json\n{\"name\": \"access\", \"type\": \"enum\",\n \"coreValues\": [{\"value\": \"owner\", \"label\": \"Owner\"},\n                {\"value\": \"editor\", \"label\": \"Editor\"},\n                {\"value\": \"viewer\", \"label\": \"Viewer\"}]}\n```\n\n`coreValues` is required on an enum edge field and rejected on any other type; a `default` must be one of the declared values; values must be unique. Edge enums are closed — no `userValues`/`extensible` half. Creating or editing an edge validates the value against the declared set (including via `--edge-data`), and the relationships UI renders a picker instead of a free-text box.\n\nTwo limits worth knowing. Only relationships you declare can carry `edgeFields`: the built-in structural names (`member_of`, `has_child`, `mentions`, `has_role`) are reserved and rejected as declarations, so an edge field cannot be attached to them. And `required`/`default` on an edge field are recorded but not enforced at write time — an omitted enum key is stored absent rather than filled in from `default`, so don't rely on a default to supply a value.",
 };
 
+/// The premise this rule leads with is not decoration: without it, "identity
+/// comes from its fields rather than free-form content" reads as a contrast
+/// between structured data and a prose blob, so any entity with fields at all
+/// looks like it needs a template. The real contrast is one field vs. several
+/// — `content` already IS the identity for an entity type, so a single field
+/// holding the whole title belongs there directly, never duplicated into a
+/// second field. Measured failing both directions in one real session before
+/// this rewrite: a single-field identity got a pointless template AND a
+/// redundant field, and a genuinely composed identity got hand-assembled into
+/// `content` instead of templated, because the rule as originally written
+/// gave no way to tell those two cases apart.
+///
+/// Two precision notes verified against the actual title-computation path
+/// (`NodeService::compute_title`, `packages/core/src/services/node_service/crud.rs`):
+/// the "surfaces it as the title automatically" claim only holds for a node
+/// created with no parent — a nested, non-`task`/`collection` node with no
+/// `title_template` gets no computed title at all — so the rule scopes that
+/// claim to "a node created without a parent" rather than stating it
+/// unconditionally. And the markdown-primitive examples (`text`, `header`,
+/// `quote-block`, `code-block`) are illustrative, not exhaustive — several
+/// other built-ins (`ordered-list`, `checkbox`, `horizontal-line`, `table`)
+/// share the same content-is-not-identity behavior — so both forms end that
+/// list with "etc." rather than implying a closed set.
 pub const TITLE_TEMPLATE_PLACEHOLDERS: SchemaRule = SchemaRule {
     id: "title-template-placeholders",
-    imperative: "TITLE TEMPLATE: Set title_template when a node's identity comes from its fields rather than free-form content. Use {field_name} placeholders. CRITICAL: every placeholder in title_template MUST be defined as a field in the fields array. Omit title_template if the content/title field alone identifies the node.",
-    prose: "**Title template:** set `title_template` when a node's identity comes from its fields rather than free-form content, using `{field_name}` placeholders — every placeholder must be a defined field. Omit it if the content/title field alone identifies the node.",
+    imperative: "TITLE TEMPLATE: content is a node's name for entity types (Customer, Person, Invoice) \u{2014} for a node created without a parent, NodeSpace surfaces it as the title automatically. Only markdown primitives (text, header, quote-block, code-block, etc.) use content as a prose body instead of a name. Set title_template ONLY to ASSEMBLE a title from two or more fields, e.g. Person: first_name + last_name -> title_template: \"{first_name} {last_name}\". Use {field_name} placeholders; every placeholder MUST be defined as a field in the fields array. SINGLE-FIELD IDENTITY: if one field already holds the whole identity (e.g. a Customer's company name), put that value directly in content, do NOT set title_template, and do NOT add a separate field (e.g. company_name) that duplicates content.",
+    prose: "**Title template:** `content` is a node's name for entity types (`Customer`, `Person`, `Invoice`) \u{2014} for a node created without a parent, NodeSpace surfaces it as the title automatically. Only markdown primitives (`text`, `header`, `quote-block`, `code-block`, etc.) use `content` as a prose body instead of a name. Three cases:\n- **Single-field identity** \u{2014} e.g. `Customer`: one field's value is the whole title. Put it directly in `content`; don't set `title_template`, and don't add a separate field (e.g. `company_name`) that duplicates it.\n- **Composed identity** \u{2014} e.g. `Person` (`first_name` + `last_name`): no single field holds the full title, so assemble one with `title_template: \"{first_name} {last_name}\"`, using `{field_name}` placeholders \u{2014} every placeholder must be a defined field.\n- **Markdown primitive** \u{2014} `text`, `header`, etc.: `content` is prose, not a name; `title_template` doesn't apply.\n\nUse `title_template` only to assemble a title from two or more fields. If one field already holds the whole identity, that value belongs in `content` alone.",
 };
 
 pub const UNIQUE_FIELD_FLAGS: SchemaRule = SchemaRule {
