@@ -450,3 +450,73 @@ async fn installing_twice_re_keys_rather_than_failing_or_overwriting() -> Result
     }
     Ok(())
 }
+
+/// A re-key must reach the seeded guidance, not just the schemas and Plays.
+///
+/// The skills name schema ids in prose. Left untouched after a re-key they
+/// point at the stranger's schema the re-key existed to avoid — which has none
+/// of the fields the guidance describes, so an agent following it writes
+/// nonsense. Worse than a dangling reference, because it resolves.
+#[tokio::test]
+async fn a_re_key_is_disclosed_in_the_seeded_guidance() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+
+    handle_create_schema(
+        &service,
+        serde_json::json!({
+            "name": "Cycle",
+            "description": "A bicycle in the shed",
+            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+        }),
+    )
+    .await
+    .expect("pre-existing schema");
+
+    let report = install_recipe(&service, &linear()).await;
+    assert!(report.success, "first failure: {:?}", report.failure());
+    let new_id = report.suffixed()[0].1.to_string();
+
+    let guidance = seeded_guidance(&service, "Cycles").await?;
+    assert!(
+        guidance.contains(&new_id),
+        "guidance must name the id the cycle schema actually landed under ({new_id}), \
+         or it sends agents at someone else's schema"
+    );
+    Ok(())
+}
+
+/// The common case: nothing collided, so the guidance ships exactly as
+/// authored with no note bolted on.
+#[tokio::test]
+async fn a_clean_install_leaves_the_guidance_unannotated() -> Result<()> {
+    let (service, _tmp) = test_service().await?;
+    let report = install_recipe(&service, &linear()).await;
+    assert!(report.success);
+    assert!(report.suffixed().is_empty());
+
+    let guidance = seeded_guidance(&service, "Cycles").await?;
+    assert!(
+        !guidance.contains("Type names in this workspace"),
+        "no rename note should appear when nothing was re-keyed"
+    );
+    Ok(())
+}
+
+/// The flattened markdown body of the seeded skill whose title contains
+/// `title_fragment`.
+async fn seeded_guidance(service: &Arc<NodeService>, title_fragment: &str) -> Result<String> {
+    let skills = service.query_nodes_by_type("skill", Some("active")).await?;
+    let skill = skills
+        .iter()
+        .find(|n| n.content.contains(title_fragment))
+        .unwrap_or_else(|| panic!("no seeded skill titled like '{title_fragment}'"));
+
+    // (root, nodes-by-id, children-by-parent) — the flattened body is every
+    // descendant's content; order does not matter for a contains check.
+    let (_root, nodes, _children) = service.get_subtree_data(&skill.id).await?;
+    Ok(nodes
+        .values()
+        .map(|n| n.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n"))
+}

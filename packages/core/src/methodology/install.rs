@@ -115,7 +115,22 @@ pub async fn install_recipe(
             continue;
         }
 
-        let outcome = match prepare_nodes_from_template(template) {
+        // Guidance names schema ids in prose, so a re-key would leave it
+        // pointing at the stranger's schema the re-key existed to avoid —
+        // actively misleading, since that type has none of the fields the
+        // guidance describes. Appended as a note rather than rewritten in
+        // place: the markdown is sentences, and blind value substitution
+        // would corrupt any that happened to contain the word.
+        let template = match rename_note(&renames) {
+            Some(note) => {
+                let mut annotated = template.clone();
+                annotated.markdown_content.push_str(&note);
+                std::borrow::Cow::Owned(annotated)
+            }
+            None => std::borrow::Cow::Borrowed(template),
+        };
+
+        let outcome = match prepare_nodes_from_template(&template) {
             Ok(nodes) => match node_service.seed_nodes_from_templates(vec![nodes]).await {
                 Ok(_) => StepOutcome::Created {
                     id: template.title.clone(),
@@ -275,6 +290,37 @@ fn rewrite_schema_ids(
         ),
         _ => value.clone(),
     }
+}
+
+/// A markdown note naming every re-keyed id, appended to seeded guidance when
+/// an install had to move a schema aside.
+///
+/// Returns `None` when nothing was re-keyed, which is the common case — the
+/// guidance then ships exactly as authored.
+fn rename_note(renames: &HashMap<String, String>) -> Option<String> {
+    if renames.is_empty() {
+        return None;
+    }
+
+    // Sorted so the note is stable across installs rather than following
+    // HashMap iteration order.
+    let mut pairs: Vec<(&String, &String)> = renames.iter().collect();
+    pairs.sort_unstable();
+
+    let mut note = String::from(
+        "\n\n## Type names in this workspace\n\n\
+         Some names this guidance uses were already taken when the methodology \
+         was installed, so the types were created under different ones. Where \
+         the text above says the first name, use the second:\n\n",
+    );
+    for (requested, created) in pairs {
+        note.push_str(&format!("- `{requested}` → `{created}`\n"));
+    }
+    note.push_str(
+        "\nThe types already holding the original names belong to something else \
+         and are unrelated to this methodology.\n",
+    );
+    Some(note)
 }
 
 fn resolved_id(id: &str, renames: &HashMap<String, String>) -> String {

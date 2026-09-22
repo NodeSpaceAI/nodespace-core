@@ -320,11 +320,14 @@ nodespace node update <play-id> --lifecycle-status active                    # r
 A Play's execution errors are **not** in the graph. Engine diagnostics (a failed
 action, a cycle-limit breach, a rule that would not compile) are operational
 telemetry rather than knowledge, so they go to the daemon log rather than
-becoming nodes — there is nothing to query for them. Read them from
-`~/.nodespace/logs/nodespaced.log`, filtering on the play id:
+becoming nodes — there is nothing to query for them. Read them with
+`nodespace logs`, which resolves the log path for you (it differs between a
+desktop-app install and a Homebrew service):
 
 ```bash
-grep '<play-id>' ~/.nodespace/logs/nodespaced.log
+nodespace logs --filter <play-id>
+nodespace logs --filter <play-id> --lines 200
+nodespace logs --path-only                    # just print where the log lives
 ```
 
 `get-workflow-state` is the one purpose-built verb — it runs the engine's condition evaluation out of band from a live trigger, which a generic verb cannot do:
@@ -652,6 +655,14 @@ Structured property query with comparison operators (equals/contains/gt/lt/gte/l
 ### `nodespace diagnostics`
 
 Developer diagnostics: database path, size, node counts, schema count, daemon process memory
+
+### `nodespace logs`
+
+Read the daemon's log — where Play execution errors go
+
+- `--filter <FILTER>` — Show only lines containing this text — a play id, a rule name, an error type. Matched literally, not as a regex
+- `--lines <LINES>` — How many matching lines to show, most recent last
+- `--path-only` — Print the resolved log file path and exit without reading it
 
 ### `nodespace import`
 

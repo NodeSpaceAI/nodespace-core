@@ -395,13 +395,28 @@ impl GraphResolver {
         // This is live, not hypothetical: `tasks` is declared both on `project`
         // (reverse `project`) and on `person` (reverse `assignee`), so an
         // unnarrowed `node.assignee` would return the project too.
-        Ok(match source_type {
-            Some(source_type) => nodes
-                .into_iter()
-                .filter(|n| n.node_type == source_type)
-                .collect(),
-            None => nodes,
-        })
+        //
+        // Matched against the declarer's whole descendant set, not its exact
+        // id: `task.blocks` declares reverse `blocked_by` with source_type
+        // `task`, and an `issue` IS a task (ADR-078), so an issue blocking an
+        // issue must survive this filter. Comparing the concrete type alone
+        // silently dropped every subtype instance, which read as "nothing
+        // blocks this" rather than as an error.
+        let Some(source_type) = source_type else {
+            return Ok(nodes);
+        };
+        let mut kept = Vec::with_capacity(nodes.len());
+        for n in nodes {
+            let chain = self
+                .node_service
+                .resolve_type_chain(&n.node_type)
+                .await
+                .map_err(|e| e.to_string())?;
+            if chain.contains(&source_type) {
+                kept.push(n);
+            }
+        }
+        Ok(kept)
     }
 
     /// Whether `segment` is declared as a "many" cardinality relationship on

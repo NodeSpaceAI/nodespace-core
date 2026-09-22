@@ -274,8 +274,9 @@ fn cycle_rollover_play() -> PlayStep {
         play_id: "linear-cycle-rollover",
         name: "Close out the ending cycle",
         description: "On the day a cycle ends, create its successor — starting the next day and \
-             spanning that cycle's own duration_days — then move any unfinished work into \
-             it. Work that is done or cancelled stays where it is.",
+             spanning that cycle's own duration_days — then move the ending cycle's tasks \
+             into it. Every task moves, finished ones included: the engine has no per-item \
+             filter for a for_each yet.",
         rules: json!([{
             "name": "create-successor-and-roll-over",
             "trigger": {
@@ -336,7 +337,12 @@ fn sub_issue_completion_gate() -> PlayStep {
                 "type": "graph_event",
                 "on": "property_changed",
                 "node_type": "issue",
-                "property_key": "status",
+                // Namespaced, not bare: `update_node` stores a schema field
+                // under the node's own type object and reports the change as
+                // `"{node_type}.{field}"`, so that is what a trigger's
+                // `property_key` matches against. A bare "status" matches
+                // nothing and the rule silently never fires.
+                "property_key": "issue.status",
             },
             "conditions": [
                 "node.status == 'done'",
@@ -374,7 +380,12 @@ fn blocker_gate() -> PlayStep {
                 "type": "graph_event",
                 "on": "property_changed",
                 "node_type": "issue",
-                "property_key": "status",
+                // Namespaced, not bare: `update_node` stores a schema field
+                // under the node's own type object and reports the change as
+                // `"{node_type}.{field}"`, so that is what a trigger's
+                // `property_key` matches against. A bare "status" matches
+                // nothing and the rule silently never fires.
+                "property_key": "issue.status",
             },
             "conditions": [
                 "node.status == 'in_progress'",
@@ -514,12 +525,20 @@ two copies of the same truth, one of which would drift.
 the next day and running for `duration_days` — read off the ending cycle, so
 changing cadence means editing that field, not the Play.
 
-**Rollover.** The day after a cycle ends, unfinished work is moved to the
-successor. Done and cancelled work stays put. The old edge is kept, so an issue
-that slipped shows which cycle it came from.
+**Create the first cycle yourself.** This triggers on an existing cycle reaching
+its end date, so with no cycle in the graph nothing ever fires. Create one with
+a `start_date` and `end_date`; the automation takes over from there.
 
-Both run daily just after midnight, on whichever devices are online. If several
-are, they converge on the same result rather than duplicating it.
+**Rollover.** In the same run, the ending cycle's tasks move to the successor —
+added to the new cycle and removed from the old one, so a task belongs to
+exactly one cycle.
+
+Every task moves, completed ones included. That is a current limitation rather
+than a design choice: a `for_each` action cannot filter per item yet. If a
+finished cycle should keep its completed work, move those tasks back afterwards.
+
+Runs daily just after midnight, on whichever devices are online. If several are,
+they converge on the same result rather than duplicating it.
 
 ## Estimate totals
 
