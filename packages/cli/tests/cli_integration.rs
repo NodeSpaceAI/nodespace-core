@@ -3437,3 +3437,58 @@ async fn playbook_get_workflow_state_round_trip() {
 
     let _ = shutdown.send(());
 }
+
+/// With no `--database`, routing must resolve the daemon's default to a
+/// concrete id and stamp it — not send an unstamped request and let the daemon
+/// pick.
+///
+/// Both reach the same database today, so this is not about which rows come
+/// back. It is about whether the CLI can *say* which database it read. An
+/// unstamped request is resolved daemon-side against whatever
+/// `registry.default_database` holds when it arrives, so the CLI never learns
+/// the target and cannot report it. A write that went elsewhere — an agent turn
+/// runs against its own event watcher's database, not the default — then reads
+/// back as a well-formed empty result, indistinguishable from a write that
+/// never happened. That is how a schema written by an agent can appear to
+/// vanish from a CLI search.
+#[tokio::test]
+async fn routing_with_no_selection_pins_the_resolved_default_database_id() {
+    let (sock, shutdown, _tempdir) = spawn_routing_daemon().await;
+
+    let mut db = connect_database(&sock).await.expect("connect database");
+    let listed = db
+        .list(ListDatabasesRequest {})
+        .await
+        .expect("list databases")
+        .into_inner();
+    let default_id = listed
+        .databases
+        .iter()
+        .find(|d| d.is_default)
+        .map(|d| d.id.clone())
+        .expect("the harness seeds a default database");
+
+    let (_interceptor, resolved) = nodespace_cli::resolve_routing(&sock, None)
+        .await
+        .expect("resolve routing with no selection");
+
+    assert_eq!(
+        resolved.as_deref(),
+        Some(default_id.as_str()),
+        "no --database must resolve to the default's concrete id, so the target \
+         is a fact the CLI knows rather than one the daemon decides per request"
+    );
+
+    // An explicit selection of that same database must land on the same id —
+    // the two paths agree rather than one of them being special.
+    let (_interceptor, explicit) = nodespace_cli::resolve_routing(&sock, Some(&default_id))
+        .await
+        .expect("resolve routing with explicit selection");
+    assert_eq!(
+        explicit.as_deref(),
+        Some(default_id.as_str()),
+        "selecting the default by id must resolve to the same id as selecting nothing"
+    );
+
+    let _ = shutdown.send(());
+}
