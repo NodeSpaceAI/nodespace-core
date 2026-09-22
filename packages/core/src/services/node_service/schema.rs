@@ -585,27 +585,46 @@ impl NodeService {
     /// shadowing rule [`crate::schema::extends_chain::flatten_chain_fields`]
     /// applies to fields, kept here rather than reused directly since a
     /// relationship carries no `SchemaField`-shaped data to flatten.
+    ///
+    /// Returns `(relationships, relationship_name -> owning_schema_id)`,
+    /// mirroring [`Self::resolve_field_owners`]'s shape: a caller that needs
+    /// to decide whether a given name resolves as a field or a relationship
+    /// (e.g. save-time Play-path validation) has to compare *where in the
+    /// chain* each kind's declaration lives, not just whether the name is a
+    /// member of each independently-merged set — a nearer schema's own
+    /// relationship must shadow a farther ancestor's field of the same name,
+    /// and vice versa, since extends-chain shadowing is defined per
+    /// declared name, not per field-vs-relationship kind. The owners map is
+    /// what makes that chain-position comparison possible.
     pub async fn resolve_relationships(
         &self,
         node_type: &str,
-    ) -> Result<Vec<crate::models::schema::SchemaRelationship>, NodeServiceError> {
+    ) -> Result<
+        (
+            Vec<crate::models::schema::SchemaRelationship>,
+            std::collections::HashMap<String, String>,
+        ),
+        NodeServiceError,
+    > {
         let chain = self.resolve_type_chain(node_type).await?;
 
         let mut out: Vec<crate::models::schema::SchemaRelationship> = Vec::new();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut owners: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
 
         for schema_id in &chain {
             let Some(schema) = self.get_schema_node(schema_id).await? else {
                 continue;
             };
             for rel in schema.relationships {
-                if seen.insert(rel.name.clone()) {
+                if !owners.contains_key(&rel.name) {
+                    owners.insert(rel.name.clone(), schema_id.clone());
                     out.push(rel);
                 }
             }
         }
 
-        Ok(out)
+        Ok((out, owners))
     }
 
     /// Rename a field across all node instances and update the schema definition.

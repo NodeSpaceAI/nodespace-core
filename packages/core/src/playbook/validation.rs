@@ -32,7 +32,7 @@ use crate::services::NodeService;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
-use tracing::{debug, warn};
+use tracing::debug;
 
 // ---------------------------------------------------------------------------
 // Validation Errors
@@ -183,6 +183,26 @@ pub enum PlayValidationError {
         expected: String,
         location: String,
     },
+    /// A schema/extends-chain resolution call needed to validate a
+    /// condition path failed (a DB error while walking the `extends`
+    /// chain), rather than succeeding with a definitive field/relationship/
+    /// unknown-segment answer.
+    ///
+    /// Save-time validation cannot safely degrade to a narrower, un-merged
+    /// view on this failure the way a read-only diagnostic can: silently
+    /// falling back to `current_type`'s own directly-declared fields/
+    /// relationships would reintroduce, under nothing more than a
+    /// transient DB hiccup, the exact under-reporting bug this module
+    /// exists to close — a genuinely inherited field or relationship could
+    /// be wrongly rejected as `BrokenPath`, blocking a legitimate Play from
+    /// ever being saved. Surfaced here instead so the failure is visible
+    /// and the caller can retry, rather than the play being silently
+    /// mis-validated one way or the other.
+    SchemaResolutionFailed {
+        node_type: String,
+        error: String,
+        location: String,
+    },
 }
 
 impl std::fmt::Display for PlayValidationError {
@@ -330,6 +350,17 @@ impl std::fmt::Display for PlayValidationError {
                  never fires; declare it as '{}')",
                 location, node_type, property_key, node_type, expected
             ),
+            Self::SchemaResolutionFailed {
+                node_type,
+                error,
+                location,
+            } => write!(
+                f,
+                "schema resolution failed for '{}' at {}: {} (could not determine whether the \
+                 referenced path is valid — this is a transient/internal error, not a broken \
+                 path; retry)",
+                node_type, location, error
+            ),
         }
     }
 }
@@ -361,7 +392,8 @@ impl PlayValidationError {
             | Self::RejectActionOnReactiveRule { location }
             | Self::RejectActionHasForEach { location }
             | Self::DuplicateActionList { location, .. }
-            | Self::UnnamespacedPropertyChangedKey { location, .. } => location,
+            | Self::UnnamespacedPropertyChangedKey { location, .. }
+            | Self::SchemaResolutionFailed { location, .. } => location,
         }
     }
 
@@ -389,6 +421,7 @@ impl PlayValidationError {
             Self::RejectActionHasForEach { .. } => "reject_action_has_for_each",
             Self::DuplicateActionList { .. } => "duplicate_action_list",
             Self::UnnamespacedPropertyChangedKey { .. } => "unnamespaced_property_changed_key",
+            Self::SchemaResolutionFailed { .. } => "schema_resolution_failed",
         }
     }
 }
@@ -685,44 +718,78 @@ async fn validate_schema_path(
     for (i, segment) in segments[1..].iter().enumerate() {
         ensure_schema_cached(&current_type, node_service, schema_cache).await;
 
-        let schema = match schema_cache.get(&current_type).and_then(|s| s.as_ref()) {
-            Some(s) => s,
-            None => {
-                // Schema not found — can't validate further
-                // (UnknownNodeType error is already reported by trigger validation)
+        if schema_cache
+            .get(&current_type)
+            .and_then(|s| s.as_ref())
+            .is_none()
+        {
+            // Schema not found — can't validate further
+            // (UnknownNodeType error is already reported by trigger validation)
+            return;
+        }
+
+        // Resolve which schema in `current_type`'s ADR-078 `extends` chain
+        // declares `segment` — as a field, or as a relationship — together
+        // with the full chain order, nearest first.
+        //
+        // This must NOT be two independently pre-merged sets ("is it a
+        // member of the whole merged field set?", then separately "is it a
+        // member of the whole merged relationship set?") checked in a fixed
+        // field-then-relationship order: a nearer schema's OWN relationship
+        // must shadow a farther ancestor's field of the same name, and vice
+        // versa — extends-chain shadowing is defined per declared name, not
+        // per field-vs-relationship kind. `resolve_field_owners`/
+        // `resolve_relationships` each return an owning-schema-id per name,
+        // so the two are combined below by comparing chain position, not by
+        // asking "field first" unconditionally.
+        //
+        // On a resolution failure, this does not fall back to a narrower,
+        // un-merged view (`schema.fields`/`schema.relationships`): that
+        // would reintroduce, under nothing more than a transient DB error,
+        // the exact under-reporting bug this fix exists to close. Surfaced
+        // as a validation error instead — see `SchemaResolutionFailed`.
+        let (field_owners, chain) = match node_service.resolve_field_owners(&current_type).await {
+            Ok((_fields, owners, chain)) => (owners, chain),
+            Err(e) => {
+                errors.push(PlayValidationError::SchemaResolutionFailed {
+                    node_type: current_type.clone(),
+                    error: e.to_string(),
+                    location: location.to_string(),
+                });
                 return;
             }
         };
+        let (relationships, rel_owners) =
+            match node_service.resolve_relationships(&current_type).await {
+                Ok(result) => result,
+                Err(e) => {
+                    errors.push(PlayValidationError::SchemaResolutionFailed {
+                        node_type: current_type.clone(),
+                        error: e.to_string(),
+                        location: location.to_string(),
+                    });
+                    return;
+                }
+            };
 
-        // Check if the segment is a field on the *effective* schema — own
-        // directly-declared fields plus everything inherited across the
-        // ADR-078 `extends` chain, not just `schema.fields`. A subtype
-        // schema that inherits a field from an ancestor without redeclaring
-        // it (the normal, intended `extends` usage) must still count as a
-        // real field here, or a condition referencing it is wrongly
-        // rejected with `BrokenPath` and the play can never be saved at
-        // all. `resolve_field_owners` already walks and merges that chain;
-        // reuse it rather than re-deriving the merge from `schema` (same
-        // fix pattern `walk_path_against_schema` in `workflow_state.rs`
-        // applies to the identical gap in its diagnostic candidate
-        // enumeration). On a resolution error, fall back to this schema's
-        // own fields rather than an empty set — a transient failure must
-        // not misreport a field that unambiguously exists on the node's own
-        // schema as broken.
-        let known_fields: Vec<String> = match node_service.resolve_field_owners(&current_type).await
-        {
-            Ok((fields, _owners, _chain)) => fields.into_iter().map(|f| f.name).collect(),
-            Err(e) => {
-                warn!(
-                    node_type = %current_type,
-                    error = %e,
-                    "validate_schema_path: effective-field resolution failed; path validation \
-                     degraded to this schema's own directly-declared fields"
-                );
-                schema.fields.iter().map(|f| f.name.clone()).collect()
-            }
+        let field_pos = field_owners
+            .get(segment)
+            .and_then(|owner| chain.iter().position(|t| t == owner));
+        let rel_pos = rel_owners
+            .get(segment)
+            .and_then(|owner| chain.iter().position(|t| t == owner));
+        let is_field = match (field_pos, rel_pos) {
+            (Some(_), None) => true,
+            (None, _) => false,
+            // Both a field and a relationship somewhere in the chain
+            // declare this name: the nearer (lower chain index) one wins.
+            // Schema creation guards against the SAME schema declaring
+            // both under one name, so equal positions only mean the tie
+            // is moot — the field arm is picked arbitrarily but
+            // harmlessly.
+            (Some(f), Some(r)) => f <= r,
         };
-        let is_field = known_fields.iter().any(|f| f == segment);
+
         if is_field {
             // Fields are terminal — if there are more segments after this, it's broken
             if i + 1 < segments.len() - 1 {
@@ -755,28 +822,7 @@ async fn validate_schema_path(
             continue;
         }
 
-        // Check if the segment is a relationship on the *effective* schema
-        // — own directly-declared relationships plus everything inherited
-        // across the extends chain, not just `schema.relationships`.
-        // Mirrors the field resolution above: a relationship declared only
-        // on an ancestor schema (inherited, not redeclared) must still be
-        // recognized here, or a condition traversing it is wrongly
-        // rejected with `BrokenPath`. On a resolution error, fall back to
-        // this schema's own relationships rather than an empty set.
-        let known_relationships: Vec<crate::models::schema::SchemaRelationship> =
-            match node_service.resolve_relationships(&current_type).await {
-                Ok(rels) => rels,
-                Err(e) => {
-                    warn!(
-                        node_type = %current_type,
-                        error = %e,
-                        "validate_schema_path: effective-relationship resolution failed; path \
-                         validation degraded to this schema's own directly-declared relationships"
-                    );
-                    schema.relationships.clone()
-                }
-            };
-        let relationship = known_relationships.iter().find(|r| r.name == *segment);
+        let relationship = relationships.iter().find(|r| r.name == *segment);
         if let Some(rel) = relationship {
             if let Some(ref target_type) = rel.target_type {
                 // Follow the relationship to the target schema
@@ -2553,6 +2599,85 @@ mod tests {
                 result.is_ok(),
                 "a condition traversing a genuinely inherited (extends-chain) relationship must \
                  validate successfully, not be rejected as BrokenPath: {:?}",
+                result
+            );
+        }
+
+        /// Regression for a precedence bug in the extends-chain fix above:
+        /// `validate_schema_path` must pick whichever of a field or a
+        /// relationship declaration is *nearer* in the extends chain, not
+        /// unconditionally prefer "is it a member of the whole merged field
+        /// set" over "is it a member of the whole merged relationship set".
+        ///
+        /// `vp_prec_target` declares field `label`; `vp_prec_base` declares
+        /// FIELD `owner`; `vp_prec_sub` `extends` `vp_prec_base` and
+        /// declares its OWN RELATIONSHIP also named `owner`, targeting
+        /// `vp_prec_target` — a name that is a field on an ancestor and a
+        /// relationship on the (nearer) subtype itself. A Play condition
+        /// `node.owner.label == 'active'` on `vp_prec_sub` must resolve
+        /// `owner` as the nearer, own-schema relationship declaration (and
+        /// traverse into `vp_prec_target` to find `label`), not as the
+        /// farther, inherited field declaration — which would wrongly
+        /// terminate the path at `owner` and reject `label` as
+        /// unreachable/broken.
+        #[tokio::test]
+        async fn test_own_relationship_shadows_inherited_field_of_same_name() {
+            let (svc, _tmp) = create_test_service().await;
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vp_prec_target",
+                    "fields": [
+                        { "name": "label", "type": "string", "protection": "user", "indexed": false }
+                    ]
+                }),
+            )
+            .await
+            .expect("target schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vp_prec_base",
+                    "fields": [
+                        { "name": "owner", "type": "string", "protection": "user", "indexed": false }
+                    ]
+                }),
+            )
+            .await
+            .expect("base schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "vp_prec_sub",
+                    "extends": "vp_prec_base",
+                    "fields": [],
+                    "relationships": [{
+                        "name": "owner",
+                        "targetType": "vp_prec_target",
+                        "direction": "out",
+                        "cardinality": "one",
+                        "reverseName": "owned_subs",
+                        "reverseCardinality": "many"
+                    }]
+                }),
+            )
+            .await
+            .expect("subtype schema creation failed");
+
+            let rules = vec![make_rule(
+                "vp_prec_sub",
+                vec!["node.owner.label == 'active'"],
+                vec![],
+            )];
+            let result = validate_play(&rules, &svc).await;
+            assert!(
+                result.is_ok(),
+                "the subtype's OWN relationship declaration must shadow the ancestor's \
+                 inherited field of the same name (nearer wins), not be misresolved as a \
+                 terminal field: {:?}",
                 result
             );
         }
