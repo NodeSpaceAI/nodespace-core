@@ -1259,7 +1259,9 @@ pub async fn handle_create_schema(
     // The same id as `schema_id` above (schema nodes derive their id from
     // content), but this is the one the transaction actually produced rather
     // than the one predicted before the write — so it, not `schema_id`, is
-    // what the verification read below looks up.
+    // what the verification read below looks up. Should the two ever diverge,
+    // that read fails loudly against the id nothing was written under, rather
+    // than returning a payload whose `schemaId` names a row that isn't there.
     let created_schema_id: String = node_service
         .with_transaction(move |tx| {
             let node_service = Arc::clone(&node_service_for_tx);
@@ -1329,19 +1331,60 @@ pub async fn handle_create_schema(
                  Do not report it as created — verify with get_node before relying on it.",
                 created_schema_id, e
             ))
-        })?
-        .ok_or_else(|| {
-            MarkdownError::internal_error(format!(
-                "Schema '{}' reported a successful write but is not present in the \
-                 database afterwards. It was NOT created.",
-                created_schema_id
-            ))
         })?;
+
+    // `get_schema_node` returns `Ok(None)` for two different facts: the row is
+    // absent, or it is present but `SchemaNode::from_node` could not parse it
+    // (see the store's warn-and-return-None arm). Asserting the first without
+    // checking would repeat this PR's own bug in miniature — claiming more than
+    // the read established — and in the damaging direction: told a schema it
+    // did commit was "NOT created", an agent retries, the exists-check reads
+    // `Ok(None)` too, and the retry runs into the primary-key violation that
+    // the exists-check exists to prevent. One raw row read tells them apart.
+    let persisted = match persisted {
+        Some(schema) => schema,
+        None => {
+            let raw_row_exists = node_service
+                .get_node_verifying(&created_schema_id)
+                .await
+                .map_err(|e| {
+                    MarkdownError::internal_error(format!(
+                        "Schema '{}' could not be verified after writing: {}. \
+                         Do not report it as created.",
+                        created_schema_id, e
+                    ))
+                })?
+                .is_some();
+
+            return Err(MarkdownError::internal_error(if raw_row_exists {
+                format!(
+                    "Schema '{}' was written but cannot be read back as a valid schema — \
+                     the stored row is present but unreadable. Do not report it as created, \
+                     and do not retry: creating it again will collide with the existing row.",
+                    created_schema_id
+                )
+            } else {
+                format!(
+                    "Schema '{}' reported a successful write but is not present in the \
+                     database afterwards. It was NOT created.",
+                    created_schema_id
+                )
+            }));
+        }
+    };
 
     let output = CreateSchemaOutput {
         schema_id: persisted.id,
         is_core: persisted.is_core,
         version: persisted.schema_version,
+        // The one field still taken from the request, deliberately. A
+        // description is not stored on the schema node: it is parsed into a
+        // markdown child subtree, so "reading it back" would mean reassembling
+        // prose from nodes, which does not round-trip to the input string. The
+        // value here is the exact text handed to the subtree write that just
+        // committed. Nothing downstream counts or validates it — the no-op
+        // guard reads `fields` — so it carries none of the weight that made
+        // echoing the field list a defect.
         description: description_text,
         fields: persisted.fields,
         relationships: persisted.relationships,

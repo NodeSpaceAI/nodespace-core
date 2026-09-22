@@ -1071,11 +1071,24 @@ pub struct NodeService {
 
 /// How a test makes a post-commit verification read fail. See
 /// [`NodeService::set_write_verification_fault`].
+///
+/// `non_exhaustive` so adding a second fault shape later is not a breaking
+/// change to this crate's public surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WriteVerificationFault {
     /// The verification read reports the row as absent, as though the write
-    /// had silently not landed.
+    /// had silently not landed — and so does every other read, so a caller
+    /// that double-checks the raw row agrees it is gone. This is the reported
+    /// bug's shape: success claimed for a schema that is not there.
     ReportMissing,
+    /// The schema read reports the row as absent while the raw row is still
+    /// there — the shape of a stored node that `SchemaNode::from_node` cannot
+    /// parse, which the store reports as `Ok(None)`. Distinct from
+    /// [`Self::ReportMissing`] because the honest diagnosis differs: the write
+    /// did land, so telling the caller it did not would send it into a retry
+    /// that collides with the existing row.
+    ReportUnparseable,
 }
 
 impl Clone for NodeService {
@@ -2415,6 +2428,14 @@ impl NodeService {
     /// the only way to reach the branch the verification exists for, and
     /// therefore the only way a regression test can fail when someone removes
     /// it. See [`WriteVerificationFault`].
+    ///
+    /// `pub` is forced rather than chosen: the only caller is an integration
+    /// test under `tests/`, which compiles as its own crate, so neither
+    /// `#[cfg(test)]` nor `pub(crate)` is visible to it. The reader half stays
+    /// `pub(crate)` because it has no such constraint. If a second seam ever
+    /// wants this treatment, move both behind a `test-support` Cargo feature
+    /// and let the compiler enforce what this doc comment currently asserts —
+    /// not worth the feature plumbing for one.
     pub fn set_write_verification_fault(&self, fault: Option<WriteVerificationFault>) {
         let mut guard = self
             .write_verification_fault
@@ -2423,22 +2444,46 @@ impl NodeService {
         *guard = fault;
     }
 
+    /// The armed fault, if any.
+    fn write_verification_fault(&self) -> Option<WriteVerificationFault> {
+        *self
+            .write_verification_fault
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Read a schema node back for post-commit verification, honoring an armed
     /// [`WriteVerificationFault`].
     ///
     /// Identical to [`Self::get_schema_node`] in production, where no fault is
-    /// ever armed.
+    /// ever armed. Both fault variants report the schema as absent here — they
+    /// differ only in what [`Self::get_node_verifying`] then says about the raw
+    /// row, which is precisely the distinction the caller has to draw.
     pub(crate) async fn get_schema_node_verifying(
         &self,
         id: &str,
     ) -> Result<Option<crate::models::SchemaNode>, NodeServiceError> {
-        let fault = *self
-            .write_verification_fault
-            .read()
-            .unwrap_or_else(|e| e.into_inner());
-        match fault {
-            Some(WriteVerificationFault::ReportMissing) => Ok(None),
+        match self.write_verification_fault() {
+            Some(_) => Ok(None),
             None => self.get_schema_node(id).await,
+        }
+    }
+
+    /// Read a raw node back for post-commit verification, honoring an armed
+    /// [`WriteVerificationFault`].
+    ///
+    /// Identical to [`Self::get_node`] in production. Under
+    /// [`WriteVerificationFault::ReportMissing`] the row reads as gone, so a
+    /// caller distinguishing "absent" from "present but unparseable" concludes
+    /// the former; under [`WriteVerificationFault::ReportUnparseable`] the real
+    /// row is returned, so it concludes the latter.
+    pub(crate) async fn get_node_verifying(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::models::Node>, NodeServiceError> {
+        match self.write_verification_fault() {
+            Some(WriteVerificationFault::ReportMissing) => Ok(None),
+            _ => self.get_node(id).await,
         }
     }
 

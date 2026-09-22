@@ -87,6 +87,48 @@ async fn a_write_that_cannot_be_verified_is_an_error_not_a_populated_success() {
     );
 }
 
+/// A row that committed but reads back unparseable must NOT be reported as
+/// "not created".
+///
+/// The store folds two different facts into one `Ok(None)`: the row is absent,
+/// or it is present and `SchemaNode::from_node` failed on it. Claiming the
+/// first without checking would be this PR's own bug in miniature — asserting
+/// more than the read establishes — and it misleads in the costly direction.
+/// An agent told a schema it *did* commit was never created retries, the
+/// exists-check reads `Ok(None)` as well, and the retry runs straight into the
+/// primary-key collision the exists-check is there to prevent.
+#[tokio::test]
+async fn a_committed_but_unreadable_schema_is_not_reported_as_never_created() {
+    let (svc, _tmp) = test_service().await;
+
+    svc.set_write_verification_fault(Some(WriteVerificationFault::ReportUnparseable));
+
+    let err = handle_create_schema(
+        &svc,
+        serde_json::json!({
+            "name": "Event Venue",
+            "fields": [{"name": "capacity", "type": "number"}]
+        }),
+    )
+    .await
+    .expect_err("an unverifiable write must not report success");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("event_venue"),
+        "the error must name the schema, got: {msg}"
+    );
+    assert!(
+        !msg.contains("NOT created"),
+        "the row DID commit — claiming it was not created sends the agent into \
+         a retry that collides with it, got: {msg}"
+    );
+    assert!(
+        msg.contains("do not retry") || msg.contains("collide"),
+        "the error must steer the agent away from retrying, got: {msg}"
+    );
+}
+
 /// Every field the result claims must be readable back out of the database
 /// under the id the result reports.
 ///
