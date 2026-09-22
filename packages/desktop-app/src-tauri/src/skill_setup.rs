@@ -20,10 +20,10 @@
 //! compile step, or a platform this hasn't been wired up for yet. See
 //! `resolve_installer_path`.
 //!
-//! Before the compiled binary is invoked, [`resolve_compiled_installer_path`]
-//! checks (and self-heals, via [`ensure_installer_executable`]) that it still
-//! carries the executable bit a build-time chmod or artifact round-trip
-//! could otherwise silently strip — mirroring the runtime self-heal
+//! Before the compiled binary is invoked, [`resolve_installer`] checks (and
+//! self-heals, via [`ensure_installer_executable`]) that it still carries the
+//! executable bit a build-time chmod or artifact round-trip could otherwise
+//! silently strip — mirroring the runtime self-heal
 //! `daemon_setup::extract_sidecar_if_changed` already does for the
 //! `nodespaced`/`nodespace` sidecars.
 //!
@@ -641,7 +641,7 @@ fn resolve_compiled_installer_path<R: tauri::Runtime>(
 }
 
 /// Ensure the bundled `nodespace-skill-installer` sidecar carries the
-/// executable bit before [`resolve_compiled_installer_path`] hands it to
+/// executable bit before [`resolve_installer`] hands it to
 /// [`compiled_installer_command`], self-healing a lost `+x` the same way
 /// `daemon_setup::extract_sidecar_if_changed` self-heals `nodespaced`/
 /// `nodespace` — both guard the identical failure mode (a build-time chmod
@@ -724,6 +724,24 @@ fn ensure_installer_executable(path: &Path) -> Result<(), String> {
     // `access` only reads through the pointer it's given.
     if unsafe { libc::access(c_path.as_ptr(), libc::X_OK) } == 0 {
         return Ok(());
+    }
+
+    // A path that doesn't exist at all is a distinct failure from "exists
+    // but isn't executable" -- reusing `access`'s own errno (rather than an
+    // extra `std::fs::metadata` stat call, which the mode-bit version of
+    // this function used to make) distinguishes them without a second
+    // syscall. In practice this function's only real caller
+    // (`resolve_installer`) never reaches it for a path that doesn't exist
+    // -- it's only called once `resolve_compiled_installer_path` has already
+    // confirmed `binary.exists()` -- so this is purely a "fail clearly, not
+    // misleadingly" concern for the unit tests exercising this function in
+    // isolation, not a path production code can hit.
+    let access_err = std::io::Error::last_os_error();
+    if access_err.kind() == std::io::ErrorKind::NotFound {
+        return Err(format!(
+            "Cannot find the bundled skill installer at {}: {access_err}",
+            path.display()
+        ));
     }
 
     tracing::warn!(
@@ -1219,8 +1237,13 @@ mod tests {
         let err = ensure_installer_executable(&missing)
             .expect_err("a missing file must be a clear error, not a panic");
         assert!(
-            err.contains("Cannot stat") && err.contains("does-not-exist"),
-            "expected a clear stat-failure message naming the path, got: {err}"
+            err.contains("Cannot find") && err.contains("does-not-exist"),
+            "expected a clear not-found message naming the path, got: {err}"
+        );
+        assert!(
+            !err.contains("repaired") && !err.contains("reinstalling"),
+            "a missing path is a distinct failure from a broken-but-present binary and \
+             must not be phrased as a failed repair, got: {err}"
         );
     }
 
