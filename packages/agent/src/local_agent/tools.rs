@@ -4380,7 +4380,7 @@ mod tests {
     /// never block or reject a write; getting this wrong risks the model
     /// telling a user a unique flag "will prevent duplicates," which is
     /// false (see `NodeService::find_duplicate_for`'s doc comment). This
-    /// guards against the two copies drifying apart on that specific claim.
+    /// guards against the two copies drifting apart on that specific claim.
     #[test]
     fn unique_field_tool_descriptions_state_advisory_only_semantics() {
         for tool in [Tool::CreateSchema, Tool::UpdateSchema] {
@@ -4456,29 +4456,51 @@ mod tests {
                 let mut field = base.clone();
                 field[key] = sample_value_for_declared_key(&declared[key]);
 
-                serde_json::from_value::<nodespace_core::models::SchemaField>(field.clone())
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "{tool:?} declares field key {key:?} in its {fields_key} JSON Schema, \
-                             but SchemaField rejects it: {e}. The tool schema is what the model \
-                             copies verbatim, so this key breaks every call that sets it. Fix the \
-                             declared key to match SchemaField's camelCase wire form."
-                        )
-                    });
+                if let Err(e) =
+                    serde_json::from_value::<nodespace_core::models::SchemaField>(field.clone())
+                {
+                    // Only an `unknown field` error indicts the KEY, which is
+                    // what this test is about. Any other error (a bad enum
+                    // variant, a type mismatch) means the probe VALUE below
+                    // didn't suit this key — a gap in the test harness, not a
+                    // schema bug. Distinguishing the two keeps a correctly
+                    // spelled key from failing with a message blaming its
+                    // spelling.
+                    assert!(
+                        e.to_string().contains("unknown field"),
+                        "test-harness gap, not a schema bug: {tool:?}'s {fields_key} key {key:?} \
+                         is spelled correctly, but the probe value \
+                         {probe} did not deserialize: {e}. Teach \
+                         `sample_value_for_declared_key` how to build a valid value for this \
+                         key's declared shape.",
+                        probe = field[key],
+                    );
+                    panic!(
+                        "{tool:?} declares field key {key:?} in its {fields_key} JSON Schema, \
+                         but SchemaField rejects it: {e}. The tool schema is what the model \
+                         copies verbatim, so this key breaks every call that sets it. Fix the \
+                         declared key to match SchemaField's camelCase wire form."
+                    );
+                }
             }
         }
     }
 
     /// Builds a type-appropriate placeholder for a declared JSON Schema
     /// property, so the round-trip above tests the *key*, not the value.
+    ///
+    /// Every key the two tools declare today is a string, boolean or array, so
+    /// the arms below cover them. The string fallback is deliberately naive: a
+    /// key whose value has more structure than "any string" (an enum-typed
+    /// field like `protection`, say) would need its own arm, and the caller's
+    /// `unknown field` check turns that into an explicit test-harness message
+    /// rather than a misleading failure.
     fn sample_value_for_declared_key(declared: &serde_json::Value) -> serde_json::Value {
         match declared["type"].as_str() {
             Some("boolean") => serde_json::json!(true),
             Some("number") | Some("integer") => serde_json::json!(1),
             Some("array") => serde_json::json!([]),
             Some("object") => serde_json::json!({}),
-            // `name`/`type` are overwritten with their own valid values by the
-            // caller's base object; any other string key takes a plain string.
             _ => serde_json::json!("text"),
         }
     }
