@@ -139,6 +139,49 @@ export interface TurnRecord {
    * documentation of the behavior.
    */
   emptyGeneration?: boolean;
+  /**
+   * The named schema/operation decisions this turn made, in round order.
+   *
+   * Recorded per ReAct round rather than per turn: a turn that searched and
+   * then wrote made two operation decisions, and both are scoreable. Optional
+   * because results files recorded before this field existed do not carry it —
+   * absence means "not recorded", not "no decision made".
+   */
+  decisions?: DecisionRecord[];
+}
+
+/**
+ * One recorded decision: what the model could have picked, and what it picked.
+ *
+ * The candidate set is carried alongside the outcome because an outcome alone
+ * is not scoreable — whether calling `search_nodes` was right depends on what
+ * else was on offer. Mirrors `local_agent::decisions::DecisionRecord` on the
+ * Rust side; the two are joined by the `[decision ...]` log marker.
+ */
+export interface DecisionRecord {
+  /** Which selection this describes. */
+  kind: "schema" | "operation";
+  /** Everything on offer, in presentation order. */
+  candidates: string[];
+  /**
+   * What was picked, or `null` when nothing was.
+   *
+   * `null` is a real outcome, not a missing value: a turn offered tools that
+   * called none is ADR-056's Scenario 6 shape, and the failure class that
+   * motivated recording these at all.
+   */
+  selected: string | null;
+  /**
+   * The selection names something the candidate set never offered.
+   *
+   * Impossible for operations (the surface is scoped before the model sees it,
+   * and the grammar constrains the call envelope to a registered tool name),
+   * possible for schemas (nothing constrains a `node_type` argument to a
+   * retrieved candidate). The single most diagnostic signal here: unlike a
+   * close call between plausible options, it cannot be explained as a hard
+   * choice.
+   */
+  offMenu: boolean;
 }
 
 /** The verdict a fixture's scoring function returns for one scenario. */

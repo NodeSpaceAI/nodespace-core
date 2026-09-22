@@ -242,6 +242,31 @@ export function formatTurnLogLines(slice: string): string[] {
       }
     }
   }
+  // The two named decisions per ReAct iteration (agent_loop.rs's "Agent
+  // decision: ..." lines, via local_agent::decisions). Each carries the
+  // candidate set alongside the outcome, because an outcome alone is not
+  // scoreable: whether calling `search_nodes` was right depends on what else
+  // was on offer that turn.
+  //
+  // `decision_candidates` is matched to END OF LINE for the same reason
+  // `routed_skills` is — tracing leaves the value unquoted, and a
+  // comma-separated list of names cannot be delimited by anything shorter than
+  // the line end. agent_loop.rs emits it last on the line for that reason, so
+  // the two fields read before it are safe to match normally.
+  for (const l of lines.filter((l) => l.includes("Agent decision:"))) {
+    const kind = l.match(/decision="?(schema|operation)"?/)?.[1];
+    if (!kind) continue;
+    const selected = l.match(/decision_selected="?([^"\s]*)"?/)?.[1] ?? "";
+    const offMenu = /decision_off_menu=true/.test(l) ? " [off-menu]" : "";
+    const candidates = l.match(/decision_candidates="?(.*?)"?$/)?.[1]?.trim() ?? "";
+    // An empty `selected` is a real outcome (the model was offered tools and
+    // called none — ADR-056's Scenario 6 shape), so it is rendered as an
+    // explicit `none` rather than omitted. Dropping the marker would make that
+    // failure indistinguishable from a turn this scrape could not parse.
+    out.push(
+      `[decision ${kind}] selected=${selected || "none"}${offMenu} candidates=${candidates}`,
+    );
+  }
   for (const l of lines.filter((l) => l.includes("Tool executed"))) {
     const tool = l.match(/tool="?([a-z_]+)"?/)?.[1] ?? "?";
     const args = l.match(/args_preview="?([^"]*?)"? result_preview/)?.[1] ?? "";

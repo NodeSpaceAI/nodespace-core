@@ -139,6 +139,57 @@ describe("formatTurnLogLines", () => {
     expect(lines.filter((l) => l.startsWith("[routed skills]"))).toHaveLength(1);
   });
 
+  test("captures both named decisions with their candidate sets", () => {
+    // Verbatim tracing shape: `decision_candidates` is unquoted and last on the
+    // line, because a comma-separated list of names cannot be delimited by
+    // anything shorter than the line end.
+    const slice = [
+      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_selected="create_node" decision_off_menu=false decision_candidates=create_node, search_nodes, get_node`,
+      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_selected="invoice" decision_off_menu=false decision_candidates=invoice, customer`,
+    ].join("\n");
+    const lines = formatTurnLogLines(slice);
+    expect(lines).toContain(
+      "[decision operation] selected=create_node candidates=create_node, search_nodes, get_node",
+    );
+    expect(lines).toContain(
+      "[decision schema] selected=invoice candidates=invoice, customer",
+    );
+  });
+
+  test("marks a selection the candidate set never offered", () => {
+    // The most diagnostic signal the record carries: unlike a close call
+    // between plausible candidates, naming a type that was never on offer
+    // cannot be explained as a hard choice.
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: schema selected iteration=0 decision="schema" decision_selected="album" decision_off_menu=true decision_candidates=invoice, customer`;
+    const lines = formatTurnLogLines(slice);
+    expect(lines).toContain(
+      "[decision schema] selected=album [off-menu] candidates=invoice, customer",
+    );
+  });
+
+  test("records an empty selection as an explicit none, not an omitted marker", () => {
+    // ADR-056's Scenario 6 shape: tools were offered and none was called.
+    // Dropping the marker would make that failure indistinguishable from a
+    // line this scrape could not parse.
+    const slice = `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=1 decision="operation" decision_selected="" decision_off_menu=false decision_candidates=search_nodes, update_node`;
+    const lines = formatTurnLogLines(slice);
+    expect(lines).toContain(
+      "[decision operation] selected=none candidates=search_nodes, update_node",
+    );
+  });
+
+  test("keeps one decision marker per iteration in a multi-round turn", () => {
+    // Unlike `[routed skills]`, which describes the turn and is taken from the
+    // last line, decisions are per-round: a ReAct turn that searched and then
+    // wrote made two operation decisions and both are scoreable.
+    const slice = [
+      `2026-09-22T10:00:00Z  INFO nodespace_agent: Agent decision: operation selected iteration=0 decision="operation" decision_selected="search_nodes" decision_off_menu=false decision_candidates=search_nodes, update_node`,
+      `2026-09-22T10:00:02Z  INFO nodespace_agent: Agent decision: operation selected iteration=1 decision="operation" decision_selected="update_node" decision_off_menu=false decision_candidates=search_nodes, update_node`,
+    ].join("\n");
+    const lines = formatTurnLogLines(slice);
+    expect(lines.filter((l) => l.startsWith("[decision operation]"))).toHaveLength(2);
+  });
+
   test("extracts the empty-generation marker only on the documented error text", () => {
     const slice =
       '2026-07-30T22:27:39Z  WARN nodespace_daemon: inference turn failed error="model produced empty response with no tool calls"';

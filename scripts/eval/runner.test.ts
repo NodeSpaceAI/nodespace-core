@@ -724,6 +724,81 @@ describe("parseTurnOutput", () => {
     const turn = parseTurnOutput("assistant> hi", 100);
     expect(turn.emptyGeneration).toBeUndefined();
   });
+
+  test("parses both decision kinds with their candidate sets", () => {
+    const out = [
+      "[decision operation] selected=create_node candidates=create_node, search_nodes",
+      "[decision schema] selected=invoice candidates=invoice, customer",
+      "assistant> done",
+    ].join("\n");
+    const turn = parseTurnOutput(out, 100);
+    expect(turn.decisions).toEqual([
+      {
+        kind: "operation",
+        selected: "create_node",
+        offMenu: false,
+        candidates: ["create_node", "search_nodes"],
+      },
+      {
+        kind: "schema",
+        selected: "invoice",
+        offMenu: false,
+        candidates: ["invoice", "customer"],
+      },
+    ]);
+  });
+
+  test("round-trips an unselected decision back to null, not the literal none", () => {
+    // A scorer must not have to know the marker's wire spelling for "picked
+    // nothing" — and this is ADR-056's Scenario 6 shape, the failure class the
+    // decision record exists to make visible.
+    const out = [
+      "[decision operation] selected=none candidates=search_nodes, update_node",
+      "assistant> I'd be happy to help.",
+    ].join("\n");
+    const turn = parseTurnOutput(out, 100);
+    expect(turn.decisions?.[0].selected).toBeNull();
+    expect(turn.decisions?.[0].candidates).toEqual([
+      "search_nodes",
+      "update_node",
+    ]);
+  });
+
+  test("carries the off-menu flag without it leaking into the selection", () => {
+    const out = [
+      "[decision schema] selected=album [off-menu] candidates=invoice, customer",
+      "assistant> created",
+    ].join("\n");
+    const turn = parseTurnOutput(out, 100);
+    expect(turn.decisions?.[0].selected).toBe("album");
+    expect(turn.decisions?.[0].offMenu).toBe(true);
+  });
+
+  test("decisions is undefined (not empty) when no marker is present", () => {
+    // Absence means "this build did not record them", which a stale baseline
+    // must not be scored against as though the model decided nothing.
+    const turn = parseTurnOutput("assistant> hi", 100);
+    expect(turn.decisions).toBeUndefined();
+  });
+
+  test("does not read a decision marker the model narrated in its own reply", () => {
+    // Same anchoring hazard every other marker here guards: `out` carries raw
+    // model text, and a model quoting a marker-shaped string must not be
+    // mistaken for the harness's own signal.
+    const out =
+      "assistant> I logged it as [decision schema] selected=album candidates=x";
+    const turn = parseTurnOutput(out, 100);
+    expect(turn.decisions).toBeUndefined();
+  });
+
+  test("keeps an empty candidate set from collapsing into a phantom candidate", () => {
+    const out = [
+      "[decision operation] selected=none candidates=",
+      "assistant> hi",
+    ].join("\n");
+    const turn = parseTurnOutput(out, 100);
+    expect(turn.decisions?.[0].candidates).toEqual([]);
+  });
 });
 
 describe("agent-matrix minProperties scoring", () => {
