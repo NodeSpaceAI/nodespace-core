@@ -717,11 +717,17 @@ async fn update_relationship_properties_refuses_to_corrupt_a_declaration_edge() 
 /// top level — not silently dropped, leaving the relationship created as
 /// though it had been written correctly.
 ///
-/// `target_type`/`reverse_name` are the realistic failure: the struct's own
-/// fields genuinely are snake_case, so a caller who forgets the wire form is
-/// camelCase types exactly this. `reverse_name` is the worst case of all —
-/// `reverseName` is required, so a caller who typos it must get a hard error,
-/// not a `success: true` response with the reverse half silently unset.
+/// Two shapes that were genuinely silent before this fix: an entirely
+/// unknown key, and a snake_case typo of a real *optional* field
+/// (`target_type` instead of `targetType`) — the misspelled spelling isn't a
+/// known field, so it used to vanish and `target_type` stayed silently unset
+/// rather than becoming the type the caller intended. (A typo of a
+/// *required* field with no correctly spelled counterpart present, e.g.
+/// `reverse_name` alone with no `reverseName`, was already a hard error
+/// before this fix too — serde reports "missing field `reverseName`"
+/// regardless of `deny_unknown_fields`; see
+/// `test_schema_relationship_requires_both_reverse_fields` in
+/// `nodespace-types` for that floor.)
 #[tokio::test]
 async fn misspelled_relationship_key_is_rejected_not_silently_dropped() -> Result<()> {
     let (svc, _t) = create_test_service().await?;
@@ -752,9 +758,11 @@ async fn misspelled_relationship_key_is_rejected_not_silently_dropped() -> Resul
     // The rejection must not leave a half-created schema behind.
     assert!(svc.get_schema_node("invoice").await?.is_none());
 
-    // The realistic case: a snake_case typo of `reverseName`, via
-    // update_schema's `add_relationships`. Silently dropping this would leave
-    // the required reverse half unset while reporting success.
+    // The realistic case: a snake_case typo of the optional `targetType`,
+    // via update_schema's `add_relationships`. Every required field is
+    // present and correctly spelled, so pre-fix this silently created the
+    // relationship with `target_type` unset instead of the customer type the
+    // caller intended.
     handle_create_schema(
         &svc,
         json!({
@@ -779,19 +787,18 @@ async fn misspelled_relationship_key_is_rejected_not_silently_dropped() -> Resul
             "schema_id": "invoice",
             "add_relationships": [{
                 "name": "billed_to",
-                "targetType": "customer",
+                "target_type": "customer",
                 "direction": "out",
                 "cardinality": "one",
                 "reverseName": "invoices",
-                "reverseCardinality": "many",
-                "reverse_name": "invoices"
+                "reverseCardinality": "many"
             }]
         }),
     )
     .await
-    .expect_err("a snake_case typo of reverseName must be rejected, not dropped");
+    .expect_err("a snake_case typo of targetType must be rejected, not dropped");
     assert!(
-        err.to_string().contains("reverse_name"),
+        err.to_string().contains("target_type"),
         "error should name the offending key: {err}"
     );
     // No relationship was silently created off the bad entry.

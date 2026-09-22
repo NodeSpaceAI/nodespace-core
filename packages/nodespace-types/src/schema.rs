@@ -87,7 +87,7 @@ pub fn derive_friendly_name(name: &str) -> String {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnumValue {
     pub value: String,
     pub label: String,
@@ -222,7 +222,7 @@ fn is_false(b: &bool) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EdgeField {
     pub name: String,
     #[serde(rename = "type")]
@@ -1155,30 +1155,58 @@ mod tests {
         );
     }
 
-    /// A misspelled key — the snake_case typo of a real field, exactly what a
-    /// caller writes given the struct's fields genuinely are snake_case and
-    /// only the wire form is camelCase — must be rejected, not silently
-    /// dropped. Mirrors [`SchemaField`]'s existing `deny_unknown_fields`
-    /// coverage, and is the reverse case of
-    /// [`test_schema_relationship_requires_both_reverse_fields`] above: there
-    /// a *required* key is absent; here a *misspelled* key means the field the
-    /// caller intended to set (`reverseName`) is ALSO absent, so both failures
-    /// must surface — silently accepting the typo would report success while
-    /// leaving `reverseName` unset in every way that matters.
+    /// An unknown or misspelled key must be rejected, not silently dropped —
+    /// mirrors [`SchemaField`]'s existing `deny_unknown_fields` coverage.
+    /// Two shapes, both genuinely silent pre-fix:
+    ///
+    /// - a redundant, misspelled key coexisting with the correctly spelled
+    ///   one (`reverseName` present and valid, plus a leftover
+    ///   `reverse_name`) — every required field is already satisfied, so
+    ///   nothing else catches the mistake and the relationship used to be
+    ///   created exactly as the caller (correctly) authored it, silently
+    ///   dropping the stray key
+    /// - a typo of an *optional* field (`target_type` instead of
+    ///   `targetType`) — the misspelled key isn't a known field, so it used
+    ///   to vanish and `target_type` stayed silently `None` rather than the
+    ///   value the caller intended
+    ///
+    /// A typo of a *required* field with no correctly spelled counterpart
+    /// present (e.g. `reverse_name` alone, no `reverseName`) is deliberately
+    /// NOT covered here: serde already rejects that case pre-fix too, via the
+    /// standard "missing field `reverseName`" error — a real error, just a
+    /// differently shaped one than `deny_unknown_fields` produces. See
+    /// [`test_schema_relationship_requires_both_reverse_fields`] above for
+    /// that floor.
     #[test]
     fn test_schema_relationship_rejects_unknown_field() {
-        let snake_case_typo = json!({
+        let redundant_typo = json!({
             "name": "assigned_to",
             "targetType": "person",
             "direction": "out",
             "cardinality": "one",
-            "reverse_name": "tasks",
-            "reverseCardinality": "many"
+            "reverseName": "tasks",
+            "reverseCardinality": "many",
+            "reverse_name": "tasks"
         });
-        let err = serde_json::from_value::<SchemaRelationship>(snake_case_typo)
-            .expect_err("a snake_case typo of a real key must be rejected, not dropped");
+        let err = serde_json::from_value::<SchemaRelationship>(redundant_typo)
+            .expect_err("a redundant snake_case key must be rejected, not silently dropped");
         assert!(
             err.to_string().contains("reverse_name"),
+            "error should name the offending key, got: {err}"
+        );
+
+        let optional_field_typo = json!({
+            "name": "assigned_to",
+            "target_type": "person",
+            "direction": "out",
+            "cardinality": "one",
+            "reverseName": "tasks",
+            "reverseCardinality": "many"
+        });
+        let err = serde_json::from_value::<SchemaRelationship>(optional_field_typo)
+            .expect_err("a typo of an optional field must be rejected, not silently dropped");
+        assert!(
+            err.to_string().contains("target_type"),
             "error should name the offending key, got: {err}"
         );
 
