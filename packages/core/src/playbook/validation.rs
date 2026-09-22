@@ -595,11 +595,15 @@ async fn ensure_schema_cached(
 /// inheritance (ADR-078). Matching only the concrete type would refuse
 /// `node.blocked_by` on an issue while allowing it on a task.
 ///
-/// Takes the same `schema_cache` as [`resolve_forward_segment`]: called
-/// second (see [`validate_schema_path`]'s forward-first precedence), it
-/// walks the same chain the forward check just walked, so a schema either
-/// already cached — no second fetch needed — for the current segment's
-/// scope.
+/// Takes the same `schema_cache` as [`resolve_forward_segment`], but this
+/// function never reads it back: the inbound-relationship data below always
+/// comes from a fresh `get_inbound_relationships` call, which is not
+/// cache-backed. Warming the cache here still isn't wasted — it means a
+/// scope's schema, once fetched by whichever of the two checks runs first
+/// for a given segment, is a cache hit for the other (and for the next
+/// segment's [`ensure_schema_cached`] call at the top of the loop) — but the
+/// per-scope `get_inbound_relationships` cost this function actually incurs
+/// is untouched by it.
 async fn resolve_reverse_segment(
     node_type: &str,
     segment: &str,
