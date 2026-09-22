@@ -500,6 +500,65 @@ async fn self_referential_reverse_name_resolves() -> Result<()> {
     Ok(())
 }
 
+/// A self-referential relationship is the one case where the old flip was not
+/// simply empty. For a normal (cross-type) declaration, `--direction in` on a
+/// reverse name flipped to the forward relationship's true outbound side,
+/// which structurally can never have edges — a real but guaranteed-empty
+/// query. Self-referential is different: `adr_old` can itself be the SOURCE
+/// of a `supersedes` edge (it supersedes an even older ADR), so that flipped
+/// query is real *and non-empty* — the old code would have silently returned
+/// a plausible-looking but WRONG answer (what `adr_old` supersedes) instead
+/// of the real one (what supersedes `adr_old`), which is a worse trap than a
+/// bare zero: a populated result invites no suspicion at all. The fix must
+/// return the correct answer regardless of what else `adr_old` participates in.
+#[tokio::test]
+async fn self_referential_reverse_name_with_direction_in_does_not_return_the_wrong_edge(
+) -> Result<()> {
+    let (svc, _t) = create_test_service().await?;
+
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Adr",
+            "fields": [{ "name": "status", "type": "string", "protection": "user", "indexed": false }],
+            "relationships": [{
+                "name": "supersedes",
+                "targetType": "adr",
+                "direction": "out",
+                "cardinality": "one",
+                "reverseName": "superseded_by",
+                "reverseCardinality": "one"
+            }]
+        }),
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("adr schema: {e}"))?;
+
+    make_node(&svc, "adr_new", "adr").await?;
+    make_node(&svc, "adr_old", "adr").await?;
+    make_node(&svc, "adr_ancient", "adr").await?;
+    // adr_old sits in the middle of a chain: adr_new supersedes it, and it in
+    // turn supersedes adr_ancient — giving it a real edge on BOTH sides of
+    // `supersedes`, which is exactly what the old flip needed to return a
+    // wrong-but-plausible answer instead of an empty one.
+    svc.create_relationship("adr_new", "supersedes", "adr_old", json!({}))
+        .await?;
+    svc.create_relationship("adr_old", "supersedes", "adr_ancient", json!({}))
+        .await?;
+
+    let via_in = rel_ops::get_related_nodes(&svc, get("adr_old", "superseded_by", "in")).await?;
+    assert_eq!(
+        via_in.count, 1,
+        "superseded_by + --direction in must not double-reverse to the wrong edge"
+    );
+    assert_eq!(
+        via_in.related_nodes[0]["id"], "adr_new",
+        "must return what supersedes adr_old (the real answer), not what adr_old \
+         itself supersedes (adr_ancient — the old flip's wrong answer)"
+    );
+    Ok(())
+}
+
 /// The exact regression reported: `Invoice.billed_to → Customer`, reverseName
 /// `invoices`. `--type invoices --direction in` used to resolve `invoices` to
 /// its forward form `billed_to`, then flip `--direction in` onto that
