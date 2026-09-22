@@ -60,7 +60,7 @@ pub async fn install_recipe(
         }
 
         let label = format!("Create `{}` schema", step.schema_id);
-        let outcome = create_schema_resolving_collisions(node_service, step).await;
+        let outcome = create_schema_resolving_collisions(node_service, step, &renames).await;
         if let StepOutcome::Suffixed { created, .. } = &outcome {
             renames.insert(step.schema_id.to_string(), created.clone());
         }
@@ -162,8 +162,17 @@ pub async fn install_recipe(
 async fn create_schema_resolving_collisions(
     node_service: &Arc<NodeService>,
     step: &crate::methodology::SchemaStep,
+    renames: &HashMap<String, String>,
 ) -> StepOutcome {
-    match handle_create_schema(node_service, step.params.clone()).await {
+    // Schema params carry ids too — `extends` names a parent, a relationship's
+    // `targetType` names a target — so an earlier re-key has to reach them the
+    // same way it reaches the vocabulary, Play and skill steps. The shipped
+    // recipe cannot hit this (both point at core `task`, which is never
+    // suffixed), but a recipe whose second schema extends its first would
+    // silently extend the stranger's schema instead.
+    let params = rewrite_schema_ids(&step.params, renames);
+
+    match handle_create_schema(node_service, params.clone()).await {
         Ok(_) => {
             return StepOutcome::Created {
                 id: step.schema_id.to_string(),
@@ -179,9 +188,9 @@ async fn create_schema_resolving_collisions(
 
     // Taken. `name` drives the derived id, so suffixing the name is what
     // moves the schema to a free id.
-    let base_name = step.params["name"].as_str().unwrap_or(step.schema_id);
+    let base_name = params["name"].as_str().unwrap_or(step.schema_id);
     for n in 2..=MAX_SUFFIX_ATTEMPTS {
-        let mut params = step.params.clone();
+        let mut params = params.clone();
         params["name"] = serde_json::json!(format!("{base_name} {n}"));
 
         match handle_create_schema(node_service, params).await {
@@ -365,6 +374,49 @@ impl StepReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A schema step's own params must follow an earlier re-key.
+    ///
+    /// The shipped recipe cannot exercise this: `issue` extends core `task`
+    /// and `cycle.tasks` targets core `task`, and a core type is never
+    /// suffixed. So the rewrite is checked directly here rather than through
+    /// an install — otherwise the only evidence would be an install that
+    /// never reaches the branch, which proves nothing about it.
+    ///
+    /// Without the rewrite, a recipe whose second schema extends its first
+    /// would silently extend whatever stranger's schema already held that id
+    /// — inheriting the wrong fields, with no error at any point.
+    #[test]
+    fn a_schema_steps_own_params_follow_an_earlier_re_key() {
+        let mut renames = HashMap::new();
+        renames.insert("base".to_string(), "base__2".to_string());
+
+        let params = serde_json::json!({
+            "name": "Derived",
+            "extends": "base",
+            "relationships": [{
+                "name": "items",
+                "targetType": "base",
+                "direction": "out",
+                "cardinality": "many",
+                "reverseName": "owner",
+                "reverseCardinality": "one",
+            }],
+        });
+
+        let out = rewrite_schema_ids(&params, &renames);
+
+        assert_eq!(
+            out["extends"], "base__2",
+            "a parent that was re-keyed must be followed, or the subtype \
+             inherits from a stranger's schema"
+        );
+        assert_eq!(
+            out["relationships"][0]["targetType"], "base__2",
+            "a relationship target that was re-keyed must be followed too"
+        );
+        assert_eq!(out["name"], "Derived", "unrelated values are untouched");
+    }
 
     #[test]
     fn rewrite_follows_a_rename_through_nested_payloads() {

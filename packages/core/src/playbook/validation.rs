@@ -3082,6 +3082,91 @@ mod tests {
             );
         }
 
+        /// A reverse name declared on ANOTHER schema must validate, including
+        /// through an `extends` chain.
+        ///
+        /// This branch had no unit-level coverage: disabling
+        /// `resolve_reverse_segment` entirely left all of this module's tests
+        /// green, because the only thing pinning it was the Linear recipe's
+        /// integration suite. The sibling precedence test does not help —
+        /// it asserts the FORWARD name wins, so it passes whether or not the
+        /// reverse branch works at all.
+        ///
+        /// Deliberately routed through a subtype: `vr_child extends vr_task`,
+        /// and the reverse name is declared toward `vr_task`. That is the
+        /// shape the recipe actually needs (`blocked_by` reaching an `issue`
+        /// via `task.blocks`) and the one that was silently rejected before
+        /// the chain-walk landed.
+        #[tokio::test]
+        async fn test_reverse_name_from_another_schema_validates_through_extends() {
+            let (svc, _tmp) = create_test_service().await;
+
+            // The parent, plus a subtype of it.
+            create_schema(&svc, "vr_task", 1, json!([])).await;
+            let child = Node::new_with_id(
+                "vr_child".to_string(),
+                "schema".to_string(),
+                "vr_child".to_string(),
+                json!({
+                    "isCore": false,
+                    "schemaVersion": 1,
+                    "description": "vr_child schema",
+                    "fields": []
+                }),
+            );
+            svc.create_node(child)
+                .await
+                .expect("Failed to create vr_child schema");
+            let extends: Vec<crate::models::schema::SchemaRelationship> =
+                serde_json::from_value(json!([{
+                    "name": "extends",
+                    "targetType": "vr_task",
+                    "direction": "out",
+                    "cardinality": "one",
+                    "reverseName": "extended_by",
+                    "reverseCardinality": "many"
+                }]))
+                .expect("valid extends fixture");
+            svc.set_schema_relationships("vr_child", &extends)
+                .await
+                .expect("Failed to declare extends on vr_child");
+
+            // A third schema declares a forward relationship toward the
+            // PARENT, whose reverse spelling is `blocked_by`. Nothing declares
+            // `blocked_by` on vr_child itself, so it is reachable only by
+            // walking to vr_task and reading the reverse side.
+            create_schema(
+                &svc,
+                "vr_blocker",
+                1,
+                json!([{
+                    "name": "blocks",
+                    "targetType": "vr_task",
+                    "direction": "out",
+                    "cardinality": "many",
+                    "reverseName": "blocked_by",
+                    "reverseCardinality": "many"
+                }]),
+            )
+            .await;
+
+            // `create_schema` gives vr_blocker a "status" field, so the path
+            // resolves only if the reverse walk lands there. A failure to
+            // resolve the reverse name reports a broken path instead.
+            let rules = vec![make_rule(
+                "vr_child",
+                vec!["node.blocked_by.status == 'open'"],
+                vec![],
+            )];
+            let result = validate_play(&rules, &svc).await;
+            assert!(
+                result.is_ok(),
+                "a reverse name declared on another schema, reached through an \
+                 extends chain, must validate: {:?}",
+                result
+            );
+        }
+
         // ---------------------------------------------------------------
         // check_schema_change_impact tests (Phase 2)
         // ---------------------------------------------------------------

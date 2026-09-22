@@ -520,3 +520,90 @@ async fn seeded_guidance(service: &Arc<NodeService>, title_fragment: &str) -> Re
         .collect::<Vec<_>>()
         .join("\n"))
 }
+
+/// A schema step that references an EARLIER step's schema must follow that
+/// step's re-key.
+///
+/// Exercises `create_schema_resolving_collisions`' own rewrite, which the
+/// shipped Linear recipe cannot reach: `issue` extends core `task` and
+/// `cycle.tasks` targets core `task`, and a core type is never suffixed. A
+/// unit test over `rewrite_schema_ids` does not cover this either — it proves
+/// the helper works, not that this call site invokes it. Only a recipe whose
+/// second schema names its first can tell the difference.
+///
+/// Without the rewrite the derived schema extends whatever stranger's schema
+/// already held the id: wrong inherited fields, no error anywhere.
+#[tokio::test]
+async fn a_later_schema_step_follows_an_earlier_step_s_re_key() -> Result<()> {
+    use nodespace_core::methodology::{MethodologyRecipe, SchemaStep};
+
+    let (service, _tmp) = test_service().await?;
+
+    // A squatter on the id the recipe's first schema wants, forcing a re-key.
+    handle_create_schema(
+        &service,
+        serde_json::json!({
+            "name": "Widget",
+            "description": "Someone else's widget, unrelated to this recipe",
+            "fields": [{ "name": "colour", "type": "string", "protection": "user" }],
+        }),
+    )
+    .await
+    .expect("squatter schema");
+
+    let recipe = MethodologyRecipe {
+        id: "two-step",
+        name: "Two-step",
+        description: "A recipe whose second schema extends its first.",
+        schemas: vec![
+            SchemaStep {
+                schema_id: "widget",
+                params: serde_json::json!({
+                    "name": "Widget",
+                    "description": "The recipe's own widget",
+                    "fields": [{ "name": "size", "type": "string", "protection": "user" }],
+                }),
+            },
+            SchemaStep {
+                schema_id: "gadget",
+                params: serde_json::json!({
+                    "name": "Gadget",
+                    "extends": "widget",
+                    "description": "Extends the recipe's widget, not the stranger's",
+                    "fields": [],
+                }),
+            },
+        ],
+        field_value_extensions: vec![],
+        plays: vec![],
+        skills: vec![],
+    };
+
+    let report = install_recipe(&service, &recipe).await;
+    assert!(report.success, "install failed: {:?}", report.failure());
+
+    let widget_id = report
+        .suffixed()
+        .first()
+        .map(|(_, created)| created.to_string())
+        .expect("the squatted widget must have been re-keyed");
+    assert_ne!(widget_id, "widget");
+
+    // The derived schema must extend the RE-KEYED widget. Reading the parent
+    // back through the relationship table is what distinguishes "followed the
+    // rename" from "silently extended the stranger".
+    let gadget = service
+        .get_schema_node("gadget")
+        .await?
+        .expect("gadget schema should exist");
+    let parent = nodespace_core::schema::extends_chain::declared_parent(&gadget)
+        .expect("gadget should declare an extends target");
+
+    assert_eq!(
+        parent, widget_id,
+        "gadget must extend the recipe's own re-keyed widget ({widget_id}), \
+         not the stranger's schema that squatted the original id"
+    );
+
+    Ok(())
+}
