@@ -190,8 +190,8 @@ pub const TITLE_TEMPLATE_PLACEHOLDERS: SchemaRule = SchemaRule {
 
 pub const UNIQUE_FIELD_FLAGS: SchemaRule = SchemaRule {
     id: "unique-field-flags",
-    imperative: "UNIQUE FIELDS: Set \"unique\": true on a field when the user's request implies each instance should have a distinct value for it (e.g. \"each ticket should have a unique key\" -> flag key unique). Use \"unique_case_insensitive\": true instead of \"unique\" when case shouldn't matter (e.g. email, username). ADVISORY ONLY: this does NOT prevent duplicates from being created — it only lets the system suggest a likely existing match (e.g. surface the existing node) when a new value collides. Never tell the user a unique flag will block or reject a duplicate; describe it as a duplicate warning/suggestion, not an enforced constraint. Example: {\"name\": \"key\", \"type\": \"text\", \"unique_case_insensitive\": true}.",
-    prose: "**Unique fields:** set `\"unique\": true` on a field when the user's request implies each instance should have a distinct value for it (e.g. \"each ticket should have a unique key\" → flag `key` unique). Use `\"unique_case_insensitive\": true` instead when case shouldn't matter — email and username are the common case. This is advisory only: it does not prevent duplicates from being created, it only lets the system surface a likely existing match when a new value collides. Never describe it to the user as blocking or rejecting duplicates — it's a suggestion, not an enforced constraint. Example: `{\"name\":\"key\",\"type\":\"text\",\"unique_case_insensitive\":true}`.",
+    imperative: "UNIQUE FIELDS: Set \"unique\": true on a field when the user's request implies each instance should have a distinct value for it (e.g. \"each ticket should have a unique key\" -> flag key unique). Use \"uniqueCaseInsensitive\": true instead of \"unique\" when case shouldn't matter (e.g. email, username). ADVISORY ONLY: this does NOT prevent duplicates from being created — it only lets the system suggest a likely existing match (e.g. surface the existing node) when a new value collides. Never tell the user a unique flag will block or reject a duplicate; describe it as a duplicate warning/suggestion, not an enforced constraint. Example: {\"name\": \"key\", \"type\": \"text\", \"uniqueCaseInsensitive\": true}.",
+    prose: "**Unique fields:** set `\"unique\": true` on a field when the user's request implies each instance should have a distinct value for it (e.g. \"each ticket should have a unique key\" → flag `key` unique). Use `\"uniqueCaseInsensitive\": true` instead when case shouldn't matter — email and username are the common case. This is advisory only: it does not prevent duplicates from being created, it only lets the system surface a likely existing match when a new value collides. Never describe it to the user as blocking or rejecting duplicates — it's a suggestion, not an enforced constraint. Example: `{\"name\":\"key\",\"type\":\"text\",\"uniqueCaseInsensitive\":true}`.",
 };
 
 /// All schema-authoring rules, in the order they should be rendered.
@@ -399,6 +399,64 @@ mod tests {
                  substance was removed, that's the drift this test exists to catch",
                 r.id,
                 r.skill_md_key_phrase
+            );
+        }
+    }
+
+    /// Extracts the JSON object following "Example: " in a rule's doc text
+    /// (optionally wrapped in a single pair of markdown backticks), by
+    /// balancing braces rather than assuming no nested `{}` — a future
+    /// example may nest an object-valued field.
+    fn extract_example_json(text: &str) -> &str {
+        let marker = "Example: ";
+        let after = text
+            .rfind(marker)
+            .map(|i| &text[i + marker.len()..])
+            .unwrap_or_else(|| panic!("no \"Example: \" marker found in: {text:?}"));
+        let after = after.strip_prefix('`').unwrap_or(after);
+        let start = after
+            .find('{')
+            .unwrap_or_else(|| panic!("no JSON object after \"Example: \" in: {text:?}"));
+        let mut depth = 0usize;
+        for (i, c) in after[start..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &after[start..start + i + 1];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces in example JSON: {text:?}");
+    }
+
+    /// `UNIQUE_FIELD_FLAGS`'s documented `uniqueCaseInsensitive` example
+    /// (both the imperative form seeded into the in-app agent prompt and the
+    /// prose form rendered into the shipped skill) must deserialize as a real
+    /// `SchemaField` through the exact wire format `create_schema`/
+    /// `update_schema` accept. `SchemaField` is `#[serde(rename_all =
+    /// "camelCase", deny_unknown_fields)]` (`nodespace-types::schema`), so a
+    /// doc example written in the struct's own snake_case field name — as
+    /// this rule's text once was — is rejected as an unknown field the
+    /// moment it's copied verbatim, rather than caught here.
+    #[test]
+    fn unique_field_flags_example_matches_schema_field_wire_format() {
+        for text in [UNIQUE_FIELD_FLAGS.imperative, UNIQUE_FIELD_FLAGS.prose] {
+            let json = extract_example_json(text);
+            let field: nodespace_core::models::SchemaField = serde_json::from_str(json)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "documented example {json} failed to deserialize as SchemaField \
+                         (wire key mismatch?): {e}"
+                    )
+                });
+            assert_eq!(
+                field.unique_case_insensitive,
+                Some(true),
+                "documented example should set uniqueCaseInsensitive: true"
             );
         }
     }
