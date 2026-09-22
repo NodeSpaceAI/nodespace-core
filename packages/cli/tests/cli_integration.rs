@@ -3035,6 +3035,45 @@ fn collection_path_and_id_flags_are_mutually_exclusive() {
     assert_eq!(ok.args.collections, vec!["docs:rust", "reference"]);
 }
 
+/// `--property` on `node create` is repeatable and value-parsed by
+/// `parse_property` the same way `node update`'s already is — this exercises
+/// the real clap arg parser (not a hand-built `CreateArgs` literal), so a
+/// regression in the `#[arg(...)]` wiring itself (not just in `create()`'s
+/// use of the parsed result) would be caught here.
+#[test]
+fn create_property_flag_is_repeatable_and_value_parsed() {
+    use clap::Parser;
+
+    #[derive(Parser, Debug)]
+    struct CreateHarness {
+        #[command(flatten)]
+        args: commands::node::CreateArgs,
+    }
+
+    let ok = CreateHarness::try_parse_from([
+        "create",
+        "--type",
+        "customer",
+        "--content",
+        "Northwind Labs",
+        "--property",
+        "company_name=Northwind Labs",
+        "--property",
+        "employee_count=42",
+    ])
+    .expect("repeated --property must parse");
+    assert_eq!(
+        ok.args.properties,
+        vec![
+            (
+                "company_name".to_string(),
+                serde_json::json!("Northwind Labs")
+            ),
+            ("employee_count".to_string(), serde_json::json!(42)),
+        ]
+    );
+}
+
 /// `nodespace skill reset <key>` with none of `--guidance`/`--config`/`--all`
 /// must be a parse-time usage error, not a silent full reset (ADR-072: reset
 /// is the one destructive path in the system, so a bare invocation must
