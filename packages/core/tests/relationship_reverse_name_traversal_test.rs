@@ -144,6 +144,13 @@ async fn reverse_name_ignores_the_requested_direction() -> Result<()> {
         via_in.count, 1,
         "reverse name + --direction in must not double-reverse to zero"
     );
+    // Both calls now run the identical resolved query, so this is not an
+    // order-dependent comparison of two independent result sets — order
+    // matches by construction. If this test is ever extended to assert on
+    // multiple related nodes, prefer sorted ids (see the `ids()` helper in
+    // `reverse_name_with_direction_in_matches_the_issue_repro` below) rather
+    // than raw `Vec<Value>` equality, which the store gives no ordering
+    // guarantee for in general.
     assert_eq!(via_in.related_nodes, via_out.related_nodes);
     Ok(())
 }
@@ -662,6 +669,9 @@ async fn builtin_reverse_name_ignores_the_requested_direction() -> Result<()> {
         via_in.count, 1,
         "built-in reverse name + --direction in must not double-reverse to zero"
     );
+    // Same identical-query note as `reverse_name_ignores_the_requested_direction`
+    // above — order matches by construction here, not by a store ordering
+    // guarantee.
     assert_eq!(via_in.related_nodes, via_default.related_nodes);
     assert_eq!(via_in.relationship_name, "has_child");
     assert_eq!(via_in.direction, "in");

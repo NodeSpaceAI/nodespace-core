@@ -50,7 +50,11 @@ pub struct UpdateRelPropsInput {
 pub struct GetRelatedInput {
     pub node_id: String,
     pub relationship_name: String,
-    /// "out" (forward) or "in" (reverse)
+    /// "out" (forward) or "in" (reverse). Ignored, silently, when
+    /// `relationship_name` resolves to [`ResolvedRelName::Reverse`] — a
+    /// reverse name already names one specific traversal, so there is
+    /// nothing left for this field to select. See [`get_related_nodes`]'s
+    /// doc comment for why.
     pub direction: String,
 }
 
