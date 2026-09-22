@@ -2367,25 +2367,26 @@ mod tests {
         }
 
         /// Regression for the ADR-078 extends-chain gap in save-time
-        /// validation (identical root cause to #2769/PR#2817's diagnostic-
-        /// path fix, but here it blocks a save rather than misreporting a
-        /// diagnostic): `validate_schema_path` must resolve a condition
-        /// segment against the *effective* field set of the target schema —
-        /// its own directly-declared fields plus everything inherited
-        /// across the `extends` chain — not just that schema's own fields.
+        /// validation — the same root cause as the identical gap in the
+        /// engine's diagnostic candidate enumeration, but here it blocks a
+        /// save outright rather than misreporting a diagnostic:
+        /// `validate_schema_path` must resolve a condition segment against
+        /// the *effective* field set of the target schema — its own
+        /// directly-declared fields plus everything inherited across the
+        /// `extends` chain — not just that schema's own fields.
         ///
-        /// Reproduces the exact issue scenario: `vp_epic_base` declares
-        /// `priority`; `vp_epic` `extends` `vp_epic_base` with no fields of
-        /// its own (the normal, intended `extends` usage — inheriting
-        /// rather than redeclaring); `vp_task_epic` declares a relationship
-        /// `epic` targeting `vp_epic`. A Play condition
+        /// Reproduces a realistic inheritance scenario: `vp_epic_base`
+        /// declares `priority`; `vp_epic` `extends` `vp_epic_base` with no
+        /// fields of its own (the normal, intended `extends` usage —
+        /// inheriting rather than redeclaring); `vp_task_epic` declares a
+        /// relationship `epic` targeting `vp_epic`. A Play condition
         /// `node.epic.priority == 'high'` references a field that is
         /// genuinely inherited, not redeclared. Before the fix this was
         /// rejected with `BrokenPath` ("'priority' is not a field or
         /// relationship on schema 'vp_epic'") and the play could never be
         /// saved at all, even though `priority` resolves correctly via the
-        /// extends chain everywhere else (the runtime engine, and now the
-        /// #2769-fixed diagnostic path).
+        /// extends chain everywhere else (the runtime engine, and the
+        /// diagnostic candidate enumeration).
         #[tokio::test]
         async fn test_inherited_field_through_relationship_passes_validation() {
             let (svc, _tmp) = create_test_service().await;
