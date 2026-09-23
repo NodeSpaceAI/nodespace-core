@@ -58,6 +58,12 @@ impl SqliteStore {
     /// found, only the minimum-depth set is returned (§3: nearest boundary
     /// wins, ties grant). Empty means the node's access is inherited from its
     /// outline ancestry.
+    ///
+    /// The node itself is never counted, even if it is a restricted
+    /// collection. A collection is only ever a tree root, and never embedded,
+    /// so the one case this affects is a defect descendant of a restricted
+    /// collection root. It is treated as a boundary, which errs toward
+    /// excluding more.
     pub(crate) async fn access_boundary(&self, node_id: &str) -> Result<BTreeSet<String>> {
         let restricted = restricted_collection_sql("n");
         let mut seen: HashSet<String> = HashSet::from([node_id.to_string()]);

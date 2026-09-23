@@ -584,7 +584,7 @@ impl NodeService {
                     .ok_or_else(|| NodeServiceError::node_not_found(target_id))?;
                 if target.node_type == "collection" {
                     return Err(NodeServiceError::hierarchy_violation(
-                        crate::db::collection_not_root(target_id),
+                        crate::db::collection_not_root(Some(target_id)),
                     ));
                 }
             }

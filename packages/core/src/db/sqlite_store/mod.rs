@@ -600,10 +600,14 @@ impl SqliteStore {
 /// always a root and nests through `member_of`. The `collection_not_root`
 /// prefix matches the schema triggers' `RAISE` message, so every path that
 /// refuses it reads the same.
-pub(crate) fn collection_not_root(collection_id: &str) -> String {
+pub(crate) fn collection_not_root(collection_id: Option<&str>) -> String {
+    let subject = match collection_id {
+        Some(id) => format!("collection '{}'", id),
+        None => "a new collection".to_string(),
+    };
     format!(
-        "collection_not_root: collection '{}' cannot have a parent; collections nest through member_of, not has_child (ADR-059 §2)",
-        collection_id
+        "collection_not_root: {} cannot have a parent; collections nest through member_of, not has_child (ADR-059 §2)",
+        subject
     )
 }
 

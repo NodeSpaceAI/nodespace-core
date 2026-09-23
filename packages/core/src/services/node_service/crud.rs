@@ -468,7 +468,7 @@ impl NodeService {
         if let Some(ref parent_id) = params.parent_id {
             if params.node_type == "collection" {
                 return Err(NodeServiceError::hierarchy_violation(
-                    crate::db::collection_not_root(params.id.as_deref().unwrap_or("new")),
+                    crate::db::collection_not_root(params.id.as_deref()),
                 ));
             }
             let parent_node = self
