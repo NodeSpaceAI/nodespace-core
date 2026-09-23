@@ -1040,6 +1040,45 @@ async fn validate_no_relationship_redeclaration(
     Ok(())
 }
 
+/// Reject a name shared between this schema's own `fields` and its own
+/// `relationships` — the chain-length-one case of the same invariant
+/// [`validate_no_field_redeclaration`]/[`validate_no_relationship_redeclaration`]
+/// enforce across an extends chain. ADR-078's cross-domain rule is per
+/// declared name, not per ancestor scope: a single schema declaring a field
+/// and a relationship under the same name is exactly as ambiguous as a
+/// descendant doing so against an ancestor, just with no chain resolution
+/// needed to see it.
+///
+/// `relationships` is filtered to exclude type-system bookkeeping names
+/// (`extends`/`extended_by`, see [`crate::models::schema::is_type_system_relationship`])
+/// before comparing — those are NodeSpace's own synthesized rows, not real
+/// declarations a caller authored, and an ordinary field legally named
+/// "extends" must never be rejected for colliding with them.
+fn validate_no_same_schema_field_relationship_collision(
+    fields: &[SchemaField],
+    relationships: &[crate::models::schema::SchemaRelationship],
+) -> Result<(), MarkdownError> {
+    for field in fields {
+        if let Some(rel) = relationships
+            .iter()
+            .filter(|r| !crate::models::schema::is_type_system_relationship(&r.name))
+            .find(|r| r.name == field.name)
+        {
+            return Err(MarkdownError::invalid_params(format!(
+                "'{}' cannot be declared as both a field and a relationship on the same \
+                 schema — a name must resolve unambiguously as one or the other, the same \
+                 additive-only rule that applies across an extends chain. This schema's \
+                 relationship '{}' targets '{}'. Rename the field or the relationship.",
+                field.name,
+                rel.name,
+                rel.target_type.as_deref().unwrap_or("*"),
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Validate the `edgeFields` declared on each relationship.
 ///
 /// Mirrors the node-side `validate_schema_field` enum rule (an enum must
@@ -1410,6 +1449,10 @@ pub async fn handle_create_schema(
     reject_reserved_relationship_names(&relationships)?;
     validate_edge_field_declarations(&relationships)?;
     validate_relationship_targets_exist(node_service, &relationships, pending_schema_id).await?;
+    // Cross-domain collision within this SAME schema's own declarations —
+    // no extends chain needed to produce the ambiguity ADR-078 exists to
+    // prevent, so this runs unconditionally, not just when `extends` is set.
+    validate_no_same_schema_field_relationship_collision(&stored_fields, &relationships)?;
 
     // `extends` (ADR-078). Validated before the schema node exists, like the
     // relationship checks above, so a bad parent can't leave a half-created
@@ -2379,6 +2422,15 @@ pub async fn handle_update_schema(
             }
         }
     }
+
+    // Cross-domain collision within this SAME schema's own final declaration
+    // set — `fields`/`relationships` are fully resolved at this point (every
+    // add/remove/rename and the extends re-target above already applied), so
+    // this catches a name an `add_fields` call and an `add_relationships`
+    // call in the SAME request both claim, not just a collision against an
+    // ancestor. Runs unconditionally: no extends chain is needed to produce
+    // the ambiguity ADR-078 exists to prevent.
+    validate_no_same_schema_field_relationship_collision(&fields, &relationships)?;
 
     // Resolve title_template: use new value if provided, otherwise keep existing
     let title_template = params.title_template.or(schema.title_template);

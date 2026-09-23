@@ -5689,3 +5689,136 @@ async fn test_extends_retarget_is_not_falsely_rejected_by_the_schemas_own_extend
          happens to name \"extends\": {result:?}"
     );
 }
+
+// ============================================================================
+// ADR-078 write-time collision enforcement: same-schema (no extends at all)
+// field/relationship collision
+// ============================================================================
+
+#[tokio::test]
+async fn test_create_schema_rejects_a_field_and_relationship_sharing_a_name_with_no_extends() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+
+    // No extends anywhere — the collision is between this schema's OWN
+    // field and its OWN relationship, declared in the same call.
+    let result = handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "fields": [
+                { "name": "owner", "type": "string", "protection": "user", "indexed": false }
+            ],
+            "relationships": [widget_relationship("owner", "widget", "owned_bugs")]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "a field and a relationship sharing a name on the same schema, with no extends \
+         involved, must be rejected",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("owner"),
+        "error should name the colliding name: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_add_fields_rejects_a_name_already_used_by_an_existing_relationship_no_extends() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "fields": [],
+            "relationships": [widget_relationship("owner", "widget", "owned_bugs")]
+        }),
+    )
+    .await
+    .expect("bug schema should be created");
+
+    // No extends parent at all — the ancestor-chain check has nothing to
+    // run against, so only the same-schema check can catch this.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "add_fields": [
+                { "name": "owner", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "add_fields must reject a name already used by this schema's own relationship, even \
+         with no extends parent",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("owner"),
+        "error should name the colliding name: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_add_relationships_rejects_a_name_already_used_by_an_existing_field_no_extends() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+    create_base_schema(&svc, "Bug", &["owner"]).await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "add_relationships": [widget_relationship("owner", "widget", "owned_bugs")]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "add_relationships must reject a name already used by this schema's own field, even \
+         with no extends parent",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("owner"),
+        "error should name the colliding name: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_add_fields_and_add_relationships_in_the_same_call_rejects_a_shared_name() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+    create_base_schema(&svc, "Bug", &[]).await;
+
+    // Neither `add_fields` nor `add_relationships` collides with anything
+    // that exists BEFORE this call — the collision is between the two new
+    // declarations, both introduced in the SAME request. Only checking the
+    // final merged state (after both are folded in) catches this.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "add_fields": [
+                { "name": "owner", "type": "string", "protection": "user", "indexed": false }
+            ],
+            "add_relationships": [widget_relationship("owner", "widget", "owned_bugs")]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "an add_fields and add_relationships pair introducing the same name in one call must \
+         be rejected",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("owner"),
+        "error should name the colliding name: {msg}"
+    );
+}
