@@ -147,18 +147,18 @@ async fn test_is_root_node_with_parent() -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_find_root_id_for_root_node() -> Result<()> {
+async fn test_find_embedding_root_id_for_root_node() -> Result<()> {
     let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     let root = create_root_node(&node_service, "text", "Root").await?;
 
-    let found_root_id = embedding_service.find_root_id(&root.id).await?;
+    let found_root_id = embedding_service.find_embedding_root_id(&root.id).await?;
     assert_eq!(found_root_id, root.id, "Root should find itself");
     Ok(())
 }
 
 #[tokio::test]
-async fn test_find_root_id_for_deep_child() -> Result<()> {
+async fn test_find_embedding_root_id_for_deep_child() -> Result<()> {
     let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
 
     // Create a tree: root -> child1 -> child2 -> child3
@@ -167,7 +167,7 @@ async fn test_find_root_id_for_deep_child() -> Result<()> {
     let child2 = create_child_node(&node_service, &child1.id, "text", "Child2").await?;
     let child3 = create_child_node(&node_service, &child2.id, "text", "Child3").await?;
 
-    let found_root_id = embedding_service.find_root_id(&child3.id).await?;
+    let found_root_id = embedding_service.find_embedding_root_id(&child3.id).await?;
     assert_eq!(
         found_root_id, root.id,
         "Deep child should find correct root"

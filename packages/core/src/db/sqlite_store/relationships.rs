@@ -432,8 +432,9 @@ impl SqliteStore {
     }
 
     /// ADR-059 §2 — a content node may hold a `member_of` edge only when it is a
-    /// **root** node (no `has_child` parent). Collections (nesting) and person
-    /// nodes (grantee membership, ADR-037 §4) are exempt. Enforced at the store's
+    /// **root** node (no `has_child` parent). Person nodes (grantee
+    /// membership, ADR-037 §4) are exempt. A collection needs no exemption: it
+    /// is always a root (see `collection_not_root`). Enforced at the store's
     /// three `member_of` INSERT sites (`add_to_collection`,
     /// `bulk_add_to_collections`, and the generic `create_generic_relationship`
     /// when its `rel_type` is `member_of`), so every write path is covered without
@@ -474,7 +475,7 @@ impl SqliteStore {
                 let id: String = row.get(0)?;
                 let node_type: String = row.get(1)?;
                 let has_parent: i64 = row.get(2)?;
-                if has_parent != 0 && node_type != "collection" && node_type != "person" {
+                if has_parent != 0 && node_type != "person" {
                     return Err(anyhow::anyhow!(
                         "member_of_not_root: content node '{}' (type '{}') has a parent, so it cannot be a member of a collection directly — file its root node instead",
                         id,

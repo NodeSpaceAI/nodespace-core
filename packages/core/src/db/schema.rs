@@ -294,6 +294,39 @@ async fn create_schema_body(conn: &libsql::Connection) -> Result<()> {
     .await
     .context("Failed to create title FTS5 delete trigger")?;
 
+    // A collection is always a root (ADR-059 §2): collections nest through
+    // `member_of`, never `has_child`. A collection may still HAVE `has_child`
+    // children; it may not BE one. Enforced here rather than at each Rust
+    // insert site because `has_child` edges are written from a dozen places
+    // (create, append, move, bulk hierarchy, sync cold-sweep, seeding, generic
+    // relationship create) and a node can become a collection by a type switch.
+    // Foreign keys are immediate, so a child's node row always exists by the
+    // time its edge is inserted.
+    conn.execute(
+        r#"CREATE TRIGGER IF NOT EXISTS collection_is_root_edge BEFORE INSERT ON relationship
+        WHEN new.relationship_type = 'has_child'
+          AND (SELECT node_type FROM node WHERE id = new.out_node) = 'collection'
+        BEGIN
+            SELECT RAISE(ABORT, 'collection_not_root: a collection cannot have a parent; collections nest through member_of (ADR-059 §2)');
+        END"#,
+        (),
+    )
+    .await
+    .context("Failed to create collection-is-root edge trigger")?;
+
+    conn.execute(
+        r#"CREATE TRIGGER IF NOT EXISTS collection_is_root_type BEFORE UPDATE OF node_type ON node
+        WHEN new.node_type = 'collection'
+          AND EXISTS (SELECT 1 FROM relationship
+                      WHERE out_node = new.id AND relationship_type = 'has_child')
+        BEGIN
+            SELECT RAISE(ABORT, 'collection_not_root: a node with a parent cannot become a collection; collections nest through member_of (ADR-059 §2)');
+        END"#,
+        (),
+    )
+    .await
+    .context("Failed to create collection-is-root type trigger")?;
+
     // sqlite-vec virtual table for embedding KNN search. Keyed by `embedding.id`
     // (the per-chunk UUID); holds ONLY real, non-stale vectors (see upsert/
     // delete/mark-stale paths). vec0 is a fast brute-force SIMD scan, not an ANN

@@ -2623,9 +2623,14 @@ impl SqliteStore {
     /// membership` on the `member_of` INSERT sites. (Fresh-node attach sites can't
     /// pre-hold a membership; `move_children_to_parent` only moves already-interior
     /// nodes.) Rejects rather than dropping the membership (a node can hold several
-    /// grants, each an independent access path). `collection` (nesting) and
-    /// `person` (grantee, ADR-037 §4) nodes are exempt. A single chunked query
-    /// keeps the bulk/cold-sweep path a single round trip.
+    /// grants, each an independent access path). `person` (grantee, ADR-037 §4)
+    /// nodes are exempt.
+    ///
+    /// Also refuses a `collection`, which is always a root (ADR-059 §2): see
+    /// [`super::collection_not_root`]. The schema's `collection_is_root_*`
+    /// triggers back this up on every write path; checking here gives the
+    /// reparent paths a readable error. One chunked query finds both kinds of
+    /// offender, keeping the bulk/cold-sweep path a single round trip per chunk.
     pub(crate) async fn assert_may_gain_parent(&self, node_ids: &[&str]) -> Result<()> {
         if node_ids.is_empty() {
             return Ok(());
@@ -2638,13 +2643,15 @@ impl SqliteStore {
         const ID_CHUNK: usize = 900;
         for chunk in unique.chunks(ID_CHUNK) {
             let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
-            // Offenders: non-exempt nodes that already hold a `member_of` edge.
+            // Offenders: collections, and non-exempt nodes that already hold a
+            // `member_of` edge.
             let sql = format!(
-                "SELECT n.id FROM node n \
+                "SELECT n.id, n.node_type FROM node n \
                  WHERE n.id IN ({}) \
-                   AND n.node_type NOT IN ('collection', 'person') \
-                   AND EXISTS(SELECT 1 FROM relationship r \
-                              WHERE r.in_node = n.id AND r.relationship_type = 'member_of')",
+                   AND (n.node_type = 'collection' \
+                        OR (n.node_type != 'person' \
+                            AND EXISTS(SELECT 1 FROM relationship r \
+                                       WHERE r.in_node = n.id AND r.relationship_type = 'member_of')))",
                 placeholders.join(", ")
             );
             let params: Vec<libsql::Value> = chunk
@@ -2653,7 +2660,7 @@ impl SqliteStore {
                 .collect();
             // Drain and drop the cursor before `get_node_memberships` checks out a
             // second reader connection — see `ReadRows` in `connections.rs`.
-            let offender: Option<String> = {
+            let offender: Option<(String, String)> = {
                 let mut rows = self
                     .read()
                     .await?
@@ -2661,11 +2668,14 @@ impl SqliteStore {
                     .await
                     .context("Failed to validate root-only membership on reparent")?;
                 match rows.next().await? {
-                    Some(row) => Some(row.get(0)?),
+                    Some(row) => Some((row.get(0)?, row.get(1)?)),
                     None => None,
                 }
             };
-            if let Some(offender) = offender {
+            if let Some((offender, node_type)) = offender {
+                if node_type == "collection" {
+                    return Err(anyhow::anyhow!(super::collection_not_root(Some(&offender))));
+                }
                 let memberships = self.get_node_memberships(&offender).await?;
                 return Err(anyhow::anyhow!(
                     "member_of_not_root: node '{}' holds collection membership ({}) and cannot be moved under a parent — only root nodes may hold collection membership (ADR-059 §2). Remove it from the collection(s) first, or move its root instead.",

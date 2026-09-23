@@ -466,6 +466,11 @@ impl NodeService {
 
         // Step 3: Validate parent exists and is a container (if provided)
         if let Some(ref parent_id) = params.parent_id {
+            if params.node_type == "collection" {
+                return Err(NodeServiceError::hierarchy_violation(
+                    crate::db::collection_not_root(params.id.as_deref()),
+                ));
+            }
             let parent_node = self
                 .get_node(parent_id)
                 .await?
@@ -1884,8 +1889,8 @@ impl NodeService {
         node_id: &str,
         expected_version: i64,
     ) -> Result<crate::models::DeleteResult, NodeServiceError> {
-        // Capture root before deletion for embedding queue.
-        let root_id_for_embedding = self.get_root_id(node_id).await.ok();
+        // Capture the embedding root before deletion for the embedding queue.
+        let root_id_for_embedding = self.get_embedding_root_id(node_id).await.ok();
 
         // Nothing to check or delete if the target is already gone — matches the idempotent
         // absent-target behavior `delete_subtree_atomic` has always had.
@@ -1951,7 +1956,7 @@ impl NodeService {
             });
         }
 
-        // Queue root for embedding regeneration when a non-root node was deleted.
+        // Queue the embedding root for regeneration when a node inside it was deleted.
         #[cfg(feature = "nlp")]
         if let Some(root_id) = root_id_for_embedding {
             if root_id != node_id {
@@ -2852,9 +2857,11 @@ impl NodeService {
     ///   (a root's is its content, a child's is none). Without the refresh an
     ///   indented root keeps its title and title search returns it as a
     ///   document, and an outdented child stays unfindable by name.
-    /// - **Embedding.** Only a tree root carries an embedding. A node that
-    ///   becomes a child drops its own, or vector search would still return it
-    ///   bare. Its (new) tree root is queued either way: a new root needs its
+    /// - **Embedding.** Only an embedding root carries an embedding: a tree
+    ///   root, or a descendant re-rooted at an access boundary (ADR-059 §7),
+    ///   which keeps its own. Any other node that becomes a child drops its
+    ///   own, or vector search would still return it bare. Its (new) embedding
+    ///   root is queued either way: a new root needs its
     ///   first embedding, and a tree that gained a child needs its aggregate
     ///   rebuilt.
     ///
@@ -2884,7 +2891,12 @@ impl NodeService {
                 .set_title(node_id, title.as_deref(), node.version)
                 .await?;
         }
-        if !is_root && self.store.has_embeddings(node_id).await? {
+        // A child carries no embedding, unless it is an access-boundary
+        // descendant re-rooted by ADR-059 §7.
+        if !is_root
+            && self.store.has_embeddings(node_id).await?
+            && self.store.embedding_root_id(node_id).await? != node_id
+        {
             self.store.delete_embeddings(node_id).await?;
         }
         Ok(())

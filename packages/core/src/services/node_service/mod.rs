@@ -2804,6 +2804,16 @@ impl NodeAccessor for NodeService {
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
         Ok(node_map.into_values().collect())
     }
+
+    async fn access_boundaries_under(
+        &self,
+        root_id: &str,
+    ) -> Result<std::collections::HashSet<String>, NodeServiceError> {
+        self.store
+            .access_boundaries_under(root_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
+    }
 }
 
 #[cfg(test)]
@@ -3092,6 +3102,398 @@ mod tests {
             err.is_err(),
             "ADR-059 §2: a has_child descendant must be rejected from direct collection membership (member_of is root-only)"
         );
+    }
+
+    /// ADR-059 §7's defect path: when root-only membership is bypassed and a
+    /// descendant lands behind an access boundary its root does not cross,
+    /// aggregation excludes it and its subtree, logs the violation, and the
+    /// descendant becomes its own embedding root, keeping its embedding.
+    #[tokio::test]
+    async fn access_boundary_descendant_is_excluded_and_rerooted_adr059() {
+        use crate::behaviors::{NodeBehavior, TextNodeBehavior};
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+        use std::io::Write;
+        use std::sync::Mutex;
+
+        #[derive(Clone, Default)]
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl Write for Capture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        const RESTRICTED: &str = "22222222-2222-2222-2222-2222222222c1";
+        const OPEN_COLL: &str = "22222222-2222-2222-2222-2222222222c2";
+        const ROOT: &str = "22222222-2222-2222-2222-2222222222a1";
+        const DESC: &str = "22222222-2222-2222-2222-2222222222a2";
+        const GRANDCHILD: &str = "22222222-2222-2222-2222-2222222222a3";
+        const SIBLING: &str = "22222222-2222-2222-2222-2222222222a4";
+        const FILED_OPEN: &str = "22222222-2222-2222-2222-2222222222a5";
+
+        let (svc, _tmp) = create_test_service().await;
+        let create = |id: &str, node_type: &str, content: &str, parent: Option<&str>, props| {
+            svc.create_node_with_parent(CreateNodeParams {
+                id: Some(id.into()),
+                node_type: node_type.into(),
+                content: content.into(),
+                parent_id: parent.map(Into::into),
+                position: InsertPositionOwned::End,
+                properties: props,
+                lifecycle_status: None,
+            })
+        };
+        create(
+            RESTRICTED,
+            "collection",
+            "Restricted",
+            None,
+            json!({ "collection": { "restrictedToMembers": true } }),
+        )
+        .await
+        .unwrap();
+        create(OPEN_COLL, "collection", "Open", None, json!({}))
+            .await
+            .unwrap();
+        create(ROOT, "text", "OPEN_ROOT_TEXT", None, json!({}))
+            .await
+            .unwrap();
+        create(DESC, "text", "RESTRICTED_DESC_TEXT", Some(ROOT), json!({}))
+            .await
+            .unwrap();
+        create(
+            GRANDCHILD,
+            "text",
+            "RESTRICTED_GRANDCHILD_TEXT",
+            Some(DESC),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        create(SIBLING, "text", "OPEN_SIBLING_TEXT", Some(ROOT), json!({}))
+            .await
+            .unwrap();
+        create(FILED_OPEN, "text", "FILED_OPEN_TEXT", Some(ROOT), json!({}))
+            .await
+            .unwrap();
+
+        // The violating shape: `member_of` edges on has_child descendants,
+        // written directly so `assert_may_gain_parent` never sees them.
+        for (member, collection) in [(DESC, RESTRICTED), (FILED_OPEN, OPEN_COLL)] {
+            svc.store()
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
+                     VALUES (?1, ?2, ?3, 'member_of', '{}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    libsql::params![uuid::Uuid::new_v4().to_string(), member, collection],
+                )
+                .await
+                .unwrap();
+        }
+
+        let root = svc.get_node(ROOT).await.unwrap().unwrap();
+        let logs = Capture::default();
+        let aggregated = {
+            let sink = logs.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(move || sink.clone())
+                .with_ansi(false)
+                .finish();
+            let _guard = tracing::subscriber::set_default(subscriber);
+            TextNodeBehavior
+                .get_aggregated_content(&root, &svc)
+                .await
+                .unwrap_or_default()
+        };
+
+        // The boundary descendant and its subtree stay out of the root's
+        // vector; open content, including a node filed into an OPEN
+        // collection (same access), stays in.
+        assert!(aggregated.contains("OPEN_SIBLING_TEXT"), "{aggregated}");
+        assert!(aggregated.contains("FILED_OPEN_TEXT"), "{aggregated}");
+        assert!(!aggregated.contains("RESTRICTED_DESC_TEXT"), "{aggregated}");
+        assert!(
+            !aggregated.contains("RESTRICTED_GRANDCHILD_TEXT"),
+            "{aggregated}"
+        );
+
+        // The defect is surfaced at error level, naming both nodes.
+        let logs = String::from_utf8(logs.0.lock().unwrap().clone()).unwrap();
+        let defect = logs
+            .lines()
+            .find(|l| l.contains("ADR-059 §7 defect"))
+            .unwrap_or_else(|| panic!("no defect logged:\n{logs}"));
+        assert!(defect.contains("ERROR"), "{defect}");
+        assert!(defect.contains(ROOT) && defect.contains(DESC), "{defect}");
+
+        // The descendant is its own embedding root, for itself and its subtree.
+        assert_eq!(svc.get_embedding_root_id(DESC).await.unwrap(), DESC);
+        assert_eq!(svc.get_embedding_root_id(GRANDCHILD).await.unwrap(), DESC);
+        assert_eq!(svc.get_embedding_root_id(SIBLING).await.unwrap(), ROOT);
+        assert_eq!(svc.get_embedding_root_id(FILED_OPEN).await.unwrap(), ROOT);
+
+        // The rootness refresh keeps the re-rooted descendant's embedding and
+        // still drops an ordinary child's. Checked by content hash: the
+        // refresh re-queues the embedding root, and a fresh stale marker would
+        // otherwise hide a deleted embedding.
+        for id in [DESC, SIBLING] {
+            svc.store()
+                .upsert_embeddings(
+                    id,
+                    vec![crate::models::NewEmbedding::single_chunk(
+                        id,
+                        vec![0.5; 768],
+                        "kept-hash",
+                        1,
+                        1,
+                    )],
+                )
+                .await
+                .unwrap();
+            svc.refresh_for_rootness(id, false).await;
+        }
+        let kept = |id: &'static str| {
+            let svc = &svc;
+            async move {
+                svc.get_embeddings(id)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .any(|e| e.content_hash.as_deref() == Some("kept-hash"))
+            }
+        };
+        assert!(kept(DESC).await, "re-rooted descendant keeps its embedding");
+        assert!(
+            !kept(SIBLING).await,
+            "an ordinary child's embedding is dropped"
+        );
+    }
+
+    /// ADR-059 §2: a collection is always a root. It nests through
+    /// `member_of`, and it may have `has_child` children, but no write path
+    /// can give it a parent: create, move, relationship create, a raw edge
+    /// insert, or switching a child's type to `collection`.
+    #[tokio::test]
+    async fn collection_is_always_a_root_adr059() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+
+        let (svc, _tmp) = create_test_service().await;
+        let params = |id: &str, node_type: &str, parent: Option<&str>| CreateNodeParams {
+            id: Some(id.into()),
+            node_type: node_type.into(),
+            content: format!("{node_type} {id}"),
+            parent_id: parent.map(Into::into),
+            position: InsertPositionOwned::End,
+            properties: json!({}),
+            lifecycle_status: None,
+        };
+        const TEXT_ROOT: &str = "44444444-4444-4444-4444-4444444444a1";
+        const COLL: &str = "44444444-4444-4444-4444-4444444444c1";
+        const COLL_CHILD: &str = "44444444-4444-4444-4444-4444444444a2";
+        const NESTED: &str = "44444444-4444-4444-4444-4444444444c2";
+        const TEXT_CHILD: &str = "44444444-4444-4444-4444-4444444444a3";
+
+        svc.create_node_with_parent(params(TEXT_ROOT, "text", None))
+            .await
+            .unwrap();
+        svc.create_node_with_parent(params(COLL, "collection", None))
+            .await
+            .unwrap();
+        // A collection may have has_child children.
+        svc.create_node_with_parent(params(COLL_CHILD, "text", Some(COLL)))
+            .await
+            .expect("a collection may have a text child");
+
+        let is_refusal =
+            |e: &dyn std::fmt::Display| format!("{e:#}").contains("collection_not_root");
+
+        // Created under a parent.
+        let err = svc
+            .create_node_with_parent(params(NESTED, "collection", Some(TEXT_ROOT)))
+            .await
+            .expect_err("a collection cannot be created under a parent");
+        assert!(is_refusal(&err), "{err:#}");
+
+        // Moved under a parent.
+        let err = svc
+            .move_node_unchecked(COLL, Some(TEXT_ROOT), crate::services::InsertPosition::End)
+            .await
+            .expect_err("a collection cannot be moved under a parent");
+        assert!(is_refusal(&err), "{err:#}");
+
+        // Given a parent through the relationship API.
+        let err = svc
+            .create_relationship(TEXT_ROOT, "has_child", COLL, json!({}))
+            .await
+            .expect_err("a collection cannot gain a has_child parent");
+        assert!(is_refusal(&err), "{err:#}");
+
+        // Given a parent by a raw edge insert, bypassing every Rust check.
+        let err = svc
+            .store()
+            .write()
+            .await
+            .execute(
+                "INSERT INTO relationship (in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
+                 VALUES (?1, ?2, 'has_child', '{}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                libsql::params![TEXT_ROOT, COLL],
+            )
+            .await
+            .expect_err("the schema refuses a collection child edge");
+        assert!(err.to_string().contains("collection_not_root"), "{err}");
+
+        // A child cannot become a collection.
+        svc.create_node_with_parent(params(TEXT_CHILD, "text", Some(TEXT_ROOT)))
+            .await
+            .unwrap();
+        let err = svc
+            .store()
+            .switch_node_type_atomic(TEXT_CHILD, "collection", json!({}), None)
+            .await
+            .expect_err("a child cannot become a collection");
+        assert!(
+            format!("{err:#}").contains("collection_not_root"),
+            "{err:#}"
+        );
+
+        // Nothing above left a parent on a collection.
+        assert!(svc.store().get_parent_id(COLL).await.unwrap().is_none());
+        assert!(svc.store().get_node(NESTED).await.unwrap().is_none());
+    }
+
+    /// Which descendants count as ADR-059 §7 access boundaries, shape by
+    /// shape. Every shape asserts both `access_boundaries_under` (what
+    /// aggregation excludes) and `embedding_root_id` (where a node's embedding
+    /// lives), so the two cannot drift apart.
+    #[tokio::test]
+    async fn access_boundary_shapes_agree_across_exclusion_and_rerooting_adr059() {
+        use crate::services::{CreateNodeParams, InsertPositionOwned};
+        use std::collections::HashSet;
+
+        let (svc, _tmp) = create_test_service().await;
+        let mut seq = 0u32;
+        let mut next_id = || {
+            seq += 1;
+            format!("33333333-3333-3333-3333-{:012}", seq)
+        };
+        let svc = &svc;
+        let create = |id: String, node_type: &'static str, parent: Option<String>, props| async move {
+            svc.create_node_with_parent(CreateNodeParams {
+                id: Some(id.clone()),
+                node_type: node_type.into(),
+                content: format!("{node_type} {id}"),
+                parent_id: parent,
+                position: InsertPositionOwned::End,
+                properties: props,
+                lifecycle_status: None,
+            })
+            .await
+            .unwrap();
+            id
+        };
+        // Written directly: most of these edges are ones `assert_may_gain_parent` refuses.
+        let file = |member: String, collection: String| async move {
+            svc.store()
+                .write()
+                .await
+                .execute(
+                    "INSERT INTO relationship (id, in_node, out_node, relationship_type, properties, version, created_at, modified_at) \
+                     VALUES (?1, ?2, ?3, 'member_of', '{}', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    libsql::params![uuid::Uuid::new_v4().to_string(), member, collection],
+                )
+                .await
+                .unwrap();
+        };
+        let restricted = || json!({ "collection": { "restrictedToMembers": true } });
+
+        let c1 = create(next_id(), "collection", None, restricted()).await;
+        let c2 = create(next_id(), "collection", None, restricted()).await;
+        let open = create(next_id(), "collection", None, json!({})).await;
+        // An open collection nested (via member_of) inside a restricted one.
+        let open_in_c1 = create(next_id(), "collection", None, json!({})).await;
+        file(open_in_c1.clone(), c1.clone()).await;
+
+        let boundaries =
+            |root: String| async move { svc.store().access_boundaries_under(&root).await.unwrap() };
+        let root_of = |id: String| async move { svc.get_embedding_root_id(&id).await.unwrap() };
+        let set = |ids: &[&String]| ids.iter().map(|s| (*s).clone()).collect::<HashSet<_>>();
+
+        // (a) A boundary nested inside a boundary: each is its own root, and
+        // each is excluded only from the root directly above it.
+        let r = create(next_id(), "text", None, json!({})).await;
+        let b1 = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        let b2 = create(next_id(), "text", Some(b1.clone()), json!({})).await;
+        let leaf = create(next_id(), "text", Some(b2.clone()), json!({})).await;
+        file(b1.clone(), c1.clone()).await;
+        file(b2.clone(), c2.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&b1]), "(a) root");
+        assert_eq!(
+            boundaries(b1.clone()).await,
+            set(&[&b2]),
+            "(a) outer boundary"
+        );
+        assert_eq!(root_of(b1.clone()).await, b1, "(a)");
+        assert_eq!(root_of(b2.clone()).await, b2, "(a)");
+        assert_eq!(root_of(leaf).await, b2, "(a)");
+
+        // (b) A restricted root: a descendant filed into the SAME collection
+        // has the same access; one filed into a different collection does not.
+        let r = create(next_id(), "text", None, json!({})).await;
+        svc.store()
+            .add_to_collection(&r, &c1, &json!({}))
+            .await
+            .expect("a root may be filed");
+        let same = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        let other = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        file(same.clone(), c1.clone()).await;
+        file(other.clone(), c2.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&other]), "(b)");
+        assert_eq!(root_of(same).await, r, "(b) same collection");
+        assert_eq!(root_of(other.clone()).await, other, "(b) other collection");
+
+        // (b') Ties: a root in {c1, c2} and a descendant in {c1} alone differ,
+        // since the root admits c2's members too (ADR-059 §3).
+        let r = create(next_id(), "text", None, json!({})).await;
+        file(r.clone(), c1.clone()).await;
+        file(r.clone(), c2.clone()).await;
+        let narrower = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        file(narrower.clone(), c1.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&narrower]), "(b')");
+        assert_eq!(root_of(narrower.clone()).await, narrower, "(b')");
+
+        // (c) A collection inside an outline cannot be built at all; see
+        // `collection_is_always_a_root_adr059`.
+
+        // (d) A person's membership is an RBAC grant, not classification.
+        let r = create(next_id(), "text", None, json!({})).await;
+        let person = create(next_id(), "person", Some(r.clone()), json!({})).await;
+        file(person.clone(), c1.clone()).await;
+        assert!(boundaries(r.clone()).await.is_empty(), "(d)");
+        assert_eq!(root_of(person).await, r, "(d)");
+
+        // (e) Filed into an open collection that is itself inside a restricted
+        // one: restricted two steps up, so a boundary.
+        let r = create(next_id(), "text", None, json!({})).await;
+        let deep = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        file(deep.clone(), open_in_c1.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&deep]), "(e)");
+        assert_eq!(root_of(deep.clone()).await, deep, "(e)");
+
+        // (f) A same-access candidate (filed into an open collection) is not a
+        // boundary, but one below it still is.
+        let r = create(next_id(), "text", None, json!({})).await;
+        let mid = create(next_id(), "text", Some(r.clone()), json!({})).await;
+        let below = create(next_id(), "text", Some(mid.clone()), json!({})).await;
+        file(mid.clone(), open.clone()).await;
+        file(below.clone(), c1.clone()).await;
+        assert_eq!(boundaries(r.clone()).await, set(&[&below]), "(f)");
+        assert_eq!(root_of(mid).await, r, "(f)");
+        assert_eq!(root_of(below.clone()).await, below, "(f)");
     }
 
     /// A schema added to `get_core_schemas()` after a database's first run

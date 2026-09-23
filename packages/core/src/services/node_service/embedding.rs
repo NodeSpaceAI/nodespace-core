@@ -93,18 +93,15 @@ impl NodeService {
     /// Only a root is ever embedded, and its embedding aggregates its
     /// descendants. A child has no meaning outside its root, so it never
     /// carries an embedding of its own — including a child of a
-    /// non-embeddable root such as a `date` page or a `task`.
+    /// non-embeddable root such as a `date` page or a `task`. The one
+    /// exception is a descendant whose access differs from its root's
+    /// (ADR-059 §7): it is cut out of the root's vector and is its own
+    /// embedding root. See [`crate::db::SqliteStore::embedding_root_id`].
     pub async fn get_embedding_root_id(&self, node_id: &str) -> Result<String, NodeServiceError> {
-        let mut current = node_id.to_string();
-        while let Some(pid) = self
-            .store
-            .get_parent_id(&current)
+        self.store
+            .embedding_root_id(node_id)
             .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        {
-            current = pid;
-        }
-        Ok(current)
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))
     }
 
     /// Queue a node's root for embedding regeneration
@@ -116,7 +113,7 @@ impl NodeService {
     /// This is a non-blocking operation - errors are logged but don't fail the caller.
     #[cfg(feature = "nlp")]
     pub async fn queue_root_for_embedding(&self, node_id: &str) {
-        // Find the embedding root (tree root) of this node.
+        // Find the embedding root of this node.
         let root_id = match self.get_embedding_root_id(node_id).await {
             Ok(id) => id,
             Err(e) => {
@@ -214,23 +211,16 @@ impl NodeService {
         node_id: &str,
         embedding_waker: Option<&crate::services::EmbeddingWaker>,
     ) {
-        // Find the embedding root — the tree root, as in
-        // `NodeService::get_embedding_root_id`.
-        let root_id = {
-            let mut current_id = node_id.to_string();
-            loop {
-                match store.get_parent_id(&current_id).await {
-                    Ok(Some(pid)) => current_id = pid,
-                    Ok(None) => break current_id,
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to find root for node {} (embedding not queued): {}",
-                            node_id,
-                            e
-                        );
-                        return;
-                    }
-                }
+        // Find the embedding root, as in `NodeService::get_embedding_root_id`.
+        let root_id = match store.embedding_root_id(node_id).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to find root for node {} (embedding not queued): {}",
+                    node_id,
+                    e
+                );
+                return;
             }
         };
 
