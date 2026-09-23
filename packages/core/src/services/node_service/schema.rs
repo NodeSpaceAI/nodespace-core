@@ -569,7 +569,7 @@ impl NodeService {
         }
 
         Ok((
-            crate::schema::extends_chain::flatten_chain_fields(&chain_fields),
+            crate::schema::extends_chain::flatten_chain_fields(chain_fields),
             owners,
             chain,
         ))
@@ -651,7 +651,7 @@ impl NodeService {
         }
 
         Ok((
-            crate::schema::extends_chain::flatten_chain_by_name(&chain_relationships, |r| {
+            crate::schema::extends_chain::flatten_chain_by_name(chain_relationships, |r| {
                 r.name.as_str()
             }),
             owners,

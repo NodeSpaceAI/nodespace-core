@@ -159,18 +159,27 @@ pub fn detect_cycle(
 /// resolution total if a collision arises anyway — through a retroactive
 /// ancestor addition, the unresolved edge case ADR-078 names — rather than
 /// dropping an item or returning both.
-pub fn flatten_chain_by_name<T: Clone>(
-    chain_items: &[Vec<T>],
-    name_of: impl Fn(&T) -> &str,
-) -> Vec<T> {
+///
+/// Takes `chain_items` by value and moves surviving items into the result
+/// rather than cloning them: every caller here builds `chain_items` fresh
+/// per call and never reads it again afterward, so there is nothing for a
+/// `&[Vec<T>]` + `Clone` signature to buy — it would only add a clone per
+/// surviving item (and, for `T = SchemaRelationship`, a bound the type
+/// doesn't even need to carry). A shadowed item's name is checked against
+/// `seen` before it is (not) added, so a redeclared name costs one `&str`
+/// comparison rather than a throwaway allocation.
+pub fn flatten_chain_by_name<T>(chain_items: Vec<Vec<T>>, name_of: impl Fn(&T) -> &str) -> Vec<T> {
     let mut out: Vec<T> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for items in chain_items {
         for item in items {
-            if seen.insert(name_of(item).to_string()) {
-                out.push(item.clone());
+            let name = name_of(&item);
+            if seen.contains(name) {
+                continue;
             }
+            seen.insert(name.to_string());
+            out.push(item);
         }
     }
 
@@ -183,8 +192,8 @@ pub fn flatten_chain_by_name<T: Clone>(
 /// order (own schema first, then each ancestor). A field declared by a nearer
 /// scope shadows a same-named field from a further one. Field-specific
 /// wrapper around [`flatten_chain_by_name`] — see its doc for the shadowing
-/// rationale, which applies here unchanged.
-pub fn flatten_chain_fields(chain_fields: &[Vec<SchemaField>]) -> Vec<SchemaField> {
+/// rationale (and the by-value signature), which applies here unchanged.
+pub fn flatten_chain_fields(chain_fields: Vec<Vec<SchemaField>>) -> Vec<SchemaField> {
     flatten_chain_by_name(chain_fields, |f| f.name.as_str())
 }
 
@@ -388,7 +397,7 @@ mod tests {
     fn flatten_keeps_chain_order_and_dedupes_to_nearest() {
         let own = vec![field("severity")];
         let parent = vec![field("status"), field("severity")];
-        let flat = flatten_chain_fields(&[own, parent]);
+        let flat = flatten_chain_fields(vec![own, parent]);
 
         let names: Vec<&str> = flat.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(names, vec!["severity", "status"]);
@@ -418,7 +427,7 @@ mod tests {
         // dedup loop.
         let own = vec![relationship("blocks")];
         let parent = vec![relationship("assignee"), relationship("blocks")];
-        let flat = flatten_chain_by_name(&[own, parent], |r| r.name.as_str());
+        let flat = flatten_chain_by_name(vec![own, parent], |r| r.name.as_str());
 
         let names: Vec<&str> = flat.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, vec!["blocks", "assignee"]);
@@ -427,7 +436,7 @@ mod tests {
     #[test]
     fn flatten_of_an_unextended_schema_is_its_own_fields() {
         let own = vec![field("status"), field("priority")];
-        let flat = flatten_chain_fields(std::slice::from_ref(&own));
+        let flat = flatten_chain_fields(vec![own]);
         assert_eq!(flat.len(), 2);
     }
 
