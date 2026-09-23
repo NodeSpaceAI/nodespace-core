@@ -625,11 +625,24 @@ impl SqliteStore {
             .collect())
     }
 
-    pub async fn bm25_search_roots(
+    /// Keyword half of general search: bm25 over `node_title_fts`, best first.
+    ///
+    /// Only titled roots are in that index, so every hit is already a document —
+    /// a child line has no title and cannot match. Body text is reachable through
+    /// the root's embedding, not through this index.
+    ///
+    /// Schemas are left out. A schema's title is its type name ("Task",
+    /// "Project"), a word that turns up in ordinary queries, so matching it
+    /// would rank a type above the user's own documents on "project roadmap".
+    /// A schema is still found by meaning, through its embedding.
+    ///
+    /// Returns `(node_id, bm25)` pairs in rank order. FTS5 bm25 is NEGATIVE, more
+    /// negative = better, matching `resolve_entities_by_title`.
+    pub async fn bm25_search_titles(
         &self,
         query: &str,
         candidate_limit: i64,
-    ) -> Result<HashSet<String>> {
+    ) -> Result<Vec<(String, f64)>> {
         let tokens: Vec<String> = query
             .split_whitespace()
             .map(|t| {
@@ -641,7 +654,7 @@ impl SqliteStore {
             .collect();
 
         if tokens.is_empty() {
-            return Ok(HashSet::new());
+            return Ok(Vec::new());
         }
 
         // Build FTS5 query: "token1" OR "token2" OR ...
@@ -652,109 +665,25 @@ impl SqliteStore {
             .join(" OR ");
 
         let sql = format!(
-            "SELECT n.id FROM node n JOIN node_fts f ON f.id = n.id WHERE node_fts MATCH ?1 ORDER BY rank LIMIT {}",
+            "SELECT f.id, bm25(node_title_fts) FROM node_title_fts f \
+             JOIN node n ON n.id = f.id \
+             WHERE node_title_fts MATCH ?1 AND n.node_type != 'schema' \
+             ORDER BY rank LIMIT {}",
             candidate_limit
         );
 
-        // Scoped so the cursor drops before the root-resolution queries and the
-        // `get_nodes_by_ids` below check out a second reader connection — see
-        // `ReadRows` in `connections.rs`.
-        let mut matching_ids: Vec<String> = Vec::new();
-        {
-            let mut rows = self
-                .read()
-                .await?
-                .query(&sql, libsql::params![fts_query])
-                .await
-                .context("Failed to execute BM25 search")?;
+        let mut rows = self
+            .read()
+            .await?
+            .query(&sql, libsql::params![fts_query])
+            .await
+            .context("Failed to execute BM25 title search")?;
 
-            while let Some(row) = rows.next().await? {
-                matching_ids.push(row.get(0)?);
-            }
+        let mut hits = Vec::new();
+        while let Some(row) = rows.next().await? {
+            hits.push((row.get(0)?, row.get(1)?));
         }
-
-        if matching_ids.is_empty() {
-            return Ok(HashSet::new());
-        }
-
-        // Resolve every match to its EMBEDDING root in one set operation: seed the
-        // recursive CTE with the whole match set (depth 0), walk `has_child`
-        // parents, and for each seed keep the deepest ancestor reached.
-        //
-        // The walk stops BELOW a non-embeddable *container* (a `date` page, but also
-        // a `task`/`collection`/`agent-guidance` — see `NON_EMBEDDABLE_CONTAINER_TYPES`):
-        // such a node is a non-embeddable organizational root whose children each
-        // carry their own content and are their own embedding roots. This mirrors
-        // the behavior probe in `NodeService::get_embedding_root_id`, which SQL
-        // can't run — so we refuse to traverse INTO any parent of a container type.
-        // Without this, a bullet hit resolved up to the container (e.g. the date or
-        // task node), which the default `Knowledge` search scope excludes — so that
-        // content was silently unfindable. The parity of this list with the
-        // non-embeddable child-bearing behaviors is enforced by
-        // `container_type_parity_tests::non_embeddable_container_types_match_behaviors`.
-        // Container types come from a hardcoded const of static identifiers — no
-        // user input — so inlining them as SQL literals is injection-safe.
-        let container_types: Vec<String> = crate::behaviors::NON_EMBEDDABLE_CONTAINER_TYPES
-            .iter()
-            .map(|t| format!("'{t}'"))
-            .collect();
-
-        // Chunk the seed list under SQLite's compiled SQLITE_MAX_VARIABLE_NUMBER
-        // (32766). Each chunk's recursive walk resolves only its own seeds — the
-        // base case selects `id IN (chunk)` and every recursive step stays
-        // within that seed's own ancestor chain — so running the CTE once per
-        // chunk and merging into `candidate_roots` is equivalent to one
-        // unchunked query over the whole match set.
-        const ID_CHUNK: usize = 900;
-        let mut candidate_roots: HashSet<String> = HashSet::new();
-        for chunk in matching_ids.chunks(ID_CHUNK) {
-            let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{}", i)).collect();
-            let sql = format!(
-                r#"WITH RECURSIVE ancestors(seed_id, node_id, depth) AS (
-                    SELECT id, id, 0 FROM node WHERE id IN ({})
-                    UNION ALL
-                    SELECT a.seed_id, r.in_node, a.depth + 1 FROM relationship r
-                    JOIN ancestors a ON r.out_node = a.node_id
-                    JOIN node pn ON pn.id = r.in_node
-                    WHERE r.relationship_type = 'has_child' AND a.depth < 100
-                      AND pn.node_type NOT IN ({})
-                )
-                SELECT seed_id, node_id FROM ancestors a
-                WHERE a.depth = (SELECT MAX(depth) FROM ancestors WHERE seed_id = a.seed_id)"#,
-                placeholders.join(", "),
-                container_types.join(", ")
-            );
-
-            let params: Vec<libsql::Value> = chunk
-                .iter()
-                .map(|id| libsql::Value::Text(id.clone()))
-                .collect();
-
-            let mut rows = self
-                .read()
-                .await?
-                .query(&sql, params)
-                .await
-                .context("Failed to resolve BM25 roots")?;
-
-            while let Some(row) = rows.next().await? {
-                let root_id: String = row.get(1)?;
-                candidate_roots.insert(root_id);
-            }
-        }
-
-        if candidate_roots.is_empty() {
-            return Ok(HashSet::new());
-        }
-
-        // Defensive existence re-check, batched into a single `id IN (...)` query
-        // instead of a per-root `get_node` round-trip.
-        let candidate_vec: Vec<String> = candidate_roots.into_iter().collect();
-        let existing = self.get_nodes_by_ids(&candidate_vec).await?;
-        Ok(candidate_vec
-            .into_iter()
-            .filter(|id| existing.contains_key(id))
-            .collect())
+        Ok(hits)
     }
 
     pub async fn create_stale_embedding_marker(&self, node_id: &str) -> Result<()> {

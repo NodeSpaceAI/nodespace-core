@@ -604,6 +604,7 @@ describe('Core Plugins Integration', () => {
       date: true,
       'quote-block': true,
       collection: true,
+      person: true, // child nodes are notes about the person
 
       // Leaf nodes (Rust returns false)
       'code-block': false,

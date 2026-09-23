@@ -312,76 +312,37 @@ impl SqliteStore {
             .await
             .context("Failed to create database schema")?;
 
-        Self::backfill_fts_if_stale(conn).await?;
-
-        Ok(())
-    }
-
-    /// FTS5 index-integrity repair. The external-content `node_fts` triggers
-    /// index writes as they happen, so a healthy database stays in sync on its
-    /// own — but the index and `node` can still diverge if a write is
-    /// interrupted, or if rows reach `node` by a path the triggers did not see
-    /// (a bulk restore, or a `VACUUM` that renumbers rowids). A desynced index silently
-    /// omits those rows from `bm25_search_roots` forever, so rebuild from
-    /// `node` when the two disagree — but ONLY then, so a healthy DB does not
-    /// re-index its whole corpus on every startup.
-    ///
-    /// The staleness signal is the count of ACTUALLY-INDEXED documents, read from
-    /// FTS5's `node_fts_docsize` shadow table — NOT `count(*) FROM node_fts`, which
-    /// for an external-content table reads rowids from the content table (`node`)
-    /// and so always equals the node count regardless of index population. When the
-    /// indexed-doc count differs from `node`, rebuild. No-op on a fresh DB (both 0)
-    /// and after the first rebuild.
-    async fn backfill_fts_if_stale(conn: &libsql::Connection) -> Result<()> {
-        let count = |sql: &'static str| async move {
-            let mut r = conn.query(sql, ()).await?;
-            let n: i64 = r
-                .next()
-                .await?
-                .map(|row| row.get(0))
-                .transpose()?
-                .unwrap_or(0);
-            Ok::<i64, anyhow::Error>(n)
-        };
-        let indexed = count("SELECT count(*) FROM node_fts_docsize")
-            .await
-            .context("Failed to count indexed FTS docs")?;
-        let node_count = count("SELECT count(*) FROM node")
-            .await
-            .context("Failed to count node rows")?;
-        if indexed != node_count {
-            conn.execute("INSERT INTO node_fts(node_fts) VALUES('rebuild')", ())
-                .await
-                .context("Failed to backfill FTS5 index")?;
-        }
-
         Self::backfill_title_fts_if_stale(conn).await?;
+
         Ok(())
     }
 
-    /// The same index-integrity repair for `node_title_fts`, which needs its own
-    /// because that index differs from `node_fts` in two ways that both matter
-    /// here.
+    /// FTS5 index-integrity repair for `node_title_fts`. The triggers index
+    /// writes as they happen, so a healthy database stays in sync on its own —
+    /// but the index and `node` can still diverge if a write is interrupted, or
+    /// if rows reach `node` by a path the triggers did not see (a bulk restore,
+    /// or a `VACUUM` that renumbers rowids). A desynced index silently omits
+    /// those rows from title search forever, so refill from `node` when the two
+    /// disagree — but ONLY then, so a healthy DB does not re-index on every
+    /// startup.
     ///
-    /// First, it is PARTIAL: only titled rows are indexed, so the healthy count
+    /// The index is PARTIAL: only titled rows are indexed, so the healthy count
     /// is `count(*) FROM node WHERE nullif(title, '') IS NOT NULL`, not
     /// `count(*) FROM node`. Comparing against the plain node count would call a
     /// correct index stale on every startup of any database holding a single
     /// child node.
     ///
-    /// Like `backfill_fts_if_stale`, this compares CARDINALITY, so an index
-    /// holding the right number of wrong rows reads as healthy. That is a known
-    /// limit of both checks rather than a property of this one: it catches
-    /// truncation and partial writes, not substitution.
+    /// This compares CARDINALITY, so an index holding the right number of wrong
+    /// rows reads as healthy: it catches truncation and partial writes, not
+    /// substitution.
     ///
-    /// Second, it is STANDALONE rather than external-content, so `'rebuild'` is
+    /// The index is STANDALONE rather than external-content, so `'rebuild'` is
     /// not available (it re-derives rows from a content table this index does not
     /// have) — and would be wrong anyway, since it cannot express the NULL-title
     /// skip. Repair is therefore an explicit delete-and-refill from `node`.
     ///
-    /// `count(*) FROM node_title_fts` is a real row count here, unlike the
-    /// external-content case that forces `node_fts` to read its shadow
-    /// `node_fts_docsize` table.
+    /// `count(*) FROM node_title_fts` is a real row count, since the table
+    /// owns its rows.
     ///
     /// Returns whether it repaired. A needless repair still produces a correct
     /// index, so inspecting the resulting rows cannot distinguish "was already
@@ -418,14 +379,13 @@ impl SqliteStore {
     /// Clear and refill `node_title_fts` from `node`, as ONE transaction.
     ///
     /// The atomicity is the point. Repair is two statements — a DELETE and a
-    /// refill — and `backfill_fts_if_stale` runs after `create_schema` has
+    /// refill — and `backfill_title_fts_if_stale` runs after `create_schema` has
     /// committed, so without an explicit transaction these execute in
     /// autocommit. A crash between them would leave the index EMPTY: not the
     /// stale state the repair was called to fix, but a strictly worse one,
     /// where every entity lookup silently returns nothing. (It would
     /// self-correct on the next open, since an empty index fails the count
-    /// check too — but only after however long that takes.) `node_fts` needs no
-    /// equivalent because its `'rebuild'` is a single atomic statement.
+    /// check too — but only after however long that takes.)
     ///
     /// `BEGIN IMMEDIATE` and the unconditional rollback-on-failure follow
     /// `create_schema`'s reasoning: take the write lock up front rather than
@@ -643,7 +603,7 @@ mod conflicts;
 mod connections;
 mod embeddings;
 mod nodes;
-pub use nodes::ResolvedEntity;
+pub use nodes::{BulkNodeRow, ResolvedEntity};
 mod relationships;
 mod search;
 pub(crate) mod tx;
@@ -1680,75 +1640,6 @@ mod tests {
         assert!(
             bulk_err.to_string().contains("member_of_not_root"),
             "bulk cold-sweep reparent must be gated; got: {bulk_err}"
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_backfill_fts_reindexes_unindexed_nodes() -> Result<()> {
-        // a node present in `node` but missing from `node_fts` (the pre-FTS
-        // corpus) must be re-indexed by the one-time backfill.
-        let (store, _t) = create_test_store().await?;
-
-        let node = Node::new(
-            "text".to_string(),
-            "alpha uniquetoken9173".to_string(),
-            json!({}),
-        );
-        let nid = node.id.clone();
-        store.create_node(node, None, None).await?;
-
-        // Simulate a pre-FTS node: drop it from the external-content index.
-        let rowid: i64 = {
-            let mut r = store
-                .read()
-                .await?
-                .query(
-                    "SELECT rowid FROM node WHERE id = ?1",
-                    libsql::params![nid.clone()],
-                )
-                .await?;
-            r.next().await?.unwrap().get(0)?
-        };
-        store
-            .write()
-            .await
-            .execute(
-                "INSERT INTO node_fts(node_fts, rowid, id, content) VALUES('delete', ?1, ?2, ?3)",
-                libsql::params![rowid, nid.clone(), "alpha uniquetoken9173"],
-            )
-            .await?;
-
-        let matches = |store: Arc<SqliteStore>| async move {
-            let mut r = store
-                .read()
-                .await?
-                .query(
-                    "SELECT count(*) FROM node_fts WHERE node_fts MATCH 'uniquetoken9173'",
-                    (),
-                )
-                .await?;
-            Ok::<i64, anyhow::Error>(r.next().await?.unwrap().get(0)?)
-        };
-        assert_eq!(
-            matches(store.clone()).await?,
-            0,
-            "node should be missing from the index"
-        );
-
-        // Bind the guard rather than writing `&store.write().await.clone()`:
-        // in that form the temporary guard lives to the end of the statement,
-        // i.e. across the whole `backfill_fts_if_stale` await, so the idiom
-        // would self-deadlock if it were ever copied somewhere that re-enters
-        // `write()`. Binding makes the hold explicit and its scope obvious.
-        let db = store.write().await;
-        SqliteStore::backfill_fts_if_stale(&db).await?;
-        drop(db);
-
-        assert_eq!(
-            matches(store.clone()).await?,
-            1,
-            "backfill should re-index the node"
         );
         Ok(())
     }
@@ -2842,17 +2733,6 @@ mod tests {
             gauge.peak(),
             1,
             "get_incoming_mention_containers held a cursor across a nested read"
-        );
-
-        gauge.reset_peak();
-        assert!(
-            !store.bm25_search_roots("child", 50).await?.is_empty(),
-            "fixture must produce an FTS hit, or the nested get_nodes_by_ids is never reached"
-        );
-        assert_eq!(
-            gauge.peak(),
-            1,
-            "bm25_search_roots held a cursor across get_nodes_by_ids"
         );
 
         gauge.reset_peak();

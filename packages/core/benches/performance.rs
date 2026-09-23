@@ -448,16 +448,17 @@ fn bench_batch_update(c: &mut Criterion) {
     group.finish();
 }
 
-/// Benchmark BM25 root-walk latency at realistic corpus sizes
+/// Benchmark BM25 title-search latency at realistic corpus sizes
 ///
-/// Measures: BM25 `@@` query + iterative parent-walk to resolve roots.
-/// Run at 100, 500, and 1000 nodes with 3-level nesting (root→child→grandchild).
+/// Measures: bm25 over `node_title_fts`. Run at 100, 500, and 1000 nodes with
+/// 3-level nesting (root→child→grandchild); only the roots are titled, so the
+/// children sit in the corpus but not in the index.
 /// This is the BM25 leg of hybrid search; it runs in parallel with KNN (~50-100ms).
 /// Target: BM25 path completes well under KNN latency so it stays hidden.
-fn bench_bm25_search_roots(c: &mut Criterion) {
+fn bench_bm25_search_titles(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
 
-    let mut group = c.benchmark_group("bm25_search_roots");
+    let mut group = c.benchmark_group("bm25_search_titles");
 
     for corpus_size in [100usize, 500, 1000] {
         // Build corpus once outside the benchmark loop
@@ -523,7 +524,7 @@ fn bench_bm25_search_roots(c: &mut Criterion) {
                 rt.block_on(async {
                     black_box(
                         store_arc
-                            .bm25_search_roots("persistence", 100)
+                            .bm25_search_titles("persistence", 100)
                             .await
                             .unwrap(),
                     )
@@ -1095,7 +1096,7 @@ criterion_group!(
     bench_occ_overhead,
     bench_batch_get,
     bench_batch_update,
-    bench_bm25_search_roots,
+    bench_bm25_search_titles,
     bench_trigger_index_lookup,
     bench_path_extraction,
     bench_graph_resolver,

@@ -2764,67 +2764,156 @@ impl NodeService {
         Ok(())
     }
 
-    /// Compute the indexed title for a node.
+    /// The one title rule, shared by every write path (single-node create and
+    /// update, moves, bulk hierarchy inserts).
+    ///
+    /// A type with a `titleTemplate` takes the interpolated template. Otherwise
+    /// the title is the node's content for a root and for a `task` or
+    /// `collection` at any depth (each is a named thing wherever it sits), and
+    /// none for any other child — a child line has no meaning outside its root.
+    /// No type is special-cased beyond that: a `date` page or `schema` is a root
+    /// titled by its content (`2026-09-23`, `Task`), like any other root.
+    pub(crate) fn derive_title(
+        node: &Node,
+        is_root: bool,
+        schema: Option<&crate::models::SchemaNode>,
+    ) -> Option<String> {
+        if let Some(schema) = schema {
+            if let Some(template) = &schema.title_template {
+                // Properties are stored namespaced: { "node_type": { "field": value } }
+                // Unwrap to the inner namespace object for template interpolation
+                let flat_props = node
+                    .properties
+                    .get(&node.node_type)
+                    .unwrap_or(&node.properties);
+                return Some(crate::utils::interpolate_title_template_with_schema(
+                    template,
+                    flat_props,
+                    &schema.fields,
+                ));
+            }
+        }
+        if is_root || matches!(node.node_type.as_str(), "task" | "collection") {
+            Some(crate::utils::strip_markdown(&node.content))
+        } else {
+            None
+        }
+    }
+
+    /// The schema [`Self::derive_title`] reads for `node_type`. A failed lookup
+    /// falls back to no schema (the content rule) rather than blocking the
+    /// write.
+    pub(crate) async fn title_schema(&self, node_type: &str) -> Option<crate::models::SchemaNode> {
+        match self.get_schema_node(node_type).await {
+            Ok(schema) => schema,
+            Err(e) => {
+                tracing::warn!(
+                    node_type = %node_type,
+                    error = %e,
+                    "title schema lookup failed, falling back to content-based title"
+                );
+                None
+            }
+        }
+    }
+
+    /// Compute the indexed title for a node — [`Self::derive_title`] with the
+    /// node's schema, looking up rootness only when the caller doesn't supply it
+    /// and the rule depends on it.
     pub(crate) async fn compute_title(
         &self,
         node: &Node,
         is_root: Option<bool>,
     ) -> Result<Option<String>, NodeServiceError> {
-        // date/schema nodes never get titles regardless of template
-        if node.node_type == "date" || node.node_type == "schema" {
-            return Ok(None);
-        }
-
-        // Check for title_template in the schema for this node type
-        match self.get_schema_node(&node.node_type).await {
-            Ok(Some(schema)) => {
-                if let Some(template) = &schema.title_template {
-                    // Properties are stored namespaced: { "node_type": { "field": value } }
-                    // Unwrap to the inner namespace object for template interpolation
-                    let flat_props = node
-                        .properties
-                        .get(&node.node_type)
-                        .unwrap_or(&node.properties);
-                    return Ok(Some(crate::utils::interpolate_title_template_with_schema(
-                        template,
-                        flat_props,
-                        &schema.fields,
-                    )));
-                }
-            }
-            Ok(None) => {} // No schema for this type — fall through to content-based logic
-            Err(e) => {
-                // Schema lookup failed; fall through to content-based title rather than
-                // blocking the create/update operation
-                tracing::warn!(
-                    node_type = %node.node_type,
-                    error = %e,
-                    "compute_title: schema lookup failed, falling back to content-based title"
-                );
-            }
-        }
-
-        // Fall back to content-based title
-        let title = match node.node_type.as_str() {
-            "task" | "collection" => Some(crate::utils::strip_markdown(&node.content)),
-            _ => {
-                let root = match is_root {
-                    Some(v) => v,
-                    None => self
-                        .store
-                        .get_parent_id(&node.id)
-                        .await
-                        .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-                        .is_none(),
-                };
-                if root {
-                    Some(crate::utils::strip_markdown(&node.content))
-                } else {
-                    None
-                }
-            }
+        let schema = self.title_schema(&node.node_type).await;
+        let rootness_matters = schema
+            .as_ref()
+            .and_then(|s| s.title_template.as_ref())
+            .is_none()
+            && !matches!(node.node_type.as_str(), "task" | "collection");
+        let is_root = match is_root {
+            Some(v) => v,
+            None if rootness_matters => self
+                .store
+                .get_parent_id(&node.id)
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+                .is_none(),
+            None => false,
         };
-        Ok(title)
+        Ok(Self::derive_title(node, is_root, schema.as_ref()))
+    }
+
+    /// Bring `node_id`'s derived state in line after an edge write set whether
+    /// it is a root. Every path that gains or drops a `has_child` edge calls
+    /// this, so "only roots are results" holds for both search indexes:
+    ///
+    /// - **Title.** A title follows rootness for every type without a template
+    ///   (a root's is its content, a child's is none). Without the refresh an
+    ///   indented root keeps its title and title search returns it as a
+    ///   document, and an outdented child stays unfindable by name.
+    /// - **Embedding.** Only a tree root carries an embedding. A node that
+    ///   becomes a child drops its own, or vector search would still return it
+    ///   bare. Its (new) tree root is queued either way: a new root needs its
+    ///   first embedding, and a tree that gained a child needs its aggregate
+    ///   rebuilt.
+    ///
+    /// Best-effort: it runs after the edge write has committed, so a failure is
+    /// logged rather than returned — a derived index must not turn a committed
+    /// move into a reported failure that skips the caller's version bump and
+    /// events.
+    pub(crate) async fn refresh_for_rootness(&self, node_id: &str, is_root: bool) {
+        if let Err(e) = self.try_refresh_for_rootness(node_id, is_root).await {
+            tracing::warn!(
+                node_id = %node_id,
+                error = %e,
+                "failed to refresh title/embedding after a rootness change"
+            );
+        }
+        #[cfg(feature = "nlp")]
+        self.queue_root_for_embedding(node_id).await;
+    }
+
+    async fn try_refresh_for_rootness(&self, node_id: &str, is_root: bool) -> anyhow::Result<()> {
+        let Some(node) = self.store.get_node(node_id).await? else {
+            return Ok(());
+        };
+        let title = self.compute_title(&node, Some(is_root)).await?;
+        if title != node.title {
+            self.store
+                .set_title(node_id, title.as_deref(), node.version)
+                .await?;
+        }
+        if !is_root && self.store.has_embeddings(node_id).await? {
+            self.store.delete_embeddings(node_id).await?;
+        }
+        Ok(())
+    }
+
+    /// `_in_tx` twin of [`Self::refresh_for_rootness`], for the title only.
+    /// The tx paths (invariant-rule relationship actions, node merge) rarely
+    /// change rootness, and the embedding store has no transaction-scoped
+    /// writers; a stale embedding there is corrected the next time the node's
+    /// tree is re-embedded.
+    pub(crate) async fn refresh_for_rootness_in_tx(
+        &self,
+        tx: &NodeServiceTx<'_>,
+        node_id: &str,
+        is_root: bool,
+    ) -> Result<(), NodeServiceError> {
+        let Some(node) = crate::db::SqliteStore::get_node_in_tx(tx.store_tx(), node_id)
+            .await
+            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
+        else {
+            return Ok(());
+        };
+        let title = self.compute_title(&node, Some(is_root)).await?;
+        if title != node.title {
+            crate::db::SqliteStore::set_title_in_tx(tx.store_tx(), node_id, title.as_deref())
+                .await
+                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Check if a node exists

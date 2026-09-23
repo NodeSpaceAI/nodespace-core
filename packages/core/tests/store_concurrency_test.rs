@@ -170,14 +170,7 @@ mod store_concurrency_tests {
 
         // A large hierarchy import whose LAST row duplicates the first id, so the
         // transaction fails on a primary-key conflict after a lot of awaited work.
-        let mut rows: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )> = Vec::new();
+        let mut rows: Vec<nodespace_core::db::BulkNodeRow> = Vec::new();
         let root_id = uuid::Uuid::new_v4().to_string();
         rows.push((
             root_id.clone(),
@@ -186,6 +179,7 @@ mod store_concurrency_tests {
             None,
             1.0,
             json!({}),
+            None,
         ));
         for i in 0..400 {
             rows.push((
@@ -195,6 +189,7 @@ mod store_concurrency_tests {
                 Some(root_id.clone()),
                 i as f64,
                 json!({}),
+                None,
             ));
         }
         // Duplicate id → the whole transaction rolls back.
@@ -205,6 +200,7 @@ mod store_concurrency_tests {
             None,
             1.0,
             json!({}),
+            None,
         ));
 
         let importer = tokio::spawn({
@@ -272,14 +268,7 @@ mod store_concurrency_tests {
         // throughout; none may ever be visible.
         let doomed: Vec<String> = (0..200).map(|_| uuid::Uuid::new_v4().to_string()).collect();
 
-        let mut rows: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )> = doomed
+        let mut rows: Vec<nodespace_core::db::BulkNodeRow> = doomed
             .iter()
             .enumerate()
             .map(|(i, id)| {
@@ -290,6 +279,7 @@ mod store_concurrency_tests {
                     None,
                     i as f64,
                     json!({}),
+                    None,
                 )
             })
             .collect();
@@ -301,6 +291,7 @@ mod store_concurrency_tests {
             None,
             0.0,
             json!({}),
+            None,
         ));
 
         let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -357,14 +348,7 @@ mod store_concurrency_tests {
         let (store, _t) = create_test_store().await?;
         let probe = seed_node(&store, "probe").await?;
 
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            f64,
-            serde_json::Value,
-        )> = (0..2000)
+        let rows: Vec<nodespace_core::db::BulkNodeRow> = (0..2000)
             .map(|i| {
                 (
                     uuid::Uuid::new_v4().to_string(),
@@ -373,6 +357,7 @@ mod store_concurrency_tests {
                     None,
                     i as f64,
                     json!({}),
+                    None,
                 )
             })
             .collect();

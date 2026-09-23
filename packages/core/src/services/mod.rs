@@ -67,7 +67,7 @@ pub trait NodeAccessor: Send + Sync {
 /// about every type; they just declare intent.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SearchScope {
-    /// Default: knowledge nodes (text, header, code-block, schema, table)
+    /// Default: the user's knowledge — `KNOWLEDGE_CORE_TYPES` plus user-defined types
     Knowledge,
     /// Only conversation nodes (ai-chat)
     Conversations,

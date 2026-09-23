@@ -205,7 +205,15 @@ async fn test_behavior_driven_non_embeddable_types() -> Result<()> {
     let registry = NodeBehaviorRegistry::new();
 
     // Types whose behaviors always return None from get_embeddable_content
-    let non_embeddable_types = vec!["task", "date", "collection", "query", "horizontal-line"];
+    let non_embeddable_types = vec![
+        "task",
+        "project",
+        "person",
+        "date",
+        "collection",
+        "query",
+        "horizontal-line",
+    ];
     for node_type in non_embeddable_types {
         let behavior = registry.get(node_type).expect("behavior should exist");
         let node = Node::new(node_type.to_string(), "test content".to_string(), json!({}));
@@ -1238,175 +1246,326 @@ async fn test_title_keyword_boost_applied() -> Result<()> {
 // Hybrid Search Tests
 // =========================================================================
 
-/// Test that BM25 search finds nodes containing query terms
+/// Ids from the keyword half, in rank order.
+async fn title_hits(store: &SqliteStore, query: &str) -> Result<Vec<String>> {
+    Ok(store
+        .bm25_search_titles(query, 50)
+        .await?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect())
+}
+
+/// The keyword half finds a root by a word in its title.
 #[tokio::test]
-async fn test_bm25_search_roots_finds_root_by_content() -> Result<()> {
+async fn test_bm25_search_titles_finds_root_by_title() -> Result<()> {
     let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
 
-    // Create a root node with specific vocabulary
     let doc = create_root_node(
         &node_service,
         "text",
         "SharedNodeStore debounce persistence coordinator pattern",
     )
     .await?;
-
-    // Create an unrelated node
     let other = create_root_node(&node_service, "text", "Unrelated content about cats").await?;
 
-    // BM25 search should find the document by exact term
-    let roots = store.bm25_search_roots("persistence", 50).await?;
+    let hits = title_hits(&store, "persistence").await?;
 
+    assert!(hits.contains(&doc.id), "should find the root by its title");
     assert!(
-        roots.contains(&doc.id),
-        "BM25 should find root with 'persistence' in content"
-    );
-    assert!(
-        !roots.contains(&other.id),
-        "BM25 should not find unrelated document"
+        !hits.contains(&other.id),
+        "should not find an unrelated root"
     );
 
     Ok(())
 }
 
-/// Test that BM25 search resolves child node matches to their root
+/// A word that appears only in a child line is never matched: the child has no
+/// title, and the keyword half does not walk from a child to its root. Covers a
+/// child under a `text` root, a `task`, a `date` page and an `agent-guidance`
+/// root — the last three are the non-embeddable roots whose children search
+/// used to return bare.
 #[tokio::test]
-async fn test_bm25_search_roots_resolves_child_to_root() -> Result<()> {
+async fn test_bm25_search_titles_never_matches_child_lines() -> Result<()> {
     let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
 
-    // Create a root node with generic content
-    let root = create_root_node(&node_service, "text", "Overview document").await?;
+    node_service.ensure_date_exists("2026-09-23").await?;
+    let text_root = create_root_node(&node_service, "text", "Overview document").await?;
+    let task_root = create_root_node(&node_service, "task", "Ship the release").await?;
+    let guidance_root = create_root_node(&node_service, "agent-guidance", "Local agent").await?;
 
-    // Create a child node with specific technical vocabulary
-    let child = create_child_node(
-        &node_service,
-        &root.id,
-        "text",
-        "SimplePersistenceCoordinator debounce implementation",
-    )
-    .await?;
+    let mut children = Vec::new();
+    for parent in [
+        text_root.id.as_str(),
+        task_root.id.as_str(),
+        "2026-09-23",
+        guidance_root.id.as_str(),
+    ] {
+        children.push(
+            create_child_node(
+                &node_service,
+                parent,
+                "text",
+                "clarification before deleting zebrawood",
+            )
+            .await?,
+        );
+    }
 
-    // BM25 search should find the ROOT (not the child) when the term is in the child
-    let roots = store.bm25_search_roots("debounce", 50).await?;
-
+    let hits = title_hits(&store, "zebrawood clarification").await?;
     assert!(
-        roots.contains(&root.id),
-        "BM25 should surface the ROOT when query term is in a child node"
+        hits.is_empty(),
+        "a word only in child lines must match nothing — neither the child nor its root: {hits:?}"
     );
-    assert!(
-        !roots.contains(&child.id),
-        "BM25 should return root IDs, not child IDs"
-    );
+    for child in &children {
+        assert_eq!(child.title, None, "a child line must carry no title");
+    }
 
     Ok(())
 }
 
-/// Test BM25 with query term buried in a grandchild node
+/// The embedding root is always the tree root, even under a non-embeddable
+/// root: a line on a date page or under a task never becomes an embedding root
+/// of its own, so it carries no vector and search never returns it bare.
 #[tokio::test]
-async fn test_bm25_search_roots_resolves_grandchild_to_root() -> Result<()> {
+async fn test_embedding_root_is_tree_root_under_non_embeddable_roots() -> Result<()> {
+    let (_embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
+
+    node_service.ensure_date_exists("2026-09-23").await?;
+    let task = create_root_node(&node_service, "task", "Ship the release").await?;
+
+    for root in ["2026-09-23", task.id.as_str()] {
+        let child = create_child_node(&node_service, root, "text", "a journal line").await?;
+        let grandchild = create_child_node(&node_service, &child.id, "text", "detail").await?;
+        for id in [&child.id, &grandchild.id] {
+            assert_eq!(node_service.get_embedding_root_id(id).await?, root);
+        }
+    }
+
+    Ok(())
+}
+
+/// Title follows rootness across moves: indenting a root under a parent drops
+/// its title (and its title-index row), and moving it back to root restores
+/// both. Without this an indented document stays keyword-findable as a bare
+/// child line.
+#[tokio::test]
+async fn test_move_rederives_title_from_rootness() -> Result<()> {
     let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
 
-    let root = create_root_node(&node_service, "text", "Frontend Architecture").await?;
-    let child =
-        create_child_node(&node_service, &root.id, "text", "State management section").await?;
-    let grandchild = create_child_node(
-        &node_service,
-        &child.id,
-        "text",
-        "reactivity rune derived store update",
-    )
-    .await?;
+    let parent = create_root_node(&node_service, "text", "Parent document").await?;
+    let moved = create_root_node(&node_service, "text", "Quokka habitat notes").await?;
+    assert_eq!(moved.title.as_deref(), Some("Quokka habitat notes"));
+    assert_eq!(title_hits(&store, "quokka").await?, vec![moved.id.clone()]);
 
-    // Query term is in grandchild - should resolve to root
-    let roots = store.bm25_search_roots("reactivity", 50).await?;
+    node_service
+        .move_node_unchecked(
+            &moved.id,
+            Some(&parent.id),
+            nodespace_core::services::InsertPosition::End,
+        )
+        .await?;
+    let indented = node_service.get_node(&moved.id).await?.expect("node");
+    assert_eq!(indented.title, None, "an indented node carries no title");
+    assert!(title_hits(&store, "quokka").await?.is_empty());
 
-    assert!(
-        roots.contains(&root.id),
-        "BM25 should surface ROOT when query term is in grandchild"
+    node_service
+        .move_node_unchecked(
+            &moved.id,
+            None,
+            nodespace_core::services::InsertPosition::End,
+        )
+        .await?;
+    let outdented = node_service.get_node(&moved.id).await?.expect("node");
+    assert_eq!(outdented.title.as_deref(), Some("Quokka habitat notes"));
+    assert_eq!(title_hits(&store, "quokka").await?, vec![moved.id.clone()]);
+
+    Ok(())
+}
+
+/// The same through the relationship API: adding a `has_child` edge drops the
+/// child's title, deleting it restores the title.
+#[tokio::test]
+async fn test_has_child_edge_rederives_title_from_rootness() -> Result<()> {
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let parent = create_root_node(&node_service, "text", "Parent document").await?;
+    let child = create_root_node(&node_service, "text", "Wombat burrow survey").await?;
+
+    node_service
+        .create_relationship(&parent.id, "has_child", &child.id, json!({}))
+        .await?;
+    assert_eq!(
+        node_service.get_node(&child.id).await?.expect("node").title,
+        None
     );
-    assert!(
-        !roots.contains(&child.id),
-        "Intermediate child should not appear as root"
+    assert!(title_hits(&store, "wombat").await?.is_empty());
+
+    node_service
+        .delete_relationship(&parent.id, "has_child", &child.id)
+        .await?;
+    assert_eq!(
+        node_service
+            .get_node(&child.id)
+            .await?
+            .expect("node")
+            .title
+            .as_deref(),
+        Some("Wombat burrow survey")
     );
-    assert!(
-        !roots.contains(&grandchild.id),
-        "Grandchild should not appear as root"
+    assert_eq!(title_hits(&store, "wombat").await?, vec![child.id.clone()]);
+
+    Ok(())
+}
+
+/// Roots that aren't embedded — a task, a date page, a user-defined record —
+/// are found by their title.
+#[tokio::test]
+async fn test_bm25_search_titles_finds_task_date_and_record_titles() -> Result<()> {
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let task = create_root_node(&node_service, "task", "Renew the Contoso contract").await?;
+    node_service.ensure_date_exists("2026-09-23").await?;
+
+    assert!(title_hits(&store, "Renew the Contoso contract")
+        .await?
+        .contains(&task.id));
+    assert!(title_hits(&store, "2026-09-23")
+        .await?
+        .contains(&"2026-09-23".to_string()));
+
+    Ok(())
+}
+
+/// A core schema carries its name as its title and is in the title index, but
+/// the keyword half leaves it out: a type name is a common word, so "project
+/// roadmap" must return the user's roadmap, not the Project schema.
+#[tokio::test]
+async fn test_core_schemas_are_titled_but_not_keyword_hits() -> Result<()> {
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let task_schema = store.get_node("task").await?.expect("core task schema");
+    assert_eq!(task_schema.title.as_deref(), Some("Task"));
+
+    let roadmap = create_root_node(&node_service, "text", "Q3 project roadmap").await?;
+    let hits = title_hits(&store, "project roadmap").await?;
+    assert_eq!(
+        hits,
+        vec![roadmap.id],
+        "only the user's document, never the schema"
     );
 
     Ok(())
 }
 
-/// Test that BM25 returns empty set when no content matches
+/// A user-defined record is found by its name, by the keyword half and by
+/// general search in the default scope — user-defined types are admitted to
+/// `Knowledge` from the schema list at search time.
 #[tokio::test]
-async fn test_bm25_search_roots_no_match_returns_empty() -> Result<()> {
+async fn test_user_defined_record_is_found_by_title() -> Result<()> {
+    let (embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+    let node_service = Arc::new(node_service);
+    let embedding_service = Arc::new(embedding_service);
+
+    let created = nodespace_core::schema::handle_create_schema(
+        &node_service,
+        json!({ "name": "Company", "fields": [{ "name": "industry", "type": "text" }] }),
+    )
+    .await?;
+    let company_type = created["schemaId"].as_str().expect("schema id").to_string();
+    let record = create_root_node(&node_service, &company_type, "Northwind Trading").await?;
+
+    assert_eq!(
+        title_hits(&store, "Northwind Trading").await?,
+        vec![record.id.clone()]
+    );
+
+    let input = title_search_input("Northwind Trading", None);
+    let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
+    assert!(
+        output.matched_nodes.iter().any(|n| n.id == record.id),
+        "the default scope admits a user-defined record"
+    );
+
+    Ok(())
+}
+
+/// Only a tree root carries an embedding: indenting a root under a parent
+/// drops the embedding it had, so vector search can't return it bare.
+#[tokio::test]
+async fn test_indented_root_drops_its_embedding() -> Result<()> {
+    use nodespace_core::models::NewEmbedding;
+
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    let parent = create_root_node(&node_service, "text", "Parent document").await?;
+    let moved = create_root_node(&node_service, "text", "Standalone note").await?;
+    store
+        .upsert_embeddings(
+            &moved.id,
+            vec![NewEmbedding {
+                node_id: moved.id.clone(),
+                vector: vec![0.5f32; 768],
+                model_name: Some("test-model".to_string()),
+                chunk_index: 0,
+                chunk_start: 0,
+                chunk_end: 15,
+                total_chunks: 1,
+                content_hash: "hash".to_string(),
+                token_count: 3,
+            }],
+        )
+        .await?;
+    assert!(store.has_embeddings(&moved.id).await?);
+
+    node_service
+        .move_node_unchecked(
+            &moved.id,
+            Some(&parent.id),
+            nodespace_core::services::InsertPosition::End,
+        )
+        .await?;
+
+    assert!(
+        !store.has_embeddings(&moved.id).await?,
+        "a node that became a child must not keep its own embedding"
+    );
+    Ok(())
+}
+
+/// Hits come back in bm25 rank order: a root matching more query tokens ranks
+/// above one matching fewer.
+#[tokio::test]
+async fn test_bm25_search_titles_ordered_by_rank() -> Result<()> {
+    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
+
+    // Created weaker-first so insertion order can't masquerade as rank order.
+    let weak = create_root_node(&node_service, "text", "Quarterly planning").await?;
+    let strong = create_root_node(&node_service, "text", "Quarterly revenue forecast").await?;
+
+    let hits = store
+        .bm25_search_titles("quarterly revenue forecast", 50)
+        .await?;
+    let ids: Vec<&str> = hits.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(ids, vec![strong.id.as_str(), weak.id.as_str()]);
+    assert!(
+        hits[0].1 < hits[1].1,
+        "bm25 is negative, more negative = better: {hits:?}"
+    );
+
+    Ok(())
+}
+
+/// Test that the keyword half returns nothing when no title matches
+#[tokio::test]
+async fn test_bm25_search_titles_no_match_returns_empty() -> Result<()> {
     let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
 
     let _doc = create_root_node(&node_service, "text", "cats and dogs").await?;
 
-    let roots = store.bm25_search_roots("xyznonexistentterm123", 50).await?;
-
-    assert!(
-        roots.is_empty(),
-        "BM25 should return empty set when no content matches"
-    );
-
-    Ok(())
-}
-
-/// Test that a single call correctly partitions multiple simultaneous matches
-/// across independent trees, including two matches that share one root, a
-/// match nested three levels deep in a separate tree, and a match that is
-/// itself a root — the batched CTE must resolve each to the right root
-/// without cross-contamination between seeds.
-#[tokio::test]
-async fn test_bm25_search_roots_batches_multiple_matches_across_trees() -> Result<()> {
-    let (_embedding_service, node_service, store, _temp_dir) = create_unified_test_env().await?;
-
-    // Tree A: root with two children that both match "shared-term".
-    let root_a = create_root_node(&node_service, "text", "Tree A overview").await?;
-    let child_a1 = create_child_node(
-        &node_service,
-        &root_a.id,
-        "text",
-        "shared-term in child one",
-    )
-    .await?;
-    let child_a2 = create_child_node(
-        &node_service,
-        &root_a.id,
-        "text",
-        "shared-term in child two",
-    )
-    .await?;
-
-    // Tree B: root -> child -> grandchild, match buried in the grandchild.
-    let root_b = create_root_node(&node_service, "text", "Tree B overview").await?;
-    let child_b = create_child_node(&node_service, &root_b.id, "text", "Tree B section").await?;
-    let grandchild_b =
-        create_child_node(&node_service, &child_b.id, "text", "shared-term deep leaf").await?;
-
-    // Tree C: an unparented node that is itself a root and itself the match.
-    let root_c = create_root_node(&node_service, "text", "shared-term standalone root").await?;
-
-    let roots = store.bm25_search_roots("shared-term", 50).await?;
-
-    assert_eq!(
-        roots.len(),
-        3,
-        "Should resolve to exactly 3 distinct roots, not one per match: {:?}",
-        roots
-    );
-    assert!(roots.contains(&root_a.id), "Tree A's root should surface");
-    assert!(roots.contains(&root_b.id), "Tree B's root should surface");
-    assert!(roots.contains(&root_c.id), "Standalone root should surface");
-    assert!(
-        !roots.contains(&child_a1.id) && !roots.contains(&child_a2.id),
-        "Tree A's children should not appear as roots"
-    );
-    assert!(
-        !roots.contains(&child_b.id) && !roots.contains(&grandchild_b.id),
-        "Tree B's child/grandchild should not appear as roots"
-    );
+    assert!(title_hits(&store, "xyznonexistentterm123")
+        .await?
+        .is_empty());
 
     Ok(())
 }
@@ -1462,7 +1621,10 @@ async fn test_hybrid_intersection_tier_signal() -> Result<()> {
     }
 
     // Run both signals independently (mirrors the hybrid search parallel execution)
-    let bm25_roots = store.bm25_search_roots("persistence", 50).await?;
+    let bm25_roots: std::collections::HashSet<String> = title_hits(&store, "persistence")
+        .await?
+        .into_iter()
+        .collect();
     let knn_results = store.search_embeddings(&vec_same, 20, Some(0.1)).await?;
     let knn_ids: std::collections::HashSet<String> =
         knn_results.iter().map(|r| r.node_id.clone()).collect();
@@ -1470,7 +1632,7 @@ async fn test_hybrid_intersection_tier_signal() -> Result<()> {
     // doc_a should be in BOTH (tier 1: intersection)
     assert!(
         bm25_roots.contains(&doc_a.id),
-        "doc_a should be in BM25 results (has 'persistence' in content)"
+        "doc_a should be in BM25 results (has 'persistence' in its title)"
     );
     assert!(
         knn_ids.contains(&doc_a.id),
@@ -1480,7 +1642,7 @@ async fn test_hybrid_intersection_tier_signal() -> Result<()> {
     // doc_b should be in KNN only (tier 2)
     assert!(
         !bm25_roots.contains(&doc_b.id),
-        "doc_b should NOT be in BM25 results (no 'persistence' in content)"
+        "doc_b should NOT be in BM25 results (no 'persistence' in its title)"
     );
     assert!(
         knn_ids.contains(&doc_b.id),
@@ -1551,7 +1713,10 @@ async fn test_hybrid_bm25_only_tier_has_no_knn_score() -> Result<()> {
         .await?;
 
     // Run both signals
-    let bm25_roots = store.bm25_search_roots("persistence", 50).await?;
+    let bm25_roots: std::collections::HashSet<String> = title_hits(&store, "persistence")
+        .await?
+        .into_iter()
+        .collect();
     let knn_results = store.search_embeddings(&vec_b, 20, Some(0.1)).await?;
     let knn_ids: std::collections::HashSet<String> =
         knn_results.iter().map(|r| r.node_id.clone()).collect();
@@ -1573,7 +1738,7 @@ async fn test_hybrid_bm25_only_tier_has_no_knn_score() -> Result<()> {
     );
     assert!(
         !bm25_roots.contains(&doc_knn_only.id),
-        "doc_knn_only should NOT appear in BM25 results (no 'persistence' in content)"
+        "doc_knn_only should NOT appear in BM25 results (no 'persistence' in its title)"
     );
 
     Ok(())
@@ -1618,9 +1783,7 @@ async fn test_hybrid_conceptual_query_bm25_misses_knn_hits() -> Result<()> {
         .await?;
 
     // BM25 query uses different vocabulary than the document content → no match
-    let bm25_roots = store
-        .bm25_search_roots("pattern for persisting changes", 50)
-        .await?;
+    let bm25_roots = title_hits(&store, "pattern for persisting changes").await?;
 
     // KNN finds it via embedding similarity
     let knn_results = store.search_embeddings(&vec, 20, Some(0.1)).await?;
@@ -1997,9 +2160,9 @@ async fn test_title_matches_still_respect_archived_filtering() -> Result<()> {
     Ok(())
 }
 
-/// The default `knowledge` scope excludes `task`, so a keyword hit on one is
-/// filtered out exactly as a semantic hit would be — the scope guard applies
-/// to both halves of the merge.
+/// The default `knowledge` scope admits a `task` — it is found by its title —
+/// but not system content such as `agent-guidance`. The scope guard applies to
+/// both halves of the merge.
 #[tokio::test]
 async fn test_title_matches_respect_default_knowledge_scope() -> Result<()> {
     let (embedding_service, node_service, _store, _temp_dir) = create_unified_test_env().await?;
@@ -2007,13 +2170,23 @@ async fn test_title_matches_respect_default_knowledge_scope() -> Result<()> {
     let embedding_service = Arc::new(embedding_service);
 
     let task = create_root_node(&node_service, "task", "Draft Q3 architecture review").await?;
+    let guidance = create_root_node(
+        &node_service,
+        "agent-guidance",
+        "Draft Q3 architecture review",
+    )
+    .await?;
 
     let input = title_search_input("Draft Q3 architecture review", None);
     let output = search_ops::search_semantic(&node_service, &embedding_service, input).await?;
 
     assert!(
-        !output.matched_nodes.iter().any(|n| n.id == task.id),
-        "the default knowledge scope excludes task, for keyword hits as well"
+        output.matched_nodes.iter().any(|n| n.id == task.id),
+        "the default knowledge scope admits a task"
+    );
+    assert!(
+        !output.matched_nodes.iter().any(|n| n.id == guidance.id),
+        "the default knowledge scope excludes agent-guidance, for keyword hits as well"
     );
     Ok(())
 }
