@@ -114,7 +114,8 @@ Use this to pick the right command for the task at hand.
 
 | Goal | Command |
 |------|---------|
-| Find nodes by keywords or meaning | `nodespace search "<query>"` |
+| Find a specific record you know by name (a task, a company, any typed record) | `nodespace node query --title-contains "<name>"` |
+| Find notes and documents by meaning | `nodespace search "<query>"` |
 | List all nodes of a type | `nodespace search "" --type <type>` |
 | Filter by property values (status, due_date, priority, etc.) | `nodespace query --type <type> --filters '<json>'` |
 | Filter with comparison operators (gt, lt, gte, lte, in) | `nodespace query --type <type> --filters '<json>'` |
@@ -123,15 +124,11 @@ Use this to pick the right command for the task at hand.
 
 **`nodespace node query` is for exact substring/type matching only** (`--content-contains`, `--title-contains`, `--mentioned-by`, `--type`). It has no property-filter flags.
 
-**`nodespace query` is the command for structured property queries** — status, due_date, priority, or any comparison operator. Examples:
-- "find all my open tasks" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"status","value":"open"}]'`
-- "tasks due tomorrow" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"due_date","value":"<YYYY-MM-DD>"}]' --sorting '[{"field":"due_date","direction":"asc"}]'`
-- "tasks due this week" → `nodespace query --type task --filters '[{"type":"property","operator":"gte","property":"due_date","value":"<week start>"},{"type":"property","operator":"lte","property":"due_date","value":"<week end>"}]'`
-- "high priority tasks" → `nodespace query --type task --filters '[{"type":"property","operator":"equals","property":"priority","value":"high"}]'`
+**`nodespace query` is the command for structured property queries** — status, due_date, priority, or any comparison operator. Worked examples: `references/cli.md`, *Structured property query*.
 
-Date format for all date properties: **YYYY-MM-DD**. Available operators: `equals`, `contains`, `gt`, `lt`, `gte`, `lte`, `in`, `exists`. Filter types: `property`, `content`, `relationship`, `metadata`.
+**A name is not an ID — resolve it before you act.** When the user names a record you haven't looked up ("mark the Northwind contract signed", "add Fabrikam"), run `nodespace node query --title-contains "<name>"` first. Not `nodespace search`: a name search only matches prose, never tasks or typed records. Judge the results by whether one *is* the named record — same name, same type — not by whether the list is empty, since the lookup also matches on a shared word. One match: act on its ID; if asked to *add* it, say it already exists and ask before creating a duplicate. Several: ask which one. None: it doesn't exist — create it if they're adding it, otherwise tell them. Don't keep searching.
 
-**`nodespace search` is semantic** (embedding-based similarity), ranked by relevance. Pass `--type` to narrow to one or more node types, `--limit` to cap results (default 20), `--include-content` to also read the top 5 hits (a bare result is just its heading). No graph-boost, cross-collection exclusion, or edge-inclusion — fall back to `nodespace query` plus `nodespace relationship get` for those.
+**`nodespace search` is semantic** (embedding-based similarity over prose nodes), ranked by relevance. Pass `--type` to narrow to one or more node types, `--limit` to cap results (default 20), `--include-content` to also read the top 5 hits (a bare result is just its heading). No graph-boost, cross-collection exclusion, or edge-inclusion — fall back to `nodespace query` plus `nodespace relationship get` for those.
 
 **Multiple topics:** run `nodespace search` once per topic rather than one broad search plus per-result fetches.
 
@@ -249,7 +246,7 @@ Prefer a collection for any durable grouping: don't add a `tags`/`categories`/`t
 Deletion is permanent and takes the node's children with it. Resolve the node first and confirm with the user before deleting anything you did not just create — a wrong id here is not recoverable.
 
 ```bash
-nodespace node query --content-contains "draft spec"   # resolve the id first
+nodespace node query --title-contains "draft spec"     # resolve the id first
 nodespace node delete <node-id>
 ```
 
