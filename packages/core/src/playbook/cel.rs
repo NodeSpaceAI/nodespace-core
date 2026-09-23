@@ -559,30 +559,34 @@ fn build_condition_context_with_resolved<'a>(
 /// non-deterministic surface CEL can express today.
 pub const NON_DETERMINISTIC_FUNCTIONS: &[&str] = &["today", "days_since", "days_until"];
 
-/// All three date functions below read the wall clock in **UTC**, never in the
-/// host's local timezone. This was a deliberate fix for a real divergence:
-/// `today()` used to read `Local::now()` while `days_since`/`days_until` read
-/// `Utc::now()`, so a condition like `node.due_date == today()` and
-/// `days_until(node.due_date) == 0` could disagree for the same moment,
-/// depending on the host's offset from UTC — one function had already rolled
-/// over to a new day while the other had not.
-///
-/// UTC was chosen over "make everything local" for two reasons:
-///
-/// - There is no single "local" for a rule that can run on multiple synced
-///   devices (ADR-060, ADR-074's derived identity). A UTC day boundary is the
-///   same instant everywhere; a local-calendar-day boundary is not, and would
-///   make "today" mean a different absolute moment on every device.
-/// - The daemon evaluating a condition is not necessarily attached to the
-///   timezone the play author had in mind — there's no principled way for
-///   server-side/headless evaluation to pick "whose local time" wins.
-///
-/// The accepted trade-off: `today()` no longer matches the *user's* calendar
-/// day exactly at the UTC boundary — someone well east or west of UTC can see
-/// `today()` roll over up to ~12 hours before or after their own local
-/// midnight. That's judged better than three functions silently disagreeing
-/// with each other.
-///
+// ---------------------------------------------------------------------------
+// Which clock: today() / days_since() / days_until() all read UTC
+// ---------------------------------------------------------------------------
+//
+// All three date functions below read the wall clock in **UTC**, never in the
+// host's local timezone. This was a deliberate fix for a real divergence:
+// `today()` used to read `Local::now()` while `days_since`/`days_until` read
+// `Utc::now()`, so a condition like `node.due_date == today()` and
+// `days_until(node.due_date) == 0` could disagree for the same moment,
+// depending on the host's offset from UTC — one function had already rolled
+// over to a new day while the other had not.
+//
+// UTC was chosen over "make everything local" for two reasons:
+//
+// - There is no single "local" for a rule that can run on multiple synced
+//   devices (ADR-060, ADR-074's derived identity). A UTC day boundary is the
+//   same instant everywhere; a local-calendar-day boundary is not, and would
+//   make "today" mean a different absolute moment on every device.
+// - The daemon evaluating a condition is not necessarily attached to the
+//   timezone the play author had in mind — there's no principled way for
+//   server-side/headless evaluation to pick "whose local time" wins.
+//
+// The accepted trade-off: `today()` no longer matches the *user's* calendar
+// day exactly at the UTC boundary — someone well east or west of UTC can see
+// `today()` roll over up to ~12 hours before or after their own local
+// midnight. That's judged better than three functions silently disagreeing
+// with each other.
+
 /// `days_since(date_string)` — Parse ISO 8601 date and return days elapsed.
 ///
 /// Returns negative for future dates. Returns error for invalid input.
@@ -598,8 +602,9 @@ fn cel_days_until(date_str: Arc<String>) -> Result<Value, ExecutionError> {
 }
 
 /// `today()` — Return the current UTC date as an ISO 8601 string. See the
-/// module comment above [`cel_days_since`] for why UTC, not the host's local
-/// timezone, is authoritative here and must match `days_since`/`days_until`.
+/// "Which clock" comment block above [`cel_days_since`] for why UTC, not the
+/// host's local timezone, is authoritative here and must match
+/// `days_since`/`days_until`.
 fn cel_today() -> String {
     Utc::now().format("%Y-%m-%d").to_string()
 }
@@ -1159,20 +1164,33 @@ mod tests {
         // different calendar dates near a day boundary depending on the
         // host's timezone offset, so this expression could evaluate to
         // false even though "today" and "0 days until" are the same claim.
+        //
+        // The expression makes two independent, unsynchronized `Utc::now()`
+        // reads (once inside `today()`, once inside `days_until()`), so a
+        // UTC midnight tick landing in the microsecond gap between them
+        // would make a *correct* implementation observe a 1-day disagreement
+        // too -- retry once rather than accept that sub-microsecond flake.
         let node = test_node("task", json!({}));
         let event = node_created_event("task");
-        let result =
-            evaluate_conditions(&conds(&["days_until(today()) == 0"]), &node, &event, None).await;
+        let conditions = conds(&["days_until(today()) == 0"]);
+        let mut result = evaluate_conditions(&conditions, &node, &event, None).await;
+        if result != ConditionResult::Pass {
+            result = evaluate_conditions(&conditions, &node, &event, None).await;
+        }
         assert_eq!(result, ConditionResult::Pass);
     }
 
     #[tokio::test]
     async fn today_and_days_since_zero_agree_on_the_same_clock() {
-        // Same agreement, the `days_since` direction.
+        // Same agreement, the `days_since` direction; see the retry note on
+        // `today_and_days_until_zero_agree_on_the_same_clock` above.
         let node = test_node("task", json!({}));
         let event = node_created_event("task");
-        let result =
-            evaluate_conditions(&conds(&["days_since(today()) == 0"]), &node, &event, None).await;
+        let conditions = conds(&["days_since(today()) == 0"]);
+        let mut result = evaluate_conditions(&conditions, &node, &event, None).await;
+        if result != ConditionResult::Pass {
+            result = evaluate_conditions(&conditions, &node, &event, None).await;
+        }
         assert_eq!(result, ConditionResult::Pass);
     }
 
