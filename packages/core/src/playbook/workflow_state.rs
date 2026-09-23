@@ -113,7 +113,12 @@ pub struct WorkflowState {
     /// itself) — not the unbounded-until-retried staleness a failed refresh
     /// produces, which is what this field exists to flag. A cache read
     /// during that ordinary lag cannot fail the way a live call can, so it
-    /// stays invisible here, same as before.
+    /// stays invisible here, same as before. The same reasoning covers the
+    /// similarly brief window at process startup before this database's
+    /// `PlaybookEngine::start` has run its first refresh at all: no refresh
+    /// has failed yet there either, only not yet happened — which is
+    /// `ancestor_cache`'s own pre-existing "absent means no ancestry"
+    /// default, not a gap this field introduces.
     ///
     /// An empty `degraded_reasons` therefore means: every live lookup that
     /// fed this response succeeded, AND the ancestor-cache refresh most
@@ -351,10 +356,17 @@ pub async fn get_workflow_state(
     // succeeded again, that fan-out may have silently missed a Play
     // registered on an ancestor of `node.node_type` — flag it the same way a
     // live resolution failure is flagged, rather than staying silent just
-    // because a cache read cannot itself return an `Err`. Process-wide, not
-    // per-node-type (see `WorkflowState::degraded_reasons`): `None` (no
-    // engine wired, e.g. a bare `NodeService` in a unit test) means no
-    // signal is available, not that the cache is known fresh.
+    // because a cache read cannot itself return an `Err`. Per-database
+    // (the daemon runs one `PlaybookEngine`/`NodeService` pair per database
+    // id), not per-node-type (see `WorkflowState::degraded_reasons`): `None`
+    // (no engine wired, e.g. a bare `NodeService` in a unit test) means no
+    // signal is available, not that the cache is known fresh. `false` also
+    // covers the brief window before this database's `PlaybookEngine::start`
+    // has run its first `refresh_ancestor_cache` at all — no refresh has
+    // failed yet there either, even though the cache is still genuinely
+    // empty, which matches `ancestor_cache`'s own pre-existing "absent means
+    // no ancestry" default (see its doc comment in `lifecycle.rs`) rather
+    // than introducing a new gap.
     if node_service
         .playbook_ancestry_dirty()
         .is_some_and(|dirty| dirty.load(Ordering::Relaxed))
