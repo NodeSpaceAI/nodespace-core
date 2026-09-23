@@ -600,35 +600,77 @@ fn extend_inherited_field(
     Ok(addition.values.len())
 }
 
+/// Which reserved-name category a relationship name falls into, if any. The
+/// single source of truth for "is this name off-limits and why" — both
+/// [`reject_reserved_relationship_names`] (the `add_relationships`/
+/// `create_schema` side) and [`reject_reserved_relationship_removal_names`]
+/// (the `remove_relationships` side) classify through this one function and
+/// format their own, differently-worded messages from the result, so a
+/// future change to *which* names are reserved only has one place to change
+/// — the two call sites cannot drift apart on the policy itself, only on
+/// wording.
+enum ReservedRelationshipName {
+    /// A built-in structural relationship (`has_child`, …). Never stored as
+    /// a declaration (see `builtin_exclusion_sql`) — naming one is always
+    /// either an outright collision (on the add side) or an inert no-op (on
+    /// the remove side).
+    Builtin,
+    /// A type-system relationship (`extends`/`extended_by`, see
+    /// `TYPE_SYSTEM_RELATIONSHIPS`). Only the forward spelling, `extends`, is
+    /// ever stored as a `relationship_type` value (`set_schema_declarations`
+    /// writes one row per declaration, keyed on the forward name) — so unlike
+    /// `extends`, naming `extended_by` here was always an inert no-op, the
+    /// same situation as the built-in branch above, not a real bypass; it is
+    /// rejected anyway for the same early, consistent-feedback reason. The
+    /// stored `extends` row is settable/clearable only through the schema
+    /// definition's own `extends` key — never through a generic by-name
+    /// relationship path.
+    TypeSystem,
+}
+
+fn classify_reserved_relationship_name(name: &str) -> Option<ReservedRelationshipName> {
+    if crate::models::schema::is_reserved_relationship_name(name) {
+        Some(ReservedRelationshipName::Builtin)
+    } else if crate::models::schema::is_type_system_relationship(name) {
+        Some(ReservedRelationshipName::TypeSystem)
+    } else {
+        None
+    }
+}
+
 fn reject_reserved_relationship_names(
     relationships: &[crate::models::schema::SchemaRelationship],
 ) -> Result<(), MarkdownError> {
     for rel in relationships {
         for (which, name) in [("name", &rel.name), ("reverseName", &rel.reverse_name)] {
-            if crate::models::schema::is_reserved_relationship_name(name) {
-                return Err(MarkdownError::invalid_params(format!(
-                    "Relationship {} '{}' is reserved for a built-in structural relationship \
-                     ({}). Choose a different name.",
-                    which,
-                    name,
-                    crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
-                )));
-            }
-            // Type-system names are rejected here but, unlike the built-ins
-            // above, are still stored and read as ordinary declarations — see
-            // `TYPE_SYSTEM_RELATIONSHIPS`. `extends` reaches the relationship
-            // table only via the schema definition's own `extends` key, which
-            // this handler synthesizes.
-            if crate::models::schema::is_type_system_relationship(name) {
-                return Err(MarkdownError::invalid_params(format!(
-                    "Relationship {} '{}' is reserved: '{}' describes the type system itself \
-                     and is not declared as a relationship. Use the schema's own \"extends\" \
-                     key instead — e.g. {{\"name\": \"Issue\", \"extends\": \"task\", \
-                     \"fields\": [...]}}.",
-                    which,
-                    name,
-                    crate::models::schema::EXTENDS_RELATIONSHIP,
-                )));
+            match classify_reserved_relationship_name(name) {
+                Some(ReservedRelationshipName::Builtin) => {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "Relationship {} '{}' is reserved for a built-in structural relationship \
+                         ({}). Choose a different name.",
+                        which,
+                        name,
+                        crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
+                    )));
+                }
+                // Type-system names are rejected here but, unlike the
+                // built-ins above, are still stored and read as ordinary
+                // declarations — see `TYPE_SYSTEM_RELATIONSHIPS`. `extends`
+                // reaches the relationship table only via the schema
+                // definition's own `extends` key, which this handler
+                // synthesizes.
+                Some(ReservedRelationshipName::TypeSystem) => {
+                    return Err(MarkdownError::invalid_params(format!(
+                        "Relationship {} '{}' is reserved: '{}' describes the type system itself \
+                         and is not declared as a relationship. Use the schema's own \"extends\" \
+                         key instead — e.g. {{\"name\": \"Issue\", \"extends\": \"task\", \
+                         \"fields\": [...]}}.",
+                        which,
+                        name,
+                        crate::models::schema::EXTENDS_RELATIONSHIP,
+                    )));
+                }
+                None => {}
             }
         }
     }
@@ -637,7 +679,8 @@ fn reject_reserved_relationship_names(
 
 /// Reject `extends`/`extended_by` from `remove_relationships`'s by-name
 /// removal list — the same reserved names `add_relationships` blocks via
-/// [`reject_reserved_relationship_names`], applied to the removal side of
+/// [`reject_reserved_relationship_names`] (both classify through
+/// [`classify_reserved_relationship_name`]), applied to the removal side of
 /// `update_schema`.
 ///
 /// `remove_relationships` is a generic by-name removal over the same
@@ -653,23 +696,26 @@ fn reject_reserved_relationship_names(
 /// no-op.
 fn reject_reserved_relationship_removal_names(names: &[String]) -> Result<(), MarkdownError> {
     for name in names {
-        if crate::models::schema::is_reserved_relationship_name(name) {
-            return Err(MarkdownError::invalid_params(format!(
-                "Relationship name '{}' is reserved for a built-in structural relationship \
-                 ({}) and is never stored as a declaration, so it cannot be removed via \
-                 remove_relationships.",
-                name,
-                crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
-            )));
-        }
-        if crate::models::schema::is_type_system_relationship(name) {
-            return Err(MarkdownError::invalid_params(format!(
-                "Relationship name '{}' cannot be removed via remove_relationships: '{}' \
-                 describes the type system itself. Use the schema's own \"extends\" key to \
-                 re-target it to a different parent instead — there is no way to clear it.",
-                name,
-                crate::models::schema::EXTENDS_RELATIONSHIP,
-            )));
+        match classify_reserved_relationship_name(name) {
+            Some(ReservedRelationshipName::Builtin) => {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Relationship name '{}' is reserved for a built-in structural relationship \
+                     ({}) and is never stored as a declaration, so it cannot be removed via \
+                     remove_relationships.",
+                    name,
+                    crate::models::schema::RESERVED_RELATIONSHIP_NAMES.join(", ")
+                )));
+            }
+            Some(ReservedRelationshipName::TypeSystem) => {
+                return Err(MarkdownError::invalid_params(format!(
+                    "Relationship name '{}' cannot be removed via remove_relationships: '{}' \
+                     describes the type system itself. Use the schema's own \"extends\" key to \
+                     re-target it to a different parent instead — there is no way to clear it.",
+                    name,
+                    crate::models::schema::EXTENDS_RELATIONSHIP,
+                )));
+            }
+            None => {}
         }
     }
     Ok(())

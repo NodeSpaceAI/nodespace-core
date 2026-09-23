@@ -429,6 +429,8 @@ This is the mirror of the `targetType` rule above: a relationship's target must 
 
 Two scoping notes. Only declarations *between schemas* block the delete — relationship edges between ordinary nodes are instance data and are not counted, so there is no need to unpick those first. And deleting the type does not delete its instances: they remain as nodes of that type, so remove them with `node delete` separately if the user wants them gone too.
 
+**Exception for `extends`:** it is never cleared through `remove_relationships` — that call is rejected outright, since the only way to change an `extends` edge is the dedicated `extends` field on `schema update` (re-targeting it, never clearing it). So the sequence above does not apply to `extends` itself: a schema that extends a parent needs no prerequisite step — deleting it deletes its own `extends` declaration right along with it. A schema OTHER schemas still extend stays blocked with the same `schema_has_declarations` rejection until those children are deleted, or re-targeted onto a different parent: `nodespace schema update --params '{"schema_id":"<child>","extends":"<new-parent>"}'`.
+
 **Schema fields:** define only type-specific fields — don't add a `name` or `title` field; every node already has a built-in content/title field. Exception: if `title_template` uses a `{name}` placeholder, `name` must be defined as a field (any placeholder in `title_template` must have a matching field).
 
 **Field source:** derive every field from what the user's own request describes wanting to track — never from another schema shown in the entity-types context. That listing exists so you don't recreate a type that already exists; it is not a shape to copy fields from for a new, unrelated type.
