@@ -2857,34 +2857,36 @@ impl NodeService {
     ///   bare. Its (new) tree root is queued either way: a new root needs its
     ///   first embedding, and a tree that gained a child needs its aggregate
     ///   rebuilt.
-    pub(crate) async fn refresh_for_rootness(
-        &self,
-        node_id: &str,
-        is_root: bool,
-    ) -> Result<(), NodeServiceError> {
-        let Some(node) = self
-            .store
-            .get_node(node_id)
-            .await
-            .map_err(|e| NodeServiceError::query_failed(e.to_string()))?
-        else {
+    ///
+    /// Best-effort: it runs after the edge write has committed, so a failure is
+    /// logged rather than returned — a derived index must not turn a committed
+    /// move into a reported failure that skips the caller's version bump and
+    /// events.
+    pub(crate) async fn refresh_for_rootness(&self, node_id: &str, is_root: bool) {
+        if let Err(e) = self.try_refresh_for_rootness(node_id, is_root).await {
+            tracing::warn!(
+                node_id = %node_id,
+                error = %e,
+                "failed to refresh title/embedding after a rootness change"
+            );
+        }
+        #[cfg(feature = "nlp")]
+        self.queue_root_for_embedding(node_id).await;
+    }
+
+    async fn try_refresh_for_rootness(&self, node_id: &str, is_root: bool) -> anyhow::Result<()> {
+        let Some(node) = self.store.get_node(node_id).await? else {
             return Ok(());
         };
         let title = self.compute_title(&node, Some(is_root)).await?;
         if title != node.title {
             self.store
                 .set_title(node_id, title.as_deref(), node.version)
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+                .await?;
         }
-        if !is_root {
-            self.store
-                .delete_embeddings(node_id)
-                .await
-                .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
+        if !is_root && self.store.has_embeddings(node_id).await? {
+            self.store.delete_embeddings(node_id).await?;
         }
-        #[cfg(feature = "nlp")]
-        self.queue_root_for_embedding(node_id).await;
         Ok(())
     }
 

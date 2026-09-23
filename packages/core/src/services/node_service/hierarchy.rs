@@ -375,7 +375,7 @@ impl NodeService {
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
         self.refresh_for_rootness(node_id, new_parent.is_none())
-            .await?;
+            .await;
 
         // Emit RelationshipUpdated event (unified relationship events)
         if let Some(parent_id) = new_parent {
@@ -506,7 +506,7 @@ impl NodeService {
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
         self.refresh_for_rootness(node_id, new_parent.is_none())
-            .await?;
+            .await;
 
         // ADR-069 §2: bump the version BEFORE emitting any event, not after.
         // The store's move_node and this bump remain two separate atomic
@@ -868,7 +868,7 @@ impl NodeService {
             .move_node(child_id, Some(parent_id), insert_after_id)
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
-        self.refresh_for_rootness(child_id, false).await?;
+        self.refresh_for_rootness(child_id, false).await;
 
         // Emit RelationshipCreated event (unified relationship events)
         self.emit_event(DomainEvent::RelationshipCreated {
@@ -957,7 +957,7 @@ impl NodeService {
             .await
             .map_err(|e| NodeServiceError::query_failed(e.to_string()))?;
         for (parent, child, order) in &created {
-            self.refresh_for_rootness(child, false).await?;
+            self.refresh_for_rootness(child, false).await;
             self.emit_event(DomainEvent::RelationshipCreated {
                 relationship: crate::db::events::RelationshipEvent::new(
                     format!("relationship:{}:{}", parent, child),
