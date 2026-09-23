@@ -205,7 +205,15 @@ async fn test_behavior_driven_non_embeddable_types() -> Result<()> {
     let registry = NodeBehaviorRegistry::new();
 
     // Types whose behaviors always return None from get_embeddable_content
-    let non_embeddable_types = vec!["task", "date", "collection", "query", "horizontal-line"];
+    let non_embeddable_types = vec![
+        "task",
+        "project",
+        "person",
+        "date",
+        "collection",
+        "query",
+        "horizontal-line",
+    ];
     for node_type in non_embeddable_types {
         let behavior = registry.get(node_type).expect("behavior should exist");
         let node = Node::new(node_type.to_string(), "test content".to_string(), json!({}));
