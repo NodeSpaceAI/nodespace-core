@@ -6307,3 +6307,93 @@ async fn test_rename_fields_combined_with_a_self_extend_does_not_migrate_data() 
         schema.fields
     );
 }
+
+#[tokio::test]
+async fn test_rename_fields_combined_with_a_blank_extends_does_not_migrate_data() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Bug", &["notes"]).await;
+
+    // A blank "extends" value must not be pre-filtered into "no retarget,
+    // fall back to the old parent" — it is exactly the input
+    // `validate_extends_target` itself rejects, and that rejection must
+    // land before Phase 1 migrates the rename's data.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "comments" }],
+            "extends": ""
+        }),
+    )
+    .await;
+
+    result.expect_err("a rename_fields call combined with a blank extends must be rejected");
+
+    let schema = svc
+        .get_schema_node("bug")
+        .await
+        .unwrap()
+        .expect("bug schema should still exist");
+    assert!(
+        schema.fields.iter().any(|f| f.name == "notes"),
+        "field should still be named 'notes' — the rename must not have partially applied \
+         before the blank extends value was caught: {:?}",
+        schema.fields
+    );
+}
+
+#[tokio::test]
+async fn test_display_only_rename_combined_with_an_invalid_extends_does_not_relabel() {
+    let (svc, _tmp) = create_test_service().await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "fields": [
+                {
+                    "name": "notes",
+                    "type": "string",
+                    "protection": "user",
+                    "indexed": false,
+                    "friendlyName": "Notes"
+                }
+            ]
+        }),
+    )
+    .await
+    .expect("bug schema should be created");
+
+    // The batch contains ONLY a display-only rename (from == to, with
+    // friendlyName) — no identity rename. Phase 1 still commits it via
+    // `update_schema_field_friendly_name`, a separate, immediately-applying
+    // write, so the invalid extends target must be validated before Phase 1
+    // runs here too, not just when the batch also renames a field's name.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "notes", "friendlyName": "New Label" }],
+            "extends": "does_not_exist"
+        }),
+    )
+    .await;
+
+    result.expect_err(
+        "a display-only rename combined with an invalid extends target must be rejected",
+    );
+
+    let schema = svc
+        .get_schema_node("bug")
+        .await
+        .unwrap()
+        .expect("bug schema should still exist");
+    let field = schema
+        .fields
+        .iter()
+        .find(|f| f.name == "notes")
+        .expect("notes field should still exist");
+    assert_eq!(
+        field.friendly_name, "Notes",
+        "friendly_name must not have been changed before the invalid extends target was caught"
+    );
+}

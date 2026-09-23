@@ -899,8 +899,16 @@ async fn validate_no_field_redeclaration(
     parent_id: &str,
     own_fields: &[SchemaField],
 ) -> Result<(), MarkdownError> {
-    let (inherited, owners, _chain) =
-        resolve_field_owners_or_error(node_service, parent_id).await?;
+    // Concurrent, not sequential: the two resolutions are independent reads
+    // against the same `parent_id` chain, so there is nothing for a
+    // sequential await to buy — matches the same tokio::try_join! pattern
+    // `playbook::validation`'s equivalent pair already uses, and for the
+    // same reason (see that call site's comment on why collapsing to
+    // whichever error arrives first loses nothing here either).
+    let ((inherited, owners, _chain), (_, relationship_owners)) = tokio::try_join!(
+        resolve_field_owners_or_error(node_service, parent_id),
+        resolve_relationships_or_error(node_service, parent_id)
+    )?;
 
     for field in own_fields {
         if let Some(existing) = inherited.iter().find(|f| f.name == field.name) {
@@ -924,8 +932,6 @@ async fn validate_no_field_redeclaration(
             )));
         }
     }
-
-    let (_, relationship_owners) = resolve_relationships_or_error(node_service, parent_id).await?;
 
     for field in own_fields {
         if let Some(owner) = relationship_owners.get(&field.name) {
@@ -1017,7 +1023,12 @@ async fn validate_no_relationship_redeclaration(
         .filter(|r| is_declared_relationship(r))
         .collect();
 
-    let (inherited, owners) = resolve_relationships_or_error(node_service, parent_id).await?;
+    // Concurrent, not sequential — see `validate_no_field_redeclaration`'s
+    // identical `tokio::try_join!` for why.
+    let ((inherited, owners), (_, field_owners, _)) = tokio::try_join!(
+        resolve_relationships_or_error(node_service, parent_id),
+        resolve_field_owners_or_error(node_service, parent_id)
+    )?;
 
     for rel in &own_relationships {
         if let Some(existing) = inherited.iter().find(|r| r.name == rel.name) {
@@ -1043,8 +1054,6 @@ async fn validate_no_relationship_redeclaration(
             )));
         }
     }
-
-    let (_, field_owners, _) = resolve_field_owners_or_error(node_service, parent_id).await?;
 
     for rel in &own_relationships {
         if let Some(owner) = field_owners.get(&rel.name) {
@@ -1134,8 +1143,12 @@ async fn validate_rename_destination_against_ancestors(
     parent_id: &str,
     to: &str,
 ) -> Result<(), MarkdownError> {
-    let (inherited_fields, field_owners, _) =
-        resolve_field_owners_or_error(node_service, parent_id).await?;
+    // Concurrent, not sequential — see `validate_no_field_redeclaration`'s
+    // identical `tokio::try_join!` for why.
+    let ((inherited_fields, field_owners, _), (_, relationship_owners)) = tokio::try_join!(
+        resolve_field_owners_or_error(node_service, parent_id),
+        resolve_relationships_or_error(node_service, parent_id)
+    )?;
     if let Some(existing) = inherited_fields.iter().find(|f| f.name == to) {
         let declaring_schema = field_owners
             .get(to)
@@ -1150,7 +1163,6 @@ async fn validate_rename_destination_against_ancestors(
         )));
     }
 
-    let (_, relationship_owners) = resolve_relationships_or_error(node_service, parent_id).await?;
     if let Some(owner) = relationship_owners.get(to) {
         return Err(MarkdownError::invalid_params(format!(
             "rename_fields: destination '{}' is already declared as a relationship by '{}' \
@@ -2085,22 +2097,26 @@ pub async fn handle_update_schema(
         // retarget block re-validates it again when it actually applies
         // the edge, which is redundant but harmless (a pure read, not a
         // write).
-        let has_identity_rename = renames.iter().any(|r| r.from != r.to);
-        let rename_ancestor: Option<String> = if has_identity_rename {
-            match params
-                .extends
-                .as_deref()
-                .map(str::trim)
-                .filter(|p| !p.is_empty())
-            {
-                Some(new_parent) => {
-                    validate_extends_target(node_service, &params.schema_id, new_parent).await?;
-                    Some(new_parent.to_string())
-                }
-                None => declared_extends_parent(&relationships_before_rename),
-            }
+        //
+        // Gated on `params.extends` being `Some` AT ALL — not on whether
+        // it's non-blank after trimming, and not on whether this batch
+        // contains an identity rename. Phase 1 commits eagerly for EVERY
+        // entry in `renames`, not just identity ones: a display-only
+        // rename (`from == to` with `friendlyName`) writes via
+        // `update_schema_field_friendly_name`, itself a separate,
+        // immediately-committing write (see its own comment below). A
+        // blank `extends` value is exactly what `validate_extends_target`
+        // itself rejects — mirroring the later retarget block, which
+        // passes the trimmed value straight through with no emptiness
+        // pre-filter of its own — so pre-filtering it out here would
+        // silently treat it as "no retarget, fall back to the old parent"
+        // and let Phase 1 commit before that rejection ever runs.
+        let rename_ancestor: Option<String> = if let Some(ref new_parent) = params.extends {
+            let new_parent = new_parent.trim();
+            validate_extends_target(node_service, &params.schema_id, new_parent).await?;
+            Some(new_parent.to_string())
         } else {
-            None
+            declared_extends_parent(&relationships_before_rename)
         };
 
         for rename in renames {
