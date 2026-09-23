@@ -454,10 +454,10 @@ impl GraphResolver {
     async fn is_declared_many_relationship(&self, node_type: &str, segment: &str) -> bool {
         matches!(
             self.node_service.resolve_relationships(node_type).await,
-            Ok((rels, _owners)) if rels
-                .iter()
-                .find(|r| r.name == segment)
-                .is_some_and(|r| r.cardinality == crate::models::schema::RelationshipCardinality::Many)
+            Ok((rels, _owners)) if rels.iter().any(|r| {
+                r.name == segment
+                    && r.cardinality == crate::models::schema::RelationshipCardinality::Many
+            })
         )
     }
 
@@ -2371,6 +2371,68 @@ mod tests {
                      with zero current matches, got {:?}",
                     other
                 ),
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn probe_inherited_relationship_with_real_attached_data() {
+            let (svc, _tmp) = create_test_service().await;
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({"name": "probe_item", "fields": []}),
+            )
+            .await
+            .expect("target schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "probe_base",
+                    "fields": [],
+                    "relationships": [{
+                        "name": "items",
+                        "targetType": "probe_item",
+                        "direction": "out",
+                        "cardinality": "many",
+                        "reverseName": "parent",
+                        "reverseCardinality": "one"
+                    }]
+                }),
+            )
+            .await
+            .expect("base schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({"name": "probe_sub", "extends": "probe_base", "fields": []}),
+            )
+            .await
+            .expect("subtype schema creation failed");
+
+            let parent = make_node("probe-p1", "probe_sub", json!({}));
+            svc.create_node(parent.clone()).await.unwrap();
+
+            let child = make_node("probe-c1", "probe_item", json!({}));
+            svc.create_node(child.clone()).await.unwrap();
+
+            svc.create_relationship("probe-p1", "items", "probe-c1", json!({}))
+                .await
+                .expect("attaching a real inherited-relationship edge failed");
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver.resolve_path(&parent, &["items".to_string()]).await;
+            match result {
+                ResolvedValue::Collection(nodes) => {
+                    println!("PROBE RESULT: Collection with {} nodes", nodes.len());
+                    assert_eq!(
+                        nodes.len(),
+                        1,
+                        "expected the real attached item to be found, got {} nodes",
+                        nodes.len()
+                    );
+                }
+                other => panic!("PROBE RESULT: expected Collection([1 item]), got {:?}", other),
             }
         }
     }
