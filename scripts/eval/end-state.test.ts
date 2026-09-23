@@ -193,11 +193,11 @@ describe("snapshot parsing", () => {
 
   test("reads related ids from objects and bare strings alike", () => {
     expect(
-      readRelatedIds({ related_nodes: [{ id: "a" }, "b", { nope: 1 }] }),
+      readRelatedIds({ nodes: [{ id: "a" }, "b", { nope: 1 }] }),
     ).toEqual(["a", "b"]);
   });
 
-  test("tolerates a payload with no related_nodes array", () => {
+  test("tolerates a payload with no nodes array", () => {
     expect(readRelatedIds(null)).toEqual([]);
     expect(readRelatedIds({ count: 0 })).toEqual([]);
   });

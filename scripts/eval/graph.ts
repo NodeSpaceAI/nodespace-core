@@ -226,7 +226,7 @@ export function readNodeList(payload: unknown): SnapshotNode[] {
 /** Pull target ids out of a `relationship get` payload. */
 export function readRelatedIds(payload: unknown): string[] {
   if (typeof payload !== "object" || payload === null) return [];
-  const related = (payload as Record<string, unknown>).related_nodes;
+  const related = (payload as Record<string, unknown>).nodes;
   if (!Array.isArray(related)) return [];
   const ids: string[] = [];
   for (const r of related) {
