@@ -346,6 +346,42 @@ describe('Outdenting/indenting an unpersisted, actively-edited node does not dro
     );
     expect(versionMismatch).toBeUndefined();
   });
+
+  it('rolls back the optimistic outdent and reports failure — never falls through to the persisted-node MOVE path — when the CREATE re-trigger is declined', async () => {
+    const grandparent = addPersistedNode('grandparent');
+    const parent = addPersistedNode('parent');
+    vi.spyOn(sharedNodeStore, 'getParentsForNode').mockImplementation((nodeId: string) => {
+      if (nodeId === 'child') return [parent];
+      if (nodeId === 'parent') return [grandparent];
+      return [];
+    });
+
+    const child = makeNode('child');
+    sharedNodeStore.setNode(child, { type: 'viewer', viewerId: 'test-viewer' });
+    focusManager.focusNode('child', 'default');
+
+    // Force the re-trigger to be declined. `viewerSource` makes this
+    // unreachable today (decideRemoteUpdate always applies a `viewer`
+    // source), but the caller must never report success — or fall through
+    // to the already-persisted MOVE path — if this ever changes.
+    vi.spyOn(sharedNodeStore, 'setNode').mockReturnValue(false);
+
+    const { backendAdapter } = await import('$lib/services/backend-adapter');
+    const moveNodeMock = vi.mocked(backendAdapter.moveNode);
+    const moveInMemorySpy = vi.mocked(structureTree.moveInMemoryRelationship);
+    moveInMemorySpy.mockClear();
+
+    const outdentResult = await service.outdentNode('child');
+
+    expect(outdentResult).toBe(false);
+    // No fall-through: moveNode must never be called for a node that was
+    // never created server-side.
+    expect(moveNodeMock).not.toHaveBeenCalled();
+    // The optimistic reparent (child: parent -> grandparent) must be rolled
+    // back (grandparent -> parent), matching rollbackOutdentChanges.
+    expect(moveInMemorySpy).toHaveBeenCalledWith('parent', 'grandparent', 'child');
+    expect(moveInMemorySpy).toHaveBeenCalledWith('grandparent', 'parent', 'child');
+  });
 });
 
 describe('setNode: a re-triggered write to a focused/pending node must use a viewer source', () => {
