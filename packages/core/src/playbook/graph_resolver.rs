@@ -236,7 +236,7 @@ impl GraphResolver {
             let ambiguous_match_count = matches!(&related, Ok(nodes) if nodes.len() <= 1);
             if ambiguous_match_count
                 && self
-                    .is_declared_many_relationship(&current_node.node_type, segment)
+                    .is_declared_many_relationship(&current_node, segment)
                     .await
             {
                 let result = match related {
@@ -434,7 +434,7 @@ impl GraphResolver {
     }
 
     /// Whether `segment` is declared as a "many" cardinality relationship on
-    /// `node_type`, checked against the *effective* relationship set --
+    /// `node`'s type, checked against the *effective* relationship set --
     /// `node_type`'s own directly-declared relationships plus everything
     /// inherited across the ADR-078 `extends` chain (`resolve_relationships`),
     /// not just this schema's own declarations. A relationship declared only
@@ -457,6 +457,24 @@ impl GraphResolver {
     /// its `reverseCardinality` toward `project.tasks` is "many"), so a
     /// reverse match must never fall back to checking `cardinality`.
     ///
+    /// The reverse check mirrors `resolve_relationship_name`'s reverse
+    /// resolution in two further respects it would otherwise silently
+    /// diverge from:
+    /// - The `extends`/`extended_by` type-system relationship is excluded,
+    ///   the same exclusion `resolve_relationships` already applies to the
+    ///   forward set (see its doc comment) -- `get_inbound_relationships`
+    ///   does NOT exclude it, so without this an ancestor schema's own
+    ///   `extended_by` segment (present on every schema with a subtype) would
+    ///   be misread as a declared many-relationship, even though no data node
+    ///   ever carries such an edge.
+    /// - An UNTYPED declaration (`target_type: None`) only counts if it
+    ///   actually reaches `node` (probed via `get_related_nodes`), and the
+    ///   FIRST name match by `get_inbound_relationships`'s order wins rather
+    ///   than any match -- both exactly as `resolve_relationship_name` does,
+    ///   so a same-spelled `reverse_name` collision across schemas, or an
+    ///   untyped declaration that belongs to a different node entirely,
+    ///   can't force the wrong cardinality onto this traversal.
+    ///
     /// Only called when a relationship fetch already returned zero or
     /// exactly one row -- the only counts where cardinality can change the
     /// resolved shape (see the call site's doc: for two or more rows the
@@ -465,8 +483,13 @@ impl GraphResolver {
     /// declared many-relationship with zero or one current matches", which
     /// the raw row count alone can't tell apart. Any lookup failure (schema
     /// not found, service error) conservatively resolves to `false` -- i.e.
-    /// today's existing row-count-only behavior -- rather than guessing.
-    async fn is_declared_many_relationship(&self, node_type: &str, segment: &str) -> bool {
+    /// today's existing row-count-only behavior -- rather than guessing; it
+    /// is logged rather than swallowed, since it is a genuine infrastructure
+    /// failure indistinguishable, if silent, from the ordinary "not declared
+    /// many" case.
+    async fn is_declared_many_relationship(&self, node: &Node, segment: &str) -> bool {
+        let node_type = &node.node_type;
+
         // Forward first: `node_type`'s own (or inherited) relationship set.
         match self.node_service.resolve_relationships(node_type).await {
             Ok((rels, _owners)) => {
@@ -474,7 +497,13 @@ impl GraphResolver {
                     return r.cardinality == crate::models::schema::RelationshipCardinality::Many;
                 }
             }
-            Err(_) => return false,
+            Err(e) => {
+                warn!(
+                    "is_declared_many_relationship: failed to resolve forward relationships for {}: {}",
+                    node_type, e
+                );
+                return false;
+            }
         }
 
         // Reverse: some other schema's relationship declares `segment` as its
@@ -482,13 +511,48 @@ impl GraphResolver {
         // `extends`). `get_inbound_relationships` already expands that chain
         // internally, so a single call covers inheritance too -- no separate
         // per-scope loop needed.
-        matches!(
-            self.node_service.get_inbound_relationships(node_type).await,
-            Ok(inbound) if inbound.iter().any(|(_source_type, r)| {
-                r.reverse_name == segment
-                    && r.reverse_cardinality == crate::models::schema::RelationshipCardinality::Many
-            })
-        )
+        let inbound = match self.node_service.get_inbound_relationships(node_type).await {
+            Ok(inbound) => inbound,
+            Err(e) => {
+                warn!(
+                    "is_declared_many_relationship: failed to resolve inbound relationships for {}: {}",
+                    node_type, e
+                );
+                return false;
+            }
+        };
+
+        for (_source_type, rel) in inbound {
+            if rel.reverse_name != segment {
+                continue;
+            }
+            // Never a real data relationship -- see the doc comment above.
+            if crate::models::schema::is_type_system_relationship(&rel.name) {
+                continue;
+            }
+            if rel.target_type.is_none() {
+                // Untyped: only counts if it actually reaches THIS node.
+                let reaches_this_node = match self
+                    .node_service
+                    .get_related_nodes(&node.id, &rel.name, "in")
+                    .await
+                {
+                    Ok(nodes) => !nodes.is_empty(),
+                    Err(e) => {
+                        warn!(
+                            "is_declared_many_relationship: failed to probe untyped relationship '{}' for {}: {}",
+                            rel.name, node.id, e
+                        );
+                        return false;
+                    }
+                };
+                if !reaches_this_node {
+                    continue;
+                }
+            }
+            return rel.reverse_cardinality == crate::models::schema::RelationshipCardinality::Many;
+        }
+        false
     }
 
     /// Build an enriched CEL context with graph-resolved paths.
@@ -2507,6 +2571,64 @@ mod tests {
                     other
                 ),
             }
+        }
+
+        /// Regression: the reverse-cardinality check must exclude the
+        /// `extends`/`extended_by` type-system relationship, exactly as
+        /// `resolve_relationships` already excludes it from the forward set.
+        ///
+        /// `extends` is stored as an ordinary `SchemaRelationship` row (on
+        /// the subtype's schema, targeting its parent) with `reverseName:
+        /// "extended_by"` and `reverseCardinality: "many"` -- so ANY base
+        /// schema with at least one subtype has an inbound `extends`
+        /// declaration reaching it. `get_inbound_relationships`, unlike
+        /// `resolve_relationships`, does not filter type-system
+        /// relationships out, so walking `extended_by` on an ordinary
+        /// instance of the base type must still resolve to `Missing` (no
+        /// data node ever carries such an edge) rather than being
+        /// misidentified as a declared many-relationship and forced to an
+        /// empty `Collection`.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn extended_by_segment_is_not_treated_as_a_declared_many_relationship() {
+            let (svc, _tmp) = create_test_service().await;
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "gr_extlk_base",
+                    "fields": []
+                }),
+            )
+            .await
+            .expect("base schema creation failed");
+
+            // A subtype exists solely so the base schema has an inbound
+            // `extends` declaration (reverseName "extended_by") to leak.
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "gr_extlk_sub",
+                    "extends": "gr_extlk_base",
+                    "fields": []
+                }),
+            )
+            .await
+            .expect("subtype schema creation failed");
+
+            // An ordinary instance of the BASE type -- not a schema node,
+            // and no `extends`/`extended_by` edge ever points at it.
+            let base = make_node("gr-extlk-b1", "gr_extlk_base", json!({}));
+            svc.create_node(base.clone()).await.unwrap();
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver
+                .resolve_path(&base, &["extended_by".to_string()])
+                .await;
+            assert!(
+                matches!(result, ResolvedValue::Missing),
+                "expected Missing for the type-system 'extended_by' segment, got {:?}",
+                result
+            );
         }
     }
 }
