@@ -1130,19 +1130,31 @@ fn validate_no_same_schema_field_relationship_collision(
 /// `SchemaField` to hand — `rename_fields` renames an existing field in
 /// place, it does not construct a new one — so this mirrors just the name
 /// lookup those two do, over the same two resolvers.
+///
+/// Uses [`NodeService::resolve_field_owners`] (not `resolve_effective_fields`)
+/// for the same-domain half specifically so a collision two-or-more scopes up
+/// the chain is attributed to the schema that actually declares it, not
+/// unconditionally to `parent_id` (the nearest ancestor) — this is new code,
+/// not the pre-existing same issue in `validate_no_field_redeclaration`
+/// tracked separately.
 async fn validate_rename_destination_against_ancestors(
     node_service: &Arc<NodeService>,
     parent_id: &str,
     to: &str,
 ) -> Result<(), MarkdownError> {
-    let inherited_fields = resolve_effective_fields(node_service, parent_id).await?;
+    let (inherited_fields, field_owners, _) =
+        resolve_field_owners_or_error(node_service, parent_id).await?;
     if let Some(existing) = inherited_fields.iter().find(|f| f.name == to) {
+        let declaring_schema = field_owners
+            .get(to)
+            .map(String::as_str)
+            .unwrap_or(parent_id);
         return Err(MarkdownError::invalid_params(format!(
             "rename_fields: destination '{}' is already declared by '{}' (inherited via \
              extends) and cannot be reused — composition is additive only, with no override \
              or narrowing. The inherited field is type '{}'. Choose a different destination \
              name.",
-            to, parent_id, existing.field_type,
+            to, declaring_schema, existing.field_type,
         )));
     }
 
@@ -2076,31 +2088,48 @@ pub async fn handle_update_schema(
             // it. Skipped for a display-only rename (`from == to`): that
             // introduces no new name, so there is nothing new to collide.
             if rename.from != rename.to {
-                if let Some(rel) = schema_before
-                    .relationships
-                    .iter()
-                    .filter(|r| is_declared_relationship(r))
-                    .find(|r| r.name == rename.to)
-                {
-                    return Err(MarkdownError::invalid_params(format!(
-                        "rename_fields: destination '{}' collides with this schema's own \
-                         relationship '{}' (targets '{}') — a name must resolve unambiguously \
-                         as either a field or a relationship, never both. Choose a different \
-                         destination name.",
-                        rename.to,
-                        rel.name,
-                        rel.target_type.as_deref().unwrap_or("*"),
-                    )));
-                }
+                // Relationships as they'll stand once this SAME call's own
+                // `remove_relationships` applies — not `schema_before`'s raw
+                // snapshot, which would still show a name this call is
+                // simultaneously freeing as colliding.
+                // `remove_relationships` itself is applied later (Phase 2,
+                // to a separately-cloned list); this recomputes just the
+                // piece the checks below need, ahead of any mutation.
+                let relationships_before_rename: Vec<crate::models::schema::SchemaRelationship> =
+                    schema_before
+                        .relationships
+                        .iter()
+                        .filter(|r| {
+                            !params
+                                .remove_relationships
+                                .as_ref()
+                                .is_some_and(|names| names.contains(&r.name))
+                        })
+                        .cloned()
+                        .collect();
 
-                // Also check against a relationship THIS SAME call adds via
-                // `add_relationships`. That section runs well after Phase 1
-                // folds renames in (and after Phase 1 has already committed
-                // its own transaction), so a destination colliding only with
-                // a same-call addition — not anything pre-existing — would
-                // otherwise reach only the end-of-function same-schema
-                // check, by which point the rename has already migrated
-                // every node's data.
+                // Same-schema collision — routes through the same shared
+                // check `create_schema`/`add_fields`/`add_relationships` all
+                // use, via a synthetic single-field slice (a rename has no
+                // complete `SchemaField` to hand; only the name matters
+                // here).
+                let synthetic_field = SchemaField {
+                    name: rename.to.clone(),
+                    ..Default::default()
+                };
+                validate_no_same_schema_field_relationship_collision(
+                    std::slice::from_ref(&synthetic_field),
+                    &relationships_before_rename,
+                )?;
+
+                // Also check against a relationship or field THIS SAME call
+                // adds via `add_relationships`/`add_fields`. Both sections
+                // run well after Phase 1 folds renames in (and after Phase 1
+                // has already committed its own transaction), so a
+                // destination colliding only with a same-call addition —
+                // not anything pre-existing — would otherwise reach only
+                // the end-of-function same-schema check, by which point the
+                // rename has already migrated every node's data.
                 if let Some(ref add_rels) = params.add_relationships {
                     if let Some(rel) = add_rels.iter().find(|r| r.name == rename.to) {
                         return Err(MarkdownError::invalid_params(format!(
@@ -2115,8 +2144,37 @@ pub async fn handle_update_schema(
                         )));
                     }
                 }
+                if let Some(ref add_fields) = params.add_fields {
+                    if add_fields.iter().any(|f| f.name == rename.to) {
+                        return Err(MarkdownError::invalid_params(format!(
+                            "rename_fields: destination '{}' collides with a field this same \
+                             call also adds via add_fields. Choose a different destination \
+                             name, or make the rename and the addition two separate calls.",
+                            rename.to,
+                        )));
+                    }
+                }
 
-                if let Some(parent) = declared_extends_parent(&schema_before.relationships) {
+                // Ancestor-chain check — against the parent this rename will
+                // actually be evaluated under once the call completes: the
+                // NEW parent when this same call also retargets `extends`
+                // (checking the OLD one would validate against a parent
+                // this schema is simultaneously leaving, and skipping the
+                // check entirely — mirroring how `current_ancestor_for_additive_check`
+                // defers to the retarget block for `add_fields`/
+                // `add_relationships` — is unsafe here specifically because
+                // Phase 1 commits before that later block runs), otherwise
+                // the schema's current declared parent.
+                let rename_ancestor: Option<String> = match params
+                    .extends
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty())
+                {
+                    Some(new_parent) => Some(new_parent.to_string()),
+                    None => declared_extends_parent(&relationships_before_rename),
+                };
+                if let Some(parent) = rename_ancestor {
                     validate_rename_destination_against_ancestors(
                         node_service,
                         &parent,

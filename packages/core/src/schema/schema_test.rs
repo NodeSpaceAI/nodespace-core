@@ -6038,3 +6038,193 @@ async fn test_rename_fields_rejects_a_destination_colliding_with_a_same_call_add
         schema.fields
     );
 }
+
+#[tokio::test]
+async fn test_rename_fields_rejects_a_destination_colliding_with_a_same_call_add_fields() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Bug", &["notes"]).await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "extra" }],
+            "add_fields": [
+                { "name": "extra", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "a rename destination colliding with a field added in the SAME call must be rejected \
+         before the rename migrates any data",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("extra"),
+        "error should name the colliding destination: {msg}"
+    );
+
+    let schema = svc
+        .get_schema_node("bug")
+        .await
+        .unwrap()
+        .expect("bug schema should still exist");
+    assert!(
+        schema.fields.iter().any(|f| f.name == "notes"),
+        "field should still be named 'notes' — the rename must not have partially applied: {:?}",
+        schema.fields
+    );
+}
+
+#[tokio::test]
+async fn test_rename_fields_checks_the_new_parent_when_combined_with_extends_retarget() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+    create_base_schema(&svc, "OldParent", &[]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "NewParent",
+            "fields": [],
+            "relationships": [widget_relationship("owner", "widget", "owned_by_new_parent")]
+        }),
+    )
+    .await
+    .expect("new_parent schema should be created");
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "oldparent",
+            "fields": [
+                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("bug extends oldparent should succeed");
+
+    // The collision is with new_parent's relationship, not oldparent's
+    // (empty) declarations — the rename destination check must validate
+    // against the parent this call is retargeting TO, not the one it's
+    // leaving.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "owner" }],
+            "extends": "newparent"
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "a rename destination colliding with the NEW parent (being retargeted to in the same \
+         call) must be rejected before the rename migrates any data",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("owner"),
+        "error should name the colliding destination: {msg}"
+    );
+
+    let schema = svc
+        .get_schema_node("bug")
+        .await
+        .unwrap()
+        .expect("bug schema should still exist");
+    assert!(
+        schema.fields.iter().any(|f| f.name == "notes"),
+        "field should still be named 'notes' — the rename must not have partially applied: {:?}",
+        schema.fields
+    );
+}
+
+#[tokio::test]
+async fn test_rename_fields_allows_a_destination_colliding_only_with_the_abandoned_old_parent() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "OldParent",
+            "fields": [],
+            "relationships": [widget_relationship("owner", "widget", "owned_by_old_parent")]
+        }),
+    )
+    .await
+    .expect("old_parent schema should be created");
+    create_base_schema(&svc, "NewParent", &[]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "extends": "oldparent",
+            "fields": [
+                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+            ]
+        }),
+    )
+    .await
+    .expect("bug extends oldparent should succeed");
+
+    // "owner" only collides with oldparent — the parent this call is
+    // simultaneously LEAVING. Checking against it (rather than newparent,
+    // which has no such collision) would wrongly reject an otherwise-valid
+    // request.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "owner" }],
+            "extends": "newparent"
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a rename destination colliding only with the OLD parent being abandoned in the same \
+         call must not be rejected: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_rename_fields_allows_a_destination_freed_by_the_same_calls_remove_relationships() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Widget", &[]).await;
+    handle_create_schema(
+        &svc,
+        json!({
+            "name": "Bug",
+            "fields": [
+                { "name": "notes", "type": "string", "protection": "user", "indexed": false }
+            ],
+            "relationships": [widget_relationship("owner", "widget", "owned_bugs")]
+        }),
+    )
+    .await
+    .expect("bug schema should be created");
+
+    // "owner" collides with bug's OWN relationship, but that relationship is
+    // ALSO being removed by this same call — the destination check must see
+    // relationships as they'll stand AFTER remove_relationships applies, not
+    // the pre-call snapshot.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "remove_relationships": ["owner"],
+            "rename_fields": [{ "from": "notes", "to": "owner" }]
+        }),
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "a rename destination freed by this same call's remove_relationships must not be \
+         rejected: {result:?}"
+    );
+}
