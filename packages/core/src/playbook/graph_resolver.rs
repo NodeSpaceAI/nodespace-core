@@ -2373,5 +2373,103 @@ mod tests {
                 ),
             }
         }
+
+        /// Regression for core#2868, a sibling to the zero-match case above.
+        /// A REAL edge is attached to a subtype instance via the extends
+        /// chain -- before the fix, this still resolved to an empty
+        /// `Collection`, indistinguishable from "nothing attached".
+        ///
+        /// `resolve_relationship_name`'s forward-name check (in
+        /// `ops::rel_ops`, which `fetch_related_nodes` calls into) looked up
+        /// `node_type`'s schema via `get_schema_node` -- the type's own
+        /// directly-declared relationships only, never the ADR-078
+        /// `extends`-chain-merged set `resolve_relationships` provides. So
+        /// `items`, declared only on `gr_ext_base` and inherited (not
+        /// redeclared) by `gr_ext_sub`, was invisible to it. Resolution fell
+        /// through to `OpsError::InvalidParams` ("undeclared in either
+        /// direction"), which `fetch_related_nodes` treats as "undeclared,
+        /// not a failure" and short-circuits to an empty result -- even
+        /// though the write path (`create_relationship` ->
+        /// `resolve_declared_relationship`) is already chain-aware and
+        /// happily attached the edge below. core#2837 fixed the zero-match
+        /// *classification* (the sibling test above), but never touched
+        /// this fetch, so a genuinely populated edge on a subtype instance
+        /// stayed silently unreadable until now.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn inherited_relationship_with_real_edge_resolves_to_populated_collection() {
+            let (svc, _tmp) = create_test_service().await;
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "gr_ext_item2",
+                    "fields": []
+                }),
+            )
+            .await
+            .expect("target schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "gr_ext_base2",
+                    "fields": [],
+                    "relationships": [{
+                        "name": "items",
+                        "targetType": "gr_ext_item2",
+                        "direction": "out",
+                        "cardinality": "many",
+                        "reverseName": "parent",
+                        "reverseCardinality": "one"
+                    }]
+                }),
+            )
+            .await
+            .expect("base schema creation failed");
+
+            crate::schema::handle_create_schema(
+                &svc,
+                json!({
+                    "name": "gr_ext_sub2",
+                    "extends": "gr_ext_base2",
+                    "fields": []
+                }),
+            )
+            .await
+            .expect("subtype schema creation failed");
+
+            // A subtype instance with a REAL edge attached, even though
+            // `items` is only declared on the ancestor schema.
+            let parent = make_node("gr-ext-p2", "gr_ext_sub2", json!({}));
+            svc.create_node(parent.clone()).await.unwrap();
+            let item = make_node("gr-ext-i1", "gr_ext_item2", json!({}));
+            svc.create_node(item.clone()).await.unwrap();
+
+            svc.create_relationship("gr-ext-p2", "items", "gr-ext-i1", json!({}))
+                .await
+                .expect(
+                    "create_relationship must succeed for an inherited relationship -- the \
+                     write path is already extends-chain aware",
+                );
+
+            let mut resolver = GraphResolver::new(Arc::clone(&svc));
+            let result = resolver.resolve_path(&parent, &["items".to_string()]).await;
+            match result {
+                ResolvedValue::Collection(nodes) => {
+                    assert_eq!(
+                        nodes.len(),
+                        1,
+                        "expected the real attached edge to be readable through the \
+                         extends chain, got {} nodes",
+                        nodes.len()
+                    );
+                    assert_eq!(nodes[0].id, "gr-ext-i1");
+                }
+                other => panic!(
+                    "expected a populated Collection containing the real attached edge, got {:?}",
+                    other
+                ),
+            }
+        }
     }
 }
