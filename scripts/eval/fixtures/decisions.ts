@@ -74,7 +74,18 @@ type Expected =
    * at all (`stage2_tools` scopes it out), so it reads as a wrong-tool failure
    * when retrieval was what went wrong.
    */
-  | { decision: "skill"; matches: RegExp };
+  | { decision: "skill"; matches: RegExp }
+  /**
+   * The turn must not create a second copy of this existing record, and must
+   * either ask the user about it (a clarification naming it) or act on it.
+   *
+   * Not a decision assertion, and deliberately the only one that is not. It
+   * exists for the case a write-path guard closes rather than the model: the
+   * model's choice stays wrong, the system corrects it, and what is worth
+   * pinning is that the user never gets the duplicate. The operation decision
+   * is still recorded in the results file for every scenario.
+   */
+  | { decision: "outcome"; noDuplicateOf: string };
 
 interface DecisionScenario extends Scenario {
   expected: Expected;
@@ -454,17 +465,15 @@ const FIXTURES: DecisionScenario[] = [
     // holds" appears to be a harder ask than the output-shape constraints that
     // measurement covered.
     //
-    // Left asserting the wanted behaviour rather than the observed one, so it
-    // reads as a known gap instead of silently blessing the duplicate. Closing
-    // it needs a deterministic guard — the system already holds the resolved
-    // entity, so the collision is detectable before the write without any
-    // model judgment — which is a change to the write path rather than to any
-    // prompt, and is tracked on its own.
+    // Closed by a deterministic guard on the write path instead: the system
+    // holds the resolved entity, so a `create_node` whose type and title match
+    // it is refused before it executes, the model is told to ask, and if it
+    // does not, the system asks for it. So this scores the OUTCOME — no
+    // duplicate, and the user asked — rather than the operation decision,
+    // which the guard cannot change: the model still picks `create_node`, and
+    // `operationDecision` in the results file keeps recording that miss.
     prompt: "Add Northwind Trading to the companies we sell to.",
-    expected: {
-      decision: "operation",
-      oneOf: ["route_clarify", "update_node", "search_nodes", "resolve_query"],
-    },
+    expected: { decision: "outcome", noDuplicateOf: SEEDED_COMPANY_TITLE },
     entityResolution: true,
   },
   {
@@ -581,11 +590,58 @@ function firstDecision(turns: TurnRecord[], kind: "skill" | "schema" | "operatio
   return undefined;
 }
 
+/**
+ * How every clarification the agent ends a turn with opens — its own
+ * `route_clarify` and the duplicate guard's alike. Mirrors
+ * `CLARIFICATION_OPENER` in `packages/agent/src/local_agent/agent_loop.rs`.
+ */
+const CLARIFICATION_OPENER = "I can take that a couple of ways";
+
+/**
+ * Score a turn that must not duplicate `title`: no `create_node` may have
+ * succeeded, and the turn must have asked the user about the record or acted
+ * on it with an update.
+ */
+function assertNoDuplicate(title: string, turns: TurnRecord[]): Verdict {
+  // `toolCalls` is what tells a refused create (isError) from one that landed.
+  // A turn that called tools but recorded no outcomes cannot be scored here —
+  // treating it as "no create succeeded" would pass a real duplicate.
+  if (turns.some((t) => t.toolsCalled.length > 0 && t.toolCalls === undefined)) {
+    return {
+      passed: false,
+      failure:
+        "Tools were called but no per-call outcomes were recorded, so a refused " +
+        "create cannot be told from one that succeeded.",
+    };
+  }
+  const calls = turns.flatMap((t) => t.toolCalls ?? []);
+  if (calls.some((c) => c.name === "create_node" && !c.isError)) {
+    return {
+      passed: false,
+      failure: `A create_node succeeded, so "${title}" now exists twice. Tools: ${turns.flatMap((t) => t.toolsCalled).join(", ")}`,
+    };
+  }
+  const reply = turns.at(-1)?.reply ?? "";
+  if (reply.startsWith(CLARIFICATION_OPENER) && reply.includes(title)) {
+    return { passed: true };
+  }
+  if (calls.some((c) => c.name === "update_node" && !c.isError)) {
+    return { passed: true };
+  }
+  return {
+    passed: false,
+    failure: `No duplicate was created, but the user was neither asked about "${title}" nor was it updated. Reply: ${reply.slice(0, 300)}`,
+  };
+}
+
 function assertFixture(
   fixture: DecisionScenario,
   turns: TurnRecord[],
 ): Verdict {
   const { expected } = fixture;
+  if (expected.decision === "outcome") {
+    return assertNoDuplicate(expected.noDuplicateOf, turns);
+  }
   const decision = firstDecision(turns, expected.decision);
 
   // A build predating the decision markers records none at all. Scoring that as
