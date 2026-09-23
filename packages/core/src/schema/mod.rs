@@ -2040,6 +2040,69 @@ pub async fn handle_update_schema(
     }
 
     if let Some(ref renames) = params.rename_fields {
+        // Relationships as they'll stand once this SAME call's own
+        // `remove_relationships` applies — not `schema_before`'s raw
+        // snapshot, which would still show a name this call is
+        // simultaneously freeing as colliding. `remove_relationships`
+        // itself is applied later (Phase 2, to a separately-cloned list);
+        // this recomputes just the piece the checks below need, ahead of
+        // any mutation. Computed once for the whole batch: it doesn't vary
+        // per rename entry.
+        let relationships_before_rename: Vec<crate::models::schema::SchemaRelationship> =
+            schema_before
+                .relationships
+                .iter()
+                .filter(|r| {
+                    !params
+                        .remove_relationships
+                        .as_ref()
+                        .is_some_and(|names| names.contains(&r.name))
+                })
+                .cloned()
+                .collect();
+
+        // The ancestor a rename destination must be checked against once
+        // this call completes: the NEW parent when this same call also
+        // retargets `extends` (checking the OLD one would validate against
+        // a parent this schema is simultaneously leaving), otherwise the
+        // schema's current declared parent. Also computed once — the same
+        // ancestor applies to every entry in the batch.
+        //
+        // Deferring entirely when `extends` is set — mirroring how
+        // `current_ancestor_for_additive_check` defers to the retarget
+        // block for `add_fields`/`add_relationships` — is unsafe here
+        // specifically because Phase 1 commits before that later block
+        // runs. And trusting `params.extends` outright is equally unsafe:
+        // a target that doesn't exist (or is self-referential, or would
+        // close a cycle) resolves to an empty ancestor chain rather than
+        // erroring (a missing schema "contributes nothing" to
+        // `resolve_field_owners`/`resolve_relationships`, per their own
+        // doc comments), so an invalid target would let the rename pass
+        // unchecked here and only be caught by the retarget block's own
+        // `validate_extends_target` call much later — after Phase 1 has
+        // already migrated the rename. Validating the target's
+        // existence/self-reference/cycle here first closes that gap; the
+        // retarget block re-validates it again when it actually applies
+        // the edge, which is redundant but harmless (a pure read, not a
+        // write).
+        let has_identity_rename = renames.iter().any(|r| r.from != r.to);
+        let rename_ancestor: Option<String> = if has_identity_rename {
+            match params
+                .extends
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+            {
+                Some(new_parent) => {
+                    validate_extends_target(node_service, &params.schema_id, new_parent).await?;
+                    Some(new_parent.to_string())
+                }
+                None => declared_extends_parent(&relationships_before_rename),
+            }
+        } else {
+            None
+        };
+
         for rename in renames {
             if let Some(field) = schema_before.get_field(&rename.from) {
                 if !schema_before.can_modify_field(&rename.from) {
@@ -2080,26 +2143,6 @@ pub async fn handle_update_schema(
             // it. Skipped for a display-only rename (`from == to`): that
             // introduces no new name, so there is nothing new to collide.
             if rename.from != rename.to {
-                // Relationships as they'll stand once this SAME call's own
-                // `remove_relationships` applies — not `schema_before`'s raw
-                // snapshot, which would still show a name this call is
-                // simultaneously freeing as colliding.
-                // `remove_relationships` itself is applied later (Phase 2,
-                // to a separately-cloned list); this recomputes just the
-                // piece the checks below need, ahead of any mutation.
-                let relationships_before_rename: Vec<crate::models::schema::SchemaRelationship> =
-                    schema_before
-                        .relationships
-                        .iter()
-                        .filter(|r| {
-                            !params
-                                .remove_relationships
-                                .as_ref()
-                                .is_some_and(|names| names.contains(&r.name))
-                        })
-                        .cloned()
-                        .collect();
-
                 // Same-schema collision — routes through the same shared
                 // check `create_schema`/`add_fields`/`add_relationships` all
                 // use, via a synthetic single-field slice (a rename has no
@@ -2147,32 +2190,9 @@ pub async fn handle_update_schema(
                     }
                 }
 
-                // Ancestor-chain check — against the parent this rename will
-                // actually be evaluated under once the call completes: the
-                // NEW parent when this same call also retargets `extends`
-                // (checking the OLD one would validate against a parent
-                // this schema is simultaneously leaving, and skipping the
-                // check entirely — mirroring how `current_ancestor_for_additive_check`
-                // defers to the retarget block for `add_fields`/
-                // `add_relationships` — is unsafe here specifically because
-                // Phase 1 commits before that later block runs), otherwise
-                // the schema's current declared parent.
-                let rename_ancestor: Option<String> = match params
-                    .extends
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|p| !p.is_empty())
-                {
-                    Some(new_parent) => Some(new_parent.to_string()),
-                    None => declared_extends_parent(&relationships_before_rename),
-                };
-                if let Some(parent) = rename_ancestor {
-                    validate_rename_destination_against_ancestors(
-                        node_service,
-                        &parent,
-                        &rename.to,
-                    )
-                    .await?;
+                if let Some(ref parent) = rename_ancestor {
+                    validate_rename_destination_against_ancestors(node_service, parent, &rename.to)
+                        .await?;
                 }
             }
         }

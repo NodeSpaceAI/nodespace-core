@@ -6228,3 +6228,82 @@ async fn test_rename_fields_allows_a_destination_freed_by_the_same_calls_remove_
          rejected: {result:?}"
     );
 }
+
+#[tokio::test]
+async fn test_rename_fields_combined_with_a_nonexistent_extends_target_does_not_migrate_data() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Bug", &["notes"]).await;
+
+    // The rename destination check must not trust an unvalidated
+    // `params.extends` target: a nonexistent schema resolves to an empty
+    // ancestor chain rather than erroring (a missing schema "contributes
+    // nothing" to chain resolution), so without validating the target
+    // first, this would let the rename commit before the later
+    // `validate_extends_target` call in the retarget block ever runs.
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "comments" }],
+            "extends": "does_not_exist"
+        }),
+    )
+    .await;
+
+    let err = result.expect_err(
+        "a rename_fields call combined with a nonexistent extends target must be rejected",
+    );
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("does_not_exist"),
+        "error should name the invalid target: {msg}"
+    );
+
+    let schema = svc
+        .get_schema_node("bug")
+        .await
+        .unwrap()
+        .expect("bug schema should still exist");
+    assert!(
+        schema.fields.iter().any(|f| f.name == "notes"),
+        "field should still be named 'notes' — the rename must not have partially applied \
+         before the invalid extends target was caught: {:?}",
+        schema.fields
+    );
+}
+
+#[tokio::test]
+async fn test_rename_fields_combined_with_a_self_extend_does_not_migrate_data() {
+    let (svc, _tmp) = create_test_service().await;
+    create_base_schema(&svc, "Bug", &["notes"]).await;
+
+    let result = handle_update_schema(
+        &svc,
+        json!({
+            "schema_id": "bug",
+            "rename_fields": [{ "from": "notes", "to": "comments" }],
+            "extends": "bug"
+        }),
+    )
+    .await;
+
+    let err =
+        result.expect_err("a rename_fields call combined with a self-extend must be rejected");
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("itself") || msg.to_lowercase().contains("cannot extend"),
+        "error should describe the self-extend: {msg}"
+    );
+
+    let schema = svc
+        .get_schema_node("bug")
+        .await
+        .unwrap()
+        .expect("bug schema should still exist");
+    assert!(
+        schema.fields.iter().any(|f| f.name == "notes"),
+        "field should still be named 'notes' — the rename must not have partially applied \
+         before the self-extend was caught: {:?}",
+        schema.fields
+    );
+}
