@@ -829,8 +829,14 @@ async fn validate_no_field_redeclaration(
             .resolve_field_owners(parent_id)
             .await
             .map_err(|e| {
+                // `e` already names whichever schema in the chain the
+                // underlying lookup actually failed on (see
+                // `NodeService::get_schema_node`'s own error context) — this
+                // wrapper describes the chain walk `parent_id` kicked off,
+                // not the failing schema itself, so it doesn't repeat
+                // `parent_id` as if it were that schema.
                 MarkdownError::internal_error(format!(
-                    "Failed to resolve fields for '{parent_id}': {e}"
+                    "Failed to resolve the field-owner chain starting from '{parent_id}': {e}"
                 ))
             })?;
 
